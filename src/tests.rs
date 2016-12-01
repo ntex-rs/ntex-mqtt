@@ -53,7 +53,7 @@ fn test_decode_connect_packets() {
         Done(&b""[..], Packet::Connect {
             clean_session: false,
             keep_alive: 60,
-            client_id: "12345",
+            client_id: b"12345",
             will: None,
             username: Some("user"),
             password: Some(b"pass"),
@@ -64,7 +64,7 @@ fn test_decode_connect_packets() {
         Done(&b""[..], Packet::Connect {
             clean_session: false,
             keep_alive: 60,
-            client_id: "12345",
+            client_id: b"12345",
             will: Some(ConnectionWill{
                 qos: QoS::ExactlyOnce,
                 retain: false,

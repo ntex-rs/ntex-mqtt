@@ -99,7 +99,7 @@ pub enum Packet<'a> {
         clean_session: bool,
         keep_alive: u16,
         will: Option<ConnectionWill<'a>>,
-        client_id: &'a str,
+        client_id: &'a [u8],
         username: Option<&'a str>,
         password: Option<&'a [u8]>,
     },

@@ -42,11 +42,8 @@ pub fn decode_variable_length_usize(i: &[u8]) -> IResult<&[u8], usize> {
     }
 }
 
-named!(pub decode_utf8_str<&str>, chain!(
-    l: be_u16 ~
-    s: map_res!(take!(l), str::from_utf8),
-    || { s }
-));
+named!(pub decode_length_bytes, length_bytes!(be_u16));
+named!(pub decode_utf8_str<&str>, map_res!(length_bytes!(be_u16), str::from_utf8));
 
 named!(pub decode_fixed_header<FixedHeader>, do_parse!(
     b0: bits!( pair!( take_bits!( u8, 4 ), take_bits!( u8, 4 ) ) ) >>
@@ -78,13 +75,13 @@ named!(pub decode_connect_packet<Packet>, do_parse!(
     error_if!((flags & 0x01) != 0, RESERVED_FLAG) >>
 
     keep_alive: be_u16 >>
-    client_id: decode_utf8_str >>
+    client_id: decode_length_bytes >>
     error_if!(client_id.is_empty() && !is_flag_set!(flags, CLEAN_SESSION), INVALID_CLIENT_ID) >>
 
     topic: cond!(is_flag_set!(flags, WILL), decode_utf8_str) >>
     message: cond!(is_flag_set!(flags, WILL), decode_utf8_str) >>
     username: cond!(is_flag_set!(flags, USERNAME), decode_utf8_str) >>
-    password: cond!(is_flag_set!(flags, PASSWORD), length_bytes!(be_u16)) >>
+    password: cond!(is_flag_set!(flags, PASSWORD), decode_length_bytes) >>
     (
         Packet::Connect {
             clean_session: is_flag_set!(flags, CLEAN_SESSION),
