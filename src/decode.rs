@@ -1,26 +1,16 @@
 use std::str;
-use std::mem;
 
 use nom::{be_u8, be_u16, IResult, Needed, ErrorKind};
 use nom::IResult::{Done, Incomplete, Error};
 
+use error::*;
 use packet::*;
-
-#[repr(u32)]
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-pub enum ErrorCode {
-    InvalidProtocol,
-    UnsupportLevel,
-    ReservedFlag,
-    InvalidClientId,
-    InvalidValue,
-}
 
 macro_rules! error_if (
   ($i:expr, $cond:expr, $code:expr) => (
     {
       if $cond {
-        IResult::Error(error_code!(ErrorKind::Custom(unsafe { mem::transmute($code) })))
+        IResult::Error(error_code!(ErrorKind::Custom($code)))
       } else {
         IResult::Done($i, ())
       }
@@ -46,16 +36,16 @@ pub fn decode_variable_length_usize(i: &[u8]) -> IResult<&[u8], usize> {
             if n < 4 {
                 Incomplete(Needed::Unknown)
             } else {
-                Error(error_position!(ErrorKind::Digit, i))
+                Error(error_position!(ErrorKind::Custom(INVALID_LENGTH), i))
             }
         }
     }
 }
 
-named!(pub decode_utf8_str<&str>, do_parse!(
-    len: be_u16 >>
-    buf: take!(len) >>
-    ( unsafe { str::from_utf8_unchecked(buf) } )
+named!(pub decode_utf8_str<&str>, chain!(
+    l: be_u16 ~
+    s: map_res!(take!(l), str::from_utf8),
+    || { s }
 ));
 
 named!(pub decode_fixed_header<FixedHeader>, do_parse!(
@@ -76,19 +66,20 @@ macro_rules! is_flag_set {
 
 named!(pub decode_connect_packet<Packet>, do_parse!(
     length: be_u16 >>
+    error_if!(length != 4, INVALID_PROTOCOL) >>
+
     proto: take!(4) >>
-    error_if!(length != 4 || proto != b"MQTT", ErrorCode::InvalidProtocol) >>
+    error_if!(proto != b"MQTT", INVALID_PROTOCOL) >>
 
     level: be_u8 >>
-    error_if!(level != 4, ErrorCode::UnsupportLevel) >>
+    error_if!(level != 4, UNSUPPORT_LEVEL) >>
 
     flags: be_u8 >>
-    error_if!((flags & 0x01) != 0, ErrorCode::ReservedFlag) >>
+    error_if!((flags & 0x01) != 0, RESERVED_FLAG) >>
 
     keep_alive: be_u16 >>
     client_id: decode_utf8_str >>
-    error_if!(client_id.is_empty() && !is_flag_set!(flags, CLEAN_SESSION),
-              ErrorCode::InvalidClientId) >>
+    error_if!(client_id.is_empty() && !is_flag_set!(flags, CLEAN_SESSION), INVALID_CLIENT_ID) >>
 
     topic: cond!(is_flag_set!(flags, WILL), decode_utf8_str) >>
     message: cond!(is_flag_set!(flags, WILL), decode_utf8_str) >>
@@ -113,7 +104,7 @@ named!(pub decode_connect_packet<Packet>, do_parse!(
 
 named!(pub decode_connect_ack_header<(ConnectAckFlags, ConnectReturnCode)>, do_parse!(
     flags: be_u8 >>
-    error_if!((flags & 0b11111110) != 0, ErrorCode::ReservedFlag) >>
+    error_if!((flags & 0b11111110) != 0, RESERVED_FLAG) >>
 
     return_code: be_u8 >>
     (

@@ -7,6 +7,8 @@ extern crate bitflags;
 #[macro_use]
 extern crate nom;
 
+mod error;
+#[macro_use]
 mod packet;
 mod encode;
 mod decode;
@@ -14,6 +16,7 @@ mod decode;
 #[cfg(test)]
 mod tests;
 
+pub use error::*;
 pub use packet::*;
 pub use encode::*;
 pub use decode::*;

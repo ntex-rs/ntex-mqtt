@@ -3,6 +3,7 @@ extern crate env_logger;
 use nom::{Needed, ErrorKind};
 use nom::IResult::{Done, Incomplete, Error};
 
+use error::*;
 use packet::*;
 use decode::*;
 
@@ -21,7 +22,7 @@ fn test_decode_variable_length_encoding_usize() {
     assert_eq!(decode_variable_length_usize(b"\xff\xff\xff"),
                Incomplete(Needed::Unknown));
     assert_eq!(decode_variable_length_usize(b"\xff\xff\xff\xff\xff\xff"),
-               Error(ErrorKind::Digit));
+               Error(ErrorKind::Custom(INVALID_LENGTH)));
 }
 
 #[test]
@@ -41,6 +42,8 @@ fn test_decode_fixed_header() {
                         packet_flags: 0x0C,
                         remaining_length: (2 << 7) + 0x7F,
                     }));
+
+    assert_eq!(decode_fixed_header(b"\x20"), Incomplete(Needed::Unknown));
 }
 
 #[test]
@@ -72,9 +75,21 @@ fn test_decode_connect_packets() {
             password: None,
         }));
 
+    assert_eq!(decode_connect_packet(b"\x00\x02MQ"),
+               Error(ErrorKind::Custom(INVALID_PROTOCOL)));
+    assert_eq!(decode_connect_packet(b"\x00\x04MQAA"),
+               Error(ErrorKind::Custom(INVALID_PROTOCOL)));
+    assert_eq!(decode_connect_packet(b"\x00\x04MQTT\x03"),
+               Error(ErrorKind::Custom(UNSUPPORT_LEVEL)));
+    assert_eq!(decode_connect_packet(b"\x00\x04MQTT\x04\xff"),
+               Error(ErrorKind::Custom(RESERVED_FLAG)));
+
     assert_eq!(decode_connect_ack_header(b"\x01\x04"),
                Done(&b""[..],
                     (SESSION_PRESENT, ConnectReturnCode::BadUserNameOrPassword)));
+
+    assert_eq!(decode_connect_ack_header(b"\x03\x04"),
+               Error(ErrorKind::Custom(RESERVED_FLAG)));
 
     assert_eq!(decode_packet(b"\x20\x02\x01\x04"),
                Done(&b""[..],

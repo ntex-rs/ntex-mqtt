@@ -1,16 +1,17 @@
 use std::mem;
 use std::convert::From;
 
+#[macro_export]
 macro_rules! const_enum {
     ($name:ty : $repr:ty) => {
         impl From<$repr> for $name {
-            fn from(u: u8) -> Self {
+            fn from(u: $repr) -> Self {
                 unsafe { mem::transmute(u) }
             }
         }
 
         impl Into<$repr> for $name {
-            fn into(self) -> u8 {
+            fn into(self) -> $repr {
                 unsafe { mem::transmute(self) }
             }
         }
