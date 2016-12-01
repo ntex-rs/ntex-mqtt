@@ -24,7 +24,6 @@ pub enum QoS {
     AtMostOnce = 0,
     AtLeastOnce = 1,
     ExactlyOnce = 2,
-    Reserved = 3,
 }
 
 const_enum!(QoS: u8);
@@ -92,8 +91,6 @@ pub enum SubscribeStatus {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Packet<'a> {
-    /// Reserved
-    Reserved,
     /// Client request to connect to Server
     Connect {
         clean_session: bool,
@@ -148,6 +145,51 @@ pub enum Packet<'a> {
     PingResponse,
     /// Client is disconnecting
     Disconnect,
+}
+
+impl<'a> Packet<'a> {
+    pub fn packet_type(&self) -> u8 {
+        match *self {
+            Packet::Connect { .. } => control_type::CONNECT,
+            Packet::ConnectAck { .. } => control_type::CONNACK,
+            Packet::Publish { .. } => control_type::PUBLISH,
+            Packet::PublishAck { .. } => control_type::PUBACK,
+            Packet::PublishReceived { .. } => control_type::PUBREC,
+            Packet::PublishRelease { .. } => control_type::PUBREL,
+            Packet::PublishComplete { .. } => control_type::PUBCOMP,
+            Packet::Subscribe { .. } => control_type::SUBSCRIBE,
+            Packet::SubscribeAck { .. } => control_type::SUBACK,
+            Packet::Unsubscribe { .. } => control_type::UNSUBSCRIBE,
+            Packet::UnsubscribeAck { .. } => control_type::UNSUBACK,
+            Packet::PingRequest => control_type::PINGREQ,
+            Packet::PingResponse => control_type::PINGRESP,
+            Packet::Disconnect => control_type::DISCONNECT,
+        }
+    }
+
+    pub fn packet_flags(&self) -> u8 {
+        match *self {
+            Packet::Publish { dup, qos, retain, .. } => {
+                let mut b = qos.into();
+
+                b <<= 1;
+
+                if dup {
+                    b |= 0b1000;
+                }
+
+                if retain {
+                    b |= 0b0001;
+                }
+
+                b
+            }
+            Packet::PublishRelease { .. } |
+            Packet::Subscribe { .. } |
+            Packet::Unsubscribe { .. } => 0b0010,
+            _ => 0,
+        }
+    }
 }
 
 mod control_type {

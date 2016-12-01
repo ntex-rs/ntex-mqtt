@@ -13,6 +13,7 @@ license = "MIT/Apache-2.0"
 log = "^0.3"
 bitflags = "^0.7"
 nom = "^2.0"
+byteorder = "^0.5"
 
 [dev-dependencies]
 env_logger = "^0.3"

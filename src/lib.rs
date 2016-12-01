@@ -1,11 +1,10 @@
 #[macro_use]
 extern crate log;
-
 #[macro_use]
 extern crate bitflags;
-
 #[macro_use]
 extern crate nom;
+extern crate byteorder;
 
 mod error;
 #[macro_use]
