@@ -51,17 +51,19 @@ bitflags! {
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum ConnectReturnCode {
     /// Connection accepted
-    ConnectionAccepted = 1,
+    ConnectionAccepted = 0,
     /// Connection Refused, unacceptable protocol version
-    UnacceptableProtocolVersion = 2,
+    UnacceptableProtocolVersion = 1,
     /// Connection Refused, identifier rejected
-    IdentifierRejected = 3,
+    IdentifierRejected = 2,
     /// Connection Refused, Server unavailable
-    ServiceUnavailable = 4,
+    ServiceUnavailable = 3,
     /// Connection Refused, bad user name or password
-    BadUserNameOrPassword = 5,
+    BadUserNameOrPassword = 4,
     /// Connection Refused, not authorized
-    NotAuthorized = 6,
+    NotAuthorized = 5,
+    /// Reserved
+    Reserved = 6,
 }
 
 const_enum!(ConnectReturnCode: u8);
@@ -98,7 +100,7 @@ pub enum Packet<'a> {
         will: Option<ConnectionWill<'a>>,
         client_id: &'a str,
         username: Option<&'a str>,
-        password: Option<&'a str>,
+        password: Option<&'a [u8]>,
     },
     /// Connect acknowledgment
     ConnectAck {

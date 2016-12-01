@@ -1,10 +1,35 @@
 use std::str;
-use std::convert::Into;
+use std::mem;
 
 use nom::{be_u8, be_u16, IResult, Needed, ErrorKind};
 use nom::IResult::{Done, Incomplete, Error};
 
 use packet::*;
+
+#[repr(u32)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum ErrorCode {
+    InvalidProtocol,
+    UnsupportLevel,
+    ReservedFlag,
+    InvalidClientId,
+    InvalidValue,
+}
+
+macro_rules! error_if (
+  ($i:expr, $cond:expr, $code:expr) => (
+    {
+      if $cond {
+        IResult::Error(error_code!(ErrorKind::Custom(unsafe { mem::transmute($code) })))
+      } else {
+        IResult::Done($i, ())
+      }
+    }
+  );
+  ($i:expr, $cond:expr, $err:expr) => (
+    error!($i, $cond, $err);
+  );
+);
 
 pub fn decode_variable_length_usize(i: &[u8]) -> IResult<&[u8], usize> {
     let n = if i.len() > 4 { 4 } else { i.len() };
@@ -36,11 +61,13 @@ named!(pub decode_utf8_str<&str>, do_parse!(
 named!(pub decode_fixed_header<FixedHeader>, do_parse!(
     b0: bits!( pair!( take_bits!( u8, 4 ), take_bits!( u8, 4 ) ) ) >>
     remaining_length: decode_variable_length_usize >>
-    ( FixedHeader{
-        packet_type: ControlType::from(b0.0),
-        packet_flags: b0.1,
-        remaining_length: remaining_length,
-    } )
+    (
+        FixedHeader {
+            packet_type: ControlType::from(b0.0),
+            packet_flags: b0.1,
+            remaining_length: remaining_length,
+        }
+    )
 ));
 
 macro_rules! is_flag_set {
@@ -50,74 +77,97 @@ macro_rules! is_flag_set {
 named!(pub decode_connect_packet<Packet>, do_parse!(
     length: be_u16 >>
     proto: take!(4) >>
+    error_if!(length != 4 || proto != b"MQTT", ErrorCode::InvalidProtocol) >>
+
     level: be_u8 >>
+    error_if!(level != 4, ErrorCode::UnsupportLevel) >>
+
     flags: be_u8 >>
+    error_if!((flags & 0x01) != 0, ErrorCode::ReservedFlag) >>
+
     keep_alive: be_u16 >>
     client_id: decode_utf8_str >>
+    error_if!(client_id.is_empty() && !is_flag_set!(flags, CLEAN_SESSION),
+              ErrorCode::InvalidClientId) >>
+
     topic: cond!(is_flag_set!(flags, WILL), decode_utf8_str) >>
     message: cond!(is_flag_set!(flags, WILL), decode_utf8_str) >>
     username: cond!(is_flag_set!(flags, USERNAME), decode_utf8_str) >>
-    password: cond!(is_flag_set!(flags, PASSWORD), decode_utf8_str) >>
-    ( Packet::Connect {
-        clean_session: is_flag_set!(flags, CLEAN_SESSION),
-        keep_alive: keep_alive,
-        client_id: client_id,
-        will: if is_flag_set!(flags, WILL) { Some(ConnectionWill{
-            qos: QoS::from((flags & WILL_QOS.bits()) >> WILL_QOS_SHIFT),
-            retain: is_flag_set!(flags, WILL_RETAIN),
-            topic: topic.unwrap(),
-            message: message.unwrap(),
-        }) } else { None },
-        username: username,
-        password: password,
-    } )
+    password: cond!(is_flag_set!(flags, PASSWORD), length_bytes!(be_u16)) >>
+    (
+        Packet::Connect {
+            clean_session: is_flag_set!(flags, CLEAN_SESSION),
+            keep_alive: keep_alive,
+            client_id: client_id,
+            will: if is_flag_set!(flags, WILL) { Some(ConnectionWill{
+                qos: QoS::from((flags & WILL_QOS.bits()) >> WILL_QOS_SHIFT),
+                retain: is_flag_set!(flags, WILL_RETAIN),
+                topic: topic.unwrap(),
+                message: message.unwrap(),
+            }) } else { None },
+            username: username,
+            password: password,
+        }
+    )
 ));
 
 named!(pub decode_connect_ack_header<(ConnectAckFlags, ConnectReturnCode)>, do_parse!(
     flags: be_u8 >>
+    error_if!((flags & 0b11111110) != 0, ErrorCode::ReservedFlag) >>
+
     return_code: be_u8 >>
-    ( (ConnectAckFlags::from_bits_truncate(flags), ConnectReturnCode::from(return_code)) )
+    (
+        (ConnectAckFlags::from_bits_truncate(flags), ConnectReturnCode::from(return_code))
+    )
 ));
 
 named!(pub decode_publish_header<(&str, u16)>, do_parse!(
     topic: decode_utf8_str >>
     packet_id: be_u16 >>
-    ( (topic, packet_id) )
+    (
+        (topic, packet_id)
+    )
 ));
 
 named!(pub decode_subscribe_packet<Packet>, do_parse!(
     packet_id: be_u16 >>
     topic_filters: many1!(pair!(decode_utf8_str, be_u8)) >>
-    ( Packet::Subscribe {
-        packet_id: packet_id,
-        topic_filters: topic_filters.iter()
-                                    .map(|&(filter, flags)| (filter, QoS::from(flags & 0x03)))
-                                    .collect(),
-    } )
+    (
+        Packet::Subscribe {
+            packet_id: packet_id,
+            topic_filters: topic_filters.iter()
+                                        .map(|&(filter, flags)| (filter, QoS::from(flags & 0x03)))
+                                        .collect(),
+        }
+    )
 ));
 
 named!(pub decode_subscribe_ack_packet<Packet>, do_parse!(
     packet_id: be_u16 >>
     return_codes: many1!(be_u8) >>
-    ( Packet::SubscribeAck {
-        packet_id: packet_id,
-        status: return_codes.iter()
-                            .map(|&return_code| if return_code == 0x80 {
-                                SubscribeStatus::Failure
-                            } else {
-                                SubscribeStatus::Success(QoS::from(return_code & 0x03))
-                            })
-                            .collect(),
-    } )
+    (
+        Packet::SubscribeAck {
+            packet_id: packet_id,
+            status: return_codes.iter()
+                                .map(|&return_code| if return_code == 0x80 {
+                                    SubscribeStatus::Failure
+                                } else {
+                                    SubscribeStatus::Success(QoS::from(return_code & 0x03))
+                                })
+                                .collect(),
+        }
+    )
 ));
 
 named!(pub decode_unsubscribe_packet<Packet>, do_parse!(
     packet_id: be_u16 >>
     topic_filters: many1!(decode_utf8_str) >>
-    ( Packet::Unsubscribe {
-        packet_id: packet_id,
-        topic_filters: topic_filters,
-    } )
+    (
+        Packet::Unsubscribe {
+            packet_id: packet_id,
+            topic_filters: topic_filters,
+        }
+    )
 ));
 
 

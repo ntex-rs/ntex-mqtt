@@ -53,7 +53,7 @@ fn test_decode_connect_packets() {
             client_id: "12345",
             will: None,
             username: Some("user"),
-            password: Some("pass"),
+            password: Some(b"pass"),
         }));
 
     assert_eq!(decode_connect_packet(
@@ -74,13 +74,13 @@ fn test_decode_connect_packets() {
 
     assert_eq!(decode_connect_ack_header(b"\x01\x04"),
                Done(&b""[..],
-                    (SESSION_PRESENT, ConnectReturnCode::ServiceUnavailable)));
+                    (SESSION_PRESENT, ConnectReturnCode::BadUserNameOrPassword)));
 
     assert_eq!(decode_packet(b"\x20\x02\x01\x04"),
                Done(&b""[..],
                     Packet::ConnectAck {
                         session_present: true,
-                        return_code: ConnectReturnCode::ServiceUnavailable,
+                        return_code: ConnectReturnCode::BadUserNameOrPassword,
                     }));
 
     assert_eq!(decode_packet(b"\xe0\x00"),
