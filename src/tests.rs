@@ -45,7 +45,7 @@ fn test_decode_fixed_header() {
 
 #[test]
 fn test_decode_connect_packets() {
-    assert_eq!(decode_connect_header(
+    assert_eq!(decode_connect_packet(
         b"\x00\x04MQTT\x04\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"),
         Done(&b""[..], Packet::Connect {
             clean_session: false,
@@ -56,7 +56,7 @@ fn test_decode_connect_packets() {
             password: Some("pass"),
         }));
 
-    assert_eq!(decode_connect_header(
+    assert_eq!(decode_connect_packet(
         b"\x00\x04MQTT\x04\x14\x00\x3C\x00\x0512345\x00\x05topic\x00\x07message"),
         Done(&b""[..], Packet::Connect {
             clean_session: false,
@@ -110,6 +110,58 @@ fn test_decode_publish_packets() {
                Done(&b""[..], Packet::PublishRelease { packet_id: 0x4321 }));
     assert_eq!(decode_packet(b"\x70\x02\x43\x21"),
                Done(&b""[..], Packet::PublishComplete { packet_id: 0x4321 }));
+}
+
+#[test]
+fn test_decode_subscribe_packets() {
+    assert_eq!(decode_subscribe_packet(b"\x12\x34\x00\x04test\x01\x00\x06filter\x02"),
+               Done(&b""[..],
+                    Packet::Subscribe {
+                        packet_id: 0x1234,
+                        topic_filters: vec![("test", QoS::AtLeastOnce),
+                                            ("filter", QoS::ExactlyOnce)],
+                    }));
+    assert_eq!(decode_packet(b"\x80\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02"),
+               Done(&b""[..],
+                    Packet::Subscribe {
+                        packet_id: 0x1234,
+                        topic_filters: vec![("test", QoS::AtLeastOnce),
+                                            ("filter", QoS::ExactlyOnce)],
+                    }));
+
+    assert_eq!(decode_subscribe_ack_packet(b"\x12\x34\x01\x80\x02"),
+               Done(&b""[..],
+                    Packet::SubscribeAck {
+                        packet_id: 0x1234,
+                        status: vec![SubscribeStatus::Success(QoS::AtLeastOnce),
+                                     SubscribeStatus::Failure,
+                                     SubscribeStatus::Success(QoS::ExactlyOnce)],
+                    }));
+
+    assert_eq!(decode_packet(b"\x90\x05\x12\x34\x01\x80\x02"),
+               Done(&b""[..],
+                    Packet::SubscribeAck {
+                        packet_id: 0x1234,
+                        status: vec![SubscribeStatus::Success(QoS::AtLeastOnce),
+                                     SubscribeStatus::Failure,
+                                     SubscribeStatus::Success(QoS::ExactlyOnce)],
+                    }));
+
+    assert_eq!(decode_unsubscribe_packet(b"\x12\x34\x00\x04test\x00\x06filter"),
+               Done(&b""[..],
+                    Packet::Unsubscribe {
+                        packet_id: 0x1234,
+                        topic_filters: vec!["test", "filter"],
+                    }));
+    assert_eq!(decode_packet(b"\xa0\x10\x12\x34\x00\x04test\x00\x06filter"),
+               Done(&b""[..],
+                    Packet::Unsubscribe {
+                        packet_id: 0x1234,
+                        topic_filters: vec!["test", "filter"],
+                    }));
+
+    assert_eq!(decode_packet(b"\xb0\x02\x43\x21"),
+               Done(&b""[..], Packet::UnsubscribeAck { packet_id: 0x4321 }));
 }
 
 #[test]

@@ -82,6 +82,12 @@ pub struct ConnectionWill<'a> {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub enum SubscribeStatus {
+    Success(QoS),
+    Failure,
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub enum Packet<'a> {
     /// Reserved
     Reserved,
@@ -116,13 +122,22 @@ pub enum Packet<'a> {
     /// Publish complete (assured delivery part 3)
     PublishComplete { packet_id: u16 },
     /// Client subscribe request
-    Subscribe,
+    Subscribe {
+        packet_id: u16,
+        topic_filters: Vec<(&'a str, QoS)>,
+    },
     /// Subscribe acknowledgment
-    SubscribeAck,
+    SubscribeAck {
+        packet_id: u16,
+        status: Vec<SubscribeStatus>,
+    },
     /// Unsubscribe request
-    Unsubscribe,
+    Unsubscribe {
+        packet_id: u16,
+        topic_filters: Vec<&'a str>,
+    },
     /// Unsubscribe acknowledgment
-    UnsubscribeAck,
+    UnsubscribeAck { packet_id: u16 },
     /// PING request
     PingRequest,
     /// PING response
