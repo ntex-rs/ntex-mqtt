@@ -114,7 +114,8 @@ pub enum Packet<'a> {
         retain: bool,
         qos: QoS,
         topic: &'a str,
-        packet_id: u16,
+        packet_id: Option<u16>,
+        payload: &'a [u8],
     },
     /// Publish acknowledgment
     PublishAck { packet_id: u16 },

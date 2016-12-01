@@ -107,14 +107,25 @@ fn test_decode_publish_packets() {
     assert_eq!(decode_publish_header(b"\x00\x05topic\x12\x34"),
                Done(&b""[..], ("topic", 0x1234)));
 
-    assert_eq!(decode_packet(b"\x3d\x09\x00\x05topic\x43\x21"),
+    assert_eq!(decode_packet(b"\x3d\x0D\x00\x05topic\x43\x21data"),
                Done(&b""[..],
                     Packet::Publish {
                         dup: true,
                         retain: true,
                         qos: QoS::ExactlyOnce,
                         topic: "topic",
-                        packet_id: 0x4321,
+                        packet_id: Some(0x4321),
+                        payload: b"data",
+                    }));
+    assert_eq!(decode_packet(b"\x30\x0b\x00\x05topicdata"),
+               Done(&b""[..],
+                    Packet::Publish {
+                        dup: false,
+                        retain: false,
+                        qos: QoS::AtMostOnce,
+                        topic: "topic",
+                        packet_id: None,
+                        payload: b"data",
                     }));
 
     assert_eq!(decode_packet(b"\x40\x02\x43\x21"),

@@ -109,13 +109,7 @@ named!(pub decode_connect_ack_header<(ConnectAckFlags, ConnectReturnCode)>, do_p
     )
 ));
 
-named!(pub decode_publish_header<(&str, u16)>, do_parse!(
-    topic: decode_utf8_str >>
-    packet_id: be_u16 >>
-    (
-        (topic, packet_id)
-    )
-));
+named!(pub decode_publish_header<(&str, u16)>, pair!(decode_utf8_str, be_u16));
 
 named!(pub decode_subscribe_packet<Packet>, do_parse!(
     packet_id: be_u16 >>
@@ -171,15 +165,32 @@ fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[
             })
         }
         ControlType::Publish => {
-            decode_publish_header(i).map(|(topic, packet_id)| {
-                Packet::Publish {
-                    dup: (fixed_header.packet_flags & 0b1000) == 0b1000,
-                    qos: QoS::from((fixed_header.packet_flags & 0b0110) >> 1),
-                    retain: (fixed_header.packet_flags & 0b0001) == 0b0001,
-                    topic: topic,
-                    packet_id: packet_id,
+            let dup = (fixed_header.packet_flags & 0b1000) == 0b1000;
+            let qos = QoS::from((fixed_header.packet_flags & 0b0110) >> 1);
+            let retain = (fixed_header.packet_flags & 0b0001) == 0b0001;
+
+            let result = match qos {
+                QoS::AtLeastOnce | QoS::ExactlyOnce => {
+                    decode_publish_header(i).map(|(topic, packet_id)| (topic, Some(packet_id)))
                 }
-            })
+                _ => decode_utf8_str(i).map(|topic| (topic, None)),
+            };
+
+            match result {
+                Done(i, (topic, packet_id)) => {
+                    Done(Default::default(),
+                         Packet::Publish {
+                             dup: dup,
+                             retain: retain,
+                             qos: qos,
+                             topic: topic,
+                             packet_id: packet_id,
+                             payload: i,
+                         })
+                }
+                Error(err) => Error(err),
+                Incomplete(needed) => Incomplete(needed),
+            }
         }
         ControlType::PublishAck => {
             be_u16(i).map(|packet_id| Packet::PublishAck { packet_id: packet_id })
