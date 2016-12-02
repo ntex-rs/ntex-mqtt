@@ -1,7 +1,6 @@
 use std::mem;
 use std::convert::From;
 
-#[macro_export]
 macro_rules! const_enum {
     ($name:ty : $repr:ty) => {
         impl From<$repr> for $name {

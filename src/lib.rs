@@ -7,7 +7,6 @@ extern crate nom;
 extern crate byteorder;
 
 mod error;
-#[macro_use]
 mod packet;
 mod encode;
 mod decode;
