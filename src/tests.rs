@@ -163,6 +163,7 @@ macro_rules! assert_packet {
         let mut v = Vec::new();
         assert_eq!(v.write_packet(&$p).unwrap(), $data.len());
         assert_eq!(v, $data);
+        assert_eq!(read_packet($data).unwrap(), (&b""[..], $p));
     }
 }
 

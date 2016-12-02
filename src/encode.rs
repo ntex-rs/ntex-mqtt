@@ -242,6 +242,16 @@ pub trait WritePacketHelper: io::Write {
 }
 
 /// Extends `Write` with methods for writing packet.
+///
+/// ```
+/// use mqtt::{WritePacketExt, Packet};
+///
+/// let mut v = Vec::new();
+/// let p = Packet::PingResponse;
+///
+/// assert_eq!(v.write_packet(&p).unwrap(), 2);
+/// assert_eq!(v, b"\xd0\x00");
+/// ```
 pub trait WritePacketExt: io::Write {
     #[inline]
     /// Writes packet to the underlying writer.

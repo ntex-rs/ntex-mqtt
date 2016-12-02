@@ -223,6 +223,12 @@ named!(pub decode_packet<Packet>, do_parse!(
 ));
 
 /// Extends `AsRef<[u8]>` with methods for reading packet.
+///
+/// ```
+/// use mqtt::{ReadPacketExt, Packet};
+///
+/// assert_eq!(b"\xd0\x00".read_packet().unwrap(), Packet::PingResponse);
+/// ```
 pub trait ReadPacketExt: AsRef<[u8]> {
     #[inline]
     /// Read packet from the underlying reader.
@@ -232,3 +238,18 @@ pub trait ReadPacketExt: AsRef<[u8]> {
 }
 
 impl<T: AsRef<[u8]>> ReadPacketExt for T {}
+
+/// Read packet from the underlying `&[u8]`.
+///
+/// ```
+/// use mqtt::{read_packet, Packet};
+///
+/// assert_eq!(read_packet(b"\xc0\x00\xd0\x00").unwrap(), (&b"\xd0\x00"[..], Packet::PingRequest));
+/// ```
+pub fn read_packet(i: &[u8]) -> Result<(&[u8], Packet), IError> {
+    match decode_packet(i) {
+        r @ Done(..) => Ok(r.unwrap()),
+        Error(e) => Err(IError::Error(e)),
+        Incomplete(n) => Err(IError::Incomplete(n)),
+    }
+}

@@ -15,4 +15,4 @@ mod tests;
 
 pub use packet::{Packet, ConnectionWill, ConnectReturnCode, QoS, SubscribeReturnCode};
 pub use encode::WritePacketExt;
-pub use decode::ReadPacketExt;
+pub use decode::{ReadPacketExt, read_packet};
