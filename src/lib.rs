@@ -10,7 +10,6 @@ mod error;
 mod packet;
 mod encode;
 mod decode;
-
 #[cfg(test)]
 mod tests;
 
