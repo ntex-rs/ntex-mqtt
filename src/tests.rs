@@ -271,9 +271,9 @@ fn test_decode_subscribe_packets() {
 
     let p = Packet::SubscribeAck {
         packet_id: 0x1234,
-        status: vec![SubscribeStatus::Success(QoS::AtLeastOnce),
-                     SubscribeStatus::Failure,
-                     SubscribeStatus::Success(QoS::ExactlyOnce)],
+        status: vec![SubscribeReturnCode::Success(QoS::AtLeastOnce),
+                     SubscribeReturnCode::Failure,
+                     SubscribeReturnCode::Success(QoS::ExactlyOnce)],
     };
 
     assert_eq!(decode_subscribe_ack_header(b"\x12\x34\x01\x80\x02"),
@@ -307,9 +307,9 @@ fn test_encode_subscribe_packets() {
 
     assert_packet!(Packet::SubscribeAck {
                        packet_id: 0x1234,
-                       status: vec![SubscribeStatus::Success(QoS::AtLeastOnce),
-                                    SubscribeStatus::Failure,
-                                    SubscribeStatus::Success(QoS::ExactlyOnce)],
+                       status: vec![SubscribeReturnCode::Success(QoS::AtLeastOnce),
+                                    SubscribeReturnCode::Failure,
+                                    SubscribeReturnCode::Success(QoS::ExactlyOnce)],
                    },
                    b"\x90\x05\x12\x34\x01\x80\x02");
 

@@ -19,9 +19,25 @@ macro_rules! const_enum {
 
 #[repr(u8)]
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
+/// Quality of Service levels
 pub enum QoS {
+    /// At most once delivery
+    ///
+    /// The message is delivered according to the capabilities of the underlying network.
+    /// No response is sent by the receiver and no retry is performed by the sender.
+    /// The message arrives at the receiver either once or not at all.
     AtMostOnce = 0,
+    /// At least once delivery
+    ///
+    /// This quality of service ensures that the message arrives at the receiver at least once.
+    /// A QoS 1 PUBLISH Packet has a Packet Identifier in its variable header
+    /// and is acknowledged by a PUBACK Packet.
     AtLeastOnce = 1,
+    /// Exactly once delivery
+    ///
+    /// This is the highest quality of service,
+    /// for use when neither loss nor duplication of messages are acceptable.
+    /// There is an increased overhead associated with this quality of service.
     ExactlyOnce = 2,
 }
 
@@ -48,6 +64,7 @@ bitflags! {
 
 #[repr(u8)]
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
+/// Connect Return Code
 pub enum ConnectReturnCode {
     /// Connection accepted
     ConnectionAccepted = 0,
@@ -69,75 +86,119 @@ const_enum!(ConnectReturnCode: u8);
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct FixedHeader {
+    /// MQTT Control Packet type
     pub packet_type: u8,
+    /// Flags specific to each MQTT Control Packet type
     pub packet_flags: u8,
+    /// the number of bytes remaining within the current packet,
+    /// including data in the variable header and the payload.
     pub remaining_length: usize,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
+/// Connection Will
 pub struct ConnectionWill<'a> {
+    /// the QoS level to be used when publishing the Will Message.
     pub qos: QoS,
+    /// the Will Message is to be Retained when it is published.
     pub retain: bool,
+    /// the Will Topic
     pub topic: &'a str,
+    /// defines the Application Message that is to be published to the Will Topic
     pub message: &'a str,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
-pub enum SubscribeStatus {
+/// Subscribe Return Code
+pub enum SubscribeReturnCode {
     Success(QoS),
     Failure,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
+/// MQTT Control Packets
 pub enum Packet<'a> {
     /// Client request to connect to Server
     Connect {
+        /// the handling of the Session state.
         clean_session: bool,
+        /// a time interval measured in seconds.
         keep_alive: u16,
+        /// Will Message be stored on the Server and associated with the Network Connection.
         will: Option<ConnectionWill<'a>>,
+        /// identifies the Client to the Server.
         client_id: &'a [u8],
+        /// username can be used by the Server for authentication and authorization.
         username: Option<&'a str>,
+        /// password can be used by the Server for authentication and authorization.
         password: Option<&'a [u8]>,
     },
     /// Connect acknowledgment
     ConnectAck {
+        /// enables a Client to establish whether the Client and Server have a consistent view
+        /// about whether there is already stored Session state.
         session_present: bool,
         return_code: ConnectReturnCode,
     },
     /// Publish message
     Publish {
+        /// this might be re-delivery of an earlier attempt to send the Packet.
         dup: bool,
         retain: bool,
+        /// the level of assurance for delivery of an Application Message.
         qos: QoS,
+        /// the information channel to which payload data is published.
         topic: &'a str,
+        /// only present in PUBLISH Packets where the QoS level is 1 or 2.
         packet_id: Option<u16>,
+        /// the Application Message that is being published.
         payload: &'a [u8],
     },
     /// Publish acknowledgment
-    PublishAck { packet_id: u16 },
+    PublishAck {
+        /// Packet Identifier
+        packet_id: u16,
+    },
     /// Publish received (assured delivery part 1)
-    PublishReceived { packet_id: u16 },
+    PublishReceived {
+        /// Packet Identifier
+        packet_id: u16,
+    },
     /// Publish release (assured delivery part 2)
-    PublishRelease { packet_id: u16 },
+    PublishRelease {
+        /// Packet Identifier
+        packet_id: u16,
+    },
     /// Publish complete (assured delivery part 3)
-    PublishComplete { packet_id: u16 },
+    PublishComplete {
+        /// Packet Identifier
+        packet_id: u16,
+    },
     /// Client subscribe request
     Subscribe {
+        /// Packet Identifier
         packet_id: u16,
+        /// the list of Topic Filters and QoS to which the Client wants to subscribe.
         topic_filters: Vec<(&'a str, QoS)>,
     },
     /// Subscribe acknowledgment
     SubscribeAck {
         packet_id: u16,
-        status: Vec<SubscribeStatus>,
+        /// corresponds to a Topic Filter in the SUBSCRIBE Packet being acknowledged.
+        status: Vec<SubscribeReturnCode>,
     },
     /// Unsubscribe request
     Unsubscribe {
+        /// Packet Identifier
         packet_id: u16,
+        /// the list of Topic Filters that the Client wishes to unsubscribe from.
         topic_filters: Vec<&'a str>,
     },
     /// Unsubscribe acknowledgment
-    UnsubscribeAck { packet_id: u16 },
+    UnsubscribeAck {
+        /// Packet Identifier
+        packet_id: u16,
+    },
     /// PING request
     PingRequest,
     /// PING response
@@ -147,6 +208,8 @@ pub enum Packet<'a> {
 }
 
 impl<'a> Packet<'a> {
+    #[inline]
+    /// MQTT Control Packet type
     pub fn packet_type(&self) -> u8 {
         match *self {
             Packet::Connect { .. } => CONNECT,
@@ -166,6 +229,7 @@ impl<'a> Packet<'a> {
         }
     }
 
+    /// Flags specific to each MQTT Control Packet type
     pub fn packet_flags(&self) -> u8 {
         match *self {
             Packet::Publish { dup, qos, retain, .. } => {

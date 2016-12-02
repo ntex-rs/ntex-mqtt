@@ -1,9 +1,9 @@
 [package]
 name = "mqtt"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Flier Lu <flier.lu@gmail.com>"]
 description = "MQTT protocol v3 implementation"
-documentation = "https://flier.github.com/rust-mqtt"
+documentation = "https://docs.rs/mqtt"
 homepage = "https://github.com/flier/rust-mqtt"
 repository = "https://github.com/flier/rust-mqtt.git"
 keywords = ["MQTT", "IoT", "messaging"]

@@ -1,6 +1,6 @@
 use std::str;
 
-use nom::{be_u8, be_u16, IResult, Needed, ErrorKind};
+use nom::{be_u8, be_u16, IResult, Needed, ErrorKind, IError};
 use nom::IResult::{Done, Incomplete, Error};
 
 use error::*;
@@ -133,9 +133,9 @@ named!(pub decode_subscribe_ack_header<Packet>, do_parse!(
             packet_id: packet_id,
             status: return_codes.iter()
                                 .map(|&return_code| if return_code == 0x80 {
-                                    SubscribeStatus::Failure
+                                    SubscribeReturnCode::Failure
                                 } else {
-                                    SubscribeStatus::Success(QoS::from(return_code & 0x03))
+                                    SubscribeReturnCode::Success(QoS::from(return_code & 0x03))
                                 })
                                 .collect(),
         }
@@ -221,3 +221,14 @@ named!(pub decode_packet<Packet>, do_parse!(
     ) >>
     ( packet )
 ));
+
+/// Extends `AsRef<[u8]>` with methods for reading packet.
+pub trait ReadPacketExt: AsRef<[u8]> {
+    #[inline]
+    /// Read packet from the underlying reader.
+    fn read_packet(&self) -> Result<Packet, IError> {
+        decode_packet(self.as_ref()).to_full_result()
+    }
+}
+
+impl<T: AsRef<[u8]>> ReadPacketExt for T {}

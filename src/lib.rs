@@ -13,7 +13,6 @@ mod decode;
 #[cfg(test)]
 mod tests;
 
-pub use error::*;
-pub use packet::*;
-pub use encode::*;
-pub use decode::*;
+pub use packet::{Packet, ConnectionWill, ConnectReturnCode, QoS, SubscribeReturnCode};
+pub use encode::WritePacketExt;
+pub use decode::ReadPacketExt;

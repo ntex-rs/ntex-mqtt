@@ -6,12 +6,7 @@ use packet::*;
 
 pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F
 
-pub trait WritePacketExt: io::Write {
-    #[inline]
-    fn write_packet(&mut self, packet: &Packet) -> Result<usize> {
-        Ok(self.write_fixed_header(packet)? + self.write_content(packet)?)
-    }
-
+pub trait WritePacketHelper: io::Write {
     #[inline]
     fn write_fixed_header(&mut self, packet: &Packet) -> Result<usize> {
         let content_size = self.calc_content_size(packet);
@@ -177,7 +172,7 @@ pub trait WritePacketExt: io::Write {
                 n += 2;
 
                 let buf: Vec<u8> = status.iter()
-                    .map(|s| if let SubscribeStatus::Success(qos) = *s {
+                    .map(|s| if let SubscribeReturnCode::Success(qos) = *s {
                         qos.into()
                     } else {
                         0x80
@@ -246,4 +241,14 @@ pub trait WritePacketExt: io::Write {
     }
 }
 
+/// Extends `Write` with methods for writing packet.
+pub trait WritePacketExt: io::Write {
+    #[inline]
+    /// Writes packet to the underlying writer.
+    fn write_packet(&mut self, packet: &Packet) -> Result<usize> {
+        Ok(self.write_fixed_header(packet)? + self.write_content(packet)?)
+    }
+}
+
+impl<W: io::Write + ?Sized> WritePacketHelper for W {}
 impl<W: io::Write + ?Sized> WritePacketExt for W {}
