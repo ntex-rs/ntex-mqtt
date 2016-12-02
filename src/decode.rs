@@ -61,7 +61,7 @@ macro_rules! is_flag_set {
     ($flags:expr, $flag:expr) => (($flags & $flag.bits()) == $flag.bits())
 }
 
-named!(pub decode_connect_packet<Packet>, do_parse!(
+named!(pub decode_connect_header<Packet>, do_parse!(
     length: be_u16 >>
     error_if!(length != 4, INVALID_PROTOCOL) >>
 
@@ -112,7 +112,7 @@ named!(pub decode_connect_ack_header<(ConnectAckFlags, ConnectReturnCode)>, do_p
 
 named!(pub decode_publish_header<(&str, u16)>, pair!(decode_utf8_str, be_u16));
 
-named!(pub decode_subscribe_packet<Packet>, do_parse!(
+named!(pub decode_subscribe_header<Packet>, do_parse!(
     packet_id: be_u16 >>
     topic_filters: many1!(pair!(decode_utf8_str, be_u8)) >>
     (
@@ -125,7 +125,7 @@ named!(pub decode_subscribe_packet<Packet>, do_parse!(
     )
 ));
 
-named!(pub decode_subscribe_ack_packet<Packet>, do_parse!(
+named!(pub decode_subscribe_ack_header<Packet>, do_parse!(
     packet_id: be_u16 >>
     return_codes: many1!(be_u8) >>
     (
@@ -142,7 +142,7 @@ named!(pub decode_subscribe_ack_packet<Packet>, do_parse!(
     )
 ));
 
-named!(pub decode_unsubscribe_packet<Packet>, do_parse!(
+named!(pub decode_unsubscribe_header<Packet>, do_parse!(
     packet_id: be_u16 >>
     topic_filters: many1!(decode_utf8_str) >>
     (
@@ -156,7 +156,7 @@ named!(pub decode_unsubscribe_packet<Packet>, do_parse!(
 
 fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[u8], Packet> {
     match fixed_header.packet_type {
-        CONNECT => decode_connect_packet(i),
+        CONNECT => decode_connect_header(i),
         CONNACK => {
             decode_connect_ack_header(i).map(|(flags, return_code)| {
                 Packet::ConnectAck {
@@ -197,9 +197,9 @@ fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[
         PUBREC => be_u16(i).map(|packet_id| Packet::PublishReceived { packet_id: packet_id }),
         PUBREL => be_u16(i).map(|packet_id| Packet::PublishRelease { packet_id: packet_id }),
         PUBCOMP => be_u16(i).map(|packet_id| Packet::PublishComplete { packet_id: packet_id }),
-        SUBSCRIBE => decode_subscribe_packet(i),
-        SUBACK => decode_subscribe_ack_packet(i),
-        UNSUBSCRIBE => decode_unsubscribe_packet(i),
+        SUBSCRIBE => decode_subscribe_header(i),
+        SUBACK => decode_subscribe_ack_header(i),
+        UNSUBSCRIBE => decode_unsubscribe_header(i),
         UNSUBACK => be_u16(i).map(|packet_id| Packet::UnsubscribeAck { packet_id: packet_id }),
 
         PINGREQ => Done(i, Packet::PingRequest),

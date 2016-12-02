@@ -67,14 +67,14 @@ pub enum ConnectReturnCode {
 
 const_enum!(ConnectReturnCode: u8);
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct FixedHeader {
     pub packet_type: u8,
     pub packet_flags: u8,
     pub remaining_length: usize,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct ConnectionWill<'a> {
     pub qos: QoS,
     pub retain: bool,
@@ -82,13 +82,13 @@ pub struct ConnectionWill<'a> {
     pub message: &'a str,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum SubscribeStatus {
     Success(QoS),
     Failure,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum Packet<'a> {
     /// Client request to connect to Server
     Connect {
