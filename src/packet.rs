@@ -70,7 +70,7 @@ const_enum!(ConnectReturnCode: u8);
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct FixedHeader {
-    pub packet_type: ControlType,
+    pub packet_type: u8,
     pub packet_flags: u8,
     pub remaining_length: usize,
 }
@@ -150,20 +150,20 @@ pub enum Packet<'a> {
 impl<'a> Packet<'a> {
     pub fn packet_type(&self) -> u8 {
         match *self {
-            Packet::Connect { .. } => control_type::CONNECT,
-            Packet::ConnectAck { .. } => control_type::CONNACK,
-            Packet::Publish { .. } => control_type::PUBLISH,
-            Packet::PublishAck { .. } => control_type::PUBACK,
-            Packet::PublishReceived { .. } => control_type::PUBREC,
-            Packet::PublishRelease { .. } => control_type::PUBREL,
-            Packet::PublishComplete { .. } => control_type::PUBCOMP,
-            Packet::Subscribe { .. } => control_type::SUBSCRIBE,
-            Packet::SubscribeAck { .. } => control_type::SUBACK,
-            Packet::Unsubscribe { .. } => control_type::UNSUBSCRIBE,
-            Packet::UnsubscribeAck { .. } => control_type::UNSUBACK,
-            Packet::PingRequest => control_type::PINGREQ,
-            Packet::PingResponse => control_type::PINGRESP,
-            Packet::Disconnect => control_type::DISCONNECT,
+            Packet::Connect { .. } => CONNECT,
+            Packet::ConnectAck { .. } => CONNACK,
+            Packet::Publish { .. } => PUBLISH,
+            Packet::PublishAck { .. } => PUBACK,
+            Packet::PublishReceived { .. } => PUBREC,
+            Packet::PublishRelease { .. } => PUBREL,
+            Packet::PublishComplete { .. } => PUBCOMP,
+            Packet::Subscribe { .. } => SUBSCRIBE,
+            Packet::SubscribeAck { .. } => SUBACK,
+            Packet::Unsubscribe { .. } => UNSUBSCRIBE,
+            Packet::UnsubscribeAck { .. } => UNSUBACK,
+            Packet::PingRequest => PINGREQ,
+            Packet::PingResponse => PINGRESP,
+            Packet::Disconnect => DISCONNECT,
         }
     }
 
@@ -192,67 +192,17 @@ impl<'a> Packet<'a> {
     }
 }
 
-mod control_type {
-    pub const CONNECT: u8 = 1;
-    pub const CONNACK: u8 = 2;
-    pub const PUBLISH: u8 = 3;
-    pub const PUBACK: u8 = 4;
-    pub const PUBREC: u8 = 5;
-    pub const PUBREL: u8 = 6;
-    pub const PUBCOMP: u8 = 7;
-    pub const SUBSCRIBE: u8 = 8;
-    pub const SUBACK: u8 = 9;
-    pub const UNSUBSCRIBE: u8 = 10;
-    pub const UNSUBACK: u8 = 11;
-    pub const PINGREQ: u8 = 12;
-    pub const PINGRESP: u8 = 13;
-    pub const DISCONNECT: u8 = 14;
-}
-
-#[repr(u8)]
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-pub enum ControlType {
-    /// Client request to connect to Server
-    Connect = control_type::CONNECT,
-
-    /// Connect acknowledgment
-    ConnectAck = control_type::CONNACK,
-
-    /// Publish message
-    Publish = control_type::PUBLISH,
-
-    /// Publish acknowledgment
-    PublishAck = control_type::PUBACK,
-
-    /// Publish received (assured delivery part 1)
-    PublishReceived = control_type::PUBREC,
-
-    /// Publish release (assured delivery part 2)
-    PublishRelease = control_type::PUBREL,
-
-    /// Publish complete (assured delivery part 3)
-    PublishComplete = control_type::PUBCOMP,
-
-    /// Client subscribe request
-    Subscribe = control_type::SUBSCRIBE,
-
-    /// Subscribe acknowledgment
-    SubscribeAck = control_type::SUBACK,
-
-    /// Unsubscribe request
-    Unsubscribe = control_type::UNSUBSCRIBE,
-
-    /// Unsubscribe acknowledgment
-    UnsubscribeAck = control_type::UNSUBACK,
-
-    /// PING request
-    PingRequest = control_type::PINGREQ,
-
-    /// PING response
-    PingResponse = control_type::PINGRESP,
-
-    /// Client is disconnecting
-    Disconnect = control_type::DISCONNECT,
-}
-
-const_enum!(ControlType: u8);
+pub const CONNECT: u8 = 1;
+pub const CONNACK: u8 = 2;
+pub const PUBLISH: u8 = 3;
+pub const PUBACK: u8 = 4;
+pub const PUBREC: u8 = 5;
+pub const PUBREL: u8 = 6;
+pub const PUBCOMP: u8 = 7;
+pub const SUBSCRIBE: u8 = 8;
+pub const SUBACK: u8 = 9;
+pub const UNSUBSCRIBE: u8 = 10;
+pub const UNSUBACK: u8 = 11;
+pub const PINGREQ: u8 = 12;
+pub const PINGRESP: u8 = 13;
+pub const DISCONNECT: u8 = 14;

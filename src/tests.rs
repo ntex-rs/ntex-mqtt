@@ -30,7 +30,7 @@ fn test_decode_fixed_header() {
     assert_eq!(decode_fixed_header(b"\x20\x7f"),
                Done(&b""[..],
                     FixedHeader {
-                        packet_type: ControlType::ConnectAck,
+                        packet_type: CONNACK,
                         packet_flags: 0,
                         remaining_length: 127,
                     }));
@@ -38,7 +38,7 @@ fn test_decode_fixed_header() {
     assert_eq!(decode_fixed_header(b"\x3C\x82\x7f"),
                Done(&b""[..],
                     FixedHeader {
-                        packet_type: ControlType::Publish,
+                        packet_type: PUBLISH,
                         packet_flags: 0x0C,
                         remaining_length: (2 << 7) + 0x7F,
                     }));

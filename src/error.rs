@@ -4,3 +4,5 @@ pub const RESERVED_FLAG: u32 = 0x0003;
 pub const INVALID_CLIENT_ID: u32 = 0x0004;
 pub const INVALID_VALUE: u32 = 0x0005;
 pub const INVALID_LENGTH: u32 = 0x0006;
+
+pub const UNSUPPORT_PACKET_TYPE: u32 = 0x0100;

@@ -50,7 +50,7 @@ named!(pub decode_fixed_header<FixedHeader>, do_parse!(
     remaining_length: decode_variable_length_usize >>
     (
         FixedHeader {
-            packet_type: ControlType::from(b0.0),
+            packet_type: b0.0,
             packet_flags: b0.1,
             remaining_length: remaining_length,
         }
@@ -105,7 +105,8 @@ named!(pub decode_connect_ack_header<(ConnectAckFlags, ConnectReturnCode)>, do_p
 
     return_code: be_u8 >>
     (
-        (ConnectAckFlags::from_bits_truncate(flags), ConnectReturnCode::from(return_code))
+        ConnectAckFlags::from_bits_truncate(flags),
+        ConnectReturnCode::from(return_code)
     )
 ));
 
@@ -155,8 +156,8 @@ named!(pub decode_unsubscribe_packet<Packet>, do_parse!(
 
 fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[u8], Packet> {
     match fixed_header.packet_type {
-        ControlType::Connect => decode_connect_packet(i),
-        ControlType::ConnectAck => {
+        CONNECT => decode_connect_packet(i),
+        CONNACK => {
             decode_connect_ack_header(i).map(|(flags, return_code)| {
                 Packet::ConnectAck {
                     session_present: is_flag_set!(flags.bits(), SESSION_PRESENT),
@@ -164,7 +165,7 @@ fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[
                 }
             })
         }
-        ControlType::Publish => {
+        PUBLISH => {
             let dup = (fixed_header.packet_flags & 0b1000) == 0b1000;
             let qos = QoS::from((fixed_header.packet_flags & 0b0110) >> 1);
             let retain = (fixed_header.packet_flags & 0b0001) == 0b0001;
@@ -192,28 +193,23 @@ fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[
                 Incomplete(needed) => Incomplete(needed),
             }
         }
-        ControlType::PublishAck => {
-            be_u16(i).map(|packet_id| Packet::PublishAck { packet_id: packet_id })
-        }
-        ControlType::PublishReceived => {
-            be_u16(i).map(|packet_id| Packet::PublishReceived { packet_id: packet_id })
-        }
-        ControlType::PublishRelease => {
-            be_u16(i).map(|packet_id| Packet::PublishRelease { packet_id: packet_id })
-        }
-        ControlType::PublishComplete => {
-            be_u16(i).map(|packet_id| Packet::PublishComplete { packet_id: packet_id })
-        }
-        ControlType::Subscribe => decode_subscribe_packet(i),
-        ControlType::SubscribeAck => decode_subscribe_ack_packet(i),
-        ControlType::Unsubscribe => decode_unsubscribe_packet(i),
-        ControlType::UnsubscribeAck => {
-            be_u16(i).map(|packet_id| Packet::UnsubscribeAck { packet_id: packet_id })
-        }
+        PUBACK => be_u16(i).map(|packet_id| Packet::PublishAck { packet_id: packet_id }),
+        PUBREC => be_u16(i).map(|packet_id| Packet::PublishReceived { packet_id: packet_id }),
+        PUBREL => be_u16(i).map(|packet_id| Packet::PublishRelease { packet_id: packet_id }),
+        PUBCOMP => be_u16(i).map(|packet_id| Packet::PublishComplete { packet_id: packet_id }),
+        SUBSCRIBE => decode_subscribe_packet(i),
+        SUBACK => decode_subscribe_ack_packet(i),
+        UNSUBSCRIBE => decode_unsubscribe_packet(i),
+        UNSUBACK => be_u16(i).map(|packet_id| Packet::UnsubscribeAck { packet_id: packet_id }),
 
-        ControlType::PingRequest => Done(i, Packet::PingRequest),
-        ControlType::PingResponse => Done(i, Packet::PingResponse),
-        ControlType::Disconnect => Done(i, Packet::Disconnect),
+        PINGREQ => Done(i, Packet::PingRequest),
+        PINGRESP => Done(i, Packet::PingResponse),
+        DISCONNECT => Done(i, Packet::Disconnect),
+        _ => {
+            let err_code = UNSUPPORT_PACKET_TYPE + (fixed_header.packet_type as u32);
+
+            Error(error_position!(ErrorKind::Custom(err_code), i))
+        }
     }
 }
 
