@@ -5,11 +5,17 @@ extern crate bitflags;
 #[macro_use]
 extern crate nom;
 extern crate byteorder;
+extern crate bytes;
 
 mod error;
 mod packet;
 mod encode;
 mod decode;
+
+pub mod transport;
+pub mod server;
+pub mod client;
+
 #[cfg(test)]
 mod tests;
 
