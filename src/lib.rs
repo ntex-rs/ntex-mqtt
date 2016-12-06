@@ -22,3 +22,7 @@ mod tests;
 pub use packet::{Packet, ConnectionWill, ConnectReturnCode, QoS, SubscribeReturnCode};
 pub use encode::WritePacketExt;
 pub use decode::{ReadPacketExt, read_packet};
+
+// http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
+pub const TCP_PORT: u16 = 1883;
+pub const SSL_PORT: u16 = 8883;
