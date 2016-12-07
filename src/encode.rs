@@ -2,6 +2,7 @@ use std::io::{self, Result, Error, ErrorKind};
 
 use byteorder::{BigEndian, WriteBytesExt};
 
+use proto::*;
 use packet::*;
 
 pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F

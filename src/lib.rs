@@ -3,11 +3,17 @@ extern crate log;
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
+extern crate error_chain;
+#[macro_use]
 extern crate nom;
 extern crate byteorder;
 extern crate bytes;
+extern crate slab;
+extern crate rotor;
 
 mod error;
+#[macro_use]
+mod proto;
 mod packet;
 mod encode;
 mod decode;
@@ -19,7 +25,8 @@ pub mod client;
 #[cfg(test)]
 mod tests;
 
-pub use packet::{Packet, ConnectionWill, ConnectReturnCode, QoS, SubscribeReturnCode};
+pub use proto::QoS;
+pub use packet::{Packet, ConnectionWill, ConnectReturnCode, SubscribeReturnCode};
 pub use encode::WritePacketExt;
 pub use decode::{ReadPacketExt, read_packet};
 

@@ -1,8 +1,11 @@
-pub const INVALID_PROTOCOL: u32 = 0x0001;
-pub const UNSUPPORT_LEVEL: u32 = 0x0002;
-pub const RESERVED_FLAG: u32 = 0x0003;
-pub const INVALID_CLIENT_ID: u32 = 0x0004;
-pub const INVALID_LENGTH: u32 = 0x0005;
+error_chain!{
+    foreign_links {
+        Fmt(::std::fmt::Error);
+        Io(::std::io::Error) #[cfg(unix)];
+    }
 
-
-pub const UNSUPPORT_PACKET_TYPE: u32 = 0x0100;
+    errors {
+        InvalidState
+        InvalidPacket
+    }
+}

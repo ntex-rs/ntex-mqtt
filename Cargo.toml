@@ -1,6 +1,6 @@
 [package]
 name = "mqtt"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Flier Lu <flier.lu@gmail.com>"]
 description = "MQTT protocol v3 implementation"
 documentation = "https://docs.rs/mqtt"
@@ -12,18 +12,19 @@ license = "MIT/Apache-2.0"
 [dependencies]
 log = "^0.3"
 bitflags = "^0.7"
+error-chain = "^0.7"
 nom = "^2.0"
 byteorder = "^0.5"
+slab = "^0.3"
+rotor = "^0.6"
 
 [dependencies.bytes]
 git = "https://github.com/carllerche/bytes"
 
 [dev-dependencies]
 env_logger = "^0.3"
-mio = "^0.6"
-slab = "^0.3"
 clap = "^2"
-error-chain = "^0.7"
+mio = "^0.6"
 
 [lib]
 name = "mqtt"

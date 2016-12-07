@@ -3,7 +3,7 @@ extern crate env_logger;
 use nom::{Needed, ErrorKind};
 use nom::IResult::{Done, Incomplete, Error};
 
-use error::*;
+use proto::*;
 use packet::*;
 use decode::*;
 use encode::*;

@@ -3,8 +3,15 @@ use std::str;
 use nom::{be_u8, be_u16, IResult, Needed, ErrorKind, IError};
 use nom::IResult::{Done, Incomplete, Error};
 
-use error::*;
+use proto::*;
 use packet::*;
+
+pub const INVALID_PROTOCOL: u32 = 0x0001;
+pub const UNSUPPORT_LEVEL: u32 = 0x0002;
+pub const RESERVED_FLAG: u32 = 0x0003;
+pub const INVALID_CLIENT_ID: u32 = 0x0004;
+pub const INVALID_LENGTH: u32 = 0x0005;
+pub const UNSUPPORT_PACKET_TYPE: u32 = 0x0100;
 
 macro_rules! error_if (
   ($i:expr, $cond:expr, $code:expr) => (
