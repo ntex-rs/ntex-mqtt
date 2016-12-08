@@ -1,6 +1,3 @@
-use std::mem;
-use std::convert::From;
-
 use proto::QoS;
 
 bitflags! {
