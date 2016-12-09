@@ -1,7 +1,8 @@
 use std::io;
+use std::fmt::{self, Display, Formatter, Write};
 use std::str::FromStr;
 use std::string::ToString;
-use std::convert::AsRef;
+use std::convert::{AsRef, Into};
 
 use itertools::Itertools;
 
@@ -71,19 +72,6 @@ impl FromStr for Level {
     }
 }
 
-impl ToString for Level {
-    #[inline]
-    fn to_string(&self) -> String {
-        match *self {
-            Level::Normal(ref s) => s.clone(),
-            Level::Metadata(ref s) => s.clone(),
-            Level::Blank => String::from(""),
-            Level::SingleWildcard => String::from("+"),
-            Level::MultiWildcard => String::from("#"),
-        }
-    }
-}
-
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct Topic(Vec<Level>);
 
@@ -135,13 +123,34 @@ impl FromStr for Topic {
     }
 }
 
-impl ToString for Topic {
-    #[inline]
-    fn to_string(&self) -> String {
-        self.0
-            .iter()
-            .map(Level::to_string)
-            .join("/")
+impl Display for Level {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match *self {
+            Level::Normal(ref s) => f.write_str(s.as_str()),
+            Level::Metadata(ref s) => f.write_str(s.as_str()),
+            Level::Blank => Ok(()),
+            Level::SingleWildcard => f.write_char('+'),
+            Level::MultiWildcard => f.write_char('#'),
+        }
+    }
+}
+
+impl Display for Topic {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let mut n = 0;
+        let mut first = true;
+
+        for level in self.0.iter() {
+            if first {
+                first = false;
+            } else {
+                f.write_char('/')?;
+            }
+
+            level.fmt(f)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -236,5 +245,8 @@ mod tests {
 
         assert_eq!(v.write_topic(&t).unwrap(), 10);
         assert_eq!(v, b"+/tennis/#");
+
+        assert_eq!(format!("{}", t), "+/tennis/#");
+        assert_eq!(t.to_string(), "+/tennis/#");
     }
 }
