@@ -263,3 +263,165 @@ pub trait WritePacketExt: io::Write {
 
 impl<W: io::Write + ?Sized> WritePacketHelper for W {}
 impl<W: io::Write + ?Sized> WritePacketExt for W {}
+
+#[cfg(test)]
+mod tests {
+    extern crate env_logger;
+
+    use proto::*;
+    use packet::*;
+    use decode::*;
+    use super::*;
+
+    #[test]
+    fn test_encode_variable_length() {
+        let mut v = Vec::new();
+
+        assert_eq!(v.write_variable_length(123).unwrap(), 1);
+        assert_eq!(v, &[123]);
+
+        v.clear();
+
+        assert_eq!(v.write_variable_length(129).unwrap(), 2);
+        assert_eq!(v, b"\x81\x01");
+
+        v.clear();
+
+        assert_eq!(v.write_variable_length(16383).unwrap(), 2);
+        assert_eq!(v, b"\xff\x7f");
+
+        v.clear();
+
+        assert_eq!(v.write_variable_length(2097151).unwrap(), 3);
+        assert_eq!(v, b"\xff\xff\x7f");
+
+        v.clear();
+
+        assert_eq!(v.write_variable_length(268435455).unwrap(), 4);
+        assert_eq!(v, b"\xff\xff\xff\x7f");
+
+        assert!(v.write_variable_length(MAX_VARIABLE_LENGTH + 1).is_err())
+    }
+
+    #[test]
+    fn test_encode_fixed_header() {
+        let mut v = Vec::new();
+        let p = Packet::PingRequest;
+
+        assert_eq!(v.calc_content_size(&p), 0);
+        assert_eq!(v.write_fixed_header(&p).unwrap(), 2);
+        assert_eq!(v, b"\xc0\x00");
+
+        v.clear();
+
+        let p = Packet::Publish {
+            dup: true,
+            retain: true,
+            qos: QoS::ExactlyOnce,
+            topic: "topic",
+            packet_id: Some(0x4321),
+            payload: &(0..255).map(|b| b).collect::<Vec<u8>>(),
+        };
+
+        assert_eq!(v.calc_content_size(&p), 264);
+        assert_eq!(v.write_fixed_header(&p).unwrap(), 3);
+        assert_eq!(v, b"\x3d\x88\x02");
+    }
+
+    macro_rules! assert_packet {
+        ($p:expr, $data:expr) => {
+            let mut v = Vec::new();
+            assert_eq!(v.write_packet(&$p).unwrap(), $data.len());
+            assert_eq!(v, $data);
+            assert_eq!(read_packet($data).unwrap(), (&b""[..], $p));
+        }
+    }
+
+    #[test]
+    fn test_encode_connect_packets() {
+        assert_packet!(Packet::Connect {
+                           clean_session: false,
+                           keep_alive: 60,
+                           client_id: b"12345",
+                           will: None,
+                           username: Some("user"),
+                           password: Some(b"pass"),
+                       },
+                       &b"\x10\x1D\x00\x04MQTT\x04\xC0\x00\x3C\x00\
+\x0512345\x00\x04user\x00\x04pass"[..]);
+
+        assert_packet!(Packet::Connect {
+                           clean_session: false,
+                           keep_alive: 60,
+                           client_id: b"12345",
+                           will: Some(ConnectionWill {
+                               qos: QoS::ExactlyOnce,
+                               retain: false,
+                               topic: "topic",
+                               message: "message",
+                           }),
+                           username: None,
+                           password: None,
+                       },
+                       &b"\x10\x21\x00\x04MQTT\x04\x14\x00\x3C\x00\
+\x0512345\x00\x05topic\x00\x07message"[..]);
+
+        assert_packet!(Packet::Disconnect, b"\xe0\x00");
+    }
+
+    #[test]
+    fn test_encode_publish_packets() {
+        assert_packet!(Packet::Publish {
+                           dup: true,
+                           retain: true,
+                           qos: QoS::ExactlyOnce,
+                           topic: "topic",
+                           packet_id: Some(0x4321),
+                           payload: b"data",
+                       },
+                       b"\x3d\x0D\x00\x05topic\x43\x21data");
+
+        assert_packet!(Packet::Publish {
+                           dup: false,
+                           retain: false,
+                           qos: QoS::AtMostOnce,
+                           topic: "topic",
+                           packet_id: None,
+                           payload: b"data",
+                       },
+                       b"\x30\x0b\x00\x05topicdata");
+    }
+
+    #[test]
+    fn test_encode_subscribe_packets() {
+        assert_packet!(Packet::Subscribe {
+                           packet_id: 0x1234,
+                           topic_filters: vec![("test", QoS::AtLeastOnce),
+                                               ("filter", QoS::ExactlyOnce)],
+                       },
+                       b"\x82\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02");
+
+        assert_packet!(Packet::SubscribeAck {
+                           packet_id: 0x1234,
+                           status: vec![SubscribeReturnCode::Success(QoS::AtLeastOnce),
+                                        SubscribeReturnCode::Failure,
+                                        SubscribeReturnCode::Success(QoS::ExactlyOnce)],
+                       },
+                       b"\x90\x05\x12\x34\x01\x80\x02");
+
+        assert_packet!(Packet::Unsubscribe {
+                           packet_id: 0x1234,
+                           topic_filters: vec!["test", "filter"],
+                       },
+                       b"\xa2\x10\x12\x34\x00\x04test\x00\x06filter");
+
+        assert_packet!(Packet::UnsubscribeAck { packet_id: 0x4321 },
+                       b"\xb0\x02\x43\x21");
+    }
+
+    #[test]
+    fn test_encode_ping_packets() {
+        assert_packet!(Packet::PingRequest, b"\xc0\x00");
+        assert_packet!(Packet::PingResponse, b"\xd0\x00");
+    }
+}

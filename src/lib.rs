@@ -25,9 +25,6 @@ pub mod transport;
 pub mod server;
 pub mod client;
 
-#[cfg(test)]
-mod tests;
-
 pub use proto::QoS;
 pub use packet::{Packet, ConnectionWill, ConnectReturnCode, SubscribeReturnCode};
 pub use encode::WritePacketExt;
