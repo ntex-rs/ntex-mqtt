@@ -148,18 +148,21 @@ impl Topic {
     pub fn levels(&self) -> &Vec<Level> {
         &self.0
     }
+}
 
-    pub fn from_slice(s: &[Level]) -> Topic {
+impl<'a> From<&'a [Level]> for Topic {
+    fn from(s: &[Level]) -> Self {
         let mut v = vec![];
 
         v.extend_from_slice(s);
 
         Topic(v)
     }
+}
 
-    #[inline]
-    pub fn parse<T: AsRef<str>>(s: T) -> Result<Topic> {
-        Topic::from_str(s.as_ref())
+impl From<Vec<Level>> for Topic {
+    fn from(v: Vec<Level>) -> Self {
+        Topic(v)
     }
 }
 
@@ -309,25 +312,23 @@ mod tests {
     #[test]
     fn test_parse_topic() {
         assert_eq!(topic!("sport/tennis/player1"),
-                   Topic(vec![Level::normal("sport"),
-                              Level::normal("tennis"),
-                              Level::normal("player1")]));
+                   vec![Level::normal("sport"), Level::normal("tennis"), Level::normal("player1")]
+                       .into());
 
         assert_eq!(topic!(""), Topic(vec![Level::Blank]));
         assert_eq!(topic!("/finance"),
-                   Topic(vec![Level::Blank, Level::normal("finance")]));
+                   vec![Level::Blank, Level::normal("finance")].into());
 
-        assert_eq!(topic!("$SYS"), Topic(vec![Level::metadata("$SYS")]));
+        assert_eq!(topic!("$SYS"), vec![Level::metadata("$SYS")].into());
     }
 
     #[test]
     fn test_multi_wildcard_topic() {
         assert_eq!(topic!("sport/tennis/#"),
-                   Topic(vec![Level::normal("sport"),
-                              Level::normal("tennis"),
-                              Level::MultiWildcard]));
+                   vec![Level::normal("sport"), Level::normal("tennis"), Level::MultiWildcard]
+                       .into());
 
-        assert_eq!(topic!("#"), Topic(vec![Level::MultiWildcard]));
+        assert_eq!(topic!("#"), vec![Level::MultiWildcard].into());
 
         assert!("sport/tennis#".parse::<Topic>().is_err());
         assert!("sport/tennis/#/ranking".parse::<Topic>().is_err());
@@ -335,17 +336,15 @@ mod tests {
 
     #[test]
     fn test_single_wildcard_topic() {
-        assert_eq!(topic!("+"), Topic(vec![Level::SingleWildcard]));
+        assert_eq!(topic!("+"), vec![Level::SingleWildcard].into());
 
         assert_eq!(topic!("+/tennis/#"),
-                   Topic(vec![Level::SingleWildcard,
-                              Level::normal("tennis"),
-                              Level::MultiWildcard]));
+                   vec![Level::SingleWildcard, Level::normal("tennis"), Level::MultiWildcard]
+                       .into());
 
         assert_eq!(topic!("sport/+/player1"),
-                   Topic(vec![Level::normal("sport"),
-                              Level::SingleWildcard,
-                              Level::normal("player1")]));
+                   vec![Level::normal("sport"), Level::SingleWildcard, Level::normal("player1")]
+                       .into());
 
         assert!("sport+".parse::<Topic>().is_err());
     }
@@ -353,7 +352,7 @@ mod tests {
     #[test]
     fn test_write_topic() {
         let mut v = vec![];
-        let t = Topic(vec![Level::SingleWildcard, Level::normal("tennis"), Level::MultiWildcard]);
+        let t = vec![Level::SingleWildcard, Level::normal("tennis"), Level::MultiWildcard].into();
 
         assert_eq!(v.write_topic(&t).unwrap(), 10);
         assert_eq!(v, b"+/tennis/#");
