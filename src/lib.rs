@@ -5,6 +5,8 @@ extern crate bitflags;
 #[macro_use]
 extern crate error_chain;
 #[macro_use]
+extern crate itertools;
+#[macro_use]
 extern crate nom;
 extern crate byteorder;
 extern crate bytes;
@@ -12,6 +14,7 @@ extern crate slab;
 extern crate rotor;
 
 mod error;
+mod topic;
 #[macro_use]
 mod proto;
 mod packet;
