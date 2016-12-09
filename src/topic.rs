@@ -1,13 +1,16 @@
 use std::io;
+use std::iter::Iterator;
 use std::fmt::{self, Display, Formatter, Write};
 use std::str::FromStr;
-use std::string::ToString;
 use std::convert::{AsRef, Into};
-
-use itertools::Itertools;
 
 use error::*;
 use error::ErrorKind::*;
+
+#[inline]
+fn is_metadata<T: AsRef<str>>(s: T) -> bool {
+    s.as_ref().chars().nth(0) == Some('$')
+}
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum Level {
@@ -46,6 +49,72 @@ impl Level {
 
         Level::Metadata(String::from(s.as_ref()))
     }
+
+    pub fn is_normal(&self) -> bool {
+        if let Level::Normal(_) = *self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_metadata(&self) -> bool {
+        if let Level::Metadata(_) = *self {
+            true
+        } else {
+            false
+        }
+    }
+}
+
+pub trait MatchLevel {
+    fn match_level(&self, level: &Level) -> bool;
+}
+
+impl MatchLevel for Level {
+    fn match_level(&self, level: &Level) -> bool {
+        match *level {
+            Level::Normal(ref lhs) => {
+                if let Level::Normal(ref rhs) = *self {
+                    lhs == rhs
+                } else {
+                    false
+                }
+            }
+            Level::Metadata(ref lhs) => {
+                if let Level::Metadata(ref rhs) = *self {
+                    lhs == rhs
+                } else {
+                    false
+                }
+            }
+            Level::Blank => *self == *self,
+            Level::SingleWildcard | Level::MultiWildcard => !self.is_metadata(),
+        }
+    }
+}
+
+impl<T: AsRef<str>> MatchLevel for T {
+    fn match_level(&self, level: &Level) -> bool {
+        match *level {
+            Level::Normal(ref lhs) => {
+                if is_metadata(self) {
+                    false
+                } else {
+                    lhs == self.as_ref()
+                }
+            }
+            Level::Metadata(ref lhs) => {
+                if is_metadata(self) {
+                    lhs == self.as_ref()
+                } else {
+                    false
+                }
+            }
+            Level::Blank => self.as_ref().is_empty(),
+            Level::SingleWildcard | Level::MultiWildcard => !is_metadata(self),
+        }
+    }
 }
 
 impl FromStr for Level {
@@ -62,7 +131,7 @@ impl FromStr for Level {
                     debug!("invalid level `{}` contains +|#", s);
 
                     bail!(InvalidTopic)
-                } else if s.chars().nth(0) == Some('$') {
+                } else if is_metadata(s) {
                     Ok(Level::Metadata(String::from(s)))
                 } else {
                     Ok(Level::Normal(String::from(s)))
@@ -91,6 +160,49 @@ impl Topic {
     #[inline]
     pub fn parse<T: AsRef<str>>(s: T) -> Result<Topic> {
         Topic::from_str(s.as_ref())
+    }
+}
+
+macro_rules! match_topic {
+    ($topic:expr, $levels:expr) => ({
+        let mut lhs = $topic.0.iter();
+
+        for rhs in $levels {
+            match lhs.next() {
+                Some(&Level::SingleWildcard) => {
+                    if !rhs.match_level(&Level::SingleWildcard) {
+                        break
+                    }
+                },
+                Some(&Level::MultiWildcard) => {
+                    return rhs.match_level(&Level::MultiWildcard);
+                }
+                Some(level) if rhs.match_level(level) => continue,
+                _ => return false,
+            }
+        }
+
+        match lhs.next() {
+            Some(&Level::MultiWildcard) => true,
+            Some(_) => false,
+            None => true,
+        }
+    })
+}
+
+pub trait MatchTopic {
+    fn match_topic(&self, topic: &Topic) -> bool;
+}
+
+impl MatchTopic for Topic {
+    fn match_topic(&self, topic: &Topic) -> bool {
+        match_topic!(topic, self.0.iter())
+    }
+}
+
+impl<T: AsRef<str>> MatchTopic for T {
+    fn match_topic(&self, topic: &Topic) -> bool {
+        match_topic!(topic, self.as_ref().split('/'))
     }
 }
 
@@ -137,7 +249,6 @@ impl Display for Level {
 
 impl Display for Topic {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let mut n = 0;
         let mut first = true;
 
         for level in self.0.iter() {
@@ -191,51 +302,52 @@ mod tests {
 
     use super::*;
 
+    macro_rules! topic {
+        ($s:expr) => ($s.parse::<Topic>().unwrap());
+    }
+
     #[test]
     fn test_parse_topic() {
-        assert_eq!(Topic::parse("sport/tennis/player1").unwrap(),
+        assert_eq!(topic!("sport/tennis/player1"),
                    Topic(vec![Level::normal("sport"),
                               Level::normal("tennis"),
                               Level::normal("player1")]));
 
-        assert_eq!(Topic::parse("").unwrap(), Topic(vec![Level::Blank]));
-        assert_eq!(Topic::parse("/finance").unwrap(),
+        assert_eq!(topic!(""), Topic(vec![Level::Blank]));
+        assert_eq!(topic!("/finance"),
                    Topic(vec![Level::Blank, Level::normal("finance")]));
 
-        assert_eq!(Topic::parse("$SYS").unwrap(),
-                   Topic(vec![Level::metadata("$SYS")]));
+        assert_eq!(topic!("$SYS"), Topic(vec![Level::metadata("$SYS")]));
     }
 
     #[test]
     fn test_multi_wildcard_topic() {
-        assert_eq!(Topic::parse("sport/tennis/#").unwrap(),
+        assert_eq!(topic!("sport/tennis/#"),
                    Topic(vec![Level::normal("sport"),
                               Level::normal("tennis"),
                               Level::MultiWildcard]));
 
-        assert_eq!(Topic::parse("#").unwrap(),
-                   Topic(vec![Level::MultiWildcard]));
+        assert_eq!(topic!("#"), Topic(vec![Level::MultiWildcard]));
 
-        assert!(Topic::parse("sport/tennis#").is_err());
-        assert!(Topic::parse("sport/tennis/#/ranking").is_err());
+        assert!("sport/tennis#".parse::<Topic>().is_err());
+        assert!("sport/tennis/#/ranking".parse::<Topic>().is_err());
     }
 
     #[test]
     fn test_single_wildcard_topic() {
-        assert_eq!(Topic::parse("+").unwrap(),
-                   Topic(vec![Level::SingleWildcard]));
+        assert_eq!(topic!("+"), Topic(vec![Level::SingleWildcard]));
 
-        assert_eq!(Topic::parse("+/tennis/#").unwrap(),
+        assert_eq!(topic!("+/tennis/#"),
                    Topic(vec![Level::SingleWildcard,
                               Level::normal("tennis"),
                               Level::MultiWildcard]));
 
-        assert_eq!(Topic::parse("sport/+/player1").unwrap(),
+        assert_eq!(topic!("sport/+/player1"),
                    Topic(vec![Level::normal("sport"),
                               Level::SingleWildcard,
                               Level::normal("player1")]));
 
-        assert!(Topic::parse("sport+").is_err());
+        assert!("sport+".parse::<Topic>().is_err());
     }
 
     #[test]
@@ -248,5 +360,39 @@ mod tests {
 
         assert_eq!(format!("{}", t), "+/tennis/#");
         assert_eq!(t.to_string(), "+/tennis/#");
+    }
+
+    #[test]
+    fn test_match_topic() {
+        assert!("test".match_level(&Level::normal("test")));
+        assert!("$SYS".match_level(&Level::metadata("$SYS")));
+
+        let t = "sport/tennis/player1/#".parse().unwrap();
+
+        assert!("sport/tennis/player1".match_topic(&t));
+        assert!("sport/tennis/player1/ranking".match_topic(&t));
+        assert!("sport/tennis/player1/score/wimbledon".match_topic(&t));
+
+        assert!("sport".match_topic(&"sport/#".parse().unwrap()));
+
+        let t = "sport/tennis/+".parse().unwrap();
+
+        assert!("sport/tennis/player1".match_topic(&t));
+        assert!("sport/tennis/player2".match_topic(&t));
+        assert!(!"sport/tennis/player1/ranking".match_topic(&t));
+
+        let t = "sport/+".parse().unwrap();
+
+        assert!(!"sport".match_topic(&t));
+        assert!("sport/".match_topic(&t));
+
+        assert!("/finance".match_topic(&"+/+".parse().unwrap()));
+        assert!("/finance".match_topic(&"/+".parse().unwrap()));
+        assert!(!"/finance".match_topic(&"+".parse().unwrap()));
+
+        assert!(!"$SYS".match_topic(&"#".parse().unwrap()));
+        assert!(!"$SYS/monitor/Clients".match_topic(&"+/monitor/Clients".parse().unwrap()));
+        assert!("$SYS/".match_topic(&"$SYS/#".parse().unwrap()));
+        assert!("$SYS/monitor/Clients".match_topic(&"$SYS/monitor/+".parse().unwrap()));
     }
 }
