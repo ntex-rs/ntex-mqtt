@@ -1,4 +1,5 @@
 use std::io;
+use std::ops::{Div, DivAssign};
 use std::iter::Iterator;
 use std::fmt::{self, Display, Formatter, Write};
 use std::str::FromStr;
@@ -12,7 +13,7 @@ fn is_metadata<T: AsRef<str>>(s: T) -> bool {
     s.as_ref().chars().nth(0) == Some('$')
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub enum Level {
     Normal(String),
     Metadata(String), // $SYS
@@ -67,6 +68,37 @@ impl Level {
     }
 }
 
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub struct Topic(Vec<Level>);
+
+impl Topic {
+    pub fn levels(&self) -> &Vec<Level> {
+        &self.0
+    }
+}
+
+impl<'a> From<&'a [Level]> for Topic {
+    fn from(s: &[Level]) -> Self {
+        let mut v = vec![];
+
+        v.extend_from_slice(s);
+
+        Topic(v)
+    }
+}
+
+impl From<Vec<Level>> for Topic {
+    fn from(v: Vec<Level>) -> Self {
+        Topic(v)
+    }
+}
+
+impl Into<Vec<Level>> for Topic {
+    fn into(self) -> Vec<Level> {
+        self.0
+    }
+}
+
 pub trait MatchLevel {
     fn match_level(&self, level: &Level) -> bool;
 }
@@ -117,55 +149,6 @@ impl<T: AsRef<str>> MatchLevel for T {
     }
 }
 
-impl FromStr for Level {
-    type Err = Error;
-
-    #[inline]
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "+" => Ok(Level::SingleWildcard),
-            "#" => Ok(Level::MultiWildcard),
-            "" => Ok(Level::Blank),
-            _ => {
-                if s.contains(|c| c == '+' || c == '#') {
-                    debug!("invalid level `{}` contains +|#", s);
-
-                    bail!(InvalidTopic)
-                } else if is_metadata(s) {
-                    Ok(Level::Metadata(String::from(s)))
-                } else {
-                    Ok(Level::Normal(String::from(s)))
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Eq, PartialEq, Clone)]
-pub struct Topic(Vec<Level>);
-
-impl Topic {
-    pub fn levels(&self) -> &Vec<Level> {
-        &self.0
-    }
-}
-
-impl<'a> From<&'a [Level]> for Topic {
-    fn from(s: &[Level]) -> Self {
-        let mut v = vec![];
-
-        v.extend_from_slice(s);
-
-        Topic(v)
-    }
-}
-
-impl From<Vec<Level>> for Topic {
-    fn from(v: Vec<Level>) -> Self {
-        Topic(v)
-    }
-}
-
 macro_rules! match_topic {
     ($topic:expr, $levels:expr) => ({
         let mut lhs = $topic.0.iter();
@@ -206,6 +189,30 @@ impl MatchTopic for Topic {
 impl<T: AsRef<str>> MatchTopic for T {
     fn match_topic(&self, topic: &Topic) -> bool {
         match_topic!(topic, self.as_ref().split('/'))
+    }
+}
+
+impl FromStr for Level {
+    type Err = Error;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "+" => Ok(Level::SingleWildcard),
+            "#" => Ok(Level::MultiWildcard),
+            "" => Ok(Level::Blank),
+            _ => {
+                if s.contains(|c| c == '+' || c == '#') {
+                    debug!("invalid level `{}` contains +|#", s);
+
+                    bail!(InvalidTopic)
+                } else if is_metadata(s) {
+                    Ok(Level::Metadata(String::from(s)))
+                } else {
+                    Ok(Level::Normal(String::from(s)))
+                }
+            }
+        }
     }
 }
 
@@ -298,6 +305,56 @@ pub trait WriteTopicExt: io::Write {
 }
 
 impl<W: io::Write + ?Sized> WriteTopicExt for W {}
+
+impl Div<Level> for Level {
+    type Output = Topic;
+
+    fn div(self, rhs: Level) -> Topic {
+        Topic(vec![self, rhs])
+    }
+}
+
+impl Div<Topic> for Level {
+    type Output = Topic;
+
+    fn div(self, rhs: Topic) -> Topic {
+        let mut v = vec![self];
+        v.append(&mut rhs.into());
+        Topic(v)
+    }
+}
+
+impl Div<Level> for Topic {
+    type Output = Topic;
+
+    fn div(self, rhs: Level) -> Topic {
+        let mut v: Vec<Level> = self.into();
+        v.push(rhs);
+        Topic(v)
+    }
+}
+
+impl Div<Topic> for Topic {
+    type Output = Topic;
+
+    fn div(self, rhs: Topic) -> Topic {
+        let mut v: Vec<Level> = self.into();
+        v.append(&mut rhs.into());
+        Topic(v)
+    }
+}
+
+impl DivAssign<Level> for Topic {
+    fn div_assign(&mut self, rhs: Level) {
+        self.0.push(rhs)
+    }
+}
+
+impl DivAssign<Topic> for Topic {
+    fn div_assign(&mut self, rhs: Topic) {
+        self.0.append(&mut rhs.into())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -393,5 +450,27 @@ mod tests {
         assert!(!"$SYS/monitor/Clients".match_topic(&"+/monitor/Clients".parse().unwrap()));
         assert!("$SYS/".match_topic(&"$SYS/#".parse().unwrap()));
         assert!("$SYS/monitor/Clients".match_topic(&"$SYS/monitor/+".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_operators() {
+        assert_eq!(Level::normal("sport") / Level::normal("tennis") / Level::normal("player1"),
+                   "sport/tennis/player1".parse().unwrap());
+        assert_eq!(topic!("sport/tennis") / Level::normal("player1"),
+                   "sport/tennis/player1".parse().unwrap());
+        assert_eq!(Level::normal("sport") / topic!("tennis/player1"),
+                   "sport/tennis/player1".parse().unwrap());
+        assert_eq!(topic!("sport/tennis") / topic!("player1/ranking"),
+                   "sport/tennis/player1/ranking".parse().unwrap());
+
+        let mut t = topic!("sport/tennis");
+
+        t /= Level::normal("player1");
+
+        assert_eq!(t, "sport/tennis/player1".parse().unwrap());
+
+        t /= topic!("ranking");
+
+        assert_eq!(t, "sport/tennis/player1/ranking".parse().unwrap());
     }
 }
