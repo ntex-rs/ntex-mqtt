@@ -4,7 +4,7 @@ use std::iter::{Iterator, IntoIterator};
 use std::fmt::{self, Display, Formatter, Write};
 use std::str::FromStr;
 use std::convert::{AsRef, Into};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use slab::Slab;
 
@@ -137,20 +137,8 @@ impl MatchLevel for Level {
 impl<T: AsRef<str>> MatchLevel for T {
     fn match_level(&self, level: &Level) -> bool {
         match *level {
-            Level::Normal(ref lhs) => {
-                if is_metadata(self) {
-                    false
-                } else {
-                    lhs == self.as_ref()
-                }
-            }
-            Level::Metadata(ref lhs) => {
-                if is_metadata(self) {
-                    lhs == self.as_ref()
-                } else {
-                    false
-                }
-            }
+            Level::Normal(ref lhs) => !is_metadata(self) && lhs == self.as_ref(),
+            Level::Metadata(ref lhs) => is_metadata(self) && lhs == self.as_ref(),
             Level::Blank => self.as_ref().is_empty(),
             Level::SingleWildcard | Level::MultiWildcard => !is_metadata(self),
         }
@@ -211,8 +199,6 @@ impl FromStr for Level {
             "" => Ok(Level::Blank),
             _ => {
                 if s.contains(|c| c == '+' || c == '#') {
-                    debug!("invalid level `{}` contains +|#", s);
-
                     bail!(InvalidTopic)
                 } else if is_metadata(s) {
                     Ok(Level::Metadata(String::from(s)))
@@ -229,23 +215,12 @@ impl FromStr for Topic {
 
     #[inline]
     fn from_str(s: &str) -> Result<Self> {
-        debug!("parse topic `{}`", s);
-
         s.split('/')
             .map(|level| Level::from_str(level))
             .collect::<Result<Vec<_>>>()
             .and_then(|levels| {
-                match levels.iter().position(|level| match *level {
-                    Level::MultiWildcard => true,
-                    _ => false,
-                }) {
-                    Some(pos) if pos != levels.len() - 1 => {
-                        debug!("invalid topic `{}` contains # at level {}",
-                               s,
-                               levels.len() - pos);
-
-                        bail!(InvalidTopic)
-                    }
+                match levels.iter().position(|level| *level == Level::MultiWildcard) {
+                    Some(pos) if pos != levels.len() - 1 => bail!(InvalidTopic),
                     _ => Ok(levels),
                 }
             })
@@ -370,16 +345,9 @@ type StateIdx = usize;
 #[derive(Debug, Eq, PartialEq, Clone, Default)]
 struct State {
     next: HashMap<Level, StateIdx>,
-    out: HashSet<TopicIdx>,
+    out: Option<TopicIdx>,
     single_wildcard: Option<StateIdx>,
     multi_wildcard: Option<TopicIdx>,
-    depth: usize,
-}
-
-impl State {
-    fn new(depth: usize) -> State {
-        State { depth: depth, ..Default::default() }
-    }
 }
 
 #[derive(Debug)]
@@ -423,7 +391,7 @@ impl TopicTree {
             self.topics.vacant_entry().map(|entry| entry.insert(topic.clone()).index()).unwrap()
         });
 
-        for (depth, level) in topic.0.iter().enumerate() {
+        for level in topic.0.iter() {
             match *level {
                 Level::Normal(_) |
                 Level::Metadata(_) |
@@ -431,7 +399,7 @@ impl TopicTree {
                     match self.states[cur_state].next.get(level) {
                         Some(&next_state) => cur_state = next_state,
                         None => {
-                            let next_state = self.add_state(depth);
+                            let next_state = self.add_state();
 
                             self.states[cur_state].next.insert(level.clone(), next_state);
 
@@ -443,7 +411,7 @@ impl TopicTree {
                     match self.states[cur_state].single_wildcard {
                         Some(next_state) => cur_state = next_state,
                         None => {
-                            let next_state = self.add_state(depth);
+                            let next_state = self.add_state();
 
                             self.states[cur_state].single_wildcard = Some(next_state);
 
@@ -461,11 +429,11 @@ impl TopicTree {
             }
         }
 
-        self.states[cur_state].out.insert(topic_idx);
+        self.states[cur_state].out = Some(topic_idx);
     }
 
     #[inline]
-    fn add_state(&mut self, depth: usize) -> StateIdx {
+    fn add_state(&mut self) -> StateIdx {
         if !self.states.has_available() {
             let cap = self.states.capacity();
 
@@ -474,14 +442,14 @@ impl TopicTree {
 
         self.states
             .vacant_entry()
-            .map(|entry| entry.insert(State::new(depth)).index())
+            .map(|entry| entry.insert(Default::default()).index())
             .unwrap()
     }
 
     pub fn match_topic(&self, topic: &Topic) -> Option<Vec<&Topic>> {
-        let mut topics = vec![];
+        let mut topics = Vec::with_capacity(16);
 
-        self.match_state(self.root, topic.0.as_slice(), &mut topics);
+        self.match_state(&self.states[self.root], topic.0.as_slice(), &mut topics);
 
         if topics.is_empty() {
             None
@@ -490,27 +458,30 @@ impl TopicTree {
         }
     }
 
-    fn match_state(&self, state: StateIdx, levels: &[Level], topics: &mut Vec<TopicIdx>) {
-        if let Some(topic) = self.states[state].multi_wildcard {
-            match levels.first() {
-                Some(&Level::Metadata(_)) => {}
-                _ => topics.push(topic),
+    fn match_state(&self, state: &State, levels: &[Level], topics: &mut Vec<TopicIdx>) {
+        if let Some(topic) = state.multi_wildcard {
+            if let Some(&Level::Metadata(_)) = levels.first() {
+                // skip it
+            } else {
+                topics.push(topic);
             }
         }
 
-        if levels.is_empty() {
-            if !self.states[state].out.is_empty() {
-                topics.extend(self.states[state].out.iter().map(|&idx| idx));
-            }
-        } else if let Some((level, levels)) = levels.split_first() {
-            if let Some(&next_state) = self.states[state].next.get(level) {
-                self.match_state(next_state, levels, topics)
-            }
+        match levels.split_first() {
+            Some((level, levels)) => {
+                if let Some(&next_state) = state.next.get(level) {
+                    self.match_state(&self.states[next_state], levels, topics)
+                }
 
-            if let Some(next_state) = self.states[state].single_wildcard {
-                match level {
-                    &Level::Metadata(_) => {}
-                    _ => self.match_state(next_state, levels, topics),
+                if let Some(next_state) = state.single_wildcard {
+                    if !level.is_metadata() {
+                        self.match_state(&self.states[next_state], levels, topics);
+                    }
+                }
+            }
+            None => {
+                if let Some(topic) = state.out {
+                    topics.push(topic);
                 }
             }
         }

@@ -268,6 +268,7 @@ mod tests {
     use nom::{Needed, ErrorKind};
     use nom::IResult::{Done, Incomplete, Error};
 
+    use proto::*;
     use packet::*;
     use super::*;
 
