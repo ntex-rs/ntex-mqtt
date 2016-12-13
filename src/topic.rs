@@ -1,5 +1,5 @@
 use std::io;
-use std::ops::{Div, DivAssign};
+use std::ops::{Deref, DerefMut, Div, DivAssign};
 use std::iter::{Iterator, IntoIterator};
 use std::fmt::{self, Display, Formatter, Write};
 use std::str::FromStr;
@@ -24,6 +24,9 @@ pub enum Level {
     SingleWildcard, // Single level wildcard +
     MultiWildcard, // Multi-level wildcard #
 }
+
+unsafe impl Send for Level {}
+unsafe impl Sync for Level {}
 
 impl Level {
     pub fn parse<T: AsRef<str>>(s: T) -> Result<Level> {
@@ -52,6 +55,15 @@ impl Level {
         }
 
         Level::Metadata(String::from(s.as_ref()))
+    }
+
+    #[inline]
+    pub fn value(&self) -> Option<&str> {
+        match *self {
+            Level::Normal(ref s) |
+            Level::Metadata(ref s) => Some(&s),
+            _ => None,
+        }
     }
 
     #[inline]
@@ -88,6 +100,9 @@ impl Level {
 
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub struct Topic(Vec<Level>);
+
+unsafe impl Send for Topic {}
+unsafe impl Sync for Topic {}
 
 impl Topic {
     #[inline]
@@ -132,6 +147,20 @@ impl From<Vec<Level>> for Topic {
 impl Into<Vec<Level>> for Topic {
     fn into(self) -> Vec<Level> {
         self.0
+    }
+}
+
+impl Deref for Topic {
+    type Target = Vec<Level>;
+
+    fn deref(&self) -> &Self::Target {
+        return &self.0;
+    }
+}
+
+impl DerefMut for Topic {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        return &mut self.0;
     }
 }
 
@@ -529,7 +558,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_valid_topic() {
+    fn test_level() {
+        assert!(Level::normal("sport").is_normal());
+        assert!(Level::metadata("$SYS").is_metadata());
+
+        assert_eq!(Level::normal("sport").value(), Some("sport"));
+        assert_eq!(Level::metadata("$SYS").value(), Some("$SYS"));
+
+        assert_eq!(Level::normal("sport"), "sport".parse().unwrap());
+        assert_eq!(Level::metadata("$SYS"), "$SYS".parse().unwrap());
+
         assert!(Level::Normal(String::from("sport")).is_valid());
         assert!(Level::Metadata(String::from("$SYS")).is_valid());
 
@@ -538,7 +576,10 @@ mod tests {
 
         assert!(!Level::Normal(String::from("sport#")).is_valid());
         assert!(!Level::Metadata(String::from("SYS+")).is_valid());
+    }
 
+    #[test]
+    fn test_valid_topic() {
         assert!(Topic(vec![Level::normal("sport"),
                            Level::normal("tennis"),
                            Level::normal("player1")])
