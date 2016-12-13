@@ -138,3 +138,17 @@ fn bench_encode_unsubscribe_packets(b: &mut Bencher) {
         v.write_packet(&p).unwrap();
     });
 }
+
+#[bench]
+fn bench_parse_topic(b: &mut Bencher) {
+    b.iter(|| "$SYS/+/player1".parse::<Topic>().unwrap())
+}
+
+
+#[bench]
+fn bench_match_topic(b: &mut Bencher) {
+    let t1 = "sport/tennis/player1".parse::<Topic>().unwrap();
+    let t2 = "sport/+/player1".parse::<Topic>().unwrap();
+
+    b.iter(|| t1.match_topic(&t2))
+}

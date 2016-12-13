@@ -1,9 +1,12 @@
 use std::io;
 use std::ops::{Div, DivAssign};
-use std::iter::Iterator;
+use std::iter::{Iterator, IntoIterator};
 use std::fmt::{self, Display, Formatter, Write};
 use std::str::FromStr;
 use std::convert::{AsRef, Into};
+use std::collections::{HashMap, HashSet};
+
+use slab::Slab;
 
 use error::*;
 use error::ErrorKind::*;
@@ -356,6 +359,159 @@ impl DivAssign<Topic> for Topic {
     }
 }
 
+type TopicIdx = usize;
+type StateIdx = usize;
+
+#[derive(Debug, Eq, PartialEq, Clone, Default)]
+struct State {
+    next: HashMap<Level, StateIdx>,
+    out: HashSet<TopicIdx>,
+    single_wildcard: Option<StateIdx>,
+    multi_wildcard: Option<TopicIdx>,
+    depth: usize,
+}
+
+impl State {
+    fn new(depth: usize) -> State {
+        State { depth: depth, ..Default::default() }
+    }
+}
+
+#[derive(Debug)]
+pub struct TopicTree {
+    topics: Slab<Topic, TopicIdx>,
+    states: Slab<State, StateIdx>,
+    root: StateIdx,
+}
+
+impl TopicTree {
+    pub fn new() -> TopicTree {
+        let mut states = Slab::with_capacity(64);
+        let root = states.insert(Default::default()).ok().unwrap();
+
+        TopicTree {
+            topics: Slab::with_capacity(64),
+            states: states,
+            root: root,
+        }
+    }
+
+    pub fn build<I: IntoIterator<Item = Topic>>(topics: I) -> TopicTree {
+        let mut tree = TopicTree::new();
+
+        for topic in topics {
+            tree.add(&topic);
+        }
+
+        tree
+    }
+
+    pub fn add(&mut self, topic: &Topic) {
+        let mut cur_state = self.root;
+        let topic_idx = self.topics.iter().position(|ref t| **t == *topic).unwrap_or_else(|| {
+            if !self.topics.has_available() {
+                let cap = self.topics.capacity();
+
+                self.topics.reserve_exact(cap);
+            }
+
+            self.topics.vacant_entry().map(|entry| entry.insert(topic.clone()).index()).unwrap()
+        });
+
+        for (depth, level) in topic.0.iter().enumerate() {
+            match *level {
+                Level::Normal(_) |
+                Level::Metadata(_) |
+                Level::Blank => {
+                    match self.states[cur_state].next.get(level) {
+                        Some(&next_state) => cur_state = next_state,
+                        None => {
+                            let next_state = self.add_state(depth);
+
+                            self.states[cur_state].next.insert(level.clone(), next_state);
+
+                            cur_state = next_state;
+                        }
+                    };
+                }
+                Level::SingleWildcard => {
+                    match self.states[cur_state].single_wildcard {
+                        Some(next_state) => cur_state = next_state,
+                        None => {
+                            let next_state = self.add_state(depth);
+
+                            self.states[cur_state].single_wildcard = Some(next_state);
+
+                            cur_state = next_state;
+                        }
+                    }
+                }
+                Level::MultiWildcard => {
+                    if self.states[cur_state].multi_wildcard.is_none() {
+                        self.states[cur_state].multi_wildcard = Some(topic_idx);
+                    }
+
+                    return;
+                }
+            }
+        }
+
+        self.states[cur_state].out.insert(topic_idx);
+    }
+
+    #[inline]
+    fn add_state(&mut self, depth: usize) -> StateIdx {
+        if !self.states.has_available() {
+            let cap = self.states.capacity();
+
+            self.states.reserve_exact(cap);
+        }
+
+        self.states
+            .vacant_entry()
+            .map(|entry| entry.insert(State::new(depth)).index())
+            .unwrap()
+    }
+
+    pub fn matches(&self, topic: &Topic) -> Option<Vec<&Topic>> {
+        let mut topics = vec![];
+
+        self.match_state(self.root, topic.0.as_slice(), &mut topics);
+
+        if topics.is_empty() {
+            None
+        } else {
+            Some(topics.iter().map(|&idx| &self.topics[idx]).collect())
+        }
+    }
+
+    fn match_state(&self, state: StateIdx, levels: &[Level], topics: &mut Vec<TopicIdx>) {
+        if let Some(topic) = self.states[state].multi_wildcard {
+            match levels.first() {
+                Some(&Level::Metadata(_)) => {}
+                _ => topics.push(topic),
+            }
+        }
+
+        if levels.is_empty() {
+            if !self.states[state].out.is_empty() {
+                topics.extend(self.states[state].out.iter().map(|&idx| idx));
+            }
+        } else if let Some((level, levels)) = levels.split_first() {
+            if let Some(&next_state) = self.states[state].next.get(level) {
+                self.match_state(next_state, levels, topics)
+            }
+
+            if let Some(next_state) = self.states[state].single_wildcard {
+                match level {
+                    &Level::Metadata(_) => {}
+                    _ => self.match_state(next_state, levels, topics),
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate env_logger;
@@ -472,5 +628,49 @@ mod tests {
         t /= topic!("ranking");
 
         assert_eq!(t, "sport/tennis/player1/ranking".parse().unwrap());
+    }
+
+    #[test]
+    fn test_topic_tree() {
+        let tree = TopicTree::build(vec![topic!("sport/tennis/+"),
+                                         topic!("sport/tennis/player1"),
+                                         topic!("sport/tennis/player1/#"),
+                                         topic!("sport/#"),
+                                         topic!("sport/+"),
+                                         topic!("#"),
+                                         topic!("+"),
+                                         topic!("+/+"),
+                                         topic!("/+"),
+                                         topic!("$SYS/#"),
+                                         topic!("$SYS/monitor/+"),
+                                         topic!("+/monitor/Clients")]);
+
+        assert_eq!(tree.topics.len(), 12);
+        assert_eq!(tree.states.len(), 15);
+
+        assert_eq!(tree.matches(&topic!("sport/tennis/player1")),
+                   Some(vec![&topic!("#"),
+                             &topic!("sport/#"),
+                             &topic!("sport/tennis/player1/#"),
+                             &topic!("sport/tennis/player1"),
+                             &topic!("sport/tennis/+")]));
+        assert_eq!(tree.matches(&topic!("sport/tennis/player1/ranking")),
+                   Some(vec![&topic!("#"), &topic!("sport/#"), &topic!("sport/tennis/player1/#")]));
+        assert_eq!(tree.matches(&topic!("sport/tennis/player1/score/wimbledo")),
+                   Some(vec![&topic!("#"), &topic!("sport/#"), &topic!("sport/tennis/player1/#")]));
+        assert_eq!(tree.matches(&topic!("sport")),
+                   Some(vec![&topic!("#"), &topic!("sport/#"), &topic!("+")]));
+        assert_eq!(tree.matches(&topic!("sport/")),
+                   Some(vec![&topic!("#"),
+                             &topic!("sport/#"),
+                             &topic!("sport/+"),
+                             &topic!("+/+")]));
+        assert_eq!(tree.matches(&topic!("/finance")),
+                   Some(vec![&topic!("#"), &topic!("/+"), &topic!("+/+")]));
+
+        assert_eq!(tree.matches(&topic!("$SYS/monitor/Clients")),
+                   Some(vec![&topic!("$SYS/#"), &topic!("$SYS/monitor/+")]));
+        assert_eq!(tree.matches(&topic!("/monitor/Clients")),
+                   Some(vec![&topic!("#"), &topic!("+/monitor/Clients")]));
     }
 }

@@ -268,8 +268,6 @@ impl<W: io::Write + ?Sized> WritePacketExt for W {}
 mod tests {
     extern crate env_logger;
 
-    use proto::*;
-    use packet::*;
     use decode::*;
     use super::*;
 

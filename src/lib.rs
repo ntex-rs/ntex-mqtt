@@ -26,6 +26,7 @@ pub mod server;
 pub mod client;
 
 pub use proto::QoS;
+pub use topic::{Level, Topic, TopicTree, MatchTopic};
 pub use packet::{Packet, ConnectionWill, ConnectReturnCode, SubscribeReturnCode};
 pub use encode::WritePacketExt;
 pub use decode::{ReadPacketExt, read_packet};
