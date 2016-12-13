@@ -91,6 +91,7 @@ named!(pub decode_connect_header<Packet>, do_parse!(
     password: cond!(is_flag_set!(flags, PASSWORD), decode_length_bytes) >>
     (
         Packet::Connect {
+            protocol: Protocol::MQTT(level),
             clean_session: is_flag_set!(flags, CLEAN_SESSION),
             keep_alive: keep_alive,
             client_id: client_id,
@@ -316,6 +317,7 @@ mod tests {
         assert_eq!(decode_connect_header(
         b"\x00\x04MQTT\x04\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"),
         Done(&b""[..], Packet::Connect {
+            protocol: Protocol::MQTT(4),
             clean_session: false,
             keep_alive: 60,
             client_id: b"12345",
@@ -327,6 +329,7 @@ mod tests {
         assert_eq!(decode_connect_header(
         b"\x00\x04MQTT\x04\x14\x00\x3C\x00\x0512345\x00\x05topic\x00\x07message"),
         Done(&b""[..], Packet::Connect {
+            protocol: Protocol::MQTT(4),
             clean_session: false,
             keep_alive: 60,
             client_id: b"12345",

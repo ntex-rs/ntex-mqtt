@@ -1,4 +1,4 @@
-use proto::QoS;
+use proto::{Protocol, QoS};
 
 bitflags! {
     pub flags ConnectFlags: u8 {
@@ -77,6 +77,7 @@ pub enum SubscribeReturnCode {
 pub enum Packet<'a> {
     /// Client request to connect to Server
     Connect {
+        protocol: Protocol,
         /// the handling of the Session state.
         clean_session: bool,
         /// a time interval measured in seconds.

@@ -77,13 +77,14 @@ pub trait WritePacketHelper: io::Write {
         let mut n = 0;
 
         match *packet {
-            Packet::Connect { clean_session,
+            Packet::Connect { protocol,
+                              clean_session,
                               keep_alive,
                               ref will,
                               client_id,
                               username,
                               password } => {
-                n += self.write_utf8_str("MQTT")?;
+                n += self.write_utf8_str(protocol.name())?;
 
                 let mut flags = ConnectFlags::empty();
 
@@ -110,7 +111,7 @@ pub trait WritePacketHelper: io::Write {
                     flags |= CLEAN_SESSION;
                 }
 
-                n += self.write(&[4, flags.bits()])?;
+                n += self.write(&[protocol.level(), flags.bits()])?;
 
                 self.write_u16::<BigEndian>(keep_alive)?;
                 n += 2;
@@ -340,6 +341,7 @@ mod tests {
     #[test]
     fn test_encode_connect_packets() {
         assert_packet!(Packet::Connect {
+                           protocol: Protocol::MQTT(4),
                            clean_session: false,
                            keep_alive: 60,
                            client_id: b"12345",
@@ -351,6 +353,7 @@ mod tests {
 \x0512345\x00\x04user\x00\x04pass"[..]);
 
         assert_packet!(Packet::Connect {
+                           protocol: Protocol::MQTT(4),
                            clean_session: false,
                            keep_alive: 60,
                            client_id: b"12345",
