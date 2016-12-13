@@ -14,6 +14,7 @@ extern crate slab;
 extern crate rotor;
 
 mod error;
+#[macro_use]
 mod topic;
 #[macro_use]
 mod proto;

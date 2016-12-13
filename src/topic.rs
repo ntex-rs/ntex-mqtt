@@ -102,6 +102,11 @@ impl Into<Vec<Level>> for Topic {
     }
 }
 
+#[macro_export]
+macro_rules! topic {
+    ($s:expr) => ($s.parse::<Topic>().unwrap());
+}
+
 pub trait MatchLevel {
     fn match_level(&self, level: &Level) -> bool;
 }
@@ -473,7 +478,7 @@ impl TopicTree {
             .unwrap()
     }
 
-    pub fn matches(&self, topic: &Topic) -> Option<Vec<&Topic>> {
+    pub fn match_topic(&self, topic: &Topic) -> Option<Vec<&Topic>> {
         let mut topics = vec![];
 
         self.match_state(self.root, topic.0.as_slice(), &mut topics);
@@ -517,10 +522,6 @@ mod tests {
     extern crate env_logger;
 
     use super::*;
-
-    macro_rules! topic {
-        ($s:expr) => ($s.parse::<Topic>().unwrap());
-    }
 
     #[test]
     fn test_parse_topic() {
@@ -648,29 +649,29 @@ mod tests {
         assert_eq!(tree.topics.len(), 12);
         assert_eq!(tree.states.len(), 15);
 
-        assert_eq!(tree.matches(&topic!("sport/tennis/player1")),
+        assert_eq!(tree.match_topic(&topic!("sport/tennis/player1")),
                    Some(vec![&topic!("#"),
                              &topic!("sport/#"),
                              &topic!("sport/tennis/player1/#"),
                              &topic!("sport/tennis/player1"),
                              &topic!("sport/tennis/+")]));
-        assert_eq!(tree.matches(&topic!("sport/tennis/player1/ranking")),
+        assert_eq!(tree.match_topic(&topic!("sport/tennis/player1/ranking")),
                    Some(vec![&topic!("#"), &topic!("sport/#"), &topic!("sport/tennis/player1/#")]));
-        assert_eq!(tree.matches(&topic!("sport/tennis/player1/score/wimbledo")),
+        assert_eq!(tree.match_topic(&topic!("sport/tennis/player1/score/wimbledo")),
                    Some(vec![&topic!("#"), &topic!("sport/#"), &topic!("sport/tennis/player1/#")]));
-        assert_eq!(tree.matches(&topic!("sport")),
+        assert_eq!(tree.match_topic(&topic!("sport")),
                    Some(vec![&topic!("#"), &topic!("sport/#"), &topic!("+")]));
-        assert_eq!(tree.matches(&topic!("sport/")),
+        assert_eq!(tree.match_topic(&topic!("sport/")),
                    Some(vec![&topic!("#"),
                              &topic!("sport/#"),
                              &topic!("sport/+"),
                              &topic!("+/+")]));
-        assert_eq!(tree.matches(&topic!("/finance")),
+        assert_eq!(tree.match_topic(&topic!("/finance")),
                    Some(vec![&topic!("#"), &topic!("/+"), &topic!("+/+")]));
 
-        assert_eq!(tree.matches(&topic!("$SYS/monitor/Clients")),
+        assert_eq!(tree.match_topic(&topic!("$SYS/monitor/Clients")),
                    Some(vec![&topic!("$SYS/#"), &topic!("$SYS/monitor/+")]));
-        assert_eq!(tree.matches(&topic!("/monitor/Clients")),
+        assert_eq!(tree.match_topic(&topic!("/monitor/Clients")),
                    Some(vec![&topic!("#"), &topic!("+/monitor/Clients")]));
     }
 }
