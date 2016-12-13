@@ -31,7 +31,7 @@ pub trait WritePacketHelper: io::Write {
                 n += 2 + client_id.len();
 
                 // Will Topic + Will Message
-                if let &Some(ConnectionWill { topic, message, .. }) = will {
+                if let &Some(LastWill { topic, message, .. }) = will {
                     n += 2 + topic.len() + 2 + message.len();
                 }
 
@@ -95,7 +95,7 @@ pub trait WritePacketHelper: io::Write {
                     flags |= PASSWORD;
                 }
 
-                if let &Some(ConnectionWill { qos, retain, .. }) = will {
+                if let &Some(LastWill { qos, retain, .. }) = will {
                     flags |= WILL;
 
                     if retain {
@@ -118,7 +118,7 @@ pub trait WritePacketHelper: io::Write {
 
                 n += self.write_fixed_length_bytes(client_id)?;
 
-                if let &Some(ConnectionWill { topic, message, .. }) = will {
+                if let &Some(LastWill { topic, message, .. }) = will {
                     n += self.write_utf8_str(topic)?;
                     n += self.write_utf8_str(message)?;
                 }
@@ -357,7 +357,7 @@ mod tests {
                            clean_session: false,
                            keep_alive: 60,
                            client_id: b"12345",
-                           will: Some(ConnectionWill {
+                           will: Some(LastWill {
                                qos: QoS::ExactlyOnce,
                                retain: false,
                                topic: "topic",

@@ -54,7 +54,7 @@ pub struct FixedHeader {
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 /// Connection Will
-pub struct ConnectionWill<'a> {
+pub struct LastWill<'a> {
     /// the QoS level to be used when publishing the Will Message.
     pub qos: QoS,
     /// the Will Message is to be Retained when it is published.
@@ -83,7 +83,7 @@ pub enum Packet<'a> {
         /// a time interval measured in seconds.
         keep_alive: u16,
         /// Will Message be stored on the Server and associated with the Network Connection.
-        will: Option<ConnectionWill<'a>>,
+        will: Option<LastWill<'a>>,
         /// identifies the Client to the Server.
         client_id: &'a [u8],
         /// username can be used by the Server for authentication and authorization.

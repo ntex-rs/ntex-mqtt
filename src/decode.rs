@@ -95,7 +95,7 @@ named!(pub decode_connect_header<Packet>, do_parse!(
             clean_session: is_flag_set!(flags, CLEAN_SESSION),
             keep_alive: keep_alive,
             client_id: client_id,
-            will: if is_flag_set!(flags, WILL) { Some(ConnectionWill{
+            will: if is_flag_set!(flags, WILL) { Some(LastWill{
                 qos: QoS::from((flags & WILL_QOS.bits()) >> WILL_QOS_SHIFT),
                 retain: is_flag_set!(flags, WILL_RETAIN),
                 topic: topic.unwrap(),
@@ -333,7 +333,7 @@ mod tests {
             clean_session: false,
             keep_alive: 60,
             client_id: b"12345",
-            will: Some(ConnectionWill{
+            will: Some(LastWill{
                 qos: QoS::ExactlyOnce,
                 retain: false,
                 topic: "topic",
