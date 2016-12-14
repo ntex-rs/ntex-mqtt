@@ -1,3 +1,5 @@
+use std::fmt::{self, Display, Formatter};
+
 use proto::{Protocol, QoS};
 
 bitflags! {
@@ -41,7 +43,25 @@ pub enum ConnectReturnCode {
 
 const_enum!(ConnectReturnCode: u8);
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+impl ConnectReturnCode {
+    pub fn reason(&self) -> &'static str {
+        match *self {
+            ConnectReturnCode::ConnectionAccepted => "Connection Accepted",
+            ConnectReturnCode::UnacceptableProtocolVersion => {
+                "Connection Refused, unacceptable protocol version"
+            }
+            ConnectReturnCode::IdentifierRejected => "Connection Refused, identifier rejected",
+            ConnectReturnCode::ServiceUnavailable => "Connection Refused, Server unavailable",
+            ConnectReturnCode::BadUserNameOrPassword => {
+                "Connection Refused, bad user name or password"
+            }
+            ConnectReturnCode::NotAuthorized => "Connection Refused, not authorized",
+            _ => "Connection Refused",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct FixedHeader {
     /// MQTT Control Packet type
     pub packet_type: u8,
@@ -52,7 +72,7 @@ pub struct FixedHeader {
     pub remaining_length: usize,
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 /// Connection Will
 pub struct LastWill<'a> {
     /// the QoS level to be used when publishing the Will Message.
@@ -62,17 +82,17 @@ pub struct LastWill<'a> {
     /// the Will Topic
     pub topic: &'a str,
     /// defines the Application Message that is to be published to the Will Topic
-    pub message: &'a str,
+    pub message: &'a [u8],
 }
 
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 /// Subscribe Return Code
 pub enum SubscribeReturnCode {
     Success(QoS),
     Failure,
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 /// MQTT Control Packets
 pub enum Packet<'a> {
     /// Client request to connect to Server
@@ -83,9 +103,9 @@ pub enum Packet<'a> {
         /// a time interval measured in seconds.
         keep_alive: u16,
         /// Will Message be stored on the Server and associated with the Network Connection.
-        will: Option<LastWill<'a>>,
+        last_will: Option<LastWill<'a>>,
         /// identifies the Client to the Server.
-        client_id: &'a [u8],
+        client_id: &'a str,
         /// username can be used by the Server for authentication and authorization.
         username: Option<&'a str>,
         /// password can be used by the Server for authentication and authorization.

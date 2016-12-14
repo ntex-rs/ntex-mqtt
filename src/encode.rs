@@ -23,7 +23,7 @@ pub trait WritePacketHelper: io::Write {
 
     fn calc_content_size(&mut self, packet: &Packet) -> usize {
         match *packet {
-            Packet::Connect { ref will, client_id, username, password, .. } => {
+            Packet::Connect { ref last_will, client_id, username, password, .. } => {
                 // Protocol Name + Protocol Level + Connect Flags + Keep Alive
                 let mut n = 2 + 4 + 1 + 1 + 2;
 
@@ -31,7 +31,7 @@ pub trait WritePacketHelper: io::Write {
                 n += 2 + client_id.len();
 
                 // Will Topic + Will Message
-                if let &Some(LastWill { topic, message, .. }) = will {
+                if let &Some(LastWill { topic, message, .. }) = last_will {
                     n += 2 + topic.len() + 2 + message.len();
                 }
 
@@ -80,7 +80,7 @@ pub trait WritePacketHelper: io::Write {
             Packet::Connect { protocol,
                               clean_session,
                               keep_alive,
-                              ref will,
+                              ref last_will,
                               client_id,
                               username,
                               password } => {
@@ -95,7 +95,7 @@ pub trait WritePacketHelper: io::Write {
                     flags |= PASSWORD;
                 }
 
-                if let &Some(LastWill { qos, retain, .. }) = will {
+                if let &Some(LastWill { qos, retain, .. }) = last_will {
                     flags |= WILL;
 
                     if retain {
@@ -116,11 +116,11 @@ pub trait WritePacketHelper: io::Write {
                 self.write_u16::<BigEndian>(keep_alive)?;
                 n += 2;
 
-                n += self.write_fixed_length_bytes(client_id)?;
+                n += self.write_utf8_str(client_id)?;
 
-                if let &Some(LastWill { topic, message, .. }) = will {
+                if let &Some(LastWill { topic, message, .. }) = last_will {
                     n += self.write_utf8_str(topic)?;
-                    n += self.write_utf8_str(message)?;
+                    n += self.write_fixed_length_bytes(message)?;
                 }
 
                 if let Some(s) = username {
@@ -344,8 +344,8 @@ mod tests {
                            protocol: Protocol::MQTT(4),
                            clean_session: false,
                            keep_alive: 60,
-                           client_id: b"12345",
-                           will: None,
+                           client_id: "12345",
+                           last_will: None,
                            username: Some("user"),
                            password: Some(b"pass"),
                        },
@@ -356,12 +356,12 @@ mod tests {
                            protocol: Protocol::MQTT(4),
                            clean_session: false,
                            keep_alive: 60,
-                           client_id: b"12345",
-                           will: Some(LastWill {
+                           client_id: "12345",
+                           last_will: Some(LastWill {
                                qos: QoS::ExactlyOnce,
                                retain: false,
                                topic: "topic",
-                               message: "message",
+                               message: b"message",
                            }),
                            username: None,
                            password: None,

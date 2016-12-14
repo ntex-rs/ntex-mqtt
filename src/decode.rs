@@ -76,17 +76,17 @@ named!(pub decode_connect_header<Packet>, do_parse!(
     error_if!(proto != b"MQTT", INVALID_PROTOCOL) >>
 
     level: be_u8 >>
-    error_if!(level != 4, UNSUPPORT_LEVEL) >>
+    error_if!(level != DEFAULT_MQTT_LEVEL, UNSUPPORT_LEVEL) >>
 
     flags: be_u8 >>
     error_if!((flags & 0x01) != 0, RESERVED_FLAG) >>
 
     keep_alive: be_u16 >>
-    client_id: decode_length_bytes >>
+    client_id: decode_utf8_str >>
     error_if!(client_id.is_empty() && !is_flag_set!(flags, CLEAN_SESSION), INVALID_CLIENT_ID) >>
 
     topic: cond!(is_flag_set!(flags, WILL), decode_utf8_str) >>
-    message: cond!(is_flag_set!(flags, WILL), decode_utf8_str) >>
+    message: cond!(is_flag_set!(flags, WILL), decode_length_bytes) >>
     username: cond!(is_flag_set!(flags, USERNAME), decode_utf8_str) >>
     password: cond!(is_flag_set!(flags, PASSWORD), decode_length_bytes) >>
     (
@@ -95,7 +95,7 @@ named!(pub decode_connect_header<Packet>, do_parse!(
             clean_session: is_flag_set!(flags, CLEAN_SESSION),
             keep_alive: keep_alive,
             client_id: client_id,
-            will: if is_flag_set!(flags, WILL) { Some(LastWill{
+            last_will: if is_flag_set!(flags, WILL) { Some(LastWill{
                 qos: QoS::from((flags & WILL_QOS.bits()) >> WILL_QOS_SHIFT),
                 retain: is_flag_set!(flags, WILL_RETAIN),
                 topic: topic.unwrap(),
@@ -320,8 +320,8 @@ mod tests {
             protocol: Protocol::MQTT(4),
             clean_session: false,
             keep_alive: 60,
-            client_id: b"12345",
-            will: None,
+            client_id: "12345",
+            last_will: None,
             username: Some("user"),
             password: Some(b"pass"),
         }));
@@ -332,12 +332,12 @@ mod tests {
             protocol: Protocol::MQTT(4),
             clean_session: false,
             keep_alive: 60,
-            client_id: b"12345",
-            will: Some(LastWill{
+            client_id: "12345",
+            last_will: Some(LastWill{
                 qos: QoS::ExactlyOnce,
                 retain: false,
                 topic: "topic",
-                message: "message",
+                message: b"message",
             }),
             username: None,
             password: None,

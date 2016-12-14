@@ -6,6 +6,7 @@ extern crate bitflags;
 extern crate error_chain;
 #[macro_use]
 extern crate itertools;
+extern crate rand;
 #[macro_use]
 extern crate nom;
 extern crate byteorder;
@@ -28,7 +29,7 @@ pub mod client;
 
 pub use proto::QoS;
 pub use topic::{Level, Topic, TopicTree, MatchTopic};
-pub use packet::{Packet, LastWill, ConnectReturnCode, SubscribeReturnCode};
+pub use packet::{Packet, ConnectReturnCode, SubscribeReturnCode};
 pub use encode::WritePacketExt;
 pub use decode::{ReadPacketExt, read_packet};
 
