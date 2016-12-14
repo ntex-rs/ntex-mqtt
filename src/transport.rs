@@ -2,6 +2,7 @@ use std::mem;
 use std::io;
 use std::io::prelude::*;
 use std::net::{self, SocketAddr};
+use std::sync::{Arc, Mutex};
 
 use bytes::{Buf, BufMut, ByteBuf, SliceBuf};
 
@@ -12,8 +13,28 @@ use rotor::mio::tcp::{TcpListener, TcpStream};
 use rotor::{Machine, Response, EarlyScope, Scope, GenericScope};
 
 use error::*;
+use packet::Packet;
 use decode::read_packet;
 use encode::WritePacketExt;
+
+pub trait Handler<'a> {
+    fn on_received_packet(&mut self, packet: &Packet<'a>);
+}
+
+pub trait Transport {
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn send_packet(&mut self, packet: &Packet) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Transport for Tcp {}
+impl Transport for Udp {}
+impl Transport for Tls {}
+impl Transport for WebSocket {}
 
 pub enum State {
     Receiving(ByteBuf),
@@ -186,6 +207,9 @@ pub enum Tcp {
     Connection(TcpStream, State),
 }
 
+pub struct Fsm(Arc<Mutex<Tcp>>);
+pub struct TcpClient(Arc<Mutex<Tcp>>);
+
 impl Tcp {
     pub fn server(addr: &SocketAddr, scope: &mut EarlyScope) -> Response<Self, Void> {
         Self::wrap_listener(TcpListener::bind(addr), scope)
@@ -210,25 +234,31 @@ impl Tcp {
         }
     }
 
-    pub fn client(addr: &SocketAddr, scope: &mut EarlyScope) -> Response<Self, Void> {
+    pub fn client(addr: &SocketAddr, scope: &mut EarlyScope) -> Response<(Fsm, TcpClient), Void> {
         Self::wrap_stream(TcpStream::connect(addr), scope)
     }
 
     pub fn from_stream(stream: net::TcpStream,
                        addr: &SocketAddr,
                        scope: &mut EarlyScope)
-                       -> Response<Self, Void> {
+                       -> Response<(Fsm, TcpClient), Void> {
         Self::wrap_stream(TcpStream::connect_stream(stream, addr), scope)
     }
 
-    fn wrap_stream(res: io::Result<TcpStream>, scope: &mut EarlyScope) -> Response<Self, Void> {
+    fn wrap_stream(res: io::Result<TcpStream>,
+                   scope: &mut EarlyScope)
+                   -> Response<(Fsm, TcpClient), Void> {
         match res.and_then(|sock| {
                 info!("tcp stream {} -> {}", sock.local_addr()?, sock.peer_addr()?);
 
                 Ok(Tcp::Client(sock))
             })
             .and_then(|m| m.register(scope).map(|_| m)) {
-            Ok(m) => Response::ok(m),
+            Ok(m) => {
+                let arc = Arc::new(Mutex::new(m));
+
+                Response::ok((Fsm(arc.clone()), TcpClient(arc.clone())))
+            }
             Err(err) => Response::error(Box::new(err)),
         }
     }
@@ -374,3 +404,12 @@ impl Machine for Tcp {
         Response::done()
     }
 }
+
+pub struct UdpContext;
+pub enum Udp {}
+
+pub struct TlsContext;
+pub enum Tls {}
+
+pub struct WebSocketContext;
+pub enum WebSocket {}
