@@ -12,15 +12,27 @@ use transport::{self, Transport};
 
 #[derive(Debug, PartialEq, Clone)]
 enum Waiting<'a> {
-    Ack {
+    PublishAck {
         packet_id: PacketId,
         msg: Rc<Message<'a>>,
     },
-    Complete { packet_id: PacketId },
+    PublishComplete { packet_id: PacketId },
+    SubscribeAck {
+        packet_id: PacketId,
+        topic_filters: &'a [(&'a str, QoS)],
+    },
+    UnsubscribeAck {
+        packet_id: PacketId,
+        topic_filters: &'a [&'a str],
+    },
 }
 
 pub trait Handler {
     fn on_received_message(&mut self, msg: &Message);
+
+    fn on_subscribed_topic(&mut self, topics: &[(&str, SubscribeReturnCode)]);
+
+    fn on_unsubscribed_topic(&mut self, topics: &[&str]);
 }
 
 #[derive(Debug)]
@@ -74,7 +86,7 @@ impl<'a, H: Handler> Session<'a, H> {
             .iter()
             .map(|ref waiting| {
                 match *waiting {
-                    &Waiting::Ack { packet_id, ref msg } => {
+                    &Waiting::PublishAck { packet_id, ref msg } => {
                         Packet::Publish {
                             dup: false,
                             retain: false,
@@ -84,8 +96,20 @@ impl<'a, H: Handler> Session<'a, H> {
                             payload: msg.payload,
                         }
                     }
-                    &Waiting::Complete { packet_id } => {
+                    &Waiting::PublishComplete { packet_id } => {
                         Packet::PublishRelease { packet_id: packet_id }
+                    }
+                    &Waiting::SubscribeAck { packet_id, ref topic_filters } => {
+                        Packet::Subscribe {
+                            packet_id: packet_id,
+                            topic_filters: From::from(*topic_filters),
+                        }
+                    }
+                    &Waiting::UnsubscribeAck { packet_id, ref topic_filters } => {
+                        Packet::Unsubscribe {
+                            packet_id: packet_id,
+                            topic_filters: From::from(*topic_filters),
+                        }
                     }
                 }
             })
@@ -118,7 +142,7 @@ impl<'a, H: Handler> Session<'a, H> {
         if let Some(entry) = self.waiting_reply.vacant_entry() {
             let packet_id = entry.index() as PacketId;
 
-            Some(entry.insert(Waiting::Ack {
+            Some(entry.insert(Waiting::PublishAck {
                     packet_id: packet_id,
                     msg: msg.clone(),
                 })
@@ -144,7 +168,7 @@ impl<'a, H: Handler> Session<'a, H> {
         if let Some(mut entry) = self.waiting_reply.entry(packet_id as usize) {
             debug!("message {} received at server side", packet_id);
 
-            entry.replace(Waiting::Complete { packet_id: packet_id });
+            entry.replace(Waiting::PublishComplete { packet_id: packet_id });
 
             Some(Packet::PublishRelease { packet_id: packet_id })
         } else {
@@ -185,6 +209,73 @@ impl<'a, H: Handler> Session<'a, H> {
 
     fn on_publish_release(&mut self, packet_id: PacketId) -> Option<Packet<'a>> {
         Some(Packet::PublishComplete { packet_id: packet_id })
+    }
+
+    pub fn subscribe(&mut self, topic_filters: &'a [(&'a str, QoS)]) -> Option<Packet<'a>> {
+        if let Some(entry) = self.waiting_reply.vacant_entry() {
+            let packet_id = entry.index() as PacketId;
+
+            entry.insert(Waiting::SubscribeAck {
+                packet_id: packet_id,
+                topic_filters: topic_filters,
+            });
+
+            Some(Packet::Subscribe {
+                packet_id: packet_id,
+                topic_filters: From::from(topic_filters),
+            })
+        } else {
+            warn!("too many message waiting ack, downgrade to QoS level 0");
+
+            None
+        }
+    }
+
+    fn on_subscribe_ack(&mut self, packet_id: PacketId, status: &[SubscribeReturnCode]) {
+        if let Some(Waiting::SubscribeAck { topic_filters, .. }) = self.waiting_reply
+            .remove(packet_id as usize) {
+            debug!("subscribe {} acked", packet_id);
+
+            let status = topic_filters.iter()
+                .map(|&(topic, _)| topic)
+                .zip(status.iter().map(|code| *code))
+                .collect::<Vec<(&str, SubscribeReturnCode)>>();
+
+            self.handler.on_subscribed_topic(status.as_slice());
+        } else {
+            warn!("unexpected packet id {}", packet_id);
+        }
+    }
+
+    pub fn unsubscribe(&mut self, topic_filters: &'a [&'a str]) -> Option<Packet<'a>> {
+        if let Some(entry) = self.waiting_reply.vacant_entry() {
+            let packet_id = entry.index() as PacketId;
+
+            entry.insert(Waiting::UnsubscribeAck {
+                packet_id: packet_id,
+                topic_filters: topic_filters,
+            });
+
+            Some(Packet::Unsubscribe {
+                packet_id: packet_id,
+                topic_filters: From::from(topic_filters),
+            })
+        } else {
+            warn!("too many message waiting ack, downgrade to QoS level 0");
+
+            None
+        }
+    }
+
+    fn on_unsubscribe_ack(&mut self, packet_id: PacketId) {
+        if let Some(Waiting::UnsubscribeAck { topic_filters, .. }) = self.waiting_reply
+            .remove(packet_id as usize) {
+            debug!("unsubscribe {} acked", packet_id);
+
+            self.handler.on_unsubscribed_topic(topic_filters)
+        } else {
+            warn!("unexpected packet id {}", packet_id)
+        }
     }
 }
 
@@ -263,6 +354,14 @@ impl<'a, T: Transport, H: 'a + Handler> transport::Handler<'a> for Client<'a, T,
                     .on_publish_complete(packet_id)
                     .and_then(|packet| self.transport.send_packet(&packet).ok());
             }
+            Packet::SubscribeAck { packet_id, ref status } => {
+                self.session
+                    .on_subscribe_ack(packet_id, status);
+            }
+            Packet::UnsubscribeAck { packet_id } => {
+                self.session
+                    .on_unsubscribe_ack(packet_id);
+            }
             Packet::PingResponse => {
                 debug!("received ping response");
             }
@@ -298,6 +397,15 @@ impl Builder {
             session: Session::new(handler),
             client_id: self.client_id,
             keep_alive: self.keep_alive,
+        }
+    }
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Builder {
+            client_id: ClientId::new(),
+            keep_alive: Duration::new(0, 0),
         }
     }
 }
