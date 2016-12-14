@@ -27,8 +27,6 @@ pub trait Handler {
 pub struct Session<'a, H: 'a + Handler> {
     handler: &'a mut H,
 
-    // The Client Identifier (ClientId) identifies the Client to the Server.
-    client_id: ClientId,
     // QoS 1 and QoS 2 messages which have been sent to the Server,
     // but have not been completely acknowledged.
     waiting_reply: Slab<Waiting<'a>>,
@@ -38,17 +36,16 @@ impl<'a, H: Handler> Session<'a, H> {
     pub fn new(handler: &'a mut H) -> Self {
         Session {
             handler: handler,
-            client_id: ClientId::new(),
             waiting_reply: Slab::with_capacity(256),
         }
     }
 
     pub fn reset(&mut self) {
-        self.client_id = ClientId::new();
         self.waiting_reply.clear();
     }
 
     pub fn connect(&'a mut self,
+                   client_id: &'a ClientId,
                    clean_session: bool,
                    keep_alive: u16,
                    auth: Option<(&'a str, &'a [u8])>,
@@ -66,7 +63,7 @@ impl<'a, H: Handler> Session<'a, H> {
                     retain: false,
                 }
             }),
-            client_id: &self.client_id,
+            client_id: client_id,
             username: auth.map(|(username, _)| username),
             password: auth.map(|(_, password)| password),
         }
@@ -93,6 +90,10 @@ impl<'a, H: Handler> Session<'a, H> {
                 }
             })
             .collect()
+    }
+
+    pub fn ping(&mut self) -> Packet<'a> {
+        Packet::PingRequest
     }
 
     pub fn disconnect(&mut self) -> Packet<'a> {
@@ -190,8 +191,8 @@ impl<'a, H: Handler> Session<'a, H> {
 pub struct Client<'a, T: Transport, H: 'a + Handler> {
     transport: T,
     session: Session<'a, H>,
+    client_id: ClientId,
     keep_alive: Duration,
-    last_packet: Instant,
 }
 
 impl<'a, T: Transport, H: 'a + Handler> Client<'a, T, H> {
@@ -209,7 +210,7 @@ impl<'a, T: Transport, H: 'a + Handler> transport::Handler<'a> for Client<'a, T,
                 match return_code {
                     ConnectReturnCode::ConnectionAccepted => {
                         info!("client session `{}` {}",
-                              self.session.client_id,
+                              self.client_id,
                               if session_present {
                                   "resumed"
                               } else {
@@ -223,7 +224,7 @@ impl<'a, T: Transport, H: 'a + Handler> transport::Handler<'a> for Client<'a, T,
                     }
                     _ => {
                         info!("client session `{}` refused, {}",
-                              self.session.client_id,
+                              self.client_id,
                               return_code.reason());
 
                         self.close();
@@ -263,14 +264,40 @@ impl<'a, T: Transport, H: 'a + Handler> transport::Handler<'a> for Client<'a, T,
                     .and_then(|packet| self.transport.send_packet(&packet).ok());
             }
             Packet::PingResponse => {
-                debug!("received ping response in {} seconds",
-                       self.last_packet.elapsed().as_secs());
-
-                self.last_packet = Instant::now();
+                debug!("received ping response");
             }
             _ => {
                 warn!("unexpected packet {}", packet.packet_type());
             }
+        }
+    }
+}
+
+pub struct Builder {
+    client_id: ClientId,
+    keep_alive: Duration,
+}
+
+impl Builder {
+    pub fn client_id(mut self, client_id: ClientId) -> Self {
+        self.client_id = client_id;
+        self
+    }
+
+    pub fn keep_alive(mut self, keep_alive: Duration) -> Self {
+        self.keep_alive = keep_alive;
+        self
+    }
+
+    pub fn build<'a, T: Transport, H: 'a + Handler>(self,
+                                                    transport: T,
+                                                    handler: &'a mut H)
+                                                    -> Client<'a, T, H> {
+        Client {
+            transport: transport,
+            session: Session::new(handler),
+            client_id: self.client_id,
+            keep_alive: self.keep_alive,
         }
     }
 }
