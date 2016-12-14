@@ -52,14 +52,15 @@ fn bench_decode_unsubscribe_packets(b: &mut Bencher) {
 #[bench]
 fn bench_encode_connect_packets(b: &mut Bencher) {
     let p = Packet::Connect {
+        protocol: Default::default(),
         clean_session: false,
         keep_alive: 60,
-        client_id: b"12345",
-        will: Some(ConnectionWill {
+        client_id: "12345",
+        last_will: Some(LastWill {
             qos: QoS::ExactlyOnce,
             retain: false,
             topic: "topic",
-            message: "message",
+            message: b"message",
         }),
         username: None,
         password: None,

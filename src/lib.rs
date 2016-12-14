@@ -29,7 +29,7 @@ pub mod client;
 
 pub use proto::QoS;
 pub use topic::{Level, Topic, TopicTree, MatchTopic};
-pub use packet::{Packet, ConnectReturnCode, SubscribeReturnCode};
+pub use packet::{Packet, LastWill, ConnectReturnCode, SubscribeReturnCode};
 pub use encode::WritePacketExt;
 pub use decode::{ReadPacketExt, read_packet};
 

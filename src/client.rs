@@ -1,12 +1,10 @@
 use std::rc::Rc;
-use std::time::{Duration, Instant};
-use std::collections::HashMap;
+use std::time::Duration;
 
 use slab::Slab;
 
 use error::*;
 use proto::*;
-use topic::*;
 use packet::*;
 use transport::{self, Transport};
 
