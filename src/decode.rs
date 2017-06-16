@@ -36,8 +36,10 @@ pub fn decode_variable_length_usize(i: &[u8]) -> IResult<&[u8], usize> {
         Some(idx) => {
             Done(&i[idx + 1..],
                  i[..idx + 1]
-                     .iter()
-                     .fold(0, |acc, b| (acc << 7) + (b & 0x7F) as usize))
+                     .iter().enumerate()
+                     .fold(0usize, |acc, (i, b)| {
+                         acc + (((b & 0x7F) as usize) << (i * 7))
+                     }))
         }
         _ => {
             if n < 4 {
@@ -275,20 +277,31 @@ mod tests {
 
     #[test]
     fn test_decode_variable_length() {
-        assert_eq!(decode_variable_length_usize(b"\x7f\x7f"),
-               Done(&b"\x7f"[..], 127));
-        assert_eq!(decode_variable_length_usize(b"\x83\x7f"),
-               Done(&b""[..], (3 << 7) + 127));
-        assert_eq!(decode_variable_length_usize(b"\x83\x82\x81\x7f"),
-               Done(&b""[..], ((((((3 << 7) + 2) << 7) + 1) << 7) + 127)));
-        assert_eq!(decode_variable_length_usize(b"\xff\xff\xff\x7f"),
-               Done(&b""[..],
-                    ((((((0x7f << 7) + 0x7f) << 7) + 0x7f) << 7) + 127)));
+        macro_rules! assert_variable_length (
+            ($bytes:expr, $res:expr) => {{
+                assert_eq!(decode_variable_length_usize($bytes), Done(&b""[..], $res));
+            }};
+
+            ($bytes:expr, $res:expr, $rest:expr) => {{
+                assert_eq!(decode_variable_length_usize($bytes), Done(&$rest[..], $res));
+            }};
+        );
+
+        assert_variable_length!(b"\x7f\x7f", 127, b"\x7f");
 
         assert_eq!(decode_variable_length_usize(b"\xff\xff\xff"),
                Incomplete(Needed::Unknown));
         assert_eq!(decode_variable_length_usize(b"\xff\xff\xff\xff\xff\xff"),
                Error(ErrorKind::Custom(INVALID_LENGTH)));
+
+        assert_variable_length!(b"\x00", 0);
+        assert_variable_length!(b"\x7f", 127);
+        assert_variable_length!(b"\x80\x01", 128);
+        assert_variable_length!(b"\xff\x7f", 16383);
+        assert_variable_length!(b"\x80\x80\x01", 16384);
+        assert_variable_length!(b"\xff\xff\x7f", 2097151);
+        assert_variable_length!(b"\x80\x80\x80\x01", 2097152);
+        assert_variable_length!(b"\xff\xff\xff\x7f", 268435455);
     }
 
     #[test]
@@ -306,7 +319,7 @@ mod tests {
                     FixedHeader {
                         packet_type: PUBLISH,
                         packet_flags: 0x0C,
-                        remaining_length: (2 << 7) + 0x7F,
+                        remaining_length: 16258,
                     }));
 
         assert_eq!(decode_fixed_header(b"\x20"), Incomplete(Needed::Unknown));
