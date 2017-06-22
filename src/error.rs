@@ -15,19 +15,19 @@ error_chain!{
     }
 }
 
-impl<T> From<::rotor::SpawnError<T>> for Error {
-    fn from(err: ::rotor::SpawnError<T>) -> Self {
-        match err {
-            ::rotor::SpawnError::NoSlabSpace(_) => {
-                error!("out of memory");
+// impl<T> From<::rotor::SpawnError<T>> for Error {
+//     fn from(err: ::rotor::SpawnError<T>) -> Self {
+//         match err {
+//             ::rotor::SpawnError::NoSlabSpace(_) => {
+//                 error!("out of memory");
 
-                ErrorKind::OutOfMemory.into()
-            }
-            ::rotor::SpawnError::UserError(err) => {
-                error!("spawn error, {}", err);
+//                 ErrorKind::OutOfMemory.into()
+//             }
+//             ::rotor::SpawnError::UserError(err) => {
+//                 error!("spawn error, {}", err);
 
-                ErrorKind::SpawnError.into()
-            }
-        }
-    }
-}
+//                 ErrorKind::SpawnError.into()
+//             }
+//         }
+//     }
+// }

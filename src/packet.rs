@@ -1,4 +1,5 @@
 use proto::{Protocol, QoS};
+use bytes::Bytes;
 
 bitflags! {
     pub flags ConnectFlags: u8 {
@@ -72,15 +73,15 @@ pub struct FixedHeader {
 
 #[derive(Debug, PartialEq, Clone)]
 /// Connection Will
-pub struct LastWill<'a> {
+pub struct LastWill {
     /// the QoS level to be used when publishing the Will Message.
     pub qos: QoS,
     /// the Will Message is to be Retained when it is published.
     pub retain: bool,
     /// the Will Topic
-    pub topic: &'a str,
+    pub topic: String,
     /// defines the Application Message that is to be published to the Will Topic
-    pub message: &'a [u8],
+    pub message: Bytes,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -92,7 +93,7 @@ pub enum SubscribeReturnCode {
 
 #[derive(Debug, PartialEq, Clone)]
 /// MQTT Control Packets
-pub enum Packet<'a> {
+pub enum Packet {
     /// Client request to connect to Server
     Connect {
         protocol: Protocol,
@@ -101,13 +102,13 @@ pub enum Packet<'a> {
         /// a time interval measured in seconds.
         keep_alive: u16,
         /// Will Message be stored on the Server and associated with the Network Connection.
-        last_will: Option<LastWill<'a>>,
+        last_will: Option<LastWill>,
         /// identifies the Client to the Server.
-        client_id: &'a str,
+        client_id: String,
         /// username can be used by the Server for authentication and authorization.
-        username: Option<&'a str>,
+        username: Option<String>,
         /// password can be used by the Server for authentication and authorization.
-        password: Option<&'a [u8]>,
+        password: Option<Bytes>,
     },
     /// Connect acknowledgment
     ConnectAck {
@@ -124,11 +125,11 @@ pub enum Packet<'a> {
         /// the level of assurance for delivery of an Application Message.
         qos: QoS,
         /// the information channel to which payload data is published.
-        topic: &'a str,
+        topic: String,
         /// only present in PUBLISH Packets where the QoS level is 1 or 2.
         packet_id: Option<u16>,
         /// the Application Message that is being published.
-        payload: &'a [u8],
+        payload: Bytes,
     },
     /// Publish acknowledgment
     PublishAck {
@@ -155,7 +156,7 @@ pub enum Packet<'a> {
         /// Packet Identifier
         packet_id: u16,
         /// the list of Topic Filters and QoS to which the Client wants to subscribe.
-        topic_filters: Vec<(&'a str, QoS)>,
+        topic_filters: Vec<(String, QoS)>,
     },
     /// Subscribe acknowledgment
     SubscribeAck {
@@ -168,7 +169,7 @@ pub enum Packet<'a> {
         /// Packet Identifier
         packet_id: u16,
         /// the list of Topic Filters that the Client wishes to unsubscribe from.
-        topic_filters: Vec<&'a str>,
+        topic_filters: Vec<String>,
     },
     /// Unsubscribe acknowledgment
     UnsubscribeAck {
@@ -183,7 +184,7 @@ pub enum Packet<'a> {
     Disconnect,
 }
 
-impl<'a> Packet<'a> {
+impl Packet {
     #[inline]
     /// MQTT Control Packet type
     pub fn packet_type(&self) -> u8 {

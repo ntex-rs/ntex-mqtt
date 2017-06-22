@@ -1,7 +1,6 @@
-use std::str;
-
 use nom::{be_u8, be_u16, IResult, Needed, ErrorKind, IError};
 use nom::IResult::{Done, Incomplete, Error};
+use bytes::Bytes;
 
 use proto::*;
 use packet::*;
@@ -51,8 +50,13 @@ pub fn decode_variable_length_usize(i: &[u8]) -> IResult<&[u8], usize> {
     }
 }
 
-named!(pub decode_length_bytes, length_bytes!(be_u16));
-named!(pub decode_utf8_str<&str>, map_res!(length_bytes!(be_u16), str::from_utf8));
+named!(pub decode_length_bytes<Bytes>,
+    do_parse!(
+        len: be_u16
+         >> s: map!(take!(len), Bytes::from)
+         >> (s)
+    ));
+named!(pub decode_utf8_str<String>, map_res!(length_bytes!(be_u16), |r: &[u8]| String::from_utf8(r.to_vec())));
 
 named!(pub decode_fixed_header<FixedHeader>, do_parse!(
     b0: bits!( pair!( take_bits!( u8, 4 ), take_bits!( u8, 4 ) ) ) >>
@@ -120,7 +124,7 @@ named!(pub decode_connect_ack_header<(ConnectAckFlags, ConnectReturnCode)>, do_p
     )
 ));
 
-named!(pub decode_publish_header<(&str, u16)>, pair!(decode_utf8_str, be_u16));
+named!(pub decode_publish_header<(String, u16)>, pair!(decode_utf8_str, be_u16));
 
 named!(pub decode_subscribe_header<Packet>, do_parse!(
     packet_id: be_u16 >>
@@ -129,7 +133,7 @@ named!(pub decode_subscribe_header<Packet>, do_parse!(
         Packet::Subscribe {
             packet_id: packet_id,
             topic_filters: topic_filters.iter()
-                                        .map(|&(filter, flags)| (filter, QoS::from(flags & 0x03)))
+                                        .map(|&(ref filter, flags)| (filter.to_owned(), QoS::from(flags & 0x03))) // todo: revisit String ref changes and this .to_owned() call
                                         .collect(),
         }
     )
@@ -196,7 +200,7 @@ fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[
                              qos: qos,
                              topic: topic,
                              packet_id: packet_id,
-                             payload: i,
+                             payload: Bytes::from(i),
                          })
                 }
                 Error(err) => Error(err),
@@ -266,7 +270,7 @@ pub fn read_packet(i: &[u8]) -> Result<(&[u8], Packet), IError> {
 
 #[cfg(test)]
 mod tests {
-    extern crate env_logger;
+    //extern crate env_logger;
 
     use nom::{Needed, ErrorKind};
     use nom::IResult::{Done, Incomplete, Error};
@@ -333,10 +337,10 @@ mod tests {
             protocol: Protocol::MQTT(4),
             clean_session: false,
             keep_alive: 60,
-            client_id: "12345",
+            client_id: "12345".to_owned(),
             last_will: None,
-            username: Some("user"),
-            password: Some(b"pass"),
+            username: Some("user".to_owned()),
+            password: Some(Bytes::from(&b"pass"[..])),
         }));
 
         assert_eq!(decode_connect_header(
@@ -345,12 +349,12 @@ mod tests {
             protocol: Protocol::MQTT(4),
             clean_session: false,
             keep_alive: 60,
-            client_id: "12345",
+            client_id: "12345".to_owned(),
             last_will: Some(LastWill{
                 qos: QoS::ExactlyOnce,
                 retain: false,
-                topic: "topic",
-                message: b"message",
+                topic: "topic".to_owned(),
+                message: Bytes::from(&b"message"[..]),
             }),
             username: None,
             password: None,
@@ -386,7 +390,7 @@ mod tests {
     #[test]
     fn test_decode_publish_packets() {
         assert_eq!(decode_publish_header(b"\x00\x05topic\x12\x34"),
-               Done(&b""[..], ("topic", 0x1234)));
+               Done(&b""[..], ("topic".to_owned(), 0x1234)));
 
         assert_eq!(decode_packet(b"\x3d\x0D\x00\x05topic\x43\x21data"),
                Done(&b""[..],
@@ -394,9 +398,9 @@ mod tests {
                         dup: true,
                         retain: true,
                         qos: QoS::ExactlyOnce,
-                        topic: "topic",
+                        topic: "topic".to_owned(),
                         packet_id: Some(0x4321),
-                        payload: b"data",
+                        payload: Bytes::from(&b"data"[..]),
                     }));
         assert_eq!(decode_packet(b"\x30\x0b\x00\x05topicdata"),
                Done(&b""[..],
@@ -404,9 +408,9 @@ mod tests {
                         dup: false,
                         retain: false,
                         qos: QoS::AtMostOnce,
-                        topic: "topic",
+                        topic: "topic".to_owned(),
                         packet_id: None,
-                        payload: b"data",
+                        payload: Bytes::from(&b"data"[..]),
                     }));
 
         assert_eq!(decode_packet(b"\x40\x02\x43\x21"),
@@ -423,7 +427,7 @@ mod tests {
     fn test_decode_subscribe_packets() {
         let p = Packet::Subscribe {
             packet_id: 0x1234,
-            topic_filters: vec![("test", QoS::AtLeastOnce), ("filter", QoS::ExactlyOnce)],
+            topic_filters: vec![("test".to_owned(), QoS::AtLeastOnce), ("filter".to_owned(), QoS::ExactlyOnce)],
         };
 
         assert_eq!(decode_subscribe_header(b"\x12\x34\x00\x04test\x01\x00\x06filter\x02"),
@@ -446,7 +450,7 @@ mod tests {
 
         let p = Packet::Unsubscribe {
             packet_id: 0x1234,
-            topic_filters: vec!["test", "filter"],
+            topic_filters: vec!["test".to_owned(), "filter".to_owned()],
         };
 
         assert_eq!(decode_unsubscribe_header(b"\x12\x34\x00\x04test\x00\x06filter"),
