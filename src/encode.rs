@@ -10,7 +10,7 @@ pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F
 pub trait WritePacketHelper: io::Write {
     #[inline]
     fn write_fixed_header(&mut self, packet: &Packet) -> Result<usize> {
-        let content_size = self.calc_content_size(packet);
+        let content_size = calc_remaining_length(packet);
 
         debug!("write FixedHeader {{ type={}, flags={}, remaining_length={} }} ",
                packet.packet_type(),
@@ -19,58 +19,6 @@ pub trait WritePacketHelper: io::Write {
 
         Ok(self.write(&[(packet.packet_type() << 4) | packet.packet_flags()])? +
            self.write_variable_length(content_size)?)
-    }
-
-    fn calc_content_size(&mut self, packet: &Packet) -> usize {
-        match *packet {
-            Packet::Connect { ref last_will, ref client_id, ref username, ref password, .. } => {
-                // Protocol Name + Protocol Level + Connect Flags + Keep Alive
-                let mut n = 2 + 4 + 1 + 1 + 2;
-
-                // Client Id
-                n += 2 + client_id.len();
-
-                // Will Topic + Will Message
-                if let &Some(LastWill { ref topic, ref message, .. }) = last_will {
-                    n += 2 + topic.len() + 2 + message.len();
-                }
-
-                if let &Some(ref s) = username {
-                    n += 2 + s.len();
-                }
-
-                if let &Some(ref s) = password {
-                    n += 2 + s.len();
-                }
-
-                n
-            }
-
-            Packet::ConnectAck { .. } => 2, // Flags + Return Code
-
-            Packet::Publish { ref topic, packet_id, ref payload, .. } => {
-                // Topic + Packet Id + Payload
-                2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.len()
-            }
-
-            Packet::PublishAck { .. } |
-            Packet::PublishReceived { .. } |
-            Packet::PublishRelease { .. } |
-            Packet::PublishComplete { .. } |
-            Packet::UnsubscribeAck { .. } => 2, // Packet Id
-
-            Packet::Subscribe { ref topic_filters, .. } => {
-                2 + topic_filters.iter().fold(0, |acc, &(ref filter, _)| acc + 2 + filter.len() + 1)
-            }
-
-            Packet::SubscribeAck { ref status, .. } => 2 + status.len(),
-
-            Packet::Unsubscribe { ref topic_filters, .. } => {
-                2 + topic_filters.iter().fold(0, |acc, ref filter| acc + 2 + filter.len())
-            }
-
-            Packet::PingRequest | Packet::PingResponse | Packet::Disconnect => 0,
-        }
     }
 
     fn write_content(&mut self, packet: &Packet) -> Result<usize> {
@@ -266,6 +214,58 @@ pub trait WritePacketExt: io::Write {
 impl<W: io::Write + ?Sized> WritePacketHelper for W {}
 impl<W: io::Write + ?Sized> WritePacketExt for W {}
 
+pub fn calc_remaining_length(packet: &Packet) -> usize {
+    match *packet {
+        Packet::Connect { ref last_will, ref client_id, ref username, ref password, .. } => {
+            // Protocol Name + Protocol Level + Connect Flags + Keep Alive
+            let mut n = 2 + 4 + 1 + 1 + 2;
+
+            // Client Id
+            n += 2 + client_id.len();
+
+            // Will Topic + Will Message
+            if let &Some(LastWill { ref topic, ref message, .. }) = last_will {
+                n += 2 + topic.len() + 2 + message.len();
+            }
+
+            if let &Some(ref s) = username {
+                n += 2 + s.len();
+            }
+
+            if let &Some(ref s) = password {
+                n += 2 + s.len();
+            }
+
+            n
+        }
+
+        Packet::ConnectAck { .. } => 2, // Flags + Return Code
+
+        Packet::Publish { ref topic, packet_id, ref payload, .. } => {
+            // Topic + Packet Id + Payload
+            2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.len()
+        }
+
+        Packet::PublishAck { .. } |
+        Packet::PublishReceived { .. } |
+        Packet::PublishRelease { .. } |
+        Packet::PublishComplete { .. } |
+        Packet::UnsubscribeAck { .. } => 2, // Packet Id
+
+        Packet::Subscribe { ref topic_filters, .. } => {
+            2 + topic_filters.iter().fold(0, |acc, &(ref filter, _)| acc + 2 + filter.len() + 1)
+        }
+
+        Packet::SubscribeAck { ref status, .. } => 2 + status.len(),
+
+        Packet::Unsubscribe { ref topic_filters, .. } => {
+            2 + topic_filters.iter().fold(0, |acc, ref filter| acc + 2 + filter.len())
+        }
+
+        Packet::PingRequest | Packet::PingResponse | Packet::Disconnect => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //extern crate env_logger;
@@ -310,7 +310,7 @@ mod tests {
         let mut v = Vec::new();
         let p = Packet::PingRequest;
 
-        assert_eq!(v.calc_content_size(&p), 0);
+        assert_eq!(v.calc_remaining_length(&p), 0);
         assert_eq!(v.write_fixed_header(&p).unwrap(), 2);
         assert_eq!(v, b"\xc0\x00");
 
@@ -325,7 +325,7 @@ mod tests {
             payload: Bytes::from((0..255).collect::<Vec<u8>>()),
         };
 
-        assert_eq!(v.calc_content_size(&p), 264);
+        assert_eq!(v.calc_remaining_length(&p), 264);
         assert_eq!(v.write_fixed_header(&p).unwrap(), 3);
         assert_eq!(v, b"\x3d\x88\x02");
     }

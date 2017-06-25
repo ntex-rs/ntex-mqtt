@@ -25,7 +25,7 @@ mod decode;
 pub use proto::QoS;
 pub use topic::{Level, Topic, TopicTree, MatchTopic};
 pub use packet::{Packet, LastWill, ConnectReturnCode, SubscribeReturnCode};
-pub use encode::WritePacketExt;
+pub use encode::{WritePacketExt, calc_remaining_length};
 pub use decode::{ReadPacketExt, read_packet};
 
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
