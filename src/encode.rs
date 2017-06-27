@@ -4,7 +4,6 @@ use byteorder::{BigEndian, WriteBytesExt};
 
 use proto::*;
 use packet::*;
-use bytes::Bytes;
 
 pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F
 
@@ -275,6 +274,7 @@ mod tests {
     use packet::*;
     use decode::*;
     use super::*;
+    use bytes::Bytes;
 
     #[test]
     fn test_encode_variable_length() {
