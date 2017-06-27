@@ -200,7 +200,7 @@ fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[
                              qos: qos,
                              topic: topic,
                              packet_id: packet_id,
-                             payload: Bytes::from(i),
+                             payload: if i.len() <= 31 { PayloadPromise::Ready(i.into()) } else {PayloadPromise::Available(i.len())},
                          })
                 }
                 Error(err) => Error(err),
@@ -400,7 +400,7 @@ mod tests {
                         qos: QoS::ExactlyOnce,
                         topic: "topic".to_owned(),
                         packet_id: Some(0x4321),
-                        payload: Bytes::from(&b"data"[..]),
+                        payload: PayloadPromise::from(&b"data"[..]),
                     }));
         assert_eq!(decode_packet(b"\x30\x0b\x00\x05topicdata"),
                Done(&b""[..],
@@ -410,7 +410,7 @@ mod tests {
                         qos: QoS::AtMostOnce,
                         topic: "topic".to_owned(),
                         packet_id: None,
-                        payload: Bytes::from(&b"data"[..]),
+                        payload: PayloadPromise::from(&b"data"[..]),
                     }));
 
         assert_eq!(decode_packet(b"\x40\x02\x43\x21"),

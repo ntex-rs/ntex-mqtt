@@ -4,6 +4,7 @@ use byteorder::{BigEndian, WriteBytesExt};
 
 use proto::*;
 use packet::*;
+use bytes::Bytes;
 
 pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F
 
@@ -93,7 +94,7 @@ pub trait WritePacketHelper: io::Write {
                     n += 2;
                 }
 
-                n += self.write(&payload)?;
+                n += self.write(payload.unwrap())?
             }
 
             Packet::PublishAck { packet_id } |
@@ -243,7 +244,7 @@ pub fn calc_remaining_length(packet: &Packet) -> usize {
 
         Packet::Publish { ref topic, packet_id, ref payload, .. } => {
             // Topic + Packet Id + Payload
-            2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.len()
+            2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.unwrap().len()
         }
 
         Packet::PublishAck { .. } |
@@ -310,7 +311,7 @@ mod tests {
         let mut v = Vec::new();
         let p = Packet::PingRequest;
 
-        assert_eq!(v.calc_remaining_length(&p), 0);
+        assert_eq!(calc_remaining_length(&p), 0);
         assert_eq!(v.write_fixed_header(&p).unwrap(), 2);
         assert_eq!(v, b"\xc0\x00");
 
@@ -322,10 +323,10 @@ mod tests {
             qos: QoS::ExactlyOnce,
             topic: "topic".to_owned(),
             packet_id: Some(0x4321),
-            payload: Bytes::from((0..255).collect::<Vec<u8>>()),
+            payload: (0..255).collect::<Vec<u8>>().into(),
         };
 
-        assert_eq!(v.calc_remaining_length(&p), 264);
+        assert_eq!(calc_remaining_length(&p), 264);
         assert_eq!(v.write_fixed_header(&p).unwrap(), 3);
         assert_eq!(v, b"\x3d\x88\x02");
     }
@@ -381,7 +382,7 @@ mod tests {
                            qos: QoS::ExactlyOnce,
                            topic: "topic".to_owned(),
                            packet_id: Some(0x4321),
-                           payload: Bytes::from(&b"data"[..]),
+                           payload: PayloadPromise::from(&b"data"[..]),
                        },
                        b"\x3d\x0D\x00\x05topic\x43\x21data");
 
@@ -391,7 +392,7 @@ mod tests {
                            qos: QoS::AtMostOnce,
                            topic: "topic".to_owned(),
                            packet_id: None,
-                           payload: Bytes::from(&b"data"[..]),
+                           payload: PayloadPromise::from(&b"data"[..]),
                        },
                        b"\x30\x0b\x00\x05topicdata");
     }
