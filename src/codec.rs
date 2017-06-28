@@ -7,7 +7,7 @@ use std::io::{Error, ErrorKind};
 #[derive(Default)]
 pub struct Codec;
 
-impl Decoder for MqttCodec {
+impl Decoder for Codec {
     type Item = Packet;
     type Error = Error;
 
@@ -33,7 +33,7 @@ impl Decoder for MqttCodec {
     }
 }
 
-impl Encoder for MqttCodec {
+impl Encoder for Codec {
     type Item = Packet;
     type Error = Error;
 
