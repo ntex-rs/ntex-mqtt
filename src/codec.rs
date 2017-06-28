@@ -1,4 +1,4 @@
-use super::{Packet, PayloadPromise, read_packet, WritePacketExt, calc_remaining_length};
+use super::{Packet, read_packet, WritePacketExt, calc_remaining_length};
 use tokio_io::codec::{Decoder, Encoder};
 use bytes::{BytesMut, BufMut};
 use nom::IError;
@@ -12,22 +12,27 @@ impl Decoder for Codec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let len: usize;
+        let packet_len: usize;
+        let payload_len: usize;
         let mut p: Packet;
         match read_packet(src) {
-            Ok((rest, packet)) => {
-                len = (rest.as_ptr() as usize) - (src.as_ptr() as usize);
+            Ok((rest, packet, size)) => {
+                packet_len = (rest.as_ptr() as usize) - (src.as_ptr() as usize);
+                payload_len = size;
                 p = packet;
             }
             // todo: derive error
             Err(IError::Error(_)) => return Err(Error::new(ErrorKind::Other, "oops")),
             Err(IError::Incomplete(_)) => return Ok(None),
         };
-        let mut parsed = src.split_to(len);
+        let mut parsed = src.split_to(packet_len);
         // pull payload for publish packet if it was deferred
-        if let Packet::Publish {payload: PayloadPromise::Available(payload_size), dup, retain, qos, topic, packet_id } = p {
-            let len = parsed.len();
-            p = Packet::Publish {dup, retain, qos, packet_id, topic, payload: PayloadPromise::Ready(parsed.split_off(len - payload_size).freeze()) }
+        match p {
+            Packet::Publish {ref mut payload, ..} if payload_len > 0 => {
+                let len = parsed.len();
+                *payload = parsed.split_off(len - payload_len).freeze();
+            },
+            _ => {}
         }
         Ok(Some(p))
     }

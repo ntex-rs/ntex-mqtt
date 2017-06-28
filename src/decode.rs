@@ -170,15 +170,15 @@ named!(pub decode_unsubscribe_header<Packet>, do_parse!(
 ));
 
 
-fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[u8], Packet> {
+fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[u8], (Packet, usize)> {
     match fixed_header.packet_type {
-        CONNECT => decode_connect_header(i),
+        CONNECT => decode_connect_header(i).map(|p| (p, 0)),
         CONNACK => {
             decode_connect_ack_header(i).map(|(flags, return_code)| {
-                Packet::ConnectAck {
+                (Packet::ConnectAck {
                     session_present: is_flag_set!(flags.bits(), SESSION_PRESENT),
                     return_code: return_code,
-                }
+                }, 0)
             })
         }
         PUBLISH => {
@@ -195,32 +195,33 @@ fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[
 
             match result {
                 Done(i, (topic, packet_id)) => {
+                    let size = if i.len() <= 31 { 0 } else { i.len() };
                     Done(Default::default(),
-                         Packet::Publish {
+                         (Packet::Publish {
                              dup: dup,
                              retain: retain,
                              qos: qos,
                              topic: topic,
                              packet_id: packet_id,
-                             payload: if i.len() <= 31 { PayloadPromise::Ready(i.into()) } else {PayloadPromise::Available(i.len())},
-                         })
+                             payload: if size == 0 { i.into() } else {Bytes::new()},
+                         }, size))
                 }
                 Error(err) => Error(err),
                 Incomplete(needed) => Incomplete(needed),
             }
         }
-        PUBACK => be_u16(i).map(|packet_id| Packet::PublishAck { packet_id: packet_id }),
-        PUBREC => be_u16(i).map(|packet_id| Packet::PublishReceived { packet_id: packet_id }),
-        PUBREL => be_u16(i).map(|packet_id| Packet::PublishRelease { packet_id: packet_id }),
-        PUBCOMP => be_u16(i).map(|packet_id| Packet::PublishComplete { packet_id: packet_id }),
-        SUBSCRIBE => decode_subscribe_header(i),
-        SUBACK => decode_subscribe_ack_header(i),
-        UNSUBSCRIBE => decode_unsubscribe_header(i),
-        UNSUBACK => be_u16(i).map(|packet_id| Packet::UnsubscribeAck { packet_id: packet_id }),
+        PUBACK => be_u16(i).map(|packet_id| (Packet::PublishAck { packet_id: packet_id }, 0)),
+        PUBREC => be_u16(i).map(|packet_id| (Packet::PublishReceived { packet_id: packet_id }, 0)),
+        PUBREL => be_u16(i).map(|packet_id| (Packet::PublishRelease { packet_id: packet_id }, 0)),
+        PUBCOMP => be_u16(i).map(|packet_id| (Packet::PublishComplete { packet_id: packet_id }, 0)),
+        SUBSCRIBE => decode_subscribe_header(i).map(|p| (p, 0)),
+        SUBACK => decode_subscribe_ack_header(i).map(|p| (p, 0)),
+        UNSUBSCRIBE => decode_unsubscribe_header(i).map(|p| (p, 0)),
+        UNSUBACK => be_u16(i).map(|packet_id| (Packet::UnsubscribeAck { packet_id: packet_id }, 0)),
 
-        PINGREQ => Done(i, Packet::PingRequest),
-        PINGRESP => Done(i, Packet::PingResponse),
-        DISCONNECT => Done(i, Packet::Disconnect),
+        PINGREQ => Done(i, (Packet::PingRequest, 0)),
+        PINGRESP => Done(i, (Packet::PingResponse, 0)),
+        DISCONNECT => Done(i, (Packet::Disconnect, 0)),
         _ => {
             let err_code = UNSUPPORT_PACKET_TYPE + (fixed_header.packet_type as u32);
 
@@ -229,7 +230,7 @@ fn decode_variable_header<'a>(i: &[u8], fixed_header: FixedHeader) -> IResult<&[
     }
 }
 
-named!(pub decode_packet<Packet>, do_parse!(
+named!(pub decode_packet<(Packet, usize)>, do_parse!(
     fixed_header: decode_fixed_header >>
     packet: flat_map!(
         take!(fixed_header.remaining_length),
@@ -249,7 +250,14 @@ pub trait ReadPacketExt: AsRef<[u8]> {
     #[inline]
     /// Read packet from the underlying reader.
     fn read_packet(&self) -> Result<Packet, IError> {
-        decode_packet(self.as_ref()).to_full_result()
+        decode_packet(self.as_ref())
+            .map(|decoded| {
+                // match decoded {
+                //     (Packet:::Publish { }, size) if size > 0 => P
+                // }
+                decoded.0
+            })
+            .to_full_result()
     }
 }
 
@@ -262,9 +270,9 @@ impl<T: AsRef<[u8]>> ReadPacketExt for T {}
 ///
 /// assert_eq!(read_packet(b"\xc0\x00\xd0\x00").unwrap(), (&b"\xd0\x00"[..], Packet::PingRequest));
 /// ```
-pub fn read_packet(i: &[u8]) -> Result<(&[u8], Packet), IError> {
+pub fn read_packet(i: &[u8]) -> Result<(&[u8], Packet, usize), IError> {
     match decode_packet(i) {
-        r @ Done(..) => Ok(r.unwrap()),
+        Done(rest, (packet, size)) => Ok((rest, packet, size)),
         Error(e) => Err(IError::Error(e)),
         Incomplete(n) => Err(IError::Incomplete(n)),
     }

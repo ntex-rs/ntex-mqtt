@@ -99,7 +99,7 @@ pub trait WritePacketHelper: io::Write {
                     n += 2;
                 }
 
-                n += self.write(payload.unwrap())?
+                n += self.write(payload)?
             }
 
             Packet::PublishAck { packet_id } |
@@ -254,7 +254,7 @@ pub fn calc_remaining_length(packet: &Packet) -> usize {
 
         Packet::Publish { ref topic, packet_id, ref payload, .. } => {
             // Topic + Packet Id + Payload
-            2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.unwrap().len()
+            2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.len()
         }
 
         Packet::PublishAck { .. } |

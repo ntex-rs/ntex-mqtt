@@ -110,28 +110,6 @@ pub enum SubscribeReturnCode {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum PayloadPromise {
-    Available(usize),
-    Ready(Bytes)
-}
-
-impl<T: Into<Bytes>> From<T> for PayloadPromise
-{
-    fn from(val: T) -> PayloadPromise {
-        PayloadPromise::Ready(val.into())
-    }
-}
-
-impl PayloadPromise {
-    pub fn unwrap(&self) -> &Bytes {
-        match *self {
-            PayloadPromise::Ready(ref b) => b,
-            _ => panic!("Payload must be ready by this time"),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Clone)]
 /// MQTT Control Packets
 pub enum Packet {
     /// Client request to connect to Server
@@ -157,7 +135,7 @@ pub enum Packet {
         /// only present in PUBLISH Packets where the QoS level is 1 or 2.
         packet_id: Option<u16>,
         /// the Application Message that is being published.
-        payload: PayloadPromise,
+        payload: Bytes,
     },
     /// Publish acknowledgment
     PublishAck {
