@@ -97,18 +97,20 @@ named!(pub decode_connect_header<Packet>, do_parse!(
     password: cond!(is_flag_set!(flags, PASSWORD), decode_length_bytes) >>
     (
         Packet::Connect {
-            protocol: Protocol::MQTT(level),
-            clean_session: is_flag_set!(flags, CLEAN_SESSION),
-            keep_alive: keep_alive,
-            client_id: client_id,
-            last_will: if is_flag_set!(flags, WILL) { Some(LastWill{
-                qos: QoS::from((flags & WILL_QOS.bits()) >> WILL_QOS_SHIFT),
-                retain: is_flag_set!(flags, WILL_RETAIN),
-                topic: topic.unwrap(),
-                message: message.unwrap(),
-            }) } else { None },
-            username: username,
-            password: password,
+            connect: Box::new(Connect {
+                protocol: Protocol::MQTT(level),
+                clean_session: is_flag_set!(flags, CLEAN_SESSION),
+                keep_alive: keep_alive,
+                client_id: client_id,
+                last_will: if is_flag_set!(flags, WILL) { Some(LastWill{
+                    qos: QoS::from((flags & WILL_QOS.bits()) >> WILL_QOS_SHIFT),
+                    retain: is_flag_set!(flags, WILL_RETAIN),
+                    topic: topic.unwrap(),
+                    message: message.unwrap(),
+                }) } else { None },
+                username: username,
+                password: password,
+            })
         }
     )
 ));

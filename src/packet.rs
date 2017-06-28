@@ -84,6 +84,24 @@ pub struct LastWill {
     pub message: Bytes,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+/// Connect packet content
+pub struct Connect {
+    pub protocol: Protocol,
+    /// the handling of the Session state.
+    pub clean_session: bool,
+    /// a time interval measured in seconds.
+    pub keep_alive: u16,
+    /// Will Message be stored on the Server and associated with the Network Connection.
+    pub last_will: Option<LastWill>,
+    /// identifies the Client to the Server.
+    pub client_id: String,
+    /// username can be used by the Server for authentication and authorization.
+    pub username: Option<String>,
+    /// password can be used by the Server for authentication and authorization.
+    pub password: Option<Bytes>,
+}
+
 #[derive(Debug, PartialEq, Copy, Clone)]
 /// Subscribe Return Code
 pub enum SubscribeReturnCode {
@@ -118,19 +136,7 @@ impl PayloadPromise {
 pub enum Packet {
     /// Client request to connect to Server
     Connect {
-        protocol: Protocol,
-        /// the handling of the Session state.
-        clean_session: bool,
-        /// a time interval measured in seconds.
-        keep_alive: u16,
-        /// Will Message be stored on the Server and associated with the Network Connection.
-        last_will: Option<LastWill>,
-        /// identifies the Client to the Server.
-        client_id: String,
-        /// username can be used by the Server for authentication and authorization.
-        username: Option<String>,
-        /// password can be used by the Server for authentication and authorization.
-        password: Option<Bytes>,
+        connect: Box<Connect>
     },
     /// Connect acknowledgment
     ConnectAck {

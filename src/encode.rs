@@ -25,59 +25,65 @@ pub trait WritePacketHelper: io::Write {
         let mut n = 0;
 
         match *packet {
-            Packet::Connect { protocol,
+            Packet::Connect{ref connect} => {
+                match **connect {
+                    Connect {protocol,
                               clean_session,
                               keep_alive,
                               ref last_will,
                               ref client_id,
                               ref username,
-                              ref password } => {
-                n += self.write_utf8_str(&protocol.name().to_owned())?;
+                              ref password} =>
+                    {
+                        n += self.write_utf8_str(&protocol.name().to_owned())?;
 
-                let mut flags = ConnectFlags::empty();
+                        let mut flags = ConnectFlags::empty();
 
-                if username.is_some() {
-                    flags |= USERNAME;
-                }
-                if password.is_some() {
-                    flags |= PASSWORD;
-                }
+                        if username.is_some() {
+                            flags |= USERNAME;
+                        }
+                        if password.is_some() {
+                            flags |= PASSWORD;
+                        }
 
-                if let &Some(LastWill { qos, retain, .. }) = last_will {
-                    flags |= WILL;
+                        if let &Some(LastWill { qos, retain, .. }) = last_will {
+                            flags |= WILL;
 
-                    if retain {
-                        flags |= WILL_RETAIN;
+                            if retain {
+                                flags |= WILL_RETAIN;
+                            }
+
+                            let b: u8 = qos.into();
+
+                            flags |= ConnectFlags::from_bits_truncate(b << WILL_QOS_SHIFT);
+                        }
+
+                        if clean_session {
+                            flags |= CLEAN_SESSION;
+                        }
+
+                        n += self.write(&[protocol.level(), flags.bits()])?;
+
+                        self.write_u16::<BigEndian>(keep_alive)?;
+                        n += 2;
+
+                        n += self.write_utf8_str(client_id)?;
+
+                        if let &Some(LastWill { ref topic, ref message, .. }) = last_will {
+                            n += self.write_utf8_str(&topic)?;
+                            n += self.write_fixed_length_bytes(message)?;
+                        }
+
+                        if let &Some(ref s) = username {
+                            n += self.write_utf8_str(&s)?;
+                        }
+
+                        if let &Some(ref s) = password {
+                            n += self.write_fixed_length_bytes(s)?;
+                        }
                     }
-
-                    let b: u8 = qos.into();
-
-                    flags |= ConnectFlags::from_bits_truncate(b << WILL_QOS_SHIFT);
                 }
-
-                if clean_session {
-                    flags |= CLEAN_SESSION;
-                }
-
-                n += self.write(&[protocol.level(), flags.bits()])?;
-
-                self.write_u16::<BigEndian>(keep_alive)?;
-                n += 2;
-
-                n += self.write_utf8_str(client_id)?;
-
-                if let &Some(LastWill { ref topic, ref message, .. }) = last_will {
-                    n += self.write_utf8_str(&topic)?;
-                    n += self.write_fixed_length_bytes(message)?;
-                }
-
-                if let &Some(ref s) = username {
-                    n += self.write_utf8_str(&s)?;
-                }
-
-                if let &Some(ref s) = password {
-                    n += self.write_fixed_length_bytes(s)?;
-                }
+                
             }
 
             Packet::ConnectAck { session_present, return_code } => {
@@ -216,27 +222,32 @@ impl<W: io::Write + ?Sized> WritePacketExt for W {}
 
 pub fn calc_remaining_length(packet: &Packet) -> usize {
     match *packet {
-        Packet::Connect { ref last_will, ref client_id, ref username, ref password, .. } => {
-            // Protocol Name + Protocol Level + Connect Flags + Keep Alive
-            let mut n = 2 + 4 + 1 + 1 + 2;
+        Packet::Connect { ref connect } => {
+            match **connect {
+                Connect {ref last_will, ref client_id, ref username, ref password, ..} =>
+                {
+                    // Protocol Name + Protocol Level + Connect Flags + Keep Alive
+                    let mut n = 2 + 4 + 1 + 1 + 2;
 
-            // Client Id
-            n += 2 + client_id.len();
+                    // Client Id
+                    n += 2 + client_id.len();
 
-            // Will Topic + Will Message
-            if let &Some(LastWill { ref topic, ref message, .. }) = last_will {
-                n += 2 + topic.len() + 2 + message.len();
+                    // Will Topic + Will Message
+                    if let &Some(LastWill { ref topic, ref message, .. }) = last_will {
+                        n += 2 + topic.len() + 2 + message.len();
+                    }
+
+                    if let &Some(ref s) = username {
+                        n += 2 + s.len();
+                    }
+
+                    if let &Some(ref s) = password {
+                        n += 2 + s.len();
+                    }
+
+                    n
+                }
             }
-
-            if let &Some(ref s) = username {
-                n += 2 + s.len();
-            }
-
-            if let &Some(ref s) = password {
-                n += 2 + s.len();
-            }
-
-            n
         }
 
         Packet::ConnectAck { .. } => 2, // Flags + Return Code
