@@ -24,7 +24,7 @@ mod encode;
 mod decode;
 mod codec;
 
-pub use proto::QoS;
+pub use proto::{QoS, Protocol};
 pub use topic::{Level, Topic, TopicTree, MatchTopic};
 pub use packet::{Packet, LastWill, Connect, ConnectReturnCode, SubscribeReturnCode};
 pub use encode::{WritePacketExt, calc_remaining_length};
