@@ -1,24 +1,6 @@
 use proto::{Protocol, QoS};
 use bytes::Bytes;
-
-bitflags! {
-    pub flags ConnectFlags: u8 {
-        const USERNAME      = 0b10000000,
-        const PASSWORD      = 0b01000000,
-        const WILL_RETAIN   = 0b00100000,
-        const WILL_QOS      = 0b00011000,
-        const WILL          = 0b00000100,
-        const CLEAN_SESSION = 0b00000010,
-    }
-}
-
-pub const WILL_QOS_SHIFT: u8 = 3;
-
-bitflags! {
-    pub flags ConnectAckFlags: u8 {
-        const SESSION_PRESENT = 0b00000001,
-    }
-}
+use string::String;
 
 #[repr(u8)]
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -61,17 +43,6 @@ impl ConnectReturnCode {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct FixedHeader {
-    /// MQTT Control Packet type
-    pub packet_type: u8,
-    /// Flags specific to each MQTT Control Packet type
-    pub packet_flags: u8,
-    /// the number of bytes remaining within the current packet,
-    /// including data in the variable header and the payload.
-    pub remaining_length: usize,
-}
-
-#[derive(Debug, PartialEq, Clone)]
 /// Connection Will
 pub struct LastWill {
     /// the QoS level to be used when publishing the Will Message.
@@ -79,7 +50,7 @@ pub struct LastWill {
     /// the Will Message is to be Retained when it is published.
     pub retain: bool,
     /// the Will Topic
-    pub topic: String,
+    pub topic: String<Bytes>,
     /// defines the Application Message that is to be published to the Will Topic
     pub message: Bytes,
 }
@@ -95,9 +66,9 @@ pub struct Connect {
     /// Will Message be stored on the Server and associated with the Network Connection.
     pub last_will: Option<LastWill>,
     /// identifies the Client to the Server.
-    pub client_id: String,
+    pub client_id: String<Bytes>,
     /// username can be used by the Server for authentication and authorization.
-    pub username: Option<String>,
+    pub username: Option<String<Bytes>>,
     /// password can be used by the Server for authentication and authorization.
     pub password: Option<Bytes>,
 }
@@ -131,7 +102,7 @@ pub enum Packet {
         /// the level of assurance for delivery of an Application Message.
         qos: QoS,
         /// the information channel to which payload data is published.
-        topic: String,
+        topic: String<Bytes>,
         /// only present in PUBLISH Packets where the QoS level is 1 or 2.
         packet_id: Option<u16>,
         /// the Application Message that is being published.
@@ -162,7 +133,7 @@ pub enum Packet {
         /// Packet Identifier
         packet_id: u16,
         /// the list of Topic Filters and QoS to which the Client wants to subscribe.
-        topic_filters: Vec<(String, QoS)>,
+        topic_filters: Vec<(String<Bytes>, QoS)>,
     },
     /// Subscribe acknowledgment
     SubscribeAck {
@@ -175,7 +146,7 @@ pub enum Packet {
         /// Packet Identifier
         packet_id: u16,
         /// the list of Topic Filters that the Client wishes to unsubscribe from.
-        topic_filters: Vec<String>,
+        topic_filters: Vec<String<Bytes>>,
     },
     /// Unsubscribe acknowledgment
     UnsubscribeAck {

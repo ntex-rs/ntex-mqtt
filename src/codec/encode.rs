@@ -1,226 +1,192 @@
-use std::io::{self, Result, Error, ErrorKind};
-
-use byteorder::{BigEndian, WriteBytesExt};
+use bytes::{BigEndian, Bytes, BytesMut, BufMut};
+use string::String;
 
 use proto::*;
 use packet::*;
+use super::*;
 
 pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F
 
-pub trait WritePacketHelper: io::Write {
-    #[inline]
-    fn write_fixed_header(&mut self, packet: &Packet) -> Result<usize> {
-        let content_size = calc_remaining_length(packet);
+#[inline]
+fn write_fixed_header(packet: &Packet, dst: &mut BytesMut) {
+    let content_size = get_encoded_size(packet);
 
-        debug!("write FixedHeader {{ type={}, flags={}, remaining_length={} }} ",
-               packet.packet_type(),
-               packet.packet_flags(),
-               content_size);
+    debug!("write FixedHeader {{ type={}, flags={}, remaining_length={} }} ",
+            packet.packet_type(),
+            packet.packet_flags(),
+            content_size);
 
-        Ok(self.write(&[(packet.packet_type() << 4) | packet.packet_flags()])? +
-           self.write_variable_length(content_size)?)
-    }
+    dst.put_u8((packet.packet_type() << 4) | packet.packet_flags());
+    write_variable_length(content_size, dst);
+}
 
-    fn write_content(&mut self, packet: &Packet) -> Result<usize> {
-        let mut n = 0;
+fn write_content(packet: &Packet, dst: &mut BytesMut) {
+    match *packet {
+        Packet::Connect{ref connect} => {
+            match **connect {
+                Connect {protocol,
+                            clean_session,
+                            keep_alive,
+                            ref last_will,
+                            ref client_id,
+                            ref username,
+                            ref password} =>
+                {
+                    write_fixed_length_bytes(&Bytes::from_static(protocol.name().as_bytes()) , dst);
+                    // write_utf8_str(&protocol.name().to_owned(), dst);
 
-        match *packet {
-            Packet::Connect{ref connect} => {
-                match **connect {
-                    Connect {protocol,
-                              clean_session,
-                              keep_alive,
-                              ref last_will,
-                              ref client_id,
-                              ref username,
-                              ref password} =>
-                    {
-                        n += self.write_utf8_str(&protocol.name().to_owned())?;
+                    let mut flags = ConnectFlags::empty();
 
-                        let mut flags = ConnectFlags::empty();
+                    if username.is_some() {
+                        flags |= USERNAME;
+                    }
+                    if password.is_some() {
+                        flags |= PASSWORD;
+                    }
 
-                        if username.is_some() {
-                            flags |= USERNAME;
-                        }
-                        if password.is_some() {
-                            flags |= PASSWORD;
-                        }
+                    if let &Some(LastWill { qos, retain, .. }) = last_will {
+                        flags |= WILL;
 
-                        if let &Some(LastWill { qos, retain, .. }) = last_will {
-                            flags |= WILL;
-
-                            if retain {
-                                flags |= WILL_RETAIN;
-                            }
-
-                            let b: u8 = qos.into();
-
-                            flags |= ConnectFlags::from_bits_truncate(b << WILL_QOS_SHIFT);
+                        if retain {
+                            flags |= WILL_RETAIN;
                         }
 
-                        if clean_session {
-                            flags |= CLEAN_SESSION;
-                        }
+                        let b: u8 = qos.into();
 
-                        n += self.write(&[protocol.level(), flags.bits()])?;
+                        flags |= ConnectFlags::from_bits_truncate(b << WILL_QOS_SHIFT);
+                    }
 
-                        self.write_u16::<BigEndian>(keep_alive)?;
-                        n += 2;
+                    if clean_session {
+                        flags |= CLEAN_SESSION;
+                    }
 
-                        n += self.write_utf8_str(client_id)?;
+                    dst.put_slice(&[protocol.level(), flags.bits()]);
 
-                        if let &Some(LastWill { ref topic, ref message, .. }) = last_will {
-                            n += self.write_utf8_str(&topic)?;
-                            n += self.write_fixed_length_bytes(message)?;
-                        }
+                    dst.put_u16::<BigEndian>(keep_alive);
 
-                        if let &Some(ref s) = username {
-                            n += self.write_utf8_str(&s)?;
-                        }
+                    write_utf8_str(client_id, dst);
 
-                        if let &Some(ref s) = password {
-                            n += self.write_fixed_length_bytes(s)?;
-                        }
+                    if let &Some(LastWill { ref topic, ref message, .. }) = last_will {
+                        write_utf8_str(&topic, dst);
+                        write_fixed_length_bytes(message, dst);
+                    }
+
+                    if let &Some(ref s) = username {
+                        write_utf8_str(&s, dst);
+                    }
+
+                    if let &Some(ref s) = password {
+                        write_fixed_length_bytes(s, dst);
                     }
                 }
-                
             }
-
-            Packet::ConnectAck { session_present, return_code } => {
-                n += self.write(&[if session_present { 0x01 } else { 0x00 }, return_code.into()])?;
-            }
-
-            Packet::Publish { qos, ref topic, packet_id, ref payload, .. } => {
-                n += self.write_utf8_str(&topic)?;
-
-                if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
-                    self.write_u16::<BigEndian>(packet_id.unwrap())?;
-
-                    n += 2;
-                }
-
-                n += self.write(payload)?
-            }
-
-            Packet::PublishAck { packet_id } |
-            Packet::PublishReceived { packet_id } |
-            Packet::PublishRelease { packet_id } |
-            Packet::PublishComplete { packet_id } |
-            Packet::UnsubscribeAck { packet_id } => {
-                self.write_u16::<BigEndian>(packet_id)?;
-
-                n += 2;
-            }
-
-            Packet::Subscribe { packet_id, ref topic_filters } => {
-                self.write_u16::<BigEndian>(packet_id)?;
-
-                n += 2;
-
-                for &(ref filter, qos) in topic_filters {
-                    n += self.write_utf8_str(&filter)? + self.write(&[qos.into()])?;
-                }
-            }
-
-            Packet::SubscribeAck { packet_id, ref status } => {
-                self.write_u16::<BigEndian>(packet_id)?;
-
-                n += 2;
-
-                let buf: Vec<u8> = status.iter()
-                    .map(|s| if let SubscribeReturnCode::Success(qos) = *s {
-                        qos.into()
-                    } else {
-                        0x80
-                    })
-                    .collect();
-
-                n += self.write(&buf)?;
-            }
-
-            Packet::Unsubscribe { packet_id, ref topic_filters } => {
-                self.write_u16::<BigEndian>(packet_id)?;
-
-                n += 2;
-
-                for ref filter in topic_filters {
-                    n += self.write_utf8_str(&filter)?;
-                }
-            }
-
-            Packet::PingRequest | Packet::PingResponse | Packet::Disconnect => {}
+            
         }
 
-        Ok(n)
-    }
+        Packet::ConnectAck { session_present, return_code } => {
+            dst.put_slice(&[if session_present { 0x01 } else { 0x00 }, return_code.into()]);
+        }
 
-    #[inline]
-    fn write_utf8_str(&mut self, s: &String) -> Result<usize> {
-        self.write_u16::<BigEndian>(s.len() as u16)?;
+        Packet::Publish { qos, ref topic, packet_id, ref payload, .. } => {
+            write_utf8_str(&topic, dst);
 
-        Ok(2 + self.write(s.as_bytes())?)
-    }
-
-    #[inline]
-    fn write_fixed_length_bytes<T: AsRef<[u8]>>(&mut self, s: T) -> Result<usize> {
-        let r = s.as_ref();
-        self.write_u16::<BigEndian>(r.len() as u16)?;
-
-        Ok(2 + self.write(r)?)
-    }
-
-    #[inline]
-    fn write_variable_length(&mut self, size: usize) -> Result<usize> {
-        if size > MAX_VARIABLE_LENGTH {
-            Err(Error::new(ErrorKind::Other, "out of range"))
-        } else if size < 128 {
-            self.write(&[size as u8])
-        } else {
-            let mut v = Vec::new();
-            let mut s = size;
-
-            while s > 0 {
-                let mut b = (s % 128) as u8;
-
-                s >>= 7;
-
-                if s > 0 {
-                    b |= 0x80;
-                }
-
-                v.push(b);
+            if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
+                dst.put_u16::<BigEndian>(packet_id.unwrap());
             }
 
-            debug!("write variable length {} in {} bytes", size, v.len());
-
-            self.write(&v)
+            dst.put(payload);
         }
+
+        Packet::PublishAck { packet_id } |
+        Packet::PublishReceived { packet_id } |
+        Packet::PublishRelease { packet_id } |
+        Packet::PublishComplete { packet_id } |
+        Packet::UnsubscribeAck { packet_id } => {
+            dst.put_u16::<BigEndian>(packet_id);
+        }
+
+        Packet::Subscribe { packet_id, ref topic_filters } => {
+            dst.put_u16::<BigEndian>(packet_id);
+
+            for &(ref filter, qos) in topic_filters {
+                write_utf8_str(&filter, dst);
+                dst.put_slice(&[qos.into()]);
+            }
+        }
+
+        Packet::SubscribeAck { packet_id, ref status } => {
+            dst.put_u16::<BigEndian>(packet_id);
+
+            let buf: Vec<u8> = status.iter()
+                .map(|s| if let SubscribeReturnCode::Success(qos) = *s {
+                    qos.into()
+                } else {
+                    0x80
+                })
+                .collect();
+
+            dst.put_slice(&buf);
+        }
+
+        Packet::Unsubscribe { packet_id, ref topic_filters } => {
+            dst.put_u16::<BigEndian>(packet_id);
+
+            for ref filter in topic_filters {
+                write_utf8_str(&filter, dst);
+            }
+        }
+
+        Packet::PingRequest | Packet::PingResponse | Packet::Disconnect => {}
     }
 }
 
-/// Extends `Write` with methods for writing packet.
-///
-/// ```
-/// use mqtt::{WritePacketExt, Packet};
-///
-/// let mut v = Vec::new();
-/// let p = Packet::PingResponse;
-///
-/// assert_eq!(v.write_packet(&p).unwrap(), 2);
-/// assert_eq!(v, b"\xd0\x00");
-/// ```
-pub trait WritePacketExt: io::Write {
-    #[inline]
-    /// Writes packet to the underlying writer.
-    fn write_packet(&mut self, packet: &Packet) -> Result<usize> {
-        Ok(self.write_fixed_header(packet)? + self.write_content(packet)?)
+#[inline]
+fn write_utf8_str(s: &String<Bytes>, dst: &mut BytesMut) {
+    dst.put_u16::<BigEndian>(s.len() as u16);
+    dst.put(s.get_ref());
+}
+
+#[inline]
+fn write_fixed_length_bytes(s: &Bytes, dst: &mut BytesMut) {
+    let r = s.as_ref();
+    dst.put_u16::<BigEndian>(r.len() as u16);
+    dst.put(s);
+}
+
+#[inline]
+fn write_variable_length(size: usize, dst: &mut BytesMut) {
+    // todo: verify at higher level
+    // if size > MAX_VARIABLE_LENGTH {
+    //     Err(Error::new(ErrorKind::Other, "out of range"))
+    if size <= 127 {
+        dst.put_u8(size as u8);
+    }
+    else if size <= 16383 { // 127 + 127 << 7
+        dst.put_slice(&[
+            (size % 128 | 0x80) as u8,
+            (size >> 7) as u8]);
+    }
+    else if size <= 2097151 { // 127 + 127 << 7 + 127 << 14
+        dst.put_slice(&[
+            (size % 128 | 0x80) as u8,
+            ((size >> 7) % 128 | 0x80) as u8,
+            (size >> 14) as u8]);
+    }
+    else {
+        dst.put_slice(&[
+            (size % 128 | 0x80) as u8,
+            ((size >> 7) % 128 | 0x80) as u8,
+            ((size >> 14) % 128 | 0x80) as u8,
+            (size >> 21) as u8]);
     }
 }
 
-impl<W: io::Write + ?Sized> WritePacketHelper for W {}
-impl<W: io::Write + ?Sized> WritePacketExt for W {}
+pub fn write_packet(packet: &Packet, dst: &mut BytesMut) {
+    write_fixed_header(packet, dst);
+    write_content(packet, dst);
+}
 
-pub fn calc_remaining_length(packet: &Packet) -> usize {
+pub fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {
         Packet::Connect { ref connect } => {
             match **connect {

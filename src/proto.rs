@@ -2,6 +2,8 @@ use std::fmt::{self, Display, Formatter};
 use std::ops::Deref;
 
 use rand::{thread_rng, Rng};
+use string::String;
+use bytes::Bytes;
 
 #[macro_export]
 macro_rules! const_enum {
@@ -73,35 +75,6 @@ pub enum QoS {
 }
 
 const_enum!(QoS: u8);
-
-#[derive(Debug, PartialEq, Clone, Default)]
-pub struct ClientId(String);
-
-impl ClientId {
-    pub fn new() -> ClientId {
-        Self::with_size(16)
-    }
-
-    pub fn with_size(size: usize) -> ClientId {
-        ClientId(thread_rng().gen_ascii_chars().take(size).collect())
-    }
-}
-
-impl Deref for ClientId {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Display for ClientId {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-pub type PacketId = u16;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Message<'a> {
