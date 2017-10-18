@@ -23,6 +23,7 @@ pub use proto::{QoS, Protocol};
 pub use topic::{Level, Topic, TopicTree, MatchTopic};
 pub use packet::{Packet, LastWill, Connect, ConnectReturnCode, SubscribeReturnCode};
 pub use codec::Codec;
+pub use error::*;
 
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
 pub const TCP_PORT: u16 = 1883;
