@@ -4,8 +4,6 @@ extern crate log;
 extern crate bitflags;
 #[macro_use]
 extern crate error_chain;
-#[macro_use]
-extern crate itertools;
 extern crate rand;
 extern crate byteorder;
 extern crate bytes;

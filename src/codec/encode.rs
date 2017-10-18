@@ -38,17 +38,17 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
                     let mut flags = ConnectFlags::empty();
 
                     if username.is_some() {
-                        flags |= USERNAME;
+                        flags |= ConnectFlags::USERNAME;
                     }
                     if password.is_some() {
-                        flags |= PASSWORD;
+                        flags |= ConnectFlags::PASSWORD;
                     }
 
-                    if let &Some(LastWill { qos, retain, .. }) = last_will {
-                        flags |= WILL;
+                    if let Some(LastWill { qos, retain, .. }) = *last_will {
+                        flags |= ConnectFlags::WILL;
 
                         if retain {
-                            flags |= WILL_RETAIN;
+                            flags |= ConnectFlags::WILL_RETAIN;
                         }
 
                         let b: u8 = qos.into();
@@ -57,7 +57,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
                     }
 
                     if clean_session {
-                        flags |= CLEAN_SESSION;
+                        flags |= ConnectFlags::CLEAN_SESSION;
                     }
 
                     dst.put_slice(&[protocol.level(), flags.bits()]);
@@ -66,16 +66,16 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
 
                     write_utf8_str(client_id, dst);
 
-                    if let &Some(LastWill { ref topic, ref message, .. }) = last_will {
-                        write_utf8_str(&topic, dst);
+                    if let Some(LastWill { ref topic, ref message, .. }) = *last_will {
+                        write_utf8_str(topic, dst);
                         write_fixed_length_bytes(message, dst);
                     }
 
-                    if let &Some(ref s) = username {
-                        write_utf8_str(&s, dst);
+                    if let Some(ref s) = *username {
+                        write_utf8_str(s, dst);
                     }
 
-                    if let &Some(ref s) = password {
+                    if let Some(ref s) = *password {
                         write_fixed_length_bytes(s, dst);
                     }
                 }
@@ -88,7 +88,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
         }
 
         Packet::Publish { qos, ref topic, packet_id, ref payload, .. } => {
-            write_utf8_str(&topic, dst);
+            write_utf8_str(topic, dst);
 
             if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
                 dst.put_u16::<BigEndian>(packet_id.unwrap());
@@ -109,7 +109,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             dst.put_u16::<BigEndian>(packet_id);
 
             for &(ref filter, qos) in topic_filters {
-                write_utf8_str(&filter, dst);
+                write_utf8_str(filter, dst);
                 dst.put_slice(&[qos.into()]);
             }
         }
@@ -131,8 +131,8 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
         Packet::Unsubscribe { packet_id, ref topic_filters } => {
             dst.put_u16::<BigEndian>(packet_id);
 
-            for ref filter in topic_filters {
-                write_utf8_str(&filter, dst);
+            for filter in topic_filters {
+                write_utf8_str(filter, dst);
             }
         }
 
@@ -163,20 +163,20 @@ fn write_variable_length(size: usize, dst: &mut BytesMut) {
     }
     else if size <= 16383 { // 127 + 127 << 7
         dst.put_slice(&[
-            (size % 128 | 0x80) as u8,
+            ((size % 128) | 0x80) as u8,
             (size >> 7) as u8]);
     }
     else if size <= 2097151 { // 127 + 127 << 7 + 127 << 14
         dst.put_slice(&[
-            (size % 128 | 0x80) as u8,
-            ((size >> 7) % 128 | 0x80) as u8,
+            ((size % 128) | 0x80) as u8,
+            (((size >> 7) % 128) | 0x80) as u8,
             (size >> 14) as u8]);
     }
     else {
         dst.put_slice(&[
-            (size % 128 | 0x80) as u8,
-            ((size >> 7) % 128 | 0x80) as u8,
-            ((size >> 14) % 128 | 0x80) as u8,
+            ((size % 128) | 0x80) as u8,
+            (((size >> 7) % 128) | 0x80) as u8,
+            (((size >> 14) % 128) | 0x80) as u8,
             (size >> 21) as u8]);
     }
 }
@@ -199,15 +199,15 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
                     n += 2 + client_id.len();
 
                     // Will Topic + Will Message
-                    if let &Some(LastWill { ref topic, ref message, .. }) = last_will {
+                    if let Some(LastWill { ref topic, ref message, .. }) = *last_will {
                         n += 2 + topic.len() + 2 + message.len();
                     }
 
-                    if let &Some(ref s) = username {
+                    if let Some(ref s) = *username {
                         n += 2 + s.len();
                     }
 
-                    if let &Some(ref s) = password {
+                    if let Some(ref s) = *password {
                         n += 2 + s.len();
                     }
 
@@ -216,17 +216,17 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
             }
         }
 
-        Packet::ConnectAck { .. } => 2, // Flags + Return Code
 
         Packet::Publish { ref topic, packet_id, ref payload, .. } => {
             // Topic + Packet Id + Payload
             2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.len()
         }
 
-        Packet::PublishAck { .. } |
-        Packet::PublishReceived { .. } |
-        Packet::PublishRelease { .. } |
-        Packet::PublishComplete { .. } |
+        Packet::ConnectAck { .. } | // Flags + Return Code
+        Packet::PublishAck { .. } | // Packet Id
+        Packet::PublishReceived { .. } | // Packet Id
+        Packet::PublishRelease { .. } | // Packet Id
+        Packet::PublishComplete { .. } | // Packet Id
         Packet::UnsubscribeAck { .. } => 2, // Packet Id
 
         Packet::Subscribe { ref topic_filters, .. } => {
@@ -236,7 +236,7 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
         Packet::SubscribeAck { ref status, .. } => 2 + status.len(),
 
         Packet::Unsubscribe { ref topic_filters, .. } => {
-            2 + topic_filters.iter().fold(0, |acc, ref filter| acc + 2 + filter.len())
+            2 + topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
         }
 
         Packet::PingRequest | Packet::PingResponse | Packet::Disconnect => 0,

@@ -1,6 +1,6 @@
 use std::io::Cursor;
 use tokio_io::codec::{Decoder, Encoder};
-use bytes::{BytesMut, BufMut};
+use bytes::BytesMut;
 
 use super::Packet;
 use error::*;
@@ -12,21 +12,21 @@ use self::decode::*;
 use self::encode::*;
 
 bitflags! {
-    pub flags ConnectFlags: u8 {
-        const USERNAME      = 0b10000000,
-        const PASSWORD      = 0b01000000,
-        const WILL_RETAIN   = 0b00100000,
-        const WILL_QOS      = 0b00011000,
-        const WILL          = 0b00000100,
-        const CLEAN_SESSION = 0b00000010,
+    pub struct ConnectFlags: u8 {
+        const USERNAME      = 0b1000_0000;
+        const PASSWORD      = 0b0100_0000;
+        const WILL_RETAIN   = 0b0010_0000;
+        const WILL_QOS      = 0b0001_1000;
+        const WILL          = 0b0000_0100;
+        const CLEAN_SESSION = 0b0000_0010;
     }
 }
 
 pub const WILL_QOS_SHIFT: u8 = 3;
 
 bitflags! {
-    pub flags ConnectAckFlags: u8 {
-        const SESSION_PRESENT = 0b00000001,
+    pub struct ConnectAckFlags: u8 {
+        const SESSION_PRESENT = 0b0000_0001;
     }
 }
 
@@ -41,9 +41,13 @@ enum DecodeState {
 }
 
 impl Codec {
-    pub fn new() -> Codec {
+    pub fn new() -> Self {
         Codec { state: DecodeState::FrameHeader }
     }
+}
+
+impl Default for Codec {
+    fn default() -> Self { Self::new() }
 }
 
 impl Decoder for Codec {

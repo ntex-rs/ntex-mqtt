@@ -11,12 +11,11 @@ license = "MIT/Apache-2.0"
 
 [dependencies]
 log = "0.3"
-bitflags = "0.8"
-error-chain = "0.10"
-itertools = "0.5"
+bitflags = "1.0"
+error-chain = "0.11"
 rand = "0.3"
 byteorder = "1.0"
-slab = "0.3"
+slab = "0.4"
 bytes = "0.4"
 string = { git = 'https://github.com/carllerche/string' }
 tokio-io = "0.1"
@@ -24,17 +23,16 @@ tokio-io = "0.1"
 [dev-dependencies]
 env_logger = "^0.3"
 clap = "^2"
-mio = "^0.6"
 
 [lib]
 name = "mqtt"
 
-[[example]]
-name = "echo_server"
-path = "examples/echo_server.rs"
-test = false
+# [[example]]
+# name = "echo_server"
+# path = "examples/echo_server.rs"
+# test = false
 
-[[example]]
-name = "echo_client"
-path = "examples/echo_client.rs"
-test = false
+# [[example]]
+# name = "echo_client"
+# path = "examples/echo_client.rs"
+# test = false

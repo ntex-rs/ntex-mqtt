@@ -1,10 +1,3 @@
-use std::fmt::{self, Display, Formatter};
-use std::ops::Deref;
-
-use rand::{thread_rng, Rng};
-use string::String;
-use bytes::Bytes;
-
 #[macro_export]
 macro_rules! const_enum {
     ($name:ty : $repr:ty) => {
@@ -46,7 +39,7 @@ impl Protocol {
 
 impl Default for Protocol {
     fn default() -> Self {
-        return Protocol::MQTT(DEFAULT_MQTT_LEVEL);
+        Protocol::MQTT(DEFAULT_MQTT_LEVEL)
     }
 }
 
@@ -75,10 +68,3 @@ pub enum QoS {
 }
 
 const_enum!(QoS: u8);
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Message<'a> {
-    pub topic: &'a str,
-    pub payload: &'a [u8],
-    pub qos: QoS,
-}

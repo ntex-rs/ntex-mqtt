@@ -4,7 +4,6 @@ use std::io::Cursor;
 
 use proto::*;
 use packet::*;
-use error::*;
 use super::*;
 
 macro_rules! check_flag {
@@ -81,34 +80,34 @@ fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
     let keep_alive = src.get_u16::<BigEndian>();
     let client_id = decode_utf8_str(src)?;
     ensure!(
-        !client_id.is_empty() || check_flag!(flags, CLEAN_SESSION),
+        !client_id.is_empty() || check_flag!(flags, ConnectFlags::CLEAN_SESSION),
         DecodeError::InvalidClientId
     );
 
-    let topic = if check_flag!(flags, WILL) {
+    let topic = if check_flag!(flags, ConnectFlags::WILL) {
         Some(decode_utf8_str(src)?)
     } else {
         None
     };
-    let message = if check_flag!(flags, WILL) {
+    let message = if check_flag!(flags, ConnectFlags::WILL) {
         Some(decode_length_bytes(src)?)
     } else {
         None
     };
-    let username = if check_flag!(flags, USERNAME) {
+    let username = if check_flag!(flags, ConnectFlags::USERNAME) {
         Some(decode_utf8_str(src)?)
     } else {
         None
     };
-    let password = if check_flag!(flags, PASSWORD) {
+    let password = if check_flag!(flags, ConnectFlags::PASSWORD) {
         Some(decode_length_bytes(src)?)
     } else {
         None
     };
     let last_will = if topic.is_some() {
         Some(LastWill {
-            qos: QoS::from((flags & WILL_QOS.bits()) >> WILL_QOS_SHIFT),
-            retain: check_flag!(flags, WILL_RETAIN),
+            qos: QoS::from((flags & ConnectFlags::WILL_QOS.bits()) >> WILL_QOS_SHIFT),
+            retain: check_flag!(flags, ConnectFlags::WILL_RETAIN),
             topic: topic.unwrap(),
             message: message.unwrap(),
         })
@@ -119,7 +118,7 @@ fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
     Ok(Packet::Connect {
         connect: Box::new(Connect {
             protocol: Protocol::MQTT(level),
-            clean_session: check_flag!(flags, CLEAN_SESSION),
+            clean_session: check_flag!(flags, ConnectFlags::CLEAN_SESSION),
             keep_alive,
             client_id,
             last_will,
@@ -133,13 +132,13 @@ fn decode_connect_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
     ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
     let flags = src.get_u8();
     ensure!(
-        (flags & 0b11111110) == 0,
+        (flags & 0b1111_1110) == 0,
         DecodeError::ConnAckReservedFlagSet
     );
 
     let return_code = src.get_u8();
     Ok(Packet::ConnectAck {
-        session_present: check_flag!(flags, SESSION_PRESENT),
+        session_present: check_flag!(flags, ConnectAckFlags::SESSION_PRESENT),
         return_code: ConnectReturnCode::from(return_code),
     })
 }

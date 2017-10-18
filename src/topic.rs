@@ -61,7 +61,7 @@ impl Level {
     pub fn value(&self) -> Option<&str> {
         match *self {
             Level::Normal(ref s) |
-            Level::Metadata(ref s) => Some(&s),
+            Level::Metadata(ref s) => Some(s),
             _ => None,
         }
     }
@@ -154,13 +154,13 @@ impl Deref for Topic {
     type Target = Vec<Level>;
 
     fn deref(&self) -> &Self::Target {
-        return &self.0;
+        &self.0
     }
 }
 
 impl DerefMut for Topic {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        return &mut self.0;
+        &mut self.0
     }
 }
 
@@ -240,7 +240,7 @@ pub trait MatchTopic {
 
 impl MatchTopic for Topic {
     fn match_topic(&self, topic: &Topic) -> bool {
-        match_topic!(topic, self.0.iter())
+        match_topic!(topic, &self.0)
     }
 }
 
@@ -280,7 +280,7 @@ impl FromStr for Topic {
         s.split('/')
             .map(|level| Level::from_str(level))
             .collect::<Result<Vec<_>>>()
-            .map(|levels| Topic(levels))
+            .map(Topic)
             .and_then(|topic| {
                 if topic.is_valid() {
                     Ok(topic)
@@ -294,7 +294,7 @@ impl FromStr for Topic {
 impl Display for Level {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match *self {
-            Level::Normal(ref s) => f.write_str(s.as_str()),
+            Level::Normal(ref s) |
             Level::Metadata(ref s) => f.write_str(s.as_str()),
             Level::Blank => Ok(()),
             Level::SingleWildcard => f.write_char('+'),
@@ -307,7 +307,7 @@ impl Display for Topic {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let mut first = true;
 
-        for level in self.0.iter() {
+        for level in &self.0 {
             if first {
                 first = false;
             } else {
@@ -324,7 +324,7 @@ impl Display for Topic {
 pub trait WriteTopicExt: io::Write {
     fn write_level(&mut self, level: &Level) -> io::Result<usize> {
         match *level {
-            Level::Normal(ref s) => self.write(s.as_str().as_bytes()),
+            Level::Normal(ref s) |
             Level::Metadata(ref s) => self.write(s.as_str().as_bytes()),
             Level::Blank => Ok(0),
             Level::SingleWildcard => self.write(b"+"),
@@ -415,15 +415,15 @@ struct State {
 
 #[derive(Debug)]
 pub struct TopicTree {
-    topics: Slab<Topic, TopicIdx>,
-    states: Slab<State, StateIdx>,
+    topics: Slab<Topic>,
+    states: Slab<State>,
     root: StateIdx,
 }
 
 impl TopicTree {
     pub fn new() -> TopicTree {
         let mut states = Slab::with_capacity(64);
-        let root = states.insert(Default::default()).ok().unwrap();
+        let root = states.insert(Default::default());
 
         TopicTree {
             topics: Slab::with_capacity(64),
@@ -444,17 +444,9 @@ impl TopicTree {
 
     pub fn add(&mut self, topic: &Topic) {
         let mut cur_state = self.root;
-        let topic_idx = self.topics.iter().position(|ref t| **t == *topic).unwrap_or_else(|| {
-            if !self.topics.has_available() {
-                let cap = self.topics.capacity();
+        let topic_idx = self.topics.iter().find(|&(idx, t)| *t == *topic).map(|(idx, t)| idx).unwrap_or_else(|| self.topics.insert(topic.clone()));
 
-                self.topics.reserve_exact(cap);
-            }
-
-            self.topics.vacant_entry().map(|entry| entry.insert(topic.clone()).index()).unwrap()
-        });
-
-        for level in topic.0.iter() {
+        for level in &topic.0 {
             match *level {
                 Level::Normal(_) |
                 Level::Metadata(_) |
@@ -497,16 +489,7 @@ impl TopicTree {
 
     #[inline]
     fn add_state(&mut self) -> StateIdx {
-        if !self.states.has_available() {
-            let cap = self.states.capacity();
-
-            self.states.reserve_exact(cap);
-        }
-
-        self.states
-            .vacant_entry()
-            .map(|entry| entry.insert(Default::default()).index())
-            .unwrap()
+        self.states.insert(Default::default())
     }
 
     pub fn match_topic(&self, topic: &Topic) -> Option<Vec<&Topic>> {
