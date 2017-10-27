@@ -1,5 +1,5 @@
 use bytes::{BigEndian, Buf, Bytes};
-use string::String;
+use string::{String, TryFrom};
 use std::io::Cursor;
 
 use proto::*;
@@ -213,7 +213,7 @@ fn decode_length_bytes(src: &mut Cursor<Bytes>) -> Result<Bytes> {
 
 fn decode_utf8_str(src: &mut Cursor<Bytes>) -> Result<String<Bytes>> {
     let bytes = decode_length_bytes(src)?;
-    unsafe { Ok(String::from_utf8_unchecked(bytes)) }
+    Ok(String::try_from(bytes)?)
 }
 
 fn take(buf: &mut Cursor<Bytes>, n: usize) -> Bytes {
