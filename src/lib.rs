@@ -1,3 +1,5 @@
+#![feature(proc_macro, conservative_impl_trait, generators, vec_resize_default)]
+
 #[macro_use]
 extern crate log;
 #[macro_use]
@@ -9,7 +11,10 @@ extern crate byteorder;
 extern crate bytes;
 extern crate slab;
 extern crate tokio_io;
+extern crate tokio_core;
 extern crate string;
+#[macro_use]
+extern crate futures_await as futures;
 
 mod error;
 #[macro_use]
@@ -18,12 +23,14 @@ mod topic;
 mod proto;
 mod packet;
 mod codec;
+mod transport;
 
 pub use proto::{QoS, Protocol};
 pub use topic::{Level, Topic, TopicTree, MatchTopic};
 pub use packet::{Packet, LastWill, Connect, ConnectReturnCode, SubscribeReturnCode};
 pub use codec::Codec;
 pub use error::*;
+pub use transport::{Connection, Delivery};
 
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
 pub const TCP_PORT: u16 = 1883;

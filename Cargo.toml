@@ -19,6 +19,8 @@ slab = "0.4"
 bytes = "0.4"
 string = { git = 'https://github.com/carllerche/string' }
 tokio-io = "0.1"
+tokio-core = "0.1"
+futures-await = { git = 'https://github.com/alexcrichton/futures-await' }
 
 [dev-dependencies]
 env_logger = "^0.3"
