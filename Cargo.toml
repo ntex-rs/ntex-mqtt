@@ -17,10 +17,10 @@ rand = "0.3"
 byteorder = "1.0"
 slab = "0.4"
 bytes = "0.4"
-string = { git = 'https://github.com/carllerche/string' }
+string = "0.1"
 tokio-io = "0.1"
 tokio-core = "0.1"
-futures-await = { git = 'https://github.com/alexcrichton/futures-await' }
+futures-await = "0.1"
 
 [dev-dependencies]
 env_logger = "^0.3"

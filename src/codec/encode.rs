@@ -90,7 +90,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
         Packet::Publish { qos, ref topic, packet_id, ref payload, .. } => {
             use SEND_IN_FLIGHT;
             SEND_IN_FLIGHT.fetch_add(1, ::std::sync::atomic::Ordering::SeqCst);
-            println!("{}", topic);
+            println!("{:?}", topic);
             write_utf8_str(topic, dst);
 
             if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
