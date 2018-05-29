@@ -1,4 +1,4 @@
-use bytes::{BigEndian, Buf, Bytes};
+use bytes::{Buf, Bytes};
 use string::{String, TryFrom};
 use std::io::Cursor;
 
@@ -35,9 +35,13 @@ pub(crate) fn read_packet(src: &mut Cursor<Bytes>, header: FixedHeader) -> Resul
         CONNECT => decode_connect_packet(src),
         CONNACK => decode_connect_ack_packet(src),
         PUBLISH => decode_publish_packet(src, header),
-        PUBACK => Ok(Packet::PublishAck {
-            packet_id: read_u16(src)?,
-        }),
+        PUBACK => {
+            use SEND_IN_FLIGHT;
+            SEND_IN_FLIGHT.fetch_sub(1, ::std::sync::atomic::Ordering::SeqCst);
+            Ok(Packet::PublishAck {
+                packet_id: read_u16(src)?,
+            })
+        },
         PUBREC => Ok(Packet::PublishReceived {
             packet_id: read_u16(src)?,
         }),
@@ -62,7 +66,7 @@ pub(crate) fn read_packet(src: &mut Cursor<Bytes>, header: FixedHeader) -> Resul
 
 fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
     ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
-    let len = src.get_u16::<BigEndian>();
+    let len = src.get_u16_be();
     ensure!(len == 4, DecodeError::InvalidProtocol);
 
     ensure!(&src.bytes()[0..4] == b"MQTT", DecodeError::InvalidProtocol);
@@ -77,7 +81,7 @@ fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
     let flags = src.get_u8();
     ensure!((flags & 0x01) == 0, DecodeError::ConnectReservedFlagSet);
 
-    let keep_alive = src.get_u16::<BigEndian>();
+    let keep_alive = src.get_u16_be();
     let client_id = decode_utf8_str(src)?;
     ensure!(
         !client_id.is_empty() || check_flag!(flags, ConnectFlags::CLEAN_SESSION),
@@ -225,7 +229,7 @@ fn take(buf: &mut Cursor<Bytes>, n: usize) -> Bytes {
 
 fn read_u16(src: &mut Cursor<Bytes>) -> Result<u16> {
     ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
-    Ok(src.get_u16::<BigEndian>())
+    Ok(src.get_u16_be())
 }
 
 #[cfg(test)]

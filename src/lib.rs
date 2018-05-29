@@ -1,4 +1,4 @@
-#![feature(proc_macro, conservative_impl_trait, generators, vec_resize_default)]
+#![feature(proc_macro, generators, vec_resize_default)]
 
 #[macro_use]
 extern crate log;
@@ -13,7 +13,6 @@ extern crate slab;
 extern crate tokio_io;
 extern crate tokio_core;
 extern crate string;
-#[macro_use]
 extern crate futures_await as futures;
 
 mod error;
@@ -35,3 +34,5 @@ pub use transport::{Connection, Delivery};
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
 pub const TCP_PORT: u16 = 1883;
 pub const SSL_PORT: u16 = 8883;
+
+pub static SEND_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

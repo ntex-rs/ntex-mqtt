@@ -1,4 +1,4 @@
-use bytes::{BigEndian, Bytes, BytesMut, BufMut};
+use bytes::{Bytes, BytesMut, BufMut};
 use string::String;
 
 use proto::*;
@@ -62,7 +62,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
 
                     dst.put_slice(&[protocol.level(), flags.bits()]);
 
-                    dst.put_u16::<BigEndian>(keep_alive);
+                    dst.put_u16_be(keep_alive);
 
                     write_utf8_str(client_id, dst);
 
@@ -88,10 +88,12 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
         }
 
         Packet::Publish { qos, ref topic, packet_id, ref payload, .. } => {
+            use SEND_IN_FLIGHT;
+            SEND_IN_FLIGHT.fetch_add(1, ::std::sync::atomic::Ordering::SeqCst);
             write_utf8_str(topic, dst);
 
             if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
-                dst.put_u16::<BigEndian>(packet_id.unwrap());
+                dst.put_u16_be(packet_id.unwrap());
             }
 
             dst.put(payload);
@@ -102,11 +104,11 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
         Packet::PublishRelease { packet_id } |
         Packet::PublishComplete { packet_id } |
         Packet::UnsubscribeAck { packet_id } => {
-            dst.put_u16::<BigEndian>(packet_id);
+            dst.put_u16_be(packet_id);
         }
 
         Packet::Subscribe { packet_id, ref topic_filters } => {
-            dst.put_u16::<BigEndian>(packet_id);
+            dst.put_u16_be(packet_id);
 
             for &(ref filter, qos) in topic_filters {
                 write_utf8_str(filter, dst);
@@ -115,7 +117,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
         }
 
         Packet::SubscribeAck { packet_id, ref status } => {
-            dst.put_u16::<BigEndian>(packet_id);
+            dst.put_u16_be(packet_id);
 
             let buf: Vec<u8> = status.iter()
                 .map(|s| if let SubscribeReturnCode::Success(qos) = *s {
@@ -129,7 +131,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
         }
 
         Packet::Unsubscribe { packet_id, ref topic_filters } => {
-            dst.put_u16::<BigEndian>(packet_id);
+            dst.put_u16_be(packet_id);
 
             for filter in topic_filters {
                 write_utf8_str(filter, dst);
@@ -142,14 +144,14 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
 
 #[inline]
 fn write_utf8_str(s: &String<Bytes>, dst: &mut BytesMut) {
-    dst.put_u16::<BigEndian>(s.len() as u16);
+    dst.put_u16_be(s.len() as u16);
     dst.put(s.get_ref());
 }
 
 #[inline]
 fn write_fixed_length_bytes(s: &Bytes, dst: &mut BytesMut) {
     let r = s.as_ref();
-    dst.put_u16::<BigEndian>(r.len() as u16);
+    dst.put_u16_be(r.len() as u16);
     dst.put(s);
 }
 
