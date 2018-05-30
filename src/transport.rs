@@ -141,6 +141,9 @@ impl ConnectionInner {
         if let Some(task) = self.write_task.take() {
             task.notify();
         }
+        else {
+            println!("there was no task around");
+        }
     }
 
     fn set_write_task(&mut self, task: Task) {
@@ -152,6 +155,7 @@ impl ConnectionInner {
             Packet::PublishAck { packet_id } => {
                 if let Some(pending) = self.pending_ack.pop_front() {
                     if pending.0 != packet_id {
+                        println!("protocol violation");
                         // todo: handle protocol violation
                     }
                     pending.1.send(Ok(()));
