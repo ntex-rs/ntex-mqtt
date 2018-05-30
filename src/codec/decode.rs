@@ -36,8 +36,6 @@ pub(crate) fn read_packet(src: &mut Cursor<Bytes>, header: FixedHeader) -> Resul
         CONNACK => decode_connect_ack_packet(src),
         PUBLISH => decode_publish_packet(src, header),
         PUBACK => {
-            use SEND_IN_FLIGHT;
-            SEND_IN_FLIGHT.fetch_sub(1, ::std::sync::atomic::Ordering::SeqCst);
             Ok(Packet::PublishAck {
                 packet_id: read_u16(src)?,
             })
