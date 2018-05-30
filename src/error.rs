@@ -16,6 +16,7 @@ error_chain!{
         Fmt(::std::fmt::Error);
         Io(::std::io::Error);
         Canceled(::futures::Canceled);
+        Canceled2(::futures::unsync::oneshot::Canceled);
         Utf8(::std::str::Utf8Error);
     }
 
