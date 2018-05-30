@@ -146,8 +146,10 @@ impl ConnectionInner {
         }
     }
 
-    fn set_write_task(&mut self, task: Task) {
-        self.write_task = Some(task);
+    fn set_write_task(&mut self) {
+        if self.write_task.is_none() {
+            self.write_task = Some(task::current());
+        }
     }
 
     pub fn handle_packet(&mut self, packet: Packet) {
@@ -267,6 +269,7 @@ impl<T: Sink<SinkItem = Packet, SinkError = Error> + 'static> Future for Connect
                         }
                     }
                 } else {
+                    conn.set_write_task();
                     break;
                 }
             }
@@ -279,7 +282,7 @@ impl<T: Sink<SinkItem = Packet, SinkError = Error> + 'static> Future for Connect
                     Ok(Async::Ready(_)) => {
                         not_ready = false;
                         self.flushed = true;
-                        conn.set_write_task(task::current());
+                        conn.set_write_task();
                     }
                     Ok(Async::NotReady) => (),
                     Err(e) => bail!(e),
