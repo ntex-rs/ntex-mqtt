@@ -1,13 +1,13 @@
 use std::{rc::Rc, cell::RefCell, collections::VecDeque};
+use futures::prelude::*;
 use futures::{future, Future, task::{self, Task}, unsync::oneshot};
-use futures::{Async, AsyncSink, IntoFuture, Poll, Sink, Stream};
+use tokio_io::{AsyncRead, AsyncWrite, codec::Framed};
+use tokio_core::reactor;
 use bytes::Bytes;
 use string::String;
 use proto::{QoS, Protocol};
 use packet::{Packet, Connect, ConnectReturnCode};
 use codec::Codec;
-use tokio_io::{AsyncRead, AsyncWrite, codec::Framed};
-use tokio_core::reactor;
 
 use error::{Error, Result};
 
@@ -297,7 +297,7 @@ impl Future for Delivery {
             return match receiver.poll() {
                 Ok(Async::Ready(r)) => r.map(|state| Async::Ready(state)),
                 Ok(Async::NotReady) => Ok(Async::NotReady),
-                Err(e) => Err(::error::ErrorKind::InvalidState.into())
+                Err(e) => Err(e.into())
             };
         }
 

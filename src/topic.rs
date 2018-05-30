@@ -1,11 +1,11 @@
-use std::io;
-use std::ops::{Deref, DerefMut, Div, DivAssign};
-use std::iter::{Iterator, IntoIterator};
-use std::fmt::{self, Display, Formatter, Write};
-use std::str::FromStr;
-use std::convert::{AsRef, Into};
-use std::collections::HashMap;
-
+use std::{
+    io,
+    fmt::{self, Write},
+    ops::{Deref, DerefMut, Div, DivAssign},
+    iter::{Iterator, IntoIterator},
+    str::FromStr,
+    collections::HashMap
+};
 use slab::Slab;
 
 use error::*;
@@ -291,8 +291,8 @@ impl FromStr for Topic {
     }
 }
 
-impl Display for Level {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+impl fmt::Display for Level {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Level::Normal(ref s) |
             Level::Metadata(ref s) => f.write_str(s.as_str()),
@@ -303,8 +303,8 @@ impl Display for Level {
     }
 }
 
-impl Display for Topic {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+impl fmt::Display for Topic {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut first = true;
 
         for level in &self.0 {

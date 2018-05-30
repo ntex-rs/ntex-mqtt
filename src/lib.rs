@@ -1,5 +1,3 @@
-#![feature(vec_resize_default)]
-
 #[macro_use]
 extern crate log;
 #[macro_use]

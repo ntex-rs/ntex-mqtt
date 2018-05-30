@@ -1,6 +1,6 @@
+use std::io::Cursor;
 use bytes::{Buf, Bytes};
 use string::{String, TryFrom};
-use std::io::Cursor;
 
 use proto::*;
 use packet::*;
