@@ -297,7 +297,7 @@ impl Future for Delivery {
             return match receiver.poll() {
                 Ok(Async::Ready(r)) => r.map(|state| Async::Ready(state)),
                 Ok(Async::NotReady) => Ok(Async::NotReady),
-                Err(e) => Err(e.into())
+                Err(e) => Err(::error::ErrorKind::InvalidState.into())
             };
         }
 
