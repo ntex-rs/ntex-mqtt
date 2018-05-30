@@ -1,18 +1,13 @@
-use futures::prelude::*;
+use std::{rc::Rc, cell::RefCell, collections::VecDeque};
+use futures::{future, Future, task::{self, Task}, unsync::oneshot};
+use futures::{Async, AsyncSink, IntoFuture, Poll, Sink, Stream};
 use bytes::Bytes;
 use string::String;
 use proto::{QoS, Protocol};
 use packet::{Packet, Connect, ConnectReturnCode};
 use codec::Codec;
-use futures::{future, Future};
-use futures::task::{self, Task};
-use futures::unsync::oneshot;
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_io::codec::Framed;
+use tokio_io::{AsyncRead, AsyncWrite, codec::Framed};
 use tokio_core::reactor;
-use std::rc::Rc;
-use std::cell::RefCell;
-use std::collections::VecDeque;
 
 use error::{Error, Result};
 
