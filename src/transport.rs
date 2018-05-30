@@ -45,8 +45,7 @@ pub enum Delivery {
 }
 
 impl Connection {
-    #[async]
-    pub fn open<T: AsyncRead + AsyncWrite + 'static>(client_id: String<Bytes>, handle: reactor::Handle, io: T) -> Result<Connection> {
+    pub fn open<T: AsyncRead + AsyncWrite + 'static>(client_id: String<Bytes>, handle: reactor::Handle, io: T) -> impl Future<Item = Connection, Error = Error> {
         let io = io.framed(Codec::new());
         let connect = Connect {
             protocol: Protocol::default(),
@@ -57,25 +56,28 @@ impl Connection {
             username: None,
             password: None
         };
-        let io = await!(io.send(Packet::Connect { connect: Box::new(connect) } ))?;
-        let (packet_opt, io) = await!(io.into_future()).map_err(|e| e.0)?;
-        if let Some(packet) = packet_opt {
-            if let Packet::ConnectAck { session_present, return_code } = packet {
-                if let ConnectReturnCode::ConnectionAccepted = return_code {
-                    // todo: surface session_present
-                    Ok(Connection::new(handle, io))
+        io.send(Packet::Connect { connect: Box::new(connect) } )
+            .from_err()
+            .and_then(|io| io.into_future().map_err(|e| e.0.into()))
+            .and_then(|(packet_opt, io)| {
+                if let Some(packet) = packet_opt {
+                    if let Packet::ConnectAck { session_present, return_code } = packet {
+                        if let ConnectReturnCode::ConnectionAccepted = return_code {
+                            // todo: surface session_present
+                            Ok(Connection::new(handle, io))
+                        }
+                        else {
+                            Err(return_code.reason().into())
+                        }
+                    }
+                    else {
+                        Err("Protocol violation: expected CONNACK".into())
+                    }
                 }
                 else {
-                    Err(return_code.reason().into())
+                    Err("Connection is closed.".into())
                 }
-            }
-            else {
-                Err("Protocol violation: expected CONNACK".into())
-            }
-        }
-        else {
-            Err("Connection is closed.".into())
-        }
+            })
     }
 
     fn new<T: AsyncRead + AsyncWrite + 'static>(handle: reactor::Handle, io: Framed<T, Codec>) -> Connection {

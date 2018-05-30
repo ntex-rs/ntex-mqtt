@@ -1,4 +1,4 @@
-#![feature(proc_macro, generators, vec_resize_default)]
+#![feature(vec_resize_default)]
 
 #[macro_use]
 extern crate log;
@@ -13,7 +13,7 @@ extern crate slab;
 extern crate tokio_io;
 extern crate tokio_core;
 extern crate string;
-extern crate futures_await as futures;
+extern crate futures;
 
 mod error;
 #[macro_use]
