@@ -82,7 +82,7 @@ impl Connection {
         });
         handle.spawn(read_handling.map_err(|e| {
             // todo: handle error while reading
-            println!("Error reading: {:?}", e);
+            println!("MQTT: Error reading: {:?}", e);
         }));
         handle.spawn(send_fut.map(|_| ()));
         Connection { inner: connection }
