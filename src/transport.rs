@@ -1,6 +1,6 @@
 use std::{rc::Rc, cell::RefCell, collections::VecDeque};
 use futures::prelude::*;
-use futures::{future, Future, task::{self, Task}, unsync::oneshot};
+use futures::{future, Future, task::{self, Task}, unsync::{oneshot, mpsc}};
 use tokio_io::{AsyncRead, AsyncWrite, codec::Framed};
 use tokio_core::reactor;
 use bytes::Bytes;
@@ -20,17 +20,12 @@ pub struct Connection {
 }
 
 pub struct ConnectionInner {
+    write_sender: mpsc::UnboundedSender<Packet>,
     write_queue: VecDeque<Packet>,
     write_task: Option<Task>,
     pending_ack: VecDeque<(u16, DeliveryPromise)>,
     pending_sub_acks: VecDeque<(u16, DeliveryPromise)>,
     next_packet_id: u16
-}
-
-struct ConnectionTransport<T: Sink<SinkItem = Packet, SinkError = Error> + 'static> {
-    sink: T,
-    connection: InnerRef,
-    flushed: bool,
 }
 
 pub enum Delivery {
@@ -77,12 +72,9 @@ impl Connection {
 
     fn new<T: AsyncRead + AsyncWrite + 'static>(handle: reactor::Handle, io: Framed<T, Codec>) -> Connection {
         let (writer, reader) = io.split();
-        let connection = Rc::new(RefCell::new(ConnectionInner::new()));
-        let conn_transport = ConnectionTransport {
-            sink: writer,
-            connection: connection.clone(),
-            flushed: true,
-        };
+        let (tx, rx) = mpsc::unbounded();
+        let connection = Rc::new(RefCell::new(ConnectionInner::new(tx)));
+        let send_fut = writer.sink_map_err(|e| println!("sink err: {}", e)).send_all(rx);
         let reader_conn = connection.clone();
         let read_handling = reader.for_each(move |packet| {
             reader_conn
@@ -94,10 +86,7 @@ impl Connection {
             // todo: handle error while reading
             println!("Error reading: {:?}", e);
         }));
-        handle.spawn(conn_transport.map_err(|e| {
-            // todo: handle error while writing
-            println!("Error writing: {:?}", e);
-        }));
+        handle.spawn(send_fut.map(|_| ()));
         Connection { inner: connection }
     }
 
@@ -118,8 +107,9 @@ impl Connection {
 }
 
 impl ConnectionInner {
-    pub fn new() -> ConnectionInner {
+    pub fn new(sender: mpsc::UnboundedSender<Packet>) -> ConnectionInner {
         ConnectionInner {
+            write_sender: sender,
             write_queue: VecDeque::new(),
             write_task: None,
             pending_ack: VecDeque::new(),
@@ -128,28 +118,8 @@ impl ConnectionInner {
         }
     }
 
-    fn pop_next_packet(&mut self) -> Option<Packet> {
-        self.write_queue.pop_front()
-    }
-
-    fn prepend_packet(&mut self, packet: Packet) {
-        self.write_queue.push_front(packet);
-    }
-
-    pub fn post_packet(&mut self, packet: Packet) {
-        self.write_queue.push_back(packet);
-        if let Some(task) = self.write_task.take() {
-            task.notify();
-        }
-        else {
-            println!("there was no task around");
-        }
-    }
-
-    fn set_write_task(&mut self) {
-        if self.write_task.is_none() {
-            self.write_task = Some(task::current());
-        }
+    pub fn post_packet(&self, packet: Packet) {
+        self.write_sender.unbounded_send(packet);
     }
 
     pub fn handle_packet(&mut self, packet: Packet) {
@@ -236,63 +206,6 @@ impl ConnectionInner {
             self.next_packet_id = packet_id + 1;
         }
         packet_id
-    }
-}
-
-impl<T: Sink<SinkItem = Packet, SinkError = Error> + 'static> Future for ConnectionTransport<T> {
-    type Item = ();
-    type Error = Error;
-
-    // Tick the state machine
-    fn poll(&mut self) -> Poll<(), Error> {
-        // TODO: Always tick the transport first -- heartbeat, etc.
-        // self.dispatch.get_mut().inner.transport().tick();
-
-        let mut conn = self.connection.borrow_mut();
-
-        loop {
-            loop {
-                if let Some(packet) = conn.pop_next_packet() {
-                    match self.sink.start_send(packet) {
-                        Ok(AsyncSink::NotReady(packet)) => {
-                            conn.prepend_packet(packet);
-                            break;
-                        }
-                        Ok(AsyncSink::Ready) => {
-                            //let _ = tx.send(Ok(())); todo: feedback for write out?
-                            self.flushed = false;
-                            continue;
-                        }
-                        Err(e) => {
-                            bail!(e);
-                            // let _ = tx.send(Err(err));
-                        }
-                    }
-                } else {
-                    conn.set_write_task();
-                    break;
-                }
-            }
-
-            let mut not_ready = true;
-
-            // flush sink
-            if !self.flushed {
-                match self.sink.poll_complete() {
-                    Ok(Async::Ready(_)) => {
-                        not_ready = false;
-                        self.flushed = true;
-                        conn.set_write_task();
-                    }
-                    Ok(Async::NotReady) => (),
-                    Err(e) => bail!(e),
-                };
-            }
-
-            if not_ready {
-                return Ok(Async::NotReady);
-            }
-        }
     }
 }
 
