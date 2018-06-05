@@ -1,6 +1,6 @@
 use std::{rc::Rc, cell::RefCell, collections::VecDeque};
 use futures::prelude::*;
-use futures::{future, Future, task::{self, Task}, unsync::{oneshot, mpsc}};
+use futures::{future, Future, unsync::{oneshot, mpsc}};
 use tokio_io::{AsyncRead, AsyncWrite, codec::Framed};
 use tokio_core::reactor;
 use bytes::Bytes;
@@ -21,8 +21,6 @@ pub struct Connection {
 
 pub struct ConnectionInner {
     write_sender: mpsc::UnboundedSender<Packet>,
-    write_queue: VecDeque<Packet>,
-    write_task: Option<Task>,
     pending_ack: VecDeque<(u16, DeliveryPromise)>,
     pending_sub_acks: VecDeque<(u16, DeliveryPromise)>,
     next_packet_id: u16
@@ -110,16 +108,14 @@ impl ConnectionInner {
     pub fn new(sender: mpsc::UnboundedSender<Packet>) -> ConnectionInner {
         ConnectionInner {
             write_sender: sender,
-            write_queue: VecDeque::new(),
-            write_task: None,
             pending_ack: VecDeque::new(),
             pending_sub_acks: VecDeque::new(),
             next_packet_id: 1
         }
     }
 
-    pub fn post_packet(&self, packet: Packet) {
-        self.write_sender.unbounded_send(packet);
+    pub fn post_packet(&self, packet: Packet) -> ::std::result::Result<(), mpsc::SendError<Packet>> {
+        self.write_sender.unbounded_send(packet)
     }
 
     pub fn handle_packet(&mut self, packet: Packet) {
@@ -165,7 +161,9 @@ impl ConnectionInner {
                 packet_id: None,
                 payload
             };
-            self.post_packet(publish);
+            if let Err(e) = self.post_packet(publish) {
+                return Delivery::Resolved(Err(e.into()));
+            }
             Delivery::Resolved(Ok(())) // todo: delay until handed out to network successfully
         }
         else {
@@ -179,7 +177,9 @@ impl ConnectionInner {
                 payload
             };
             let (delivery_tx, delivery_rx) = oneshot::channel();
-            self.post_packet(publish);
+            if let Err(e) = self.post_packet(publish) {
+                return Delivery::Resolved(Err(e.into()));
+            }
             self.pending_ack.push_back((packet_id, delivery_tx));
             Delivery::Pending(delivery_rx)
         }

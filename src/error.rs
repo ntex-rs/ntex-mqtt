@@ -17,6 +17,7 @@ error_chain!{
         Io(::std::io::Error);
         Canceled(::futures::Canceled);
         Utf8(::std::str::Utf8Error);
+        ConnectionGone(::futures::unsync::mpsc::SendError<::packet::Packet>);
     }
 
     errors {
