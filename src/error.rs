@@ -1,4 +1,4 @@
-use std::convert::From;
+use std::{io, str};
 
 #[derive(Debug)]
 pub enum DecodeError {
@@ -8,33 +8,27 @@ pub enum DecodeError {
     ConnectReservedFlagSet,
     ConnAckReservedFlagSet,
     InvalidClientId,
-    UnsupportedPacketType
+    UnsupportedPacketType,
+    IoError(io::Error),
+    Utf8Error(str::Utf8Error),
 }
 
-error_chain!{
-    foreign_links {
-        Fmt(::std::fmt::Error);
-        Io(::std::io::Error);
-        Canceled(::futures::Canceled);
-        Utf8(::std::str::Utf8Error);
-        ConnectionGone(::futures::unsync::mpsc::SendError<::packet::Packet>);
-    }
-
-    errors {
-        DecodeError(e: DecodeError) {
-            description("error occured while decoding")
-            display("error occured while decoding: '{:?}'", e)
-        }
-        OutOfMemory
-        InvalidState
-        InvalidPacket
-        InvalidTopic
-        SpawnError
+impl From<io::Error> for DecodeError {
+    fn from(err: io::Error) -> Self {
+        DecodeError::IoError(err)
     }
 }
 
-impl From<DecodeError> for Error {
-    fn from(v: DecodeError) -> Error {
-        ErrorKind::DecodeError(v).into()
+impl From<str::Utf8Error> for DecodeError {
+    fn from(err: str::Utf8Error) -> Self {
+        DecodeError::Utf8Error(err)
     }
+}
+
+pub enum MqttError {
+    OutOfMemory,
+    InvalidState,
+    InvalidPacket,
+    InvalidTopic,
+    SpawnError,
 }

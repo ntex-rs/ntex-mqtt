@@ -1,5 +1,5 @@
-use proto::{Protocol, QoS};
 use bytes::Bytes;
+use proto::{Protocol, QoS};
 use string::String;
 
 #[repr(u8)]
@@ -84,9 +84,7 @@ pub enum SubscribeReturnCode {
 /// MQTT Control Packets
 pub enum Packet {
     /// Client request to connect to Server
-    Connect {
-        connect: Box<Connect>
-    },
+    Connect { connect: Box<Connect> },
     /// Connect acknowledgment
     ConnectAck {
         /// enables a Client to establish whether the Client and Server have a consistent view
@@ -186,7 +184,9 @@ impl Packet {
     /// Flags specific to each MQTT Control Packet type
     pub fn packet_flags(&self) -> u8 {
         match *self {
-            Packet::Publish { dup, qos, retain, .. } => {
+            Packet::Publish {
+                dup, qos, retain, ..
+            } => {
                 let mut b = qos.into();
 
                 b <<= 1;
@@ -201,9 +201,9 @@ impl Packet {
 
                 b
             }
-            Packet::PublishRelease { .. } |
-            Packet::Subscribe { .. } |
-            Packet::Unsubscribe { .. } => 0b0010,
+            Packet::PublishRelease { .. }
+            | Packet::Subscribe { .. }
+            | Packet::Unsubscribe { .. } => 0b0010,
             _ => 0,
         }
     }

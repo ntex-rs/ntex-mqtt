@@ -1,9 +1,9 @@
-use bytes::{Bytes, BytesMut, BufMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use string::String;
 
-use proto::*;
-use packet::*;
 use super::*;
+use packet::*;
+use proto::*;
 
 pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F
 
@@ -11,10 +11,12 @@ pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F
 fn write_fixed_header(packet: &Packet, dst: &mut BytesMut) {
     let content_size = get_encoded_size(packet);
 
-    debug!("write FixedHeader {{ type={}, flags={}, remaining_length={} }} ",
-            packet.packet_type(),
-            packet.packet_flags(),
-            content_size);
+    debug!(
+        "write FixedHeader {{ type={}, flags={}, remaining_length={} }} ",
+        packet.packet_type(),
+        packet.packet_flags(),
+        content_size
+    );
 
     dst.put_u8((packet.packet_type() << 4) | packet.packet_flags());
     write_variable_length(content_size, dst);
@@ -22,17 +24,18 @@ fn write_fixed_header(packet: &Packet, dst: &mut BytesMut) {
 
 fn write_content(packet: &Packet, dst: &mut BytesMut) {
     match *packet {
-        Packet::Connect{ref connect} => {
+        Packet::Connect { ref connect } => {
             match **connect {
-                Connect {protocol,
-                            clean_session,
-                            keep_alive,
-                            ref last_will,
-                            ref client_id,
-                            ref username,
-                            ref password} =>
-                {
-                    write_fixed_length_bytes(&Bytes::from_static(protocol.name().as_bytes()) , dst);
+                Connect {
+                    protocol,
+                    clean_session,
+                    keep_alive,
+                    ref last_will,
+                    ref client_id,
+                    ref username,
+                    ref password,
+                } => {
+                    write_fixed_length_bytes(&Bytes::from_static(protocol.name().as_bytes()), dst);
                     // write_utf8_str(&protocol.name().to_owned(), dst);
 
                     let mut flags = ConnectFlags::empty();
@@ -66,7 +69,12 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
 
                     write_utf8_str(client_id, dst);
 
-                    if let Some(LastWill { ref topic, ref message, .. }) = *last_will {
+                    if let Some(LastWill {
+                        ref topic,
+                        ref message,
+                        ..
+                    }) = *last_will
+                    {
                         write_utf8_str(topic, dst);
                         write_fixed_length_bytes(message, dst);
                     }
@@ -80,14 +88,25 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
                     }
                 }
             }
-            
         }
 
-        Packet::ConnectAck { session_present, return_code } => {
-            dst.put_slice(&[if session_present { 0x01 } else { 0x00 }, return_code.into()]);
+        Packet::ConnectAck {
+            session_present,
+            return_code,
+        } => {
+            dst.put_slice(&[
+                if session_present { 0x01 } else { 0x00 },
+                return_code.into(),
+            ]);
         }
 
-        Packet::Publish { qos, ref topic, packet_id, ref payload, .. } => {
+        Packet::Publish {
+            qos,
+            ref topic,
+            packet_id,
+            ref payload,
+            ..
+        } => {
             write_utf8_str(topic, dst);
 
             if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
@@ -97,15 +116,18 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             dst.put(payload);
         }
 
-        Packet::PublishAck { packet_id } |
-        Packet::PublishReceived { packet_id } |
-        Packet::PublishRelease { packet_id } |
-        Packet::PublishComplete { packet_id } |
-        Packet::UnsubscribeAck { packet_id } => {
+        Packet::PublishAck { packet_id }
+        | Packet::PublishReceived { packet_id }
+        | Packet::PublishRelease { packet_id }
+        | Packet::PublishComplete { packet_id }
+        | Packet::UnsubscribeAck { packet_id } => {
             dst.put_u16_be(packet_id);
         }
 
-        Packet::Subscribe { packet_id, ref topic_filters } => {
+        Packet::Subscribe {
+            packet_id,
+            ref topic_filters,
+        } => {
             dst.put_u16_be(packet_id);
 
             for &(ref filter, qos) in topic_filters {
@@ -114,21 +136,29 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             }
         }
 
-        Packet::SubscribeAck { packet_id, ref status } => {
+        Packet::SubscribeAck {
+            packet_id,
+            ref status,
+        } => {
             dst.put_u16_be(packet_id);
 
-            let buf: Vec<u8> = status.iter()
-                .map(|s| if let SubscribeReturnCode::Success(qos) = *s {
-                    qos.into()
-                } else {
-                    0x80
-                })
-                .collect();
+            let buf: Vec<u8> = status
+                .iter()
+                .map(|s| {
+                    if let SubscribeReturnCode::Success(qos) = *s {
+                        qos.into()
+                    } else {
+                        0x80
+                    }
+                }).collect();
 
             dst.put_slice(&buf);
         }
 
-        Packet::Unsubscribe { packet_id, ref topic_filters } => {
+        Packet::Unsubscribe {
+            packet_id,
+            ref topic_filters,
+        } => {
             dst.put_u16_be(packet_id);
 
             for filter in topic_filters {
@@ -160,24 +190,23 @@ fn write_variable_length(size: usize, dst: &mut BytesMut) {
     //     Err(Error::new(ErrorKind::Other, "out of range"))
     if size <= 127 {
         dst.put_u8(size as u8);
-    }
-    else if size <= 16383 { // 127 + 127 << 7
-        dst.put_slice(&[
-            ((size % 128) | 0x80) as u8,
-            (size >> 7) as u8]);
-    }
-    else if size <= 2097151 { // 127 + 127 << 7 + 127 << 14
+    } else if size <= 16383 {
+        // 127 + 127 << 7
+        dst.put_slice(&[((size % 128) | 0x80) as u8, (size >> 7) as u8]);
+    } else if size <= 2097151 {
+        // 127 + 127 << 7 + 127 << 14
         dst.put_slice(&[
             ((size % 128) | 0x80) as u8,
             (((size >> 7) % 128) | 0x80) as u8,
-            (size >> 14) as u8]);
-    }
-    else {
+            (size >> 14) as u8,
+        ]);
+    } else {
         dst.put_slice(&[
             ((size % 128) | 0x80) as u8,
             (((size >> 7) % 128) | 0x80) as u8,
             (((size >> 14) % 128) | 0x80) as u8,
-            (size >> 21) as u8]);
+            (size >> 21) as u8,
+        ]);
     }
 }
 
@@ -247,11 +276,11 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
 mod tests {
     //extern crate env_logger;
 
-    use proto::*;
-    use packet::*;
-    use decode::*;
     use super::*;
     use bytes::Bytes;
+    use decode::*;
+    use packet::*;
+    use proto::*;
 
     #[test]
     fn test_encode_variable_length() {
@@ -314,91 +343,111 @@ mod tests {
             assert_eq!(v.write_packet(&$p).unwrap(), $data.len());
             assert_eq!(v, $data);
             assert_eq!(read_packet($data).unwrap(), (&b""[..], $p));
-        }
+        };
     }
 
     #[test]
     fn test_encode_connect_packets() {
-        assert_packet!(Packet::Connect {
-                           protocol: Protocol::MQTT(4),
-                           clean_session: false,
-                           keep_alive: 60,
-                           client_id: "12345".to_owned(),
-                           last_will: None,
-                           username: Some("user".to_owned()),
-                           password: Some(Bytes::from(&b"pass"[..])),
-                       },
-                       &b"\x10\x1D\x00\x04MQTT\x04\xC0\x00\x3C\x00\
-\x0512345\x00\x04user\x00\x04pass"[..]);
+        assert_packet!(
+            Packet::Connect {
+                protocol: Protocol::MQTT(4),
+                clean_session: false,
+                keep_alive: 60,
+                client_id: "12345".to_owned(),
+                last_will: None,
+                username: Some("user".to_owned()),
+                password: Some(Bytes::from(&b"pass"[..])),
+            },
+            &b"\x10\x1D\x00\x04MQTT\x04\xC0\x00\x3C\x00\
+\x0512345\x00\x04user\x00\x04pass"[..]
+        );
 
-        assert_packet!(Packet::Connect {
-                           protocol: Protocol::MQTT(4),
-                           clean_session: false,
-                           keep_alive: 60,
-                           client_id: "12345".to_owned(),
-                           last_will: Some(LastWill {
-                               qos: QoS::ExactlyOnce,
-                               retain: false,
-                               topic: "topic".to_owned(),
-                               message: Bytes::from(&b"message"[..]),
-                           }),
-                           username: None,
-                           password: None,
-                       },
-                       &b"\x10\x21\x00\x04MQTT\x04\x14\x00\x3C\x00\
-\x0512345\x00\x05topic\x00\x07message"[..]);
+        assert_packet!(
+            Packet::Connect {
+                protocol: Protocol::MQTT(4),
+                clean_session: false,
+                keep_alive: 60,
+                client_id: "12345".to_owned(),
+                last_will: Some(LastWill {
+                    qos: QoS::ExactlyOnce,
+                    retain: false,
+                    topic: "topic".to_owned(),
+                    message: Bytes::from(&b"message"[..]),
+                }),
+                username: None,
+                password: None,
+            },
+            &b"\x10\x21\x00\x04MQTT\x04\x14\x00\x3C\x00\
+\x0512345\x00\x05topic\x00\x07message"[..]
+        );
 
         assert_packet!(Packet::Disconnect, b"\xe0\x00");
     }
 
     #[test]
     fn test_encode_publish_packets() {
-        assert_packet!(Packet::Publish {
-                           dup: true,
-                           retain: true,
-                           qos: QoS::ExactlyOnce,
-                           topic: "topic".to_owned(),
-                           packet_id: Some(0x4321),
-                           payload: PayloadPromise::from(&b"data"[..]),
-                       },
-                       b"\x3d\x0D\x00\x05topic\x43\x21data");
+        assert_packet!(
+            Packet::Publish {
+                dup: true,
+                retain: true,
+                qos: QoS::ExactlyOnce,
+                topic: "topic".to_owned(),
+                packet_id: Some(0x4321),
+                payload: PayloadPromise::from(&b"data"[..]),
+            },
+            b"\x3d\x0D\x00\x05topic\x43\x21data"
+        );
 
-        assert_packet!(Packet::Publish {
-                           dup: false,
-                           retain: false,
-                           qos: QoS::AtMostOnce,
-                           topic: "topic".to_owned(),
-                           packet_id: None,
-                           payload: PayloadPromise::from(&b"data"[..]),
-                       },
-                       b"\x30\x0b\x00\x05topicdata");
+        assert_packet!(
+            Packet::Publish {
+                dup: false,
+                retain: false,
+                qos: QoS::AtMostOnce,
+                topic: "topic".to_owned(),
+                packet_id: None,
+                payload: PayloadPromise::from(&b"data"[..]),
+            },
+            b"\x30\x0b\x00\x05topicdata"
+        );
     }
 
     #[test]
     fn test_encode_subscribe_packets() {
-        assert_packet!(Packet::Subscribe {
-                           packet_id: 0x1234,
-                           topic_filters: vec![("test".to_owned(), QoS::AtLeastOnce),
-                                               ("filter".to_owned(), QoS::ExactlyOnce)],
-                       },
-                       b"\x82\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02");
+        assert_packet!(
+            Packet::Subscribe {
+                packet_id: 0x1234,
+                topic_filters: vec![
+                    ("test".to_owned(), QoS::AtLeastOnce),
+                    ("filter".to_owned(), QoS::ExactlyOnce)
+                ],
+            },
+            b"\x82\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02"
+        );
 
-        assert_packet!(Packet::SubscribeAck {
-                           packet_id: 0x1234,
-                           status: vec![SubscribeReturnCode::Success(QoS::AtLeastOnce),
-                                        SubscribeReturnCode::Failure,
-                                        SubscribeReturnCode::Success(QoS::ExactlyOnce)],
-                       },
-                       b"\x90\x05\x12\x34\x01\x80\x02");
+        assert_packet!(
+            Packet::SubscribeAck {
+                packet_id: 0x1234,
+                status: vec![
+                    SubscribeReturnCode::Success(QoS::AtLeastOnce),
+                    SubscribeReturnCode::Failure,
+                    SubscribeReturnCode::Success(QoS::ExactlyOnce)
+                ],
+            },
+            b"\x90\x05\x12\x34\x01\x80\x02"
+        );
 
-        assert_packet!(Packet::Unsubscribe {
-                           packet_id: 0x1234,
-                           topic_filters: vec!["test".to_owned(), "filter".to_owned()],
-                       },
-                       b"\xa2\x10\x12\x34\x00\x04test\x00\x06filter");
+        assert_packet!(
+            Packet::Unsubscribe {
+                packet_id: 0x1234,
+                topic_filters: vec!["test".to_owned(), "filter".to_owned()],
+            },
+            b"\xa2\x10\x12\x34\x00\x04test\x00\x06filter"
+        );
 
-        assert_packet!(Packet::UnsubscribeAck { packet_id: 0x4321 },
-                       b"\xb0\x02\x43\x21");
+        assert_packet!(
+            Packet::UnsubscribeAck { packet_id: 0x4321 },
+            b"\xb0\x02\x43\x21"
+        );
     }
 
     #[test]

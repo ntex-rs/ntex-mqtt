@@ -1,6 +1,6 @@
 #![feature(test)]
-extern crate test;
 extern crate mqtt;
+extern crate test;
 
 use test::Bencher;
 
@@ -112,9 +112,11 @@ fn bench_encode_subscribe_packets(b: &mut Bencher) {
 fn bench_encode_subscribe_ack_packets(b: &mut Bencher) {
     let p = Packet::SubscribeAck {
         packet_id: 0x1234,
-        status: vec![SubscribeReturnCode::Success(QoS::AtLeastOnce),
-                     SubscribeReturnCode::Failure,
-                     SubscribeReturnCode::Success(QoS::ExactlyOnce)],
+        status: vec![
+            SubscribeReturnCode::Success(QoS::AtLeastOnce),
+            SubscribeReturnCode::Failure,
+            SubscribeReturnCode::Success(QoS::ExactlyOnce),
+        ],
     };
 
     let mut v = Vec::new();
@@ -155,18 +157,20 @@ fn bench_match_topic(b: &mut Bencher) {
 
 #[bench]
 fn bench_match_topic_tree(b: &mut Bencher) {
-    let tree = TopicTree::build(vec![topic!("sport/tennis/+"),
-                                     topic!("sport/tennis/player1"),
-                                     topic!("sport/tennis/player1/#"),
-                                     topic!("sport/#"),
-                                     topic!("sport/+"),
-                                     topic!("#"),
-                                     topic!("+"),
-                                     topic!("+/+"),
-                                     topic!("/+"),
-                                     topic!("$SYS/#"),
-                                     topic!("$SYS/monitor/+"),
-                                     topic!("+/monitor/Clients")]);
+    let tree = TopicTree::build(vec![
+        topic!("sport/tennis/+"),
+        topic!("sport/tennis/player1"),
+        topic!("sport/tennis/player1/#"),
+        topic!("sport/#"),
+        topic!("sport/+"),
+        topic!("#"),
+        topic!("+"),
+        topic!("+/+"),
+        topic!("/+"),
+        topic!("$SYS/#"),
+        topic!("$SYS/monitor/+"),
+        topic!("+/monitor/Clients"),
+    ]);
     let t = topic!("sport/tennis/player1");
 
     b.iter(|| tree.match_topic(&t))

@@ -6,13 +6,13 @@ macro_rules! const_enum {
                 unsafe { ::std::mem::transmute(u) }
             }
         }
-
+        
         impl ::std::convert::Into<$repr> for $name {
             fn into(self) -> $repr {
                 unsafe { ::std::mem::transmute(self) }
             }
         }
-    }
+    };
 }
 
 pub const DEFAULT_MQTT_LEVEL: u8 = 4;

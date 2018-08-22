@@ -1,12 +1,12 @@
-use std::io::Cursor;
-use tokio_io::codec::{Decoder, Encoder};
 use bytes::BytesMut;
+use std::io::Cursor;
+use tokio_codec::{Decoder, Encoder};
 
 use super::Packet;
-use error::*;
+use error::DecodeError;
 
-mod encode;
 mod decode;
+mod encode;
 
 use self::decode::*;
 use self::encode::*;
@@ -31,7 +31,7 @@ bitflags! {
 }
 
 pub struct Codec {
-    state: DecodeState
+    state: DecodeState,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,19 +42,23 @@ enum DecodeState {
 
 impl Codec {
     pub fn new() -> Self {
-        Codec { state: DecodeState::FrameHeader }
+        Codec {
+            state: DecodeState::FrameHeader,
+        }
     }
 }
 
 impl Default for Codec {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Decoder for Codec {
     type Item = Packet;
-    type Error = Error;
+    type Error = DecodeError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
         loop {
             match self.state {
                 DecodeState::FrameHeader => {
@@ -76,12 +80,12 @@ impl Decoder for Codec {
                                 src.reserve(remaining_length); // extend receiving buffer to fit the whole frame -- todo: too eager?
                                 return Ok(None);
                             }
-                        },
+                        }
                         None => {
                             return Ok(None);
                         }
                     }
-                },
+                }
                 DecodeState::Frame(fixed) => {
                     if src.len() < fixed.remaining_length {
                         return Ok(None);
@@ -100,9 +104,9 @@ impl Decoder for Codec {
 
 impl Encoder for Codec {
     type Item = Packet;
-    type Error = Error;
+    type Error = DecodeError;
 
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<()> {
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), DecodeError> {
         let content_size = get_encoded_size(&item);
         dst.reserve(content_size + 5);
         write_packet(&item, dst);

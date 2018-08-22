@@ -1,17 +1,35 @@
-use std::io::Cursor;
 use bytes::{Buf, Bytes};
+use std::io::Cursor;
 use string::{String, TryFrom};
 
-use proto::*;
-use packet::*;
 use super::*;
+use packet::*;
+use proto::*;
+
+use error::DecodeError;
 
 macro_rules! check_flag {
-    ($flags:expr, $flag:expr) => (($flags & $flag.bits()) == $flag.bits())
+    ($flags:expr, $flag:expr) => {
+        ($flags & $flag.bits()) == $flag.bits()
+    };
 }
 
-pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>> {
-    if let Some((len, consumed, more)) = src.iter()
+macro_rules! ensure {
+    ($cond:expr, $e:expr) => {
+        if !($cond) {
+            return Err($e);
+        }
+    };
+    ($cond:expr, $fmt:expr, $($arg:tt)+) => {
+        if !($cond) {
+            return Err($fmt, $($arg)+);
+        }
+    };
+}
+
+pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>, DecodeError> {
+    if let Some((len, consumed, more)) = src
+        .iter()
         .enumerate()
         .scan((0, true), |state, (idx, x)| {
             if !state.1 || idx > 3 {
@@ -20,8 +38,7 @@ pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>> {
             state.0 += ((x & 0x7F) as usize) << (idx * 7);
             state.1 = x & 0x80 != 0;
             Some((state.0, idx + 1, state.1))
-        })
-        .last()
+        }).last()
     {
         ensure!(!more || consumed < 4, DecodeError::InvalidLength);
         return Ok(Some((len, consumed)));
@@ -30,16 +47,17 @@ pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>> {
     Ok(None)
 }
 
-pub(crate) fn read_packet(src: &mut Cursor<Bytes>, header: FixedHeader) -> Result<Packet> {
+pub(crate) fn read_packet(
+    src: &mut Cursor<Bytes>,
+    header: FixedHeader,
+) -> Result<Packet, DecodeError> {
     match header.packet_type {
         CONNECT => decode_connect_packet(src),
         CONNACK => decode_connect_ack_packet(src),
         PUBLISH => decode_publish_packet(src, header),
-        PUBACK => {
-            Ok(Packet::PublishAck {
-                packet_id: read_u16(src)?,
-            })
-        },
+        PUBACK => Ok(Packet::PublishAck {
+            packet_id: read_u16(src)?,
+        }),
         PUBREC => Ok(Packet::PublishReceived {
             packet_id: read_u16(src)?,
         }),
@@ -62,7 +80,7 @@ pub(crate) fn read_packet(src: &mut Cursor<Bytes>, header: FixedHeader) -> Resul
     }
 }
 
-fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
+fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet, DecodeError> {
     ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
     let len = src.get_u16_be();
     ensure!(len == 4, DecodeError::InvalidProtocol);
@@ -130,7 +148,7 @@ fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
     })
 }
 
-fn decode_connect_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
+fn decode_connect_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet, DecodeError> {
     ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
     let flags = src.get_u8();
     ensure!(
@@ -145,7 +163,10 @@ fn decode_connect_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
     })
 }
 
-fn decode_publish_packet(src: &mut Cursor<Bytes>, header: FixedHeader) -> Result<Packet> {
+fn decode_publish_packet(
+    src: &mut Cursor<Bytes>,
+    header: FixedHeader,
+) -> Result<Packet, DecodeError> {
     let topic = decode_utf8_str(src)?;
     let qos = QoS::from((header.packet_flags & 0b0110) >> 1);
     let packet_id = if qos == QoS::AtMostOnce {
@@ -167,7 +188,7 @@ fn decode_publish_packet(src: &mut Cursor<Bytes>, header: FixedHeader) -> Result
     })
 }
 
-fn decode_subscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
+fn decode_subscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet, DecodeError> {
     let packet_id = read_u16(src)?;
     let mut topic_filters = Vec::new();
     while src.remaining() > 0 {
@@ -183,19 +204,21 @@ fn decode_subscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
     })
 }
 
-fn decode_subscribe_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
+fn decode_subscribe_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet, DecodeError> {
     let packet_id = read_u16(src)?;
-    let status = src.iter()
-        .map(|code| if code == 0x80 {
-            SubscribeReturnCode::Failure
-        } else {
-            SubscribeReturnCode::Success(QoS::from(code & 0x03))
-        })
-        .collect();
+    let status = src
+        .iter()
+        .map(|code| {
+            if code == 0x80 {
+                SubscribeReturnCode::Failure
+            } else {
+                SubscribeReturnCode::Success(QoS::from(code & 0x03))
+            }
+        }).collect();
     Ok(Packet::SubscribeAck { packet_id, status })
 }
 
-fn decode_unsubscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
+fn decode_unsubscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet, DecodeError> {
     let packet_id = read_u16(src)?;
     let mut topic_filters = Vec::new();
     while src.remaining() > 0 {
@@ -207,13 +230,13 @@ fn decode_unsubscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet> {
     })
 }
 
-fn decode_length_bytes(src: &mut Cursor<Bytes>) -> Result<Bytes> {
+fn decode_length_bytes(src: &mut Cursor<Bytes>) -> Result<Bytes, DecodeError> {
     let len = read_u16(src)? as usize;
     ensure!(src.remaining() >= len, DecodeError::InvalidLength);
     Ok(take(src, len))
 }
 
-fn decode_utf8_str(src: &mut Cursor<Bytes>) -> Result<String<Bytes>> {
+fn decode_utf8_str(src: &mut Cursor<Bytes>) -> Result<String<Bytes>, DecodeError> {
     let bytes = decode_length_bytes(src)?;
     Ok(String::try_from(bytes)?)
 }
@@ -225,7 +248,7 @@ fn take(buf: &mut Cursor<Bytes>, n: usize) -> Bytes {
     ret
 }
 
-fn read_u16(src: &mut Cursor<Bytes>) -> Result<u16> {
+fn read_u16(src: &mut Cursor<Bytes>) -> Result<u16, DecodeError> {
     ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
     Ok(src.get_u16_be())
 }
@@ -234,12 +257,12 @@ fn read_u16(src: &mut Cursor<Bytes>) -> Result<u16> {
 mod tests {
     //extern crate env_logger;
 
-    use nom::{ErrorKind, Needed};
     use nom::IResult::{Done, Error, Incomplete};
+    use nom::{ErrorKind, Needed};
 
-    use proto::*;
-    use packet::*;
     use super::*;
+    use packet::*;
+    use proto::*;
 
     #[test]
     fn test_decode_variable_length() {

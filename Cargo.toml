@@ -10,17 +10,16 @@ keywords = ["MQTT", "IoT", "messaging"]
 license = "MIT/Apache-2.0"
 
 [dependencies]
-log = "0.3"
+log = "0.4"
 bitflags = "1.0"
-error-chain = "0.11"
 rand = "0.3"
 byteorder = "1.0"
 slab = "0.4"
 bytes = "0.4"
 string = "0.1"
-tokio-io = "0.1"
-tokio-core = "0.1"
 futures = "0.1"
+tokio-io = "0.1"
+tokio-codec = "0.1"
 
 [dev-dependencies]
 env_logger = "^0.3"
