@@ -9,7 +9,6 @@ extern crate rand;
 extern crate slab;
 extern crate string;
 extern crate tokio_codec;
-extern crate tokio_io;
 
 mod error;
 #[macro_use]
