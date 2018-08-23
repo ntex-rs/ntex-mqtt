@@ -30,6 +30,7 @@ bitflags! {
     }
 }
 
+#[derive(Debug)]
 pub struct Codec {
     state: DecodeState,
 }
