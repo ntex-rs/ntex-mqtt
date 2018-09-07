@@ -25,10 +25,18 @@ impl From<str::Utf8Error> for DecodeError {
     }
 }
 
+#[derive(Debug)]
 pub enum MqttError {
     OutOfMemory,
     InvalidState,
     InvalidPacket,
     InvalidTopic,
     SpawnError,
+    Decode(DecodeError),
+}
+
+impl From<DecodeError> for MqttError {
+    fn from(err: DecodeError) -> Self {
+        MqttError::Decode(err)
+    }
 }
