@@ -157,6 +157,9 @@ pub enum Packet {
     PingResponse,
     /// Client is disconnecting
     Disconnect,
+
+    /// No response
+    Empty,
 }
 
 impl Packet {
@@ -178,6 +181,7 @@ impl Packet {
             Packet::PingRequest => PINGREQ,
             Packet::PingResponse => PINGRESP,
             Packet::Disconnect => DISCONNECT,
+            Packet::Empty => DISCONNECT,
         }
     }
 
