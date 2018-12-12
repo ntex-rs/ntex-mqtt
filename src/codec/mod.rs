@@ -108,9 +108,14 @@ impl Encoder for Codec {
     type Error = DecodeError;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), DecodeError> {
-        let content_size = get_encoded_size(&item);
-        dst.reserve(content_size + 5);
-        write_packet(&item, dst);
+        match item {
+            Packet::Empty => (),
+            _ => {
+                let content_size = get_encoded_size(&item);
+                dst.reserve(content_size + 5);
+                write_packet(&item, dst);
+            }
+        }
         Ok(())
     }
 }
