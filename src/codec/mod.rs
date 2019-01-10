@@ -74,7 +74,7 @@ impl Decoder for Codec {
                             self.state = DecodeState::Frame(FixedHeader {
                                 packet_type: fixed >> 4,
                                 packet_flags: fixed & 0xF,
-                                remaining_length: remaining_length,
+                                remaining_length,
                             });
                             // todo: validate remaining_length against max frame size config
                             if src.len() < remaining_length {

@@ -181,7 +181,7 @@ impl MatchLevel for Level {
                     false
                 }
             }
-            Level::Blank => *self == *self,
+            Level::Blank => true,
             Level::SingleWildcard | Level::MultiWildcard => !self.is_metadata(),
         }
     }
@@ -409,15 +409,21 @@ pub struct TopicTree {
     root: StateIdx,
 }
 
+impl Default for TopicTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TopicTree {
     pub fn new() -> TopicTree {
         let mut states = Slab::with_capacity(64);
         let root = states.insert(Default::default());
 
         TopicTree {
+            states,
+            root,
             topics: Slab::with_capacity(64),
-            states: states,
-            root: root,
         }
     }
 

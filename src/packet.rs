@@ -26,8 +26,8 @@ pub enum ConnectReturnCode {
 const_enum!(ConnectReturnCode: u8);
 
 impl ConnectReturnCode {
-    pub fn reason(&self) -> &'static str {
-        match *self {
+    pub fn reason(self) -> &'static str {
+        match self {
             ConnectReturnCode::ConnectionAccepted => "Connection Accepted",
             ConnectReturnCode::UnacceptableProtocolVersion => {
                 "Connection Refused, unacceptable protocol version"

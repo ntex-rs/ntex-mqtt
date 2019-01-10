@@ -78,7 +78,7 @@ pub(crate) fn read_packet(
         PINGREQ => Ok(Packet::PingRequest),
         PINGRESP => Ok(Packet::PingResponse),
         DISCONNECT => Ok(Packet::Disconnect),
-        _ => Err(DecodeError::UnsupportedPacketType.into()),
+        _ => Err(DecodeError::UnsupportedPacketType),
     }
 }
 

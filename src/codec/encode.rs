@@ -1,94 +1,80 @@
-use bytes::{BufMut, Bytes, BytesMut};
-use string::String;
+use bytes::{BufMut, BytesMut};
 
 use super::*;
 use crate::packet::*;
 use crate::proto::*;
 
-// pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F
-
 #[inline]
 fn write_fixed_header(packet: &Packet, dst: &mut BytesMut) {
     let content_size = get_encoded_size(packet);
-
-    debug!(
-        "write FixedHeader {{ type={}, flags={}, remaining_length={} }} ",
-        packet.packet_type(),
-        packet.packet_flags(),
-        content_size
-    );
-
     dst.put_u8((packet.packet_type() << 4) | packet.packet_flags());
     write_variable_length(content_size, dst);
 }
 
 fn write_content(packet: &Packet, dst: &mut BytesMut) {
     match *packet {
-        Packet::Connect { ref connect } => {
-            match **connect {
-                Connect {
-                    protocol,
-                    clean_session,
-                    keep_alive,
-                    ref last_will,
-                    ref client_id,
-                    ref username,
-                    ref password,
-                } => {
-                    write_fixed_length_bytes(&Bytes::from_static(protocol.name().as_bytes()), dst);
-                    // write_utf8_str(&protocol.name().to_owned(), dst);
+        Packet::Connect { ref connect } => match **connect {
+            Connect {
+                protocol,
+                clean_session,
+                keep_alive,
+                ref last_will,
+                ref client_id,
+                ref username,
+                ref password,
+            } => {
+                write_slice(protocol.name().as_bytes(), dst);
 
-                    let mut flags = ConnectFlags::empty();
+                let mut flags = ConnectFlags::empty();
 
-                    if username.is_some() {
-                        flags |= ConnectFlags::USERNAME;
-                    }
-                    if password.is_some() {
-                        flags |= ConnectFlags::PASSWORD;
-                    }
+                if username.is_some() {
+                    flags |= ConnectFlags::USERNAME;
+                }
+                if password.is_some() {
+                    flags |= ConnectFlags::PASSWORD;
+                }
 
-                    if let Some(LastWill { qos, retain, .. }) = *last_will {
-                        flags |= ConnectFlags::WILL;
+                if let Some(LastWill { qos, retain, .. }) = *last_will {
+                    flags |= ConnectFlags::WILL;
 
-                        if retain {
-                            flags |= ConnectFlags::WILL_RETAIN;
-                        }
-
-                        let b: u8 = qos.into();
-
-                        flags |= ConnectFlags::from_bits_truncate(b << WILL_QOS_SHIFT);
+                    if retain {
+                        flags |= ConnectFlags::WILL_RETAIN;
                     }
 
-                    if clean_session {
-                        flags |= ConnectFlags::CLEAN_SESSION;
-                    }
+                    let b: u8 = qos.into();
 
-                    dst.put_slice(&[protocol.level(), flags.bits()]);
+                    flags |= ConnectFlags::from_bits_truncate(b << WILL_QOS_SHIFT);
+                }
 
-                    dst.put_u16_be(keep_alive);
+                if clean_session {
+                    flags |= ConnectFlags::CLEAN_SESSION;
+                }
 
-                    write_utf8_str(client_id, dst);
+                dst.put_slice(&[protocol.level(), flags.bits()]);
 
-                    if let Some(LastWill {
-                        ref topic,
-                        ref message,
-                        ..
-                    }) = *last_will
-                    {
-                        write_utf8_str(topic, dst);
-                        write_fixed_length_bytes(message, dst);
-                    }
+                dst.put_u16_be(keep_alive);
 
-                    if let Some(ref s) = *username {
-                        write_utf8_str(s, dst);
-                    }
+                write_slice(client_id.as_bytes(), dst);
 
-                    if let Some(ref s) = *password {
-                        write_fixed_length_bytes(s, dst);
-                    }
+                if let Some(LastWill {
+                    ref topic,
+                    ref message,
+                    ..
+                }) = *last_will
+                {
+                    write_slice(topic.as_bytes(), dst);
+                    write_slice(&message, dst);
+                }
+
+                if let Some(ref s) = *username {
+                    write_slice(s.as_bytes(), dst);
+                }
+
+                if let Some(ref s) = *password {
+                    write_slice(s, dst);
                 }
             }
-        }
+        },
 
         Packet::ConnectAck {
             session_present,
@@ -107,7 +93,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             ref payload,
             ..
         } => {
-            write_utf8_str(topic, dst);
+            write_slice(topic.as_bytes(), dst);
 
             if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
                 dst.put_u16_be(packet_id.unwrap());
@@ -131,7 +117,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             dst.put_u16_be(packet_id);
 
             for &(ref filter, qos) in topic_filters {
-                write_utf8_str(filter, dst);
+                write_slice(filter.as_ref(), dst);
                 dst.put_slice(&[qos.into()]);
             }
         }
@@ -163,7 +149,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             dst.put_u16_be(packet_id);
 
             for filter in topic_filters {
-                write_utf8_str(filter, dst);
+                write_slice(filter.as_ref(), dst);
             }
         }
 
@@ -172,16 +158,9 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
 }
 
 #[inline]
-fn write_utf8_str(s: &String<Bytes>, dst: &mut BytesMut) {
-    dst.put_u16_be(s.len() as u16);
-    dst.put(s.get_ref());
-}
-
-#[inline]
-fn write_fixed_length_bytes(s: &Bytes, dst: &mut BytesMut) {
-    let r = s.as_ref();
+fn write_slice(r: &[u8], dst: &mut BytesMut) {
     dst.put_u16_be(r.len() as u16);
-    dst.put(s);
+    dst.put_slice(r);
 }
 
 #[inline]
@@ -194,7 +173,7 @@ fn write_variable_length(size: usize, dst: &mut BytesMut) {
     } else if size <= 16383 {
         // 127 + 127 << 7
         dst.put_slice(&[((size % 128) | 0x80) as u8, (size >> 7) as u8]);
-    } else if size <= 2097151 {
+    } else if size <= 2_097_151 {
         // 127 + 127 << 7 + 127 << 14
         dst.put_slice(&[
             ((size % 128) | 0x80) as u8,
@@ -245,7 +224,6 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
                 }
             }
         }
-
 
         Packet::Publish { ref topic, packet_id, ref payload, .. } => {
             // Topic + Packet Id + Payload

@@ -24,14 +24,14 @@ pub enum Protocol {
 }
 
 impl Protocol {
-    pub fn name(&self) -> &'static str {
-        match *self {
+    pub fn name(self) -> &'static str {
+        match self {
             Protocol::MQTT(_) => "MQTT",
         }
     }
 
-    pub fn level(&self) -> u8 {
-        match *self {
+    pub fn level(self) -> u8 {
+        match self {
             Protocol::MQTT(level) => level,
         }
     }
