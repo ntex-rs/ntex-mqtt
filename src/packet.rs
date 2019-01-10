@@ -1,6 +1,7 @@
 use bytes::Bytes;
-use proto::{Protocol, QoS};
 use string::String;
+
+use crate::proto::{Protocol, QoS};
 
 #[repr(u8)]
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]

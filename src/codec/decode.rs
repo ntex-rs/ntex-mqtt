@@ -1,12 +1,13 @@
-use bytes::{Buf, Bytes};
 use std::io::Cursor;
+
+use bytes::{Buf, Bytes};
 use string::{String, TryFrom};
 
 use super::*;
-use packet::*;
-use proto::*;
+use crate::packet::*;
+use crate::proto::*;
 
-use error::DecodeError;
+use crate::error::DecodeError;
 
 macro_rules! check_flag {
     ($flags:expr, $flag:expr) => {
@@ -38,7 +39,8 @@ pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>, Deco
             state.0 += ((x & 0x7F) as usize) << (idx * 7);
             state.1 = x & 0x80 != 0;
             Some((state.0, idx + 1, state.1))
-        }).last()
+        })
+        .last()
     {
         ensure!(!more || consumed < 4, DecodeError::InvalidLength);
         return Ok(Some((len, consumed)));
@@ -214,7 +216,8 @@ fn decode_subscribe_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet, Decode
             } else {
                 SubscribeReturnCode::Success(QoS::from(code & 0x03))
             }
-        }).collect();
+        })
+        .collect();
     Ok(Packet::SubscribeAck { packet_id, status })
 }
 

@@ -1,14 +1,10 @@
-use slab::Slab;
-use std::{
-    collections::HashMap,
-    fmt::{self, Write},
-    io,
-    iter::{IntoIterator, Iterator},
-    ops::{Deref, DerefMut, Div, DivAssign},
-    str::FromStr,
-};
+use std::collections::HashMap;
+use std::fmt::{self, Write};
+use std::{io, ops, str::FromStr};
 
-use error::MqttError;
+use slab::Slab;
+
+use crate::error::MqttError;
 
 #[inline]
 fn is_metadata<T: AsRef<str>>(s: T) -> bool {
@@ -23,9 +19,6 @@ pub enum Level {
     SingleWildcard, // Single level wildcard +
     MultiWildcard,  // Multi-level wildcard #
 }
-
-unsafe impl Send for Level {}
-unsafe impl Sync for Level {}
 
 impl Level {
     pub fn parse<T: AsRef<str>>(s: T) -> Result<Level, MqttError> {
@@ -99,9 +92,6 @@ impl Level {
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub struct Topic(Vec<Level>);
 
-unsafe impl Send for Topic {}
-unsafe impl Sync for Topic {}
-
 impl Topic {
     #[inline]
     pub fn levels(&self) -> &Vec<Level> {
@@ -122,7 +112,8 @@ impl Topic {
                         Level::Metadata(_) => pos != 0,
                         _ => false,
                     })
-            }).is_none()
+            })
+            .is_none()
     }
 }
 
@@ -148,7 +139,7 @@ impl Into<Vec<Level>> for Topic {
     }
 }
 
-impl Deref for Topic {
+impl ops::Deref for Topic {
     type Target = Vec<Level>;
 
     fn deref(&self) -> &Self::Target {
@@ -156,7 +147,7 @@ impl Deref for Topic {
     }
 }
 
-impl DerefMut for Topic {
+impl ops::DerefMut for Topic {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
@@ -350,7 +341,7 @@ pub trait WriteTopicExt: io::Write {
 
 impl<W: io::Write + ?Sized> WriteTopicExt for W {}
 
-impl Div<Level> for Level {
+impl ops::Div<Level> for Level {
     type Output = Topic;
 
     fn div(self, rhs: Level) -> Topic {
@@ -358,7 +349,7 @@ impl Div<Level> for Level {
     }
 }
 
-impl Div<Topic> for Level {
+impl ops::Div<Topic> for Level {
     type Output = Topic;
 
     fn div(self, rhs: Topic) -> Topic {
@@ -368,7 +359,7 @@ impl Div<Topic> for Level {
     }
 }
 
-impl Div<Level> for Topic {
+impl ops::Div<Level> for Topic {
     type Output = Topic;
 
     fn div(self, rhs: Level) -> Topic {
@@ -378,7 +369,7 @@ impl Div<Level> for Topic {
     }
 }
 
-impl Div<Topic> for Topic {
+impl ops::Div<Topic> for Topic {
     type Output = Topic;
 
     fn div(self, rhs: Topic) -> Topic {
@@ -388,13 +379,13 @@ impl Div<Topic> for Topic {
     }
 }
 
-impl DivAssign<Level> for Topic {
+impl ops::DivAssign<Level> for Topic {
     fn div_assign(&mut self, rhs: Level) {
         self.0.push(rhs)
     }
 }
 
-impl DivAssign<Topic> for Topic {
+impl ops::DivAssign<Topic> for Topic {
     fn div_assign(&mut self, rhs: Topic) {
         self.0.append(&mut rhs.into())
     }
@@ -445,8 +436,8 @@ impl TopicTree {
         let topic_idx = self
             .topics
             .iter()
-            .find(|&(idx, t)| *t == *topic)
-            .map(|(idx, t)| idx)
+            .find(|&(_, t)| *t == *topic)
+            .map(|(idx, _)| idx)
             .unwrap_or_else(|| self.topics.insert(topic.clone()));
 
         for level in &topic.0 {
@@ -564,51 +555,45 @@ mod tests {
 
     #[test]
     fn test_valid_topic() {
-        assert!(
-            Topic(vec![
-                Level::normal("sport"),
-                Level::normal("tennis"),
-                Level::normal("player1")
-            ]).is_valid()
-        );
+        assert!(Topic(vec![
+            Level::normal("sport"),
+            Level::normal("tennis"),
+            Level::normal("player1")
+        ])
+        .is_valid());
 
-        assert!(
-            Topic(vec![
-                Level::normal("sport"),
-                Level::normal("tennis"),
-                Level::MultiWildcard
-            ]).is_valid()
-        );
-        assert!(
-            Topic(vec![
-                Level::metadata("$SYS"),
-                Level::normal("tennis"),
-                Level::MultiWildcard
-            ]).is_valid()
-        );
+        assert!(Topic(vec![
+            Level::normal("sport"),
+            Level::normal("tennis"),
+            Level::MultiWildcard
+        ])
+        .is_valid());
+        assert!(Topic(vec![
+            Level::metadata("$SYS"),
+            Level::normal("tennis"),
+            Level::MultiWildcard
+        ])
+        .is_valid());
 
-        assert!(
-            Topic(vec![
-                Level::normal("sport"),
-                Level::SingleWildcard,
-                Level::normal("player1")
-            ]).is_valid()
-        );
+        assert!(Topic(vec![
+            Level::normal("sport"),
+            Level::SingleWildcard,
+            Level::normal("player1")
+        ])
+        .is_valid());
 
-        assert!(
-            !Topic(vec![
-                Level::normal("sport"),
-                Level::MultiWildcard,
-                Level::normal("player1")
-            ]).is_valid()
-        );
-        assert!(
-            !Topic(vec![
-                Level::normal("sport"),
-                Level::metadata("$SYS"),
-                Level::normal("player1")
-            ]).is_valid()
-        );
+        assert!(!Topic(vec![
+            Level::normal("sport"),
+            Level::MultiWildcard,
+            Level::normal("player1")
+        ])
+        .is_valid());
+        assert!(!Topic(vec![
+            Level::normal("sport"),
+            Level::metadata("$SYS"),
+            Level::normal("player1")
+        ])
+        .is_valid());
     }
 
     #[test]
@@ -619,7 +604,8 @@ mod tests {
                 Level::normal("sport"),
                 Level::normal("tennis"),
                 Level::normal("player1")
-            ].into()
+            ]
+            .into()
         );
 
         assert_eq!(topic!(""), Topic(vec![Level::Blank]));
@@ -641,7 +627,8 @@ mod tests {
                 Level::normal("sport"),
                 Level::normal("tennis"),
                 Level::MultiWildcard
-            ].into()
+            ]
+            .into()
         );
 
         assert_eq!(topic!("#"), vec![Level::MultiWildcard].into());
@@ -660,7 +647,8 @@ mod tests {
                 Level::SingleWildcard,
                 Level::normal("tennis"),
                 Level::MultiWildcard
-            ].into()
+            ]
+            .into()
         );
 
         assert_eq!(
@@ -669,7 +657,8 @@ mod tests {
                 Level::normal("sport"),
                 Level::SingleWildcard,
                 Level::normal("player1")
-            ].into()
+            ]
+            .into()
         );
 
         assert!("sport+".parse::<Topic>().is_err());
@@ -682,7 +671,8 @@ mod tests {
             Level::SingleWildcard,
             Level::normal("tennis"),
             Level::MultiWildcard,
-        ].into();
+        ]
+        .into();
 
         assert_eq!(v.write_topic(&t).unwrap(), 10);
         assert_eq!(v, b"+/tennis/#");

@@ -2,10 +2,10 @@ use bytes::{BufMut, Bytes, BytesMut};
 use string::String;
 
 use super::*;
-use packet::*;
-use proto::*;
+use crate::packet::*;
+use crate::proto::*;
 
-pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F
+// pub const MAX_VARIABLE_LENGTH: usize = 268435455; // 0xFF,0xFF,0xFF,0x7F
 
 #[inline]
 fn write_fixed_header(packet: &Packet, dst: &mut BytesMut) {
@@ -150,7 +150,8 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
                     } else {
                         0x80
                     }
-                }).collect();
+                })
+                .collect();
 
             dst.put_slice(&buf);
         }
