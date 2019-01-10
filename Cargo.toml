@@ -16,7 +16,8 @@ rand = "0.3"
 byteorder = "1.0"
 slab = "0.4"
 bytes = "0.4"
-string = "0.1"
+#string = "0.1"
+string = { git="https://github.com/fafhrd91/string.git" }
 futures = "0.1"
 tokio-codec = "0.1"
 
