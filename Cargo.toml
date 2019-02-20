@@ -1,0 +1,29 @@
+[package]
+name = "actix-mqtt"
+version = "0.1.0"
+authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+mqtt-codec = { git = "https://github.com/fafhrd91/rust-mqtt.git" }
+# mqtt-codec = { path = "../mqtt-codec" }
+
+actix-codec = "0.1.0"
+actix-service = "0.2.2"
+actix-utils = "0.2.2"
+actix-router = { git = "https://github.com/actix/actix-net.git" }
+derive_more = "0.14"
+either = "1.5"
+futures = "0.1"
+hashbrown = "0.1.8"
+log = "0.4"
+bytes = "0.4"
+uuid = { version = "0.7", features = ["v4"] }
+slab = "0.4"
+string = "0.1.3"
+tokio-timer = "0.2"
+
+[dev-dependencies]
+env_logger = "0.6"
+actix-server = "0.2.1"
+actix-test-server = { git = "https://github.com/actix/actix-net.git" }
