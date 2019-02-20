@@ -1,2 +1,3 @@
-# rust-mqtt
-MQTT protocol v3 implementation
+# MQTT v3.1 Codec
+
+MQTT v3.1 Codec implementation
