@@ -1,11 +1,11 @@
 [package]
 name = "mqtt-codec"
 version = "0.1.0"
-authors = ["Nikolay Kim <fafhrd91@gmail.com>", "Flier Lu <flier.lu@gmail.com>"]
-description = "MQTT Codec v3.1.1"
+authors = ["Max Gortman <mgortman@microsoft.com>", "Nikolay Kim <fafhrd91@gmail.com>", "Flier Lu <flier.lu@gmail.com>"]
+description = "MQTT v3.1 Codec"
 documentation = "https://docs.rs/mqtt-codec"
-homepage = "https://github.com/fafhrd91/rust-mqtt"
-repository = "https://github.com/fafhrd91/rust-mqtt.git"
+homepage = "https://github.com/fafhrd91/mqtt-codec"
+repository = "https://github.com/fafhrd91/mqtt-codec.git"
 keywords = ["MQTT", "IoT", "messaging"]
 license = "MIT/Apache-2.0"
 edition = "2018"
