@@ -89,7 +89,7 @@ impl Level {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+#[derive(Debug, Eq, Clone, Hash)]
 pub struct Topic(Vec<Level>);
 
 impl Topic {
@@ -114,6 +114,45 @@ impl Topic {
                     })
             })
             .is_none()
+    }
+}
+
+macro_rules! match_topic {
+    ($topic:expr, $levels:expr) => {{
+        let mut lhs = $topic.0.iter();
+
+        for rhs in $levels {
+            match lhs.next() {
+                Some(&Level::SingleWildcard) => {
+                    if !rhs.match_level(&Level::SingleWildcard) {
+                        break;
+                    }
+                }
+                Some(&Level::MultiWildcard) => {
+                    return rhs.match_level(&Level::MultiWildcard);
+                }
+                Some(level) if rhs.match_level(level) => continue,
+                _ => return false,
+            }
+        }
+
+        match lhs.next() {
+            Some(&Level::MultiWildcard) => true,
+            Some(_) => false,
+            None => true,
+        }
+    }};
+}
+
+impl PartialEq for Topic {
+    fn eq(&self, other: &Topic) -> bool {
+        match_topic!(self, &other.0)
+    }
+}
+
+impl<T: AsRef<str>> PartialEq<T> for Topic {
+    fn eq(&self, other: &T) -> bool {
+        match_topic!(self, other.as_ref().split('/'))
     }
 }
 
@@ -195,49 +234,6 @@ impl<T: AsRef<str>> MatchLevel for T {
             Level::Blank => self.as_ref().is_empty(),
             Level::SingleWildcard | Level::MultiWildcard => !is_metadata(self),
         }
-    }
-}
-
-macro_rules! match_topic {
-    ($topic:expr, $levels:expr) => {{
-        let mut lhs = $topic.0.iter();
-
-        for rhs in $levels {
-            match lhs.next() {
-                Some(&Level::SingleWildcard) => {
-                    if !rhs.match_level(&Level::SingleWildcard) {
-                        break;
-                    }
-                }
-                Some(&Level::MultiWildcard) => {
-                    return rhs.match_level(&Level::MultiWildcard);
-                }
-                Some(level) if rhs.match_level(level) => continue,
-                _ => return false,
-            }
-        }
-
-        match lhs.next() {
-            Some(&Level::MultiWildcard) => true,
-            Some(_) => false,
-            None => true,
-        }
-    }};
-}
-
-pub trait MatchTopic {
-    fn match_topic(&self, topic: &Topic) -> bool;
-}
-
-impl MatchTopic for Topic {
-    fn match_topic(&self, topic: &Topic) -> bool {
-        match_topic!(topic, &self.0)
-    }
-}
-
-impl<T: AsRef<str>> MatchTopic for T {
-    fn match_topic(&self, topic: &Topic) -> bool {
-        match_topic!(topic, self.as_ref().split('/'))
     }
 }
 
