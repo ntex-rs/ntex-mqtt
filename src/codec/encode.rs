@@ -13,7 +13,7 @@ fn write_fixed_header(packet: &Packet, dst: &mut BytesMut) {
 
 fn write_content(packet: &Packet, dst: &mut BytesMut) {
     match *packet {
-        Packet::Connect { ref connect } => match **connect {
+        Packet::Connect(ref connect) => match *connect {
             Connect {
                 protocol,
                 clean_session,
@@ -86,13 +86,13 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             ]);
         }
 
-        Packet::Publish {
+        Packet::Publish(Publish {
             qos,
             ref topic,
             packet_id,
             ref payload,
             ..
-        } => {
+        }) => {
             write_slice(topic.as_bytes(), dst);
 
             if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
@@ -197,8 +197,8 @@ pub fn write_packet(packet: &Packet, dst: &mut BytesMut) {
 
 pub fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {
-        Packet::Connect { ref connect } => {
-            match **connect {
+        Packet::Connect ( ref connect ) => {
+            match *connect {
                 Connect {ref last_will, ref client_id, ref username, ref password, ..} =>
                 {
                     // Protocol Name + Protocol Level + Connect Flags + Keep Alive
@@ -225,7 +225,7 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
             }
         }
 
-        Packet::Publish { ref topic, packet_id, ref payload, .. } => {
+        Packet::Publish( Publish{ ref topic, packet_id, ref payload, .. }) => {
             // Topic + Packet Id + Payload
             2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.len()
         }

@@ -137,17 +137,15 @@ fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet, DecodeError>
         None
     };
 
-    Ok(Packet::Connect {
-        connect: Box::new(Connect {
-            protocol: Protocol::MQTT(level),
-            clean_session: check_flag!(flags, ConnectFlags::CLEAN_SESSION),
-            keep_alive,
-            client_id,
-            last_will,
-            username,
-            password,
-        }),
-    })
+    Ok(Packet::Connect(Connect {
+        protocol: Protocol::MQTT(level),
+        clean_session: check_flag!(flags, ConnectFlags::CLEAN_SESSION),
+        keep_alive,
+        client_id,
+        last_will,
+        username,
+        password,
+    }))
 }
 
 fn decode_connect_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet, DecodeError> {
@@ -161,7 +159,7 @@ fn decode_connect_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet, DecodeEr
     let return_code = src.get_u8();
     Ok(Packet::ConnectAck {
         session_present: check_flag!(flags, ConnectAckFlags::SESSION_PRESENT),
-        return_code: ConnectReturnCode::from(return_code),
+        return_code: ConnectCode::from(return_code),
     })
 }
 
@@ -180,14 +178,14 @@ fn decode_publish_packet(
     let len = src.remaining();
     let payload = take(src, len);
 
-    Ok(Packet::Publish {
+    Ok(Packet::Publish(Publish {
         dup: (header.packet_flags & 0b1000) == 0b1000,
         qos,
         retain: (header.packet_flags & 0b0001) == 0b0001,
         topic,
         packet_id,
         payload,
-    })
+    }))
 }
 
 fn decode_subscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet, DecodeError> {

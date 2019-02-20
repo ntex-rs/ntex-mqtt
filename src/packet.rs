@@ -6,7 +6,7 @@ use crate::proto::{Protocol, QoS};
 #[repr(u8)]
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 /// Connect Return Code
-pub enum ConnectReturnCode {
+pub enum ConnectCode {
     /// Connection accepted
     ConnectionAccepted = 0,
     /// Connection Refused, unacceptable protocol version
@@ -23,21 +23,19 @@ pub enum ConnectReturnCode {
     Reserved = 6,
 }
 
-const_enum!(ConnectReturnCode: u8);
+const_enum!(ConnectCode: u8);
 
-impl ConnectReturnCode {
+impl ConnectCode {
     pub fn reason(self) -> &'static str {
         match self {
-            ConnectReturnCode::ConnectionAccepted => "Connection Accepted",
-            ConnectReturnCode::UnacceptableProtocolVersion => {
+            ConnectCode::ConnectionAccepted => "Connection Accepted",
+            ConnectCode::UnacceptableProtocolVersion => {
                 "Connection Refused, unacceptable protocol version"
             }
-            ConnectReturnCode::IdentifierRejected => "Connection Refused, identifier rejected",
-            ConnectReturnCode::ServiceUnavailable => "Connection Refused, Server unavailable",
-            ConnectReturnCode::BadUserNameOrPassword => {
-                "Connection Refused, bad user name or password"
-            }
-            ConnectReturnCode::NotAuthorized => "Connection Refused, not authorized",
+            ConnectCode::IdentifierRejected => "Connection Refused, identifier rejected",
+            ConnectCode::ServiceUnavailable => "Connection Refused, Server unavailable",
+            ConnectCode::BadUserNameOrPassword => "Connection Refused, bad user name or password",
+            ConnectCode::NotAuthorized => "Connection Refused, not authorized",
             _ => "Connection Refused",
         }
     }
@@ -74,6 +72,22 @@ pub struct Connect {
     pub password: Option<Bytes>,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+/// Publish message
+pub struct Publish {
+    /// this might be re-delivery of an earlier attempt to send the Packet.
+    pub dup: bool,
+    pub retain: bool,
+    /// the level of assurance for delivery of an Application Message.
+    pub qos: QoS,
+    /// the information channel to which payload data is published.
+    pub topic: String<Bytes>,
+    /// only present in PUBLISH Packets where the QoS level is 1 or 2.
+    pub packet_id: Option<u16>,
+    /// the Application Message that is being published.
+    pub payload: Bytes,
+}
+
 #[derive(Debug, PartialEq, Copy, Clone)]
 /// Subscribe Return Code
 pub enum SubscribeReturnCode {
@@ -85,28 +99,19 @@ pub enum SubscribeReturnCode {
 /// MQTT Control Packets
 pub enum Packet {
     /// Client request to connect to Server
-    Connect { connect: Box<Connect> },
+    Connect(Connect),
+
     /// Connect acknowledgment
     ConnectAck {
         /// enables a Client to establish whether the Client and Server have a consistent view
         /// about whether there is already stored Session state.
         session_present: bool,
-        return_code: ConnectReturnCode,
+        return_code: ConnectCode,
     },
+
     /// Publish message
-    Publish {
-        /// this might be re-delivery of an earlier attempt to send the Packet.
-        dup: bool,
-        retain: bool,
-        /// the level of assurance for delivery of an Application Message.
-        qos: QoS,
-        /// the information channel to which payload data is published.
-        topic: String<Bytes>,
-        /// only present in PUBLISH Packets where the QoS level is 1 or 2.
-        packet_id: Option<u16>,
-        /// the Application Message that is being published.
-        payload: Bytes,
-    },
+    Publish(Publish),
+
     /// Publish acknowledgment
     PublishAck {
         /// Packet Identifier
@@ -127,6 +132,7 @@ pub enum Packet {
         /// Packet Identifier
         packet_id: u16,
     },
+
     /// Client subscribe request
     Subscribe {
         /// Packet Identifier
@@ -140,6 +146,7 @@ pub enum Packet {
         /// corresponds to a Topic Filter in the SUBSCRIBE Packet being acknowledged.
         status: Vec<SubscribeReturnCode>,
     },
+
     /// Unsubscribe request
     Unsubscribe {
         /// Packet Identifier
@@ -152,10 +159,12 @@ pub enum Packet {
         /// Packet Identifier
         packet_id: u16,
     },
+
     /// PING request
     PingRequest,
     /// PING response
     PingResponse,
+
     /// Client is disconnecting
     Disconnect,
 
@@ -189,9 +198,9 @@ impl Packet {
     /// Flags specific to each MQTT Control Packet type
     pub fn packet_flags(&self) -> u8 {
         match *self {
-            Packet::Publish {
+            Packet::Publish(Publish {
                 dup, qos, retain, ..
-            } => {
+            }) => {
                 let mut b = qos.into();
 
                 b <<= 1;

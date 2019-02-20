@@ -11,7 +11,7 @@ mod packet;
 
 pub use self::codec::Codec;
 pub use self::error::{DecodeError, MqttError};
-pub use self::packet::{Connect, ConnectReturnCode, LastWill, Packet, SubscribeReturnCode};
+pub use self::packet::{Connect, ConnectCode, LastWill, Packet, Publish, SubscribeReturnCode};
 pub use self::proto::{Protocol, QoS};
 pub use self::topic::{Level, MatchTopic, Topic, TopicTree};
 
