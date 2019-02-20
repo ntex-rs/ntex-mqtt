@@ -4,7 +4,7 @@ use bytes::BytesMut;
 use tokio_codec::{Decoder, Encoder};
 
 use super::Packet;
-use crate::error::DecodeError;
+use crate::error::ParseError;
 
 mod decode;
 mod encode;
@@ -58,9 +58,9 @@ impl Default for Codec {
 
 impl Decoder for Codec {
     type Item = Packet;
-    type Error = DecodeError;
+    type Error = ParseError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, ParseError> {
         loop {
             match self.state {
                 DecodeState::FrameHeader => {
@@ -106,9 +106,9 @@ impl Decoder for Codec {
 
 impl Encoder for Codec {
     type Item = Packet;
-    type Error = DecodeError;
+    type Error = ParseError;
 
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), DecodeError> {
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), ParseError> {
         match item {
             Packet::Empty => (),
             _ => {

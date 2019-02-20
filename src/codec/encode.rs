@@ -1,8 +1,70 @@
 use bytes::{BufMut, BytesMut};
 
-use super::*;
 use crate::packet::*;
 use crate::proto::*;
+
+use super::{ConnectFlags, WILL_QOS_SHIFT};
+
+pub fn write_packet(packet: &Packet, dst: &mut BytesMut) {
+    write_fixed_header(packet, dst);
+    write_content(packet, dst);
+}
+
+pub fn get_encoded_size(packet: &Packet) -> usize {
+    match *packet {
+        Packet::Connect ( ref connect ) => {
+            match *connect {
+                Connect {ref last_will, ref client_id, ref username, ref password, ..} =>
+                {
+                    // Protocol Name + Protocol Level + Connect Flags + Keep Alive
+                    let mut n = 2 + 4 + 1 + 1 + 2;
+
+                    // Client Id
+                    n += 2 + client_id.len();
+
+                    // Will Topic + Will Message
+                    if let Some(LastWill { ref topic, ref message, .. }) = *last_will {
+                        n += 2 + topic.len() + 2 + message.len();
+                    }
+
+                    if let Some(ref s) = *username {
+                        n += 2 + s.len();
+                    }
+
+                    if let Some(ref s) = *password {
+                        n += 2 + s.len();
+                    }
+
+                    n
+                }
+            }
+        }
+
+        Packet::Publish( Publish{ ref topic, packet_id, ref payload, .. }) => {
+            // Topic + Packet Id + Payload
+            2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.len()
+        }
+
+        Packet::ConnectAck { .. } | // Flags + Return Code
+        Packet::PublishAck { .. } | // Packet Id
+        Packet::PublishReceived { .. } | // Packet Id
+        Packet::PublishRelease { .. } | // Packet Id
+        Packet::PublishComplete { .. } | // Packet Id
+        Packet::UnsubscribeAck { .. } => 2, // Packet Id
+
+        Packet::Subscribe { ref topic_filters, .. } => {
+            2 + topic_filters.iter().fold(0, |acc, &(ref filter, _)| acc + 2 + filter.len() + 1)
+        }
+
+        Packet::SubscribeAck { ref status, .. } => 2 + status.len(),
+
+        Packet::Unsubscribe { ref topic_filters, .. } => {
+            2 + topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
+        }
+
+        Packet::PingRequest | Packet::PingResponse | Packet::Disconnect | Packet::Empty => 0,
+    }
+}
 
 #[inline]
 fn write_fixed_header(packet: &Packet, dst: &mut BytesMut) {
@@ -187,67 +249,6 @@ fn write_variable_length(size: usize, dst: &mut BytesMut) {
             (((size >> 14) % 128) | 0x80) as u8,
             (size >> 21) as u8,
         ]);
-    }
-}
-
-pub fn write_packet(packet: &Packet, dst: &mut BytesMut) {
-    write_fixed_header(packet, dst);
-    write_content(packet, dst);
-}
-
-pub fn get_encoded_size(packet: &Packet) -> usize {
-    match *packet {
-        Packet::Connect ( ref connect ) => {
-            match *connect {
-                Connect {ref last_will, ref client_id, ref username, ref password, ..} =>
-                {
-                    // Protocol Name + Protocol Level + Connect Flags + Keep Alive
-                    let mut n = 2 + 4 + 1 + 1 + 2;
-
-                    // Client Id
-                    n += 2 + client_id.len();
-
-                    // Will Topic + Will Message
-                    if let Some(LastWill { ref topic, ref message, .. }) = *last_will {
-                        n += 2 + topic.len() + 2 + message.len();
-                    }
-
-                    if let Some(ref s) = *username {
-                        n += 2 + s.len();
-                    }
-
-                    if let Some(ref s) = *password {
-                        n += 2 + s.len();
-                    }
-
-                    n
-                }
-            }
-        }
-
-        Packet::Publish( Publish{ ref topic, packet_id, ref payload, .. }) => {
-            // Topic + Packet Id + Payload
-            2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.len()
-        }
-
-        Packet::ConnectAck { .. } | // Flags + Return Code
-        Packet::PublishAck { .. } | // Packet Id
-        Packet::PublishReceived { .. } | // Packet Id
-        Packet::PublishRelease { .. } | // Packet Id
-        Packet::PublishComplete { .. } | // Packet Id
-        Packet::UnsubscribeAck { .. } => 2, // Packet Id
-
-        Packet::Subscribe { ref topic_filters, .. } => {
-            2 + topic_filters.iter().fold(0, |acc, &(ref filter, _)| acc + 2 + filter.len() + 1)
-        }
-
-        Packet::SubscribeAck { ref status, .. } => 2 + status.len(),
-
-        Packet::Unsubscribe { ref topic_filters, .. } => {
-            2 + topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
-        }
-
-        Packet::PingRequest | Packet::PingResponse | Packet::Disconnect | Packet::Empty => 0,
     }
 }
 

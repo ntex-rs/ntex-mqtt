@@ -1,7 +1,7 @@
 use std::{io, str};
 
 #[derive(Debug)]
-pub enum DecodeError {
+pub enum ParseError {
     InvalidProtocol,
     InvalidLength,
     UnsupportedProtocolLevel,
@@ -13,30 +13,18 @@ pub enum DecodeError {
     Utf8Error(str::Utf8Error),
 }
 
-impl From<io::Error> for DecodeError {
+impl From<io::Error> for ParseError {
     fn from(err: io::Error) -> Self {
-        DecodeError::IoError(err)
+        ParseError::IoError(err)
     }
 }
 
-impl From<str::Utf8Error> for DecodeError {
+impl From<str::Utf8Error> for ParseError {
     fn from(err: str::Utf8Error) -> Self {
-        DecodeError::Utf8Error(err)
+        ParseError::Utf8Error(err)
     }
 }
 
-#[derive(Debug)]
-pub enum MqttError {
-    OutOfMemory,
-    InvalidState,
-    InvalidPacket,
+pub enum MqttTopicError {
     InvalidTopic,
-    SpawnError,
-    Decode(DecodeError),
-}
-
-impl From<DecodeError> for MqttError {
-    fn from(err: DecodeError) -> Self {
-        MqttError::Decode(err)
-    }
 }
