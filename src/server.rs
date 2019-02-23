@@ -4,7 +4,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use actix_codec::{AsyncRead, AsyncWrite, Framed};
-use actix_service::{Apply, IntoNewService, NewService, Service, ServiceExt, Transform};
+use actix_service::boxed::BoxedService;
+use actix_service::{
+    Apply, IntoConfigurableNewService, IntoNewService, NewService, Service, ServiceExt,
+    Transform,
+};
 use actix_utils::framed::{FramedTransport, FramedTransportError};
 use actix_utils::inflight::InFlightService;
 use actix_utils::keepalive::KeepAliveService;
@@ -15,6 +19,7 @@ use futures::{Async, Future, Poll, Sink, Stream};
 use mqtt_codec as mqtt;
 
 use crate::cell::Cell;
+use crate::connect::ConnectAck;
 use crate::error::{MqttConnectError, MqttError, MqttPublishError};
 use crate::publish::Publish;
 
@@ -26,15 +31,15 @@ pub struct MqttServer<Io, S, C, P> {
     _t: PhantomData<(Io, S)>,
 }
 
-impl<Io, S, C> MqttServer<Io, S, C, NotImplemented<Publish<S>, ()>>
+impl<Io, S, C> MqttServer<Io, S, C, NotImplemented<S>>
 where
     S: 'static,
-    C: NewService<Request = mqtt::Connect, Response = Result<S, mqtt::ConnectCode>> + 'static,
+    C: NewService<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
     C::Error: fmt::Debug,
     C::InitError: fmt::Debug,
 {
     /// Create server factory
-    pub fn new<F>(connect: F) -> MqttServer<Io, S, C, NotImplemented<Publish<S>, ()>>
+    pub fn new<F>(connect: F) -> MqttServer<Io, S, C, NotImplemented<S>>
     where
         F: IntoNewService<C>,
     {
@@ -51,8 +56,8 @@ impl<Io, S, C, P> MqttServer<Io, S, C, P> {
     /// Set publish service
     pub fn publish<F, P1>(self, publish: F) -> MqttServer<Io, S, C, P1>
     where
-        F: IntoNewService<P1>,
-        P1: NewService<Request = Publish<S>, Response = ()> + 'static,
+        F: IntoConfigurableNewService<P1, S>,
+        P1: NewService<S, Request = Publish<S>, Response = ()> + 'static,
         P1::Error: fmt::Debug,
         P1::InitError: fmt::Debug,
     {
@@ -76,14 +81,14 @@ impl<Io, S, C, P> Clone for MqttServer<Io, S, C, P> {
     }
 }
 
-impl<Io, S, C, P> NewService for MqttServer<Io, S, C, P>
+impl<Io, S, C, P> NewService<()> for MqttServer<Io, S, C, P>
 where
     Io: AsyncRead + AsyncWrite + 'static,
     S: 'static,
-    C: NewService<Request = mqtt::Connect, Response = Result<S, mqtt::ConnectCode>> + 'static,
+    C: NewService<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
     C::Error: fmt::Debug,
     C::InitError: fmt::Debug,
-    P: NewService<Request = Publish<S>, Response = ()> + 'static,
+    P: NewService<S, Request = Publish<S>, Response = ()> + 'static,
     P::Error: fmt::Debug,
     P::InitError: fmt::Debug,
 {
@@ -94,9 +99,9 @@ where
     type InitError = ();
     type Future = MqttServerFactory<Io, S, C, P>;
 
-    fn new_service(&self) -> Self::Future {
+    fn new_service(&self, _: &()) -> Self::Future {
         MqttServerFactory {
-            fut: self.connect.new_service(),
+            fut: self.connect.new_service(&()),
             publish: self.publish.clone(),
             time: self.time.clone(),
             _t: PhantomData,
@@ -115,10 +120,10 @@ impl<Io, S, C, P> Future for MqttServerFactory<Io, S, C, P>
 where
     Io: AsyncRead + AsyncWrite + 'static,
     S: 'static,
-    C: NewService<Request = mqtt::Connect, Response = Result<S, mqtt::ConnectCode>> + 'static,
+    C: NewService<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
     C::Error: fmt::Debug,
     C::InitError: fmt::Debug,
-    P: NewService<Request = Publish<S>, Response = ()>,
+    P: NewService<S, Request = Publish<S>, Response = ()>,
     P::Error: fmt::Debug,
     P::InitError: fmt::Debug,
 {
@@ -153,9 +158,9 @@ impl<Io, S, C, P> Service for Server<Io, S, C, P>
 where
     Io: AsyncRead + AsyncWrite + 'static,
     S: 'static,
-    C: Service<Request = mqtt::Connect, Response = Result<S, mqtt::ConnectCode>> + 'static,
+    C: Service<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
     C::Error: fmt::Debug,
-    P: NewService<Request = Publish<S>, Response = ()> + 'static,
+    P: NewService<S, Request = Publish<S>, Response = ()> + 'static,
     P::Error: fmt::Debug,
     P::InitError: fmt::Debug,
 {
@@ -174,62 +179,58 @@ where
     fn call(&mut self, req: Io) -> Self::Future {
         let mut inner = self.0.clone();
 
-        Box::new(
-            Framed::new(req, mqtt::Codec::new())
-                .into_future()
-                .map_err(|(e, _)| MqttConnectError::Protocol(e.into()))
-                .and_then(move |(packet, framed)| match packet {
-                    Some(mqtt::Packet::Connect(connect)) => Either::A(
-                        inner
-                            .get_mut()
-                            .connect
-                            .call(connect)
-                            .map_err(|e| MqttConnectError::Service(e))
-                            .and_then(move |session| {
-                                match session {
-                                    Ok(session) =>
-                                        Either::A(
-                                            framed.send(
-                                                 mqtt::Packet::ConnectAck{session_present: true, return_code: mqtt::ConnectCode::ConnectionAccepted}
-                                            )
-                                            .map_err(|e| MqttConnectError::Protocol(e.into()))
-                                            .map(move|framed| (session, framed, inner))),
-                                    Err(code) => {
-                                        Either::B(framed.send(mqtt::Packet::ConnectAck{session_present: false, return_code: code})
-                                                  .map_err(|e| MqttConnectError::Protocol(e.into()))
-                                                  .and_then(|_| err(MqttConnectError::Disconnected))
-                                        )
-                                    }
-                                }
-                            })
-                    ),
-                    Some(packet) => {
-                        log::info!(
-                            "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
-                            packet.packet_type()
-                        );
-                        Either::B(err(MqttConnectError::UnexpectedPacket(packet)))
-                    }
-                    None => {
-                        log::trace!("mqtt client disconnected",);
-                        Either::B(err(MqttConnectError::Disconnected))
-                    }
-                })
-                .from_err()
-                .and_then(|(session, framed, mut inner)| {
-                    let time = inner.time.clone();
-                    inner
-                        .get_mut()
-                        .publish
-                        .new_service()
-                        .map_err(|e| {
-                            log::error!("Can not construct publish service: {:?}", e);
-                            MqttPublishError::ConstructError
+        let fut = Framed::new(req, mqtt::Codec::new())
+            .into_future()
+            .map_err(|(e, _)| MqttConnectError::Protocol(e.into()))
+            .and_then(move |(packet, framed)| match packet {
+                Some(mqtt::Packet::Connect(connect)) => Either::A(
+                    inner.get_mut().connect.call(connect)
+                        .map_err(|e| MqttConnectError::Service(e))
+                        .and_then(move |result| match result.into_inner() {
+                            either::Either::Left((session, session_present)) => {
+                                Either::A(
+                                    framed.send(
+                                        mqtt::Packet::ConnectAck{
+                                            session_present,
+                                            return_code: mqtt::ConnectCode::ConnectionAccepted} )
+                                        .map_err(|e| MqttConnectError::Protocol(e.into()))
+                                        .map(move|framed| (session, framed, inner)))
+                            },
+                            either::Either::Right(code) => {
+                                Either::B(framed.send(mqtt::Packet::ConnectAck{session_present: false, return_code: code})
+                                          .map_err(|e| MqttConnectError::Protocol(e.into()))
+                                          .and_then(|_| err(MqttConnectError::Disconnected))
+                                )
+                            }
                         })
-                        .and_then(move |publish| {
-                            // mqtt dispatcher service
-                            let service =
-                            // keep-alive
+                ),
+                Some(packet) => {
+                    log::info!(
+                        "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
+                        packet.packet_type()
+                    );
+                    Either::B(err(MqttConnectError::UnexpectedPacket(packet)))
+                }
+                None => {
+                    log::trace!("mqtt client disconnected",);
+                    Either::B(err(MqttConnectError::Disconnected))
+                }
+            })
+            .from_err()
+            .and_then(|(session, framed, mut inner)| {
+                let time = inner.time.clone();
+                inner
+                    .get_mut()
+                    .publish
+                    .new_service(&session)
+                    .map_err(|e| {
+                        log::error!("Can not construct publish service: {:?}", e);
+                        MqttPublishError::ConstructError
+                    })
+                    .and_then(move |publish| {
+                        // mqtt dispatcher service
+                        let service =
+                        // keep-alive
                             KeepAliveService::new(
                                 Duration::from_secs(3600), time, || MqttPublishError::KeepAliveTimeout
                             )
@@ -245,15 +246,15 @@ where
                                     ServerDispatcher::new(Cell::new(session), publish)
                                 ));
 
-                            FramedTransport::new(framed, service).map_err(|e| match e {
-                                FramedTransportError::Service(e) => e,
-                                FramedTransportError::Decoder(e) => MqttPublishError::Protocol(e.into()),
-                                FramedTransportError::Encoder(e) => MqttPublishError::Protocol(e.into()),
-                            })
+                        FramedTransport::new(framed, service).map_err(|e| match e {
+                            FramedTransportError::Service(e) => e,
+                            FramedTransportError::Decoder(e) => MqttPublishError::Protocol(e.into()),
+                            FramedTransportError::Encoder(e) => MqttPublishError::Protocol(e.into()),
                         })
-                        .map_err(MqttError::from)
-                }),
-        )
+                    })
+                    .map_err(MqttError::from)
+            });
+        Box::new(fut)
     }
 }
 
@@ -302,6 +303,22 @@ where
                     packet_id,
                 })
             }
+            mqtt::Packet::Subscribe {
+                packet_id,
+                topic_filters,
+            } => Either::A(ok(mqtt::Packet::SubscribeAck {
+                packet_id,
+                status: topic_filters
+                    .into_iter()
+                    .map(|t| {
+                        mqtt::SubscribeReturnCode::Success(if t.1 == mqtt::QoS::AtMostOnce {
+                            t.1
+                        } else {
+                            mqtt::QoS::AtLeastOnce
+                        })
+                    })
+                    .collect(),
+            })),
             _ => Either::A(ok(mqtt::Packet::Empty)),
         }
     }
@@ -332,44 +349,29 @@ where
 }
 
 /// Not implemented publish service
-pub struct NotImplemented<Req, Res>(PhantomData<(Req, Res)>);
+pub struct NotImplemented<S>(PhantomData<S>);
 
-impl<Req, Res> Default for NotImplemented<Req, Res> {
+impl<S> Default for NotImplemented<S> {
     fn default() -> Self {
         NotImplemented(PhantomData)
     }
 }
 
-impl<Req, Res> Clone for NotImplemented<Req, Res> {
+impl<S> Clone for NotImplemented<S> {
     fn clone(&self) -> Self {
         NotImplemented(PhantomData)
     }
 }
 
-impl<Req, Res> NewService for NotImplemented<Req, Res> {
-    type Request = Req;
-    type Response = Res;
+impl<S> NewService<S> for NotImplemented<S> {
+    type Request = Publish<S>;
+    type Response = ();
     type Error = &'static str;
-    type InitError = ();
-    type Service = NotImplemented<Req, Res>;
+    type InitError = &'static str;
+    type Service = BoxedService<Publish<S>, (), &'static str>;
     type Future = FutureResult<Self::Service, Self::InitError>;
 
-    fn new_service(&self) -> Self::Future {
-        ok(self.clone())
-    }
-}
-
-impl<Req, Res> Service for NotImplemented<Req, Res> {
-    type Request = Req;
-    type Response = Res;
-    type Error = &'static str;
-    type Future = FutureResult<Self::Response, Self::Error>;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        Err("not implemented")
-    }
-
-    fn call(&mut self, _: Self::Request) -> Self::Future {
+    fn new_service(&self, _: &S) -> Self::Future {
         err("not implemented")
     }
 }

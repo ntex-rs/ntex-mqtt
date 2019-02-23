@@ -1,16 +1,15 @@
 use futures::future::ok;
 use futures::Future;
 
-use actix_mqtt::{MqttServer, Publish};
+use actix_mqtt::{ConnectAck, MqttServer, Publish};
+use actix_service::fn_service;
 use mqtt_codec as mqtt;
 
 struct Session;
 
-fn connect(
-    packet: mqtt::Connect,
-) -> impl Future<Item = Result<Session, mqtt::ConnectCode>, Error = ()> {
+fn connect(packet: mqtt::Connect) -> impl Future<Item = ConnectAck<Session>, Error = ()> {
     log::info!("new connection: {:?}", packet);
-    ok(Ok(Session))
+    ok(ConnectAck::new(Session, false))
 }
 
 fn publish(publish: Publish<Session>) -> impl Future<Item = (), Error = ()> {
@@ -31,7 +30,7 @@ fn main() -> std::io::Result<()> {
 
     actix_server::Server::build()
         .bind("mqtt", "127.0.0.1:1883", || {
-            MqttServer::new(connect).publish(publish)
+            MqttServer::new(connect).publish(fn_service(publish))
         })
         .unwrap()
         .workers(1)

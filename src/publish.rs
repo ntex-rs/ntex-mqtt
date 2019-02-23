@@ -56,4 +56,8 @@ impl<S> Publish<S> {
     pub fn session_mut(&mut self) -> &mut S {
         self.session.get_mut()
     }
+
+    pub fn take_payload(self) -> Bytes {
+        self.publish.payload
+    }
 }

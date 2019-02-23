@@ -5,6 +5,7 @@ use mqtt_codec;
 pub enum MqttError<E1, E2> {
     Connect(MqttConnectError<E1>),
     Publish(MqttPublishError<E2>),
+    Io(std::io::Error),
 }
 
 pub enum MqttConnectError<E> {

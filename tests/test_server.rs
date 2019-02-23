@@ -1,19 +1,15 @@
-// use actix_connector::{Connect, Connector};
-use actix_service::{IntoNewService, NewService, Service};
 use actix_test_server::TestServer;
-use futures::future::{err, lazy, ok};
+use futures::future::ok;
 use futures::Future;
 
-use actix_mqtt::MqttServer;
+use actix_mqtt::{ConnectAck, MqttServer};
 use mqtt_codec as mqtt;
-// use amqp_transport::{self, client, sasl, Configuration};
 
 struct Session;
 
-fn connect(
-    packet: mqtt::Connect,
-) -> impl Future<Item = Result<Session, mqtt::ConnectCode>, Error = ()> {
-    ok(Ok(Session))
+fn connect(packet: mqtt::Connect) -> impl Future<Item = ConnectAck<Session>, Error = ()> {
+    println!("CONNECT: {:?}", packet);
+    ok(ConnectAck::new(Session, false))
 }
 
 #[test]
@@ -24,7 +20,7 @@ fn test_simple() -> std::io::Result<()> {
     );
     env_logger::init();
 
-    let mut srv = TestServer::with(|| MqttServer::new().connect(connect));
+    let _srv = TestServer::with(|| MqttServer::new(connect));
 
     Ok(())
 }
