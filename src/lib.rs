@@ -1,5 +1,6 @@
 mod cell;
 mod connect;
+mod dispatcher;
 mod error;
 mod publish;
 mod server;
