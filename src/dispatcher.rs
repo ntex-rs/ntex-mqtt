@@ -38,6 +38,7 @@ where
 impl<S, T> Service for ServerDispatcher<S, T>
 where
     T: Service<Request = Publish<S>, Response = ()>,
+    T::Error: std::fmt::Debug,
 {
     type Request = mqtt::Packet;
     type Response = mqtt::Packet;
@@ -93,6 +94,7 @@ pub struct PublishResponse<T: Service> {
 impl<T> Future for PublishResponse<T>
 where
     T: Service<Response = ()>,
+    T::Error: std::fmt::Debug,
 {
     type Item = mqtt::Packet;
     type Error = MqttPublishError<T::Error>;

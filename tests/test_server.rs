@@ -2,12 +2,11 @@ use actix_test_server::TestServer;
 use futures::future::ok;
 use futures::Future;
 
-use actix_mqtt::{ConnectAck, MqttServer};
-use mqtt_codec as mqtt;
+use actix_mqtt::{Connect, ConnectAck, MqttServer};
 
 struct Session;
 
-fn connect(packet: mqtt::Connect) -> impl Future<Item = ConnectAck<Session>, Error = ()> {
+fn connect(packet: Connect) -> impl Future<Item = ConnectAck<Session>, Error = ()> {
     println!("CONNECT: {:?}", packet);
     ok(ConnectAck::new(Session, false))
 }

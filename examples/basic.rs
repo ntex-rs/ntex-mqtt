@@ -1,13 +1,12 @@
 use futures::future::ok;
 use futures::Future;
 
-use actix_mqtt::{ConnectAck, MqttServer, Publish};
+use actix_mqtt::{Connect, ConnectAck, MqttServer, Publish};
 use actix_service::fn_service;
-use mqtt_codec as mqtt;
 
 struct Session;
 
-fn connect(packet: mqtt::Connect) -> impl Future<Item = ConnectAck<Session>, Error = ()> {
+fn connect(packet: Connect) -> impl Future<Item = ConnectAck<Session>, Error = ()> {
     log::info!("new connection: {:?}", packet);
     ok(ConnectAck::new(Session, false))
 }

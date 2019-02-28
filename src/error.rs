@@ -1,21 +1,25 @@
+use std::fmt;
+
 use derive_more::From;
 use mqtt_codec;
 
-#[derive(From)]
-pub enum MqttError<E1, E2> {
+#[derive(From, Debug)]
+pub enum MqttError<E1: fmt::Debug, E2: fmt::Debug> {
     Connect(MqttConnectError<E1>),
     Publish(MqttPublishError<E2>),
     Io(std::io::Error),
 }
 
-pub enum MqttConnectError<E> {
+#[derive(Debug)]
+pub enum MqttConnectError<E: fmt::Debug> {
     Service(E),
     Protocol(mqtt_codec::ParseError),
     UnexpectedPacket(mqtt_codec::Packet),
     Disconnected,
 }
 
-pub enum MqttPublishError<E> {
+#[derive(Debug)]
+pub enum MqttPublishError<E: fmt::Debug> {
     Service(E),
     /// "SUBSCRIBE, UNSUBSCRIBE, and PUBLISH (in cases where QoS > 0) Control Packets MUST contain a non-zero 16-bit Packet Identifier [MQTT-2.3.1-1]."
     PacketIdRequired,

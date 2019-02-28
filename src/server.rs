@@ -1,8 +1,9 @@
+use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 
-use actix_codec::{AsyncRead, AsyncWrite, Framed};
+use actix_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 use actix_service::boxed;
 use actix_service::{
     Apply, IntoConfigurableNewService, IntoNewService, NewService, Service, ServiceExt,
@@ -18,28 +19,30 @@ use futures::{try_ready, Async, Future, Poll, Sink, Stream};
 use mqtt_codec as mqtt;
 
 use crate::cell::Cell;
-use crate::connect::ConnectAck;
+use crate::connect::{Connect, ConnectAck};
 use crate::dispatcher::ServerDispatcher;
 use crate::error::{MqttConnectError, MqttError, MqttPublishError};
 use crate::publish::Publish;
+use crate::request::IntoRequest;
 
 /// Mqtt Server service
-pub struct MqttServer<Io, S, C: NewService, P, E = ()> {
+pub struct MqttServer<Req, Io, S, C: NewService, P, E, I> {
     connect: Rc<C>,
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     time: LowResTimeService,
-    _t: PhantomData<(Io, S)>,
+    _t: PhantomData<(Req, Io, S, I)>,
 }
 
-impl<Io, S, C> MqttServer<Io, S, C, NotImplemented<S, ()>, ()>
+impl<Req, Io, S, C, I> MqttServer<Req, Io, S, C, NotImplemented<S, ()>, (), I>
 where
     S: 'static,
-    C: NewService<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
+    C: NewService<Request = Connect<I>, Response = ConnectAck<S>> + 'static,
+    C::Error: fmt::Debug,
 {
     /// Create server factory
-    pub fn new<F>(connect: F) -> MqttServer<Io, S, C, NotImplemented<S, ()>, ()>
+    pub fn new<F>(connect: F) -> MqttServer<Req, Io, S, C, NotImplemented<S, ()>, (), I>
     where
         F: IntoNewService<C>,
     {
@@ -54,11 +57,12 @@ where
     }
 
     /// Set publish service
-    pub fn publish<F, P1, E>(self, publish: F) -> MqttServer<Io, S, C, P1, E>
+    pub fn publish<F, P1, E>(self, publish: F) -> MqttServer<Req, Io, S, C, P1, E, I>
     where
-        E: 'static,
+        E: fmt::Debug + 'static,
         F: IntoConfigurableNewService<P1, S>,
-        P1: NewService<S, Request = Publish<S>, Response = (), InitError = C::Error> + 'static,
+        P1: NewService<S, Request = Publish<S>, Response = (), Error = E, InitError = C::Error>
+            + 'static,
     {
         MqttServer {
             connect: self.connect,
@@ -71,11 +75,11 @@ where
     }
 }
 
-impl<Io, S, C, P, E> MqttServer<Io, S, C, P, E>
+impl<Req, Io, S, C, P, E, I> MqttServer<Req, Io, S, C, P, E, I>
 where
     C: NewService,
-    C::Error: 'static,
-    E: 'static,
+    C::Error: fmt::Debug + 'static,
+    E: fmt::Debug + 'static,
     S: 'static,
 {
     /// Set subscribe service
@@ -113,25 +117,32 @@ where
     }
 }
 
-impl<Io, S, C, P, E> MqttServer<Io, S, C, P, E>
+impl<Req, Io, S, C, P, E, I> MqttServer<Req, Io, S, C, P, E, I>
 where
     Io: AsyncRead + AsyncWrite + 'static,
-    C: NewService<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
-    C::Error: 'static,
-    E: 'static,
+    C: NewService<Request = Connect<I>, Response = ConnectAck<S>> + 'static,
+    C::Error: fmt::Debug + 'static,
+    E: fmt::Debug + 'static,
     S: 'static,
+    I: 'static,
     P: NewService<S, Request = Publish<S>, Response = (), Error = E, InitError = C::Error>
         + 'static,
 {
-    pub fn framed(
+    pub fn framed<U>(
         self,
     ) -> impl NewService<
         (),
-        Request = Framed<Io, mqtt::Codec>,
+        Request = Req,
         Response = (),
         Error = MqttError<C::Error, E>,
         InitError = C::InitError,
-    > {
+    >
+    where
+        Req: IntoRequest<Io, U, I>,
+        U: Decoder<Item = mqtt::Packet, Error = mqtt::ParseError>
+            + Encoder<Item = mqtt::Packet, Error = mqtt::ParseError>
+            + 'static,
+    {
         FramedMqttServer {
             connect: self.connect,
             publish: self.publish,
@@ -143,7 +154,7 @@ where
     }
 }
 
-impl<Io, S, C, P, E> Clone for MqttServer<Io, S, C, P, E>
+impl<Req, Io, S, C, P, E, I> Clone for MqttServer<Req, Io, S, C, P, E, I>
 where
     C: NewService,
 {
@@ -159,21 +170,24 @@ where
     }
 }
 
-impl<Io, S, C, P, E> NewService<()> for MqttServer<Io, S, C, P, E>
+impl<Req, Io, S, C, P, E, I> NewService<()> for MqttServer<Req, Io, S, C, P, E, I>
 where
     S: 'static,
-    E: 'static,
+    I: 'static,
+    E: fmt::Debug + 'static,
     Io: AsyncRead + AsyncWrite + 'static,
-    C: NewService<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
+    C: NewService<Request = Connect<I>, Response = ConnectAck<S>> + 'static,
+    C::Error: fmt::Debug,
     P: NewService<S, Request = Publish<S>, Response = (), Error = E, InitError = C::Error>
         + 'static,
+    Req: IntoRequest<Io, mqtt::Codec, I>,
 {
-    type Request = Io;
+    type Request = Req;
     type Response = ();
     type Error = MqttError<C::Error, P::Error>;
-    type Service = Server<Io, S, C::Service, P, E>;
+    type Service = Server<Req, Io, S, C::Service, P, E, I>;
     type InitError = C::InitError;
-    type Future = MqttServerFactory<Io, S, C, P, E>;
+    type Future = MqttServerFactory<Req, Io, S, C, P, E, I>;
 
     fn new_service(&self, _: &()) -> Self::Future {
         MqttServerFactory {
@@ -187,88 +201,100 @@ where
     }
 }
 
-pub struct MqttServerFactory<Io, S, C: NewService, P, E> {
+pub struct MqttServerFactory<Req, Io, S, C: NewService, P, E, I> {
     fut: C::Future,
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     time: LowResTimeService,
-    _t: PhantomData<(Io, S, E)>,
+    _t: PhantomData<(Req, Io, S, E, I)>,
 }
 
-impl<Io, S, C, P, E> Future for MqttServerFactory<Io, S, C, P, E>
+impl<Req, Io, S, C, P, E, I> Future for MqttServerFactory<Req, Io, S, C, P, E, I>
 where
     Io: AsyncRead + AsyncWrite + 'static,
     S: 'static,
-    C: NewService<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
+    C: NewService<Request = Connect<I>, Response = ConnectAck<S>> + 'static,
     P: NewService<S, Request = Publish<S>, Response = (), Error = E, InitError = C::Error>,
 {
-    type Item = Server<Io, S, C::Service, P, E>;
+    type Item = Server<Req, Io, S, C::Service, P, E, I>;
     type Error = C::InitError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        Ok(Async::Ready(Server(Cell::new(ServerInner {
-            connect: try_ready!(self.fut.poll()),
-            publish: self.publish.clone(),
-            subscribe: self.subscribe.clone(),
-            unsubscribe: self.unsubscribe.clone(),
-            time: self.time.clone(),
-            _t: PhantomData,
-        }))))
+        Ok(Async::Ready(Server(
+            Cell::new(ServerInner {
+                connect: try_ready!(self.fut.poll()),
+                publish: self.publish.clone(),
+                subscribe: self.subscribe.clone(),
+                unsubscribe: self.unsubscribe.clone(),
+                time: self.time.clone(),
+                _t: PhantomData,
+            }),
+            PhantomData,
+        )))
     }
 }
 
 /// Mqtt Server
-pub struct Server<Io, S, C: Service, P, E>(Cell<ServerInner<Io, S, C, P, E>>);
+pub struct Server<Req, Io, S, C: Service, P, E, I>(
+    Cell<ServerInner<Io, mqtt::Codec, S, C, P, E, I>>,
+    PhantomData<Req>,
+);
 
-pub(crate) struct ServerInner<Io, S, C: Service, P, E> {
+pub(crate) struct ServerInner<Io, U, S, C: Service, P, E, I> {
     connect: C,
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     time: LowResTimeService,
-    _t: PhantomData<(Io, S, E)>,
+    _t: PhantomData<(Io, S, E, U, I)>,
 }
 
-impl<Io, S, C, P, E> ServerInner<Io, S, C, P, E>
+impl<Io, U, S, C, P, E, I> ServerInner<Io, U, S, C, P, E, I>
 where
     S: 'static,
-    E: 'static,
+    U: Decoder<Item = mqtt::Packet, Error = mqtt::ParseError>
+        + Encoder<Item = mqtt::Packet, Error = mqtt::ParseError>,
+    E: fmt::Debug + 'static,
     Io: AsyncRead + AsyncWrite + 'static,
-    C: Service<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
+    C: Service<Request = Connect<I>, Response = ConnectAck<S>> + 'static,
+    C::Error: fmt::Debug,
     P: NewService<S, Request = Publish<S>, Response = (), Error = E, InitError = C::Error>
         + 'static,
 {
     fn dispatch(
         &mut self,
         packet: Option<mqtt::Packet>,
-        framed: Framed<Io, mqtt::Codec>,
-        inner: Cell<ServerInner<Io, S, C, P, E>>,
+        framed: Framed<Io, U>,
+        param: I,
+        inner: Cell<ServerInner<Io, U, S, C, P, E, I>>,
     ) -> impl Future<Item = (), Error = MqttError<C::Error, E>> {
         match packet {
             Some(mqtt::Packet::Connect(connect)) => Either::A(
                 // authenticate mqtt connection
-                self
-                    .connect
-                    .call(connect)
+                self.connect
+                    .call(Connect::new(connect, param))
                     .map_err(|e| MqttConnectError::Service(e))
                     .and_then(move |result| match result.into_inner() {
-                        either::Either::Left((session, session_present)) => {
-                            Either::A(
-                                framed.send(
-                                    mqtt::Packet::ConnectAck{
-                                        session_present,
-                                        return_code: mqtt::ConnectCode::ConnectionAccepted} )
-                                    .map_err(|e| MqttConnectError::Protocol(e.into()))
-                                    .map(move|framed| (session, framed, inner)))
-                        },
-                        either::Either::Right(code) => {
-                            Either::B(framed.send(mqtt::Packet::ConnectAck{session_present: false, return_code: code})
-                                      .map_err(|e| MqttConnectError::Protocol(e.into()))
-                                      .and_then(|_| err(MqttConnectError::Disconnected))
-                            )
-                        }
-                    })
+                        either::Either::Left((session, session_present)) => Either::A(
+                            framed
+                                .send(mqtt::Packet::ConnectAck {
+                                    session_present,
+                                    return_code: mqtt::ConnectCode::ConnectionAccepted,
+                                })
+                                .map_err(|e| MqttConnectError::Protocol(e.into()))
+                                .map(move |framed| (session, framed, inner)),
+                        ),
+                        either::Either::Right(code) => Either::B(
+                            framed
+                                .send(mqtt::Packet::ConnectAck {
+                                    session_present: false,
+                                    return_code: code,
+                                })
+                                .map_err(|e| MqttConnectError::Protocol(e.into()))
+                                .and_then(|_| err(MqttConnectError::Disconnected)),
+                        ),
+                    }),
             ),
             Some(packet) => {
                 log::info!(
@@ -280,22 +306,25 @@ where
             None => {
                 log::trace!("mqtt client disconnected",);
                 Either::B(err(MqttConnectError::Disconnected))
-                }
+            }
         }
         .from_err()
-            .and_then(|(session, framed, mut inner)| {
-                let time = inner.time.clone();
-                let inner = inner.get_mut();
+        .and_then(|(session, framed, mut inner)| {
+            let time = inner.time.clone();
+            let inner = inner.get_mut();
 
-                // construct publish, subscribe, unsubscribe services
-                inner.publish
-                    .new_service(&session)
-                    .join3(inner.subscribe.new_service(&session),
-                           inner.unsubscribe.new_service(&session))
-                    .map_err(|e| MqttError::from(MqttConnectError::Service(e)))
-                    .and_then(move |(publish, subscribe, unsubscribe)| {
-                        // mqtt dispatcher pipeline
-                        let service =
+            // construct publish, subscribe, unsubscribe services
+            inner
+                .publish
+                .new_service(&session)
+                .join3(
+                    inner.subscribe.new_service(&session),
+                    inner.unsubscribe.new_service(&session),
+                )
+                .map_err(|e| MqttError::from(MqttConnectError::Service(e)))
+                .and_then(move |(publish, subscribe, unsubscribe)| {
+                    // mqtt dispatcher pipeline
+                    let service =
                             // keep-alive connection
                             KeepAliveService::new(
                                 Duration::from_secs(3600), time, || MqttPublishError::KeepAliveTimeout
@@ -316,27 +345,31 @@ where
                                         unsubscribe)
                                 ));
 
-                        FramedTransport::new(framed, service).map_err(|e| match e {
+                    FramedTransport::new(framed, service)
+                        .map_err(|e| match e {
                             FramedTransportError::Service(e) => e,
                             FramedTransportError::Decoder(e) => MqttPublishError::Protocol(e.into()),
                             FramedTransportError::Encoder(e) => MqttPublishError::Protocol(e.into()),
                         })
                         .map_err(MqttError::from)
-                    })
-            })
+                })
+        })
     }
 }
 
-impl<Io, S, C, P, E> Service for Server<Io, S, C, P, E>
+impl<Req, Io, S, C, P, E, I> Service for Server<Req, Io, S, C, P, E, I>
 where
     S: 'static,
-    E: 'static,
+    I: 'static,
+    E: fmt::Debug + 'static,
     Io: AsyncRead + AsyncWrite + 'static,
-    C: Service<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
+    C: Service<Request = Connect<I>, Response = ConnectAck<S>> + 'static,
+    C::Error: fmt::Debug,
     P: NewService<S, Request = Publish<S>, Response = (), Error = E, InitError = C::Error>
         + 'static,
+    Req: IntoRequest<Io, mqtt::Codec, I>,
 {
-    type Request = Io;
+    type Request = Req;
     type Response = ();
     type Error = MqttError<C::Error, P::Error>;
     type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
@@ -349,46 +382,53 @@ where
             .map_err(|e| MqttConnectError::Service(e).into())
     }
 
-    fn call(&mut self, req: Io) -> Self::Future {
+    fn call(&mut self, req: Req) -> Self::Future {
+        let (framed, param) = req.into_request().into_parts();
         let mut inner = self.0.clone();
 
         Box::new(
-            Framed::new(req, mqtt::Codec::new())
+            framed
                 .into_future()
                 .map_err(|(e, _)| MqttError::from(MqttConnectError::Protocol(e.into())))
                 .and_then(move |(packet, framed)| {
                     let inner2 = inner.clone();
-                    inner.get_mut().dispatch(packet, framed, inner2)
+                    inner.get_mut().dispatch(packet, framed, param, inner2)
                 }),
         )
     }
 }
 
 /// Mqtt Server service
-struct FramedMqttServer<Io, S, C: NewService, P, E> {
+struct FramedMqttServer<Req, Io, U, S, C: NewService, P, E, I> {
     connect: Rc<C>,
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     time: LowResTimeService,
-    _t: PhantomData<(Io, S)>,
+    _t: PhantomData<(Req, Io, U, S, I)>,
 }
 
-impl<Io, S, C, P, E> NewService<()> for FramedMqttServer<Io, S, C, P, E>
+impl<Req, Io, U, S, C, P, E, I> NewService<()> for FramedMqttServer<Req, Io, U, S, C, P, E, I>
 where
     S: 'static,
-    E: 'static,
+    I: 'static,
+    E: fmt::Debug + 'static,
+    U: Decoder<Item = mqtt::Packet, Error = mqtt::ParseError>
+        + Encoder<Item = mqtt::Packet, Error = mqtt::ParseError>
+        + 'static,
     Io: AsyncRead + AsyncWrite + 'static,
-    C: NewService<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
+    C: NewService<Request = Connect<I>, Response = ConnectAck<S>> + 'static,
+    C::Error: fmt::Debug,
     P: NewService<S, Request = Publish<S>, Response = (), Error = E, InitError = C::Error>
         + 'static,
+    Req: IntoRequest<Io, U, I>,
 {
-    type Request = Framed<Io, mqtt::Codec>;
+    type Request = Req;
     type Response = ();
     type Error = MqttError<C::Error, P::Error>;
-    type Service = FramedServer<Io, S, C::Service, P, E>;
+    type Service = FramedServer<Req, Io, U, S, C::Service, P, E, I>;
     type InitError = C::InitError;
-    type Future = FramedMqttServerFactory<Io, S, C, P, E>;
+    type Future = FramedMqttServerFactory<Req, Io, U, S, C, P, E, I>;
 
     fn new_service(&self, _: &()) -> Self::Future {
         FramedMqttServerFactory {
@@ -402,50 +442,64 @@ where
     }
 }
 
-struct FramedMqttServerFactory<Io, S, C: NewService, P, E> {
+struct FramedMqttServerFactory<Req, Io, U, S, C: NewService, P, E, I> {
     fut: C::Future,
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     time: LowResTimeService,
-    _t: PhantomData<(Io, S, E)>,
+    _t: PhantomData<(Req, Io, U, S, E, I)>,
 }
 
-impl<Io, S, C, P, E> Future for FramedMqttServerFactory<Io, S, C, P, E>
+impl<Req, Io, U, S, C, P, E, I> Future for FramedMqttServerFactory<Req, Io, U, S, C, P, E, I>
 where
     Io: AsyncRead + AsyncWrite + 'static,
+    U: Decoder<Item = mqtt::Packet, Error = mqtt::ParseError>
+        + Encoder<Item = mqtt::Packet, Error = mqtt::ParseError>,
     S: 'static,
-    C: NewService<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
+    C: NewService<Request = Connect<I>, Response = ConnectAck<S>> + 'static,
     P: NewService<S, Request = Publish<S>, Response = (), Error = E, InitError = C::Error>,
 {
-    type Item = FramedServer<Io, S, C::Service, P, E>;
+    type Item = FramedServer<Req, Io, U, S, C::Service, P, E, I>;
     type Error = C::InitError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        Ok(Async::Ready(FramedServer(Cell::new(ServerInner {
-            connect: try_ready!(self.fut.poll()),
-            publish: self.publish.clone(),
-            subscribe: self.subscribe.clone(),
-            unsubscribe: self.unsubscribe.clone(),
-            time: self.time.clone(),
-            _t: PhantomData,
-        }))))
+        Ok(Async::Ready(FramedServer(
+            Cell::new(ServerInner {
+                connect: try_ready!(self.fut.poll()),
+                publish: self.publish.clone(),
+                subscribe: self.subscribe.clone(),
+                unsubscribe: self.unsubscribe.clone(),
+                time: self.time.clone(),
+                _t: PhantomData,
+            }),
+            PhantomData,
+        )))
     }
 }
 
 /// Mqtt Server
-pub struct FramedServer<Io, S, C: Service, P, E>(Cell<ServerInner<Io, S, C, P, E>>);
+pub struct FramedServer<Req, Io, U, S, C: Service, P, E, I>(
+    Cell<ServerInner<Io, U, S, C, P, E, I>>,
+    PhantomData<Req>,
+);
 
-impl<Io, S, C, P, E> Service for FramedServer<Io, S, C, P, E>
+impl<Req, Io, U, S, C, P, E, I> Service for FramedServer<Req, Io, U, S, C, P, E, I>
 where
     S: 'static,
-    E: 'static,
+    I: 'static,
+    U: Decoder<Item = mqtt::Packet, Error = mqtt::ParseError>
+        + Encoder<Item = mqtt::Packet, Error = mqtt::ParseError>
+        + 'static,
+    E: fmt::Debug + 'static,
     Io: AsyncRead + AsyncWrite + 'static,
-    C: Service<Request = mqtt::Connect, Response = ConnectAck<S>> + 'static,
+    C: Service<Request = Connect<I>, Response = ConnectAck<S>> + 'static,
+    C::Error: fmt::Debug,
     P: NewService<S, Request = Publish<S>, Response = (), Error = E, InitError = C::Error>
         + 'static,
+    Req: IntoRequest<Io, U, I>,
 {
-    type Request = Framed<Io, mqtt::Codec>;
+    type Request = Req;
     type Response = ();
     type Error = MqttError<C::Error, P::Error>;
     type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
@@ -458,15 +512,17 @@ where
             .map_err(|e| MqttConnectError::Service(e).into())
     }
 
-    fn call(&mut self, req: Framed<Io, mqtt::Codec>) -> Self::Future {
+    fn call(&mut self, req: Req) -> Self::Future {
+        let (framed, param) = req.into_request().into_parts();
         let mut inner = self.0.clone();
 
         Box::new(
-            req.into_future()
+            framed
+                .into_future()
                 .map_err(|(e, _)| MqttError::from(MqttConnectError::Protocol(e.into())))
                 .and_then(move |(packet, framed)| {
                     let inner2 = inner.clone();
-                    inner.get_mut().dispatch(packet, framed, inner2)
+                    inner.get_mut().dispatch(packet, framed, param, inner2)
                 }),
         )
     }

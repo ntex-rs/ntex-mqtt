@@ -1,7 +1,42 @@
+use std::fmt;
+use std::ops::Deref;
 use std::time::Duration;
 
 use either::Either;
 use mqtt_codec as mqtt;
+
+pub struct Connect<T = ()> {
+    connect: mqtt::Connect,
+    param: T,
+}
+
+impl<T> Connect<T> {
+    pub(crate) fn new(connect: mqtt::Connect, param: T) -> Self {
+        Self { connect, param }
+    }
+
+    pub fn get_param(&self) -> &T {
+        &self.param
+    }
+
+    pub fn get_param_mut(&mut self) -> &mut T {
+        &mut self.param
+    }
+}
+
+impl<T> Deref for Connect<T> {
+    type Target = mqtt::Connect;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connect
+    }
+}
+
+impl<T> fmt::Debug for Connect<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.connect.fmt(f)
+    }
+}
 
 pub struct ConnectAck<S> {
     session: Option<S>,
