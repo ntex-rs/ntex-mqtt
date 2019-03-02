@@ -9,5 +9,15 @@ matrix:
     - rust: nightly
 
 script:
-  - cargo build --all
-  - cargo test --all
+  - |
+    if [[ "$TRAVIS_RUST_VERSION" != "nightly" ]]; then
+    cargo clean
+    cargo test --all
+    fi
+  - |
+    if [[ "$TRAVIS_RUST_VERSION" == "nightly" ]]; then
+    RUSTFLAGS="--cfg procmacro2_semver_exempt" cargo install -f cargo-tarpaulin
+    RUST_BACKTRACE=1 cargo tarpaulin --out Xml
+    bash <(curl -s https://codecov.io/bash)
+    echo "Uploaded code coverage"
+    fi
