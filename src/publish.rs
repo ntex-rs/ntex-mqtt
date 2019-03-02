@@ -1,3 +1,4 @@
+use actix_router::Path;
 use bytes::Bytes;
 use mqtt_codec as mqtt;
 
@@ -6,11 +7,17 @@ use crate::cell::Cell;
 pub struct Publish<S> {
     publish: mqtt::Publish,
     session: Cell<S>,
+    topic: Path<string::String<Bytes>>,
 }
 
 impl<S> Publish<S> {
     pub(crate) fn new(session: Cell<S>, publish: mqtt::Publish) -> Self {
-        Self { publish, session }
+        let topic = Path::new(publish.topic.clone());
+        Self {
+            publish,
+            session,
+            topic,
+        }
     }
 
     /// only present in PUBLISH Packets where the QoS level is 1 or 2.
@@ -59,5 +66,23 @@ impl<S> Publish<S> {
 
     pub fn take_payload(self) -> Bytes {
         self.publish.payload
+    }
+
+    pub fn path(&self) -> &Path<string::String<Bytes>> {
+        &self.topic
+    }
+
+    pub fn path_mut(&mut self) -> &mut Path<string::String<Bytes>> {
+        &mut self.topic
+    }
+
+    pub fn packet(&self) -> &mqtt::Publish {
+        &self.publish
+    }
+}
+
+impl<S> std::fmt::Debug for Publish<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        self.publish.fmt(f)
     }
 }
