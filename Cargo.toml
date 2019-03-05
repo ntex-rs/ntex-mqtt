@@ -12,8 +12,10 @@ edition = "2018"
 [dependencies]
 mqtt-codec = { git = "https://github.com/fafhrd91/mqtt-codec.git" }
 actix-codec = "0.1.0"
-actix-service = "0.3.0"
-actix-utils = "0.3.0"
+#actix-service = "0.3.0"
+#actix-utils = "0.3.0"
+actix-service = { git = "https://github.com/actix/actix-net.git" }
+actix-utils = { git = "https://github.com/actix/actix-net.git" }
 actix-router = { git = "https://github.com/actix/actix-net.git" }
 derive_more = "0.14"
 bytes = "0.4"
@@ -25,5 +27,7 @@ uuid = { version = "0.7", features = ["v4"] }
 
 [dev-dependencies]
 env_logger = "0.6"
-actix-server = "0.3.0"
-actix-test-server = "0.1.0"
+#actix-server = "0.3.0"
+#actix-test-server = "0.1.0"
+actix-server = { git = "https://github.com/actix/actix-net.git" }
+actix-test-server = { git = "https://github.com/actix/actix-net.git" }

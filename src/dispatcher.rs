@@ -9,7 +9,7 @@ use crate::error::MqttPublishError;
 use crate::publish::Publish;
 
 /// PUBLIS/SUBSCRIBER/UNSUBSCRIBER packets dispatcher
-pub(crate) struct ServerDispatcher<S, T: Service> {
+pub(crate) struct ServerDispatcher<S, T: Service<Publish<S>>> {
     session: Cell<S>,
     publish: T,
     _subscribe: boxed::BoxedService<mqtt::Packet, (), T::Error>,
@@ -18,7 +18,7 @@ pub(crate) struct ServerDispatcher<S, T: Service> {
 
 impl<S, T> ServerDispatcher<S, T>
 where
-    T: Service<Request = Publish<S>, Response = ()>,
+    T: Service<Publish<S>, Response = ()>,
 {
     pub(crate) fn new(
         session: Cell<S>,
@@ -35,15 +35,14 @@ where
     }
 }
 
-impl<S, T> Service for ServerDispatcher<S, T>
+impl<S, T> Service<mqtt::Packet> for ServerDispatcher<S, T>
 where
-    T: Service<Request = Publish<S>, Response = ()>,
+    T: Service<Publish<S>, Response = ()>,
     T::Error: std::fmt::Debug,
 {
-    type Request = mqtt::Packet;
     type Response = mqtt::Packet;
     type Error = MqttPublishError<T::Error>;
-    type Future = Either<FutureResult<Self::Response, Self::Error>, PublishResponse<T>>;
+    type Future = Either<FutureResult<Self::Response, Self::Error>, PublishResponse<T::Future>>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         self.publish
@@ -51,7 +50,7 @@ where
             .map_err(|e| MqttPublishError::Service(e))
     }
 
-    fn call(&mut self, req: Self::Request) -> Self::Future {
+    fn call(&mut self, req: mqtt::Packet) -> Self::Future {
         match req {
             mqtt::Packet::PingRequest => Either::A(ok(mqtt::Packet::PingResponse)),
             mqtt::Packet::Disconnect => Either::A(ok(mqtt::Packet::Empty)),
@@ -86,14 +85,14 @@ where
 }
 
 /// Publish service response future
-pub struct PublishResponse<T: Service> {
-    fut: T::Future,
+pub struct PublishResponse<T> {
+    fut: T,
     packet_id: Option<u16>,
 }
 
 impl<T> Future for PublishResponse<T>
 where
-    T: Service<Response = ()>,
+    T: Future<Item = ()>,
     T::Error: std::fmt::Debug,
 {
     type Item = mqtt::Packet;
