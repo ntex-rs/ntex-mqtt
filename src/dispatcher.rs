@@ -9,7 +9,7 @@ use crate::error::MqttPublishError;
 use crate::publish::Publish;
 
 /// PUBLIS/SUBSCRIBER/UNSUBSCRIBER packets dispatcher
-pub(crate) struct ServerDispatcher<S, T: Service<Publish<S>>> {
+pub(crate) struct ServerDispatcher<S, T: Service> {
     session: Cell<S>,
     publish: T,
     _subscribe: boxed::BoxedService<mqtt::Packet, (), T::Error>,
@@ -18,7 +18,7 @@ pub(crate) struct ServerDispatcher<S, T: Service<Publish<S>>> {
 
 impl<S, T> ServerDispatcher<S, T>
 where
-    T: Service<Publish<S>, Response = ()>,
+    T: Service<Request = Publish<S>, Response = ()>,
 {
     pub(crate) fn new(
         session: Cell<S>,
@@ -35,11 +35,12 @@ where
     }
 }
 
-impl<S, T> Service<mqtt::Packet> for ServerDispatcher<S, T>
+impl<S, T> Service for ServerDispatcher<S, T>
 where
-    T: Service<Publish<S>, Response = ()>,
+    T: Service<Request = Publish<S>, Response = ()>,
     T::Error: std::fmt::Debug,
 {
+    type Request = mqtt::Packet;
     type Response = mqtt::Packet;
     type Error = MqttPublishError<T::Error>;
     type Future = Either<FutureResult<Self::Response, Self::Error>, PublishResponse<T::Future>>;

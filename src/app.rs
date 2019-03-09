@@ -37,8 +37,8 @@ where
 
     pub fn resource<F, U: 'static>(mut self, address: &str, service: F) -> Self
     where
-        F: IntoNewService<U, Publish<S>, S>,
-        U: NewService<Publish<S>, S, Response = (), Error = E1, InitError = E2>,
+        F: IntoNewService<U, S>,
+        U: NewService<S, Request = Publish<S>, Response = (), Error = E1, InitError = E2>,
     {
         self.router.path(address, self.handlers.len());
         self.handlers
@@ -47,8 +47,7 @@ where
     }
 }
 
-impl<S, E1, E2> IntoConfigurableNewService<AppFactory<S, E1, E2>, Publish<S>, S>
-    for App<S, E1, E2>
+impl<S, E1, E2> IntoConfigurableNewService<AppFactory<S, E1, E2>, S> for App<S, E1, E2>
 where
     S: 'static,
     E1: 'static,
@@ -69,12 +68,13 @@ pub struct AppFactory<S, E1, E2> {
     not_found: Rc<Fn(Publish<S>) -> E1>,
 }
 
-impl<S, E1, E2> NewService<Publish<S>, S> for AppFactory<S, E1, E2>
+impl<S, E1, E2> NewService<S> for AppFactory<S, E1, E2>
 where
     S: 'static,
     E1: 'static,
     E2: 'static,
 {
+    type Request = Publish<S>;
     type Response = ();
     type Error = E1;
     type InitError = E2;
@@ -122,11 +122,12 @@ pub struct AppService<S, E> {
     not_found: Rc<Fn(Publish<S>) -> E>,
 }
 
-impl<S, E> Service<Publish<S>> for AppService<S, E>
+impl<S, E> Service for AppService<S, E>
 where
     S: 'static,
     E: 'static,
 {
+    type Request = Publish<S>;
     type Response = ();
     type Error = E;
     type Future = Either<
