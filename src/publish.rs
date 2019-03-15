@@ -1,6 +1,7 @@
 use actix_router::Path;
 use bytes::Bytes;
 use mqtt_codec as mqtt;
+use string::TryFrom;
 
 use crate::cell::Cell;
 
@@ -8,15 +9,30 @@ pub struct Publish<S> {
     publish: mqtt::Publish,
     session: Cell<S>,
     topic: Path<string::String<Bytes>>,
+    query: Option<string::String<Bytes>>,
 }
 
 impl<S> Publish<S> {
     pub(crate) fn new(session: Cell<S>, publish: mqtt::Publish) -> Self {
-        let topic = Path::new(publish.topic.clone());
+        let (topic, query) = if let Some(pos) = publish.topic.find('?') {
+            (
+                string::String::try_from(publish.topic.get_ref().slice(0, pos)).unwrap(),
+                Some(
+                    string::String::try_from(
+                        publish.topic.get_ref().slice(pos, publish.topic.len()),
+                    )
+                    .unwrap(),
+                ),
+            )
+        } else {
+            (publish.topic.clone(), None)
+        };
+        let topic = Path::new(topic);
         Self {
             publish,
             session,
             topic,
+            query,
         }
     }
 
@@ -74,6 +90,10 @@ impl<S> Publish<S> {
 
     pub fn path_mut(&mut self) -> &mut Path<string::String<Bytes>> {
         &mut self.topic
+    }
+
+    pub fn query(&self) -> &str {
+        self.query.as_ref().map(|s| s.as_ref()).unwrap_or("")
     }
 
     pub fn packet(&self) -> &mqtt::Publish {
