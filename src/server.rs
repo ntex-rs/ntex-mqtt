@@ -31,6 +31,7 @@ pub struct MqttServer<Io, S, C: NewService, P, E, I> {
     subscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     time: LowResTimeService,
+    on_close: Option<Rc<Fn(&mut S)>>,
     _t: PhantomData<(Io, S, I)>,
 }
 
@@ -51,6 +52,7 @@ where
             subscribe: Rc::new(boxed::new_service(SubsNotImplemented::default())),
             unsubscribe: Rc::new(boxed::new_service(SubsNotImplemented::default())),
             time: LowResTimeService::with(Duration::from_secs(1)),
+            on_close: None,
             _t: PhantomData,
         }
     }
@@ -69,6 +71,7 @@ where
             subscribe: Rc::new(boxed::new_service(SubsNotImplemented::default())),
             unsubscribe: Rc::new(boxed::new_service(SubsNotImplemented::default())),
             time: self.time,
+            on_close: self.on_close,
             _t: PhantomData,
         }
     }
@@ -114,6 +117,14 @@ where
         self.unsubscribe = Rc::new(boxed::new_service(unsubscribe.into_new_service()));
         self
     }
+
+    pub fn on_close<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&mut S) + 'static,
+    {
+        self.on_close = Some(Rc::new(f));
+        self
+    }
 }
 
 impl<Io, S, C, P, E, I> MqttServer<Io, S, C, P, E, I>
@@ -147,6 +158,7 @@ where
             subscribe: self.subscribe,
             unsubscribe: self.unsubscribe,
             time: self.time,
+            on_close: self.on_close,
             _t: PhantomData,
         }
     }
@@ -163,6 +175,7 @@ where
             subscribe: self.subscribe.clone(),
             unsubscribe: self.unsubscribe.clone(),
             time: self.time.clone(),
+            on_close: self.on_close.clone(),
             _t: PhantomData,
         }
     }
@@ -193,6 +206,7 @@ where
             subscribe: self.subscribe.clone(),
             unsubscribe: self.unsubscribe.clone(),
             time: self.time.clone(),
+            on_close: self.on_close.clone(),
             _t: PhantomData,
         }
     }
@@ -204,6 +218,7 @@ pub struct MqttServerFactory<Io, S, C: NewService, P, E, I> {
     subscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     time: LowResTimeService,
+    on_close: Option<Rc<Fn(&mut S)>>,
     _t: PhantomData<(Io, S, E, I)>,
 }
 
@@ -224,6 +239,7 @@ where
             subscribe: self.subscribe.clone(),
             unsubscribe: self.unsubscribe.clone(),
             time: self.time.clone(),
+            on_close: self.on_close.clone(),
             _t: PhantomData,
         }))))
     }
@@ -240,6 +256,7 @@ pub(crate) struct ServerInner<Io, U, S, C: Service, P, E, I> {
     subscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     time: LowResTimeService,
+    on_close: Option<Rc<Fn(&mut S)>>,
     _t: PhantomData<(Io, S, E, U, I)>,
 }
 
@@ -262,6 +279,8 @@ where
         param: I,
         inner: Cell<ServerInner<Io, U, S, C, P, E, I>>,
     ) -> impl Future<Item = (), Error = MqttError<C::Error, E>> {
+        let on_close = self.on_close.clone();
+
         match packet {
             Some(mqtt::Packet::Connect(connect)) => Either::A(
                 // authenticate mqtt connection
@@ -316,6 +335,8 @@ where
                 )
                 .map_err(|e| MqttError::from(MqttConnectError::Service(e)))
                 .and_then(move |(publish, subscribe, unsubscribe)| {
+                    let mut session = Cell::new(session);
+
                     // mqtt dispatcher pipeline
                     let service =
                             // keep-alive connection
@@ -329,7 +350,7 @@ where
                                     // mqtt spec requires ack ordering, so enforce response ordering
                                     InOrder::service(
                                         ServerDispatcher::new(
-                                            Cell::new(session),
+                                            session.clone(),
                                             publish,
                                             subscribe,
                                             unsubscribe))
@@ -346,6 +367,12 @@ where
                             FramedTransportError::Encoder(e) => MqttPublishError::Protocol(e.into()),
                         })
                         .map_err(MqttError::from)
+                        .then(move |res| {
+                            if let Some(on_close) = on_close {
+                                (*on_close)(session.get_mut());
+                            }
+                            res
+                          })
                 })
         })
     }
@@ -399,6 +426,7 @@ struct FramedMqttServer<Io, U, S, C: NewService, P, E, I> {
     subscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     time: LowResTimeService,
+    on_close: Option<Rc<Fn(&mut S)>>,
     _t: PhantomData<(Io, U, S, I)>,
 }
 
@@ -430,6 +458,7 @@ where
             subscribe: self.subscribe.clone(),
             unsubscribe: self.unsubscribe.clone(),
             time: self.time.clone(),
+            on_close: self.on_close.clone(),
             _t: PhantomData,
         }
     }
@@ -441,6 +470,7 @@ struct FramedMqttServerFactory<Io, U, S, C: NewService, P, E, I> {
     subscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, C::Error>>,
     time: LowResTimeService,
+    on_close: Option<Rc<Fn(&mut S)>>,
     _t: PhantomData<(Io, U, S, E, I)>,
 }
 
@@ -463,6 +493,7 @@ where
             subscribe: self.subscribe.clone(),
             unsubscribe: self.unsubscribe.clone(),
             time: self.time.clone(),
+            on_close: self.on_close.clone(),
             _t: PhantomData,
         }))))
     }
