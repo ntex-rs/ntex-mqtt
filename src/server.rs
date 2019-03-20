@@ -15,6 +15,7 @@ use actix_utils::keepalive::KeepAliveService;
 use actix_utils::order::{InOrder, InOrderError};
 use actix_utils::time::LowResTimeService;
 use futures::future::{err, ok, Either, FutureResult};
+use futures::unsync::mpsc;
 use futures::{try_ready, Async, Future, Poll, Sink, Stream};
 use mqtt_codec as mqtt;
 
@@ -23,6 +24,7 @@ use crate::connect::{Connect, ConnectAck};
 use crate::dispatcher::ServerDispatcher;
 use crate::error::{MqttConnectError, MqttError, MqttPublishError};
 use crate::publish::Publish;
+use crate::sink::MqttSink;
 
 /// Mqtt Server service
 pub struct MqttServer<Io, S, C: NewService, P, E, I> {
@@ -282,32 +284,35 @@ where
         let on_close = self.on_close.clone();
 
         match packet {
-            Some(mqtt::Packet::Connect(connect)) => Either::A(
-                // authenticate mqtt connection
-                self.connect
-                    .call(Connect::new(connect, param))
-                    .map_err(|e| MqttConnectError::Service(e))
-                    .and_then(move |result| match result.into_inner() {
-                        either::Either::Left((session, session_present)) => Either::A(
-                            framed
-                                .send(mqtt::Packet::ConnectAck {
-                                    session_present,
-                                    return_code: mqtt::ConnectCode::ConnectionAccepted,
-                                })
-                                .map_err(|e| MqttConnectError::Protocol(e.into()))
-                                .map(move |framed| (session, framed, inner)),
-                        ),
-                        either::Either::Right(code) => Either::B(
-                            framed
-                                .send(mqtt::Packet::ConnectAck {
-                                    session_present: false,
-                                    return_code: code,
-                                })
-                                .map_err(|e| MqttConnectError::Protocol(e.into()))
-                                .and_then(|_| err(MqttConnectError::Disconnected)),
-                        ),
-                    }),
-            ),
+            Some(mqtt::Packet::Connect(connect)) => {
+                let (tx, rx) = mpsc::unbounded();
+                Either::A(
+                    // authenticate mqtt connection
+                    self.connect
+                        .call(Connect::new(connect, param, MqttSink::new(tx)))
+                        .map_err(|e| MqttConnectError::Service(e))
+                        .and_then(move |result| match result.into_inner() {
+                            either::Either::Left((session, session_present)) => Either::A(
+                                framed
+                                    .send(mqtt::Packet::ConnectAck {
+                                        session_present,
+                                        return_code: mqtt::ConnectCode::ConnectionAccepted,
+                                    })
+                                    .map_err(|e| MqttConnectError::Protocol(e.into()))
+                                    .map(move |framed| (session, framed, inner, rx)),
+                            ),
+                            either::Either::Right(code) => Either::B(
+                                framed
+                                    .send(mqtt::Packet::ConnectAck {
+                                        session_present: false,
+                                        return_code: code,
+                                    })
+                                    .map_err(|e| MqttConnectError::Protocol(e.into()))
+                                    .and_then(|_| err(MqttConnectError::Disconnected)),
+                            ),
+                        }),
+                )
+            },
             Some(packet) => {
                 log::info!(
                     "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
@@ -321,7 +326,7 @@ where
             }
         }
         .from_err()
-        .and_then(|(session, framed, mut inner)| {
+        .and_then(|(session, framed, mut inner, rx)| {
             let time = inner.time.clone();
             let inner = inner.get_mut();
 
@@ -361,6 +366,7 @@ where
                                     ));
 
                     FramedTransport::new(framed, service)
+                        .set_receiver(rx)
                         .map_err(|e| match e {
                             FramedTransportError::Service(e) => e,
                             FramedTransportError::Decoder(e) => MqttPublishError::Protocol(e.into()),

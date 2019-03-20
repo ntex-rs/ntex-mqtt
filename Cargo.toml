@@ -29,3 +29,6 @@ env_logger = "0.6"
 actix-server = "0.4.0"
 actix-test-server = "0.2.0"
 tokio-tcp = "0.1"
+
+[patch.crates-io]
+actix-utils = { git = "https://github.com/actix/actix-net.git" }

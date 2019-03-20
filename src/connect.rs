@@ -5,14 +5,21 @@ use std::time::Duration;
 use either::Either;
 use mqtt_codec as mqtt;
 
+use crate::sink::MqttSink;
+
 pub struct Connect<T = ()> {
     connect: mqtt::Connect,
+    sink: MqttSink,
     param: T,
 }
 
 impl<T> Connect<T> {
-    pub(crate) fn new(connect: mqtt::Connect, param: T) -> Self {
-        Self { connect, param }
+    pub(crate) fn new(connect: mqtt::Connect, param: T, sink: MqttSink) -> Self {
+        Self {
+            connect,
+            param,
+            sink,
+        }
     }
 
     pub fn get_param(&self) -> &T {
@@ -21,6 +28,10 @@ impl<T> Connect<T> {
 
     pub fn get_param_mut(&mut self) -> &mut T {
         &mut self.param
+    }
+
+    pub fn sink(&self) -> &MqttSink {
+        &self.sink
     }
 }
 

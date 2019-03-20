@@ -1,5 +1,4 @@
-use actix_service::boxed;
-use actix_service::Service;
+use actix_service::{boxed, Service};
 use futures::future::{ok, Either, FutureResult};
 use futures::{Async, Future, Poll};
 use mqtt_codec as mqtt;
