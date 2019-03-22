@@ -55,6 +55,22 @@ impl MqttSink {
         inner.idx += 1;
         rx.map_err(|_| ())
     }
+
+    pub fn publish_qos0(&mut self, topic: string::String<Bytes>, payload: Bytes) {
+        let inner = self.0.get_mut();
+        let publish = mqtt::Publish {
+            topic,
+            payload,
+            dup: false,
+            retain: false,
+            qos: mqtt::QoS::AtMostOnce,
+            packet_id: Some(inner.idx),
+        };
+        let _ = inner
+            .tx
+            .unbounded_send(FramedMessage::Message(mqtt::Packet::Publish(publish)));
+        inner.idx += 1;
+    }
 }
 
 impl fmt::Debug for MqttSink {

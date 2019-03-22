@@ -19,7 +19,7 @@ impl<S> Publish<S> {
                 string::String::try_from(publish.topic.get_ref().slice(0, pos)).unwrap(),
                 Some(
                     string::String::try_from(
-                        publish.topic.get_ref().slice(pos, publish.topic.len()),
+                        publish.topic.get_ref().slice(pos + 1, publish.topic.len()),
                     )
                     .unwrap(),
                 ),
