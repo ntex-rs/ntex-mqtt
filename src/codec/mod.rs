@@ -3,8 +3,9 @@ use std::io::Cursor;
 use bytes::BytesMut;
 use tokio_codec::{Decoder, Encoder};
 
-use super::Packet;
 use crate::error::ParseError;
+use crate::proto::QoS;
+use crate::{Packet, Publish};
 
 mod decode;
 mod encode;
@@ -112,9 +113,14 @@ impl Encoder for Codec {
         match item {
             Packet::Empty => (),
             _ => {
+                if let Packet::Publish(Publish { qos, packet_id, .. }) = item {
+                    if (qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce) && packet_id.is_none() {
+                        return Err(ParseError::PacketIdRequired);
+                    }
+                }
                 let content_size = get_encoded_size(&item);
                 dst.reserve(content_size + 5);
-                write_packet(&item, dst);
+                write_packet(&item, dst, content_size);
             }
         }
         Ok(())

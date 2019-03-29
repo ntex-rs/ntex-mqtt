@@ -5,8 +5,8 @@ use crate::proto::*;
 
 use super::{ConnectFlags, WILL_QOS_SHIFT};
 
-pub fn write_packet(packet: &Packet, dst: &mut BytesMut) {
-    write_fixed_header(packet, dst);
+pub fn write_packet(packet: &Packet, dst: &mut BytesMut, content_size: usize) {
+    write_fixed_header(packet, dst, content_size);
     write_content(packet, dst);
 }
 
@@ -40,9 +40,13 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
             }
         }
 
-        Packet::Publish( Publish{ ref topic, packet_id, ref payload, .. }) => {
+        Packet::Publish( Publish{ qos, ref topic, ref payload, .. }) => {
             // Topic + Packet Id + Payload
-            2 + topic.len() + packet_id.map_or(0, |_| 2) + payload.len()
+            if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
+                4 + topic.len() + payload.len()
+            } else {
+                2 + topic.len() + payload.len()
+            }
         }
 
         Packet::ConnectAck { .. } | // Flags + Return Code
@@ -67,8 +71,7 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
 }
 
 #[inline]
-fn write_fixed_header(packet: &Packet, dst: &mut BytesMut) {
-    let content_size = get_encoded_size(packet);
+fn write_fixed_header(packet: &Packet, dst: &mut BytesMut, content_size: usize) {
     dst.put_u8((packet.packet_type() << 4) | packet.packet_flags());
     write_variable_length(content_size, dst);
 }

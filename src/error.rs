@@ -9,6 +9,7 @@ pub enum ParseError {
     ConnAckReservedFlagSet,
     InvalidClientId,
     UnsupportedPacketType,
+    PacketIdRequired,
     IoError(io::Error),
     Utf8Error(str::Utf8Error),
 }
