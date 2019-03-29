@@ -22,7 +22,7 @@ impl MqttSink {
     pub(crate) fn new(tx: mpsc::UnboundedSender<FramedMessage<mqtt::Packet>>) -> Self {
         MqttSink(Cell::new(MqttSinkInner {
             tx,
-            idx: 0,
+            idx: 1,
             queue: VecDeque::new(),
         }))
     }
@@ -64,12 +64,11 @@ impl MqttSink {
             dup: false,
             retain: false,
             qos: mqtt::QoS::AtMostOnce,
-            packet_id: Some(inner.idx),
+            packet_id: None,
         };
         let _ = inner
             .tx
             .unbounded_send(FramedMessage::Message(mqtt::Packet::Publish(publish)));
-        inner.idx += 1;
     }
 }
 
