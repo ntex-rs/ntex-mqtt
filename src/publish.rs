@@ -1,6 +1,8 @@
 use actix_router::Path;
 use bytes::Bytes;
 use mqtt_codec as mqtt;
+use serde::de::DeserializeOwned;
+use serde_json::Error as JsonError;
 use string::TryFrom;
 
 use crate::cell::Cell;
@@ -65,12 +67,6 @@ impl<S> Publish<S> {
     }
 
     #[inline]
-    /// the Application Message that is being published.
-    pub fn payload(&self) -> &Bytes {
-        &self.publish.payload
-    }
-
-    #[inline]
     pub fn session(&self) -> &S {
         &*self.session
     }
@@ -78,10 +74,6 @@ impl<S> Publish<S> {
     #[inline]
     pub fn session_mut(&mut self) -> &mut S {
         self.session.get_mut()
-    }
-
-    pub fn take_payload(self) -> Bytes {
-        self.publish.payload
     }
 
     pub fn path(&self) -> &Path<string::String<Bytes>> {
@@ -98,6 +90,22 @@ impl<S> Publish<S> {
 
     pub fn packet(&self) -> &mqtt::Publish {
         &self.publish
+    }
+
+    #[inline]
+    /// the Application Message that is being published.
+    pub fn payload(&self) -> &Bytes {
+        &self.publish.payload
+    }
+
+    /// Extract Bytes from packet payload
+    pub fn take_payload(self) -> Bytes {
+        self.publish.payload
+    }
+
+    /// Loads and parse `application/json` encoded body.
+    pub fn json<T: DeserializeOwned>(&mut self) -> Result<T, JsonError> {
+        serde_json::from_slice(&self.publish.payload)
     }
 }
 
