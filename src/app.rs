@@ -131,8 +131,8 @@ where
     type Response = ();
     type Error = E;
     type Future = Either<
-        Box<Future<Item = Self::Response, Error = Self::Error>>,
         FutureResult<Self::Response, Self::Error>,
+        Box<Future<Item = Self::Response, Error = Self::Error>>,
     >;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
@@ -152,9 +152,9 @@ where
 
     fn call(&mut self, mut req: Publish<S>) -> Self::Future {
         if let Some((idx, _info)) = self.router.recognize(req.path_mut()) {
-            Either::A(self.handlers[*idx].call(req))
+            self.handlers[*idx].call(req)
         } else {
-            Either::B(err((*self.not_found.as_ref())(req)))
+            Either::A(err((*self.not_found.as_ref())(req)))
         }
     }
 }
