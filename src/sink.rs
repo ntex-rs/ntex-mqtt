@@ -27,8 +27,8 @@ impl MqttSink {
         }))
     }
 
-    pub fn close(&mut self) {
-        let _ = self.0.get_mut().tx.unbounded_send(FramedMessage::Close);
+    pub fn close(&self) {
+        let _ = self.0.get_ref().tx.unbounded_send(FramedMessage::Close);
     }
 
     pub fn publish(
