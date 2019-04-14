@@ -56,8 +56,8 @@ impl MqttSink {
         rx.map_err(|_| ())
     }
 
-    pub fn publish_qos0(&mut self, topic: string::String<Bytes>, payload: Bytes) {
-        let inner = self.0.get_mut();
+    pub fn publish_qos0(&self, topic: string::String<Bytes>, payload: Bytes) {
+        let inner = self.0.get_ref();
         let publish = mqtt::Publish {
             topic,
             payload,
