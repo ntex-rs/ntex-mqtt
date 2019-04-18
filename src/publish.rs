@@ -38,11 +38,6 @@ impl<S> Publish<S> {
         }
     }
 
-    /// only present in PUBLISH Packets where the QoS level is 1 or 2.
-    pub fn packet_id(&self) -> Option<u16> {
-        self.publish.packet_id
-    }
-
     #[inline]
     /// this might be re-delivery of an earlier attempt to send the Packet.
     pub fn dup(&self) -> bool {
@@ -74,6 +69,11 @@ impl<S> Publish<S> {
     #[inline]
     pub fn session_mut(&mut self) -> &mut S {
         self.session.get_mut()
+    }
+
+    /// only present in PUBLISH Packets where the QoS level is 1 or 2.
+    pub fn id(&self) -> Option<u16> {
+        self.publish.packet_id
     }
 
     pub fn path(&self) -> &Path<string::String<Bytes>> {
