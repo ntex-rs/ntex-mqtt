@@ -8,25 +8,24 @@ use futures::{Async, Future, Poll};
 
 use crate::publish::Publish;
 
-type Handler<S, E1, E2> = BoxedNewService<S, Publish<S>, (), E1, E2>;
+type Handler<S, E> = BoxedNewService<S, Publish<S>, (), E, E>;
 type HandlerService<S, E> = BoxedService<Publish<S>, (), E>;
 
-pub struct App<S, E1, E2> {
+pub struct App<S, E> {
     router: RouterBuilder<usize>,
-    handlers: Vec<Handler<S, E1, E2>>,
-    not_found: Rc<Fn(Publish<S>) -> E1>,
+    handlers: Vec<Handler<S, E>>,
+    not_found: Rc<Fn(Publish<S>) -> E>,
 }
 
-impl<S, E1, E2> App<S, E1, E2>
+impl<S, E> App<S, E>
 where
     S: 'static,
-    E1: 'static,
-    E2: 'static,
+    E: 'static,
 {
     /// Create mqtt application and provide default topic handler.
     pub fn new<F>(not_found: F) -> Self
     where
-        F: Fn(Publish<S>) -> E1 + 'static,
+        F: Fn(Publish<S>) -> E + 'static,
     {
         App {
             router: Router::build(),
@@ -38,22 +37,26 @@ where
     pub fn resource<F, U: 'static>(mut self, address: &str, service: F) -> Self
     where
         F: IntoNewService<U, S>,
-        U: NewService<S, Request = Publish<S>, Response = (), Error = E1, InitError = E2>,
+        U: NewService<S, Request = Publish<S>, Response = ()>,
+        E: From<U::Error> + From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
-        self.handlers
-            .push(boxed::new_service(service.into_new_service()));
+        self.handlers.push(boxed::new_service(
+            service
+                .into_new_service()
+                .map_err(|e| e.into())
+                .map_init_err(|e| e.into()),
+        ));
         self
     }
 }
 
-impl<S, E1, E2> IntoConfigurableNewService<AppFactory<S, E1, E2>, S> for App<S, E1, E2>
+impl<S, E> IntoConfigurableNewService<AppFactory<S, E>, S> for App<S, E>
 where
     S: 'static,
-    E1: 'static,
-    E2: 'static,
+    E: 'static,
 {
-    fn into_new_service(self) -> AppFactory<S, E1, E2> {
+    fn into_new_service(self) -> AppFactory<S, E> {
         AppFactory {
             router: Rc::new(self.router.finish()),
             handlers: self.handlers,
@@ -62,24 +65,23 @@ where
     }
 }
 
-pub struct AppFactory<S, E1, E2> {
+pub struct AppFactory<S, E> {
     router: Rc<Router<usize>>,
-    handlers: Vec<Handler<S, E1, E2>>,
-    not_found: Rc<Fn(Publish<S>) -> E1>,
+    handlers: Vec<Handler<S, E>>,
+    not_found: Rc<Fn(Publish<S>) -> E>,
 }
 
-impl<S, E1, E2> NewService<S> for AppFactory<S, E1, E2>
+impl<S, E> NewService<S> for AppFactory<S, E>
 where
     S: 'static,
-    E1: 'static,
-    E2: 'static,
+    E: 'static,
 {
     type Request = Publish<S>;
     type Response = ();
-    type Error = E1;
-    type InitError = E2;
-    type Service = AppService<S, E1>;
-    type Future = AppFactoryFut<S, E1, E2>;
+    type Error = E;
+    type InitError = E;
+    type Service = AppService<S, E>;
+    type Future = AppFactoryFut<S, E>;
 
     fn new_service(&self, session: &S) -> Self::Future {
         let fut: Vec<_> = self
@@ -96,15 +98,15 @@ where
     }
 }
 
-pub struct AppFactoryFut<S, E1, E2> {
+pub struct AppFactoryFut<S, E> {
     router: Rc<Router<usize>>,
-    handlers: JoinAll<Vec<Box<Future<Item = HandlerService<S, E1>, Error = E2>>>>,
-    not_found: Rc<Fn(Publish<S>) -> E1>,
+    handlers: JoinAll<Vec<Box<Future<Item = HandlerService<S, E>, Error = E>>>>,
+    not_found: Rc<Fn(Publish<S>) -> E>,
 }
 
-impl<S, E1, E2> Future for AppFactoryFut<S, E1, E2> {
-    type Item = AppService<S, E1>;
-    type Error = E2;
+impl<S, E> Future for AppFactoryFut<S, E> {
+    type Item = AppService<S, E>;
+    type Error = E;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let handlers = futures::try_ready!(self.handlers.poll());

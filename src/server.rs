@@ -556,7 +556,7 @@ impl<S, E> NewService<S> for NotImplemented<S, E> {
     type Request = Publish<S>;
     type Response = ();
     type Error = E;
-    type InitError = ();
+    type InitError = E;
     type Service = NotImplemented<S, E>;
     type Future = FutureResult<Self::Service, Self::InitError>;
 
@@ -582,20 +582,20 @@ impl<S, E> Service for NotImplemented<S, E> {
 }
 
 /// Not implemented subscribe service
-pub struct SubsNotImplemented<S, E1, E2>(PhantomData<(S, E1, E2)>);
+pub struct SubsNotImplemented<S, E>(PhantomData<(S, E)>);
 
-impl<S, E1, E2> Default for SubsNotImplemented<S, E1, E2> {
+impl<S, E> Default for SubsNotImplemented<S, E> {
     fn default() -> Self {
         SubsNotImplemented(PhantomData)
     }
 }
 
-impl<S, E1, E2> NewService<S> for SubsNotImplemented<S, E1, E2> {
+impl<S, E> NewService<S> for SubsNotImplemented<S, E> {
     type Request = Subscribe<S>;
     type Response = Vec<mqtt::SubscribeReturnCode>;
-    type Error = E1;
-    type InitError = E2;
-    type Service = SubsNotImplemented<S, E1, E2>;
+    type Error = E;
+    type InitError = E;
+    type Service = SubsNotImplemented<S, E>;
     type Future = FutureResult<Self::Service, Self::InitError>;
 
     fn new_service(&self, _: &S) -> Self::Future {
@@ -603,10 +603,10 @@ impl<S, E1, E2> NewService<S> for SubsNotImplemented<S, E1, E2> {
     }
 }
 
-impl<S, E1, E2> Service for SubsNotImplemented<S, E1, E2> {
+impl<S, E> Service for SubsNotImplemented<S, E> {
     type Request = Subscribe<S>;
     type Response = Vec<mqtt::SubscribeReturnCode>;
-    type Error = E1;
+    type Error = E;
     type Future = FutureResult<Self::Response, Self::Error>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
@@ -620,20 +620,20 @@ impl<S, E1, E2> Service for SubsNotImplemented<S, E1, E2> {
 }
 
 /// Not implemented subscribe service
-pub struct UnsubsNotImplemented<S, E1, E2>(PhantomData<(S, E1, E2)>);
+pub struct UnsubsNotImplemented<S, E>(PhantomData<(S, E)>);
 
-impl<S, E1, E2> Default for UnsubsNotImplemented<S, E1, E2> {
+impl<S, E> Default for UnsubsNotImplemented<S, E> {
     fn default() -> Self {
         UnsubsNotImplemented(PhantomData)
     }
 }
 
-impl<S, E1, E2> NewService<S> for UnsubsNotImplemented<S, E1, E2> {
+impl<S, E> NewService<S> for UnsubsNotImplemented<S, E> {
     type Request = mqtt::Packet;
     type Response = ();
-    type Error = E1;
-    type InitError = E2;
-    type Service = UnsubsNotImplemented<S, E1, E2>;
+    type Error = E;
+    type InitError = E;
+    type Service = UnsubsNotImplemented<S, E>;
     type Future = FutureResult<Self::Service, Self::InitError>;
 
     fn new_service(&self, _: &S) -> Self::Future {
@@ -641,10 +641,10 @@ impl<S, E1, E2> NewService<S> for UnsubsNotImplemented<S, E1, E2> {
     }
 }
 
-impl<S, E1, E2> Service for UnsubsNotImplemented<S, E1, E2> {
+impl<S, E> Service for UnsubsNotImplemented<S, E> {
     type Request = mqtt::Packet;
     type Response = ();
-    type Error = E1;
+    type Error = E;
     type Future = FutureResult<Self::Response, Self::Error>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
