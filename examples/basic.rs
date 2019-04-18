@@ -14,7 +14,7 @@ fn connect(packet: Connect) -> impl Future<Item = ConnectAck<Session>, Error = (
 fn publish(publish: Publish<Session>) -> impl Future<Item = (), Error = ()> {
     log::info!(
         "incoming publish: {:?} -> {:?}",
-        publish.packet_id(),
+        publish.id(),
         publish.topic()
     );
     ok(())

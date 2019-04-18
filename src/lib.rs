@@ -13,6 +13,6 @@ pub use self::publish::Publish;
 pub use self::subs::Subscribe;
 
 pub use self::app::App;
-pub use self::error::{MqttConnectError, MqttError, MqttPublishError};
+pub use self::error::MqttError;
 pub use self::server::MqttServer;
 pub use self::sink::MqttSink;

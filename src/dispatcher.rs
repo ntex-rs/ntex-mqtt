@@ -4,7 +4,7 @@ use futures::{try_ready, Async, Future, Poll};
 use mqtt_codec as mqtt;
 
 use crate::cell::Cell;
-use crate::error::MqttPublishError;
+use crate::error::MqttError;
 use crate::publish::Publish;
 use crate::subs::Subscribe;
 
@@ -38,20 +38,17 @@ where
 impl<S, T> Service for ServerDispatcher<S, T>
 where
     T: Service<Request = Publish<S>, Response = ()>,
-    T::Error: std::fmt::Debug,
 {
     type Request = mqtt::Packet;
     type Response = mqtt::Packet;
-    type Error = MqttPublishError<T::Error>;
+    type Error = MqttError<T::Error>;
     type Future = Either<
-        FutureResult<mqtt::Packet, MqttPublishError<T::Error>>,
+        FutureResult<mqtt::Packet, MqttError<T::Error>>,
         Either<SubscribeResponse<T::Error>, PublishResponse<T::Future>>,
     >;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.publish
-            .poll_ready()
-            .map_err(|e| MqttPublishError::Service(e))
+        self.publish.poll_ready().map_err(|e| MqttError::Service(e))
     }
 
     fn call(&mut self, req: mqtt::Packet) -> Self::Future {
@@ -91,13 +88,12 @@ pub struct PublishResponse<T> {
 impl<T> Future for PublishResponse<T>
 where
     T: Future<Item = ()>,
-    T::Error: std::fmt::Debug,
 {
     type Item = mqtt::Packet;
-    type Error = MqttPublishError<T::Error>;
+    type Error = MqttError<T::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        try_ready!(self.fut.poll().map_err(|e| MqttPublishError::Service(e)));
+        try_ready!(self.fut.poll().map_err(|e| MqttError::Service(e)));
         if let Some(packet_id) = self.packet_id {
             Ok(Async::Ready(mqtt::Packet::PublishAck { packet_id }))
         } else {
@@ -116,15 +112,12 @@ pub struct SubscribeResponse<E> {
     packet_id: u16,
 }
 
-impl<E> Future for SubscribeResponse<E>
-where
-    E: std::fmt::Debug,
-{
+impl<E> Future for SubscribeResponse<E> {
     type Item = mqtt::Packet;
-    type Error = MqttPublishError<E>;
+    type Error = MqttError<E>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let status = try_ready!(self.fut.poll().map_err(|e| MqttPublishError::Service(e)));
+        let status = try_ready!(self.fut.poll().map_err(|e| MqttError::Service(e)));
         Ok(Async::Ready(mqtt::Packet::SubscribeAck {
             status,
             packet_id: self.packet_id,
