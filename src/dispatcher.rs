@@ -6,13 +6,13 @@ use mqtt_codec as mqtt;
 use crate::cell::Cell;
 use crate::error::MqttError;
 use crate::publish::Publish;
-use crate::subs::Subscribe;
+use crate::subs::{Subscribe, SubscribeResult};
 
 /// PUBLIS/SUBSCRIBER/UNSUBSCRIBER packets dispatcher
 pub(crate) struct ServerDispatcher<S, T: Service> {
     session: Cell<S>,
     publish: T,
-    subscribe: boxed::BoxedService<Subscribe<S>, Vec<mqtt::SubscribeReturnCode>, T::Error>,
+    subscribe: boxed::BoxedService<Subscribe<S>, SubscribeResult, T::Error>,
     unsubscribe: boxed::BoxedService<mqtt::Packet, (), T::Error>,
 }
 
@@ -23,7 +23,7 @@ where
     pub(crate) fn new(
         session: Cell<S>,
         publish: T,
-        subscribe: boxed::BoxedService<Subscribe<S>, Vec<mqtt::SubscribeReturnCode>, T::Error>,
+        subscribe: boxed::BoxedService<Subscribe<S>, SubscribeResult, T::Error>,
         unsubscribe: boxed::BoxedService<mqtt::Packet, (), T::Error>,
     ) -> Self {
         Self {
@@ -108,7 +108,7 @@ type BoxedServiceResponse<Res, Err> =
 
 /// Subscribe service response future
 pub struct SubscribeResponse<E> {
-    fut: BoxedServiceResponse<Vec<mqtt::SubscribeReturnCode>, E>,
+    fut: BoxedServiceResponse<SubscribeResult, E>,
     packet_id: u16,
 }
 
@@ -117,9 +117,9 @@ impl<E> Future for SubscribeResponse<E> {
     type Error = MqttError<E>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let status = try_ready!(self.fut.poll().map_err(|e| MqttError::Service(e)));
+        let res = try_ready!(self.fut.poll().map_err(|e| MqttError::Service(e)));
         Ok(Async::Ready(mqtt::Packet::SubscribeAck {
-            status,
+            status: res.codes,
             packet_id: self.packet_id,
         }))
     }
