@@ -24,14 +24,14 @@ use crate::dispatcher::ServerDispatcher;
 use crate::error::MqttError;
 use crate::publish::Publish;
 use crate::sink::MqttSink;
-use crate::subs::{Subscribe, SubscribeResult};
+use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
 /// Mqtt Server service
 pub struct MqttServer<Io, S, C: NewService, P, E, I> {
     connect: Rc<C>,
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, Subscribe<S>, SubscribeResult, E, E>>,
-    unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, E>>,
+    unsubscribe: Rc<boxed::BoxedNewService<S, Unsubscribe<S>, (), E, E>>,
     time: LowResTimeService,
     on_close: Option<Rc<Fn(&mut S)>>,
     _t: PhantomData<(Io, S, I)>,
@@ -104,7 +104,7 @@ where
     pub fn unsubscribe<F, Srv>(mut self, unsubscribe: F) -> Self
     where
         F: IntoConfigurableNewService<Srv, S>,
-        Srv: NewService<S, Request = mqtt::Packet, Response = ()> + 'static,
+        Srv: NewService<S, Request = Unsubscribe<S>, Response = ()> + 'static,
         Srv::Service: 'static,
         E: From<Srv::Error> + From<Srv::InitError> + 'static,
     {
@@ -211,7 +211,7 @@ pub struct MqttServerFactory<Io, S, C: NewService, P, E, I> {
     fut: C::Future,
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, Subscribe<S>, SubscribeResult, E, E>>,
-    unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, E>>,
+    unsubscribe: Rc<boxed::BoxedNewService<S, Unsubscribe<S>, (), E, E>>,
     time: LowResTimeService,
     on_close: Option<Rc<Fn(&mut S)>>,
     _t: PhantomData<(Io, S, E, I)>,
@@ -249,7 +249,7 @@ pub(crate) struct ServerInner<Io, U, S, C: Service, P, E, I> {
     connect: C,
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, Subscribe<S>, SubscribeResult, E, E>>,
-    unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, E>>,
+    unsubscribe: Rc<boxed::BoxedNewService<S, Unsubscribe<S>, (), E, E>>,
     time: LowResTimeService,
     on_close: Option<Rc<Fn(&mut S)>>,
     _t: PhantomData<(Io, S, E, U, I)>,
@@ -420,7 +420,7 @@ struct FramedMqttServer<Io, U, S, C: NewService, P, E, I> {
     connect: Rc<C>,
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, Subscribe<S>, SubscribeResult, E, E>>,
-    unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, E>>,
+    unsubscribe: Rc<boxed::BoxedNewService<S, Unsubscribe<S>, (), E, E>>,
     time: LowResTimeService,
     on_close: Option<Rc<Fn(&mut S)>>,
     _t: PhantomData<(Io, U, S, I)>,
@@ -462,7 +462,7 @@ struct FramedMqttServerFactory<Io, U, S, C: NewService, P, E, I> {
     fut: C::Future,
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, Subscribe<S>, SubscribeResult, E, E>>,
-    unsubscribe: Rc<boxed::BoxedNewService<S, mqtt::Packet, (), E, E>>,
+    unsubscribe: Rc<boxed::BoxedNewService<S, Unsubscribe<S>, (), E, E>>,
     time: LowResTimeService,
     on_close: Option<Rc<Fn(&mut S)>>,
     _t: PhantomData<(Io, U, S, E, I)>,
@@ -623,7 +623,7 @@ impl<S, E> Default for UnsubsNotImplemented<S, E> {
 }
 
 impl<S, E> NewService<S> for UnsubsNotImplemented<S, E> {
-    type Request = mqtt::Packet;
+    type Request = Unsubscribe<S>;
     type Response = ();
     type Error = E;
     type InitError = E;
@@ -636,7 +636,7 @@ impl<S, E> NewService<S> for UnsubsNotImplemented<S, E> {
 }
 
 impl<S, E> Service for UnsubsNotImplemented<S, E> {
-    type Request = mqtt::Packet;
+    type Request = Unsubscribe<S>;
     type Response = ();
     type Error = E;
     type Future = FutureResult<Self::Response, Self::Error>;
@@ -645,7 +645,7 @@ impl<S, E> Service for UnsubsNotImplemented<S, E> {
         Ok(Async::Ready(()))
     }
 
-    fn call(&mut self, _: mqtt::Packet) -> Self::Future {
+    fn call(&mut self, _: Unsubscribe<S>) -> Self::Future {
         log::warn!("MQTT Unsubscribe is not implemented");
         ok(())
     }

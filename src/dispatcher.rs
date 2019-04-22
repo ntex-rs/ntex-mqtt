@@ -6,14 +6,14 @@ use mqtt_codec as mqtt;
 use crate::cell::Cell;
 use crate::error::MqttError;
 use crate::publish::Publish;
-use crate::subs::{Subscribe, SubscribeResult};
+use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
 /// PUBLIS/SUBSCRIBER/UNSUBSCRIBER packets dispatcher
 pub(crate) struct ServerDispatcher<S, T: Service> {
     session: Cell<S>,
     publish: T,
     subscribe: boxed::BoxedService<Subscribe<S>, SubscribeResult, T::Error>,
-    unsubscribe: boxed::BoxedService<mqtt::Packet, (), T::Error>,
+    unsubscribe: boxed::BoxedService<Unsubscribe<S>, (), T::Error>,
 }
 
 impl<S, T> ServerDispatcher<S, T>
@@ -24,7 +24,7 @@ where
         session: Cell<S>,
         publish: T,
         subscribe: boxed::BoxedService<Subscribe<S>, SubscribeResult, T::Error>,
-        unsubscribe: boxed::BoxedService<mqtt::Packet, (), T::Error>,
+        unsubscribe: boxed::BoxedService<Unsubscribe<S>, (), T::Error>,
     ) -> Self {
         Self {
             session,
@@ -38,13 +38,17 @@ where
 impl<S, T> Service for ServerDispatcher<S, T>
 where
     T: Service<Request = Publish<S>, Response = ()>,
+    T::Error: 'static,
 {
     type Request = mqtt::Packet;
     type Response = mqtt::Packet;
     type Error = MqttError<T::Error>;
     type Future = Either<
-        FutureResult<mqtt::Packet, MqttError<T::Error>>,
-        Either<SubscribeResponse<T::Error>, PublishResponse<T::Future>>,
+        Either<
+            FutureResult<mqtt::Packet, MqttError<T::Error>>,
+            Box<Future<Item = mqtt::Packet, Error = MqttError<T::Error>>>,
+        >,
+        PublishResponse<T::Future>,
     >;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
@@ -54,27 +58,36 @@ where
     fn call(&mut self, req: mqtt::Packet) -> Self::Future {
         println!("PKT: {:#?}", req);
         match req {
-            mqtt::Packet::PingRequest => Either::A(ok(mqtt::Packet::PingResponse)),
-            mqtt::Packet::Disconnect => Either::A(ok(mqtt::Packet::Empty)),
+            mqtt::Packet::PingRequest => Either::A(Either::A(ok(mqtt::Packet::PingResponse))),
+            mqtt::Packet::Disconnect => Either::A(Either::A(ok(mqtt::Packet::Empty))),
             mqtt::Packet::Publish(publish) => {
                 let packet_id = publish.packet_id;
-                Either::B(Either::B(PublishResponse {
+                Either::B(PublishResponse {
                     fut: self
                         .publish
                         .call(Publish::new(self.session.clone(), publish)),
                     packet_id,
-                }))
+                })
             }
             mqtt::Packet::Subscribe {
                 packet_id,
                 topic_filters,
-            } => Either::B(Either::A(SubscribeResponse {
+            } => Either::A(Either::B(Box::new(SubscribeResponse {
                 packet_id,
                 fut: self
                     .subscribe
                     .call(Subscribe::new(self.session.clone(), topic_filters)),
-            })),
-            _ => Either::A(ok(mqtt::Packet::Empty)),
+            }))),
+            mqtt::Packet::Unsubscribe {
+                packet_id,
+                topic_filters,
+            } => Either::A(Either::B(Box::new(
+                self.unsubscribe
+                    .call(Unsubscribe::new(self.session.clone(), topic_filters))
+                    .map_err(|e| MqttError::Service(e))
+                    .map(move |_| mqtt::Packet::UnsubscribeAck { packet_id }),
+            ))),
+            _ => Either::A(Either::A(ok(mqtt::Packet::Empty))),
         }
     }
 }

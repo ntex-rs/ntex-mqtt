@@ -127,3 +127,28 @@ impl<'a, S> Subscription<'a, S> {
         *self.code = mqtt::SubscribeReturnCode::Success(qos)
     }
 }
+
+pub struct Unsubscribe<S> {
+    topics: Vec<String<Bytes>>,
+    session: Cell<S>,
+}
+
+impl<S> Unsubscribe<S> {
+    pub(crate) fn new(session: Cell<S>, topics: Vec<String<Bytes>>) -> Self {
+        Self { topics, session }
+    }
+
+    #[inline]
+    pub fn session(&self) -> &S {
+        &*self.session
+    }
+
+    #[inline]
+    pub fn session_mut(&mut self) -> &mut S {
+        self.session.get_mut()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &String<Bytes>> {
+        self.topics.iter()
+    }
+}
