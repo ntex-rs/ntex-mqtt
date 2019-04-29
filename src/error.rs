@@ -26,6 +26,8 @@ impl From<str::Utf8Error> for ParseError {
     }
 }
 
-pub enum MqttTopicError {
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum TopicError {
     InvalidTopic,
+    InvalidLevel,
 }

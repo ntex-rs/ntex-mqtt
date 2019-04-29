@@ -1,7 +1,7 @@
 use std::fmt::{self, Write};
 use std::{io, ops, str::FromStr};
 
-use crate::error::MqttTopicError;
+use crate::error::TopicError;
 
 #[inline]
 fn is_metadata<T: AsRef<str>>(s: T) -> bool {
@@ -18,7 +18,7 @@ pub enum Level {
 }
 
 impl Level {
-    pub fn parse<T: AsRef<str>>(s: T) -> Result<Level, MqttTopicError> {
+    pub fn parse<T: AsRef<str>>(s: T) -> Result<Level, TopicError> {
         Level::from_str(s.as_ref())
     }
 
@@ -235,17 +235,17 @@ impl<T: AsRef<str>> MatchLevel for T {
 }
 
 impl FromStr for Level {
-    type Err = MqttTopicError;
+    type Err = TopicError;
 
     #[inline]
-    fn from_str(s: &str) -> Result<Self, MqttTopicError> {
+    fn from_str(s: &str) -> Result<Self, TopicError> {
         match s {
             "+" => Ok(Level::SingleWildcard),
             "#" => Ok(Level::MultiWildcard),
             "" => Ok(Level::Blank),
             _ => {
                 if s.contains(|c| c == '+' || c == '#') {
-                    Err(MqttTopicError::InvalidTopic)
+                    Err(TopicError::InvalidLevel)
                 } else if is_metadata(s) {
                     Ok(Level::Metadata(String::from(s)))
                 } else {
@@ -257,19 +257,19 @@ impl FromStr for Level {
 }
 
 impl FromStr for Topic {
-    type Err = MqttTopicError;
+    type Err = TopicError;
 
     #[inline]
-    fn from_str(s: &str) -> Result<Self, MqttTopicError> {
+    fn from_str(s: &str) -> Result<Self, TopicError> {
         s.split('/')
             .map(|level| Level::from_str(level))
-            .collect::<Result<Vec<_>, MqttTopicError>>()
+            .collect::<Result<Vec<_>, TopicError>>()
             .map(Topic)
             .and_then(|topic| {
                 if topic.is_valid() {
                     Ok(topic)
                 } else {
-                    Err(MqttTopicError::InvalidTopic)
+                    Err(TopicError::InvalidTopic)
                 }
             })
     }

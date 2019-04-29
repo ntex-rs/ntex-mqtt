@@ -10,7 +10,7 @@ mod codec;
 mod packet;
 
 pub use self::codec::Codec;
-pub use self::error::ParseError;
+pub use self::error::{ParseError, TopicError};
 pub use self::packet::{Connect, ConnectCode, LastWill, Packet, Publish, SubscribeReturnCode};
 pub use self::proto::{Protocol, QoS};
 pub use self::topic::{Level, Topic};
