@@ -99,8 +99,8 @@ impl<S> Publish<S> {
     }
 
     /// Extract Bytes from packet payload
-    pub fn take_payload(self) -> Bytes {
-        self.publish.payload
+    pub fn take_payload(&self) -> Bytes {
+        self.publish.payload.clone()
     }
 
     /// Loads and parse `application/json` encoded body.

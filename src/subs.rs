@@ -77,6 +77,7 @@ impl<'a, S> SubscribeIter<'a, S> {
                 cell: &mut subs.session,
                 code: &mut subs.codes[self.entry],
             };
+            self.entry += 1;
             Some(s)
         } else {
             None
