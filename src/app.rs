@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use actix_router::{Router, RouterBuilder};
 use actix_service::boxed::{self, BoxedNewService, BoxedService};
-use actix_service::{IntoConfigurableNewService, IntoNewService, NewService, Service};
+use actix_service::{IntoNewService, NewService, Service};
 use futures::future::{err, join_all, Either, FutureResult, JoinAll};
 use futures::{Async, Future, Poll};
 
@@ -36,8 +36,8 @@ where
 
     pub fn resource<F, U: 'static>(mut self, address: &str, service: F) -> Self
     where
-        F: IntoNewService<U, S>,
-        U: NewService<S, Request = Publish<S>, Response = ()>,
+        F: IntoNewService<U>,
+        U: NewService<Config = S, Request = Publish<S>, Response = ()>,
         E: From<U::Error> + From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
@@ -51,7 +51,7 @@ where
     }
 }
 
-impl<S, E> IntoConfigurableNewService<AppFactory<S, E>, S> for App<S, E>
+impl<S, E> IntoNewService<AppFactory<S, E>> for App<S, E>
 where
     S: 'static,
     E: 'static,
@@ -71,11 +71,12 @@ pub struct AppFactory<S, E> {
     not_found: Rc<Fn(Publish<S>) -> E>,
 }
 
-impl<S, E> NewService<S> for AppFactory<S, E>
+impl<S, E> NewService for AppFactory<S, E>
 where
     S: 'static,
     E: 'static,
 {
+    type Config = S;
     type Request = Publish<S>;
     type Response = ();
     type Error = E;

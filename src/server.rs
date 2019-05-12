@@ -5,9 +5,7 @@ use std::time::Duration;
 use actix_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 use actix_server_config::{Io as ServerIo, ServerConfig};
 use actix_service::boxed;
-use actix_service::{
-    IntoConfigurableNewService, IntoNewService, NewService, Service, ServiceExt,
-};
+use actix_service::{IntoNewService, NewService, Service, ServiceExt};
 use actix_utils::framed::{FramedTransport, FramedTransportError};
 use actix_utils::inflight::InFlightService;
 use actix_utils::keepalive::KeepAliveService;
@@ -40,7 +38,8 @@ pub struct MqttServer<Io, S, C: NewService, P, E, I> {
 impl<Io, S, C, E, I> MqttServer<Io, S, C, NotImplemented<S, E>, E, I>
 where
     S: 'static,
-    C: NewService<Request = Connect<I>, Response = ConnectAck<S>, Error = E> + 'static,
+    C: NewService<Config = (), Request = Connect<I>, Response = ConnectAck<S>, Error = E>
+        + 'static,
     E: From<C::InitError> + 'static,
 {
     /// Create server factory
@@ -62,8 +61,8 @@ where
     /// Set publish service
     pub fn publish<F, P1>(self, publish: F) -> MqttServer<Io, S, C, P1, E, I>
     where
-        F: IntoConfigurableNewService<P1, S>,
-        P1: NewService<S, Request = Publish<S>, Response = ()> + 'static,
+        F: IntoNewService<P1>,
+        P1: NewService<Config = S, Request = Publish<S>, Response = ()> + 'static,
         E: From<P1::Error> + From<P1::InitError> + 'static,
     {
         MqttServer {
@@ -86,8 +85,9 @@ where
     /// Set subscribe service
     pub fn subscribe<F, Srv>(mut self, subscribe: F) -> Self
     where
-        F: IntoConfigurableNewService<Srv, S>,
-        Srv: NewService<S, Request = Subscribe<S>, Response = SubscribeResult> + 'static,
+        F: IntoNewService<Srv>,
+        Srv: NewService<Config = S, Request = Subscribe<S>, Response = SubscribeResult>
+            + 'static,
         Srv::Service: 'static,
         E: From<Srv::Error> + From<Srv::InitError> + 'static,
     {
@@ -103,8 +103,8 @@ where
     /// Set unsubscribe service
     pub fn unsubscribe<F, Srv>(mut self, unsubscribe: F) -> Self
     where
-        F: IntoConfigurableNewService<Srv, S>,
-        Srv: NewService<S, Request = Unsubscribe<S>, Response = ()> + 'static,
+        F: IntoNewService<Srv>,
+        Srv: NewService<Config = S, Request = Unsubscribe<S>, Response = ()> + 'static,
         Srv::Service: 'static,
         E: From<Srv::Error> + From<Srv::InitError> + 'static,
     {
@@ -129,16 +129,17 @@ where
 impl<Io, S, C, P, E, I> MqttServer<Io, S, C, P, E, I>
 where
     Io: AsyncRead + AsyncWrite + 'static,
-    C: NewService<Request = Connect<I>, Response = ConnectAck<S>, Error = E> + 'static,
+    C: NewService<Config = (), Request = Connect<I>, Response = ConnectAck<S>, Error = E>
+        + 'static,
     E: From<C::InitError> + From<P::Error> + From<P::InitError> + 'static,
     S: 'static,
     I: 'static,
-    P: NewService<S, Request = Publish<S>, Response = ()> + 'static,
+    P: NewService<Config = S, Request = Publish<S>, Response = ()> + 'static,
 {
     pub fn framed<U>(
         self,
     ) -> impl NewService<
-        ServerConfig,
+        Config = ServerConfig,
         Request = (Framed<Io, U>, I),
         Response = (),
         Error = MqttError<E>,
@@ -178,15 +179,17 @@ where
     }
 }
 
-impl<Io, S, C, P, E, I> NewService<ServerConfig> for MqttServer<Io, S, C, P, E, I>
+impl<Io, S, C, P, E, I> NewService for MqttServer<Io, S, C, P, E, I>
 where
     Io: AsyncRead + AsyncWrite + 'static,
     E: From<C::InitError> + From<P::Error> + From<P::InitError> + 'static,
-    C: NewService<Request = Connect<I>, Response = ConnectAck<S>, Error = E> + 'static,
-    P: NewService<S, Request = Publish<S>, Response = ()> + 'static,
+    C: NewService<Config = (), Request = Connect<I>, Response = ConnectAck<S>, Error = E>
+        + 'static,
+    P: NewService<Config = S, Request = Publish<S>, Response = ()> + 'static,
     S: 'static,
     I: 'static,
 {
+    type Config = ServerConfig;
     type Request = ServerIo<Io, I>;
     type Response = ();
     type Error = MqttError<E>;
@@ -220,8 +223,9 @@ pub struct MqttServerFactory<Io, S, C: NewService, P, E, I> {
 impl<Io, S, C, P, E, I> Future for MqttServerFactory<Io, S, C, P, E, I>
 where
     Io: AsyncRead + AsyncWrite + 'static,
-    C: NewService<Request = Connect<I>, Response = ConnectAck<S>, Error = E> + 'static,
-    P: NewService<S, Request = Publish<S>, Response = ()>,
+    C: NewService<Config = (), Request = Connect<I>, Response = ConnectAck<S>, Error = E>
+        + 'static,
+    P: NewService<Config = S, Request = Publish<S>, Response = ()>,
     E: From<C::InitError> + From<P::Error> + From<P::InitError> + 'static,
 {
     type Item = Server<Io, S, C::Service, P, E, I>;
@@ -262,7 +266,7 @@ where
         + Encoder<Item = mqtt::Packet, Error = mqtt::ParseError>,
     Io: AsyncRead + AsyncWrite + 'static,
     C: Service<Request = Connect<I>, Response = ConnectAck<S>, Error = E> + 'static,
-    P: NewService<S, Request = Publish<S>, Response = ()> + 'static,
+    P: NewService<Config = S, Request = Publish<S>, Response = ()> + 'static,
     E: From<P::Error> + From<P::InitError> + 'static,
 {
     fn dispatch(
@@ -382,7 +386,7 @@ where
     I: 'static,
     Io: AsyncRead + AsyncWrite + 'static,
     C: Service<Request = Connect<I>, Response = ConnectAck<S>, Error = E> + 'static,
-    P: NewService<S, Request = Publish<S>, Response = ()> + 'static,
+    P: NewService<Config = S, Request = Publish<S>, Response = ()> + 'static,
     E: From<P::Error> + From<P::InitError> + 'static,
 {
     type Request = ServerIo<Io, I>;
@@ -426,7 +430,7 @@ struct FramedMqttServer<Io, U, S, C: NewService, P, E, I> {
     _t: PhantomData<(Io, U, S, I)>,
 }
 
-impl<Io, U, S, C, P, E, I> NewService<ServerConfig> for FramedMqttServer<Io, U, S, C, P, E, I>
+impl<Io, U, S, C, P, E, I> NewService for FramedMqttServer<Io, U, S, C, P, E, I>
 where
     S: 'static,
     I: 'static,
@@ -434,10 +438,12 @@ where
         + Encoder<Item = mqtt::Packet, Error = mqtt::ParseError>
         + 'static,
     Io: AsyncRead + AsyncWrite + 'static,
-    C: NewService<Request = Connect<I>, Response = ConnectAck<S>, Error = E> + 'static,
-    P: NewService<S, Request = Publish<S>, Response = ()> + 'static,
+    C: NewService<Config = (), Request = Connect<I>, Response = ConnectAck<S>, Error = E>
+        + 'static,
+    P: NewService<Config = S, Request = Publish<S>, Response = ()> + 'static,
     E: From<C::InitError> + From<P::Error> + From<P::InitError> + 'static,
 {
+    type Config = ServerConfig;
     type Request = (Framed<Io, U>, I);
     type Response = ();
     type Error = MqttError<E>;
@@ -473,8 +479,9 @@ where
     Io: AsyncRead + AsyncWrite + 'static,
     U: Decoder<Item = mqtt::Packet, Error = mqtt::ParseError>
         + Encoder<Item = mqtt::Packet, Error = mqtt::ParseError>,
-    C: NewService<Request = Connect<I>, Response = ConnectAck<S>, Error = E> + 'static,
-    P: NewService<S, Request = Publish<S>, Response = ()>,
+    C: NewService<Config = (), Request = Connect<I>, Response = ConnectAck<S>, Error = E>
+        + 'static,
+    P: NewService<Config = S, Request = Publish<S>, Response = ()>,
     E: From<C::InitError> + From<P::Error> + From<P::InitError> + 'static,
 {
     type Item = FramedServer<Io, U, S, C::Service, P, E, I>;
@@ -505,7 +512,7 @@ where
         + 'static,
     Io: AsyncRead + AsyncWrite + 'static,
     C: Service<Request = Connect<I>, Response = ConnectAck<S>, Error = E> + 'static,
-    P: NewService<S, Request = Publish<S>, Response = ()> + 'static,
+    P: NewService<Config = S, Request = Publish<S>, Response = ()> + 'static,
     E: From<P::Error> + From<P::InitError> + 'static,
 {
     type Request = (Framed<Io, U>, I);
@@ -546,7 +553,8 @@ impl<S, E> Default for NotImplemented<S, E> {
     }
 }
 
-impl<S, E> NewService<S> for NotImplemented<S, E> {
+impl<S, E> NewService for NotImplemented<S, E> {
+    type Config = S;
     type Request = Publish<S>;
     type Response = ();
     type Error = E;
@@ -584,7 +592,8 @@ impl<S, E> Default for SubsNotImplemented<S, E> {
     }
 }
 
-impl<S, E> NewService<S> for SubsNotImplemented<S, E> {
+impl<S, E> NewService for SubsNotImplemented<S, E> {
+    type Config = S;
     type Request = Subscribe<S>;
     type Response = SubscribeResult;
     type Error = E;
@@ -622,7 +631,8 @@ impl<S, E> Default for UnsubsNotImplemented<S, E> {
     }
 }
 
-impl<S, E> NewService<S> for UnsubsNotImplemented<S, E> {
+impl<S, E> NewService for UnsubsNotImplemented<S, E> {
+    type Config = S;
     type Request = Unsubscribe<S>;
     type Response = ();
     type Error = E;

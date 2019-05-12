@@ -1,8 +1,6 @@
+use actix_mqtt::{Connect, ConnectAck, MqttServer, Publish};
 use futures::future::ok;
 use futures::Future;
-
-use actix_mqtt::{Connect, ConnectAck, MqttServer, Publish};
-use actix_service::fn_service;
 
 struct Session;
 
@@ -29,7 +27,7 @@ fn main() -> std::io::Result<()> {
 
     actix_server::Server::build()
         .bind("mqtt", "127.0.0.1:1883", || {
-            MqttServer::new(connect).publish(fn_service(publish))
+            MqttServer::new(connect).publish(publish)
         })?
         .workers(1)
         .run()
