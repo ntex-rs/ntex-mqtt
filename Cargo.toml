@@ -12,13 +12,13 @@ edition = "2018"
 [dependencies]
 mqtt-codec = { git = "https://github.com/fafhrd91/mqtt-codec.git" }
 actix-codec = "0.1.2"
-actix-service = "0.4.0"
+actix-service = "0.4.1"
 actix-utils = "0.4.1"
 actix-router = "0.1.5"
 actix-server-config = "0.1.1"
-derive_more = "0.14"
+derive_more = "0.15.0"
 bytes = "0.4"
-either = "1.5.1"
+either = "1.5.2"
 futures = "0.1.25"
 log = "0.4"
 string = "0.2.0"
@@ -28,6 +28,6 @@ uuid = { version = "0.7", features = ["v4"] }
 
 [dev-dependencies]
 env_logger = "0.6"
-actix-server = "0.5.0"
+actix-server = "0.5.1"
 actix-test-server = "0.2.2"
 tokio-tcp = "0.1"
