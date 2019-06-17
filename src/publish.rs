@@ -7,6 +7,7 @@ use string::TryFrom;
 
 use crate::cell::Cell;
 
+/// Publish message
 pub struct Publish<S> {
     publish: mqtt::Publish,
     session: Cell<S>,
@@ -57,37 +58,44 @@ impl<S> Publish<S> {
 
     #[inline]
     /// the information channel to which payload data is published.
-    pub fn topic(&self) -> &str {
+    pub fn publish_topic(&self) -> &str {
         &self.publish.topic
     }
 
     #[inline]
+    /// returns reference to session
     pub fn session(&self) -> &S {
         &*self.session
     }
 
     #[inline]
+    /// mutable reference to session
     pub fn session_mut(&mut self) -> &mut S {
         self.session.get_mut()
     }
 
+    #[inline]
     /// only present in PUBLISH Packets where the QoS level is 1 or 2.
     pub fn id(&self) -> Option<u16> {
         self.publish.packet_id
     }
 
-    pub fn path(&self) -> &Path<string::String<Bytes>> {
+    #[inline]
+    pub fn topic(&self) -> &Path<string::String<Bytes>> {
         &self.topic
     }
 
-    pub fn path_mut(&mut self) -> &mut Path<string::String<Bytes>> {
+    #[inline]
+    pub fn topic_mut(&mut self) -> &mut Path<string::String<Bytes>> {
         &mut self.topic
     }
 
+    #[inline]
     pub fn query(&self) -> &str {
         self.query.as_ref().map(|s| s.as_ref()).unwrap_or("")
     }
 
+    #[inline]
     pub fn packet(&self) -> &mqtt::Publish {
         &self.publish
     }

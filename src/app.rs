@@ -11,6 +11,8 @@ use crate::publish::Publish;
 type Handler<S, E> = BoxedNewService<S, Publish<S>, (), E, E>;
 type HandlerService<S, E> = BoxedService<Publish<S>, (), E>;
 
+/// Application builder - structure that follows the builder pattern
+/// for building application instances for mqtt server.
 pub struct App<S, E> {
     router: RouterBuilder<usize>,
     handlers: Vec<Handler<S, E>>,
@@ -34,6 +36,7 @@ where
         }
     }
 
+    /// Configure mqtt resource for a specific topic.
     pub fn resource<F, U: 'static>(mut self, address: &str, service: F) -> Self
     where
         F: IntoNewService<U>,
@@ -154,7 +157,7 @@ where
     }
 
     fn call(&mut self, mut req: Publish<S>) -> Self::Future {
-        if let Some((idx, _info)) = self.router.recognize(req.path_mut()) {
+        if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
             self.handlers[*idx].call(req)
         } else {
             Either::A(err((*self.not_found.as_ref())(req)))

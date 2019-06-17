@@ -7,6 +7,7 @@ use mqtt_codec as mqtt;
 
 use crate::sink::MqttSink;
 
+/// Connect message
 pub struct Connect<T = ()> {
     connect: mqtt::Connect,
     sink: MqttSink,
@@ -22,6 +23,7 @@ impl<T> Connect<T> {
         }
     }
 
+    /// Returns connect parameters
     pub fn get_param(&self) -> &T {
         &self.param
     }
@@ -30,6 +32,7 @@ impl<T> Connect<T> {
         &mut self.param
     }
 
+    /// Returns mqtt server sink
     pub fn sink(&self) -> &MqttSink {
         &self.sink
     }
@@ -49,6 +52,7 @@ impl<T> fmt::Debug for Connect<T> {
     }
 }
 
+/// Ack connect message
 pub struct ConnectAck<S> {
     session: Option<S>,
     session_present: bool,

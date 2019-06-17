@@ -56,7 +56,7 @@ where
     }
 
     fn call(&mut self, req: mqtt::Packet) -> Self::Future {
-        println!("PKT: {:#?}", req);
+        log::trace!("Dispatch packet: {:#?}", req);
         match req {
             mqtt::Packet::PingRequest => Either::A(Either::A(ok(mqtt::Packet::PingResponse))),
             mqtt::Packet::Disconnect => Either::A(Either::A(ok(mqtt::Packet::Empty))),
@@ -93,7 +93,7 @@ where
 }
 
 /// Publish service response future
-pub struct PublishResponse<T> {
+pub(crate) struct PublishResponse<T> {
     fut: T,
     packet_id: Option<u16>,
 }
@@ -120,7 +120,7 @@ type BoxedServiceResponse<Res, Err> =
     Either<FutureResult<Res, Err>, Box<Future<Item = Res, Error = Err>>>;
 
 /// Subscribe service response future
-pub struct SubscribeResponse<E> {
+pub(crate) struct SubscribeResponse<E> {
     fut: BoxedServiceResponse<SubscribeResult, E>,
     packet_id: u16,
 }

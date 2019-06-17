@@ -2,6 +2,7 @@ use std::io;
 
 use mqtt_codec;
 
+/// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug)]
 pub enum MqttError<E> {
     Service(E),

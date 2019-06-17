@@ -27,10 +27,12 @@ impl MqttSink {
         }))
     }
 
+    /// Close mqtt connection
     pub fn close(&self) {
         let _ = self.0.get_ref().tx.unbounded_send(FramedMessage::Close);
     }
 
+    /// Send publish packet
     pub fn publish(
         &mut self,
         topic: string::String<Bytes>,
@@ -56,6 +58,7 @@ impl MqttSink {
         rx.map_err(|_| ())
     }
 
+    /// Send publish packet with qos set to 0
     pub fn publish_qos0(&self, topic: string::String<Bytes>, payload: Bytes) {
         let inner = self.0.get_ref();
         let publish = mqtt::Publish {
