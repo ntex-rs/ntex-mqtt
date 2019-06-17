@@ -34,7 +34,9 @@ impl ConnectCode {
             }
             ConnectCode::IdentifierRejected => "Connection Refused, identifier rejected",
             ConnectCode::ServiceUnavailable => "Connection Refused, Server unavailable",
-            ConnectCode::BadUserNameOrPassword => "Connection Refused, bad user name or password",
+            ConnectCode::BadUserNameOrPassword => {
+                "Connection Refused, bad user name or password"
+            }
             ConnectCode::NotAuthorized => "Connection Refused, not authorized",
             _ => "Connection Refused",
         }

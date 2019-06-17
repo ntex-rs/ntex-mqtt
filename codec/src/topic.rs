@@ -406,22 +406,20 @@ mod tests {
     fn test_parse_topic() {
         assert_eq!(
             topic!("sport/tennis/player1"),
-            vec![
+            Topic::from(vec![
                 Level::normal("sport"),
                 Level::normal("tennis"),
                 Level::normal("player1")
-            ]
-            .into()
+            ])
         );
 
         assert_eq!(topic!(""), Topic(vec![Level::Blank]));
         assert_eq!(
             topic!("/finance"),
-            vec![Level::Blank, Level::normal("finance")].into()
+            Topic::from(vec![Level::Blank, Level::normal("finance")])
         );
 
-        assert_eq!(topic!("$SYS"), vec![Level::metadata("$SYS")].into());
-
+        assert_eq!(topic!("$SYS"), Topic::from(vec![Level::metadata("$SYS")]));
         assert!("sport/$SYS".parse::<Topic>().is_err());
     }
 
@@ -429,42 +427,38 @@ mod tests {
     fn test_multi_wildcard_topic() {
         assert_eq!(
             topic!("sport/tennis/#"),
-            vec![
+            Topic::from(vec![
                 Level::normal("sport"),
                 Level::normal("tennis"),
                 Level::MultiWildcard
-            ]
-            .into()
+            ])
         );
 
-        assert_eq!(topic!("#"), vec![Level::MultiWildcard].into());
-
+        assert_eq!(topic!("#"), Topic::from(vec![Level::MultiWildcard]));
         assert!("sport/tennis#".parse::<Topic>().is_err());
         assert!("sport/tennis/#/ranking".parse::<Topic>().is_err());
     }
 
     #[test]
     fn test_single_wildcard_topic() {
-        assert_eq!(topic!("+"), vec![Level::SingleWildcard].into());
+        assert_eq!(topic!("+"), Topic::from(vec![Level::SingleWildcard]));
 
         assert_eq!(
             topic!("+/tennis/#"),
-            vec![
+            Topic::from(vec![
                 Level::SingleWildcard,
                 Level::normal("tennis"),
                 Level::MultiWildcard
-            ]
-            .into()
+            ])
         );
 
         assert_eq!(
             topic!("sport/+/player1"),
-            vec![
+            Topic::from(vec![
                 Level::normal("sport"),
                 Level::SingleWildcard,
                 Level::normal("player1")
-            ]
-            .into()
+            ])
         );
 
         assert!("sport+".parse::<Topic>().is_err());
@@ -492,32 +486,35 @@ mod tests {
         assert!("test".match_level(&Level::normal("test")));
         assert!("$SYS".match_level(&Level::metadata("$SYS")));
 
-        let t = "sport/tennis/player1/#".parse().unwrap();
+        let t: Topic = "sport/tennis/player1/#".parse().unwrap();
 
-        assert!("sport/tennis/player1".match_topic(&t));
-        assert!("sport/tennis/player1/ranking".match_topic(&t));
-        assert!("sport/tennis/player1/score/wimbledon".match_topic(&t));
+        assert_eq!(t, "sport/tennis/player1");
+        assert_eq!(t, "sport/tennis/player1/ranking");
+        assert_eq!(t, "sport/tennis/player1/score/wimbledon");
 
-        assert!("sport".match_topic(&"sport/#".parse().unwrap()));
+        assert_eq!(Topic::from_str("sport/#").unwrap(), "sport");
 
-        let t = "sport/tennis/+".parse().unwrap();
+        let t: Topic = "sport/tennis/+".parse().unwrap();
 
-        assert!("sport/tennis/player1".match_topic(&t));
-        assert!("sport/tennis/player2".match_topic(&t));
-        assert!(!"sport/tennis/player1/ranking".match_topic(&t));
+        assert_eq!(t, "sport/tennis/player1");
+        assert_eq!(t, "sport/tennis/player2");
+        assert!(t != "sport/tennis/player1/ranking");
 
-        let t = "sport/+".parse().unwrap();
+        let t: Topic = "sport/+".parse().unwrap();
 
-        assert!(!"sport".match_topic(&t));
-        assert!("sport/".match_topic(&t));
+        assert!(t != "sport");
+        assert_eq!(t, "sport/");
 
-        assert!("/finance".match_topic(&"+/+".parse().unwrap()));
-        assert!("/finance".match_topic(&"/+".parse().unwrap()));
-        assert!(!"/finance".match_topic(&"+".parse().unwrap()));
+        assert_eq!(Topic::from_str("+/+").unwrap(), "/finance");
+        assert_eq!(Topic::from_str("/+").unwrap(), "/finance",);
+        assert!(Topic::from_str("+").unwrap() != "/finance",);
 
-        assert!(!"$SYS".match_topic(&"#".parse().unwrap()));
-        assert!(!"$SYS/monitor/Clients".match_topic(&"+/monitor/Clients".parse().unwrap()));
-        assert!("$SYS/".match_topic(&"$SYS/#".parse().unwrap()));
-        assert!("$SYS/monitor/Clients".match_topic(&"$SYS/monitor/+".parse().unwrap()));
+        assert!(Topic::from_str("#").unwrap() != "$SYS");
+        assert!(Topic::from_str("+/monitor/Clients").unwrap() != "$SYS/monitor/Clients");
+        assert_eq!(Topic::from_str(&"$SYS/#").unwrap(), "$SYS/");
+        assert_eq!(
+            Topic::from_str("$SYS/monitor/+").unwrap(),
+            "$SYS/monitor/Clients",
+        );
     }
 }

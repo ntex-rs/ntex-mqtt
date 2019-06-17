@@ -257,139 +257,137 @@ fn write_variable_length(size: usize, dst: &mut BytesMut) {
 
 #[cfg(test)]
 mod tests {
-    //extern crate env_logger;
+    use bytes::Bytes;
+    use string::{String, TryFrom};
 
     use super::*;
-    use bytes::Bytes;
-    use decode::*;
-    use packet::*;
-    use proto::*;
 
     #[test]
     fn test_encode_variable_length() {
-        let mut v = Vec::new();
+        let mut v = BytesMut::new();
 
-        assert_eq!(v.write_variable_length(123).unwrap(), 1);
-        assert_eq!(v, &[123]);
-
-        v.clear();
-
-        assert_eq!(v.write_variable_length(129).unwrap(), 2);
-        assert_eq!(v, b"\x81\x01");
+        write_variable_length(123, &mut v);
+        assert_eq!(v, [123].as_ref());
 
         v.clear();
 
-        assert_eq!(v.write_variable_length(16383).unwrap(), 2);
-        assert_eq!(v, b"\xff\x7f");
+        write_variable_length(129, &mut v);
+        assert_eq!(v, b"\x81\x01".as_ref());
 
         v.clear();
 
-        assert_eq!(v.write_variable_length(2097151).unwrap(), 3);
-        assert_eq!(v, b"\xff\xff\x7f");
+        write_variable_length(16383, &mut v);
+        assert_eq!(v, b"\xff\x7f".as_ref());
 
         v.clear();
 
-        assert_eq!(v.write_variable_length(268435455).unwrap(), 4);
-        assert_eq!(v, b"\xff\xff\xff\x7f");
+        write_variable_length(2097151, &mut v);
+        assert_eq!(v, b"\xff\xff\x7f".as_ref());
 
-        assert!(v.write_variable_length(MAX_VARIABLE_LENGTH + 1).is_err())
+        v.clear();
+
+        write_variable_length(268435455, &mut v);
+        assert_eq!(v, b"\xff\xff\xff\x7f".as_ref());
+
+        // assert!(v.write_variable_length(MAX_VARIABLE_LENGTH + 1).is_err())
     }
 
     #[test]
     fn test_encode_fixed_header() {
-        let mut v = Vec::new();
+        let mut v = BytesMut::new();
         let p = Packet::PingRequest;
 
-        assert_eq!(calc_remaining_length(&p), 0);
-        assert_eq!(v.write_fixed_header(&p).unwrap(), 2);
-        assert_eq!(v, b"\xc0\x00");
+        assert_eq!(get_encoded_size(&p), 0);
+        write_fixed_header(&p, &mut v, 0);
+        assert_eq!(v, b"\xc0\x00".as_ref());
 
         v.clear();
 
-        let p = Packet::Publish {
+        let p = Packet::Publish(Publish {
             dup: true,
             retain: true,
             qos: QoS::ExactlyOnce,
-            topic: "topic".to_owned(),
+            topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
             packet_id: Some(0x4321),
             payload: (0..255).collect::<Vec<u8>>().into(),
-        };
+        });
 
-        assert_eq!(calc_remaining_length(&p), 264);
-        assert_eq!(v.write_fixed_header(&p).unwrap(), 3);
-        assert_eq!(v, b"\x3d\x88\x02");
+        assert_eq!(get_encoded_size(&p), 264);
+        write_fixed_header(&p, &mut v, 264);
+        assert_eq!(v, b"\x3d\x88\x02".as_ref());
     }
 
     macro_rules! assert_packet {
         ($p:expr, $data:expr) => {
-            let mut v = Vec::new();
-            assert_eq!(v.write_packet(&$p).unwrap(), $data.len());
-            assert_eq!(v, $data);
-            assert_eq!(read_packet($data).unwrap(), (&b""[..], $p));
+            let mut v = BytesMut::with_capacity(1024);
+            write_packet(&$p, &mut v, get_encoded_size($p));
+            assert_eq!(v.len(), $data.len());
+            assert_eq!(v, &$data[..]);
+            // assert_eq!(read_packet($data.cursor()).unwrap(), (&b""[..], $p));
         };
     }
 
     #[test]
     fn test_encode_connect_packets() {
         assert_packet!(
-            Packet::Connect {
+            &Packet::Connect(Connect {
                 protocol: Protocol::MQTT(4),
                 clean_session: false,
                 keep_alive: 60,
-                client_id: "12345".to_owned(),
+                client_id: String::try_from(Bytes::from_static(b"12345")).unwrap(),
                 last_will: None,
-                username: Some("user".to_owned()),
-                password: Some(Bytes::from(&b"pass"[..])),
-            },
+                username: Some(String::try_from(Bytes::from_static(b"user")).unwrap()),
+                password: Some(Bytes::from_static(b"pass")),
+            }),
             &b"\x10\x1D\x00\x04MQTT\x04\xC0\x00\x3C\x00\
 \x0512345\x00\x04user\x00\x04pass"[..]
         );
 
         assert_packet!(
-            Packet::Connect {
+            &Packet::Connect(Connect {
                 protocol: Protocol::MQTT(4),
                 clean_session: false,
                 keep_alive: 60,
-                client_id: "12345".to_owned(),
+                client_id: String::try_from(Bytes::from_static(b"12345")).unwrap(),
                 last_will: Some(LastWill {
                     qos: QoS::ExactlyOnce,
                     retain: false,
-                    topic: "topic".to_owned(),
-                    message: Bytes::from(&b"message"[..]),
+                    topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
+                    message: Bytes::from_static(b"message"),
                 }),
                 username: None,
                 password: None,
-            },
+            }),
             &b"\x10\x21\x00\x04MQTT\x04\x14\x00\x3C\x00\
 \x0512345\x00\x05topic\x00\x07message"[..]
         );
 
-        assert_packet!(Packet::Disconnect, b"\xe0\x00");
+        assert_packet!(&Packet::Disconnect, b"\xe0\x00");
     }
 
     #[test]
     fn test_encode_publish_packets() {
         assert_packet!(
-            Packet::Publish {
+            &Packet::Publish(Publish {
                 dup: true,
                 retain: true,
                 qos: QoS::ExactlyOnce,
-                topic: "topic".to_owned(),
+                topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
                 packet_id: Some(0x4321),
-                payload: PayloadPromise::from(&b"data"[..]),
-            },
+                payload: Bytes::from_static(b"data"),
+            }),
             b"\x3d\x0D\x00\x05topic\x43\x21data"
         );
 
         assert_packet!(
-            Packet::Publish {
+            &Packet::Publish(Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtMostOnce,
-                topic: "topic".to_owned(),
+                topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
                 packet_id: None,
-                payload: PayloadPromise::from(&b"data"[..]),
-            },
+                payload: Bytes::from_static(b"data"),
+            }),
             b"\x30\x0b\x00\x05topicdata"
         );
     }
@@ -397,18 +395,24 @@ mod tests {
     #[test]
     fn test_encode_subscribe_packets() {
         assert_packet!(
-            Packet::Subscribe {
+            &Packet::Subscribe {
                 packet_id: 0x1234,
                 topic_filters: vec![
-                    ("test".to_owned(), QoS::AtLeastOnce),
-                    ("filter".to_owned(), QoS::ExactlyOnce)
+                    (
+                        String::try_from(Bytes::from_static(b"test")).unwrap(),
+                        QoS::AtLeastOnce
+                    ),
+                    (
+                        String::try_from(Bytes::from_static(b"filter")).unwrap(),
+                        QoS::ExactlyOnce
+                    )
                 ],
             },
             b"\x82\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02"
         );
 
         assert_packet!(
-            Packet::SubscribeAck {
+            &Packet::SubscribeAck {
                 packet_id: 0x1234,
                 status: vec![
                     SubscribeReturnCode::Success(QoS::AtLeastOnce),
@@ -420,22 +424,25 @@ mod tests {
         );
 
         assert_packet!(
-            Packet::Unsubscribe {
+            &Packet::Unsubscribe {
                 packet_id: 0x1234,
-                topic_filters: vec!["test".to_owned(), "filter".to_owned()],
+                topic_filters: vec![
+                    String::try_from(Bytes::from_static(b"test")).unwrap(),
+                    String::try_from(Bytes::from_static(b"filter")).unwrap(),
+                ],
             },
             b"\xa2\x10\x12\x34\x00\x04test\x00\x06filter"
         );
 
         assert_packet!(
-            Packet::UnsubscribeAck { packet_id: 0x4321 },
+            &Packet::UnsubscribeAck { packet_id: 0x4321 },
             b"\xb0\x02\x43\x21"
         );
     }
 
     #[test]
     fn test_encode_ping_packets() {
-        assert_packet!(Packet::PingRequest, b"\xc0\x00");
-        assert_packet!(Packet::PingResponse, b"\xd0\x00");
+        assert_packet!(&Packet::PingRequest, b"\xc0\x00");
+        assert_packet!(&Packet::PingResponse, b"\xd0\x00");
     }
 }
