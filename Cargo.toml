@@ -5,12 +5,20 @@ authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "MQTT v3.1 Server framework"
 documentation = "https://docs.rs/actix-mqtt"
 repository = "https://github.com/actix/actix-mqtt.git"
+categories = ["network-programming"]
 keywords = ["MQTT", "IoT", "messaging"]
 license = "MIT/Apache-2.0"
+exclude = [".gitignore", ".travis.yml", ".cargo/config"]
 edition = "2018"
 
+[workspace]
+members = [
+  ".",
+  "codec",
+]
+
 [dependencies]
-mqtt-codec = { git = "https://github.com/fafhrd91/mqtt-codec.git" }
+mqtt-codec = { path = "codec" }
 actix-codec = "0.1.2"
 actix-service = "0.4.1"
 actix-utils = "0.4.1"
@@ -31,3 +39,7 @@ env_logger = "0.6"
 actix-server = "0.5.1"
 actix-test-server = "0.2.2"
 tokio-tcp = "0.1"
+
+[patch.crates-io]
+actix-mqtt = { path = "." }
+mqtt-codec = { path = "codec" }
