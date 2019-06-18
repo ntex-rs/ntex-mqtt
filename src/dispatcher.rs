@@ -46,13 +46,30 @@ where
     type Future = Either<
         Either<
             FutureResult<mqtt::Packet, MqttError<T::Error>>,
-            Box<Future<Item = mqtt::Packet, Error = MqttError<T::Error>>>,
+            Box<dyn Future<Item = mqtt::Packet, Error = MqttError<T::Error>>>,
         >,
         PublishResponse<T::Future>,
     >;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.publish.poll_ready().map_err(|e| MqttError::Service(e))
+        let res1 = self
+            .publish
+            .poll_ready()
+            .map_err(|e| MqttError::Service(e))?;
+        let res2 = self
+            .subscribe
+            .poll_ready()
+            .map_err(|e| MqttError::Service(e))?;
+        let res3 = self
+            .unsubscribe
+            .poll_ready()
+            .map_err(|e| MqttError::Service(e))?;
+
+        if res1.is_not_ready() || res2.is_not_ready() || res3.is_not_ready() {
+            Ok(Async::NotReady)
+        } else {
+            Ok(Async::Ready(()))
+        }
     }
 
     fn call(&mut self, req: mqtt::Packet) -> Self::Future {
@@ -117,7 +134,7 @@ where
 }
 
 type BoxedServiceResponse<Res, Err> =
-    Either<FutureResult<Res, Err>, Box<Future<Item = Res, Error = Err>>>;
+    Either<FutureResult<Res, Err>, Box<dyn Future<Item = Res, Error = Err>>>;
 
 /// Subscribe service response future
 pub(crate) struct SubscribeResponse<E> {

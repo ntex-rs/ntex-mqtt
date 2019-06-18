@@ -125,10 +125,10 @@ where
 
 pub struct AppFactoryFut<S, E> {
     router: Rc<Router<usize>>,
-    handlers: JoinAll<Vec<Box<Future<Item = HandlerService<S, E>, Error = E>>>>,
+    handlers: JoinAll<Vec<Box<dyn Future<Item = HandlerService<S, E>, Error = E>>>>,
     default: Option<
         either::Either<
-            Box<Future<Item = HandlerService<S, E>, Error = E>>,
+            Box<dyn Future<Item = HandlerService<S, E>, Error = E>>,
             HandlerService<S, E>,
         >,
     >,
@@ -172,7 +172,7 @@ where
     type Error = E;
     type Future = Either<
         FutureResult<Self::Response, Self::Error>,
-        Box<Future<Item = Self::Response, Error = Self::Error>>,
+        Box<dyn Future<Item = Self::Response, Error = Self::Error>>,
     >;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {

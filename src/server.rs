@@ -43,7 +43,7 @@ where
         + 'static,
     E: From<C::InitError> + 'static,
 {
-    /// Create server factory
+    /// Create server factory and provide connect service
     pub fn new<F>(connect: F) -> MqttServer<Io, S, C, NotImplemented<S, E>, E, I>
     where
         F: IntoNewService<C>,
@@ -359,14 +359,31 @@ where
     type Request = ServerIo<Io, I>;
     type Response = ();
     type Error = MqttError<E>;
-    type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Response, Error = Self::Error>>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.0
-            .get_mut()
+        let inner = self.0.get_mut();
+
+        let not_ready1 = inner
             .connect
             .poll_ready()
-            .map_err(|e| MqttError::Service(e.into()))
+            .map_err(|e| MqttError::Service(e.into()))?
+            .is_not_ready();
+
+        let not_ready2 = if let Some(ref mut srv) = inner.disconnect {
+            srv.get_mut()
+                .poll_ready()
+                .map_err(|e| MqttError::Service(e.into()))?
+                .is_not_ready()
+        } else {
+            false
+        };
+
+        if not_ready1 || not_ready2 {
+            Ok(Async::NotReady)
+        } else {
+            Ok(Async::Ready(()))
+        }
     }
 
     fn call(&mut self, req: Self::Request) -> Self::Future {
