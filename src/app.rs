@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use actix_router::{Router, RouterBuilder};
 use actix_service::boxed::{self, BoxedNewService, BoxedService};
-use actix_service::{IntoNewService, NewService, Service};
-use futures::future::{err, join_all, Either, FutureResult, JoinAll};
+use actix_service::{service_fn, IntoNewService, NewService, Service};
+use futures::future::{join_all, Either, FutureResult, JoinAll};
 use futures::{Async, Future, Poll};
 
 use crate::publish::Publish;
@@ -16,7 +16,7 @@ type HandlerService<S, E> = BoxedService<Publish<S>, (), E>;
 pub struct App<S, E> {
     router: RouterBuilder<usize>,
     handlers: Vec<Handler<S, E>>,
-    not_found: Rc<Fn(Publish<S>) -> E>,
+    default: Handler<S, E>,
 }
 
 impl<S, E> App<S, E>
@@ -24,15 +24,20 @@ where
     S: 'static,
     E: 'static,
 {
-    /// Create mqtt application and provide default topic handler.
-    pub fn new<F>(not_found: F) -> Self
-    where
-        F: Fn(Publish<S>) -> E + 'static,
-    {
+    /// Create mqtt application.
+    ///
+    /// **Note** Default service acks all publish packets
+    pub fn new() -> Self {
         App {
             router: Router::build(),
             handlers: Vec::new(),
-            not_found: Rc::new(not_found),
+            default: boxed::new_service(
+                service_fn(|p: Publish<S>| {
+                    log::warn!("Unknown topic {:?}", p.publish_topic());
+                    Ok::<_, E>(())
+                })
+                .map_init_err(|_| panic!()),
+            ),
         }
     }
 
@@ -52,6 +57,22 @@ where
         ));
         self
     }
+
+    /// Default service to be used if no matching resource could be found.
+    pub fn default_resource<F, U: 'static>(mut self, service: F) -> Self
+    where
+        F: IntoNewService<U>,
+        U: NewService<Config = S, Request = Publish<S>, Response = ()>,
+        E: From<U::Error> + From<U::InitError>,
+    {
+        self.default = boxed::new_service(
+            service
+                .into_new_service()
+                .map_err(|e| e.into())
+                .map_init_err(|e| e.into()),
+        );
+        self
+    }
 }
 
 impl<S, E> IntoNewService<AppFactory<S, E>> for App<S, E>
@@ -63,7 +84,7 @@ where
         AppFactory {
             router: Rc::new(self.router.finish()),
             handlers: self.handlers,
-            not_found: self.not_found,
+            default: self.default,
         }
     }
 }
@@ -71,7 +92,7 @@ where
 pub struct AppFactory<S, E> {
     router: Rc<Router<usize>>,
     handlers: Vec<Handler<S, E>>,
-    not_found: Rc<Fn(Publish<S>) -> E>,
+    default: Handler<S, E>,
 }
 
 impl<S, E> NewService for AppFactory<S, E>
@@ -97,7 +118,7 @@ where
         AppFactoryFut {
             router: self.router.clone(),
             handlers: join_all(fut),
-            not_found: self.not_found.clone(),
+            default: Some(either::Either::Left(self.default.new_service(session))),
         }
     }
 }
@@ -105,7 +126,12 @@ where
 pub struct AppFactoryFut<S, E> {
     router: Rc<Router<usize>>,
     handlers: JoinAll<Vec<Box<Future<Item = HandlerService<S, E>, Error = E>>>>,
-    not_found: Rc<Fn(Publish<S>) -> E>,
+    default: Option<
+        either::Either<
+            Box<Future<Item = HandlerService<S, E>, Error = E>>,
+            HandlerService<S, E>,
+        >,
+    >,
 }
 
 impl<S, E> Future for AppFactoryFut<S, E> {
@@ -113,11 +139,19 @@ impl<S, E> Future for AppFactoryFut<S, E> {
     type Error = E;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let handlers = futures::try_ready!(self.handlers.poll());
+        let handlers = match self.default.as_mut().unwrap() {
+            either::Either::Left(ref mut fut) => {
+                let default = futures::try_ready!(fut.poll());
+                self.default = Some(either::Either::Right(default));
+                return self.poll();
+            }
+            either::Either::Right(_) => futures::try_ready!(self.handlers.poll()),
+        };
+
         Ok(Async::Ready(AppService {
             handlers,
             router: self.router.clone(),
-            not_found: self.not_found.clone(),
+            default: self.default.take().unwrap().right().unwrap(),
         }))
     }
 }
@@ -125,7 +159,7 @@ impl<S, E> Future for AppFactoryFut<S, E> {
 pub struct AppService<S, E> {
     router: Rc<Router<usize>>,
     handlers: Vec<BoxedService<Publish<S>, (), E>>,
-    not_found: Rc<Fn(Publish<S>) -> E>,
+    default: BoxedService<Publish<S>, (), E>,
 }
 
 impl<S, E> Service for AppService<S, E>
@@ -160,7 +194,7 @@ where
         if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
             self.handlers[*idx].call(req)
         } else {
-            Either::A(err((*self.not_found.as_ref())(req)))
+            self.default.call(req)
         }
     }
 }
