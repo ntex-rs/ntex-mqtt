@@ -122,9 +122,12 @@ where
     pub fn disconnect<UF, U>(mut self, srv: UF) -> Self
     where
         UF: IntoService<U>,
-        U: Service<Request = Session<S>, Response = (), Error = E> + 'static,
+        U: Service<Request = Session<S>, Response = ()> + 'static,
+        E: From<U::Error> + 'static,
     {
-        self.disconnect = Some(Cell::new(boxed::service(srv.into_service())));
+        self.disconnect = Some(Cell::new(boxed::service(
+            srv.into_service().map_err(|e| e.into()),
+        )));
         self
     }
 }

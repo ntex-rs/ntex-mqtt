@@ -45,15 +45,12 @@ where
     pub fn resource<F, U: 'static>(mut self, address: &str, service: F) -> Self
     where
         F: IntoNewService<U>,
-        U: NewService<Config = S, Request = Publish<S>, Response = ()>,
-        E: From<U::Error> + From<U::InitError>,
+        U: NewService<Config = S, Request = Publish<S>, Response = (), Error = E>,
+        E: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
         self.handlers.push(boxed::new_service(
-            service
-                .into_new_service()
-                .map_err(|e| e.into())
-                .map_init_err(|e| e.into()),
+            service.into_new_service().map_init_err(|e| E::from(e)),
         ));
         self
     }
@@ -62,15 +59,15 @@ where
     pub fn default_resource<F, U: 'static>(mut self, service: F) -> Self
     where
         F: IntoNewService<U>,
-        U: NewService<Config = S, Request = Publish<S>, Response = ()>,
-        E: From<U::Error> + From<U::InitError>,
+        U: NewService<
+            Config = S,
+            Request = Publish<S>,
+            Response = (),
+            Error = E,
+            InitError = E,
+        >,
     {
-        self.default = boxed::new_service(
-            service
-                .into_new_service()
-                .map_err(|e| e.into())
-                .map_init_err(|e| e.into()),
-        );
+        self.default = boxed::new_service(service.into_new_service());
         self
     }
 }
