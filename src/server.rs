@@ -21,8 +21,8 @@ use crate::connect::{Connect, ConnectAck};
 use crate::dispatcher::ServerDispatcher;
 use crate::error::MqttError;
 use crate::publish::Publish;
+use crate::session::Session;
 use crate::sink::MqttSink;
-use crate::state::State;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
 /// Mqtt Server
@@ -31,7 +31,7 @@ pub struct MqttServer<Io, S, C: NewService, P, E, I> {
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, Subscribe<S>, SubscribeResult, E, E>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, Unsubscribe<S>, (), E, E>>,
-    disconnect: Option<Cell<boxed::BoxedService<State<S>, (), E>>>,
+    disconnect: Option<Cell<boxed::BoxedService<Session<S>, (), E>>>,
     time: LowResTimeService,
     _t: PhantomData<(Io, S, I)>,
 }
@@ -122,7 +122,7 @@ where
     pub fn disconnect<UF, U>(mut self, srv: UF) -> Self
     where
         UF: IntoService<U>,
-        U: Service<Request = State<S>, Response = (), Error = E> + 'static,
+        U: Service<Request = Session<S>, Response = (), Error = E> + 'static,
     {
         self.disconnect = Some(Cell::new(boxed::service(srv.into_service())));
         self
@@ -182,7 +182,7 @@ pub struct MqttServerFactory<Io, S, C: NewService, P, E, I> {
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, Subscribe<S>, SubscribeResult, E, E>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, Unsubscribe<S>, (), E, E>>,
-    disconnect: Option<Cell<boxed::BoxedService<State<S>, (), E>>>,
+    disconnect: Option<Cell<boxed::BoxedService<Session<S>, (), E>>>,
     time: LowResTimeService,
     _t: PhantomData<(Io, S, E, I)>,
 }
@@ -221,7 +221,7 @@ pub(crate) struct ServerInner<Io, U, S, C: Service, P, E, I> {
     publish: Rc<P>,
     subscribe: Rc<boxed::BoxedNewService<S, Subscribe<S>, SubscribeResult, E, E>>,
     unsubscribe: Rc<boxed::BoxedNewService<S, Unsubscribe<S>, (), E, E>>,
-    disconnect: Option<Cell<boxed::BoxedService<State<S>, (), E>>>,
+    disconnect: Option<Cell<boxed::BoxedService<Session<S>, (), E>>>,
     time: LowResTimeService,
     _t: PhantomData<(Io, S, E, U, I)>,
 }
@@ -278,7 +278,7 @@ where
                     "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
                     packet.packet_type()
                 );
-                Either::B(err(MqttError::UnexpectedPacket(packet)))
+                Either::B(err(MqttError::ExpectedConnect(packet)))
             }
             None => {
                 log::trace!("mqtt client disconnected",);
@@ -323,7 +323,7 @@ where
                                             unsubscribe))
                                         .map_err(|e| match e {
                                             InOrderError::Service(e) => e,
-                                            InOrderError::Disconnected => MqttError::InternalError,
+                                            InOrderError::Disconnected => MqttError::Disconnected,
                                         })
                                     ));
 
@@ -337,7 +337,7 @@ where
                         .map_err(MqttError::from)
                         .then(move |res| {
                             if let Some(ref mut disconnect) = inner2.get_mut().disconnect {
-                                Either::A(disconnect.get_mut().call(State::new(session)).map_err(|e| MqttError::Service(e)))
+                                Either::A(disconnect.get_mut().call(Session::new(session)).map_err(|e| MqttError::Service(e)))
                             } else {
                                 Either::B(result(res))
                             }
@@ -477,7 +477,7 @@ impl<S, E> Service for SubsNotImplemented<S, E> {
 
     fn call(&mut self, subs: Subscribe<S>) -> Self::Future {
         log::warn!("MQTT Subscribe is not implemented");
-        ok(subs.finish())
+        ok(subs.into_result())
     }
 }
 

@@ -6,12 +6,14 @@ use string::String;
 
 use crate::cell::Cell;
 
+/// Subscribe message
 pub struct Subscribe<S> {
     topics: Vec<(String<Bytes>, mqtt::QoS)>,
     codes: Vec<mqtt::SubscribeReturnCode>,
     session: Cell<S>,
 }
 
+/// Result of a subscribe message
 pub struct SubscribeResult {
     pub(crate) codes: Vec<mqtt::SubscribeReturnCode>,
 }
@@ -29,15 +31,19 @@ impl<S> Subscribe<S> {
     }
 
     #[inline]
+    /// reference to a connection session
     pub fn session(&self) -> &S {
         &*self.session
     }
 
     #[inline]
+    /// mutable reference to a connection session
     pub fn session_mut(&mut self) -> &mut S {
         self.session.get_mut()
     }
 
+    #[inline]
+    /// returns iterator over subscription topics
     pub fn iter_mut(&mut self) -> SubscribeIter<S> {
         SubscribeIter {
             subs: self as *const _ as *mut _,
@@ -46,7 +52,9 @@ impl<S> Subscribe<S> {
         }
     }
 
-    pub fn finish(self) -> SubscribeResult {
+    #[inline]
+    /// convert subscription to a result
+    pub fn into_result(self) -> SubscribeResult {
         SubscribeResult { codes: self.codes }
     }
 }
@@ -60,6 +68,7 @@ impl<'a, S> IntoIterator for &'a mut Subscribe<S> {
     }
 }
 
+/// Iterator over subscription topics
 pub struct SubscribeIter<'a, S> {
     subs: *mut Subscribe<S>,
     entry: usize,
@@ -94,6 +103,7 @@ impl<'a, S> Iterator for SubscribeIter<'a, S> {
     }
 }
 
+/// Subscription topic
 pub struct Subscription<'a, S> {
     topic: &'a String<Bytes>,
     cell: &'a mut Cell<S>,
@@ -103,32 +113,43 @@ pub struct Subscription<'a, S> {
 
 impl<'a, S> Subscription<'a, S> {
     #[inline]
+    /// reference to a connection session
     pub fn session(&self) -> &S {
         &*self.cell
     }
 
     #[inline]
+    /// mutable reference to a connection session
     pub fn session_mut(&mut self) -> &mut S {
         self.cell.get_mut()
     }
 
+    #[inline]
+    /// subscription topic
     pub fn topic(&self) -> &'a String<Bytes> {
         &self.topic
     }
 
+    #[inline]
+    /// the level of assurance for delivery of an Application Message.
     pub fn qos(&self) -> mqtt::QoS {
         self.qos
     }
 
+    #[inline]
+    /// fail to subscribe to the topic
     pub fn fail(&mut self) {
         *self.code = mqtt::SubscribeReturnCode::Failure
     }
 
+    #[inline]
+    /// subscribe to a topic with specific qos
     pub fn subscribe(&mut self, qos: mqtt::QoS) {
         *self.code = mqtt::SubscribeReturnCode::Success(qos)
     }
 }
 
+/// Unsubscribe message
 pub struct Unsubscribe<S> {
     topics: Vec<String<Bytes>>,
     session: Cell<S>,
@@ -140,15 +161,18 @@ impl<S> Unsubscribe<S> {
     }
 
     #[inline]
+    /// reference to a connection session
     pub fn session(&self) -> &S {
         &*self.session
     }
 
     #[inline]
+    /// mutable reference to a connection session
     pub fn session_mut(&mut self) -> &mut S {
         self.session.get_mut()
     }
 
+    /// returns iterator over unsubscribe topics
     pub fn iter(&self) -> impl Iterator<Item = &String<Bytes>> {
         self.topics.iter()
     }

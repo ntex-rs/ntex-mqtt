@@ -63,13 +63,13 @@ impl<S> Publish<S> {
     }
 
     #[inline]
-    /// returns reference to session
+    /// returns reference to a connection session
     pub fn session(&self) -> &S {
         &*self.session
     }
 
     #[inline]
-    /// mutable reference to session
+    /// returns mutable reference to a connection session
     pub fn session_mut(&mut self) -> &mut S {
         self.session.get_mut()
     }
