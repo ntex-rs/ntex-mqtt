@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use actix_router::{Router, RouterBuilder};
+use actix_router::RouterBuilder;
 use actix_service::boxed::{self, BoxedNewService, BoxedService};
 use actix_service::{service_fn, IntoNewService, NewService, Service};
 use futures::future::{join_all, Either, FutureResult, JoinAll};
@@ -11,15 +11,15 @@ use crate::publish::Publish;
 type Handler<S, E> = BoxedNewService<S, Publish<S>, (), E, E>;
 type HandlerService<S, E> = BoxedService<Publish<S>, (), E>;
 
-/// Application builder - structure that follows the builder pattern
-/// for building application instances for mqtt server.
-pub struct App<S, E> {
+/// Router - structure that follows the builder pattern
+/// for building publish packet router instances for mqtt server.
+pub struct Router<S, E> {
     router: RouterBuilder<usize>,
     handlers: Vec<Handler<S, E>>,
     default: Handler<S, E>,
 }
 
-impl<S, E> App<S, E>
+impl<S, E> Router<S, E>
 where
     S: 'static,
     E: 'static,
@@ -28,8 +28,8 @@ where
     ///
     /// **Note** Default service acks all publish packets
     pub fn new() -> Self {
-        App {
-            router: Router::build(),
+        Router {
+            router: actix_router::Router::build(),
             handlers: Vec::new(),
             default: boxed::new_service(
                 service_fn(|p: Publish<S>| {
@@ -72,13 +72,13 @@ where
     }
 }
 
-impl<S, E> IntoNewService<AppFactory<S, E>> for App<S, E>
+impl<S, E> IntoNewService<RouterFactory<S, E>> for Router<S, E>
 where
     S: 'static,
     E: 'static,
 {
-    fn into_new_service(self) -> AppFactory<S, E> {
-        AppFactory {
+    fn into_new_service(self) -> RouterFactory<S, E> {
+        RouterFactory {
             router: Rc::new(self.router.finish()),
             handlers: self.handlers,
             default: self.default,
@@ -86,13 +86,13 @@ where
     }
 }
 
-pub struct AppFactory<S, E> {
-    router: Rc<Router<usize>>,
+pub struct RouterFactory<S, E> {
+    router: Rc<actix_router::Router<usize>>,
     handlers: Vec<Handler<S, E>>,
     default: Handler<S, E>,
 }
 
-impl<S, E> NewService for AppFactory<S, E>
+impl<S, E> NewService for RouterFactory<S, E>
 where
     S: 'static,
     E: 'static,
@@ -102,8 +102,8 @@ where
     type Response = ();
     type Error = E;
     type InitError = E;
-    type Service = AppService<S, E>;
-    type Future = AppFactoryFut<S, E>;
+    type Service = RouterService<S, E>;
+    type Future = RouterFactoryFut<S, E>;
 
     fn new_service(&self, session: &S) -> Self::Future {
         let fut: Vec<_> = self
@@ -112,7 +112,7 @@ where
             .map(|h| h.new_service(session))
             .collect();
 
-        AppFactoryFut {
+        RouterFactoryFut {
             router: self.router.clone(),
             handlers: join_all(fut),
             default: Some(either::Either::Left(self.default.new_service(session))),
@@ -120,8 +120,8 @@ where
     }
 }
 
-pub struct AppFactoryFut<S, E> {
-    router: Rc<Router<usize>>,
+pub struct RouterFactoryFut<S, E> {
+    router: Rc<actix_router::Router<usize>>,
     handlers: JoinAll<Vec<Box<dyn Future<Item = HandlerService<S, E>, Error = E>>>>,
     default: Option<
         either::Either<
@@ -131,8 +131,8 @@ pub struct AppFactoryFut<S, E> {
     >,
 }
 
-impl<S, E> Future for AppFactoryFut<S, E> {
-    type Item = AppService<S, E>;
+impl<S, E> Future for RouterFactoryFut<S, E> {
+    type Item = RouterService<S, E>;
     type Error = E;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -145,7 +145,7 @@ impl<S, E> Future for AppFactoryFut<S, E> {
             either::Either::Right(_) => futures::try_ready!(self.handlers.poll()),
         };
 
-        Ok(Async::Ready(AppService {
+        Ok(Async::Ready(RouterService {
             handlers,
             router: self.router.clone(),
             default: self.default.take().unwrap().right().unwrap(),
@@ -153,13 +153,13 @@ impl<S, E> Future for AppFactoryFut<S, E> {
     }
 }
 
-pub struct AppService<S, E> {
-    router: Rc<Router<usize>>,
+pub struct RouterService<S, E> {
+    router: Rc<actix_router::Router<usize>>,
     handlers: Vec<BoxedService<Publish<S>, (), E>>,
     default: BoxedService<Publish<S>, (), E>,
 }
 
-impl<S, E> Service for AppService<S, E>
+impl<S, E> Service for RouterService<S, E>
 where
     S: 'static,
     E: 'static,
