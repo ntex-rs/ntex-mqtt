@@ -27,7 +27,7 @@ fn main() -> std::io::Result<()> {
 
     actix_server::Server::build()
         .bind("mqtt", "127.0.0.1:1883", || {
-            MqttServer::new(connect).publish(publish)
+            MqttServer::new(connect).finish(publish)
         })?
         .workers(1)
         .run()

@@ -1,14 +1,11 @@
-use actix_ioframe as ioframe;
 use actix_service::Service;
 use actix_test_server::TestServer;
 use bytes::Bytes;
 use futures::future::ok;
 use futures::Future;
-use mqtt_codec as mqtt;
 use string::TryFrom;
 
-use actix_mqtt::publish2::Publish;
-use actix_mqtt::{client, Connect, ConnectAck, MqttServer};
+use actix_mqtt::{client, Connect, ConnectAck, MqttServer, Publish};
 
 struct Session;
 
@@ -25,25 +22,21 @@ fn test_simple() -> std::io::Result<()> {
     );
     env_logger::init();
 
-    let mut srv = TestServer::with(|| MqttServer::new(connect));
+    let mut srv = TestServer::with(|| MqttServer::new(connect).finish(|_t| Ok(())));
 
     struct ClientSession;
 
     let mut client =
         client::Client::new(string::String::try_from(Bytes::from_static(b"user")).unwrap())
             .state(|ack: client::ConnectAck<_>| {
-                ack.sink().send(mqtt::Packet::Publish(mqtt::Publish {
-                    dup: false,
-                    retain: false,
-                    qos: mqtt::QoS::AtMostOnce,
-                    topic: string::String::try_from(Bytes::from_static(b"#")).unwrap(),
-                    packet_id: None,
-                    payload: Bytes::new(),
-                }));
+                ack.sink().publish_qos0(
+                    string::String::try_from(Bytes::from_static(b"#")).unwrap(),
+                    Bytes::new(),
+                );
                 ack.sink().close();
                 Ok(ack.state(ClientSession))
             })
-            .finish(|t: Publish<_>| {
+            .finish(|_t: Publish<_>| {
                 // t.sink().close();
                 Ok(())
             });

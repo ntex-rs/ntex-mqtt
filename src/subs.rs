@@ -1,16 +1,19 @@
+use std::cell::{Ref, RefMut};
 use std::marker::PhantomData;
 
+use actix_ioframe::State;
 use bytes::Bytes;
 use mqtt_codec as mqtt;
 use string::String;
 
-use crate::cell::Cell;
+use crate::dispatcher::MqttState;
+use crate::sink::MqttSink;
 
 /// Subscribe message
 pub struct Subscribe<S> {
     topics: Vec<(String<Bytes>, mqtt::QoS)>,
     codes: Vec<mqtt::SubscribeReturnCode>,
-    session: Cell<S>,
+    state: State<MqttState<S>>,
 }
 
 /// Result of a subscribe message
@@ -19,27 +22,36 @@ pub struct SubscribeResult {
 }
 
 impl<S> Subscribe<S> {
-    pub(crate) fn new(session: Cell<S>, topics: Vec<(String<Bytes>, mqtt::QoS)>) -> Self {
+    pub(crate) fn new(
+        state: State<MqttState<S>>,
+        topics: Vec<(String<Bytes>, mqtt::QoS)>,
+    ) -> Self {
         let mut codes = Vec::with_capacity(topics.len());
         (0..topics.len()).for_each(|_| codes.push(mqtt::SubscribeReturnCode::Failure));
 
         Self {
             topics,
-            session,
+            state,
             codes,
         }
     }
 
     #[inline]
-    /// reference to a connection session
-    pub fn session(&self) -> &S {
-        &*self.session
+    /// returns reference to a connection session
+    pub fn session(&self) -> Ref<S> {
+        Ref::map(self.state.get_ref(), |t| &t.st)
     }
 
     #[inline]
-    /// mutable reference to a connection session
-    pub fn session_mut(&mut self) -> &mut S {
-        self.session.get_mut()
+    /// returns mutable reference to a connection session
+    pub fn session_mut(&mut self) -> RefMut<S> {
+        RefMut::map(self.state.get_mut(), |t| &mut t.st)
+    }
+
+    #[inline]
+    /// Mqtt client sink object
+    pub fn sink(&self) -> MqttSink {
+        self.state.get_ref().sink().clone()
     }
 
     #[inline]
@@ -83,7 +95,7 @@ impl<'a, S> SubscribeIter<'a, S> {
             let s = Subscription {
                 topic: &subs.topics[self.entry].0,
                 qos: subs.topics[self.entry].1,
-                cell: &mut subs.session,
+                state: subs.state.clone(),
                 code: &mut subs.codes[self.entry],
             };
             self.entry += 1;
@@ -106,7 +118,7 @@ impl<'a, S> Iterator for SubscribeIter<'a, S> {
 /// Subscription topic
 pub struct Subscription<'a, S> {
     topic: &'a String<Bytes>,
-    cell: &'a mut Cell<S>,
+    state: State<MqttState<S>>,
     qos: mqtt::QoS,
     code: &'a mut mqtt::SubscribeReturnCode,
 }
@@ -114,14 +126,14 @@ pub struct Subscription<'a, S> {
 impl<'a, S> Subscription<'a, S> {
     #[inline]
     /// reference to a connection session
-    pub fn session(&self) -> &S {
-        &*self.cell
+    pub fn session(&self) -> Ref<S> {
+        Ref::map(self.state.get_ref(), |t| &t.st)
     }
 
     #[inline]
     /// mutable reference to a connection session
-    pub fn session_mut(&mut self) -> &mut S {
-        self.cell.get_mut()
+    pub fn session_mut(&mut self) -> RefMut<S> {
+        RefMut::map(self.state.get_mut(), |t| &mut t.st)
     }
 
     #[inline]
@@ -151,25 +163,31 @@ impl<'a, S> Subscription<'a, S> {
 
 /// Unsubscribe message
 pub struct Unsubscribe<S> {
+    state: State<MqttState<S>>,
     topics: Vec<String<Bytes>>,
-    session: Cell<S>,
 }
 
 impl<S> Unsubscribe<S> {
-    pub(crate) fn new(session: Cell<S>, topics: Vec<String<Bytes>>) -> Self {
-        Self { topics, session }
+    pub(crate) fn new(state: State<MqttState<S>>, topics: Vec<String<Bytes>>) -> Self {
+        Self { topics, state }
     }
 
     #[inline]
     /// reference to a connection session
-    pub fn session(&self) -> &S {
-        &*self.session
+    pub fn session(&self) -> Ref<S> {
+        Ref::map(self.state.get_ref(), |t| &t.st)
     }
 
     #[inline]
     /// mutable reference to a connection session
-    pub fn session_mut(&mut self) -> &mut S {
-        self.session.get_mut()
+    pub fn session_mut(&mut self) -> RefMut<S> {
+        RefMut::map(self.state.get_mut(), |t| &mut t.st)
+    }
+
+    #[inline]
+    /// Mqtt client sink object
+    pub fn sink(&self) -> MqttSink {
+        self.state.get_ref().sink().clone()
     }
 
     /// returns iterator over unsubscribe topics

@@ -1,35 +1,37 @@
 use std::collections::VecDeque;
 use std::fmt;
 
-use actix_utils::framed::FramedMessage;
+use actix_ioframe::Sink;
 use bytes::Bytes;
-use futures::unsync::{mpsc, oneshot};
+use futures::unsync::oneshot;
 use futures::Future;
 use mqtt_codec as mqtt;
 
 use crate::cell::Cell;
 
 #[derive(Clone)]
-pub struct MqttSink(Cell<MqttSinkInner>);
+pub struct MqttSink {
+    sink: Sink<mqtt::Packet>,
+    pub(crate) inner: Cell<MqttSinkInner>,
+}
 
-struct MqttSinkInner {
-    idx: u16,
-    tx: mpsc::UnboundedSender<FramedMessage<mqtt::Packet>>,
-    queue: VecDeque<(u16, oneshot::Sender<mqtt::Packet>)>,
+#[derive(Default)]
+pub(crate) struct MqttSinkInner {
+    pub(crate) idx: u16,
+    pub(crate) queue: VecDeque<(u16, oneshot::Sender<mqtt::Packet>)>,
 }
 
 impl MqttSink {
-    pub(crate) fn new(tx: mpsc::UnboundedSender<FramedMessage<mqtt::Packet>>) -> Self {
-        MqttSink(Cell::new(MqttSinkInner {
-            tx,
-            idx: 1,
-            queue: VecDeque::new(),
-        }))
+    pub(crate) fn new(sink: Sink<mqtt::Packet>) -> Self {
+        MqttSink {
+            sink,
+            inner: Cell::new(MqttSinkInner::default()),
+        }
     }
 
     /// Close mqtt connection
     pub fn close(&self) {
-        let _ = self.0.get_ref().tx.unbounded_send(FramedMessage::Close);
+        let _ = self.sink.close();
     }
 
     /// Send publish packet
@@ -40,7 +42,7 @@ impl MqttSink {
     ) -> impl Future<Item = mqtt::Packet, Error = ()> {
         let (tx, rx) = oneshot::channel();
 
-        let inner = self.0.get_mut();
+        let inner = self.inner.get_mut();
         inner.queue.push_back((inner.idx, tx));
 
         let publish = mqtt::Publish {
@@ -51,16 +53,13 @@ impl MqttSink {
             qos: mqtt::QoS::AtLeastOnce,
             packet_id: Some(inner.idx),
         };
-        let _ = inner
-            .tx
-            .unbounded_send(FramedMessage::Message(mqtt::Packet::Publish(publish)));
+        self.sink.send(mqtt::Packet::Publish(publish));
         inner.idx += 1;
         rx.map_err(|_| ())
     }
 
     /// Send publish packet with qos set to 0
     pub fn publish_qos0(&self, topic: string::String<Bytes>, payload: Bytes) {
-        let inner = self.0.get_ref();
         let publish = mqtt::Publish {
             topic,
             payload,
@@ -69,9 +68,7 @@ impl MqttSink {
             qos: mqtt::QoS::AtMostOnce,
             packet_id: None,
         };
-        let _ = inner
-            .tx
-            .unbounded_send(FramedMessage::Message(mqtt::Packet::Publish(publish)));
+        self.sink.send(mqtt::Packet::Publish(publish));
     }
 }
 

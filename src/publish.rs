@@ -1,3 +1,6 @@
+use std::cell::{Ref, RefMut};
+
+use actix_ioframe::State;
 use actix_router::Path;
 use bytes::Bytes;
 use mqtt_codec as mqtt;
@@ -5,18 +8,20 @@ use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
 use string::TryFrom;
 
-use crate::cell::Cell;
+use crate::dispatcher::MqttState;
+use crate::sink::MqttSink;
 
 /// Publish message
 pub struct Publish<S> {
     publish: mqtt::Publish,
-    session: Cell<S>,
+    sink: MqttSink,
+    state: State<MqttState<S>>,
     topic: Path<string::String<Bytes>>,
     query: Option<string::String<Bytes>>,
 }
 
 impl<S> Publish<S> {
-    pub(crate) fn new(session: Cell<S>, publish: mqtt::Publish) -> Self {
+    pub(crate) fn new(state: State<MqttState<S>>, publish: mqtt::Publish) -> Self {
         let (topic, query) = if let Some(pos) = publish.topic.find('?') {
             (
                 string::String::try_from(publish.topic.get_ref().slice(0, pos)).unwrap(),
@@ -31,9 +36,11 @@ impl<S> Publish<S> {
             (publish.topic.clone(), None)
         };
         let topic = Path::new(topic);
+        let sink = state.get_ref().sink().clone();
         Self {
+            sink,
             publish,
-            session,
+            state,
             topic,
             query,
         }
@@ -64,14 +71,14 @@ impl<S> Publish<S> {
 
     #[inline]
     /// returns reference to a connection session
-    pub fn session(&self) -> &S {
-        &*self.session
+    pub fn session(&self) -> Ref<S> {
+        Ref::map(self.state.get_ref(), |t| &t.st)
     }
 
     #[inline]
     /// returns mutable reference to a connection session
-    pub fn session_mut(&mut self) -> &mut S {
-        self.session.get_mut()
+    pub fn session_mut(&mut self) -> RefMut<S> {
+        RefMut::map(self.state.get_mut(), |t| &mut t.st)
     }
 
     #[inline]
@@ -109,6 +116,12 @@ impl<S> Publish<S> {
     /// Extract Bytes from packet payload
     pub fn take_payload(&self) -> Bytes {
         self.publish.payload.clone()
+    }
+
+    #[inline]
+    /// Mqtt client sink object
+    pub fn sink(&self) -> &MqttSink {
+        &self.sink
     }
 
     /// Loads and parse `application/json` encoded body.
