@@ -38,6 +38,8 @@ pub struct MqttServer<St, C: NewService> {
         MqttError<C::Error>,
     >,
     disconnect: Option<Cell<boxed::BoxedService<State<St>, (), MqttError<C::Error>>>>,
+    keep_alive: u64,
+    inflight: usize,
     _t: PhantomData<(St,)>,
 }
 
@@ -62,8 +64,26 @@ where
                     .map_init_err(|e| MqttError::Service(e)),
             ),
             disconnect: None,
+            keep_alive: 30,
+            inflight: 15,
             _t: PhantomData,
         }
+    }
+
+    /// A time interval measured in seconds.
+    ///
+    /// keep-alive is set to 30 seconds by default.
+    pub fn keep_alive(mut self, val: u16) -> Self {
+        self.keep_alive = val.into();
+        self
+    }
+
+    /// Number of in-flight concurrent messages.
+    ///
+    /// in-flight is set to 15 messages
+    pub fn inflight(mut self, val: usize) -> Self {
+        self.inflight = val;
+        self
     }
 
     /// Service to execute for subscribe packet
@@ -141,6 +161,8 @@ where
                         .map_init_err(|e| MqttError::Service(e.into())),
                     Rc::new(self.subscribe),
                     Rc::new(self.unsubscribe),
+                    self.keep_alive,
+                    self.inflight,
                 ))
                 .map_err(|e| match e {
                     ioframe::ServiceError::Service(e) => e,

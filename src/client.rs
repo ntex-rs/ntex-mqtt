@@ -28,6 +28,7 @@ pub struct Client<Io, St> {
     last_will: Option<mqtt::LastWill>,
     username: Option<string::String<Bytes>>,
     password: Option<Bytes>,
+    inflight: usize,
     _t: PhantomData<(Io, St)>,
 }
 
@@ -45,6 +46,7 @@ where
             last_will: None,
             username: None,
             password: None,
+            inflight: 15,
             _t: PhantomData,
         }
     }
@@ -89,6 +91,14 @@ where
         self
     }
 
+    /// Number of in-flight concurrent messages.
+    ///
+    /// in-flight is set to 15 messages
+    pub fn inflight(mut self, val: usize) -> Self {
+        self.inflight = val;
+        self
+    }
+
     /// Set state service
     ///
     /// State service verifies connect ack packet and construct connection state.
@@ -113,6 +123,8 @@ where
             subscribe: Rc::new(boxed::new_service(SubsNotImplemented::default())),
             unsubscribe: Rc::new(boxed::new_service(UnsubsNotImplemented::default())),
             disconnect: None,
+            keep_alive: self.keep_alive.into(),
+            inflight: self.inflight,
             _t: PhantomData,
         }
     }
@@ -140,6 +152,8 @@ pub struct ServiceBuilder<Io, St, C: Service> {
         >,
     >,
     disconnect: Option<Cell<boxed::BoxedService<State<St>, (), MqttError<C::Error>>>>,
+    keep_alive: u64,
+    inflight: usize,
 
     _t: PhantomData<(Io, St, C)>,
 }
@@ -234,6 +248,8 @@ where
                     .map_init_err(|e| MqttError::Service(e)),
                 self.subscribe,
                 self.unsubscribe,
+                self.keep_alive,
+                self.inflight,
             ))
             .map_err(|e| match e {
                 ioframe::ServiceError::Service(e) => e,

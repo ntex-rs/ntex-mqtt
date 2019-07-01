@@ -40,6 +40,8 @@ pub(crate) fn dispatcher<St, T, E>(
     unsubscribe: Rc<
         boxed::BoxedNewService<St, Unsubscribe<St>, (), MqttError<E>, MqttError<E>>,
     >,
+    keep_alive: u64,
+    inflight: usize,
 ) -> impl NewService<
     Config = MqttState<St>,
     Request = ioframe::Item<MqttState<St>, mqtt::Codec>,
@@ -75,13 +77,13 @@ where
                 // mqtt dispatcher
                 Dispatcher::new(
                     // keep-alive connection
-                    KeepAliveService::new(Duration::from_secs(3600), time, || {
+                    KeepAliveService::new(Duration::from_secs(keep_alive), time, || {
                         MqttError::KeepAliveTimeout
                     })
                     .and_then(
                         // limit number of in-flight messages
                         InFlightService::new(
-                            15,
+                            inflight,
                             // mqtt spec requires ack ordering, so enforce response ordering
                             InOrder::service(publish).map_err(|e| match e {
                                 InOrderError::Service(e) => e,
