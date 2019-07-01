@@ -11,13 +11,14 @@ use actix_utils::inflight::InFlightService;
 use actix_utils::keepalive::KeepAliveService;
 use actix_utils::order::{InOrder, InOrderError};
 use actix_utils::time::LowResTimeService;
-use futures::future::{err, ok, result, Either, FutureResult};
+use futures::future::{err, result, Either};
 use futures::unsync::mpsc;
 use futures::{try_ready, Async, Future, Poll, Sink, Stream};
 use mqtt_codec as mqtt;
 
 use crate::cell::Cell;
 use crate::connect::{Connect, ConnectAck};
+use crate::default::{NotImplemented, SubsNotImplemented, UnsubsNotImplemented};
 use crate::dispatcher::ServerDispatcher;
 use crate::error::MqttError;
 use crate::publish::Publish;
@@ -281,7 +282,7 @@ where
                     "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
                     packet.packet_type()
                 );
-                Either::B(err(MqttError::ExpectedConnect(packet)))
+                Either::B(err(MqttError::Unexpected(packet, "MQTT-3.1.0-1: Expected CONNECT packet")))
             }
             None => {
                 log::trace!("mqtt client disconnected",);
@@ -403,122 +404,5 @@ where
                     inner.get_mut().dispatch(packet, framed, params, inner2)
                 }),
         )
-    }
-}
-
-/// Not implemented publish service
-pub struct NotImplemented<S, E>(PhantomData<(S, E)>);
-
-impl<S, E> Default for NotImplemented<S, E> {
-    fn default() -> Self {
-        NotImplemented(PhantomData)
-    }
-}
-
-impl<S, E> NewService for NotImplemented<S, E> {
-    type Config = S;
-    type Request = Publish<S>;
-    type Response = ();
-    type Error = E;
-    type InitError = E;
-    type Service = NotImplemented<S, E>;
-    type Future = FutureResult<Self::Service, Self::InitError>;
-
-    fn new_service(&self, _: &S) -> Self::Future {
-        ok(NotImplemented(PhantomData))
-    }
-}
-
-impl<S, E> Service for NotImplemented<S, E> {
-    type Request = Publish<S>;
-    type Response = ();
-    type Error = E;
-    type Future = FutureResult<Self::Response, Self::Error>;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        Ok(Async::Ready(()))
-    }
-
-    fn call(&mut self, _: Publish<S>) -> Self::Future {
-        log::warn!("MQTT Publish is not implemented");
-        ok(())
-    }
-}
-
-/// Not implemented subscribe service
-pub struct SubsNotImplemented<S, E>(PhantomData<(S, E)>);
-
-impl<S, E> Default for SubsNotImplemented<S, E> {
-    fn default() -> Self {
-        SubsNotImplemented(PhantomData)
-    }
-}
-
-impl<S, E> NewService for SubsNotImplemented<S, E> {
-    type Config = S;
-    type Request = Subscribe<S>;
-    type Response = SubscribeResult;
-    type Error = E;
-    type InitError = E;
-    type Service = SubsNotImplemented<S, E>;
-    type Future = FutureResult<Self::Service, Self::InitError>;
-
-    fn new_service(&self, _: &S) -> Self::Future {
-        ok(SubsNotImplemented(PhantomData))
-    }
-}
-
-impl<S, E> Service for SubsNotImplemented<S, E> {
-    type Request = Subscribe<S>;
-    type Response = SubscribeResult;
-    type Error = E;
-    type Future = FutureResult<Self::Response, Self::Error>;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        Ok(Async::Ready(()))
-    }
-
-    fn call(&mut self, subs: Subscribe<S>) -> Self::Future {
-        log::warn!("MQTT Subscribe is not implemented");
-        ok(subs.into_result())
-    }
-}
-
-/// Not implemented subscribe service
-pub struct UnsubsNotImplemented<S, E>(PhantomData<(S, E)>);
-
-impl<S, E> Default for UnsubsNotImplemented<S, E> {
-    fn default() -> Self {
-        UnsubsNotImplemented(PhantomData)
-    }
-}
-
-impl<S, E> NewService for UnsubsNotImplemented<S, E> {
-    type Config = S;
-    type Request = Unsubscribe<S>;
-    type Response = ();
-    type Error = E;
-    type InitError = E;
-    type Service = UnsubsNotImplemented<S, E>;
-    type Future = FutureResult<Self::Service, Self::InitError>;
-
-    fn new_service(&self, _: &S) -> Self::Future {
-        ok(UnsubsNotImplemented(PhantomData))
-    }
-}
-
-impl<S, E> Service for UnsubsNotImplemented<S, E> {
-    type Request = Unsubscribe<S>;
-    type Response = ();
-    type Error = E;
-    type Future = FutureResult<Self::Response, Self::Error>;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        Ok(Async::Ready(()))
-    }
-
-    fn call(&mut self, _: Unsubscribe<S>) -> Self::Future {
-        log::warn!("MQTT Unsubscribe is not implemented");
-        ok(())
     }
 }

@@ -59,6 +59,7 @@ pub struct LastWill {
 #[derive(Debug, PartialEq, Clone)]
 /// Connect packet content
 pub struct Connect {
+    /// mqtt protocol version
     pub protocol: Protocol,
     /// the handling of the Session state.
     pub clean_session: bool,
@@ -222,6 +223,18 @@ impl Packet {
             | Packet::Unsubscribe { .. } => 0b0010,
             _ => 0,
         }
+    }
+}
+
+impl From<Connect> for Packet {
+    fn from(val: Connect) -> Packet {
+        Packet::Connect(val)
+    }
+}
+
+impl From<Publish> for Packet {
+    fn from(val: Publish) -> Packet {
+        Packet::Publish(val)
     }
 }
 

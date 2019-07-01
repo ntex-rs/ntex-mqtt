@@ -7,8 +7,8 @@ pub enum MqttError<E> {
     Service(E),
     /// Mqtt parse error
     Protocol(mqtt_codec::ParseError),
-    /// Expected connect message as first message
-    ExpectedConnect(mqtt_codec::Packet),
+    /// Unexpected packet
+    Unexpected(mqtt_codec::Packet, &'static str),
     /// "SUBSCRIBE, UNSUBSCRIBE, and PUBLISH (in cases where QoS > 0) Control Packets MUST contain a non-zero 16-bit Packet Identifier [MQTT-2.3.1-1]."
     PacketIdRequired,
     /// Keep alive timeout

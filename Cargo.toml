@@ -24,6 +24,10 @@ actix-service = "0.4.1"
 actix-utils = "0.4.2"
 actix-router = "0.1.5"
 actix-server-config = "0.1.1"
+
+#actix-ioframe = { path = "../../actix/actix-net/actix-ioframe" }
+actix-ioframe = { git="https://github.com/actix/actix-net.git" }
+
 derive_more = "0.15.0"
 bytes = "0.4"
 either = "1.5.2"
@@ -40,8 +44,6 @@ actix-connect = "0.2.0"
 actix-server = "0.5.1"
 actix-test-server = "0.2.2"
 tokio-tcp = "0.1"
-#actix-ioframe = { path = "../../actix/actix-net/actix-ioframe" }
-actix-ioframe = { git="https://github.com/actix/actix-net.git" }
 
 [patch.crates-io]
 actix-mqtt = { path = "." }

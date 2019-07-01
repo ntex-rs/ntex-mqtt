@@ -3,11 +3,12 @@ use actix_service::Service;
 use actix_test_server::TestServer;
 use bytes::Bytes;
 use futures::future::ok;
-use futures::{Future, Sink};
+use futures::Future;
 use mqtt_codec as mqtt;
 use string::TryFrom;
 
-use actix_mqtt::{Connect, ConnectAck, MqttServer};
+use actix_mqtt::publish2::Publish;
+use actix_mqtt::{client, Connect, ConnectAck, MqttServer};
 
 struct Session;
 
@@ -28,31 +29,24 @@ fn test_simple() -> std::io::Result<()> {
 
     struct ClientSession;
 
-    let mut client = ioframe::Builder::new()
-        .service(|conn: ioframe::Connect<_>| {
-            // construct connect result
-            let result = conn
-                .codec(mqtt::Codec::new())
-                .state(ClientSession)
-                .into_result();
-
-            // send Connect packet
-            result
-                .send(mqtt::Packet::Connect(mqtt::Connect {
-                    protocol: mqtt::Protocol::default(),
-                    clean_session: true,
-                    keep_alive: 10,
-                    last_will: None,
-                    client_id: string::String::try_from(Bytes::from_static(b"user")).unwrap(),
-                    username: None,
-                    password: None,
-                }))
-                .map_err(|_| panic!())
-        })
-        .finish(|t: ioframe::Item<_, mqtt::Codec>| {
-            t.sink().close();
-            Ok(None)
-        });
+    let mut client =
+        client::Client::new(string::String::try_from(Bytes::from_static(b"user")).unwrap())
+            .state(|ack: client::ConnectAck<_>| {
+                ack.sink().send(mqtt::Packet::Publish(mqtt::Publish {
+                    dup: false,
+                    retain: false,
+                    qos: mqtt::QoS::AtMostOnce,
+                    topic: string::String::try_from(Bytes::from_static(b"#")).unwrap(),
+                    packet_id: None,
+                    payload: Bytes::new(),
+                }));
+                ack.sink().close();
+                Ok(ack.state(ClientSession))
+            })
+            .finish(|t: Publish<_>| {
+                // t.sink().close();
+                Ok(())
+            });
 
     let conn = srv
         .block_on(
