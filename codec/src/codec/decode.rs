@@ -273,7 +273,6 @@ mod tests {
             };
             let mut cur = Bytes::from_static(&$bytes[consumned + 1..]).into_buf();
             assert_eq!(read_packet(&mut cur, hdr), Ok($res));
-            println!("3");
         }};
     );
 
