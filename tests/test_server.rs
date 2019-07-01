@@ -9,9 +9,9 @@ use actix_mqtt::{client, Connect, ConnectAck, MqttServer, Publish};
 
 struct Session;
 
-fn connect(packet: Connect) -> impl Future<Item = ConnectAck<Session>, Error = ()> {
+fn connect<Io>(packet: Connect<Io>) -> impl Future<Item = ConnectAck<Io, Session>, Error = ()> {
     println!("CONNECT: {:?}", packet);
-    ok(ConnectAck::new(Session, false))
+    ok(packet.ack(Session, false))
 }
 
 #[test]

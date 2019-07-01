@@ -4,9 +4,11 @@ use futures::Future;
 
 struct Session;
 
-fn connect(packet: Connect) -> impl Future<Item = ConnectAck<Session>, Error = ()> {
-    log::info!("new connection: {:?}", packet);
-    ok(ConnectAck::new(Session, false))
+fn connect<Io>(
+    connect: Connect<Io>,
+) -> impl Future<Item = ConnectAck<Io, Session>, Error = ()> {
+    log::info!("new connection: {:?}", connect);
+    ok(connect.ack(Session, false))
 }
 
 fn publish(publish: Publish<Session>) -> impl Future<Item = (), Error = ()> {

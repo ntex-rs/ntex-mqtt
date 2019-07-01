@@ -21,7 +21,7 @@ use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 use crate::State;
 
 /// Mqtt Server
-pub struct MqttServer<St, C: NewService> {
+pub struct MqttServer<Io, St, C: NewService> {
     connect: C,
     subscribe: boxed::BoxedNewService<
         St,
@@ -40,16 +40,16 @@ pub struct MqttServer<St, C: NewService> {
     disconnect: Option<Cell<boxed::BoxedService<State<St>, (), MqttError<C::Error>>>>,
     keep_alive: u64,
     inflight: usize,
-    _t: PhantomData<(St,)>,
+    _t: PhantomData<(Io, St)>,
 }
 
-impl<St, C> MqttServer<St, C>
+impl<Io, St, C> MqttServer<Io, St, C>
 where
     St: 'static,
-    C: NewService<Config = (), Request = Connect<()>, Response = ConnectAck<St>> + 'static,
+    C: NewService<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>> + 'static,
 {
     /// Create server factory and provide connect service
-    pub fn new<F>(connect: F) -> MqttServer<St, C>
+    pub fn new<F>(connect: F) -> MqttServer<Io, St, C>
     where
         F: IntoNewService<C>,
     {
@@ -135,7 +135,7 @@ where
     }
 
     /// Set service to execute for publish packet and create service factory
-    pub fn finish<Io, F, P, I>(
+    pub fn finish<F, P, I>(
         self,
         publish: F,
     ) -> impl NewService<
@@ -185,7 +185,7 @@ fn connect_service<Io, St, C>(
 >
 where
     Io: AsyncRead + AsyncWrite,
-    C: NewService<Config = (), Request = Connect<()>, Response = ConnectAck<St>> + 'static,
+    C: NewService<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>> + 'static,
 {
     new_service_cfg(move |_cfg: &()| {
         service.new_service(&()).map(|service| {
@@ -205,32 +205,32 @@ where
                                 Either::A(
                                     // authenticate mqtt connection
                                     srv.get_mut()
-                                        .call(Connect::new(connect, (), sink.clone()))
+                                        .call(Connect::new(connect, framed, sink.clone()))
                                         .map_err(|e| MqttError::Service(e.into()))
-                                        .and_then(move |result| {
-                                            match result.into_inner() {
-                                                either::Either::Left((session, session_present)) => {
-                                                    Either::A(
-                                                        framed
-                                                            .send(mqtt::Packet::ConnectAck {
-                                                                session_present,
-                                                                return_code:
-                                                                mqtt::ConnectCode::ConnectionAccepted,
-                                                            })
-                                                            .map_err(|e| MqttError::Protocol(e.into()))
-                                                            .map(move |framed| framed.state(MqttState::new(session, sink))),
-                                                    )
-                                                }
-                                                either::Either::Right(code) => Either::B(
-                                                    framed
-                                                        .send(mqtt::Packet::ConnectAck {
-                                                            session_present: false,
-                                                            return_code: code,
-                                                        })
-                                                        .map_err(|e| MqttError::Protocol(e.into()))
-                                                        .and_then(|_| err(MqttError::Disconnected)),
-                                                ),
-                                            }
+                                        .and_then(|result| match result.into_inner() {
+                                            either::Either::Left((
+                                                io,
+                                                session,
+                                                session_present,
+                                            )) => Either::A(
+                                                io.send(mqtt::Packet::ConnectAck {
+                                                    session_present,
+                                                    return_code:
+                                                        mqtt::ConnectCode::ConnectionAccepted,
+                                                })
+                                                .map_err(|e| MqttError::Protocol(e.into()))
+                                                .map(move |framed| {
+                                                    framed.state(MqttState::new(session, sink))
+                                                }),
+                                            ),
+                                            either::Either::Right((io, code)) => Either::B(
+                                                io.send(mqtt::Packet::ConnectAck {
+                                                    session_present: false,
+                                                    return_code: code,
+                                                })
+                                                .map_err(|e| MqttError::Protocol(e.into()))
+                                                .and_then(|_| err(MqttError::Disconnected)),
+                                            ),
                                         }),
                                 )
                             }
