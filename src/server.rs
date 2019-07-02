@@ -5,7 +5,7 @@ use actix_codec::{AsyncRead, AsyncWrite};
 use actix_ioframe as ioframe;
 use actix_server_config::{Io as ServerIo, ServerConfig};
 use actix_service::{boxed, new_apply_fn, new_service_cfg};
-use actix_service::{IntoNewService, IntoService, NewService, Service, ServiceExt};
+use actix_service::{IntoNewService, IntoService, NewService, Service};
 use futures::future::{err, Either};
 use futures::{Future, Sink, Stream};
 use mqtt_codec as mqtt;
@@ -18,10 +18,9 @@ use crate::error::MqttError;
 use crate::publish::Publish;
 use crate::sink::MqttSink;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
-use crate::State;
 
 /// Mqtt Server
-pub struct MqttServer<Io, St, C: NewService> {
+pub struct MqttServer<Io, St, C: NewService, U> {
     connect: C,
     subscribe: boxed::BoxedNewService<
         St,
@@ -37,19 +36,21 @@ pub struct MqttServer<Io, St, C: NewService> {
         MqttError<C::Error>,
         MqttError<C::Error>,
     >,
-    disconnect: Option<Cell<boxed::BoxedService<State<St>, (), MqttError<C::Error>>>>,
+    disconnect: U,
     keep_alive: u64,
     inflight: usize,
     _t: PhantomData<(Io, St)>,
 }
 
-impl<Io, St, C> MqttServer<Io, St, C>
+fn default_disconnect<St>(_: &mut MqttState<St>, _: bool) {}
+
+impl<Io, St, C> MqttServer<Io, St, C, ()>
 where
     St: 'static,
     C: NewService<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>> + 'static,
 {
     /// Create server factory and provide connect service
-    pub fn new<F>(connect: F) -> MqttServer<Io, St, C>
+    pub fn new<F>(connect: F) -> MqttServer<Io, St, C, impl Fn(&mut MqttState<St>, bool)>
     where
         F: IntoNewService<C>,
     {
@@ -63,13 +64,20 @@ where
                 NewService::map_err(UnsubsNotImplemented::default(), |e| MqttError::Service(e))
                     .map_init_err(|e| MqttError::Service(e)),
             ),
-            disconnect: None,
             keep_alive: 30,
             inflight: 15,
+            disconnect: default_disconnect,
             _t: PhantomData,
         }
     }
+}
 
+impl<Io, St, C, U> MqttServer<Io, St, C, U>
+where
+    St: 'static,
+    U: Fn(&mut MqttState<St>, bool) + 'static,
+    C: NewService<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>> + 'static,
+{
     /// A time interval measured in seconds.
     ///
     /// keep-alive is set to 30 seconds by default.
@@ -121,17 +129,30 @@ where
         self
     }
 
-    /// Service to execute on disconnect
-    pub fn disconnect<UF, U>(mut self, srv: UF) -> Self
+    /// Callback to execute on disconnect
+    ///
+    /// Second parameter indicates error occured during disconnect.
+    pub fn disconnect<F, Out>(
+        self,
+        disconnect: F,
+    ) -> MqttServer<Io, St, C, impl Fn(&mut MqttState<St>, bool) + 'static>
     where
-        UF: IntoService<U>,
-        U: Service<Request = State<St>, Response = ()> + 'static,
-        C::Error: From<U::Error> + 'static,
+        F: Fn(&mut St, bool) -> Out + 'static,
+        Out: futures::IntoFuture,
+        Out::Future: 'static,
     {
-        self.disconnect = Some(Cell::new(boxed::service(
-            srv.into_service().map_err(|e| MqttError::Service(e.into())),
-        )));
-        self
+        MqttServer {
+            connect: self.connect,
+            subscribe: self.subscribe,
+            unsubscribe: self.unsubscribe,
+            keep_alive: 30,
+            inflight: 15,
+            disconnect: move |st: &mut MqttState<St>, err| {
+                let fut = disconnect(&mut st.st, err).into_future();
+                tokio_current_thread::spawn(fut.map_err(|_| ()).map(|_| ()));
+            },
+            _t: PhantomData,
+        }
     }
 
     /// Set service to execute for publish packet and create service factory
@@ -154,6 +175,7 @@ where
         new_apply_fn(
             ioframe::Builder::new()
                 .factory(connect_service(self.connect))
+                .disconnect(self.disconnect)
                 .finish(dispatcher(
                     publish
                         .into_new_service()

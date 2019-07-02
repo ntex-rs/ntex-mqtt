@@ -16,7 +16,7 @@ use crate::publish::Publish;
 use crate::sink::MqttSink;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
-pub(crate) struct MqttState<St> {
+pub struct MqttState<St> {
     pub(crate) st: St,
     pub(crate) sink: MqttSink,
 }
