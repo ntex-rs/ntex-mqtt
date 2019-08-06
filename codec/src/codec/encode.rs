@@ -66,7 +66,7 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
             2 + topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
         }
 
-        Packet::PingRequest | Packet::PingResponse | Packet::Disconnect | Packet::Empty => 0,
+        Packet::PingRequest | Packet::PingResponse | Packet::Disconnect => 0,
     }
 }
 
@@ -218,7 +218,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             }
         }
 
-        Packet::PingRequest | Packet::PingResponse | Packet::Disconnect | Packet::Empty => {}
+        Packet::PingRequest | Packet::PingResponse | Packet::Disconnect => {}
     }
 }
 

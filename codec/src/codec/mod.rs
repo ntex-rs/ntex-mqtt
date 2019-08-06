@@ -110,21 +110,14 @@ impl Encoder for Codec {
     type Error = ParseError;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), ParseError> {
-        match item {
-            Packet::Empty => (),
-            _ => {
-                if let Packet::Publish(Publish { qos, packet_id, .. }) = item {
-                    if (qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce)
-                        && packet_id.is_none()
-                    {
-                        return Err(ParseError::PacketIdRequired);
-                    }
-                }
-                let content_size = get_encoded_size(&item);
-                dst.reserve(content_size + 5);
-                write_packet(&item, dst, content_size);
+        if let Packet::Publish(Publish { qos, packet_id, .. }) = item {
+            if (qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce) && packet_id.is_none() {
+                return Err(ParseError::PacketIdRequired);
             }
         }
+        let content_size = get_encoded_size(&item);
+        dst.reserve(content_size + 5);
+        write_packet(&item, dst, content_size);
         Ok(())
     }
 }

@@ -24,9 +24,8 @@ actix-service = "0.4.1"
 actix-utils = "0.4.2"
 actix-router = "0.1.5"
 actix-server-config = "0.1.1"
-
-#actix-ioframe = { path = "../../actix/actix-net/actix-ioframe" }
 actix-ioframe = { git="https://github.com/actix/actix-net.git" }
+#actix-ioframe = { path = "../../actix/actix-net/actix-ioframe" }
 
 derive_more = "0.15.0"
 bytes = "0.4"
