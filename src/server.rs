@@ -156,17 +156,16 @@ where
     }
 
     /// Set service to execute for publish packet and create service factory
-    pub fn finish<F, P, I>(
+    pub fn finish<F, P>(
         self,
         publish: F,
     ) -> impl NewService<
         Config = ServerConfig,
-        Request = ServerIo<Io, I>,
+        Request = ServerIo<Io>,
         Response = (),
         Error = MqttError<C::Error>,
     >
     where
-        I: 'static,
         Io: AsyncRead + AsyncWrite + 'static,
         F: IntoNewService<P>,
         P: NewService<Config = St, Request = Publish<St>, Response = ()> + 'static,
@@ -191,7 +190,7 @@ where
                     ioframe::ServiceError::Encoder(e) => MqttError::Protocol(e),
                     ioframe::ServiceError::Decoder(e) => MqttError::Protocol(e),
                 }),
-            |io: ServerIo<Io, I>, srv| srv.call(io.into_parts().0),
+            |io: ServerIo<Io>, srv| srv.call(io.into_parts().0),
         )
         .map_config(|_| actix_service::MappedConfig::Owned(()))
     }
