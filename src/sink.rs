@@ -31,7 +31,7 @@ impl MqttSink {
 
     /// Close mqtt connection
     pub fn close(&self) {
-        let _ = self.sink.close();
+        self.sink.close();
     }
 
     /// Send publish packet

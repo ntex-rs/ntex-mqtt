@@ -57,12 +57,12 @@ where
         MqttServer {
             connect: connect.into_new_service(),
             subscribe: boxed::new_service(
-                NewService::map_err(SubsNotImplemented::default(), |e| MqttError::Service(e))
-                    .map_init_err(|e| MqttError::Service(e)),
+                NewService::map_err(SubsNotImplemented::default(), MqttError::Service)
+                    .map_init_err(MqttError::Service),
             ),
             unsubscribe: boxed::new_service(
-                NewService::map_err(UnsubsNotImplemented::default(), |e| MqttError::Service(e))
-                    .map_init_err(|e| MqttError::Service(e)),
+                NewService::map_err(UnsubsNotImplemented::default(), MqttError::Service)
+                    .map_init_err(MqttError::Service),
             ),
             keep_alive: 30,
             inflight: 15,
@@ -217,7 +217,7 @@ where
                 let conn = conn.codec(mqtt::Codec::new());
 
                 conn.into_future()
-                    .map_err(|(e, _)| MqttError::Protocol(e.into()))
+                    .map_err(|(e, _)| MqttError::Protocol(e))
                     .and_then(move |(packet, framed)| {
                         match packet {
                             Some(mqtt::Packet::Connect(connect)) => {
@@ -227,7 +227,7 @@ where
                                     // authenticate mqtt connection
                                     srv.get_mut()
                                         .call(Connect::new(connect, framed, sink.clone()))
-                                        .map_err(|e| MqttError::Service(e.into()))
+                                        .map_err(MqttError::Service)
                                         .and_then(|result| match result.into_inner() {
                                             either::Either::Left((
                                                 io,
@@ -239,7 +239,7 @@ where
                                                     return_code:
                                                         mqtt::ConnectCode::ConnectionAccepted,
                                                 })
-                                                .map_err(|e| MqttError::Protocol(e.into()))
+                                                .map_err(MqttError::Protocol)
                                                 .map(move |framed| {
                                                     framed.state(MqttState::new(session, sink))
                                                 }),
@@ -249,7 +249,7 @@ where
                                                     session_present: false,
                                                     return_code: code,
                                                 })
-                                                .map_err(|e| MqttError::Protocol(e.into()))
+                                                .map_err(MqttError::Protocol)
                                                 .and_then(|_| err(MqttError::Disconnected)),
                                             ),
                                         }),

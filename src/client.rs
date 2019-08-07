@@ -181,8 +181,8 @@ where
         self.subscribe = Rc::new(boxed::new_service(
             subscribe
                 .into_new_service()
-                .map_err(|e| MqttError::Service(e))
-                .map_init_err(|e| MqttError::Service(e)),
+                .map_err(MqttError::Service)
+                .map_init_err(MqttError::Service),
         ));
         self
     }
@@ -203,8 +203,8 @@ where
         self.unsubscribe = Rc::new(boxed::new_service(
             unsubscribe
                 .into_new_service()
-                .map_err(|e| MqttError::Service(e))
-                .map_init_err(|e| MqttError::Service(e)),
+                .map_err(MqttError::Service)
+                .map_init_err(MqttError::Service),
         ));
         self
     }
@@ -216,7 +216,7 @@ where
         U: Service<Request = State<St>, Response = (), Error = C::Error> + 'static,
     {
         self.disconnect = Some(Cell::new(boxed::service(
-            srv.into_service().map_err(|e| MqttError::Service(e)),
+            srv.into_service().map_err(MqttError::Service),
         )));
         self
     }
@@ -244,8 +244,8 @@ where
             .finish(dispatcher(
                 service
                     .into_new_service()
-                    .map_err(|e| MqttError::Service(e))
-                    .map_init_err(|e| MqttError::Service(e)),
+                    .map_err(MqttError::Service)
+                    .map_init_err(MqttError::Service),
                 self.subscribe,
                 self.unsubscribe,
                 self.keep_alive,
@@ -281,7 +281,7 @@ where
         self.connect
             .get_mut()
             .poll_ready()
-            .map_err(|e| MqttError::Service(e))
+            .map_err(MqttError::Service)
     }
 
     fn call(&mut self, req: Self::Request) -> Self::Future {
@@ -291,7 +291,7 @@ where
         Box::new(
             req.codec(mqtt::Codec::new())
                 .send(mqtt::Packet::Connect(self.packet.clone()))
-                .map_err(|e| MqttError::Protocol(e))
+                .map_err(MqttError::Protocol)
                 .and_then(|framed| {
                     framed
                         .into_future()
@@ -312,7 +312,7 @@ where
                         Either::A(
                             srv.get_mut()
                                 .call(ack)
-                                .map_err(|e| MqttError::Service(e))
+                                .map_err(MqttError::Service)
                                 .map(|ack| ack.io.state(ack.state)),
                         )
                     }

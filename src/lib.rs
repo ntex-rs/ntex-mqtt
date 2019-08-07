@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity, clippy::new_ret_no_self)]
 //! MQTT v3.1 Server framework
 
 mod cell;

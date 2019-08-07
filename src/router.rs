@@ -50,7 +50,7 @@ where
     {
         self.router.path(address, self.handlers.len());
         self.handlers.push(boxed::new_service(
-            service.into_new_service().map_init_err(|e| E::from(e)),
+            service.into_new_service().map_init_err(E::from),
         ));
         self
     }
