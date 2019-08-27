@@ -4,8 +4,8 @@ use std::rc::Rc;
 use actix_codec::{AsyncRead, AsyncWrite};
 use actix_ioframe as ioframe;
 use actix_server_config::{Io as ServerIo, ServerConfig};
+use actix_service::{apply_fn, IntoNewService, NewService, Service, ServiceExt};
 use actix_service::{boxed, new_apply_fn, new_service_cfg};
-use actix_service::{IntoNewService, IntoService, NewService, Service};
 use futures::future::{err, Either};
 use futures::{Future, Sink, Stream};
 use mqtt_codec as mqtt;
@@ -212,23 +212,25 @@ where
         service.new_service(&()).map(|service| {
             let service = Cell::new(service);
 
-            (move |conn: ioframe::Connect<Io>| {
-                let mut srv = service.clone();
-                let conn = conn.codec(mqtt::Codec::new());
+            apply_fn(
+                service.map_err(MqttError::Service),
+                move |conn: ioframe::Connect<Io>, service| {
+                    let mut srv = service.clone();
+                    let conn = conn.codec(mqtt::Codec::new());
 
-                conn.into_future()
-                    .map_err(|(e, _)| MqttError::Protocol(e))
-                    .and_then(move |(packet, framed)| {
-                        match packet {
-                            Some(mqtt::Packet::Connect(connect)) => {
-                                let sink = MqttSink::new(framed.sink().clone());
+                    conn.into_future()
+                        .map_err(|(e, _)| MqttError::Protocol(e))
+                        .and_then(move |(packet, framed)| {
+                            match packet {
+                                Some(mqtt::Packet::Connect(connect)) => {
+                                    let sink = MqttSink::new(framed.sink().clone());
 
-                                Either::A(
-                                    // authenticate mqtt connection
-                                    srv.get_mut()
-                                        .call(Connect::new(connect, framed, sink.clone()))
-                                        .map_err(MqttError::Service)
-                                        .and_then(|result| match result.into_inner() {
+                                    Either::A(
+                                        // authenticate mqtt connection
+                                        srv.call(Connect::new(connect, framed, sink.clone()))
+                                            // .map_err(MqttError::Service)
+                                            .and_then(|result| {
+                                                match result.into_inner() {
                                             either::Either::Left((
                                                 io,
                                                 session,
@@ -252,28 +254,29 @@ where
                                                 .map_err(MqttError::Protocol)
                                                 .and_then(|_| err(MqttError::Disconnected)),
                                             ),
-                                        }),
-                                )
+                                        }
+                                            }),
+                                    )
+                                }
+                                Some(packet) => {
+                                    log::info!(
+                                        "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
+                                        packet.packet_type()
+                                    );
+                                    Either::B(err(MqttError::Unexpected(
+                                        packet,
+                                        "MQTT-3.1.0-1: Expected CONNECT packet",
+                                    )))
+                                }
+                                None => {
+                                    log::trace!("mqtt client disconnected",);
+                                    Either::B(err(MqttError::Disconnected))
+                                }
                             }
-                            Some(packet) => {
-                                log::info!(
-                                    "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
-                                    packet.packet_type()
-                                );
-                                Either::B(err(MqttError::Unexpected(
-                                    packet,
-                                    "MQTT-3.1.0-1: Expected CONNECT packet",
-                                )))
-                            }
-                            None => {
-                                log::trace!("mqtt client disconnected",);
-                                Either::B(err(MqttError::Disconnected))
-                            }
-                        }
-                        .from_err()
-                    })
-            })
-            .into_service()
+                            .from_err()
+                        })
+                },
+            )
         })
     })
 }
