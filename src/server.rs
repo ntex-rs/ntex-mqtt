@@ -37,6 +37,7 @@ pub struct MqttServer<Io, St, C: NewService, U> {
         MqttError<C::Error>,
     >,
     disconnect: U,
+    max_size: usize,
     keep_alive: u64,
     inflight: usize,
     _t: PhantomData<(Io, St)>,
@@ -64,6 +65,7 @@ where
                 NewService::map_err(UnsubsNotImplemented::default(), MqttError::Service)
                     .map_init_err(MqttError::Service),
             ),
+            max_size: 0,
             keep_alive: 30,
             inflight: 15,
             disconnect: default_disconnect,
@@ -78,6 +80,15 @@ where
     U: Fn(&mut MqttState<St>, bool) + 'static,
     C: NewService<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>> + 'static,
 {
+    /// Set max inbound frame size.
+    ///
+    /// If max size is set to `0`, size is unlimited.
+    /// By default max size is set to `0`
+    pub fn max_size(mut self, size: usize) -> Self {
+        self.max_size = size;
+        self
+    }
+
     /// A time interval measured in seconds.
     ///
     /// keep-alive is set to 30 seconds by default.
@@ -145,8 +156,9 @@ where
             connect: self.connect,
             subscribe: self.subscribe,
             unsubscribe: self.unsubscribe,
-            keep_alive: 30,
-            inflight: 15,
+            max_size: self.max_size,
+            keep_alive: self.keep_alive,
+            inflight: self.inflight,
             disconnect: move |st: &mut MqttState<St>, err| {
                 let fut = disconnect(&mut st.st, err).into_future();
                 tokio_current_thread::spawn(fut.map_err(|_| ()).map(|_| ()));
@@ -173,7 +185,7 @@ where
     {
         new_apply_fn(
             ioframe::Builder::new()
-                .factory(connect_service(self.connect))
+                .factory(connect_service(self.connect, self.max_size))
                 .disconnect(self.disconnect)
                 .finish(dispatcher(
                     publish
@@ -198,6 +210,7 @@ where
 
 fn connect_service<Io, St, C>(
     service: C,
+    max_size: usize,
 ) -> impl NewService<
     Config = (),
     Request = ioframe::Connect<Io>,
@@ -209,14 +222,15 @@ where
     C: NewService<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>> + 'static,
 {
     new_service_cfg(move |_cfg: &()| {
-        service.new_service(&()).map(|service| {
+        service.new_service(&()).map(move |service| {
             let service = Cell::new(service);
+            let max_size = max_size;
 
             apply_fn(
                 service.map_err(MqttError::Service),
                 move |conn: ioframe::Connect<Io>, service| {
                     let mut srv = service.clone();
-                    let conn = conn.codec(mqtt::Codec::new());
+                    let conn = conn.codec(mqtt::Codec::new().max_size(max_size));
 
                     conn.into_future()
                         .map_err(|(e, _)| MqttError::Protocol(e))
