@@ -158,7 +158,7 @@ where
             mqtt::Packet::PingRequest => {
                 Either::A(Either::A(ok(Some(mqtt::Packet::PingResponse))))
             }
-            mqtt::Packet::Disconnect => Either::A(Either::A(ok(Some(mqtt::Packet::Empty)))),
+            mqtt::Packet::Disconnect => Either::A(Either::A(ok(None))),
             mqtt::Packet::Publish(publish) => {
                 let packet_id = publish.packet_id;
                 Either::B(PublishResponse {
@@ -181,7 +181,7 @@ where
                     .call(Unsubscribe::new(state, topic_filters))
                     .map(move |_| Some(mqtt::Packet::UnsubscribeAck { packet_id })),
             ))),
-            _ => Either::A(Either::A(ok(Some(mqtt::Packet::Empty)))),
+            _ => Either::A(Either::A(ok(None))),
         }
     }
 }
