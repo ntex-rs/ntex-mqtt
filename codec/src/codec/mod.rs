@@ -35,6 +35,7 @@ bitflags! {
 #[derive(Debug)]
 pub struct Codec {
     state: DecodeState,
+    max_size: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,10 +45,21 @@ enum DecodeState {
 }
 
 impl Codec {
+    /// Create `Codec` instance
     pub fn new() -> Self {
         Codec {
             state: DecodeState::FrameHeader,
+            max_size: 0,
         }
+    }
+
+    /// Set max inbound frame size.
+    ///
+    /// If max size is set to `0`, size is unlimited.
+    /// By default max size is set to `0`
+    pub fn max_size(mut self, size: usize) -> Self {
+        self.max_size = size;
+        self
     }
 }
 
@@ -71,6 +83,10 @@ impl Decoder for Codec {
                     let fixed = src.as_ref()[0];
                     match decode_variable_length(&src.as_ref()[1..])? {
                         Some((remaining_length, consumed)) => {
+                            // check max message size
+                            if self.max_size != 0 && self.max_size < remaining_length {
+                                return Err(ParseError::MaxSizeExceeded);
+                            }
                             src.split_to(consumed + 1);
                             self.state = DecodeState::Frame(FixedHeader {
                                 packet_type: fixed >> 4,
@@ -131,4 +147,18 @@ pub(crate) struct FixedHeader {
     /// the number of bytes remaining within the current packet,
     /// including data in the variable header and the payload.
     pub remaining_length: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_max_size() {
+        let mut codec = Codec::new().max_size(5);
+
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(b"\0\x09");
+        assert_eq!(codec.decode(&mut buf), Err(ParseError::MaxSizeExceeded));
+    }
 }

@@ -10,6 +10,7 @@ pub enum ParseError {
     InvalidClientId,
     UnsupportedPacketType,
     PacketIdRequired,
+    MaxSizeExceeded,
     IoError(io::Error),
     Utf8Error(str::Utf8Error),
 }
@@ -47,6 +48,10 @@ impl PartialEq for ParseError {
             },
             ParseError::PacketIdRequired => match other {
                 ParseError::PacketIdRequired => true,
+                _ => false,
+            },
+            ParseError::MaxSizeExceeded => match other {
+                ParseError::MaxSizeExceeded => true,
                 _ => false,
             },
             ParseError::IoError(_) => false,
