@@ -242,33 +242,31 @@ where
                                     Either::A(
                                         // authenticate mqtt connection
                                         srv.call(Connect::new(connect, framed, sink.clone()))
-                                            // .map_err(MqttError::Service)
                                             .and_then(|result| {
                                                 match result.into_inner() {
-                                            either::Either::Left((
-                                                io,
-                                                session,
-                                                session_present,
-                                            )) => Either::A(
-                                                io.send(mqtt::Packet::ConnectAck {
-                                                    session_present,
-                                                    return_code:
-                                                        mqtt::ConnectCode::ConnectionAccepted,
-                                                })
-                                                .map_err(MqttError::Protocol)
-                                                .map(move |framed| {
-                                                    framed.state(MqttState::new(session, sink))
-                                                }),
-                                            ),
-                                            either::Either::Right((io, code)) => Either::B(
-                                                io.send(mqtt::Packet::ConnectAck {
-                                                    session_present: false,
-                                                    return_code: code,
-                                                })
-                                                .map_err(MqttError::Protocol)
-                                                .and_then(|_| err(MqttError::Disconnected)),
-                                            ),
-                                        }
+                                                    either::Either::Left((
+                                                        io,
+                                                        session,
+                                                        session_present,
+                                                    )) => Either::A(
+                                                        io.send(mqtt::Packet::ConnectAck {
+                                                            session_present,
+                                                            return_code: mqtt::ConnectCode::ConnectionAccepted,
+                                                        })
+                                                            .map_err(MqttError::Protocol)
+                                                            .map(move |framed| {
+                                                                framed.state(MqttState::new(session, sink))
+                                                            }),
+                                                    ),
+                                                    either::Either::Right((io, code)) => Either::B(
+                                                        io.send(mqtt::Packet::ConnectAck {
+                                                            session_present: false,
+                                                            return_code: code,
+                                                        })
+                                                            .map_err(MqttError::Protocol)
+                                                            .and_then(|_| err(MqttError::Disconnected)),
+                                                    ),
+                                                }
                                             }),
                                     )
                                 }

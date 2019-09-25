@@ -1,5 +1,5 @@
 use actix_service::Service;
-use actix_test_server::TestServer;
+use actix_testing::{block_on, TestServer};
 use bytes::Bytes;
 use futures::future::ok;
 use futures::Future;
@@ -18,11 +18,11 @@ fn connect<Io>(packet: Connect<Io>) -> impl Future<Item = ConnectAck<Io, Session
 fn test_simple() -> std::io::Result<()> {
     std::env::set_var(
         "RUST_LOG",
-        "actix_codec=info,actix_server=trace,actix_connector=trace,amqp_transport=trace",
+        "actix_codec=info,actix_server=trace,actix_connector=trace",
     );
     env_logger::init();
 
-    let mut srv = TestServer::with(|| MqttServer::new(connect).finish(|_t| Ok(())));
+    let srv = TestServer::with(|| MqttServer::new(connect).finish(|_t| Ok(())));
 
     struct ClientSession;
 
@@ -41,14 +41,13 @@ fn test_simple() -> std::io::Result<()> {
                 Ok(())
             });
 
-    let conn = srv
-        .block_on(
-            actix_connect::default_connector()
-                .call(actix_connect::Connect::with(String::new(), srv.addr())),
-        )
-        .unwrap();
+    let conn = block_on(
+        actix_connect::default_connector()
+            .call(actix_connect::Connect::with(String::new(), srv.addr())),
+    )
+    .unwrap();
 
-    srv.block_on(client.call(conn.into_parts().0)).unwrap();
+    block_on(client.call(conn.into_parts().0)).unwrap();
 
     Ok(())
 }

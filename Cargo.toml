@@ -2,7 +2,7 @@
 name = "actix-mqtt"
 version = "0.1.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
-description = "MQTT v3.1 Server framework"
+description = "MQTT v3.1.1 Client/Server framework"
 documentation = "https://docs.rs/actix-mqtt"
 repository = "https://github.com/actix/actix-mqtt.git"
 categories = ["network-programming"]
@@ -24,8 +24,7 @@ actix-service = "0.4.1"
 actix-utils = "0.4.2"
 actix-router = "0.1.5"
 actix-server-config = "0.1.1"
-actix-ioframe = { git="https://github.com/actix/actix-net.git" }
-#actix-ioframe = { path = "../../actix/actix-net/actix-ioframe" }
+actix-ioframe = "0.1.0"
 
 derive_more = "0.15.0"
 bytes = "0.4"
@@ -41,8 +40,8 @@ uuid = { version = "0.7", features = ["v4"] }
 [dev-dependencies]
 env_logger = "0.6"
 actix-connect = "0.2.0"
-actix-server = "0.5.1"
-actix-test-server = "0.2.2"
+actix-server = "0.6.1"
+actix-testing = "0.1.0"
 tokio-tcp = "0.1"
 
 [patch.crates-io]
