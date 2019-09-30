@@ -1,6 +1,6 @@
 [package]
 name = "actix-mqtt"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "MQTT v3.1.1 Client/Server framework"
 documentation = "https://docs.rs/actix-mqtt"

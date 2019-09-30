@@ -151,7 +151,7 @@ where
     }
 
     fn call(&mut self, req: ioframe::Item<MqttState<St>, mqtt::Codec>) -> Self::Future {
-        let (state, _, packet) = req.into_parts();
+        let (mut state, _, packet) = req.into_parts();
 
         log::trace!("Dispatch packet: {:#?}", packet);
         match packet {
@@ -165,6 +165,10 @@ where
                     fut: self.publish.call(Publish::new(state, publish)),
                     packet_id,
                 })
+            }
+            mqtt::Packet::PublishAck { packet_id } => {
+                state.get_mut().sink.complete_publish_qos1(packet_id);
+                Either::A(Either::A(ok(None)))
             }
             mqtt::Packet::Subscribe {
                 packet_id,
