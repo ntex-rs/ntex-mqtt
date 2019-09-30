@@ -55,7 +55,6 @@ impl MqttSink {
         payload: Bytes,
         dup: bool,
     ) -> impl Future<Item = (), Error = ()> {
-        log::trace!("Publish (QoS1) to {:?}", topic);
         let (tx, rx) = oneshot::channel();
 
         let inner = self.inner.get_mut();
@@ -65,15 +64,17 @@ impl MqttSink {
         }
         inner.queue.push_back((inner.idx, tx));
 
-        let publish = mqtt::Publish {
+        let publish = mqtt::Packet::Publish(mqtt::Publish {
             topic,
             payload,
             dup,
             retain: false,
             qos: mqtt::QoS::AtLeastOnce,
             packet_id: Some(inner.idx),
-        };
-        self.sink.send(mqtt::Packet::Publish(publish));
+        });
+        log::trace!("Publish (QoS1) to {:#?}", publish);
+
+        self.sink.send(publish);
         rx.map_err(|_| ())
     }
 

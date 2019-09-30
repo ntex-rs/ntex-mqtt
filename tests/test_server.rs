@@ -32,6 +32,7 @@ fn test_simple() -> std::io::Result<()> {
                 ack.sink().publish_qos0(
                     string::String::try_from(Bytes::from_static(b"#")).unwrap(),
                     Bytes::new(),
+                    false,
                 );
                 ack.sink().close();
                 Ok(ack.state(ClientSession))
