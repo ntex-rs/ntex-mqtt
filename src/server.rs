@@ -248,24 +248,40 @@ where
                                                         io,
                                                         session,
                                                         session_present,
-                                                    )) => Either::A(
-                                                        io.send(mqtt::Packet::ConnectAck {
-                                                            session_present,
-                                                            return_code: mqtt::ConnectCode::ConnectionAccepted,
-                                                        })
-                                                            .map_err(MqttError::Protocol)
-                                                            .map(move |framed| {
-                                                                framed.state(MqttState::new(session, sink))
-                                                            }),
-                                                    ),
-                                                    either::Either::Right((io, code)) => Either::B(
-                                                        io.send(mqtt::Packet::ConnectAck {
-                                                            session_present: false,
-                                                            return_code: code,
-                                                        })
-                                                            .map_err(MqttError::Protocol)
-                                                            .and_then(|_| err(MqttError::Disconnected)),
-                                                    ),
+                                                    )) => {
+                                                        log::trace!(
+                                                            "Sending ConnectAck: {:#?}", mqtt::Packet::ConnectAck {
+                                                                session_present,
+                                                                return_code: mqtt::ConnectCode::ConnectionAccepted,
+                                                            }
+                                                        );
+                                                        Either::A(
+                                                            io.send(mqtt::Packet::ConnectAck {
+                                                                session_present,
+                                                                return_code: mqtt::ConnectCode::ConnectionAccepted,
+                                                            })
+                                                                .map_err(MqttError::Protocol)
+                                                                .map(move |framed| {
+                                                                    framed.state(MqttState::new(session, sink))
+                                                                }),
+                                                        )
+                                                    },
+                                                    either::Either::Right((io, code)) => {
+                                                        log::trace!(
+                                                            "Sending ConnectAck: {:#?}", mqtt::Packet::ConnectAck {
+                                                                session_present: false,
+                                                                return_code: code,
+                                                            }
+                                                        );
+
+                                                        Either::B(
+                                                            io.send(mqtt::Packet::ConnectAck {
+                                                                session_present: false,
+                                                                return_code: code,
+                                                            })
+                                                                .map_err(MqttError::Protocol)
+                                                                .and_then(|_| err(MqttError::Disconnected)),
+                                                        )},
                                                 }
                                             }),
                                     )
