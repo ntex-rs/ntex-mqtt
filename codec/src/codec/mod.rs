@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
+use actix_codec::{Decoder, Encoder};
 use bytes::BytesMut;
-use tokio_codec::{Decoder, Encoder};
 
 use crate::error::ParseError;
 use crate::proto::QoS;

@@ -1,10 +1,12 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll};
 
 use actix_router::RouterBuilder;
 use actix_service::boxed::{self, BoxedNewService, BoxedService};
-use actix_service::{service_fn, IntoNewService, NewService, Service};
-use futures::future::{join_all, Either, FutureResult, JoinAll};
-use futures::{Async, Future, Poll};
+use actix_service::{service_fn, IntoServiceFactory, Service, ServiceFactory};
+use futures::future::{join_all, ok, JoinAll, LocalBoxFuture};
 
 use crate::publish::Publish;
 
@@ -31,10 +33,10 @@ where
         Router {
             router: actix_router::Router::build(),
             handlers: Vec::new(),
-            default: boxed::new_service(
+            default: boxed::factory(
                 service_fn(|p: Publish<S>| {
                     log::warn!("Unknown topic {:?}", p.publish_topic());
-                    Ok::<_, E>(())
+                    ok::<_, E>(())
                 })
                 .map_init_err(|_| panic!()),
             ),
@@ -44,22 +46,21 @@ where
     /// Configure mqtt resource for a specific topic.
     pub fn resource<F, U: 'static>(mut self, address: &str, service: F) -> Self
     where
-        F: IntoNewService<U>,
-        U: NewService<Config = S, Request = Publish<S>, Response = (), Error = E>,
+        F: IntoServiceFactory<U>,
+        U: ServiceFactory<Config = S, Request = Publish<S>, Response = (), Error = E>,
         E: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
-        self.handlers.push(boxed::new_service(
-            service.into_new_service().map_init_err(E::from),
-        ));
+        self.handlers
+            .push(boxed::factory(service.into_factory().map_init_err(E::from)));
         self
     }
 
     /// Default service to be used if no matching resource could be found.
     pub fn default_resource<F, U: 'static>(mut self, service: F) -> Self
     where
-        F: IntoNewService<U>,
-        U: NewService<
+        F: IntoServiceFactory<U>,
+        U: ServiceFactory<
             Config = S,
             Request = Publish<S>,
             Response = (),
@@ -67,17 +68,17 @@ where
             InitError = E,
         >,
     {
-        self.default = boxed::new_service(service.into_new_service());
+        self.default = boxed::factory(service.into_factory());
         self
     }
 }
 
-impl<S, E> IntoNewService<RouterFactory<S, E>> for Router<S, E>
+impl<S, E> IntoServiceFactory<RouterFactory<S, E>> for Router<S, E>
 where
     S: 'static,
     E: 'static,
 {
-    fn into_new_service(self) -> RouterFactory<S, E> {
+    fn into_factory(self) -> RouterFactory<S, E> {
         RouterFactory {
             router: Rc::new(self.router.finish()),
             handlers: self.handlers,
@@ -92,7 +93,7 @@ pub struct RouterFactory<S, E> {
     default: Handler<S, E>,
 }
 
-impl<S, E> NewService for RouterFactory<S, E>
+impl<S, E> ServiceFactory for RouterFactory<S, E>
 where
     S: 'static,
     E: 'static,
@@ -122,30 +123,40 @@ where
 
 pub struct RouterFactoryFut<S, E> {
     router: Rc<actix_router::Router<usize>>,
-    handlers: JoinAll<Vec<Box<dyn Future<Item = HandlerService<S, E>, Error = E>>>>,
+    handlers: JoinAll<LocalBoxFuture<'static, Result<HandlerService<S, E>, E>>>,
     default: Option<
         either::Either<
-            Box<dyn Future<Item = HandlerService<S, E>, Error = E>>,
+            LocalBoxFuture<'static, Result<HandlerService<S, E>, E>>,
             HandlerService<S, E>,
         >,
     >,
 }
 
 impl<S, E> Future for RouterFactoryFut<S, E> {
-    type Item = RouterService<S, E>;
-    type Error = E;
+    type Output = Result<RouterService<S, E>, E>;
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let handlers = match self.default.as_mut().unwrap() {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        let res = match self.default.as_mut().unwrap() {
             either::Either::Left(ref mut fut) => {
-                let default = futures::try_ready!(fut.poll());
+                let default = match futures::ready!(Pin::new(fut).poll(cx)) {
+                    Ok(default) => default,
+                    Err(e) => return Poll::Ready(Err(e)),
+                };
                 self.default = Some(either::Either::Right(default));
-                return self.poll();
+                return self.poll(cx);
             }
-            either::Either::Right(_) => futures::try_ready!(self.handlers.poll()),
+            either::Either::Right(_) => futures::ready!(Pin::new(&mut self.handlers).poll(cx)),
         };
 
-        Ok(Async::Ready(RouterService {
+        let mut handlers = Vec::new();
+        for handler in res {
+            match handler {
+                Ok(h) => handlers.push(h),
+                Err(e) => return Poll::Ready(Err(e)),
+            }
+        }
+
+        Poll::Ready(Ok(RouterService {
             handlers,
             router: self.router.clone(),
             default: self.default.take().unwrap().right().unwrap(),
@@ -167,23 +178,20 @@ where
     type Request = Publish<S>;
     type Response = ();
     type Error = E;
-    type Future = Either<
-        FutureResult<Self::Response, Self::Error>,
-        Box<dyn Future<Item = Self::Response, Error = Self::Error>>,
-    >;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+    fn poll_ready(&mut self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;
         for hnd in &mut self.handlers {
-            if let Async::NotReady = hnd.poll_ready()? {
+            if let Poll::Pending = hnd.poll_ready(cx)? {
                 not_ready = true;
             }
         }
 
         if not_ready {
-            Ok(Async::NotReady)
+            Poll::Pending
         } else {
-            Ok(Async::Ready(()))
+            Poll::Ready(Ok(()))
         }
     }
 

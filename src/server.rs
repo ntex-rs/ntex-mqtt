@@ -1,13 +1,15 @@
+use std::future::Future;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
 use actix_codec::{AsyncRead, AsyncWrite};
 use actix_ioframe as ioframe;
 use actix_server_config::{Io as ServerIo, ServerConfig};
-use actix_service::{apply_fn, IntoNewService, NewService, Service, ServiceExt};
-use actix_service::{boxed, new_apply_fn, new_service_cfg};
-use futures::future::{err, Either};
-use futures::{Future, Sink, Stream};
+use actix_service::{
+    apply_fn, apply_fn_factory, boxed, factory_fn_cfg, pipeline_factory, unit_config,
+};
+use actix_service::{IntoServiceFactory, Service, ServiceFactory};
+use futures::{FutureExt, SinkExt, StreamExt};
 use mqtt_codec as mqtt;
 
 use crate::cell::Cell;
@@ -20,7 +22,7 @@ use crate::sink::MqttSink;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
 /// Mqtt Server
-pub struct MqttServer<Io, St, C: NewService, U> {
+pub struct MqttServer<Io, St, C: ServiceFactory, U> {
     connect: C,
     subscribe: boxed::BoxedNewService<
         St,
@@ -48,21 +50,24 @@ fn default_disconnect<St>(_: &mut MqttState<St>, _: bool) {}
 impl<Io, St, C> MqttServer<Io, St, C, ()>
 where
     St: 'static,
-    C: NewService<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>> + 'static,
+    C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
+        + 'static,
 {
     /// Create server factory and provide connect service
     pub fn new<F>(connect: F) -> MqttServer<Io, St, C, impl Fn(&mut MqttState<St>, bool)>
     where
-        F: IntoNewService<C>,
+        F: IntoServiceFactory<C>,
     {
         MqttServer {
-            connect: connect.into_new_service(),
-            subscribe: boxed::new_service(
-                NewService::map_err(SubsNotImplemented::default(), MqttError::Service)
+            connect: connect.into_factory(),
+            subscribe: boxed::factory(
+                pipeline_factory(SubsNotImplemented::default())
+                    .map_err(MqttError::Service)
                     .map_init_err(MqttError::Service),
             ),
-            unsubscribe: boxed::new_service(
-                NewService::map_err(UnsubsNotImplemented::default(), MqttError::Service)
+            unsubscribe: boxed::factory(
+                pipeline_factory(UnsubsNotImplemented::default())
+                    .map_err(MqttError::Service)
                     .map_init_err(MqttError::Service),
             ),
             max_size: 0,
@@ -78,7 +83,8 @@ impl<Io, St, C, U> MqttServer<Io, St, C, U>
 where
     St: 'static,
     U: Fn(&mut MqttState<St>, bool) + 'static,
-    C: NewService<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>> + 'static,
+    C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
+        + 'static,
 {
     /// Set max inbound frame size.
     ///
@@ -108,15 +114,15 @@ where
     /// Service to execute for subscribe packet
     pub fn subscribe<F, Srv>(mut self, subscribe: F) -> Self
     where
-        F: IntoNewService<Srv>,
-        Srv: NewService<Config = St, Request = Subscribe<St>, Response = SubscribeResult>
+        F: IntoServiceFactory<Srv>,
+        Srv: ServiceFactory<Config = St, Request = Subscribe<St>, Response = SubscribeResult>
             + 'static,
         Srv::Service: 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError> + 'static,
     {
-        self.subscribe = boxed::new_service(
+        self.subscribe = boxed::factory(
             subscribe
-                .into_new_service()
+                .into_factory()
                 .map_err(|e| MqttError::Service(e.into()))
                 .map_init_err(|e| MqttError::Service(e.into())),
         );
@@ -126,14 +132,14 @@ where
     /// Service to execute for unsubscribe packet
     pub fn unsubscribe<F, Srv>(mut self, unsubscribe: F) -> Self
     where
-        F: IntoNewService<Srv>,
-        Srv: NewService<Config = St, Request = Unsubscribe<St>, Response = ()> + 'static,
+        F: IntoServiceFactory<Srv>,
+        Srv: ServiceFactory<Config = St, Request = Unsubscribe<St>, Response = ()> + 'static,
         Srv::Service: 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError> + 'static,
     {
-        self.unsubscribe = boxed::new_service(
+        self.unsubscribe = boxed::factory(
             unsubscribe
-                .into_new_service()
+                .into_factory()
                 .map_err(|e| MqttError::Service(e.into()))
                 .map_init_err(|e| MqttError::Service(e.into())),
         );
@@ -149,8 +155,7 @@ where
     ) -> MqttServer<Io, St, C, impl Fn(&mut MqttState<St>, bool) + 'static>
     where
         F: Fn(&mut St, bool) -> Out + 'static,
-        Out: futures::IntoFuture,
-        Out::Future: 'static,
+        Out: Future + 'static,
     {
         MqttServer {
             connect: self.connect,
@@ -160,8 +165,8 @@ where
             keep_alive: self.keep_alive,
             inflight: self.inflight,
             disconnect: move |st: &mut MqttState<St>, err| {
-                let fut = disconnect(&mut st.st, err).into_future();
-                tokio_current_thread::spawn(fut.map_err(|_| ()).map(|_| ()));
+                let fut = disconnect(&mut st.st, err);
+                actix_rt::spawn(fut.map(|_| ()));
             },
             _t: PhantomData,
         }
@@ -171,7 +176,7 @@ where
     pub fn finish<F, P>(
         self,
         publish: F,
-    ) -> impl NewService<
+    ) -> impl ServiceFactory<
         Config = ServerConfig,
         Request = ServerIo<Io>,
         Response = (),
@@ -179,19 +184,25 @@ where
     >
     where
         Io: AsyncRead + AsyncWrite + 'static,
-        F: IntoNewService<P>,
-        P: NewService<Config = St, Request = Publish<St>, Response = ()> + 'static,
+        F: IntoServiceFactory<P>,
+        P: ServiceFactory<Config = St, Request = Publish<St>, Response = ()> + 'static,
         C::Error: From<P::Error> + From<P::InitError> + 'static,
     {
-        new_apply_fn(
+        let connect = self.connect;
+        let max_size = self.max_size;
+        let publish = boxed::factory(
+            publish
+                .into_factory()
+                .map_err(|e| MqttError::Service(e.into()))
+                .map_init_err(|e| MqttError::Service(e.into())),
+        );
+
+        unit_config(apply_fn_factory(
             ioframe::Builder::new()
-                .factory(connect_service(self.connect, self.max_size))
+                .factory(connect_service(connect, max_size))
                 .disconnect(self.disconnect)
                 .finish(dispatcher(
-                    publish
-                        .into_new_service()
-                        .map_err(|e| MqttError::Service(e.into()))
-                        .map_init_err(|e| MqttError::Service(e.into())),
+                    publish,
                     Rc::new(self.subscribe),
                     Rc::new(self.unsubscribe),
                     self.keep_alive,
@@ -203,15 +214,14 @@ where
                     ioframe::ServiceError::Decoder(e) => MqttError::Protocol(e),
                 }),
             |io: ServerIo<Io>, srv| srv.call(io.into_parts().0),
-        )
-        .map_config(|_| actix_service::MappedConfig::Owned(()))
+        ))
     }
 }
 
 fn connect_service<Io, St, C>(
-    service: C,
+    factory: C,
     max_size: usize,
-) -> impl NewService<
+) -> impl ServiceFactory<
     Config = (),
     Request = ioframe::Connect<Io>,
     Response = ioframe::ConnectResult<Io, MqttState<St>, mqtt::Codec>,
@@ -219,92 +229,93 @@ fn connect_service<Io, St, C>(
 >
 where
     Io: AsyncRead + AsyncWrite,
-    C: NewService<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>> + 'static,
+    C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>,
 {
-    new_service_cfg(move |_cfg: &()| {
-        service.new_service(&()).map(move |service| {
-            let service = Cell::new(service);
-            let max_size = max_size;
+    factory_fn_cfg(move |_: &()| {
+        let fut = factory.new_service(&());
 
-            apply_fn(
+        async move {
+            let service = Cell::new(fut.await?);
+
+            Ok::<_, C::InitError>(apply_fn(
                 service.map_err(MqttError::Service),
                 move |conn: ioframe::Connect<Io>, service| {
                     let mut srv = service.clone();
-                    let conn = conn.codec(mqtt::Codec::new().max_size(max_size));
+                    let mut framed = conn.codec(mqtt::Codec::new().max_size(max_size));
 
-                    conn.into_future()
-                        .map_err(|(e, _)| MqttError::Protocol(e))
-                        .and_then(move |(packet, framed)| {
-                            match packet {
-                                Some(mqtt::Packet::Connect(connect)) => {
-                                    let sink = MqttSink::new(framed.sink().clone());
+                    async move {
+                        let packet = framed
+                            .next()
+                            .await
+                            .ok_or(MqttError::Disconnected)
+                            .and_then(|res| res.map_err(|e| MqttError::Protocol(e)))?;
 
-                                    Either::A(
-                                        // authenticate mqtt connection
-                                        srv.call(Connect::new(connect, framed, sink.clone()))
-                                            .and_then(|result| {
-                                                match result.into_inner() {
-                                                    either::Either::Left((
-                                                        io,
-                                                        session,
-                                                        session_present,
-                                                    )) => {
-                                                        log::trace!(
-                                                            "Sending ConnectAck: {:#?}", mqtt::Packet::ConnectAck {
-                                                                session_present,
-                                                                return_code: mqtt::ConnectCode::ConnectionAccepted,
-                                                            }
-                                                        );
-                                                        Either::A(
-                                                            io.send(mqtt::Packet::ConnectAck {
-                                                                session_present,
-                                                                return_code: mqtt::ConnectCode::ConnectionAccepted,
-                                                            })
-                                                                .map_err(MqttError::Protocol)
-                                                                .map(move |framed| {
-                                                                    framed.state(MqttState::new(session, sink))
-                                                                }),
-                                                        )
-                                                    },
-                                                    either::Either::Right((io, code)) => {
-                                                        log::trace!(
-                                                            "Sending ConnectAck: {:#?}", mqtt::Packet::ConnectAck {
-                                                                session_present: false,
-                                                                return_code: code,
-                                                            }
-                                                        );
+                        match packet {
+                            mqtt::Packet::Connect(connect) => {
+                                let sink = MqttSink::new(framed.sink().clone());
 
-                                                        Either::B(
-                                                            io.send(mqtt::Packet::ConnectAck {
-                                                                session_present: false,
-                                                                return_code: code,
-                                                            })
-                                                                .map_err(MqttError::Protocol)
-                                                                .and_then(|_| err(MqttError::Disconnected)),
-                                                        )},
-                                                }
-                                            }),
-                                    )
-                                }
-                                Some(packet) => {
-                                    log::info!(
-                                        "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
-                                        packet.packet_type()
-                                    );
-                                    Either::B(err(MqttError::Unexpected(
-                                        packet,
-                                        "MQTT-3.1.0-1: Expected CONNECT packet",
-                                    )))
-                                }
-                                None => {
-                                    log::trace!("mqtt client disconnected",);
-                                    Either::B(err(MqttError::Disconnected))
+                                // authenticate mqtt connection
+                                let result = srv
+                                    .call(Connect::new(connect, framed, sink.clone()))
+                                    .await?;
+
+                                match result.into_inner() {
+                                    either::Either::Left((
+                                        mut framed,
+                                        session,
+                                        session_present,
+                                    )) => {
+                                        log::trace!(
+                                            "Sending: {:#?}",
+                                            mqtt::Packet::ConnectAck {
+                                                session_present,
+                                                return_code:
+                                                    mqtt::ConnectCode::ConnectionAccepted,
+                                            }
+                                        );
+                                        framed
+                                            .send(mqtt::Packet::ConnectAck {
+                                                session_present,
+                                                return_code:
+                                                    mqtt::ConnectCode::ConnectionAccepted,
+                                            })
+                                            .await?;
+
+                                        Ok(framed.state(MqttState::new(session, sink)))
+                                    }
+                                    either::Either::Right((mut framed, code)) => {
+                                        log::trace!(
+                                            "Sending: {:#?}",
+                                            mqtt::Packet::ConnectAck {
+                                                session_present: false,
+                                                return_code: code,
+                                            }
+                                        );
+
+                                        framed
+                                            .send(mqtt::Packet::ConnectAck {
+                                                session_present: false,
+                                                return_code: code,
+                                            })
+                                            .await?;
+                                        Err(MqttError::Disconnected)
+                                    }
                                 }
                             }
-                            .from_err()
-                        })
+                            packet => {
+                                log::info!(
+                                    "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
+                                    packet.packet_type()
+                                );
+                                Err(MqttError::Unexpected(
+                                    packet,
+                                    "MQTT-3.1.0-1: Expected CONNECT packet",
+                                ))
+                            }
+                        }
+                    }
                 },
-            )
-        })
+            ))
+        }
     })
 }

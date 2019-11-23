@@ -9,46 +9,51 @@ use actix_mqtt::{client, Connect, ConnectAck, MqttServer, Publish};
 
 struct Session;
 
-fn connect<Io>(packet: Connect<Io>) -> impl Future<Item = ConnectAck<Io, Session>, Error = ()> {
+async fn connect<Io>(packet: Connect<Io>) -> Result<ConnectAck<Io, Session>, ()> {
     println!("CONNECT: {:?}", packet);
-    ok(packet.ack(Session, false))
+    Ok(packet.ack(Session, false))
 }
 
 #[test]
 fn test_simple() -> std::io::Result<()> {
-    std::env::set_var(
-        "RUST_LOG",
-        "actix_codec=info,actix_server=trace,actix_connector=trace",
-    );
-    env_logger::init();
+    block_on(async {
+        std::env::set_var(
+            "RUST_LOG",
+            "actix_codec=info,actix_server=trace,actix_connector=trace",
+        );
+        env_logger::init();
 
-    let srv = TestServer::with(|| MqttServer::new(connect).finish(|_t| Ok(())));
+        let srv = TestServer::with(|| MqttServer::new(connect).finish(|_t| ok(())));
 
-    struct ClientSession;
+        struct ClientSession;
 
-    let mut client =
-        client::Client::new(string::String::try_from(Bytes::from_static(b"user")).unwrap())
-            .state(|ack: client::ConnectAck<_>| {
-                ack.sink().publish_qos0(
-                    string::String::try_from(Bytes::from_static(b"#")).unwrap(),
-                    Bytes::new(),
-                    false,
-                );
-                ack.sink().close();
-                Ok(ack.state(ClientSession))
-            })
-            .finish(|_t: Publish<_>| {
-                // t.sink().close();
-                Ok(())
-            });
+        let mut client =
+            client::Client::new(string::String::try_from(Bytes::from_static(b"user")).unwrap())
+                .state(|ack: client::ConnectAck<_>| {
+                    async move {
+                        ack.sink().publish_qos0(
+                            string::String::try_from(Bytes::from_static(b"#")).unwrap(),
+                            Bytes::new(),
+                            false,
+                        );
+                        ack.sink().close();
+                        Ok(ack.state(ClientSession))
+                    }
+                })
+                .finish(|_t: Publish<_>| {
+                    async {
+                        // t.sink().close();
+                        Ok(())
+                    }
+                });
 
-    let conn = block_on(
-        actix_connect::default_connector()
-            .call(actix_connect::Connect::with(String::new(), srv.addr())),
-    )
-    .unwrap();
+        let conn = actix_connect::default_connector()
+            .call(actix_connect::Connect::with(String::new(), srv.addr()))
+            .await
+            .unwrap();
 
-    block_on(client.call(conn.into_parts().0)).unwrap();
+        client.call(conn.into_parts().0).await.unwrap();
 
-    Ok(())
+        Ok(())
+    })
 }

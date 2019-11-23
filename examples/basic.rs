@@ -1,23 +1,19 @@
 use actix_mqtt::{Connect, ConnectAck, MqttServer, Publish};
-use futures::future::ok;
-use futures::Future;
 
 struct Session;
 
-fn connect<Io>(
-    connect: Connect<Io>,
-) -> impl Future<Item = ConnectAck<Io, Session>, Error = ()> {
+async fn connect<Io>(connect: Connect<Io>) -> Result<ConnectAck<Io, Session>, ()> {
     log::info!("new connection: {:?}", connect);
-    ok(connect.ack(Session, false))
+    Ok(connect.ack(Session, false))
 }
 
-fn publish(publish: Publish<Session>) -> impl Future<Item = (), Error = ()> {
+async fn publish(publish: Publish<Session>) -> Result<(), ()> {
     log::info!(
         "incoming publish: {:?} -> {:?}",
         publish.id(),
         publish.topic()
     );
-    ok(())
+    Ok(())
 }
 
 fn main() -> std::io::Result<()> {

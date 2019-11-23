@@ -1,6 +1,6 @@
 [package]
 name = "mqtt-codec"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Max Gortman <mgortman@microsoft.com>", "Nikolay Kim <fafhrd91@gmail.com>", "Flier Lu <flier.lu@gmail.com>"]
 description = "MQTT v3.1 Codec"
 documentation = "https://docs.rs/mqtt-codec"
@@ -15,4 +15,4 @@ workspace = ".."
 bitflags = "1.0"
 bytes = "0.4"
 string = "0.2.0"
-tokio-codec = "0.1"
+actix-codec = "0.2.0-alpha.1"

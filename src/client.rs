@@ -1,12 +1,14 @@
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll};
 
 use actix_codec::{AsyncRead, AsyncWrite};
 use actix_ioframe as ioframe;
-use actix_service::{boxed, IntoNewService, IntoService, NewService, Service, ServiceExt};
+use actix_service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
 use bytes::Bytes;
-use futures::future::{err, Either};
-use futures::{Future, Poll, Sink, Stream};
+use futures::future::{FutureExt, LocalBoxFuture};
+use futures::{Sink, SinkExt, Stream, StreamExt};
 use mqtt_codec as mqtt;
 
 use crate::cell::Cell;
@@ -120,8 +122,8 @@ where
                 username: self.username,
                 password: self.password,
             },
-            subscribe: Rc::new(boxed::new_service(SubsNotImplemented::default())),
-            unsubscribe: Rc::new(boxed::new_service(UnsubsNotImplemented::default())),
+            subscribe: Rc::new(boxed::factory(SubsNotImplemented::default())),
+            unsubscribe: Rc::new(boxed::factory(UnsubsNotImplemented::default())),
             disconnect: None,
             keep_alive: self.keep_alive.into(),
             inflight: self.inflight,
@@ -165,50 +167,6 @@ where
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
     C::Error: 'static,
 {
-    /// Service to execute for subscribe packet
-    pub fn subscribe<F, Srv>(mut self, subscribe: F) -> Self
-    where
-        F: IntoNewService<Srv>,
-        Srv: NewService<
-                Config = St,
-                Request = Subscribe<St>,
-                Response = SubscribeResult,
-                InitError = C::Error,
-                Error = C::Error,
-            > + 'static,
-        Srv::Service: 'static,
-    {
-        self.subscribe = Rc::new(boxed::new_service(
-            subscribe
-                .into_new_service()
-                .map_err(MqttError::Service)
-                .map_init_err(MqttError::Service),
-        ));
-        self
-    }
-
-    /// Service to execute for unsubscribe packet
-    pub fn unsubscribe<F, Srv>(mut self, unsubscribe: F) -> Self
-    where
-        F: IntoNewService<Srv>,
-        Srv: NewService<
-                Config = St,
-                Request = Unsubscribe<St>,
-                Response = (),
-                InitError = C::Error,
-                Error = C::Error,
-            > + 'static,
-        Srv::Service: 'static,
-    {
-        self.unsubscribe = Rc::new(boxed::new_service(
-            unsubscribe
-                .into_new_service()
-                .map_err(MqttError::Service)
-                .map_init_err(MqttError::Service),
-        ));
-        self
-    }
-
     /// Service to execute on disconnect
     pub fn disconnect<UF, U>(mut self, srv: UF) -> Self
     where
@@ -226,8 +184,8 @@ where
         service: F,
     ) -> impl Service<Request = Io, Response = (), Error = MqttError<C::Error>>
     where
-        F: IntoNewService<T>,
-        T: NewService<
+        F: IntoServiceFactory<T>,
+        T: ServiceFactory<
                 Config = St,
                 Request = Publish<St>,
                 Response = (),
@@ -243,7 +201,7 @@ where
             })
             .finish(dispatcher(
                 service
-                    .into_new_service()
+                    .into_factory()
                     .map_err(MqttError::Service)
                     .map_init_err(MqttError::Service),
                 self.subscribe,
@@ -275,53 +233,56 @@ where
     type Request = ioframe::Connect<Io>;
     type Response = ioframe::ConnectResult<Io, MqttState<St>, mqtt::Codec>;
     type Error = MqttError<C::Error>;
-    type Future = Box<dyn Future<Item = Self::Response, Error = Self::Error>>;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+    fn poll_ready(&mut self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         self.connect
             .get_mut()
-            .poll_ready()
+            .poll_ready(cx)
             .map_err(MqttError::Service)
     }
 
     fn call(&mut self, req: Self::Request) -> Self::Future {
         let mut srv = self.connect.clone();
+        let packet = self.packet.clone();
 
         // send Connect packet
-        Box::new(
-            req.codec(mqtt::Codec::new())
-                .send(mqtt::Packet::Connect(self.packet.clone()))
-                .map_err(MqttError::Protocol)
-                .and_then(|framed| {
-                    framed
-                        .into_future()
-                        .map_err(|(e, _)| MqttError::Protocol(e))
-                })
-                .and_then(move |(packet, framed)| match packet {
-                    Some(mqtt::Packet::ConnectAck {
+        async move {
+            let mut framed = req.codec(mqtt::Codec::new());
+            framed
+                .send(mqtt::Packet::Connect(packet))
+                .await
+                .map_err(MqttError::Protocol)?;
+
+            let packet = framed
+                .next()
+                .await
+                .ok_or(MqttError::Disconnected)
+                .and_then(|res| res.map_err(MqttError::Protocol))?;
+
+            match packet {
+                mqtt::Packet::ConnectAck {
+                    session_present,
+                    return_code,
+                } => {
+                    let sink = MqttSink::new(framed.sink().clone());
+                    let ack = ConnectAck {
+                        sink,
                         session_present,
                         return_code,
-                    }) => {
-                        let sink = MqttSink::new(framed.sink().clone());
-                        let ack = ConnectAck {
-                            sink,
-                            session_present,
-                            return_code,
-                            io: framed,
-                        };
-                        Either::A(
-                            srv.get_mut()
-                                .call(ack)
-                                .map_err(MqttError::Service)
-                                .map(|ack| ack.io.state(ack.state)),
-                        )
-                    }
-                    Some(p) => {
-                        Either::B(err(MqttError::Unexpected(p, "Expected CONNECT-ACK packet")))
-                    }
-                    None => Either::B(err(MqttError::Disconnected)),
-                }),
-        )
+                        io: framed,
+                    };
+                    Ok(srv
+                        .get_mut()
+                        .call(ack)
+                        .await
+                        .map_err(MqttError::Service)
+                        .map(|ack| ack.io.state(ack.state))?)
+                }
+                p => Err(MqttError::Unexpected(p, "Expected CONNECT-ACK packet")),
+            }
+        }
+            .boxed_local()
     }
 }
 
@@ -361,77 +322,76 @@ impl<Io> ConnectAck<Io> {
     }
 }
 
-impl<Io> futures::Stream for ConnectAck<Io>
+impl<Io> Stream for ConnectAck<Io>
 where
-    Io: AsyncRead + AsyncWrite,
+    Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Item = mqtt::Packet;
+    type Item = Result<mqtt::Packet, mqtt::ParseError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.io).poll_next(cx)
+    }
+}
+
+impl<Io> Sink<mqtt::Packet> for ConnectAck<Io>
+where
+    Io: AsyncRead + AsyncWrite + Unpin,
+{
     type Error = mqtt::ParseError;
 
-    fn poll(&mut self) -> futures::Poll<Option<Self::Item>, Self::Error> {
-        self.io.poll()
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.io).poll_ready(cx)
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, item: mqtt::Packet) -> Result<(), Self::Error> {
+        Pin::new(&mut self.io).start_send(item)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.io).poll_close(cx)
     }
 }
 
-impl<Io> futures::Sink for ConnectAck<Io>
-where
-    Io: AsyncRead + AsyncWrite,
-{
-    type SinkItem = mqtt::Packet;
-    type SinkError = mqtt::ParseError;
-
-    fn start_send(
-        &mut self,
-        item: Self::SinkItem,
-    ) -> futures::StartSend<Self::SinkItem, Self::SinkError> {
-        self.io.start_send(item)
-    }
-
-    fn poll_complete(&mut self) -> futures::Poll<(), Self::SinkError> {
-        self.io.poll_complete()
-    }
-
-    fn close(&mut self) -> futures::Poll<(), Self::SinkError> {
-        self.io.close()
-    }
-}
-
+#[pin_project::pin_project]
 pub struct ConnectAckResult<Io, St> {
     state: MqttState<St>,
     io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
 }
 
-impl<Io, St> futures::Stream for ConnectAckResult<Io, St>
+impl<Io, St> Stream for ConnectAckResult<Io, St>
 where
-    Io: AsyncRead + AsyncWrite,
+    Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Item = mqtt::Packet;
-    type Error = mqtt::ParseError;
+    type Item = Result<mqtt::Packet, mqtt::ParseError>;
 
-    fn poll(&mut self) -> futures::Poll<Option<Self::Item>, Self::Error> {
-        self.io.poll()
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.io).poll_next(cx)
     }
 }
 
-impl<Io, St> futures::Sink for ConnectAckResult<Io, St>
+impl<Io, St> Sink<mqtt::Packet> for ConnectAckResult<Io, St>
 where
-    Io: AsyncRead + AsyncWrite,
+    Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type SinkItem = mqtt::Packet;
-    type SinkError = mqtt::ParseError;
+    type Error = mqtt::ParseError;
 
-    fn start_send(
-        &mut self,
-        item: Self::SinkItem,
-    ) -> futures::StartSend<Self::SinkItem, Self::SinkError> {
-        self.io.start_send(item)
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.io).poll_ready(cx)
     }
 
-    fn poll_complete(&mut self) -> futures::Poll<(), Self::SinkError> {
-        self.io.poll_complete()
+    fn start_send(mut self: Pin<&mut Self>, item: mqtt::Packet) -> Result<(), Self::Error> {
+        Pin::new(&mut self.io).start_send(item)
     }
 
-    fn close(&mut self) -> futures::Poll<(), Self::SinkError> {
-        self.io.close()
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.io).poll_close(cx)
     }
 }
