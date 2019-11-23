@@ -2,7 +2,6 @@ use actix_service::Service;
 use actix_testing::{block_on, TestServer};
 use bytes::Bytes;
 use futures::future::ok;
-use futures::Future;
 use string::TryFrom;
 
 use actix_mqtt::{client, Connect, ConnectAck, MqttServer, Publish};

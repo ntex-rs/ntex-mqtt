@@ -6,7 +6,7 @@ use actix_codec::{AsyncRead, AsyncWrite};
 use actix_ioframe as ioframe;
 use actix_server_config::{Io as ServerIo, ServerConfig};
 use actix_service::{
-    apply_fn, apply_fn_factory, boxed, factory_fn_cfg, pipeline_factory, unit_config,
+    apply_fn, apply_fn_factory, boxed, factory_fn, pipeline_factory, unit_config,
 };
 use actix_service::{IntoServiceFactory, Service, ServiceFactory};
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -83,8 +83,7 @@ impl<Io, St, C, U> MqttServer<Io, St, C, U>
 where
     St: 'static,
     U: Fn(&mut MqttState<St>, bool) + 'static,
-    C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
-        + 'static,
+    C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>> + 'static,
 {
     /// Set max inbound frame size.
     ///
@@ -117,8 +116,7 @@ where
         F: IntoServiceFactory<Srv>,
         Srv: ServiceFactory<Config = St, Request = Subscribe<St>, Response = SubscribeResult>
             + 'static,
-        Srv::Service: 'static,
-        C::Error: From<Srv::Error> + From<Srv::InitError> + 'static,
+        C::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         self.subscribe = boxed::factory(
             subscribe
@@ -134,8 +132,7 @@ where
     where
         F: IntoServiceFactory<Srv>,
         Srv: ServiceFactory<Config = St, Request = Unsubscribe<St>, Response = ()> + 'static,
-        Srv::Service: 'static,
-        C::Error: From<Srv::Error> + From<Srv::InitError> + 'static,
+        C::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         self.unsubscribe = boxed::factory(
             unsubscribe
@@ -152,9 +149,9 @@ where
     pub fn disconnect<F, Out>(
         self,
         disconnect: F,
-    ) -> MqttServer<Io, St, C, impl Fn(&mut MqttState<St>, bool) + 'static>
+    ) -> MqttServer<Io, St, C, impl Fn(&mut MqttState<St>, bool)>
     where
-        F: Fn(&mut St, bool) -> Out + 'static,
+        F: Fn(&mut St, bool) -> Out,
         Out: Future + 'static,
     {
         MqttServer {
@@ -186,7 +183,7 @@ where
         Io: AsyncRead + AsyncWrite + 'static,
         F: IntoServiceFactory<P>,
         P: ServiceFactory<Config = St, Request = Publish<St>, Response = ()> + 'static,
-        C::Error: From<P::Error> + From<P::InitError> + 'static,
+        C::Error: From<P::Error> + From<P::InitError>,
     {
         let connect = self.connect;
         let max_size = self.max_size;
@@ -199,7 +196,7 @@ where
 
         unit_config(apply_fn_factory(
             ioframe::Builder::new()
-                .factory(connect_service(connect, max_size))
+                .factory(connect_service_factory(connect, max_size))
                 .disconnect(self.disconnect)
                 .finish(dispatcher(
                     publish,
@@ -218,7 +215,7 @@ where
     }
 }
 
-fn connect_service<Io, St, C>(
+fn connect_service_factory<Io, St, C>(
     factory: C,
     max_size: usize,
 ) -> impl ServiceFactory<
@@ -231,7 +228,7 @@ where
     Io: AsyncRead + AsyncWrite,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>,
 {
-    factory_fn_cfg(move |_: &()| {
+    factory_fn(move || {
         let fut = factory.new_service(&());
 
         async move {
@@ -244,6 +241,7 @@ where
                     let mut framed = conn.codec(mqtt::Codec::new().max_size(max_size));
 
                     async move {
+                        // read first packet
                         let packet = framed
                             .next()
                             .await
