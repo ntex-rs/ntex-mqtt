@@ -15,23 +15,46 @@ use futures::future::{join3, ok, Either, FutureExt, LocalBoxFuture, Ready};
 use futures::ready;
 use mqtt_codec as mqtt;
 
+use crate::cell::Cell;
 use crate::error::MqttError;
 use crate::publish::Publish;
 use crate::sink::MqttSink;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
 pub struct MqttState<St> {
+    inner: Cell<MqttStateInner<St>>,
+}
+
+struct MqttStateInner<St> {
     pub(crate) st: St,
     pub(crate) sink: MqttSink,
 }
 
+impl<St> Clone for MqttState<St> {
+    fn clone(&self) -> Self {
+        MqttState {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<St> MqttState<St> {
     pub(crate) fn new(st: St, sink: MqttSink) -> Self {
-        MqttState { st, sink }
+        MqttState {
+            inner: Cell::new(MqttStateInner { st, sink }),
+        }
     }
 
     pub(crate) fn sink(&self) -> &MqttSink {
-        &self.sink
+        &self.inner.sink
+    }
+
+    pub(crate) fn session(&self) -> &St {
+        &self.inner.get_ref().st
+    }
+
+    pub(crate) fn session_mut(&mut self) -> &mut St {
+        &mut self.inner.get_mut().st
     }
 }
 
@@ -39,10 +62,16 @@ impl<St> MqttState<St> {
 pub(crate) fn dispatcher<St, T, E>(
     publish: T,
     subscribe: Rc<
-        boxed::BoxedNewService<St, Subscribe<St>, SubscribeResult, MqttError<E>, MqttError<E>>,
+        boxed::BoxServiceFactory<
+            St,
+            Subscribe<St>,
+            SubscribeResult,
+            MqttError<E>,
+            MqttError<E>,
+        >,
     >,
     unsubscribe: Rc<
-        boxed::BoxedNewService<St, Unsubscribe<St>, (), MqttError<E>, MqttError<E>>,
+        boxed::BoxServiceFactory<St, Unsubscribe<St>, (), MqttError<E>, MqttError<E>>,
     >,
     keep_alive: u64,
     inflight: usize,
@@ -55,7 +84,7 @@ pub(crate) fn dispatcher<St, T, E>(
 >
 where
     E: 'static,
-    St: 'static,
+    St: Clone + 'static,
     T: ServiceFactory<
             Config = St,
             Request = Publish<St>,
@@ -66,14 +95,15 @@ where
 {
     let time = LowResTimeService::with(Duration::from_secs(1));
 
-    factory_fn_cfg(move |cfg: &MqttState<St>| {
+    factory_fn_cfg(move |cfg: MqttState<St>| {
         let time = time.clone();
+        let state = cfg.session().clone();
 
         // create services
         let fut = join3(
-            publish.new_service(&cfg.st),
-            subscribe.new_service(&cfg.st),
-            unsubscribe.new_service(&cfg.st),
+            publish.new_service(state.clone()),
+            subscribe.new_service(state.clone()),
+            unsubscribe.new_service(state.clone()),
         );
 
         async move {
@@ -108,8 +138,8 @@ where
 /// PUBLIS/SUBSCRIBER/UNSUBSCRIBER packets dispatcher
 pub(crate) struct Dispatcher<St, T: Service> {
     publish: T,
-    subscribe: boxed::BoxedService<Subscribe<St>, SubscribeResult, T::Error>,
-    unsubscribe: boxed::BoxedService<Unsubscribe<St>, (), T::Error>,
+    subscribe: boxed::BoxService<Subscribe<St>, SubscribeResult, T::Error>,
+    unsubscribe: boxed::BoxService<Unsubscribe<St>, (), T::Error>,
 }
 
 impl<St, T> Dispatcher<St, T>
@@ -118,8 +148,8 @@ where
 {
     pub(crate) fn new(
         publish: T,
-        subscribe: boxed::BoxedService<Subscribe<St>, SubscribeResult, T::Error>,
-        unsubscribe: boxed::BoxedService<Unsubscribe<St>, (), T::Error>,
+        subscribe: boxed::BoxService<Subscribe<St>, SubscribeResult, T::Error>,
+        unsubscribe: boxed::BoxService<Unsubscribe<St>, (), T::Error>,
     ) -> Self {
         Self {
             publish,
@@ -175,7 +205,7 @@ where
                 })
             }
             mqtt::Packet::PublishAck { packet_id } => {
-                state.get_mut().sink.complete_publish_qos1(packet_id);
+                state.inner.get_mut().sink.complete_publish_qos1(packet_id);
                 Either::Left(Either::Left(ok(None)))
             }
             mqtt::Packet::Subscribe {

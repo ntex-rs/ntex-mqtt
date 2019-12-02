@@ -21,4 +21,3 @@ pub use self::router::Router;
 pub use self::server::MqttServer;
 pub use self::sink::MqttSink;
 pub use self::subs::{Subscribe, SubscribeIter, SubscribeResult, Subscription, Unsubscribe};
-pub use actix_ioframe::State;

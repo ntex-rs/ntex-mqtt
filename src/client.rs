@@ -18,7 +18,6 @@ use crate::error::MqttError;
 use crate::publish::Publish;
 use crate::sink::MqttSink;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
-use crate::State;
 
 /// Mqtt client
 #[derive(Clone)]
@@ -136,7 +135,7 @@ pub struct ServiceBuilder<Io, St, C: Service> {
     state: Cell<C>,
     packet: mqtt::Connect,
     subscribe: Rc<
-        boxed::BoxedNewService<
+        boxed::BoxServiceFactory<
             St,
             Subscribe<St>,
             SubscribeResult,
@@ -145,7 +144,7 @@ pub struct ServiceBuilder<Io, St, C: Service> {
         >,
     >,
     unsubscribe: Rc<
-        boxed::BoxedNewService<
+        boxed::BoxServiceFactory<
             St,
             Unsubscribe<St>,
             (),
@@ -153,7 +152,7 @@ pub struct ServiceBuilder<Io, St, C: Service> {
             MqttError<C::Error>,
         >,
     >,
-    disconnect: Option<Cell<boxed::BoxedService<State<St>, (), MqttError<C::Error>>>>,
+    disconnect: Option<Cell<boxed::BoxService<St, (), MqttError<C::Error>>>>,
     keep_alive: u64,
     inflight: usize,
 
@@ -162,7 +161,7 @@ pub struct ServiceBuilder<Io, St, C: Service> {
 
 impl<Io, St, C> ServiceBuilder<Io, St, C>
 where
-    St: 'static,
+    St: Clone + 'static,
     Io: AsyncRead + AsyncWrite + 'static,
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
     C::Error: 'static,
@@ -171,7 +170,7 @@ where
     pub fn disconnect<UF, U>(mut self, srv: UF) -> Self
     where
         UF: IntoService<U>,
-        U: Service<Request = State<St>, Response = (), Error = C::Error> + 'static,
+        U: Service<Request = St, Response = (), Error = C::Error> + 'static,
     {
         self.disconnect = Some(Cell::new(boxed::service(
             srv.into_service().map_err(MqttError::Service),

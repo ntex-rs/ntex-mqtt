@@ -1,6 +1,3 @@
-use std::cell::{Ref, RefMut};
-
-use actix_ioframe::State;
 use actix_router::Path;
 use bytes::Bytes;
 use mqtt_codec as mqtt;
@@ -15,13 +12,13 @@ use crate::sink::MqttSink;
 pub struct Publish<S> {
     publish: mqtt::Publish,
     sink: MqttSink,
-    state: State<MqttState<S>>,
+    state: MqttState<S>,
     topic: Path<string::String<Bytes>>,
     query: Option<string::String<Bytes>>,
 }
 
 impl<S> Publish<S> {
-    pub(crate) fn new(state: State<MqttState<S>>, publish: mqtt::Publish) -> Self {
+    pub(crate) fn new(state: MqttState<S>, publish: mqtt::Publish) -> Self {
         let (topic, query) = if let Some(pos) = publish.topic.find('?') {
             (
                 string::String::try_from(publish.topic.get_ref().slice(0, pos)).unwrap(),
@@ -36,7 +33,7 @@ impl<S> Publish<S> {
             (publish.topic.clone(), None)
         };
         let topic = Path::new(topic);
-        let sink = state.get_ref().sink().clone();
+        let sink = state.sink().clone();
         Self {
             sink,
             publish,
@@ -71,14 +68,14 @@ impl<S> Publish<S> {
 
     #[inline]
     /// returns reference to a connection session
-    pub fn session(&self) -> Ref<S> {
-        Ref::map(self.state.get_ref(), |t| &t.st)
+    pub fn session(&self) -> &S {
+        self.state.session()
     }
 
     #[inline]
     /// returns mutable reference to a connection session
-    pub fn session_mut(&mut self) -> RefMut<S> {
-        RefMut::map(self.state.get_mut(), |t| &mut t.st)
+    pub fn session_mut(&mut self) -> &mut S {
+        self.state.session_mut()
     }
 
     #[inline]

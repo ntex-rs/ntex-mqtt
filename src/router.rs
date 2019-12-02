@@ -4,14 +4,14 @@ use std::rc::Rc;
 use std::task::{Context, Poll};
 
 use actix_router::RouterBuilder;
-use actix_service::boxed::{self, BoxedNewService, BoxedService};
+use actix_service::boxed::{self, BoxService, BoxServiceFactory};
 use actix_service::{service_fn, IntoServiceFactory, Service, ServiceFactory};
 use futures::future::{join_all, ok, JoinAll, LocalBoxFuture};
 
 use crate::publish::Publish;
 
-type Handler<S, E> = BoxedNewService<S, Publish<S>, (), E, E>;
-type HandlerService<S, E> = BoxedService<Publish<S>, (), E>;
+type Handler<S, E> = BoxServiceFactory<S, Publish<S>, (), E, E>;
+type HandlerService<S, E> = BoxService<Publish<S>, (), E>;
 
 /// Router - structure that follows the builder pattern
 /// for building publish packet router instances for mqtt server.
@@ -23,7 +23,7 @@ pub struct Router<S, E> {
 
 impl<S, E> Router<S, E>
 where
-    S: 'static,
+    S: Clone + 'static,
     E: 'static,
 {
     /// Create mqtt application.
@@ -75,7 +75,7 @@ where
 
 impl<S, E> IntoServiceFactory<RouterFactory<S, E>> for Router<S, E>
 where
-    S: 'static,
+    S: Clone + 'static,
     E: 'static,
 {
     fn into_factory(self) -> RouterFactory<S, E> {
@@ -95,7 +95,7 @@ pub struct RouterFactory<S, E> {
 
 impl<S, E> ServiceFactory for RouterFactory<S, E>
 where
-    S: 'static,
+    S: Clone + 'static,
     E: 'static,
 {
     type Config = S;
@@ -106,11 +106,11 @@ where
     type Service = RouterService<S, E>;
     type Future = RouterFactoryFut<S, E>;
 
-    fn new_service(&self, session: &S) -> Self::Future {
+    fn new_service(&self, session: S) -> Self::Future {
         let fut: Vec<_> = self
             .handlers
             .iter()
-            .map(|h| h.new_service(session))
+            .map(|h| h.new_service(session.clone()))
             .collect();
 
         RouterFactoryFut {
@@ -166,8 +166,8 @@ impl<S, E> Future for RouterFactoryFut<S, E> {
 
 pub struct RouterService<S, E> {
     router: Rc<actix_router::Router<usize>>,
-    handlers: Vec<BoxedService<Publish<S>, (), E>>,
-    default: BoxedService<Publish<S>, (), E>,
+    handlers: Vec<BoxService<Publish<S>, (), E>>,
+    default: BoxService<Publish<S>, (), E>,
 }
 
 impl<S, E> Service for RouterService<S, E>

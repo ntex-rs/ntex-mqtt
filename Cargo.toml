@@ -19,15 +19,14 @@ members = [
 
 [dependencies]
 mqtt-codec = "0.3.0"
-actix-codec = "0.2.0-alpha.1"
-actix-service = "1.0.0-alpha.1"
-actix-utils = "0.5.0-alpha.1"
+actix-codec = "0.2.0-alpha.2"
+actix-service = "1.0.0-alpha.2"
+actix-utils = "1.0.0-alpha.2"
 actix-router = "0.1.5"
-actix-server-config = "0.3.0-alpha.1"
-actix-ioframe = "0.3.0-alpha.1"
-actix-rt = "1.0.0-alpha.1"
+actix-ioframe = "0.3.0-alpha.2"
+actix-rt = "1.0.0-alpha.2"
 
-derive_more = "0.15.0"
+derive_more = "0.99.2"
 bytes = "0.4"
 either = "1.5.2"
 futures = "0.3.1"
@@ -40,10 +39,9 @@ uuid = { version = "0.7", features = ["v4"] }
 
 [dev-dependencies]
 env_logger = "0.6"
-actix-connect = "1.0.0-alpha.1"
-actix-server = "0.8.0-alpha.1"
-actix-testing = "0.3.0-alpha.1"
-tokio-net = "0.2.0-alpha.6"
+actix-connect = "1.0.0-alpha.2"
+actix-server = "1.0.0-alpha.2"
+actix-testing = "1.0.0-alpha.2"
 
 [patch.crates-io]
 actix-mqtt = { path = "." }

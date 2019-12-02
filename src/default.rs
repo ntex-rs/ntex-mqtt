@@ -25,7 +25,7 @@ impl<S, E> ServiceFactory for NotImplemented<S, E> {
     type Service = NotImplemented<S, E>;
     type Future = Ready<Result<Self::Service, Self::InitError>>;
 
-    fn new_service(&self, _: &S) -> Self::Future {
+    fn new_service(&self, _: S) -> Self::Future {
         ok(NotImplemented(PhantomData))
     }
 }
@@ -64,7 +64,7 @@ impl<S, E> ServiceFactory for SubsNotImplemented<S, E> {
     type Service = SubsNotImplemented<S, E>;
     type Future = Ready<Result<Self::Service, Self::InitError>>;
 
-    fn new_service(&self, _: &S) -> Self::Future {
+    fn new_service(&self, _: S) -> Self::Future {
         ok(SubsNotImplemented(PhantomData))
     }
 }
@@ -103,7 +103,7 @@ impl<S, E> ServiceFactory for UnsubsNotImplemented<S, E> {
     type Service = UnsubsNotImplemented<S, E>;
     type Future = Ready<Result<Self::Service, Self::InitError>>;
 
-    fn new_service(&self, _: &S) -> Self::Future {
+    fn new_service(&self, _: S) -> Self::Future {
         ok(UnsubsNotImplemented(PhantomData))
     }
 }
