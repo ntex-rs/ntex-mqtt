@@ -1,5 +1,6 @@
 use actix_mqtt::{Connect, ConnectAck, MqttServer, Publish};
 
+#[derive(Clone)]
 struct Session;
 
 async fn connect<Io>(connect: Connect<Io>) -> Result<ConnectAck<Io, Session>, ()> {
