@@ -117,7 +117,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
 
                 dst.put_slice(&[protocol.level(), flags.bits()]);
 
-                dst.put_u16_be(keep_alive);
+                dst.put_u16(keep_alive);
 
                 write_slice(client_id.as_bytes(), dst);
 
@@ -161,10 +161,10 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             write_slice(topic.as_bytes(), dst);
 
             if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
-                dst.put_u16_be(packet_id.unwrap());
+                dst.put_u16(packet_id.unwrap());
             }
 
-            dst.put(payload);
+            dst.put(payload.as_ref());
         }
 
         Packet::PublishAck { packet_id }
@@ -172,14 +172,14 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
         | Packet::PublishRelease { packet_id }
         | Packet::PublishComplete { packet_id }
         | Packet::UnsubscribeAck { packet_id } => {
-            dst.put_u16_be(packet_id);
+            dst.put_u16(packet_id);
         }
 
         Packet::Subscribe {
             packet_id,
             ref topic_filters,
         } => {
-            dst.put_u16_be(packet_id);
+            dst.put_u16(packet_id);
 
             for &(ref filter, qos) in topic_filters {
                 write_slice(filter.as_ref(), dst);
@@ -191,7 +191,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             packet_id,
             ref status,
         } => {
-            dst.put_u16_be(packet_id);
+            dst.put_u16(packet_id);
 
             let buf: Vec<u8> = status
                 .iter()
@@ -211,7 +211,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             packet_id,
             ref topic_filters,
         } => {
-            dst.put_u16_be(packet_id);
+            dst.put_u16(packet_id);
 
             for filter in topic_filters {
                 write_slice(filter.as_ref(), dst);
@@ -224,7 +224,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
 
 #[inline]
 fn write_slice(r: &[u8], dst: &mut BytesMut) {
-    dst.put_u16_be(r.len() as u16);
+    dst.put_u16(r.len() as u16);
     dst.put_slice(r);
 }
 

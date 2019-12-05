@@ -1,6 +1,6 @@
 [package]
 name = "actix-mqtt"
-version = "0.2.0"
+version = "0.2.0-alpha.1"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "MQTT v3.1.1 Client/Server framework"
 documentation = "https://docs.rs/actix-mqtt"
@@ -19,30 +19,40 @@ members = [
 
 [dependencies]
 mqtt-codec = "0.3.0"
-actix-codec = "0.2.0-alpha.2"
-actix-service = "1.0.0-alpha.2"
-actix-utils = "1.0.0-alpha.2"
-actix-router = "0.1.5"
+actix-codec = "0.2.0-alpha.3"
+actix-service = "1.0.0-alpha.3"
+actix-utils = "1.0.0-alpha.3"
+actix-router = "0.2.0"
 actix-ioframe = "0.3.0-alpha.2"
-actix-rt = "1.0.0-alpha.2"
+actix-rt = "1.0.0-alpha.3"
 
 derive_more = "0.99.2"
-bytes = "0.4"
+bytes = "0.5.2"
 either = "1.5.2"
 futures = "0.3.1"
 pin-project = "0.4.6"
 log = "0.4"
-string = "0.2.0"
+# string = "0.2.1"
+string = { git = "https://github.com/carllerche/string.git" }
 serde = "1.0"
 serde_json = "1.0"
 uuid = { version = "0.7", features = ["v4"] }
 
 [dev-dependencies]
 env_logger = "0.6"
-actix-connect = "1.0.0-alpha.2"
-actix-server = "1.0.0-alpha.2"
-actix-testing = "1.0.0-alpha.2"
+actix-connect = "1.0.0-alpha.3"
+actix-server = "1.0.0-alpha.3"
+actix-testing = "1.0.0-alpha.3"
 
 [patch.crates-io]
 actix-mqtt = { path = "." }
 mqtt-codec = { path = "codec" }
+
+actix-codec = { git = "https://github.com/actix/actix-net.git" }
+actix-connect = { git = "https://github.com/actix/actix-net.git" }
+actix-rt = { git = "https://github.com/actix/actix-net.git" }
+actix-server = { git = "https://github.com/actix/actix-net.git" }
+actix-service = { git = "https://github.com/actix/actix-net.git" }
+actix-testing = { git = "https://github.com/actix/actix-net.git" }
+actix-utils = { git = "https://github.com/actix/actix-net.git" }
+actix-router = { git = "https://github.com/actix/actix-net.git" }

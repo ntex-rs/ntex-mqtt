@@ -1,6 +1,6 @@
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
-use bytes::{Buf, Bytes};
+use bytes::{buf::Buf, Bytes};
 use string::{String, TryFrom};
 
 use crate::error::ParseError;
@@ -84,12 +84,14 @@ pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>, Pars
 
 fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> {
     ensure!(src.remaining() >= 10, ParseError::InvalidLength);
-    let len = src.get_u16_be();
-    ensure!(
-        len == 4 && &src.bytes()[0..4] == b"MQTT",
-        ParseError::InvalidProtocol
-    );
-    src.advance(4);
+    let len = src.get_u16();
+    if len == 4 {
+        let mut ver = [0u8; 4];
+        src.read_exact(&mut ver).unwrap();
+        if &ver[..] != b"MQTT" {
+            return Err(ParseError::InvalidProtocol);
+        }
+    }
 
     let level = src.get_u8();
     ensure!(
@@ -100,7 +102,7 @@ fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> 
     let flags = src.get_u8();
     ensure!((flags & 0x01) == 0, ParseError::ConnectReservedFlagSet);
 
-    let keep_alive = src.get_u16_be();
+    let keep_alive = src.get_u16();
     let client_id = decode_utf8_str(src)?;
 
     ensure!(
@@ -209,8 +211,10 @@ fn decode_subscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError
 fn decode_subscribe_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> {
     let packet_id = read_u16(src)?;
     let status = src
-        .iter()
+        .bytes()
+        //.iter()
         .map(|code| {
+            let code = code.unwrap();
             if code == 0x80 {
                 SubscribeReturnCode::Failure
             } else {
@@ -246,14 +250,14 @@ fn decode_utf8_str(src: &mut Cursor<Bytes>) -> Result<String<Bytes>, ParseError>
 
 fn take(buf: &mut Cursor<Bytes>, n: usize) -> Bytes {
     let pos = buf.position() as usize;
-    let ret = buf.get_ref().slice(pos, pos + n);
+    let ret = buf.get_ref().slice(pos..pos + n);
     buf.set_position((pos + n) as u64);
     ret
 }
 
 fn read_u16(src: &mut Cursor<Bytes>) -> Result<u16, ParseError> {
     ensure!(src.remaining() >= 2, ParseError::InvalidLength);
-    Ok(src.get_u16_be())
+    Ok(src.get_u16())
 }
 
 #[cfg(test)]

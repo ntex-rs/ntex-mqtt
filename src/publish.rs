@@ -21,10 +21,10 @@ impl<S> Publish<S> {
     pub(crate) fn new(state: MqttState<S>, publish: mqtt::Publish) -> Self {
         let (topic, query) = if let Some(pos) = publish.topic.find('?') {
             (
-                string::String::try_from(publish.topic.get_ref().slice(0, pos)).unwrap(),
+                string::String::try_from(publish.topic.get_ref().slice(0..pos)).unwrap(),
                 Some(
                     string::String::try_from(
-                        publish.topic.get_ref().slice(pos + 1, publish.topic.len()),
+                        publish.topic.get_ref().slice(pos + 1..publish.topic.len()),
                     )
                     .unwrap(),
                 ),

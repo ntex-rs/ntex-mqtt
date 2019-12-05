@@ -2,7 +2,7 @@
 name = "mqtt-codec"
 version = "0.3.0"
 authors = ["Max Gortman <mgortman@microsoft.com>", "Nikolay Kim <fafhrd91@gmail.com>", "Flier Lu <flier.lu@gmail.com>"]
-description = "MQTT v3.1 Codec"
+description = "MQTT v3.1.1 Codec"
 documentation = "https://docs.rs/mqtt-codec"
 repository = "https://github.com/actix/actix-mqtt.git"
 readme = "README.md"
@@ -13,6 +13,7 @@ workspace = ".."
 
 [dependencies]
 bitflags = "1.0"
-bytes = "0.4"
-string = "0.2.0"
-actix-codec = "0.2.0-alpha.2"
+bytes = "0.5.2"
+# string = "0.2.1"
+string = { git = "https://github.com/carllerche/string.git" }
+actix-codec = "0.2.0-alpha.3"
