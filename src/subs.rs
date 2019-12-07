@@ -1,15 +1,14 @@
 use std::marker::PhantomData;
 
-use bytes::Bytes;
+use bytestring::ByteString;
 use mqtt_codec as mqtt;
-use string::String;
 
 use crate::dispatcher::MqttState;
 use crate::sink::MqttSink;
 
 /// Subscribe message
 pub struct Subscribe<S> {
-    topics: Vec<(String<Bytes>, mqtt::QoS)>,
+    topics: Vec<(ByteString, mqtt::QoS)>,
     codes: Vec<mqtt::SubscribeReturnCode>,
     state: MqttState<S>,
 }
@@ -20,7 +19,7 @@ pub struct SubscribeResult {
 }
 
 impl<S> Subscribe<S> {
-    pub(crate) fn new(state: MqttState<S>, topics: Vec<(String<Bytes>, mqtt::QoS)>) -> Self {
+    pub(crate) fn new(state: MqttState<S>, topics: Vec<(ByteString, mqtt::QoS)>) -> Self {
         let mut codes = Vec::with_capacity(topics.len());
         (0..topics.len()).for_each(|_| codes.push(mqtt::SubscribeReturnCode::Failure));
 
@@ -112,7 +111,7 @@ impl<'a, S> Iterator for SubscribeIter<'a, S> {
 
 /// Subscription topic
 pub struct Subscription<'a, S> {
-    topic: &'a String<Bytes>,
+    topic: &'a ByteString,
     state: MqttState<S>,
     qos: mqtt::QoS,
     code: &'a mut mqtt::SubscribeReturnCode,
@@ -133,7 +132,7 @@ impl<'a, S> Subscription<'a, S> {
 
     #[inline]
     /// subscription topic
-    pub fn topic(&self) -> &'a String<Bytes> {
+    pub fn topic(&self) -> &'a ByteString {
         &self.topic
     }
 
@@ -159,11 +158,11 @@ impl<'a, S> Subscription<'a, S> {
 /// Unsubscribe message
 pub struct Unsubscribe<S> {
     state: MqttState<S>,
-    topics: Vec<String<Bytes>>,
+    topics: Vec<ByteString>,
 }
 
 impl<S> Unsubscribe<S> {
-    pub(crate) fn new(state: MqttState<S>, topics: Vec<String<Bytes>>) -> Self {
+    pub(crate) fn new(state: MqttState<S>, topics: Vec<ByteString>) -> Self {
         Self { topics, state }
     }
 
@@ -186,7 +185,7 @@ impl<S> Unsubscribe<S> {
     }
 
     /// returns iterator over unsubscribe topics
-    pub fn iter(&self) -> impl Iterator<Item = &String<Bytes>> {
+    pub fn iter(&self) -> impl Iterator<Item = &ByteString> {
         self.topics.iter()
     }
 }

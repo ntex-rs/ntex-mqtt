@@ -258,7 +258,7 @@ fn write_variable_length(size: usize, dst: &mut BytesMut) {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use string::{String, TryFrom};
+    use bytestring::ByteString;
 
     use super::*;
 
@@ -307,7 +307,7 @@ mod tests {
             dup: true,
             retain: true,
             qos: QoS::ExactlyOnce,
-            topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
+            topic: ByteString::from_static("topic"),
             packet_id: Some(0x4321),
             payload: (0..255).collect::<Vec<u8>>().into(),
         });
@@ -334,9 +334,9 @@ mod tests {
                 protocol: Protocol::MQTT(4),
                 clean_session: false,
                 keep_alive: 60,
-                client_id: String::try_from(Bytes::from_static(b"12345")).unwrap(),
+                client_id: ByteString::from_static("12345"),
                 last_will: None,
-                username: Some(String::try_from(Bytes::from_static(b"user")).unwrap()),
+                username: Some(ByteString::from_static("user")),
                 password: Some(Bytes::from_static(b"pass")),
             }),
             &b"\x10\x1D\x00\x04MQTT\x04\xC0\x00\x3C\x00\
@@ -348,11 +348,11 @@ mod tests {
                 protocol: Protocol::MQTT(4),
                 clean_session: false,
                 keep_alive: 60,
-                client_id: String::try_from(Bytes::from_static(b"12345")).unwrap(),
+                client_id: ByteString::from_static("12345"),
                 last_will: Some(LastWill {
                     qos: QoS::ExactlyOnce,
                     retain: false,
-                    topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
+                    topic: ByteString::from_static("topic"),
                     message: Bytes::from_static(b"message"),
                 }),
                 username: None,
@@ -372,7 +372,7 @@ mod tests {
                 dup: true,
                 retain: true,
                 qos: QoS::ExactlyOnce,
-                topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
+                topic: ByteString::from_static("topic"),
                 packet_id: Some(0x4321),
                 payload: Bytes::from_static(b"data"),
             }),
@@ -384,7 +384,7 @@ mod tests {
                 dup: false,
                 retain: false,
                 qos: QoS::AtMostOnce,
-                topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
+                topic: ByteString::from_static("topic"),
                 packet_id: None,
                 payload: Bytes::from_static(b"data"),
             }),
@@ -398,14 +398,8 @@ mod tests {
             &Packet::Subscribe {
                 packet_id: 0x1234,
                 topic_filters: vec![
-                    (
-                        String::try_from(Bytes::from_static(b"test")).unwrap(),
-                        QoS::AtLeastOnce
-                    ),
-                    (
-                        String::try_from(Bytes::from_static(b"filter")).unwrap(),
-                        QoS::ExactlyOnce
-                    )
+                    (ByteString::from_static("test"), QoS::AtLeastOnce),
+                    (ByteString::from_static("filter"), QoS::ExactlyOnce)
                 ],
             },
             b"\x82\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02"
@@ -427,8 +421,8 @@ mod tests {
             &Packet::Unsubscribe {
                 packet_id: 0x1234,
                 topic_filters: vec![
-                    String::try_from(Bytes::from_static(b"test")).unwrap(),
-                    String::try_from(Bytes::from_static(b"filter")).unwrap(),
+                    ByteString::from_static("test"),
+                    ByteString::from_static("filter"),
                 ],
             },
             b"\xa2\x10\x12\x34\x00\x04test\x00\x06filter"

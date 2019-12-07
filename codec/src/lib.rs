@@ -1,6 +1,8 @@
 #[macro_use]
 extern crate bitflags;
 
+extern crate bytestring;
+
 mod error;
 #[macro_use]
 mod topic;

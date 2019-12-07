@@ -7,6 +7,7 @@ use actix_codec::{AsyncRead, AsyncWrite};
 use actix_ioframe as ioframe;
 use actix_service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::future::{FutureExt, LocalBoxFuture};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use mqtt_codec as mqtt;
@@ -22,12 +23,12 @@ use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 /// Mqtt client
 #[derive(Clone)]
 pub struct Client<Io, St> {
-    client_id: string::String<Bytes>,
+    client_id: ByteString,
     clean_session: bool,
     protocol: mqtt::Protocol,
     keep_alive: u16,
     last_will: Option<mqtt::LastWill>,
-    username: Option<string::String<Bytes>>,
+    username: Option<ByteString>,
     password: Option<Bytes>,
     inflight: usize,
     _t: PhantomData<(Io, St)>,
@@ -38,7 +39,7 @@ where
     St: 'static,
 {
     /// Create new client and provide client id
-    pub fn new(client_id: string::String<Bytes>) -> Self {
+    pub fn new(client_id: ByteString) -> Self {
         Client {
             client_id,
             clean_session: true,
@@ -81,7 +82,7 @@ where
     }
 
     /// Username can be used by the Server for authentication and authorization.
-    pub fn username(mut self, val: string::String<Bytes>) -> Self {
+    pub fn username(mut self, val: ByteString) -> Self {
         self.username = Some(val);
         self
     }

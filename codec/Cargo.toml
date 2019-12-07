@@ -14,6 +14,5 @@ workspace = ".."
 [dependencies]
 bitflags = "1.0"
 bytes = "0.5.2"
-# string = "0.2.1"
-string = { git = "https://github.com/carllerche/string.git" }
+bytestring = "0.1.0"
 actix-codec = "0.2.0-alpha.3"

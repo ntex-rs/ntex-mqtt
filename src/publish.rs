@@ -1,9 +1,11 @@
+use std::convert::TryFrom;
+
 use actix_router::Path;
 use bytes::Bytes;
+use bytestring::ByteString;
 use mqtt_codec as mqtt;
 use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
-use string::TryFrom;
 
 use crate::dispatcher::MqttState;
 use crate::sink::MqttSink;
@@ -13,17 +15,17 @@ pub struct Publish<S> {
     publish: mqtt::Publish,
     sink: MqttSink,
     state: MqttState<S>,
-    topic: Path<string::String<Bytes>>,
-    query: Option<string::String<Bytes>>,
+    topic: Path<ByteString>,
+    query: Option<ByteString>,
 }
 
 impl<S> Publish<S> {
     pub(crate) fn new(state: MqttState<S>, publish: mqtt::Publish) -> Self {
         let (topic, query) = if let Some(pos) = publish.topic.find('?') {
             (
-                string::String::try_from(publish.topic.get_ref().slice(0..pos)).unwrap(),
+                ByteString::try_from(publish.topic.get_ref().slice(0..pos)).unwrap(),
                 Some(
-                    string::String::try_from(
+                    ByteString::try_from(
                         publish.topic.get_ref().slice(pos + 1..publish.topic.len()),
                     )
                     .unwrap(),
@@ -85,12 +87,12 @@ impl<S> Publish<S> {
     }
 
     #[inline]
-    pub fn topic(&self) -> &Path<string::String<Bytes>> {
+    pub fn topic(&self) -> &Path<ByteString> {
         &self.topic
     }
 
     #[inline]
-    pub fn topic_mut(&mut self) -> &mut Path<string::String<Bytes>> {
+    pub fn topic_mut(&mut self) -> &mut Path<ByteString> {
         &mut self.topic
     }
 

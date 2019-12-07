@@ -4,6 +4,7 @@ use std::fmt;
 use actix_ioframe::Sink;
 use actix_utils::oneshot;
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::future::{Future, TryFutureExt};
 use mqtt_codec as mqtt;
 
@@ -35,7 +36,7 @@ impl MqttSink {
     }
 
     /// Send publish packet with qos set to 0
-    pub fn publish_qos0(&self, topic: string::String<Bytes>, payload: Bytes, dup: bool) {
+    pub fn publish_qos0(&self, topic: ByteString, payload: Bytes, dup: bool) {
         log::trace!("Publish (QoS0) to {:?}", topic);
         let publish = mqtt::Publish {
             topic,
@@ -51,7 +52,7 @@ impl MqttSink {
     /// Send publish packet
     pub fn publish_qos1(
         &mut self,
-        topic: string::String<Bytes>,
+        topic: ByteString,
         payload: Bytes,
         dup: bool,
     ) -> impl Future<Output = Result<(), ()>> {

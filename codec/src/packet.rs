@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use string::String;
+use bytestring::ByteString;
 
 use crate::proto::{Protocol, QoS};
 
@@ -51,7 +51,7 @@ pub struct LastWill {
     /// the Will Message is to be Retained when it is published.
     pub retain: bool,
     /// the Will Topic
-    pub topic: String<Bytes>,
+    pub topic: ByteString,
     /// defines the Application Message that is to be published to the Will Topic
     pub message: Bytes,
 }
@@ -68,9 +68,9 @@ pub struct Connect {
     /// Will Message be stored on the Server and associated with the Network Connection.
     pub last_will: Option<LastWill>,
     /// identifies the Client to the Server.
-    pub client_id: String<Bytes>,
+    pub client_id: ByteString,
     /// username can be used by the Server for authentication and authorization.
-    pub username: Option<String<Bytes>>,
+    pub username: Option<ByteString>,
     /// password can be used by the Server for authentication and authorization.
     pub password: Option<Bytes>,
 }
@@ -84,7 +84,7 @@ pub struct Publish {
     /// the level of assurance for delivery of an Application Message.
     pub qos: QoS,
     /// the information channel to which payload data is published.
-    pub topic: String<Bytes>,
+    pub topic: ByteString,
     /// only present in PUBLISH Packets where the QoS level is 1 or 2.
     pub packet_id: Option<u16>,
     /// the Application Message that is being published.
@@ -141,7 +141,7 @@ pub enum Packet {
         /// Packet Identifier
         packet_id: u16,
         /// the list of Topic Filters and QoS to which the Client wants to subscribe.
-        topic_filters: Vec<(String<Bytes>, QoS)>,
+        topic_filters: Vec<(ByteString, QoS)>,
     },
     /// Subscribe acknowledgment
     SubscribeAck {
@@ -155,7 +155,7 @@ pub enum Packet {
         /// Packet Identifier
         packet_id: u16,
         /// the list of Topic Filters that the Client wishes to unsubscribe from.
-        topic_filters: Vec<String<Bytes>>,
+        topic_filters: Vec<ByteString>,
     },
     /// Unsubscribe acknowledgment
     UnsubscribeAck {

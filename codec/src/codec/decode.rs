@@ -1,7 +1,8 @@
+use std::convert::TryFrom;
 use std::io::{Cursor, Read};
 
 use bytes::{buf::Buf, Bytes};
-use string::{String, TryFrom};
+use bytestring::ByteString;
 
 use crate::error::ParseError;
 use crate::packet::*;
@@ -85,12 +86,14 @@ pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>, Pars
 fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> {
     ensure!(src.remaining() >= 10, ParseError::InvalidLength);
     let len = src.get_u16();
-    if len == 4 {
+    if len >= 4 {
         let mut ver = [0u8; 4];
         src.read_exact(&mut ver).unwrap();
         if &ver[..] != b"MQTT" {
             return Err(ParseError::InvalidProtocol);
         }
+    } else {
+        return Err(ParseError::InvalidProtocol);
     }
 
     let level = src.get_u8();
@@ -243,9 +246,8 @@ fn decode_length_bytes(src: &mut Cursor<Bytes>) -> Result<Bytes, ParseError> {
     Ok(take(src, len))
 }
 
-fn decode_utf8_str(src: &mut Cursor<Bytes>) -> Result<String<Bytes>, ParseError> {
-    let bytes = decode_length_bytes(src)?;
-    Ok(String::try_from(bytes)?)
+fn decode_utf8_str(src: &mut Cursor<Bytes>) -> Result<ByteString, ParseError> {
+    Ok(ByteString::try_from(decode_length_bytes(src)?)?)
 }
 
 fn take(buf: &mut Cursor<Bytes>, n: usize) -> Bytes {
@@ -262,20 +264,18 @@ fn read_u16(src: &mut Cursor<Bytes>) -> Result<u16, ParseError> {
 
 #[cfg(test)]
 mod tests {
-    use bytes::IntoBuf;
-
     use super::*;
 
     macro_rules! assert_decode_packet (
         ($bytes:expr, $res:expr) => {{
             let fixed = $bytes.as_ref()[0];
-            let (len, consumned) = decode_variable_length(&$bytes[1..]).unwrap().unwrap();
+            let (_len, consumned) = decode_variable_length(&$bytes[1..]).unwrap().unwrap();
             let hdr = FixedHeader {
                 packet_type: fixed >> 4,
                 packet_flags: fixed & 0xF,
                 remaining_length: $bytes.len() - consumned - 1,
             };
-            let mut cur = Bytes::from_static(&$bytes[consumned + 1..]).into_buf();
+            let mut cur = Cursor::new(Bytes::from_static(&$bytes[consumned + 1..]));
             assert_eq!(read_packet(&mut cur, hdr), Ok($res));
         }};
     );
@@ -342,39 +342,33 @@ mod tests {
     #[test]
     fn test_decode_connect_packets() {
         assert_eq!(
-            decode_connect_packet(
-                &mut Bytes::from_static(
-                    b"\x00\x04MQTT\x04\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"
-                )
-                .into_buf()
-            ),
+            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+                b"\x00\x04MQTT\x04\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"
+            ))),
             Ok(Packet::Connect(Connect {
                 protocol: Protocol::MQTT(4),
                 clean_session: false,
                 keep_alive: 60,
-                client_id: String::try_from(Bytes::from_static(b"12345")).unwrap(),
+                client_id: ByteString::try_from(Bytes::from_static(b"12345")).unwrap(),
                 last_will: None,
-                username: Some(String::try_from(Bytes::from_static(b"user")).unwrap()),
+                username: Some(ByteString::try_from(Bytes::from_static(b"user")).unwrap()),
                 password: Some(Bytes::from(&b"pass"[..])),
             }))
         );
 
         assert_eq!(
-            decode_connect_packet(
-                &mut Bytes::from_static(
-                    b"\x00\x04MQTT\x04\x14\x00\x3C\x00\x0512345\x00\x05topic\x00\x07message"
-                )
-                .into_buf()
-            ),
+            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+                b"\x00\x04MQTT\x04\x14\x00\x3C\x00\x0512345\x00\x05topic\x00\x07message"
+            ))),
             Ok(Packet::Connect(Connect {
                 protocol: Protocol::MQTT(4),
                 clean_session: false,
                 keep_alive: 60,
-                client_id: String::try_from(Bytes::from_static(b"12345")).unwrap(),
+                client_id: ByteString::try_from(Bytes::from_static(b"12345")).unwrap(),
                 last_will: Some(LastWill {
                     qos: QoS::ExactlyOnce,
                     retain: false,
-                    topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
+                    topic: ByteString::try_from(Bytes::from_static(b"topic")).unwrap(),
                     message: Bytes::from(&b"message"[..]),
                 }),
                 username: None,
@@ -383,32 +377,38 @@ mod tests {
         );
 
         assert_eq!(
-            decode_connect_packet(
-                &mut Bytes::from_static(b"\x00\x02MQ00000000000000000000").into_buf()
-            ),
+            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+                b"\x00\x02MQ00000000000000000000"
+            ))),
             Err(ParseError::InvalidProtocol),
         );
         assert_eq!(
-            decode_connect_packet(
-                &mut Bytes::from_static(b"\x00\x04MQAA00000000000000000000").into_buf()
-            ),
+            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+                b"\x00\x10MQ00000000000000000000"
+            ))),
             Err(ParseError::InvalidProtocol),
         );
         assert_eq!(
-            decode_connect_packet(
-                &mut Bytes::from_static(b"\x00\x04MQTT\x0300000000000000000000").into_buf()
-            ),
+            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+                b"\x00\x04MQAA00000000000000000000"
+            ))),
+            Err(ParseError::InvalidProtocol),
+        );
+        assert_eq!(
+            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+                b"\x00\x04MQTT\x0300000000000000000000"
+            ))),
             Err(ParseError::UnsupportedProtocolLevel),
         );
         assert_eq!(
-            decode_connect_packet(
-                &mut Bytes::from_static(b"\x00\x04MQTT\x04\xff00000000000000000000").into_buf()
-            ),
+            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+                b"\x00\x04MQTT\x04\xff00000000000000000000"
+            ))),
             Err(ParseError::ConnectReservedFlagSet)
         );
 
         assert_eq!(
-            decode_connect_ack_packet(&mut Bytes::from_static(b"\x01\x04").into_buf()),
+            decode_connect_ack_packet(&mut Cursor::new(Bytes::from_static(b"\x01\x04"))),
             Ok(Packet::ConnectAck {
                 session_present: true,
                 return_code: ConnectCode::BadUserNameOrPassword
@@ -416,7 +416,7 @@ mod tests {
         );
 
         assert_eq!(
-            decode_connect_ack_packet(&mut Bytes::from_static(b"\x03\x04").into_buf()),
+            decode_connect_ack_packet(&mut Cursor::new(Bytes::from_static(b"\x03\x04"))),
             Err(ParseError::ConnAckReservedFlagSet)
         );
 
@@ -444,7 +444,7 @@ mod tests {
                 dup: true,
                 retain: true,
                 qos: QoS::ExactlyOnce,
-                topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
+                topic: ByteString::try_from(Bytes::from_static(b"topic")).unwrap(),
                 packet_id: Some(0x4321),
                 payload: Bytes::from_static(b"data"),
             })
@@ -455,7 +455,7 @@ mod tests {
                 dup: false,
                 retain: false,
                 qos: QoS::AtMostOnce,
-                topic: String::try_from(Bytes::from_static(b"topic")).unwrap(),
+                topic: ByteString::try_from(Bytes::from_static(b"topic")).unwrap(),
                 packet_id: None,
                 payload: Bytes::from_static(b"data"),
             })
@@ -485,21 +485,20 @@ mod tests {
             packet_id: 0x1234,
             topic_filters: vec![
                 (
-                    String::try_from(Bytes::from_static(b"test")).unwrap(),
+                    ByteString::try_from(Bytes::from_static(b"test")).unwrap(),
                     QoS::AtLeastOnce,
                 ),
                 (
-                    String::try_from(Bytes::from_static(b"filter")).unwrap(),
+                    ByteString::try_from(Bytes::from_static(b"filter")).unwrap(),
                     QoS::ExactlyOnce,
                 ),
             ],
         };
 
         assert_eq!(
-            decode_subscribe_packet(
-                &mut Bytes::from_static(b"\x12\x34\x00\x04test\x01\x00\x06filter\x02")
-                    .into_buf()
-            ),
+            decode_subscribe_packet(&mut Cursor::new(Bytes::from_static(
+                b"\x12\x34\x00\x04test\x01\x00\x06filter\x02"
+            ))),
             Ok(p.clone())
         );
         assert_decode_packet!(b"\x82\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02", p);
@@ -514,9 +513,9 @@ mod tests {
         };
 
         assert_eq!(
-            decode_subscribe_ack_packet(
-                &mut Bytes::from_static(b"\x12\x34\x01\x80\x02").into_buf()
-            ),
+            decode_subscribe_ack_packet(&mut Cursor::new(Bytes::from_static(
+                b"\x12\x34\x01\x80\x02"
+            ))),
             Ok(p.clone())
         );
         assert_decode_packet!(b"\x90\x05\x12\x34\x01\x80\x02", p);
@@ -524,15 +523,15 @@ mod tests {
         let p = Packet::Unsubscribe {
             packet_id: 0x1234,
             topic_filters: vec![
-                String::try_from(Bytes::from_static(b"test")).unwrap(),
-                String::try_from(Bytes::from_static(b"filter")).unwrap(),
+                ByteString::try_from(Bytes::from_static(b"test")).unwrap(),
+                ByteString::try_from(Bytes::from_static(b"filter")).unwrap(),
             ],
         };
 
         assert_eq!(
-            decode_unsubscribe_packet(
-                &mut Bytes::from_static(b"\x12\x34\x00\x04test\x00\x06filter").into_buf()
-            ),
+            decode_unsubscribe_packet(&mut Cursor::new(Bytes::from_static(
+                b"\x12\x34\x00\x04test\x00\x06filter"
+            ))),
             Ok(p.clone())
         );
         assert_decode_packet!(b"\xa2\x10\x12\x34\x00\x04test\x00\x06filter", p);
