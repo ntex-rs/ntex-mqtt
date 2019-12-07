@@ -1,6 +1,13 @@
 # Changes
 
-## [0.2.0] - 2019-xx-xx
+## [0.3.0] - 2019-xx-xx
+
+* Use bytestring instead of string
+
+* Upgrade actix-codec to 0.2.0
+
+
+## [0.2.0] - 2019-09-09
 
 * Remove `Packet::Empty`
 

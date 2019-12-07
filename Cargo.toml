@@ -46,13 +46,3 @@ actix-testing = "1.0.0-alpha.3"
 [patch.crates-io]
 actix-mqtt = { path = "." }
 mqtt-codec = { path = "codec" }
-
-actix-codec = { git = "https://github.com/actix/actix-net.git" }
-actix-connect = { git = "https://github.com/actix/actix-net.git" }
-actix-rt = { git = "https://github.com/actix/actix-net.git" }
-actix-server = { git = "https://github.com/actix/actix-net.git" }
-actix-service = { git = "https://github.com/actix/actix-net.git" }
-actix-testing = { git = "https://github.com/actix/actix-net.git" }
-actix-utils = { git = "https://github.com/actix/actix-net.git" }
-actix-router = { git = "https://github.com/actix/actix-net.git" }
-bytestring = { git = "https://github.com/actix/actix-net.git" }
