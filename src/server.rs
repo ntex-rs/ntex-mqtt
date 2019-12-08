@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use actix_codec::{AsyncRead, AsyncWrite};
 use actix_ioframe as ioframe;
-use actix_service::{apply_fn, boxed, factory_fn, pipeline_factory, unit_config};
+use actix_service::{apply_fn, boxed, fn_factory, pipeline_factory, unit_config};
 use actix_service::{IntoServiceFactory, Service, ServiceFactory};
 use futures::{FutureExt, SinkExt, StreamExt};
 use mqtt_codec as mqtt;
@@ -220,7 +220,7 @@ where
     Io: AsyncRead + AsyncWrite,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>,
 {
-    factory_fn(move || {
+    fn_factory(move || {
         let fut = factory.new_service(());
 
         async move {

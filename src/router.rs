@@ -5,7 +5,7 @@ use std::task::{Context, Poll};
 
 use actix_router::RouterBuilder;
 use actix_service::boxed::{self, BoxService, BoxServiceFactory};
-use actix_service::{service_fn, IntoServiceFactory, Service, ServiceFactory};
+use actix_service::{fn_service, IntoServiceFactory, Service, ServiceFactory};
 use futures::future::{join_all, ok, JoinAll, LocalBoxFuture};
 
 use crate::publish::Publish;
@@ -34,7 +34,7 @@ where
             router: actix_router::Router::build(),
             handlers: Vec::new(),
             default: boxed::factory(
-                service_fn(|p: Publish<S>| {
+                fn_service(|p: Publish<S>| {
                     log::warn!("Unknown topic {:?}", p.publish_topic());
                     ok::<_, E>(())
                 })
@@ -145,7 +145,9 @@ impl<S, E> Future for RouterFactoryFut<S, E> {
                 self.default = Some(either::Either::Right(default));
                 return self.poll(cx);
             }
-            either::Either::Right(_) => futures::ready!(Pin::new(&mut self.handlers).poll(cx)),
+            either::Either::Right(_) => {
+                futures::ready!(Pin::new(&mut self.handlers).poll(cx))
+            }
         };
 
         let mut handlers = Vec::new();

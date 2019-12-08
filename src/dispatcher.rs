@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use actix_ioframe as ioframe;
-use actix_service::{boxed, factory_fn_cfg, pipeline, Service, ServiceFactory};
+use actix_service::{boxed, fn_factory_with_config, pipeline, Service, ServiceFactory};
 use actix_utils::inflight::InFlightService;
 use actix_utils::keepalive::KeepAliveService;
 use actix_utils::order::{InOrder, InOrderError};
@@ -95,7 +95,7 @@ where
 {
     let time = LowResTimeService::with(Duration::from_secs(1));
 
-    factory_fn_cfg(move |cfg: MqttState<St>| {
+    fn_factory_with_config(move |cfg: MqttState<St>| {
         let time = time.clone();
         let state = cfg.session().clone();
 
