@@ -21,7 +21,7 @@ use crate::publish::Publish;
 use crate::sink::MqttSink;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
-pub struct MqttState<St> {
+pub(crate) struct MqttState<St> {
     inner: Cell<MqttStateInner<St>>,
 }
 

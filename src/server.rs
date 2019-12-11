@@ -42,7 +42,7 @@ pub struct MqttServer<Io, St, C: ServiceFactory, U> {
     _t: PhantomData<(Io, St)>,
 }
 
-fn default_disconnect<St>(_: &mut MqttState<St>, _: bool) {}
+fn default_disconnect<St>(_: St, _: bool) {}
 
 impl<Io, St, C> MqttServer<Io, St, C, ()>
 where
@@ -51,7 +51,7 @@ where
         + 'static,
 {
     /// Create server factory and provide connect service
-    pub fn new<F>(connect: F) -> MqttServer<Io, St, C, impl Fn(&mut MqttState<St>, bool)>
+    pub fn new<F>(connect: F) -> MqttServer<Io, St, C, impl Fn(St, bool)>
     where
         F: IntoServiceFactory<C>,
     {
@@ -79,7 +79,7 @@ where
 impl<Io, St, C, U> MqttServer<Io, St, C, U>
 where
     St: Clone + 'static,
-    U: Fn(&mut MqttState<St>, bool) + 'static,
+    U: Fn(St, bool) + 'static,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
         + 'static,
 {
@@ -144,12 +144,9 @@ where
     /// Callback to execute on disconnect
     ///
     /// Second parameter indicates error occured during disconnect.
-    pub fn disconnect<F, Out>(
-        self,
-        disconnect: F,
-    ) -> MqttServer<Io, St, C, impl Fn(&mut MqttState<St>, bool)>
+    pub fn disconnect<F, Out>(self, disconnect: F) -> MqttServer<Io, St, C, impl Fn(St, bool)>
     where
-        F: Fn(&mut St, bool) -> Out,
+        F: Fn(St, bool) -> Out,
         Out: Future + 'static,
     {
         MqttServer {
@@ -159,8 +156,8 @@ where
             max_size: self.max_size,
             keep_alive: self.keep_alive,
             inflight: self.inflight,
-            disconnect: move |st: &mut MqttState<St>, err| {
-                let fut = disconnect(st.session_mut(), err);
+            disconnect: move |st: St, err| {
+                let fut = disconnect(st, err);
                 actix_rt::spawn(fut.map(|_| ()));
             },
             _t: PhantomData,
@@ -180,6 +177,7 @@ where
     {
         let connect = self.connect;
         let max_size = self.max_size;
+        let disconnect = self.disconnect;
         let publish = boxed::factory(
             publish
                 .into_factory()
@@ -190,7 +188,7 @@ where
         unit_config(
             ioframe::Builder::new()
                 .factory(connect_service_factory(connect, max_size))
-                .disconnect(self.disconnect)
+                .disconnect(move |cfg, err| disconnect(cfg.session().clone(), err))
                 .finish(dispatcher(
                     publish,
                     Rc::new(self.subscribe),
@@ -212,7 +210,7 @@ fn connect_service_factory<Io, St, C>(
     max_size: usize,
 ) -> impl ServiceFactory<
     Config = (),
-    Request = ioframe::Connect<Io>,
+    Request = ioframe::Connect<Io, mqtt::Codec>,
     Response = ioframe::ConnectResult<Io, MqttState<St>, mqtt::Codec>,
     Error = MqttError<C::Error>,
 >
@@ -228,7 +226,7 @@ where
 
             Ok::<_, C::InitError>(apply_fn(
                 service.map_err(MqttError::Service),
-                move |conn: ioframe::Connect<Io>, service| {
+                move |conn: ioframe::Connect<Io, mqtt::Codec>, service| {
                     let mut srv = service.clone();
                     let mut framed = conn.codec(mqtt::Codec::new().max_size(max_size));
 

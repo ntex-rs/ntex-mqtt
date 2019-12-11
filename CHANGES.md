@@ -1,6 +1,8 @@
 # Changes
 
-## [0.1.1] - 2019-09-xx
+## [0.2.0] - 2019-12-11
+
+* Migrate to `std::future`
 
 * Support publish with QoS 1
 

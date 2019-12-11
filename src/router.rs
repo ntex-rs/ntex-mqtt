@@ -145,9 +145,7 @@ impl<S, E> Future for RouterFactoryFut<S, E> {
                 self.default = Some(either::Either::Right(default));
                 return self.poll(cx);
             }
-            either::Either::Right(_) => {
-                futures::ready!(Pin::new(&mut self.handlers).poll(cx))
-            }
+            either::Either::Right(_) => futures::ready!(Pin::new(&mut self.handlers).poll(cx)),
         };
 
         let mut handlers = Vec::new();

@@ -1,6 +1,6 @@
 # Changes
 
-## [0.3.0] - 2019-xx-xx
+## [0.3.0] - 2019-12-11
 
 * Use bytestring instead of string
 

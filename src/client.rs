@@ -230,7 +230,7 @@ where
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
     C::Error: 'static,
 {
-    type Request = ioframe::Connect<Io>;
+    type Request = ioframe::Connect<Io, mqtt::Codec>;
     type Response = ioframe::ConnectResult<Io, MqttState<St>, mqtt::Codec>;
     type Error = MqttError<C::Error>;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
