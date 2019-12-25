@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
-use actix_router::RouterBuilder;
+use actix_router::{IntoPattern, RouterBuilder};
 use actix_service::boxed::{self, BoxService, BoxServiceFactory};
 use actix_service::{fn_service, IntoServiceFactory, Service, ServiceFactory};
 use futures::future::{join_all, ok, JoinAll, LocalBoxFuture};
@@ -44,8 +44,9 @@ where
     }
 
     /// Configure mqtt resource for a specific topic.
-    pub fn resource<F, U: 'static>(mut self, address: &str, service: F) -> Self
+    pub fn resource<T, F, U: 'static>(mut self, address: T, service: F) -> Self
     where
+        T: IntoPattern,
         F: IntoServiceFactory<U>,
         U: ServiceFactory<Config = S, Request = Publish<S>, Response = (), Error = E>,
         E: From<U::InitError>,
