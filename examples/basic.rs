@@ -17,7 +17,8 @@ async fn publish(publish: Publish<Session>) -> Result<(), ()> {
     Ok(())
 }
 
-fn main() -> std::io::Result<()> {
+#[actix_rt::main]
+async fn main() -> std::io::Result<()> {
     std::env::set_var(
         "RUST_LOG",
         "actix_server=trace,actix_mqtt=trace,basic=trace",
@@ -30,4 +31,5 @@ fn main() -> std::io::Result<()> {
         })?
         .workers(1)
         .run()
+        .await
 }

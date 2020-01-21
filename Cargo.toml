@@ -42,6 +42,7 @@ env_logger = "0.6"
 actix-connect = "1.0.1"
 actix-server = "1.0.0"
 actix-testing = "1.0.0"
+actix-rt = "1.0.0"
 
 [patch.crates-io]
 actix-mqtt = { path = "." }
