@@ -106,7 +106,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
                         flags |= ConnectFlags::WILL_RETAIN;
                     }
 
-                    let b: u8 = qos.into();
+                    let b: u8 = qos as u8;
 
                     flags |= ConnectFlags::from_bits_truncate(b << WILL_QOS_SHIFT);
                 }
@@ -147,7 +147,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
         } => {
             dst.put_slice(&[
                 if session_present { 0x01 } else { 0x00 },
-                return_code.into(),
+                return_code as u8,
             ]);
         }
 
@@ -183,7 +183,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
 
             for &(ref filter, qos) in topic_filters {
                 write_slice(filter.as_ref(), dst);
-                dst.put_slice(&[qos.into()]);
+                dst.put_slice(&[qos as u8]);
             }
         }
 
@@ -197,7 +197,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
                 .iter()
                 .map(|s| {
                     if let SubscribeReturnCode::Success(qos) = *s {
-                        qos.into()
+                        qos as u8
                     } else {
                         0x80
                     }

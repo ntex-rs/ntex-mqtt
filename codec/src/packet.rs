@@ -200,7 +200,7 @@ impl Packet {
             Packet::Publish(Publish {
                 dup, qos, retain, ..
             }) => {
-                let mut b = qos.into();
+                let mut b = qos as u8;
 
                 b <<= 1;
 
