@@ -1,7 +1,6 @@
 use std::convert::TryFrom;
-use std::io::{Cursor, Read};
 
-use bytes::{buf::Buf, Bytes};
+use bytes::{Buf, Bytes};
 use bytestring::ByteString;
 
 use crate::error::ParseError;
@@ -10,31 +9,28 @@ use crate::proto::*;
 
 use super::{ConnectAckFlags, ConnectFlags, FixedHeader, WILL_QOS_SHIFT};
 
-pub(crate) fn read_packet(
-    src: &mut Cursor<Bytes>,
-    header: FixedHeader,
-) -> Result<Packet, ParseError> {
+pub(crate) fn read_packet(mut src: Bytes, header: FixedHeader) -> Result<Packet, ParseError> {
     match header.packet_type {
-        CONNECT => decode_connect_packet(src),
-        CONNACK => decode_connect_ack_packet(src),
-        PUBLISH => decode_publish_packet(src, header),
+        CONNECT => decode_connect_packet(&mut src),
+        CONNACK => decode_connect_ack_packet(&mut src),
+        PUBLISH => decode_publish_packet(&mut src, header),
         PUBACK => Ok(Packet::PublishAck {
-            packet_id: read_u16(src)?,
+            packet_id: read_u16(&mut src)?,
         }),
         PUBREC => Ok(Packet::PublishReceived {
-            packet_id: read_u16(src)?,
+            packet_id: read_u16(&mut src)?,
         }),
         PUBREL => Ok(Packet::PublishRelease {
-            packet_id: read_u16(src)?,
+            packet_id: read_u16(&mut src)?,
         }),
         PUBCOMP => Ok(Packet::PublishComplete {
-            packet_id: read_u16(src)?,
+            packet_id: read_u16(&mut src)?,
         }),
-        SUBSCRIBE => decode_subscribe_packet(src),
-        SUBACK => decode_subscribe_ack_packet(src),
-        UNSUBSCRIBE => decode_unsubscribe_packet(src),
+        SUBSCRIBE => decode_subscribe_packet(&mut src),
+        SUBACK => decode_subscribe_ack_packet(&mut src),
+        UNSUBSCRIBE => decode_unsubscribe_packet(&mut src),
         UNSUBACK => Ok(Packet::UnsubscribeAck {
-            packet_id: read_u16(src)?,
+            packet_id: read_u16(&mut src)?,
         }),
         PINGREQ => Ok(Packet::PingRequest),
         PINGRESP => Ok(Packet::PingResponse),
@@ -83,18 +79,15 @@ pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>, Pars
     Ok(None)
 }
 
-fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> {
+fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
     ensure!(src.remaining() >= 10, ParseError::InvalidLength);
     let len = src.get_u16();
-    if len >= 4 {
-        let mut ver = [0u8; 4];
-        src.read_exact(&mut ver).unwrap();
-        if &ver[..] != b"MQTT" {
-            return Err(ParseError::InvalidProtocol);
-        }
-    } else {
-        return Err(ParseError::InvalidProtocol);
-    }
+
+    ensure!(
+        len == 4 && &src.bytes()[0..4] == b"MQTT",
+        ParseError::InvalidProtocol
+    );
+    src.advance(4);
 
     let level = src.get_u8();
     ensure!(
@@ -155,7 +148,7 @@ fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> 
     }))
 }
 
-fn decode_connect_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> {
+fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
     ensure!(src.remaining() >= 2, ParseError::InvalidLength);
     let flags = src.get_u8();
     ensure!(
@@ -170,10 +163,7 @@ fn decode_connect_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseErr
     })
 }
 
-fn decode_publish_packet(
-    src: &mut Cursor<Bytes>,
-    header: FixedHeader,
-) -> Result<Packet, ParseError> {
+fn decode_publish_packet(src: &mut Bytes, header: FixedHeader) -> Result<Packet, ParseError> {
     let topic = decode_utf8_str(src)?;
     let qos = QoS::from((header.packet_flags & 0b0110) >> 1);
     let packet_id = if qos == QoS::AtMostOnce {
@@ -183,7 +173,7 @@ fn decode_publish_packet(
     };
 
     let len = src.remaining();
-    let payload = take(src, len);
+    let payload = src.split_to(len);
 
     Ok(Packet::Publish(Publish {
         dup: (header.packet_flags & 0b1000) == 0b1000,
@@ -195,8 +185,8 @@ fn decode_publish_packet(
     }))
 }
 
-fn decode_subscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> {
-    let packet_id = read_u16(src)?;
+fn decode_subscribe_packet(mut src: &mut Bytes) -> Result<Packet, ParseError> {
+    let packet_id = read_u16(&mut src)?;
     let mut topic_filters = Vec::new();
     while src.remaining() > 0 {
         let topic = decode_utf8_str(src)?;
@@ -211,14 +201,13 @@ fn decode_subscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError
     })
 }
 
-fn decode_subscribe_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> {
-    let packet_id = read_u16(src)?;
+fn decode_subscribe_ack_packet(mut src: &mut Bytes) -> Result<Packet, ParseError> {
+    let packet_id = read_u16(&mut src)?;
     let status = src
         .bytes()
-        //.iter()
+        .iter()
         .map(|code| {
-            let code = code.unwrap();
-            if code == 0x80 {
+            if *code == 0x80 {
                 SubscribeReturnCode::Failure
             } else {
                 SubscribeReturnCode::Success(QoS::from(code & 0x03))
@@ -228,8 +217,8 @@ fn decode_subscribe_ack_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseE
     Ok(Packet::SubscribeAck { packet_id, status })
 }
 
-fn decode_unsubscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> {
-    let packet_id = read_u16(src)?;
+fn decode_unsubscribe_packet(mut src: &mut Bytes) -> Result<Packet, ParseError> {
+    let packet_id = read_u16(&mut src)?;
     let mut topic_filters = Vec::new();
     while src.remaining() > 0 {
         topic_filters.push(decode_utf8_str(src)?);
@@ -240,24 +229,17 @@ fn decode_unsubscribe_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseErr
     })
 }
 
-fn decode_length_bytes(src: &mut Cursor<Bytes>) -> Result<Bytes, ParseError> {
-    let len = read_u16(src)? as usize;
+fn decode_length_bytes(mut src: &mut Bytes) -> Result<Bytes, ParseError> {
+    let len = read_u16(&mut src)? as usize;
     ensure!(src.remaining() >= len, ParseError::InvalidLength);
-    Ok(take(src, len))
+    Ok(src.split_to(len))
 }
 
-fn decode_utf8_str(src: &mut Cursor<Bytes>) -> Result<ByteString, ParseError> {
+fn decode_utf8_str(src: &mut Bytes) -> Result<ByteString, ParseError> {
     Ok(ByteString::try_from(decode_length_bytes(src)?)?)
 }
 
-fn take(buf: &mut Cursor<Bytes>, n: usize) -> Bytes {
-    let pos = buf.position() as usize;
-    let ret = buf.get_ref().slice(pos..pos + n);
-    buf.set_position((pos + n) as u64);
-    ret
-}
-
-fn read_u16(src: &mut Cursor<Bytes>) -> Result<u16, ParseError> {
+fn read_u16(src: &mut Bytes) -> Result<u16, ParseError> {
     ensure!(src.remaining() >= 2, ParseError::InvalidLength);
     Ok(src.get_u16())
 }
@@ -275,8 +257,8 @@ mod tests {
                 packet_flags: fixed & 0xF,
                 remaining_length: $bytes.len() - consumned - 1,
             };
-            let mut cur = Cursor::new(Bytes::from_static(&$bytes[consumned + 1..]));
-            assert_eq!(read_packet(&mut cur, hdr), Ok($res));
+            let cur = Bytes::from_static(&$bytes[consumned + 1..]);
+            assert_eq!(read_packet(cur, hdr), Ok($res));
         }};
     );
 
@@ -342,9 +324,9 @@ mod tests {
     #[test]
     fn test_decode_connect_packets() {
         assert_eq!(
-            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+            decode_connect_packet(&mut Bytes::from_static(
                 b"\x00\x04MQTT\x04\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"
-            ))),
+            )),
             Ok(Packet::Connect(Connect {
                 protocol: Protocol::MQTT(4),
                 clean_session: false,
@@ -357,9 +339,9 @@ mod tests {
         );
 
         assert_eq!(
-            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+            decode_connect_packet(&mut Bytes::from_static(
                 b"\x00\x04MQTT\x04\x14\x00\x3C\x00\x0512345\x00\x05topic\x00\x07message"
-            ))),
+            )),
             Ok(Packet::Connect(Connect {
                 protocol: Protocol::MQTT(4),
                 clean_session: false,
@@ -377,38 +359,32 @@ mod tests {
         );
 
         assert_eq!(
-            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
-                b"\x00\x02MQ00000000000000000000"
-            ))),
+            decode_connect_packet(&mut Bytes::from_static(b"\x00\x02MQ00000000000000000000")),
             Err(ParseError::InvalidProtocol),
         );
         assert_eq!(
-            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
-                b"\x00\x10MQ00000000000000000000"
-            ))),
+            decode_connect_packet(&mut Bytes::from_static(b"\x00\x10MQ00000000000000000000")),
             Err(ParseError::InvalidProtocol),
         );
         assert_eq!(
-            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
-                b"\x00\x04MQAA00000000000000000000"
-            ))),
+            decode_connect_packet(&mut Bytes::from_static(b"\x00\x04MQAA00000000000000000000")),
             Err(ParseError::InvalidProtocol),
         );
         assert_eq!(
-            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+            decode_connect_packet(&mut Bytes::from_static(
                 b"\x00\x04MQTT\x0300000000000000000000"
-            ))),
+            )),
             Err(ParseError::UnsupportedProtocolLevel),
         );
         assert_eq!(
-            decode_connect_packet(&mut Cursor::new(Bytes::from_static(
+            decode_connect_packet(&mut Bytes::from_static(
                 b"\x00\x04MQTT\x04\xff00000000000000000000"
-            ))),
+            )),
             Err(ParseError::ConnectReservedFlagSet)
         );
 
         assert_eq!(
-            decode_connect_ack_packet(&mut Cursor::new(Bytes::from_static(b"\x01\x04"))),
+            decode_connect_ack_packet(&mut Bytes::from_static(b"\x01\x04")),
             Ok(Packet::ConnectAck {
                 session_present: true,
                 return_code: ConnectCode::BadUserNameOrPassword
@@ -416,7 +392,7 @@ mod tests {
         );
 
         assert_eq!(
-            decode_connect_ack_packet(&mut Cursor::new(Bytes::from_static(b"\x03\x04"))),
+            decode_connect_ack_packet(&mut Bytes::from_static(b"\x03\x04")),
             Err(ParseError::ConnAckReservedFlagSet)
         );
 
@@ -496,9 +472,9 @@ mod tests {
         };
 
         assert_eq!(
-            decode_subscribe_packet(&mut Cursor::new(Bytes::from_static(
+            decode_subscribe_packet(&mut Bytes::from_static(
                 b"\x12\x34\x00\x04test\x01\x00\x06filter\x02"
-            ))),
+            )),
             Ok(p.clone())
         );
         assert_decode_packet!(b"\x82\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02", p);
@@ -513,9 +489,7 @@ mod tests {
         };
 
         assert_eq!(
-            decode_subscribe_ack_packet(&mut Cursor::new(Bytes::from_static(
-                b"\x12\x34\x01\x80\x02"
-            ))),
+            decode_subscribe_ack_packet(&mut Bytes::from_static(b"\x12\x34\x01\x80\x02")),
             Ok(p.clone())
         );
         assert_decode_packet!(b"\x90\x05\x12\x34\x01\x80\x02", p);
@@ -529,9 +503,9 @@ mod tests {
         };
 
         assert_eq!(
-            decode_unsubscribe_packet(&mut Cursor::new(Bytes::from_static(
+            decode_unsubscribe_packet(&mut Bytes::from_static(
                 b"\x12\x34\x00\x04test\x00\x06filter"
-            ))),
+            )),
             Ok(p.clone())
         );
         assert_decode_packet!(b"\xa2\x10\x12\x34\x00\x04test\x00\x06filter", p);
