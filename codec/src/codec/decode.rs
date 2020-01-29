@@ -1,4 +1,5 @@
 use std::convert::TryFrom;
+use std::num::{NonZeroU16, NonZeroU32};
 
 use bytes::{Buf, Bytes};
 use bytestring::ByteString;
@@ -15,22 +16,22 @@ pub(crate) fn read_packet(mut src: Bytes, header: FixedHeader) -> Result<Packet,
         CONNACK => decode_connect_ack_packet(&mut src),
         PUBLISH => decode_publish_packet(&mut src, header),
         PUBACK => Ok(Packet::PublishAck {
-            packet_id: read_u16(&mut src)?,
+            packet_id: NonZeroU16::parse(&mut src)?,
         }),
         PUBREC => Ok(Packet::PublishReceived {
-            packet_id: read_u16(&mut src)?,
+            packet_id: NonZeroU16::parse(&mut src)?,
         }),
         PUBREL => Ok(Packet::PublishRelease {
-            packet_id: read_u16(&mut src)?,
+            packet_id: NonZeroU16::parse(&mut src)?,
         }),
         PUBCOMP => Ok(Packet::PublishComplete {
-            packet_id: read_u16(&mut src)?,
+            packet_id: NonZeroU16::parse(&mut src)?,
         }),
         SUBSCRIBE => decode_subscribe_packet(&mut src),
         SUBACK => decode_subscribe_ack_packet(&mut src),
         UNSUBSCRIBE => decode_unsubscribe_packet(&mut src),
         UNSUBACK => Ok(Packet::UnsubscribeAck {
-            packet_id: read_u16(&mut src)?,
+            packet_id: NonZeroU16::parse(&mut src)?,
         }),
         PINGREQ => Ok(Packet::PingRequest),
         PINGRESP => Ok(Packet::PingResponse),
@@ -169,7 +170,7 @@ fn decode_publish_packet(src: &mut Bytes, header: FixedHeader) -> Result<Packet,
     let packet_id = if qos == QoS::AtMostOnce {
         None
     } else {
-        Some(read_u16(src)?)
+        Some(NonZeroU16::parse(src)?)
     };
 
     let len = src.remaining();
@@ -185,8 +186,8 @@ fn decode_publish_packet(src: &mut Bytes, header: FixedHeader) -> Result<Packet,
     }))
 }
 
-fn decode_subscribe_packet(mut src: &mut Bytes) -> Result<Packet, ParseError> {
-    let packet_id = read_u16(&mut src)?;
+fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
+    let packet_id = NonZeroU16::parse(src)?;
     let mut topic_filters = Vec::new();
     while src.remaining() > 0 {
         let topic = decode_utf8_str(src)?;
@@ -201,8 +202,8 @@ fn decode_subscribe_packet(mut src: &mut Bytes) -> Result<Packet, ParseError> {
     })
 }
 
-fn decode_subscribe_ack_packet(mut src: &mut Bytes) -> Result<Packet, ParseError> {
-    let packet_id = read_u16(&mut src)?;
+fn decode_subscribe_ack_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
+    let packet_id = NonZeroU16::parse(src)?;
     let status = src
         .bytes()
         .iter()
@@ -217,8 +218,8 @@ fn decode_subscribe_ack_packet(mut src: &mut Bytes) -> Result<Packet, ParseError
     Ok(Packet::SubscribeAck { packet_id, status })
 }
 
-fn decode_unsubscribe_packet(mut src: &mut Bytes) -> Result<Packet, ParseError> {
-    let packet_id = read_u16(&mut src)?;
+fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
+    let packet_id = NonZeroU16::parse(src)?;
     let mut topic_filters = Vec::new();
     while src.remaining() > 0 {
         topic_filters.push(decode_utf8_str(src)?);
@@ -229,19 +230,96 @@ fn decode_unsubscribe_packet(mut src: &mut Bytes) -> Result<Packet, ParseError> 
     })
 }
 
-fn decode_length_bytes(mut src: &mut Bytes) -> Result<Bytes, ParseError> {
-    let len = read_u16(&mut src)? as usize;
-    ensure!(src.remaining() >= len, ParseError::InvalidLength);
-    Ok(src.split_to(len))
+fn decode_length_bytes(src: &mut Bytes) -> Result<Bytes, ParseError> {
+    let len: u16 = NonZeroU16::parse(src)?.into();
+    ensure!(src.remaining() >= len as usize, ParseError::InvalidLength);
+    Ok(src.split_to(len as usize))
 }
 
 fn decode_utf8_str(src: &mut Bytes) -> Result<ByteString, ParseError> {
     Ok(ByteString::try_from(decode_length_bytes(src)?)?)
 }
 
-fn read_u16(src: &mut Bytes) -> Result<u16, ParseError> {
-    ensure!(src.remaining() >= 2, ParseError::InvalidLength);
-    Ok(src.get_u16())
+pub(crate) trait ByteBuf: Buf {
+    fn inner_mut(&mut self) -> &mut Bytes;
+}
+
+impl ByteBuf for Bytes {
+    fn inner_mut(&mut self) -> &mut Bytes {
+        self
+    }
+}
+
+impl ByteBuf for bytes::buf::ext::Take<&mut Bytes> {
+    fn inner_mut(&mut self) -> &mut Bytes {
+        self.get_mut()
+    }
+}
+
+pub(crate) trait Parse: Sized {
+    fn parse<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError>;
+}
+
+impl Parse for bool {
+    fn parse<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+        ensure!(src.has_remaining(), ParseError::InvalidLength); // expected more data within the field
+        let v = src.get_u8();
+        ensure!(v <= 0x1, ParseError::MalformedPacket); // value is invalid
+        Ok(v == 0x1)
+    }
+}
+
+impl Parse for u16 {
+    fn parse<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+        ensure!(src.remaining() >= 2, ParseError::InvalidLength);
+        Ok(src.get_u16())
+    }
+}
+
+impl Parse for u32 {
+    fn parse<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+        ensure!(src.remaining() >= 4, ParseError::InvalidLength); // expected more data within the field
+        let val = src.get_u32();
+        Ok(val)
+    }
+}
+
+impl Parse for NonZeroU32 {
+    fn parse<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+        let val = NonZeroU32::new(u32::parse(src)?).ok_or(ParseError::MalformedPacket)?;
+        Ok(val)
+    }
+}
+
+impl Parse for NonZeroU16 {
+    fn parse<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+        Ok(NonZeroU16::new(u16::parse(src)?).ok_or(ParseError::MalformedPacket)?)
+    }
+}
+
+impl Parse for Bytes {
+    fn parse<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+        let len = u16::parse(src)? as usize;
+        ensure!(src.remaining() >= len, ParseError::InvalidLength);
+        Ok(src.inner_mut().split_to(len))
+    }
+}
+
+pub(crate) type ByteStr = ByteString;
+
+impl Parse for ByteStr {
+    fn parse<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+        let bytes = Bytes::parse(src)?;
+        Ok(ByteString::try_from(bytes)?)
+    }
+}
+
+impl Parse for (ByteStr, ByteStr) {
+    fn parse<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+        let key = ByteStr::parse(src)?;
+        let val = ByteStr::parse(src)?;
+        Ok((key, val))
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +339,10 @@ mod tests {
             assert_eq!(read_packet(cur, hdr), Ok($res));
         }};
     );
+
+    fn packet_id(v: u16) -> NonZeroU16 {
+        NonZeroU16::new(v).unwrap()
+    }
 
     #[test]
     fn test_decode_variable_length() {
@@ -421,7 +503,7 @@ mod tests {
                 retain: true,
                 qos: QoS::ExactlyOnce,
                 topic: ByteString::try_from(Bytes::from_static(b"topic")).unwrap(),
-                packet_id: Some(0x4321),
+                packet_id: Some(packet_id(0x4321)),
                 payload: Bytes::from_static(b"data"),
             })
         );
@@ -439,26 +521,34 @@ mod tests {
 
         assert_decode_packet!(
             b"\x40\x02\x43\x21",
-            Packet::PublishAck { packet_id: 0x4321 }
+            Packet::PublishAck {
+                packet_id: packet_id(0x4321),
+            }
         );
         assert_decode_packet!(
             b"\x50\x02\x43\x21",
-            Packet::PublishReceived { packet_id: 0x4321 }
+            Packet::PublishReceived {
+                packet_id: packet_id(0x4321),
+            }
         );
         assert_decode_packet!(
             b"\x60\x02\x43\x21",
-            Packet::PublishRelease { packet_id: 0x4321 }
+            Packet::PublishRelease {
+                packet_id: packet_id(0x4321),
+            }
         );
         assert_decode_packet!(
             b"\x70\x02\x43\x21",
-            Packet::PublishComplete { packet_id: 0x4321 }
+            Packet::PublishComplete {
+                packet_id: packet_id(0x4321),
+            }
         );
     }
 
     #[test]
     fn test_decode_subscribe_packets() {
         let p = Packet::Subscribe {
-            packet_id: 0x1234,
+            packet_id: packet_id(0x1234),
             topic_filters: vec![
                 (
                     ByteString::try_from(Bytes::from_static(b"test")).unwrap(),
@@ -480,7 +570,7 @@ mod tests {
         assert_decode_packet!(b"\x82\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02", p);
 
         let p = Packet::SubscribeAck {
-            packet_id: 0x1234,
+            packet_id: packet_id(0x1234),
             status: vec![
                 SubscribeReturnCode::Success(QoS::AtLeastOnce),
                 SubscribeReturnCode::Failure,
@@ -495,7 +585,7 @@ mod tests {
         assert_decode_packet!(b"\x90\x05\x12\x34\x01\x80\x02", p);
 
         let p = Packet::Unsubscribe {
-            packet_id: 0x1234,
+            packet_id: packet_id(0x1234),
             topic_filters: vec![
                 ByteString::try_from(Bytes::from_static(b"test")).unwrap(),
                 ByteString::try_from(Bytes::from_static(b"filter")).unwrap(),
@@ -512,7 +602,9 @@ mod tests {
 
         assert_decode_packet!(
             b"\xb0\x02\x43\x21",
-            Packet::UnsubscribeAck { packet_id: 0x4321 }
+            Packet::UnsubscribeAck {
+                packet_id: packet_id(0x4321),
+            }
         );
     }
 

@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::marker::PhantomData;
+use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
@@ -237,7 +238,7 @@ where
 pub(crate) struct PublishResponse<T, E> {
     #[pin]
     fut: T,
-    packet_id: Option<u16>,
+    packet_id: Option<NonZeroU16>,
     _t: PhantomData<E>,
 }
 
@@ -264,7 +265,7 @@ where
 /// Subscribe service response future
 pub(crate) struct SubscribeResponse<E> {
     fut: LocalBoxFuture<'static, Result<SubscribeResult, E>>,
-    packet_id: u16,
+    packet_id: NonZeroU16,
 }
 
 impl<E> Future for SubscribeResponse<E> {

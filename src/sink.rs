@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::fmt;
+use std::num::NonZeroU16;
 
 use actix_ioframe::Sink;
 use actix_utils::oneshot;
@@ -71,7 +72,7 @@ impl MqttSink {
             dup,
             retain: false,
             qos: mqtt::QoS::AtLeastOnce,
-            packet_id: Some(inner.idx),
+            packet_id: NonZeroU16::new(inner.idx),
         });
         log::trace!("Publish (QoS1) to {:#?}", publish);
 
@@ -79,9 +80,9 @@ impl MqttSink {
         rx.map_err(|_| ())
     }
 
-    pub(crate) fn complete_publish_qos1(&mut self, packet_id: u16) {
+    pub(crate) fn complete_publish_qos1(&mut self, packet_id: NonZeroU16) {
         if let Some((idx, tx)) = self.inner.get_mut().queue.pop_front() {
-            if idx != packet_id {
+            if idx != packet_id.get() {
                 log::trace!(
                     "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
                     idx,

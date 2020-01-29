@@ -4,6 +4,7 @@ use std::{io, str};
 pub enum ParseError {
     InvalidProtocol,
     InvalidLength,
+    MalformedPacket,
     UnsupportedProtocolLevel,
     ConnectReservedFlagSet,
     ConnAckReservedFlagSet,
@@ -24,6 +25,10 @@ impl PartialEq for ParseError {
             },
             ParseError::InvalidLength => match other {
                 ParseError::InvalidLength => true,
+                _ => false,
+            },
+            ParseError::MalformedPacket => match other {
+                ParseError::MalformedPacket => true,
                 _ => false,
             },
             ParseError::UnsupportedProtocolLevel => match other {
