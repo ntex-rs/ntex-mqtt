@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use actix_codec::{Decoder, Encoder};
-use bytes::BytesMut;
+use bytes::{buf::Buf, BytesMut};
 
 use crate::error::ParseError;
 use crate::proto::QoS;
@@ -87,7 +87,7 @@ impl Decoder for Codec {
                             if self.max_size != 0 && self.max_size < remaining_length {
                                 return Err(ParseError::MaxSizeExceeded);
                             }
-                            src.split_to(consumed + 1);
+                            src.advance(consumed + 1);
                             self.state = DecodeState::Frame(FixedHeader {
                                 packet_type: fixed >> 4,
                                 packet_flags: fixed & 0xF,

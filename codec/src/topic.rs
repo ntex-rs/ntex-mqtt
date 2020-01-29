@@ -86,7 +86,7 @@ impl Level {
     }
 }
 
-#[derive(Debug, Eq, Clone, Hash)]
+#[derive(Debug, Eq, Clone)]
 pub struct Topic(Vec<Level>);
 
 impl Topic {
