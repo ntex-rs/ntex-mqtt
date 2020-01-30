@@ -133,11 +133,11 @@ fn decode_connect_packet(src: &mut Cursor<Bytes>) -> Result<Packet, ParseError> 
     } else {
         None
     };
-    let last_will = if topic.is_some() {
+    let last_will = if let Some(topic) = topic {
         Some(LastWill {
             qos: QoS::from((flags & ConnectFlags::WILL_QOS.bits()) >> WILL_QOS_SHIFT),
             retain: check_flag!(flags, ConnectFlags::WILL_RETAIN),
-            topic: topic.unwrap(),
+            topic,
             message: message.unwrap(),
         })
     } else {
