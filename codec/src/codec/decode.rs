@@ -100,7 +100,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
     ensure!((flags & 0x01) == 0, ParseError::ConnectReservedFlagSet);
 
     let keep_alive = src.get_u16();
-    let client_id = decode_utf8_str(src)?;
+    let client_id = ByteStr::parse(src)?;
 
     ensure!(
         !client_id.is_empty() || check_flag!(flags, ConnectFlags::CLEAN_SESSION),
@@ -108,7 +108,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
     );
 
     let topic = if check_flag!(flags, ConnectFlags::WILL) {
-        Some(decode_utf8_str(src)?)
+        Some(ByteStr::parse(src)?)
     } else {
         None
     };
@@ -118,12 +118,12 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
         None
     };
     let username = if check_flag!(flags, ConnectFlags::USERNAME) {
-        Some(decode_utf8_str(src)?)
+        Some(ByteStr::parse(src)?)
     } else {
         None
     };
     let password = if check_flag!(flags, ConnectFlags::PASSWORD) {
-        Some(decode_length_bytes(src)?)
+        Some(Bytes::parse(src)?)
     } else {
         None
     };
@@ -165,7 +165,7 @@ fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
 }
 
 fn decode_publish_packet(src: &mut Bytes, header: FixedHeader) -> Result<Packet, ParseError> {
-    let topic = decode_utf8_str(src)?;
+    let topic = ByteStr::parse(src)?;
     let qos = QoS::from((header.packet_flags & 0b0110) >> 1);
     let packet_id = if qos == QoS::AtMostOnce {
         None
@@ -190,7 +190,7 @@ fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
     let packet_id = NonZeroU16::parse(src)?;
     let mut topic_filters = Vec::new();
     while src.remaining() > 0 {
-        let topic = decode_utf8_str(src)?;
+        let topic = ByteStr::parse(src)?;
         ensure!(src.remaining() >= 1, ParseError::InvalidLength);
         let qos = QoS::from(src.get_u8() & 0x03);
         topic_filters.push((topic, qos));
@@ -222,7 +222,7 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
     let packet_id = NonZeroU16::parse(src)?;
     let mut topic_filters = Vec::new();
     while src.remaining() > 0 {
-        topic_filters.push(decode_utf8_str(src)?);
+        topic_filters.push(ByteStr::parse(src)?);
     }
     Ok(Packet::Unsubscribe {
         packet_id,
@@ -234,10 +234,6 @@ fn decode_length_bytes(src: &mut Bytes) -> Result<Bytes, ParseError> {
     let len: u16 = NonZeroU16::parse(src)?.into();
     ensure!(src.remaining() >= len as usize, ParseError::InvalidLength);
     Ok(src.split_to(len as usize))
-}
-
-fn decode_utf8_str(src: &mut Bytes) -> Result<ByteString, ParseError> {
-    Ok(ByteString::try_from(decode_length_bytes(src)?)?)
 }
 
 pub(crate) trait ByteBuf: Buf {
