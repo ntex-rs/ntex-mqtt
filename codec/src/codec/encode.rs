@@ -278,17 +278,17 @@ mod tests {
 
         v.clear();
 
-        write_variable_length(16383, &mut v);
+        write_variable_length(16_383, &mut v);
         assert_eq!(v, b"\xff\x7f".as_ref());
 
         v.clear();
 
-        write_variable_length(2097151, &mut v);
+        write_variable_length(2_097_151, &mut v);
         assert_eq!(v, b"\xff\xff\x7f".as_ref());
 
         v.clear();
 
-        write_variable_length(268435455, &mut v);
+        write_variable_length(268_435_455, &mut v);
         assert_eq!(v, b"\xff\xff\xff\x7f".as_ref());
 
         // assert!(v.write_variable_length(MAX_VARIABLE_LENGTH + 1).is_err())

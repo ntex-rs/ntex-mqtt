@@ -1,8 +1,7 @@
 #[macro_use]
 extern crate bitflags;
 
-extern crate bytestring;
-
+#[macro_use]
 mod error;
 #[macro_use]
 mod topic;
@@ -13,7 +12,7 @@ mod packet;
 
 pub use self::codec::Codec;
 pub use self::error::{ParseError, TopicError};
-pub use self::packet::{Connect, ConnectCode, LastWill, Packet, Publish, SubscribeReturnCode};
+pub use self::packet::*;
 pub use self::proto::{Protocol, QoS};
 pub use self::topic::{Level, Topic};
 

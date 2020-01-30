@@ -321,6 +321,8 @@ impl Parse for (ByteStr, ByteStr) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytestring::ByteString;
+    use std::convert::TryFrom;
 
     macro_rules! assert_decode_packet (
         ($bytes:expr, $res:expr) => {{
@@ -363,11 +365,11 @@ mod tests {
         assert_variable_length!(b"\x00", (0, 1));
         assert_variable_length!(b"\x7f", (127, 1));
         assert_variable_length!(b"\x80\x01", (128, 2));
-        assert_variable_length!(b"\xff\x7f", (16383, 2));
-        assert_variable_length!(b"\x80\x80\x01", (16384, 3));
-        assert_variable_length!(b"\xff\xff\x7f", (2097151, 3));
-        assert_variable_length!(b"\x80\x80\x80\x01", (2097152, 4));
-        assert_variable_length!(b"\xff\xff\xff\x7f", (268435455, 4));
+        assert_variable_length!(b"\xff\x7f", (16_383, 2));
+        assert_variable_length!(b"\x80\x80\x01", (16_384, 3));
+        assert_variable_length!(b"\xff\xff\x7f", (2_097_151, 3));
+        assert_variable_length!(b"\x80\x80\x80\x01", (2_097_152, 4));
+        assert_variable_length!(b"\xff\xff\xff\x7f", (268_435_455, 4));
     }
 
     // #[test]

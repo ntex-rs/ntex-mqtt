@@ -44,6 +44,8 @@ impl ConnectCode {
     }
 }
 
+pub(crate) type ByteStr = ByteString;
+
 #[derive(Debug, PartialEq, Clone)]
 /// Connection Will
 pub struct LastWill {
@@ -52,7 +54,7 @@ pub struct LastWill {
     /// the Will Message is to be Retained when it is published.
     pub retain: bool,
     /// the Will Topic
-    pub topic: ByteString,
+    pub topic: ByteStr,
     /// defines the Application Message that is to be published to the Will Topic
     pub message: Bytes,
 }
@@ -69,26 +71,23 @@ pub struct Connect {
     /// Will Message be stored on the Server and associated with the Network Connection.
     pub last_will: Option<LastWill>,
     /// identifies the Client to the Server.
-    pub client_id: ByteString,
+    pub client_id: ByteStr,
     /// username can be used by the Server for authentication and authorization.
-    pub username: Option<ByteString>,
+    pub username: Option<ByteStr>,
     /// password can be used by the Server for authentication and authorization.
     pub password: Option<Bytes>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
-/// Publish message
 pub struct Publish {
     /// this might be re-delivery of an earlier attempt to send the Packet.
     pub dup: bool,
     pub retain: bool,
     /// the level of assurance for delivery of an Application Message.
     pub qos: QoS,
-    /// the information channel to which payload data is published.
-    pub topic: ByteString,
     /// only present in PUBLISH Packets where the QoS level is 1 or 2.
     pub packet_id: Option<NonZeroU16>,
-    /// the Application Message that is being published.
+    pub topic: ByteStr,
     pub payload: Bytes,
 }
 

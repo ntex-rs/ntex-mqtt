@@ -1,10 +1,10 @@
-use actix_codec::{Decoder, Encoder};
-use bytes::{buf::Buf, BytesMut};
-
 use crate::error::ParseError;
 use crate::proto::QoS;
 use crate::{Packet, Publish};
+use actix_codec::{Decoder, Encoder};
+use bytes::{Buf, BytesMut};
 
+#[macro_use]
 mod decode;
 mod encode;
 
@@ -104,7 +104,7 @@ impl Decoder for Codec {
                     }
                 }
                 DecodeState::Frame(fixed) => {
-                    if src.len() < fixed.remaining_length {
+                    if src.len() < fixed.remaining_length as usize {
                         return Ok(None);
                     }
                     let packet_buf = src.split_to(fixed.remaining_length);
