@@ -18,49 +18,22 @@ pub enum ParseError {
 
 impl PartialEq for ParseError {
     fn eq(&self, other: &Self) -> bool {
-        match self {
-            ParseError::InvalidProtocol => match other {
-                ParseError::InvalidProtocol => true,
-                _ => false,
-            },
-            ParseError::InvalidLength => match other {
-                ParseError::InvalidLength => true,
-                _ => false,
-            },
-            ParseError::MalformedPacket => match other {
-                ParseError::MalformedPacket => true,
-                _ => false,
-            },
-            ParseError::UnsupportedProtocolLevel => match other {
-                ParseError::UnsupportedProtocolLevel => true,
-                _ => false,
-            },
-            ParseError::ConnectReservedFlagSet => match other {
-                ParseError::ConnectReservedFlagSet => true,
-                _ => false,
-            },
-            ParseError::ConnAckReservedFlagSet => match other {
-                ParseError::ConnAckReservedFlagSet => true,
-                _ => false,
-            },
-            ParseError::InvalidClientId => match other {
-                ParseError::InvalidClientId => true,
-                _ => false,
-            },
-            ParseError::UnsupportedPacketType => match other {
-                ParseError::UnsupportedPacketType => true,
-                _ => false,
-            },
-            ParseError::PacketIdRequired => match other {
-                ParseError::PacketIdRequired => true,
-                _ => false,
-            },
-            ParseError::MaxSizeExceeded => match other {
-                ParseError::MaxSizeExceeded => true,
-                _ => false,
-            },
-            ParseError::IoError(_) => false,
-            ParseError::Utf8Error(_) => false,
+        match (self, other) {
+            (ParseError::InvalidProtocol, ParseError::InvalidProtocol) => true,
+            (ParseError::InvalidLength, ParseError::InvalidLength) => true,
+            (ParseError::UnsupportedProtocolLevel, ParseError::UnsupportedProtocolLevel) => {
+                true
+            }
+            (ParseError::ConnectReservedFlagSet, ParseError::ConnectReservedFlagSet) => true,
+            (ParseError::ConnAckReservedFlagSet, ParseError::ConnAckReservedFlagSet) => true,
+            (ParseError::InvalidClientId, ParseError::InvalidClientId) => true,
+            (ParseError::UnsupportedPacketType, ParseError::UnsupportedPacketType) => true,
+            (ParseError::PacketIdRequired, ParseError::PacketIdRequired) => true,
+            (ParseError::MaxSizeExceeded, ParseError::MaxSizeExceeded) => true,
+            (ParseError::MalformedPacket, ParseError::MalformedPacket) => true,
+            (ParseError::IoError(_), _) => false,
+            (ParseError::Utf8Error(_), _) => false,
+            _ => false,
         }
     }
 }
