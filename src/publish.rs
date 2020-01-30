@@ -1,4 +1,5 @@
 use std::convert::TryFrom;
+use std::num::NonZeroU16;
 
 use actix_router::Path;
 use bytes::Bytes;
@@ -82,7 +83,7 @@ impl<S> Publish<S> {
 
     #[inline]
     /// only present in PUBLISH Packets where the QoS level is 1 or 2.
-    pub fn id(&self) -> Option<u16> {
+    pub fn id(&self) -> Option<NonZeroU16> {
         self.publish.packet_id
     }
 

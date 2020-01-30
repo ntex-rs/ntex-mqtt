@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use bytestring::ByteString;
+use std::num::NonZeroU16;
 
 use crate::proto::{Protocol, QoS};
 
@@ -86,7 +87,7 @@ pub struct Publish {
     /// the information channel to which payload data is published.
     pub topic: ByteString,
     /// only present in PUBLISH Packets where the QoS level is 1 or 2.
-    pub packet_id: Option<u16>,
+    pub packet_id: Option<NonZeroU16>,
     /// the Application Message that is being published.
     pub payload: Bytes,
 }
@@ -118,34 +119,34 @@ pub enum Packet {
     /// Publish acknowledgment
     PublishAck {
         /// Packet Identifier
-        packet_id: u16,
+        packet_id: NonZeroU16,
     },
     /// Publish received (assured delivery part 1)
     PublishReceived {
         /// Packet Identifier
-        packet_id: u16,
+        packet_id: NonZeroU16,
     },
     /// Publish release (assured delivery part 2)
     PublishRelease {
         /// Packet Identifier
-        packet_id: u16,
+        packet_id: NonZeroU16,
     },
     /// Publish complete (assured delivery part 3)
     PublishComplete {
         /// Packet Identifier
-        packet_id: u16,
+        packet_id: NonZeroU16,
     },
 
     /// Client subscribe request
     Subscribe {
         /// Packet Identifier
-        packet_id: u16,
+        packet_id: NonZeroU16,
         /// the list of Topic Filters and QoS to which the Client wants to subscribe.
         topic_filters: Vec<(ByteString, QoS)>,
     },
     /// Subscribe acknowledgment
     SubscribeAck {
-        packet_id: u16,
+        packet_id: NonZeroU16,
         /// corresponds to a Topic Filter in the SUBSCRIBE Packet being acknowledged.
         status: Vec<SubscribeReturnCode>,
     },
@@ -153,14 +154,14 @@ pub enum Packet {
     /// Unsubscribe request
     Unsubscribe {
         /// Packet Identifier
-        packet_id: u16,
+        packet_id: NonZeroU16,
         /// the list of Topic Filters that the Client wishes to unsubscribe from.
         topic_filters: Vec<ByteString>,
     },
     /// Unsubscribe acknowledgment
     UnsubscribeAck {
         /// Packet Identifier
-        packet_id: u16,
+        packet_id: NonZeroU16,
     },
 
     /// PING request

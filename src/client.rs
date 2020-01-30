@@ -282,7 +282,7 @@ where
                 p => Err(MqttError::Unexpected(p, "Expected CONNECT-ACK packet")),
             }
         }
-            .boxed_local()
+        .boxed_local()
     }
 }
 

@@ -158,7 +158,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             write_slice(topic.as_bytes(), dst);
 
             if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
-                dst.put_u16(packet_id.unwrap());
+                dst.put_u16(packet_id.unwrap().into());
             }
 
             dst.put(payload.as_ref());
@@ -169,14 +169,14 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
         | Packet::PublishRelease { packet_id }
         | Packet::PublishComplete { packet_id }
         | Packet::UnsubscribeAck { packet_id } => {
-            dst.put_u16(packet_id);
+            dst.put_u16(packet_id.into());
         }
 
         Packet::Subscribe {
             packet_id,
             ref topic_filters,
         } => {
-            dst.put_u16(packet_id);
+            dst.put_u16(packet_id.into());
 
             for &(ref filter, qos) in topic_filters {
                 write_slice(filter.as_ref(), dst);
@@ -188,7 +188,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             packet_id,
             ref status,
         } => {
-            dst.put_u16(packet_id);
+            dst.put_u16(packet_id.into());
 
             let buf: Vec<u8> = status
                 .iter()
@@ -208,7 +208,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             packet_id,
             ref topic_filters,
         } => {
-            dst.put_u16(packet_id);
+            dst.put_u16(packet_id.into());
 
             for filter in topic_filters {
                 write_slice(filter.as_ref(), dst);
@@ -256,8 +256,13 @@ fn write_variable_length(size: usize, dst: &mut BytesMut) {
 mod tests {
     use bytes::Bytes;
     use bytestring::ByteString;
+    use std::num::NonZeroU16;
 
     use super::*;
+
+    fn packet_id(v: u16) -> NonZeroU16 {
+        NonZeroU16::new(v).unwrap()
+    }
 
     #[test]
     fn test_encode_variable_length() {
@@ -305,7 +310,7 @@ mod tests {
             retain: true,
             qos: QoS::ExactlyOnce,
             topic: ByteString::from_static("topic"),
-            packet_id: Some(0x4321),
+            packet_id: Some(packet_id(0x4321)),
             payload: (0..255).collect::<Vec<u8>>().into(),
         });
 
@@ -370,7 +375,7 @@ mod tests {
                 retain: true,
                 qos: QoS::ExactlyOnce,
                 topic: ByteString::from_static("topic"),
-                packet_id: Some(0x4321),
+                packet_id: Some(packet_id(0x4321)),
                 payload: Bytes::from_static(b"data"),
             }),
             b"\x3d\x0D\x00\x05topic\x43\x21data"
@@ -393,7 +398,7 @@ mod tests {
     fn test_encode_subscribe_packets() {
         assert_packet!(
             &Packet::Subscribe {
-                packet_id: 0x1234,
+                packet_id: packet_id(0x1234),
                 topic_filters: vec![
                     (ByteString::from_static("test"), QoS::AtLeastOnce),
                     (ByteString::from_static("filter"), QoS::ExactlyOnce)
@@ -404,7 +409,7 @@ mod tests {
 
         assert_packet!(
             &Packet::SubscribeAck {
-                packet_id: 0x1234,
+                packet_id: packet_id(0x1234),
                 status: vec![
                     SubscribeReturnCode::Success(QoS::AtLeastOnce),
                     SubscribeReturnCode::Failure,
@@ -416,7 +421,7 @@ mod tests {
 
         assert_packet!(
             &Packet::Unsubscribe {
-                packet_id: 0x1234,
+                packet_id: packet_id(0x1234),
                 topic_filters: vec![
                     ByteString::from_static("test"),
                     ByteString::from_static("filter"),
@@ -426,7 +431,9 @@ mod tests {
         );
 
         assert_packet!(
-            &Packet::UnsubscribeAck { packet_id: 0x4321 },
+            &Packet::UnsubscribeAck {
+                packet_id: packet_id(0x4321)
+            },
             b"\xb0\x02\x43\x21"
         );
     }
