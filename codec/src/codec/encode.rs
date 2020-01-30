@@ -145,10 +145,7 @@ fn write_content(packet: &Packet, dst: &mut BytesMut) {
             session_present,
             return_code,
         } => {
-            dst.put_slice(&[
-                if session_present { 0x01 } else { 0x00 },
-                return_code as u8,
-            ]);
+            dst.put_slice(&[if session_present { 0x01 } else { 0x00 }, return_code as u8]);
         }
 
         Packet::Publish(Publish {

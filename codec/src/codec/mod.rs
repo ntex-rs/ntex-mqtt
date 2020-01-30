@@ -1,5 +1,3 @@
-use std::io::Cursor;
-
 use actix_codec::{Decoder, Encoder};
 use bytes::{buf::Buf, BytesMut};
 
@@ -110,8 +108,7 @@ impl Decoder for Codec {
                         return Ok(None);
                     }
                     let packet_buf = src.split_to(fixed.remaining_length);
-                    let mut packet_cur = Cursor::new(packet_buf.freeze());
-                    let packet = read_packet(&mut packet_cur, fixed)?;
+                    let packet = read_packet(packet_buf.freeze(), fixed)?;
                     self.state = DecodeState::FrameHeader;
                     src.reserve(2);
                     return Ok(Some(packet));
