@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use actix_codec::{AsyncRead, AsyncWrite};
 use actix_ioframe as ioframe;
@@ -197,6 +198,8 @@ where
             .service(ConnectService {
                 connect: self.state,
                 packet: self.packet,
+                keep_alive: self.keep_alive,
+                inflight: self.inflight,
                 _t: PhantomData,
             })
             .finish(dispatcher(
@@ -206,8 +209,6 @@ where
                     .map_init_err(MqttError::Service),
                 self.subscribe,
                 self.unsubscribe,
-                self.keep_alive,
-                self.inflight,
             ))
             .map_err(|e| match e {
                 ioframe::ServiceError::Service(e) => e,
@@ -220,6 +221,8 @@ where
 struct ConnectService<Io, St, C> {
     connect: Cell<C>,
     packet: mqtt::Connect,
+    keep_alive: u64,
+    inflight: usize,
     _t: PhantomData<(Io, St)>,
 }
 
@@ -245,6 +248,8 @@ where
     fn call(&mut self, req: Self::Request) -> Self::Future {
         let mut srv = self.connect.clone();
         let packet = self.packet.clone();
+        let keep_alive = Duration::from_secs(self.keep_alive as u64);
+        let inflight = self.inflight;
 
         // send Connect packet
         async move {
@@ -270,6 +275,8 @@ where
                         sink,
                         session_present,
                         return_code,
+                        keep_alive,
+                        inflight,
                         io: framed,
                     };
                     Ok(srv
@@ -291,6 +298,8 @@ pub struct ConnectAck<Io> {
     sink: MqttSink,
     session_present: bool,
     return_code: mqtt::ConnectCode,
+    keep_alive: Duration,
+    inflight: usize,
 }
 
 impl<Io> ConnectAck<Io> {
@@ -317,7 +326,7 @@ impl<Io> ConnectAck<Io> {
     pub fn state<St>(self, state: St) -> ConnectAckResult<Io, St> {
         ConnectAckResult {
             io: self.io,
-            state: MqttState::new(state, self.sink),
+            state: MqttState::new(state, self.sink, self.keep_alive, self.inflight),
         }
     }
 }
