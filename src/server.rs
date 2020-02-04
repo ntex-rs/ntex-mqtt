@@ -37,7 +37,6 @@ pub struct MqttServer<Io, St, C: ServiceFactory, U> {
     >,
     disconnect: U,
     max_size: usize,
-    keep_alive: u64,
     inflight: usize,
     _t: PhantomData<(Io, St)>,
 }
@@ -68,7 +67,6 @@ where
                     .map_init_err(MqttError::Service),
             ),
             max_size: 0,
-            keep_alive: 30,
             inflight: 15,
             disconnect: default_disconnect,
             _t: PhantomData,
@@ -89,14 +87,6 @@ where
     /// By default max size is set to `0`
     pub fn max_size(mut self, size: usize) -> Self {
         self.max_size = size;
-        self
-    }
-
-    /// A time interval measured in seconds.
-    ///
-    /// keep-alive is set to 30 seconds by default.
-    pub fn keep_alive(mut self, val: u16) -> Self {
-        self.keep_alive = val.into();
         self
     }
 
@@ -154,7 +144,6 @@ where
             subscribe: self.subscribe,
             unsubscribe: self.unsubscribe,
             max_size: self.max_size,
-            keep_alive: self.keep_alive,
             inflight: self.inflight,
             disconnect: move |st: St, err| {
                 let fut = disconnect(st, err);
@@ -187,14 +176,12 @@ where
 
         unit_config(
             ioframe::Builder::new()
-                .factory(connect_service_factory(connect, max_size))
+                .factory(connect_service_factory(connect, max_size, self.inflight))
                 .disconnect(move |cfg, err| disconnect(cfg.session().clone(), err))
                 .finish(dispatcher(
                     publish,
                     Rc::new(self.subscribe),
                     Rc::new(self.unsubscribe),
-                    self.keep_alive,
-                    self.inflight,
                 ))
                 .map_err(|e| match e {
                     ioframe::ServiceError::Service(e) => e,
@@ -208,6 +195,7 @@ where
 fn connect_service_factory<Io, St, C>(
     factory: C,
     max_size: usize,
+    inflight: usize,
 ) -> impl ServiceFactory<
     Config = (),
     Request = ioframe::Connect<Io, mqtt::Codec>,
@@ -243,47 +231,48 @@ where
                                 let sink = MqttSink::new(framed.sink().clone());
 
                                 // authenticate mqtt connection
-                                let result = srv
-                                    .call(Connect::new(connect, framed, sink.clone()))
+                                let mut ack = srv
+                                    .call(Connect::new(connect, framed, sink.clone(), inflight))
                                     .await?;
 
-                                match result.into_inner() {
-                                    either::Either::Left((
-                                        mut framed,
-                                        session,
-                                        session_present,
-                                    )) => {
+                                match ack.session {
+                                    Some(session) => {
                                         log::trace!(
                                             "Sending: {:#?}",
                                             mqtt::Packet::ConnectAck {
-                                                session_present,
+                                                session_present: ack.session_present,
                                                 return_code:
                                                     mqtt::ConnectCode::ConnectionAccepted,
                                             }
                                         );
-                                        framed
+                                        ack.io
                                             .send(mqtt::Packet::ConnectAck {
-                                                session_present,
+                                                session_present: ack.session_present,
                                                 return_code:
                                                     mqtt::ConnectCode::ConnectionAccepted,
                                             })
                                             .await?;
 
-                                        Ok(framed.state(MqttState::new(session, sink)))
+                                        Ok(ack.io.state(MqttState::new(
+                                            session,
+                                            sink,
+                                            ack.keep_alive,
+                                            ack.inflight,
+                                        )))
                                     }
-                                    either::Either::Right((mut framed, code)) => {
+                                    None => {
                                         log::trace!(
                                             "Sending: {:#?}",
                                             mqtt::Packet::ConnectAck {
                                                 session_present: false,
-                                                return_code: code,
+                                                return_code: ack.return_code,
                                             }
                                         );
 
-                                        framed
+                                        ack.io
                                             .send(mqtt::Packet::ConnectAck {
                                                 session_present: false,
-                                                return_code: code,
+                                                return_code: ack.return_code,
                                             })
                                             .await?;
                                         Err(MqttError::Disconnected)

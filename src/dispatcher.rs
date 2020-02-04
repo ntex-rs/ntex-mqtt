@@ -28,6 +28,8 @@ pub(crate) struct MqttState<St> {
 struct MqttStateInner<St> {
     pub(crate) st: St,
     pub(crate) sink: MqttSink,
+    pub(self) timeout: Duration,
+    pub(self) in_flight: usize,
 }
 
 impl<St> Clone for MqttState<St> {
@@ -39,9 +41,14 @@ impl<St> Clone for MqttState<St> {
 }
 
 impl<St> MqttState<St> {
-    pub(crate) fn new(st: St, sink: MqttSink) -> Self {
+    pub(crate) fn new(st: St, sink: MqttSink, timeout: Duration, in_flight: usize) -> Self {
         MqttState {
-            inner: Cell::new(MqttStateInner { st, sink }),
+            inner: Cell::new(MqttStateInner {
+                st,
+                sink,
+                timeout,
+                in_flight,
+            }),
         }
     }
 
@@ -73,8 +80,6 @@ pub(crate) fn dispatcher<St, T, E>(
     unsubscribe: Rc<
         boxed::BoxServiceFactory<St, Unsubscribe<St>, (), MqttError<E>, MqttError<E>>,
     >,
-    keep_alive: u64,
-    inflight: usize,
 ) -> impl ServiceFactory<
     Config = MqttState<St>,
     Request = ioframe::Item<MqttState<St>, mqtt::Codec>,
@@ -98,6 +103,8 @@ where
     fn_factory_with_config(move |cfg: MqttState<St>| {
         let time = time.clone();
         let state = cfg.session().clone();
+        let timeout = cfg.inner.timeout;
+        let inflight = cfg.inner.in_flight;
 
         // create services
         let fut = join3(
@@ -112,11 +119,9 @@ where
             // mqtt dispatcher
             Ok(Dispatcher::new(
                 // keep-alive connection
-                pipeline(KeepAliveService::new(
-                    Duration::from_secs(keep_alive),
-                    time,
-                    || MqttError::KeepAliveTimeout,
-                ))
+                pipeline(KeepAliveService::new(timeout, time, || {
+                    MqttError::KeepAliveTimeout
+                }))
                 .and_then(
                     // limit number of in-flight messages
                     InFlightService::new(

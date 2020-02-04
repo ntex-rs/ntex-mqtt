@@ -3,7 +3,6 @@ use std::ops::Deref;
 use std::time::Duration;
 
 use actix_ioframe as ioframe;
-use either::Either;
 use mqtt_codec as mqtt;
 
 use crate::sink::MqttSink;
@@ -12,6 +11,8 @@ use crate::sink::MqttSink;
 pub struct Connect<Io> {
     connect: mqtt::Connect,
     sink: MqttSink,
+    keep_alive: Duration,
+    inflight: usize,
     io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
 }
 
@@ -20,8 +21,15 @@ impl<Io> Connect<Io> {
         connect: mqtt::Connect,
         io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
         sink: MqttSink,
+        inflight: usize,
     ) -> Self {
-        Self { connect, io, sink }
+        Self {
+            keep_alive: Duration::from_secs(connect.keep_alive as u64),
+            connect,
+            io,
+            sink,
+            inflight,
+        }
     }
 
     /// Returns reference to io object
@@ -41,7 +49,7 @@ impl<Io> Connect<Io> {
 
     /// Ack connect message and set state
     pub fn ack<St>(self, st: St, session_present: bool) -> ConnectAck<Io, St> {
-        ConnectAck::new(self.io, st, session_present)
+        ConnectAck::new(self.io, st, session_present, self.keep_alive, self.inflight)
     }
 
     /// Create connect ack object with `identifier rejected` return code
@@ -51,8 +59,8 @@ impl<Io> Connect<Io> {
             session: None,
             session_present: false,
             return_code: mqtt::ConnectCode::IdentifierRejected,
-            timeout: Duration::from_secs(5),
-            in_flight: 15,
+            keep_alive: Duration::from_secs(5),
+            inflight: 15,
         }
     }
 
@@ -63,8 +71,8 @@ impl<Io> Connect<Io> {
             session: None,
             session_present: false,
             return_code: mqtt::ConnectCode::BadUserNameOrPassword,
-            timeout: Duration::from_secs(5),
-            in_flight: 15,
+            keep_alive: Duration::from_secs(5),
+            inflight: 15,
         }
     }
 
@@ -75,8 +83,8 @@ impl<Io> Connect<Io> {
             session: None,
             session_present: false,
             return_code: mqtt::ConnectCode::NotAuthorized,
-            timeout: Duration::from_secs(5),
-            in_flight: 15,
+            keep_alive: Duration::from_secs(5),
+            inflight: 15,
         }
     }
 }
@@ -97,12 +105,12 @@ impl<T> fmt::Debug for Connect<T> {
 
 /// Ack connect message
 pub struct ConnectAck<Io, St> {
-    io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
-    session: Option<St>,
-    session_present: bool,
-    return_code: mqtt::ConnectCode,
-    timeout: Duration,
-    in_flight: usize,
+    pub(crate) io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
+    pub(crate) session: Option<St>,
+    pub(crate) session_present: bool,
+    pub(crate) return_code: mqtt::ConnectCode,
+    pub(crate) keep_alive: Duration,
+    pub(crate) inflight: usize,
 }
 
 impl<Io, St> ConnectAck<Io, St> {
@@ -111,14 +119,16 @@ impl<Io, St> ConnectAck<Io, St> {
         io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
         session: St,
         session_present: bool,
+        keep_alive: Duration,
+        inflight: usize,
     ) -> Self {
         Self {
             io,
-            session: Some(session),
             session_present,
+            keep_alive,
+            inflight,
+            session: Some(session),
             return_code: mqtt::ConnectCode::ConnectionAccepted,
-            timeout: Duration::from_secs(5),
-            in_flight: 15,
         }
     }
 
@@ -126,7 +136,7 @@ impl<Io, St> ConnectAck<Io, St> {
     ///
     /// By default idle time-out is set to 300000 milliseconds
     pub fn idle_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
+        self.keep_alive = timeout;
         self
     }
 
@@ -134,23 +144,7 @@ impl<Io, St> ConnectAck<Io, St> {
     ///
     /// By default in-flight count is set to 15
     pub fn in_flight(mut self, in_flight: usize) -> Self {
-        self.in_flight = in_flight;
+        self.inflight = in_flight;
         self
-    }
-
-    pub(crate) fn into_inner(
-        self,
-    ) -> Either<
-        (ioframe::ConnectResult<Io, (), mqtt::Codec>, St, bool),
-        (
-            ioframe::ConnectResult<Io, (), mqtt::Codec>,
-            mqtt::ConnectCode,
-        ),
-    > {
-        if let Some(session) = self.session {
-            Either::Left((self.io, session, self.session_present))
-        } else {
-            Either::Right((self.io, self.return_code))
-        }
     }
 }

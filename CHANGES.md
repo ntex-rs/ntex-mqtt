@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.2] - 2020-02-04
+
+* Fix server keep-alive impl
+
 ## [0.2.1] - 2019-12-25
 
 * Allow to specify multi-pattern for topics
