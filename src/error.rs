@@ -13,6 +13,8 @@ pub enum MqttError<E> {
     PacketIdRequired,
     /// Keep alive timeout
     KeepAliveTimeout,
+    /// Handshake timeout
+    HandshakeTimeout,
     /// Peer disconnect
     Disconnected,
     /// Unexpected io error

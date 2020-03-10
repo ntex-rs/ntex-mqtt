@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.3] - 2020-03-10
+
+* Add server handshake timeout
+
 ## [0.2.2] - 2020-02-04
 
 * Fix server keep-alive impl
