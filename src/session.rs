@@ -34,11 +34,7 @@ impl<St> Session<St> {
         Ref::map(self.0.borrow(), |inner| &inner.sink)
     }
 
-    pub fn state(&self) -> Ref<'_, St> {
-        Ref::map(self.0.borrow(), |inner| &inner.st)
-    }
-
-    pub fn state_mut(&self) -> RefMut<'_, St> {
+    pub fn state(&self) -> RefMut<'_, St> {
         RefMut::map(self.0.borrow_mut(), |inner| &mut inner.st)
     }
 
