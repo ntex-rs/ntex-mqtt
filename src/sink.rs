@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroU16;
+use std::rc::Rc;
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -9,7 +10,7 @@ use futures::future::{err, Either, Future, TryFutureExt};
 use ntex::channel::{mpsc, oneshot};
 use ntex_mqtt_codec as mqtt;
 
-pub struct MqttSink(RefCell<MqttSinkInner>);
+pub struct MqttSink(Rc<RefCell<MqttSinkInner>>);
 
 pub(crate) struct MqttSinkInner {
     idx: u16,
@@ -17,13 +18,19 @@ pub(crate) struct MqttSinkInner {
     sink: Option<mpsc::Sender<mqtt::Packet>>,
 }
 
+impl Clone for MqttSink {
+    fn clone(&self) -> Self {
+        MqttSink(self.0.clone())
+    }
+}
+
 impl MqttSink {
     pub(crate) fn new(sink: mpsc::Sender<mqtt::Packet>) -> Self {
-        MqttSink(RefCell::new(MqttSinkInner {
+        MqttSink(Rc::new(RefCell::new(MqttSinkInner {
             idx: 0,
             sink: Some(sink),
             queue: VecDeque::new(),
-        }))
+        })))
     }
 
     /// Close mqtt connection
