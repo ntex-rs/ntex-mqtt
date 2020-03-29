@@ -1,53 +1,52 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroU16;
 
-use actix_ioframe::Sink;
-use actix_utils::oneshot;
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::{Future, TryFutureExt};
+use futures::future::{err, Either, Future, TryFutureExt};
 use mqtt_codec as mqtt;
+use ntex::channel::{mpsc, oneshot};
 
-use crate::cell::Cell;
+pub struct MqttSink(RefCell<MqttSinkInner>);
 
-#[derive(Clone)]
-pub struct MqttSink {
-    sink: Sink<mqtt::Packet>,
-    pub(crate) inner: Cell<MqttSinkInner>,
-}
-
-#[derive(Default)]
 pub(crate) struct MqttSinkInner {
-    pub(crate) idx: u16,
-    pub(crate) queue: VecDeque<(u16, oneshot::Sender<()>)>,
+    idx: u16,
+    queue: VecDeque<(u16, oneshot::Sender<()>)>,
+    sink: Option<mpsc::Sender<mqtt::Packet>>,
 }
 
 impl MqttSink {
-    pub(crate) fn new(sink: Sink<mqtt::Packet>) -> Self {
-        MqttSink {
-            sink,
-            inner: Cell::new(MqttSinkInner::default()),
-        }
+    pub(crate) fn new(sink: mpsc::Sender<mqtt::Packet>) -> Self {
+        MqttSink(RefCell::new(MqttSinkInner {
+            idx: 0,
+            sink: Some(sink),
+            queue: VecDeque::new(),
+        }))
     }
 
     /// Close mqtt connection
     pub fn close(&self) {
-        self.sink.close();
+        let _ = self.0.borrow_mut().sink.take();
     }
 
     /// Send publish packet with qos set to 0
     pub fn publish_qos0(&self, topic: ByteString, payload: Bytes, dup: bool) {
-        log::trace!("Publish (QoS0) to {:?}", topic);
-        let publish = mqtt::Publish {
-            topic,
-            payload,
-            dup,
-            retain: false,
-            qos: mqtt::QoS::AtMostOnce,
-            packet_id: None,
-        };
-        self.sink.send(mqtt::Packet::Publish(publish));
+        if let Some(ref sink) = self.0.borrow().sink {
+            log::trace!("Publish (QoS-0) to {:?}", topic);
+            let publish = mqtt::Publish {
+                topic,
+                payload,
+                dup,
+                retain: false,
+                qos: mqtt::QoS::AtMostOnce,
+                packet_id: None,
+            };
+            let _ = sink.send(mqtt::Packet::Publish(publish));
+        } else {
+            log::error!("Mqtt sink is disconnected");
+        }
     }
 
     /// Send publish packet
@@ -57,31 +56,39 @@ impl MqttSink {
         payload: Bytes,
         dup: bool,
     ) -> impl Future<Output = Result<(), ()>> {
-        let (tx, rx) = oneshot::channel();
+        let mut inner = self.0.borrow_mut();
 
-        let inner = self.inner.get_mut();
-        inner.idx += 1;
-        if inner.idx == 0 {
-            inner.idx = 1
+        if inner.sink.is_some() {
+            let (tx, rx) = oneshot::channel();
+
+            inner.idx += 1;
+            if inner.idx == 0 {
+                inner.idx = 1
+            }
+            let idx = inner.idx;
+            inner.queue.push_back((idx, tx));
+
+            let publish = mqtt::Packet::Publish(mqtt::Publish {
+                topic,
+                payload,
+                dup,
+                retain: false,
+                qos: mqtt::QoS::AtLeastOnce,
+                packet_id: NonZeroU16::new(inner.idx),
+            });
+            log::trace!("Publish (QoS1) to {:#?}", publish);
+            if inner.sink.as_ref().unwrap().send(publish).is_err() {
+                Either::Right(err(()))
+            } else {
+                Either::Left(rx.map_err(|_| ()))
+            }
+        } else {
+            Either::Right(err(()))
         }
-        inner.queue.push_back((inner.idx, tx));
-
-        let publish = mqtt::Packet::Publish(mqtt::Publish {
-            topic,
-            payload,
-            dup,
-            retain: false,
-            qos: mqtt::QoS::AtLeastOnce,
-            packet_id: NonZeroU16::new(inner.idx),
-        });
-        log::trace!("Publish (QoS1) to {:#?}", publish);
-
-        self.sink.send(publish);
-        rx.map_err(|_| ())
     }
 
-    pub(crate) fn complete_publish_qos1(&mut self, packet_id: NonZeroU16) {
-        if let Some((idx, tx)) = self.inner.get_mut().queue.pop_front() {
+    pub(crate) fn complete_publish_qos1(&self, packet_id: NonZeroU16) {
+        if let Some((idx, tx)) = self.0.borrow_mut().queue.pop_front() {
             if idx != packet_id.get() {
                 log::trace!(
                     "MQTT protocol error, packet_id order does not match, expected {}, got: {}",

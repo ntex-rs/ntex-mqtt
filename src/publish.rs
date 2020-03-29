@@ -1,27 +1,22 @@
 use std::convert::TryFrom;
 use std::num::NonZeroU16;
 
-use actix_router::Path;
 use bytes::Bytes;
 use bytestring::ByteString;
 use mqtt_codec as mqtt;
+use ntex::router::Path;
 use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
 
-use crate::dispatcher::MqttState;
-use crate::sink::MqttSink;
-
 /// Publish message
-pub struct Publish<S> {
+pub struct Publish {
     publish: mqtt::Publish,
-    sink: MqttSink,
-    state: MqttState<S>,
     topic: Path<ByteString>,
     query: Option<ByteString>,
 }
 
-impl<S> Publish<S> {
-    pub(crate) fn new(state: MqttState<S>, publish: mqtt::Publish) -> Self {
+impl Publish {
+    pub(crate) fn new(publish: mqtt::Publish) -> Self {
         let (topic, query) = if let Some(pos) = publish.topic.find('?') {
             (
                 ByteString::try_from(publish.topic.get_ref().slice(0..pos)).unwrap(),
@@ -36,11 +31,8 @@ impl<S> Publish<S> {
             (publish.topic.clone(), None)
         };
         let topic = Path::new(topic);
-        let sink = state.sink().clone();
         Self {
-            sink,
             publish,
-            state,
             topic,
             query,
         }
@@ -67,18 +59,6 @@ impl<S> Publish<S> {
     /// the information channel to which payload data is published.
     pub fn publish_topic(&self) -> &str {
         &self.publish.topic
-    }
-
-    #[inline]
-    /// returns reference to a connection session
-    pub fn session(&self) -> &S {
-        self.state.session()
-    }
-
-    #[inline]
-    /// returns mutable reference to a connection session
-    pub fn session_mut(&mut self) -> &mut S {
-        self.state.session_mut()
     }
 
     #[inline]
@@ -118,19 +98,13 @@ impl<S> Publish<S> {
         self.publish.payload.clone()
     }
 
-    #[inline]
-    /// Mqtt client sink object
-    pub fn sink(&self) -> &MqttSink {
-        &self.sink
-    }
-
     /// Loads and parse `application/json` encoded body.
     pub fn json<T: DeserializeOwned>(&mut self) -> Result<T, JsonError> {
         serde_json::from_slice(&self.publish.payload)
     }
 }
 
-impl<S> std::fmt::Debug for Publish<S> {
+impl std::fmt::Debug for Publish {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         self.publish.fmt(f)
     }

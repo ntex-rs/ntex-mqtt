@@ -4,7 +4,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
-use actix_service::Service;
+use ntex::service::Service;
 
 pub(crate) struct Cell<T> {
     inner: Rc<UnsafeCell<T>>,

@@ -1,5 +1,5 @@
 #![allow(clippy::type_complexity, clippy::new_ret_no_self)]
-//! MQTT v3.1 Server framework
+//! MQTT v3.1.1 Server framework
 
 mod cell;
 pub mod client;
@@ -10,6 +10,7 @@ mod error;
 mod publish;
 mod router;
 mod server;
+mod session;
 mod sink;
 mod subs;
 
@@ -19,5 +20,6 @@ pub use self::error::MqttError;
 pub use self::publish::Publish;
 pub use self::router::Router;
 pub use self::server::MqttServer;
+pub use self::session::Session;
 pub use self::sink::MqttSink;
 pub use self::subs::{Subscribe, SubscribeIter, SubscribeResult, Subscription, Unsubscribe};

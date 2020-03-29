@@ -2,8 +2,9 @@ use std::fmt;
 use std::ops::Deref;
 use std::time::Duration;
 
-use actix_ioframe as ioframe;
 use mqtt_codec as mqtt;
+use ntex::channel::mpsc;
+use ntex::framed;
 
 use crate::sink::MqttSink;
 
@@ -13,13 +14,13 @@ pub struct Connect<Io> {
     sink: MqttSink,
     keep_alive: Duration,
     inflight: usize,
-    io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
+    io: framed::ConnectResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
 }
 
 impl<Io> Connect<Io> {
     pub(crate) fn new(
         connect: mqtt::Connect,
-        io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
+        io: framed::ConnectResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
         sink: MqttSink,
         inflight: usize,
     ) -> Self {
@@ -49,13 +50,21 @@ impl<Io> Connect<Io> {
 
     /// Ack connect message and set state
     pub fn ack<St>(self, st: St, session_present: bool) -> ConnectAck<Io, St> {
-        ConnectAck::new(self.io, st, session_present, self.keep_alive, self.inflight)
+        ConnectAck::new(
+            self.io,
+            self.sink,
+            st,
+            session_present,
+            self.keep_alive,
+            self.inflight,
+        )
     }
 
     /// Create connect ack object with `identifier rejected` return code
     pub fn identifier_rejected<St>(self) -> ConnectAck<Io, St> {
         ConnectAck {
             io: self.io,
+            sink: self.sink,
             session: None,
             session_present: false,
             return_code: mqtt::ConnectCode::IdentifierRejected,
@@ -68,6 +77,7 @@ impl<Io> Connect<Io> {
     pub fn bad_username_or_pwd<St>(self) -> ConnectAck<Io, St> {
         ConnectAck {
             io: self.io,
+            sink: self.sink,
             session: None,
             session_present: false,
             return_code: mqtt::ConnectCode::BadUserNameOrPassword,
@@ -80,6 +90,7 @@ impl<Io> Connect<Io> {
     pub fn not_authorized<St>(self) -> ConnectAck<Io, St> {
         ConnectAck {
             io: self.io,
+            sink: self.sink,
             session: None,
             session_present: false,
             return_code: mqtt::ConnectCode::NotAuthorized,
@@ -105,18 +116,20 @@ impl<T> fmt::Debug for Connect<T> {
 
 /// Ack connect message
 pub struct ConnectAck<Io, St> {
-    pub(crate) io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
+    pub(crate) io: framed::ConnectResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
     pub(crate) session: Option<St>,
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectCode,
     pub(crate) keep_alive: Duration,
     pub(crate) inflight: usize,
+    pub(crate) sink: MqttSink,
 }
 
 impl<Io, St> ConnectAck<Io, St> {
     /// Create connect ack, `session_present` indicates that previous session is presents
     pub(crate) fn new(
-        io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
+        io: framed::ConnectResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+        sink: MqttSink,
         session: St,
         session_present: bool,
         keep_alive: Duration,
@@ -124,6 +137,7 @@ impl<Io, St> ConnectAck<Io, St> {
     ) -> Self {
         Self {
             io,
+            sink,
             session_present,
             keep_alive,
             inflight,

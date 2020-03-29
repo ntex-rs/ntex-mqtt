@@ -1,23 +1,27 @@
+use std::fmt;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use actix_codec::{AsyncRead, AsyncWrite};
-use actix_ioframe as ioframe;
-use actix_service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::{FutureExt, LocalBoxFuture};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use mqtt_codec as mqtt;
+use ntex::channel::mpsc;
+use ntex::codec::{AsyncRead, AsyncWrite};
+use ntex::framed;
+use ntex::service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
 
 use crate::cell::Cell;
 use crate::default::{SubsNotImplemented, UnsubsNotImplemented};
-use crate::dispatcher::{dispatcher, MqttState};
+use crate::dispatcher::factory;
 use crate::error::MqttError;
 use crate::publish::Publish;
+use crate::session::Session;
 use crate::sink::MqttSink;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
@@ -110,7 +114,7 @@ where
         F: IntoService<C>,
         Io: AsyncRead + AsyncWrite,
         C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>>,
-        C::Error: 'static,
+        C::Error: fmt::Debug + 'static,
     {
         ServiceBuilder {
             state: Cell::new(state.into_service()),
@@ -123,8 +127,8 @@ where
                 username: self.username,
                 password: self.password,
             },
-            subscribe: Rc::new(boxed::factory(SubsNotImplemented::default())),
-            unsubscribe: Rc::new(boxed::factory(UnsubsNotImplemented::default())),
+            subscribe: boxed::factory(SubsNotImplemented::default()),
+            unsubscribe: boxed::factory(UnsubsNotImplemented::default()),
             disconnect: None,
             keep_alive: self.keep_alive.into(),
             inflight: self.inflight,
@@ -136,25 +140,23 @@ where
 pub struct ServiceBuilder<Io, St, C: Service> {
     state: Cell<C>,
     packet: mqtt::Connect,
-    subscribe: Rc<
-        boxed::BoxServiceFactory<
-            St,
-            Subscribe<St>,
-            SubscribeResult,
-            MqttError<C::Error>,
-            MqttError<C::Error>,
-        >,
+    subscribe: boxed::BoxServiceFactory<
+        Session<St>,
+        Subscribe,
+        SubscribeResult,
+        MqttError<C::Error>,
+        MqttError<C::Error>,
     >,
-    unsubscribe: Rc<
-        boxed::BoxServiceFactory<
-            St,
-            Unsubscribe<St>,
-            (),
-            MqttError<C::Error>,
-            MqttError<C::Error>,
-        >,
+
+    unsubscribe: boxed::BoxServiceFactory<
+        Session<St>,
+        Unsubscribe,
+        (),
+        MqttError<C::Error>,
+        MqttError<C::Error>,
     >,
-    disconnect: Option<Cell<boxed::BoxService<St, (), MqttError<C::Error>>>>,
+
+    disconnect: Option<Rc<dyn Fn(&Session<St>, bool)>>,
     keep_alive: u64,
     inflight: usize,
 
@@ -163,20 +165,23 @@ pub struct ServiceBuilder<Io, St, C: Service> {
 
 impl<Io, St, C> ServiceBuilder<Io, St, C>
 where
-    St: Clone + 'static,
+    St: 'static,
     Io: AsyncRead + AsyncWrite + 'static,
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
-    C::Error: 'static,
+    C::Error: fmt::Debug + 'static,
 {
-    /// Service to execute on disconnect
-    pub fn disconnect<UF, U>(mut self, srv: UF) -> Self
+    /// Callback to execute on disconnect
+    ///
+    /// Second parameter indicates error occured during disconnect.
+    pub fn disconnect<F, Out>(mut self, disconnect: F) -> ServiceBuilder<Io, St, C>
     where
-        UF: IntoService<U>,
-        U: Service<Request = St, Response = (), Error = C::Error> + 'static,
+        F: Fn(&Session<St>, bool) -> Out + 'static,
+        Out: Future + 'static,
     {
-        self.disconnect = Some(Cell::new(boxed::service(
-            srv.into_service().map_err(MqttError::Service),
-        )));
+        self.disconnect = Some(Rc::new(move |st: &Session<St>, err| {
+            let fut = disconnect(st, err);
+            ntex::rt::spawn(fut.map(|_| ()));
+        }));
         self
     }
 
@@ -187,34 +192,34 @@ where
     where
         F: IntoServiceFactory<T>,
         T: ServiceFactory<
-                Config = St,
-                Request = Publish<St>,
+                Config = Session<St>,
+                Request = Publish,
                 Response = (),
                 Error = C::Error,
                 InitError = C::Error,
             > + 'static,
     {
-        ioframe::Builder::new()
-            .service(ConnectService {
-                connect: self.state,
-                packet: self.packet,
-                keep_alive: self.keep_alive,
-                inflight: self.inflight,
-                _t: PhantomData,
-            })
-            .finish(dispatcher(
-                service
-                    .into_factory()
-                    .map_err(MqttError::Service)
-                    .map_init_err(MqttError::Service),
-                self.subscribe,
-                self.unsubscribe,
-            ))
-            .map_err(|e| match e {
-                ioframe::ServiceError::Service(e) => e,
-                ioframe::ServiceError::Encoder(e) => MqttError::Protocol(e),
-                ioframe::ServiceError::Decoder(e) => MqttError::Protocol(e),
-            })
+        framed::Builder::new(ConnectService {
+            connect: self.state,
+            packet: self.packet,
+            keep_alive: self.keep_alive,
+            inflight: self.inflight,
+            _t: PhantomData,
+        })
+        .build(factory(
+            service
+                .into_factory()
+                .map_err(MqttError::Service)
+                .map_init_err(MqttError::Service),
+            self.subscribe,
+            self.unsubscribe,
+            self.disconnect,
+        ))
+        .map_err(|e| match e {
+            framed::ServiceError::Service(e) => e,
+            framed::ServiceError::Encoder(e) => MqttError::Protocol(e),
+            framed::ServiceError::Decoder(e) => MqttError::Protocol(e),
+        })
     }
 }
 
@@ -231,10 +236,11 @@ where
     St: 'static,
     Io: AsyncRead + AsyncWrite + 'static,
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
-    C::Error: 'static,
+    C::Error: fmt::Debug + 'static,
 {
-    type Request = ioframe::Connect<Io, mqtt::Codec>;
-    type Response = ioframe::ConnectResult<Io, MqttState<St>, mqtt::Codec>;
+    type Request = framed::Connect<Io, mqtt::Codec>;
+    type Response =
+        framed::ConnectResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>;
     type Error = MqttError<C::Error>;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -262,7 +268,10 @@ where
             let packet = framed
                 .next()
                 .await
-                .ok_or(MqttError::Disconnected)
+                .ok_or_else(|| {
+                    log::trace!("Client mqtt is disconnected during handshake");
+                    MqttError::Disconnected
+                })
                 .and_then(|res| res.map_err(MqttError::Protocol))?;
 
             match packet {
@@ -270,7 +279,8 @@ where
                     session_present,
                     return_code,
                 } => {
-                    let sink = MqttSink::new(framed.sink().clone());
+                    let (tx, rx) = mpsc::channel();
+                    let sink = MqttSink::new(tx);
                     let ack = ConnectAck {
                         sink,
                         session_present,
@@ -284,7 +294,7 @@ where
                         .call(ack)
                         .await
                         .map_err(MqttError::Service)
-                        .map(|ack| ack.io.state(ack.state))?)
+                        .map(move |ack| ack.io.out(rx).state(ack.state))?)
                 }
                 p => Err(MqttError::Unexpected(p, "Expected CONNECT-ACK packet")),
             }
@@ -294,7 +304,7 @@ where
 }
 
 pub struct ConnectAck<Io> {
-    io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
+    io: framed::ConnectResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
     sink: MqttSink,
     session_present: bool,
     return_code: mqtt::ConnectCode,
@@ -326,7 +336,7 @@ impl<Io> ConnectAck<Io> {
     pub fn state<St>(self, state: St) -> ConnectAckResult<Io, St> {
         ConnectAckResult {
             io: self.io,
-            state: MqttState::new(state, self.sink, self.keep_alive, self.inflight),
+            state: Session::new(state, self.sink, self.keep_alive, self.inflight),
         }
     }
 }
@@ -367,8 +377,8 @@ where
 
 #[pin_project::pin_project]
 pub struct ConnectAckResult<Io, St> {
-    state: MqttState<St>,
-    io: ioframe::ConnectResult<Io, (), mqtt::Codec>,
+    state: Session<St>,
+    io: framed::ConnectResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
 }
 
 impl<Io, St> Stream for ConnectAckResult<Io, St>

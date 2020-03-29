@@ -1,4 +1,4 @@
-use actix_mqtt::{Connect, ConnectAck, MqttServer, Publish};
+use ntex_mqtt::{Connect, ConnectAck, MqttServer, Publish};
 
 #[derive(Clone)]
 struct Session;
@@ -8,7 +8,7 @@ async fn connect<Io>(connect: Connect<Io>) -> Result<ConnectAck<Io, Session>, ()
     Ok(connect.ack(Session, false))
 }
 
-async fn publish(publish: Publish<Session>) -> Result<(), ()> {
+async fn publish(publish: Publish) -> Result<(), ()> {
     log::info!(
         "incoming publish: {:?} -> {:?}",
         publish.id(),
@@ -17,15 +17,12 @@ async fn publish(publish: Publish<Session>) -> Result<(), ()> {
     Ok(())
 }
 
-#[actix_rt::main]
+#[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var(
-        "RUST_LOG",
-        "actix_server=trace,actix_mqtt=trace,basic=trace",
-    );
+    std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,basic=trace");
     env_logger::init();
 
-    actix_server::Server::build()
+    ntex::server::Server::build()
         .bind("mqtt", "127.0.0.1:1883", || {
             MqttServer::new(connect).finish(publish)
         })?

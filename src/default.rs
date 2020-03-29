@@ -1,8 +1,8 @@
 use std::marker::PhantomData;
 use std::task::{Context, Poll};
 
-use actix_service::{Service, ServiceFactory};
 use futures::future::{ok, Ready};
+use ntex::service::{Service, ServiceFactory};
 
 use crate::publish::Publish;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
@@ -18,7 +18,7 @@ impl<S, E> Default for NotImplemented<S, E> {
 
 impl<S, E> ServiceFactory for NotImplemented<S, E> {
     type Config = S;
-    type Request = Publish<S>;
+    type Request = Publish;
     type Response = ();
     type Error = E;
     type InitError = E;
@@ -31,7 +31,7 @@ impl<S, E> ServiceFactory for NotImplemented<S, E> {
 }
 
 impl<S, E> Service for NotImplemented<S, E> {
-    type Request = Publish<S>;
+    type Request = Publish;
     type Response = ();
     type Error = E;
     type Future = Ready<Result<Self::Response, Self::Error>>;
@@ -40,8 +40,8 @@ impl<S, E> Service for NotImplemented<S, E> {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, _: Publish<S>) -> Self::Future {
-        log::warn!("MQTT Publish is not implemented");
+    fn call(&mut self, _: Publish) -> Self::Future {
+        log::warn!("MQTT Publish is not supported");
         ok(())
     }
 }
@@ -57,7 +57,7 @@ impl<S, E> Default for SubsNotImplemented<S, E> {
 
 impl<S, E> ServiceFactory for SubsNotImplemented<S, E> {
     type Config = S;
-    type Request = Subscribe<S>;
+    type Request = Subscribe;
     type Response = SubscribeResult;
     type Error = E;
     type InitError = E;
@@ -70,7 +70,7 @@ impl<S, E> ServiceFactory for SubsNotImplemented<S, E> {
 }
 
 impl<S, E> Service for SubsNotImplemented<S, E> {
-    type Request = Subscribe<S>;
+    type Request = Subscribe;
     type Response = SubscribeResult;
     type Error = E;
     type Future = Ready<Result<Self::Response, Self::Error>>;
@@ -79,8 +79,8 @@ impl<S, E> Service for SubsNotImplemented<S, E> {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, subs: Subscribe<S>) -> Self::Future {
-        log::warn!("MQTT Subscribe is not implemented");
+    fn call(&mut self, subs: Subscribe) -> Self::Future {
+        log::warn!("MQTT Subscribe is not supported");
         ok(subs.into_result())
     }
 }
@@ -96,7 +96,7 @@ impl<S, E> Default for UnsubsNotImplemented<S, E> {
 
 impl<S, E> ServiceFactory for UnsubsNotImplemented<S, E> {
     type Config = S;
-    type Request = Unsubscribe<S>;
+    type Request = Unsubscribe;
     type Response = ();
     type Error = E;
     type InitError = E;
@@ -109,7 +109,7 @@ impl<S, E> ServiceFactory for UnsubsNotImplemented<S, E> {
 }
 
 impl<S, E> Service for UnsubsNotImplemented<S, E> {
-    type Request = Unsubscribe<S>;
+    type Request = Unsubscribe;
     type Response = ();
     type Error = E;
     type Future = Ready<Result<Self::Response, Self::Error>>;
@@ -118,8 +118,8 @@ impl<S, E> Service for UnsubsNotImplemented<S, E> {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, _: Unsubscribe<S>) -> Self::Future {
-        log::warn!("MQTT Unsubscribe is not implemented");
+    fn call(&mut self, _: Unsubscribe) -> Self::Future {
+        log::warn!("MQTT Unsubscribe is not supported");
         ok(())
     }
 }

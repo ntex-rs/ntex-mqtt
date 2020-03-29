@@ -6,94 +6,51 @@ use std::rc::Rc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use actix_ioframe as ioframe;
-use actix_service::{boxed, fn_factory_with_config, pipeline, Service, ServiceFactory};
-use actix_utils::inflight::InFlightService;
-use actix_utils::keepalive::KeepAliveService;
-use actix_utils::order::{InOrder, InOrderError};
-use actix_utils::time::LowResTimeService;
 use futures::future::{join3, ok, Either, FutureExt, LocalBoxFuture, Ready};
 use futures::ready;
 use mqtt_codec as mqtt;
+use ntex::service::{boxed, fn_factory_with_config, pipeline, Service, ServiceFactory};
+use ntex::util::inflight::InFlightService;
+use ntex::util::keepalive::KeepAliveService;
+use ntex::util::order::{InOrder, InOrderError};
+use ntex::util::time::LowResTimeService;
 
-use crate::cell::Cell;
 use crate::error::MqttError;
 use crate::publish::Publish;
-use crate::sink::MqttSink;
+use crate::session::Session;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
-pub(crate) struct MqttState<St> {
-    inner: Cell<MqttStateInner<St>>,
-}
-
-struct MqttStateInner<St> {
-    pub(crate) st: St,
-    pub(crate) sink: MqttSink,
-    pub(self) timeout: Duration,
-    pub(self) in_flight: usize,
-}
-
-impl<St> Clone for MqttState<St> {
-    fn clone(&self) -> Self {
-        MqttState {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<St> MqttState<St> {
-    pub(crate) fn new(st: St, sink: MqttSink, timeout: Duration, in_flight: usize) -> Self {
-        MqttState {
-            inner: Cell::new(MqttStateInner {
-                st,
-                sink,
-                timeout,
-                in_flight,
-            }),
-        }
-    }
-
-    pub(crate) fn sink(&self) -> &MqttSink {
-        &self.inner.sink
-    }
-
-    pub(crate) fn session(&self) -> &St {
-        &self.inner.get_ref().st
-    }
-
-    pub(crate) fn session_mut(&mut self) -> &mut St {
-        &mut self.inner.get_mut().st
-    }
-}
-
-// dispatcher factory
-pub(crate) fn dispatcher<St, T, E>(
+/// dispatcher factory
+pub(super) fn factory<St, T, E>(
     publish: T,
-    subscribe: Rc<
-        boxed::BoxServiceFactory<
-            St,
-            Subscribe<St>,
-            SubscribeResult,
-            MqttError<E>,
-            MqttError<E>,
-        >,
+    subscribe: boxed::BoxServiceFactory<
+        Session<St>,
+        Subscribe,
+        SubscribeResult,
+        MqttError<E>,
+        MqttError<E>,
     >,
-    unsubscribe: Rc<
-        boxed::BoxServiceFactory<St, Unsubscribe<St>, (), MqttError<E>, MqttError<E>>,
+    unsubscribe: boxed::BoxServiceFactory<
+        Session<St>,
+        Unsubscribe,
+        (),
+        MqttError<E>,
+        MqttError<E>,
     >,
+    disconnect: Option<Rc<dyn Fn(&Session<St>, bool)>>,
 ) -> impl ServiceFactory<
-    Config = MqttState<St>,
-    Request = ioframe::Item<MqttState<St>, mqtt::Codec>,
+    Config = Session<St>,
+    Request = mqtt::Packet,
     Response = Option<mqtt::Packet>,
     Error = MqttError<E>,
     InitError = MqttError<E>,
 >
 where
     E: 'static,
-    St: Clone + 'static,
+    St: 'static,
     T: ServiceFactory<
-            Config = St,
-            Request = Publish<St>,
+            Config = Session<St>,
+            Request = Publish,
             Response = (),
             Error = MqttError<E>,
             InitError = MqttError<E>,
@@ -101,17 +58,16 @@ where
 {
     let time = LowResTimeService::with(Duration::from_secs(1));
 
-    fn_factory_with_config(move |cfg: MqttState<St>| {
+    fn_factory_with_config(move |cfg: Session<St>| {
         let time = time.clone();
-        let state = cfg.session().clone();
-        let timeout = cfg.inner.timeout;
-        let inflight = cfg.inner.in_flight;
+        let disconnect = disconnect.clone();
+        let (timeout, inflight) = cfg.params();
 
         // create services
         let fut = join3(
-            publish.new_service(state.clone()),
-            subscribe.new_service(state.clone()),
-            unsubscribe.new_service(state.clone()),
+            publish.new_service(cfg.clone()),
+            subscribe.new_service(cfg.clone()),
+            unsubscribe.new_service(cfg.clone()),
         );
 
         async move {
@@ -119,6 +75,7 @@ where
 
             // mqtt dispatcher
             Ok(Dispatcher::new(
+                cfg,
                 // keep-alive connection
                 pipeline(KeepAliveService::new(timeout, time, || {
                     MqttError::KeepAliveTimeout
@@ -136,6 +93,7 @@ where
                 ),
                 subscribe?,
                 unsubscribe?,
+                disconnect,
             ))
         }
     })
@@ -143,34 +101,40 @@ where
 
 /// PUBLIS/SUBSCRIBER/UNSUBSCRIBER packets dispatcher
 pub(crate) struct Dispatcher<St, T: Service> {
+    session: Session<St>,
     publish: T,
-    subscribe: boxed::BoxService<Subscribe<St>, SubscribeResult, T::Error>,
-    unsubscribe: boxed::BoxService<Unsubscribe<St>, (), T::Error>,
+    subscribe: boxed::BoxService<Subscribe, SubscribeResult, T::Error>,
+    unsubscribe: boxed::BoxService<Unsubscribe, (), T::Error>,
+    disconnect: Option<Rc<dyn Fn(&Session<St>, bool)>>,
 }
 
 impl<St, T> Dispatcher<St, T>
 where
-    T: Service<Request = Publish<St>, Response = ()>,
+    T: Service<Request = Publish, Response = ()>,
 {
     pub(crate) fn new(
+        session: Session<St>,
         publish: T,
-        subscribe: boxed::BoxService<Subscribe<St>, SubscribeResult, T::Error>,
-        unsubscribe: boxed::BoxService<Unsubscribe<St>, (), T::Error>,
+        subscribe: boxed::BoxService<Subscribe, SubscribeResult, T::Error>,
+        unsubscribe: boxed::BoxService<Unsubscribe, (), T::Error>,
+        disconnect: Option<Rc<dyn Fn(&Session<St>, bool)>>,
     ) -> Self {
         Self {
+            session,
             publish,
             subscribe,
             unsubscribe,
+            disconnect,
         }
     }
 }
 
 impl<St, T> Service for Dispatcher<St, T>
 where
-    T: Service<Request = Publish<St>, Response = ()>,
+    T: Service<Request = Publish, Response = ()>,
     T::Error: 'static,
 {
-    type Request = ioframe::Item<MqttState<St>, mqtt::Codec>;
+    type Request = mqtt::Packet;
     type Response = Option<mqtt::Packet>;
     type Error = T::Error;
     type Future = Either<
@@ -193,9 +157,14 @@ where
         }
     }
 
-    fn call(&mut self, req: ioframe::Item<MqttState<St>, mqtt::Codec>) -> Self::Future {
-        let (mut state, _, packet) = req.into_parts();
+    fn poll_shutdown(&mut self, _: &mut Context<'_>, is_error: bool) -> Poll<()> {
+        if let Some(disconnect) = self.disconnect.take() {
+            disconnect(&self.session, is_error);
+        }
+        Poll::Ready(())
+    }
 
+    fn call(&mut self, packet: mqtt::Packet) -> Self::Future {
         log::trace!("Dispatch packet: {:#?}", packet);
         match packet {
             mqtt::Packet::PingRequest => {
@@ -206,12 +175,12 @@ where
                 let packet_id = publish.packet_id;
                 Either::Right(PublishResponse {
                     packet_id,
-                    fut: self.publish.call(Publish::new(state, publish)),
+                    fut: self.publish.call(Publish::new(publish)),
                     _t: PhantomData,
                 })
             }
             mqtt::Packet::PublishAck { packet_id } => {
-                state.inner.get_mut().sink.complete_publish_qos1(packet_id);
+                self.session.sink().complete_publish_qos1(packet_id);
                 Either::Left(Either::Left(ok(None)))
             }
             mqtt::Packet::Subscribe {
@@ -220,7 +189,7 @@ where
             } => Either::Left(Either::Right(
                 SubscribeResponse {
                     packet_id,
-                    fut: self.subscribe.call(Subscribe::new(state, topic_filters)),
+                    fut: self.subscribe.call(Subscribe::new(topic_filters)),
                 }
                 .boxed_local(),
             )),
@@ -229,7 +198,7 @@ where
                 topic_filters,
             } => Either::Left(Either::Right(
                 self.unsubscribe
-                    .call(Unsubscribe::new(state, topic_filters))
+                    .call(Unsubscribe::new(topic_filters))
                     .map(move |_| Ok(Some(mqtt::Packet::UnsubscribeAck { packet_id })))
                     .boxed_local(),
             )),

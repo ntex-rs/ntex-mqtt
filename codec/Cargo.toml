@@ -14,5 +14,5 @@ workspace = ".."
 [dependencies]
 bitflags = "1.0"
 bytes = "0.5.2"
-bytestring = "0.1.0"
-actix-codec = "0.2.0"
+bytestring = "0.1.4"
+ntex-codec = "0.1.0"

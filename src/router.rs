@@ -3,15 +3,15 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
-use actix_router::{IntoPattern, RouterBuilder};
-use actix_service::boxed::{self, BoxService, BoxServiceFactory};
-use actix_service::{fn_service, IntoServiceFactory, Service, ServiceFactory};
 use futures::future::{join_all, ok, JoinAll, LocalBoxFuture};
+use ntex::router::{IntoPattern, RouterBuilder};
+use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
+use ntex::service::{fn_service, IntoServiceFactory, Service, ServiceFactory};
 
 use crate::publish::Publish;
 
-type Handler<S, E> = BoxServiceFactory<S, Publish<S>, (), E, E>;
-type HandlerService<S, E> = BoxService<Publish<S>, (), E>;
+type Handler<S, E> = BoxServiceFactory<S, Publish, (), E, E>;
+type HandlerService<E> = BoxService<Publish, (), E>;
 
 /// Router - structure that follows the builder pattern
 /// for building publish packet router instances for mqtt server.
@@ -31,10 +31,10 @@ where
     /// **Note** Default service acks all publish packets
     pub fn new() -> Self {
         Router {
-            router: actix_router::Router::build(),
+            router: ntex::router::Router::build(),
             handlers: Vec::new(),
             default: boxed::factory(
-                fn_service(|p: Publish<S>| {
+                fn_service(|p: Publish| {
                     log::warn!("Unknown topic {:?}", p.publish_topic());
                     ok::<_, E>(())
                 })
@@ -48,7 +48,7 @@ where
     where
         T: IntoPattern,
         F: IntoServiceFactory<U>,
-        U: ServiceFactory<Config = S, Request = Publish<S>, Response = (), Error = E>,
+        U: ServiceFactory<Config = S, Request = Publish, Response = (), Error = E>,
         E: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
@@ -63,7 +63,7 @@ where
         F: IntoServiceFactory<U>,
         U: ServiceFactory<
             Config = S,
-            Request = Publish<S>,
+            Request = Publish,
             Response = (),
             Error = E,
             InitError = E,
@@ -89,7 +89,7 @@ where
 }
 
 pub struct RouterFactory<S, E> {
-    router: Rc<actix_router::Router<usize>>,
+    router: Rc<ntex::router::Router<usize>>,
     handlers: Vec<Handler<S, E>>,
     default: Handler<S, E>,
 }
@@ -100,12 +100,12 @@ where
     E: 'static,
 {
     type Config = S;
-    type Request = Publish<S>;
+    type Request = Publish;
     type Response = ();
     type Error = E;
     type InitError = E;
-    type Service = RouterService<S, E>;
-    type Future = RouterFactoryFut<S, E>;
+    type Service = RouterService<E>;
+    type Future = RouterFactoryFut<E>;
 
     fn new_service(&self, session: S) -> Self::Future {
         let fut: Vec<_> = self
@@ -122,19 +122,19 @@ where
     }
 }
 
-pub struct RouterFactoryFut<S, E> {
-    router: Rc<actix_router::Router<usize>>,
-    handlers: JoinAll<LocalBoxFuture<'static, Result<HandlerService<S, E>, E>>>,
+pub struct RouterFactoryFut<E> {
+    router: Rc<ntex::router::Router<usize>>,
+    handlers: JoinAll<LocalBoxFuture<'static, Result<HandlerService<E>, E>>>,
     default: Option<
         either::Either<
-            LocalBoxFuture<'static, Result<HandlerService<S, E>, E>>,
-            HandlerService<S, E>,
+            LocalBoxFuture<'static, Result<HandlerService<E>, E>>,
+            HandlerService<E>,
         >,
     >,
 }
 
-impl<S, E> Future for RouterFactoryFut<S, E> {
-    type Output = Result<RouterService<S, E>, E>;
+impl<E> Future for RouterFactoryFut<E> {
+    type Output = Result<RouterService<E>, E>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let res = match self.default.as_mut().unwrap() {
@@ -165,18 +165,17 @@ impl<S, E> Future for RouterFactoryFut<S, E> {
     }
 }
 
-pub struct RouterService<S, E> {
-    router: Rc<actix_router::Router<usize>>,
-    handlers: Vec<BoxService<Publish<S>, (), E>>,
-    default: BoxService<Publish<S>, (), E>,
+pub struct RouterService<E> {
+    router: Rc<ntex::router::Router<usize>>,
+    handlers: Vec<BoxService<Publish, (), E>>,
+    default: BoxService<Publish, (), E>,
 }
 
-impl<S, E> Service for RouterService<S, E>
+impl<E> Service for RouterService<E>
 where
-    S: 'static,
     E: 'static,
 {
-    type Request = Publish<S>;
+    type Request = Publish;
     type Response = ();
     type Error = E;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
@@ -196,7 +195,7 @@ where
         }
     }
 
-    fn call(&mut self, mut req: Publish<S>) -> Self::Future {
+    fn call(&mut self, mut req: Publish) -> Self::Future {
         if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
             self.handlers[*idx].call(req)
         } else {

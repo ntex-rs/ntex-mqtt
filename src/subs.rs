@@ -3,14 +3,10 @@ use std::marker::PhantomData;
 use bytestring::ByteString;
 use mqtt_codec as mqtt;
 
-use crate::dispatcher::MqttState;
-use crate::sink::MqttSink;
-
 /// Subscribe message
-pub struct Subscribe<S> {
+pub struct Subscribe {
     topics: Vec<(ByteString, mqtt::QoS)>,
     codes: Vec<mqtt::SubscribeReturnCode>,
-    state: MqttState<S>,
 }
 
 /// Result of a subscribe message
@@ -18,39 +14,17 @@ pub struct SubscribeResult {
     pub(crate) codes: Vec<mqtt::SubscribeReturnCode>,
 }
 
-impl<S> Subscribe<S> {
-    pub(crate) fn new(state: MqttState<S>, topics: Vec<(ByteString, mqtt::QoS)>) -> Self {
+impl Subscribe {
+    pub(crate) fn new(topics: Vec<(ByteString, mqtt::QoS)>) -> Self {
         let mut codes = Vec::with_capacity(topics.len());
         (0..topics.len()).for_each(|_| codes.push(mqtt::SubscribeReturnCode::Failure));
 
-        Self {
-            topics,
-            state,
-            codes,
-        }
-    }
-
-    #[inline]
-    /// returns reference to a connection session
-    pub fn session(&self) -> &S {
-        self.state.session()
-    }
-
-    #[inline]
-    /// returns mutable reference to a connection session
-    pub fn session_mut(&mut self) -> &mut S {
-        self.state.session_mut()
-    }
-
-    #[inline]
-    /// Mqtt client sink object
-    pub fn sink(&self) -> MqttSink {
-        self.state.sink().clone()
+        Self { topics, codes }
     }
 
     #[inline]
     /// returns iterator over subscription topics
-    pub fn iter_mut(&mut self) -> SubscribeIter<S> {
+    pub fn iter_mut(&mut self) -> SubscribeIter {
         SubscribeIter {
             subs: self as *const _ as *mut _,
             entry: 0,
@@ -65,31 +39,30 @@ impl<S> Subscribe<S> {
     }
 }
 
-impl<'a, S> IntoIterator for &'a mut Subscribe<S> {
-    type Item = Subscription<'a, S>;
-    type IntoIter = SubscribeIter<'a, S>;
+impl<'a> IntoIterator for &'a mut Subscribe {
+    type Item = Subscription<'a>;
+    type IntoIter = SubscribeIter<'a>;
 
-    fn into_iter(self) -> SubscribeIter<'a, S> {
+    fn into_iter(self) -> SubscribeIter<'a> {
         self.iter_mut()
     }
 }
 
 /// Iterator over subscription topics
-pub struct SubscribeIter<'a, S> {
-    subs: *mut Subscribe<S>,
+pub struct SubscribeIter<'a> {
+    subs: *mut Subscribe,
     entry: usize,
-    lt: PhantomData<&'a mut Subscribe<S>>,
+    lt: PhantomData<&'a mut Subscribe>,
 }
 
-impl<'a, S> SubscribeIter<'a, S> {
-    fn next_unsafe(&mut self) -> Option<Subscription<'a, S>> {
+impl<'a> SubscribeIter<'a> {
+    fn next_unsafe(&mut self) -> Option<Subscription<'a>> {
         let subs = unsafe { &mut *self.subs };
 
         if self.entry < subs.topics.len() {
             let s = Subscription {
                 topic: &subs.topics[self.entry].0,
                 qos: subs.topics[self.entry].1,
-                state: subs.state.clone(),
                 code: &mut subs.codes[self.entry],
             };
             self.entry += 1;
@@ -100,36 +73,23 @@ impl<'a, S> SubscribeIter<'a, S> {
     }
 }
 
-impl<'a, S> Iterator for SubscribeIter<'a, S> {
-    type Item = Subscription<'a, S>;
+impl<'a> Iterator for SubscribeIter<'a> {
+    type Item = Subscription<'a>;
 
     #[inline]
-    fn next(&mut self) -> Option<Subscription<'a, S>> {
+    fn next(&mut self) -> Option<Subscription<'a>> {
         self.next_unsafe()
     }
 }
 
 /// Subscription topic
-pub struct Subscription<'a, S> {
+pub struct Subscription<'a> {
     topic: &'a ByteString,
-    state: MqttState<S>,
     qos: mqtt::QoS,
     code: &'a mut mqtt::SubscribeReturnCode,
 }
 
-impl<'a, S> Subscription<'a, S> {
-    #[inline]
-    /// reference to a connection session
-    pub fn session(&self) -> &S {
-        self.state.session()
-    }
-
-    #[inline]
-    /// mutable reference to a connection session
-    pub fn session_mut(&mut self) -> &mut S {
-        self.state.session_mut()
-    }
-
+impl<'a> Subscription<'a> {
     #[inline]
     /// subscription topic
     pub fn topic(&self) -> &'a ByteString {
@@ -156,32 +116,13 @@ impl<'a, S> Subscription<'a, S> {
 }
 
 /// Unsubscribe message
-pub struct Unsubscribe<S> {
-    state: MqttState<S>,
+pub struct Unsubscribe {
     topics: Vec<ByteString>,
 }
 
-impl<S> Unsubscribe<S> {
-    pub(crate) fn new(state: MqttState<S>, topics: Vec<ByteString>) -> Self {
-        Self { topics, state }
-    }
-
-    #[inline]
-    /// reference to a connection session
-    pub fn session(&self) -> &S {
-        self.state.session()
-    }
-
-    #[inline]
-    /// mutable reference to a connection session
-    pub fn session_mut(&mut self) -> &mut S {
-        self.state.session_mut()
-    }
-
-    #[inline]
-    /// Mqtt client sink object
-    pub fn sink(&self) -> MqttSink {
-        self.state.sink().clone()
+impl Unsubscribe {
+    pub(crate) fn new(topics: Vec<ByteString>) -> Self {
+        Self { topics }
     }
 
     /// returns iterator over unsubscribe topics

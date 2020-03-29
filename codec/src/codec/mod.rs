@@ -1,5 +1,5 @@
-use actix_codec::{Decoder, Encoder};
 use bytes::{buf::Buf, BytesMut};
+use ntex_codec::{Decoder, Encoder};
 
 use crate::error::ParseError;
 use crate::proto::QoS;

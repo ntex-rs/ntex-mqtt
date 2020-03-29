@@ -1,52 +1,49 @@
-use actix_service::Service;
-use actix_testing::TestServer;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::ok;
+use ntex::server;
+use ntex::service::Service;
 
-use actix_mqtt::{client, Connect, ConnectAck, MqttServer, Publish};
+use ntex_mqtt::{client, Connect, ConnectAck, MqttServer, Publish, Session};
 
-#[derive(Clone)]
-struct Session;
+struct St;
 
-async fn connect<Io>(packet: Connect<Io>) -> Result<ConnectAck<Io, Session>, ()> {
+async fn connect<Io>(packet: Connect<Io>) -> Result<ConnectAck<Io, St>, ()> {
     println!("CONNECT: {:?}", packet);
-    Ok(packet.ack(Session, false))
+    Ok(packet.ack(St, false))
 }
 
-#[actix_rt::test]
+#[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    std::env::set_var(
-        "RUST_LOG",
-        "actix_codec=info,actix_server=trace,actix_connector=trace",
-    );
+    std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
     env_logger::init();
 
-    let srv = TestServer::with(|| MqttServer::new(connect).finish(|_t| ok(())));
+    let srv = server::test_server(|| MqttServer::new(connect).finish(|_t| ok(())));
 
-    #[derive(Clone)]
-    struct ClientSession;
+    struct Client;
 
     let mut client = client::Client::new(ByteString::from_static("user"))
         .state(|ack: client::ConnectAck<_>| async move {
             ack.sink()
                 .publish_qos0(ByteString::from_static("#"), Bytes::new(), false);
             ack.sink().close();
-            Ok(ack.state(ClientSession))
+            Ok(ack.state(Client))
         })
-        .finish(|_t: Publish<_>| {
-            async {
-                // t.sink().close();
-                Ok(())
-            }
-        });
+        .finish(ntex::fn_factory_with_config(|session: Session<Client>| {
+            let session = session.clone();
 
-    let conn = actix_connect::default_connector()
-        .call(actix_connect::Connect::with(String::new(), srv.addr()))
+            ok::<_, ()>(ntex::into_service(move |_t: Publish| {
+                session.sink().close();
+                async { Ok(()) }
+            }))
+        }));
+
+    let conn = ntex::connect::Connector::default()
+        .call(ntex::connect::Connect::with(String::new(), srv.addr()))
         .await
         .unwrap();
 
-    client.call(conn.into_parts().0).await.unwrap();
+    client.call(conn).await.unwrap();
 
     Ok(())
 }

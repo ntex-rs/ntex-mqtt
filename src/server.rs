@@ -1,59 +1,61 @@
+use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 
-use actix_codec::{AsyncRead, AsyncWrite};
-use actix_ioframe as ioframe;
-use actix_service::{apply, apply_fn, boxed, fn_factory, pipeline_factory, unit_config};
-use actix_service::{IntoServiceFactory, Service, ServiceFactory};
-use actix_utils::timeout::{Timeout, TimeoutError};
 use futures::{FutureExt, SinkExt, StreamExt};
 use mqtt_codec as mqtt;
+use ntex::channel::mpsc;
+use ntex::codec::{AsyncRead, AsyncWrite};
+use ntex::framed;
+use ntex::service::{apply, apply_fn, boxed, fn_factory, pipeline_factory, unit_config};
+use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::util::timeout::{Timeout, TimeoutError};
 
 use crate::cell::Cell;
 use crate::connect::{Connect, ConnectAck};
 use crate::default::{SubsNotImplemented, UnsubsNotImplemented};
-use crate::dispatcher::{dispatcher, MqttState};
+use crate::dispatcher::factory;
 use crate::error::MqttError;
 use crate::publish::Publish;
+use crate::session::Session;
 use crate::sink::MqttSink;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
 /// Mqtt Server
-pub struct MqttServer<Io, St, C: ServiceFactory, U> {
+pub struct MqttServer<Io, St, C: ServiceFactory> {
     connect: C,
     subscribe: boxed::BoxServiceFactory<
-        St,
-        Subscribe<St>,
+        Session<St>,
+        Subscribe,
         SubscribeResult,
         MqttError<C::Error>,
         MqttError<C::Error>,
     >,
     unsubscribe: boxed::BoxServiceFactory<
-        St,
-        Unsubscribe<St>,
+        Session<St>,
+        Unsubscribe,
         (),
         MqttError<C::Error>,
         MqttError<C::Error>,
     >,
-    disconnect: U,
+    disconnect: Option<Rc<dyn Fn(&Session<St>, bool)>>,
     max_size: usize,
     inflight: usize,
     handshake_timeout: u64,
     _t: PhantomData<(Io, St)>,
 }
 
-fn default_disconnect<St>(_: St, _: bool) {}
-
-impl<Io, St, C> MqttServer<Io, St, C, ()>
+impl<Io, St, C> MqttServer<Io, St, C>
 where
     St: 'static,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
         + 'static,
+    C::Error: fmt::Debug,
 {
     /// Create server factory and provide connect service
-    pub fn new<F>(connect: F) -> MqttServer<Io, St, C, impl Fn(St, bool)>
+    pub fn new<F>(connect: F) -> MqttServer<Io, St, C>
     where
         F: IntoServiceFactory<C>,
     {
@@ -71,19 +73,19 @@ where
             ),
             max_size: 0,
             inflight: 15,
-            disconnect: default_disconnect,
+            disconnect: None,
             handshake_timeout: 0,
             _t: PhantomData,
         }
     }
 }
 
-impl<Io, St, C, U> MqttServer<Io, St, C, U>
+impl<Io, St, C> MqttServer<Io, St, C>
 where
-    St: Clone + 'static,
-    U: Fn(St, bool) + 'static,
+    St: 'static,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
         + 'static,
+    C::Error: fmt::Debug,
 {
     /// Set handshake timeout in millis.
     ///
@@ -115,8 +117,11 @@ where
     pub fn subscribe<F, Srv>(mut self, subscribe: F) -> Self
     where
         F: IntoServiceFactory<Srv>,
-        Srv: ServiceFactory<Config = St, Request = Subscribe<St>, Response = SubscribeResult>
-            + 'static,
+        Srv: ServiceFactory<
+                Config = Session<St>,
+                Request = Subscribe,
+                Response = SubscribeResult,
+            > + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         self.subscribe = boxed::factory(
@@ -132,7 +137,8 @@ where
     pub fn unsubscribe<F, Srv>(mut self, unsubscribe: F) -> Self
     where
         F: IntoServiceFactory<Srv>,
-        Srv: ServiceFactory<Config = St, Request = Unsubscribe<St>, Response = ()> + 'static,
+        Srv: ServiceFactory<Config = Session<St>, Request = Unsubscribe, Response = ()>
+            + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         self.unsubscribe = boxed::factory(
@@ -147,24 +153,16 @@ where
     /// Callback to execute on disconnect
     ///
     /// Second parameter indicates error occured during disconnect.
-    pub fn disconnect<F, Out>(self, disconnect: F) -> MqttServer<Io, St, C, impl Fn(St, bool)>
+    pub fn disconnect<F, Out>(mut self, disconnect: F) -> Self
     where
-        F: Fn(St, bool) -> Out,
+        F: Fn(&Session<St>, bool) -> Out + 'static,
         Out: Future + 'static,
     {
-        MqttServer {
-            connect: self.connect,
-            subscribe: self.subscribe,
-            unsubscribe: self.unsubscribe,
-            max_size: self.max_size,
-            inflight: self.inflight,
-            handshake_timeout: self.handshake_timeout,
-            disconnect: move |st: St, err| {
-                let fut = disconnect(st, err);
-                actix_rt::spawn(fut.map(|_| ()));
-            },
-            _t: PhantomData,
-        }
+        self.disconnect = Some(Rc::new(move |st: &Session<St>, err| {
+            let fut = disconnect(st, err);
+            ntex::rt::spawn(fut.map(|_| ()));
+        }));
+        self
     }
 
     /// Set service to execute for publish packet and create service factory
@@ -174,40 +172,37 @@ where
     ) -> impl ServiceFactory<Config = (), Request = Io, Response = (), Error = MqttError<C::Error>>
     where
         Io: AsyncRead + AsyncWrite + 'static,
-        F: IntoServiceFactory<P>,
-        P: ServiceFactory<Config = St, Request = Publish<St>, Response = ()> + 'static,
-        C::Error: From<P::Error> + From<P::InitError>,
+        F: IntoServiceFactory<P> + 'static,
+        P: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,
+        C::Error: From<P::Error> + From<P::InitError> + fmt::Debug,
     {
         let connect = self.connect;
         let max_size = self.max_size;
         let handshake_timeout = self.handshake_timeout;
         let disconnect = self.disconnect;
-        let publish = boxed::factory(
-            publish
-                .into_factory()
-                .map_err(|e| MqttError::Service(e.into()))
-                .map_init_err(|e| MqttError::Service(e.into())),
-        );
+        let publish = publish
+            .into_factory()
+            .map_err(|e| MqttError::Service(e.into()))
+            .map_init_err(|e| MqttError::Service(e.into()));
 
         unit_config(
-            ioframe::Builder::new()
-                .factory(connect_service_factory(
-                    connect,
-                    max_size,
-                    self.inflight,
-                    handshake_timeout,
-                ))
-                .disconnect(move |cfg, err| disconnect(cfg.session().clone(), err))
-                .finish(dispatcher(
-                    publish,
-                    Rc::new(self.subscribe),
-                    Rc::new(self.unsubscribe),
-                ))
-                .map_err(|e| match e {
-                    ioframe::ServiceError::Service(e) => e,
-                    ioframe::ServiceError::Encoder(e) => MqttError::Protocol(e),
-                    ioframe::ServiceError::Decoder(e) => MqttError::Protocol(e),
-                }),
+            framed::FactoryBuilder::new(connect_service_factory(
+                connect,
+                max_size,
+                self.inflight,
+                handshake_timeout,
+            ))
+            .build(factory(
+                publish,
+                self.subscribe,
+                self.unsubscribe,
+                disconnect,
+            ))
+            .map_err(|e| match e {
+                framed::ServiceError::Service(e) => e,
+                framed::ServiceError::Encoder(e) => MqttError::Protocol(e),
+                framed::ServiceError::Decoder(e) => MqttError::Protocol(e),
+            }),
         )
     }
 }
@@ -219,13 +214,19 @@ fn connect_service_factory<Io, St, C>(
     handshake_timeout: u64,
 ) -> impl ServiceFactory<
     Config = (),
-    Request = ioframe::Connect<Io, mqtt::Codec>,
-    Response = ioframe::ConnectResult<Io, MqttState<St>, mqtt::Codec>,
+    Request = framed::Connect<Io, mqtt::Codec>,
+    Response = framed::ConnectResult<
+        Io,
+        Session<St>,
+        mqtt::Codec,
+        mpsc::Receiver<mqtt::Packet>,
+    >,
     Error = MqttError<C::Error>,
 >
 where
     Io: AsyncRead + AsyncWrite,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>,
+    C::Error: fmt::Debug,
 {
     apply(
         Timeout::new(Duration::from_millis(handshake_timeout)),
@@ -237,7 +238,8 @@ where
 
                 Ok::<_, C::InitError>(apply_fn(
                     service.map_err(MqttError::Service),
-                    move |conn: ioframe::Connect<Io, mqtt::Codec>, service| {
+                    move |conn: framed::Connect<Io, mqtt::Codec>, service| {
+                        log::trace!("Starting mqtt handshake");
                         let mut srv = service.clone();
                         let mut framed = conn.codec(mqtt::Codec::new().max_size(max_size));
 
@@ -246,21 +248,28 @@ where
                             let packet = framed
                                 .next()
                                 .await
-                                .ok_or(MqttError::Disconnected)
-                                .and_then(|res| res.map_err(|e| MqttError::Protocol(e)))?;
+                                .ok_or_else(|| {
+                                    log::trace!("Server mqtt is disconnected during handshake");
+                                    MqttError::Disconnected
+                                })
+                                .and_then(|res| {
+                                    res.map_err(|e| {
+                                        log::trace!(
+                                            "Error is received during mqtt handshake: {:?}",
+                                            e
+                                        );
+                                        MqttError::Protocol(e)
+                                    })
+                                })?;
 
                             match packet {
                                 mqtt::Packet::Connect(connect) => {
-                                    let sink = MqttSink::new(framed.sink().clone());
+                                    let (tx, rx) = mpsc::channel();
+                                    let sink = MqttSink::new(tx);
 
                                     // authenticate mqtt connection
                                     let mut ack = srv
-                                        .call(Connect::new(
-                                            connect,
-                                            framed,
-                                            sink.clone(),
-                                            inflight,
-                                        ))
+                                        .call(Connect::new(connect, framed, sink, inflight))
                                         .await?;
 
                                     match ack.session {
@@ -273,6 +282,7 @@ where
                                                         mqtt::ConnectCode::ConnectionAccepted,
                                                 }
                                             );
+                                            let sink = ack.sink;
                                             ack.io
                                                 .send(mqtt::Packet::ConnectAck {
                                                     session_present: ack.session_present,
@@ -281,7 +291,7 @@ where
                                                 })
                                                 .await?;
 
-                                            Ok(ack.io.state(MqttState::new(
+                                            Ok(ack.io.out(rx).state(Session::new(
                                                 session,
                                                 sink,
                                                 ack.keep_alive,
