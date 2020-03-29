@@ -18,8 +18,8 @@ members = [
 ]
 
 [dependencies]
-mqtt-codec = "0.3.0"
 ntex = "0.1.1"
+ntex-mqtt-codec = "0.3.0"
 
 derive_more = "0.99.2"
 bytes = "0.5.3"
@@ -37,7 +37,7 @@ env_logger = "0.6"
 
 [patch.crates-io]
 ntex-mqtt = { path = "." }
-mqtt-codec = { path = "codec" }
+ntex-mqtt-codec = { path = "codec" }
 
 ntex = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-rt = { git = "https://github.com/ntex-rs/ntex.git" }

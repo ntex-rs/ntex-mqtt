@@ -8,12 +8,12 @@ use std::time::Duration;
 
 use futures::future::{join3, ok, Either, FutureExt, LocalBoxFuture, Ready};
 use futures::ready;
-use mqtt_codec as mqtt;
 use ntex::service::{boxed, fn_factory_with_config, pipeline, Service, ServiceFactory};
 use ntex::util::inflight::InFlightService;
 use ntex::util::keepalive::KeepAliveService;
 use ntex::util::order::{InOrder, InOrderError};
 use ntex::util::time::LowResTimeService;
+use ntex_mqtt_codec as mqtt;
 
 use crate::error::MqttError;
 use crate::publish::Publish;

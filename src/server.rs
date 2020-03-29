@@ -5,13 +5,13 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use futures::{FutureExt, SinkExt, StreamExt};
-use mqtt_codec as mqtt;
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::framed;
 use ntex::service::{apply, apply_fn, boxed, fn_factory, pipeline_factory, unit_config};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
+use ntex_mqtt_codec as mqtt;
 
 use crate::cell::Cell;
 use crate::connect::{Connect, ConnectAck};

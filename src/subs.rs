@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use bytestring::ByteString;
-use mqtt_codec as mqtt;
+use ntex_mqtt_codec as mqtt;
 
 /// Subscribe message
 pub struct Subscribe {

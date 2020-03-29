@@ -6,8 +6,8 @@ use std::num::NonZeroU16;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::{err, Either, Future, TryFutureExt};
-use mqtt_codec as mqtt;
 use ntex::channel::{mpsc, oneshot};
+use ntex_mqtt_codec as mqtt;
 
 pub struct MqttSink(RefCell<MqttSinkInner>);
 

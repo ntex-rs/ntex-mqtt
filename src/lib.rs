@@ -23,3 +23,8 @@ pub use self::server::MqttServer;
 pub use self::session::Session;
 pub use self::sink::MqttSink;
 pub use self::subs::{Subscribe, SubscribeIter, SubscribeResult, Subscription, Unsubscribe};
+
+pub mod codec {
+    //! MQTT v3.1.1 Protocol codec
+    pub use ntex_mqtt_codec::*;
+}

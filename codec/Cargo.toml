@@ -1,5 +1,5 @@
 [package]
-name = "mqtt-codec"
+name = "ntex-mqtt-codec"
 version = "0.3.0"
 authors = ["Max Gortman <mgortman@microsoft.com>", "Nikolay Kim <fafhrd91@gmail.com>", "Flier Lu <flier.lu@gmail.com>"]
 description = "MQTT v3.1.1 Codec"

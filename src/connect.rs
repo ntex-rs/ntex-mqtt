@@ -2,9 +2,9 @@ use std::fmt;
 use std::ops::Deref;
 use std::time::Duration;
 
-use mqtt_codec as mqtt;
 use ntex::channel::mpsc;
 use ntex::framed;
+use ntex_mqtt_codec as mqtt;
 
 use crate::sink::MqttSink;
 

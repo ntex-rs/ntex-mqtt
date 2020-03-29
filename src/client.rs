@@ -10,11 +10,11 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::{FutureExt, LocalBoxFuture};
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use mqtt_codec as mqtt;
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::framed;
 use ntex::service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
+use ntex_mqtt_codec as mqtt;
 
 use crate::cell::Cell;
 use crate::default::{SubsNotImplemented, UnsubsNotImplemented};
