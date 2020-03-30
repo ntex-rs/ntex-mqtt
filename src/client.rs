@@ -16,7 +16,6 @@ use ntex::framed;
 use ntex::service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
 use ntex_mqtt_codec as mqtt;
 
-use crate::cell::Cell;
 use crate::default::{SubsNotImplemented, UnsubsNotImplemented};
 use crate::dispatcher::factory;
 use crate::error::MqttError;
@@ -117,7 +116,7 @@ where
         C::Error: fmt::Debug + 'static,
     {
         ServiceBuilder {
-            state: Cell::new(state.into_service()),
+            state: Rc::new(state.into_service()),
             packet: mqtt::Connect {
                 client_id: self.client_id,
                 clean_session: self.clean_session,
@@ -138,7 +137,7 @@ where
 }
 
 pub struct ServiceBuilder<Io, St, C: Service> {
-    state: Cell<C>,
+    state: Rc<C>,
     packet: mqtt::Connect,
     subscribe: boxed::BoxServiceFactory<
         Session<St>,
@@ -224,7 +223,7 @@ where
 }
 
 struct ConnectService<Io, St, C> {
-    connect: Cell<C>,
+    connect: Rc<C>,
     packet: mqtt::Connect,
     keep_alive: u64,
     inflight: usize,
@@ -244,15 +243,21 @@ where
     type Error = MqttError<C::Error>;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+    #[inline]
+    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.connect
-            .get_mut()
+            .as_ref()
             .poll_ready(cx)
             .map_err(MqttError::Service)
     }
 
-    fn call(&mut self, req: Self::Request) -> Self::Future {
-        let mut srv = self.connect.clone();
+    #[inline]
+    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+        self.connect.as_ref().poll_shutdown(cx, is_error)
+    }
+
+    fn call(&self, req: Self::Request) -> Self::Future {
+        let srv = self.connect.clone();
         let packet = self.packet.clone();
         let keep_alive = Duration::from_secs(self.keep_alive as u64);
         let inflight = self.inflight;
@@ -290,7 +295,7 @@ where
                         io: framed,
                     };
                     Ok(srv
-                        .get_mut()
+                        .as_ref()
                         .call(ack)
                         .await
                         .map_err(MqttError::Service)

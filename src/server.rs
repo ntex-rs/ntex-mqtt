@@ -13,7 +13,6 @@ use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
 use ntex_mqtt_codec as mqtt;
 
-use crate::cell::Cell;
 use crate::connect::{Connect, ConnectAck};
 use crate::default::{SubsNotImplemented, UnsubsNotImplemented};
 use crate::dispatcher::factory;
@@ -234,13 +233,13 @@ where
             let fut = factory.new_service(());
 
             async move {
-                let service = Cell::new(fut.await?);
+                let service = Rc::new(fut.await?);
 
                 Ok::<_, C::InitError>(apply_fn(
                     service.map_err(MqttError::Service),
                     move |conn: framed::Connect<Io, mqtt::Codec>, service| {
                         log::trace!("Starting mqtt handshake");
-                        let mut srv = service.clone();
+                        let srv = service.clone();
                         let mut framed = conn.codec(mqtt::Codec::new().max_size(max_size));
 
                         async move {

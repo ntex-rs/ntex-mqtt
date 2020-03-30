@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::num::NonZeroU16;
@@ -105,7 +106,7 @@ pub(crate) struct Dispatcher<St, T: Service> {
     publish: T,
     subscribe: boxed::BoxService<Subscribe, SubscribeResult, T::Error>,
     unsubscribe: boxed::BoxService<Unsubscribe, (), T::Error>,
-    disconnect: Option<Rc<dyn Fn(&Session<St>, bool)>>,
+    disconnect: RefCell<Option<Rc<dyn Fn(&Session<St>, bool)>>>,
 }
 
 impl<St, T> Dispatcher<St, T>
@@ -124,7 +125,7 @@ where
             publish,
             subscribe,
             unsubscribe,
-            disconnect,
+            disconnect: RefCell::new(disconnect),
         }
     }
 }
@@ -145,7 +146,7 @@ where
         PublishResponse<T::Future, T::Error>,
     >;
 
-    fn poll_ready(&mut self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx)?;
         let res2 = self.subscribe.poll_ready(cx)?;
         let res3 = self.unsubscribe.poll_ready(cx)?;
@@ -157,14 +158,14 @@ where
         }
     }
 
-    fn poll_shutdown(&mut self, _: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        if let Some(disconnect) = self.disconnect.take() {
+    fn poll_shutdown(&self, _: &mut Context<'_>, is_error: bool) -> Poll<()> {
+        if let Some(disconnect) = self.disconnect.borrow_mut().take() {
             disconnect(&self.session, is_error);
         }
         Poll::Ready(())
     }
 
-    fn call(&mut self, packet: mqtt::Packet) -> Self::Future {
+    fn call(&self, packet: mqtt::Packet) -> Self::Future {
         log::trace!("Dispatch packet: {:#?}", packet);
         match packet {
             mqtt::Packet::PingRequest => {

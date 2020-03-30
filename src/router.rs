@@ -180,9 +180,9 @@ where
     type Error = E;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;
-        for hnd in &mut self.handlers {
+        for hnd in &self.handlers {
             if let Poll::Pending = hnd.poll_ready(cx)? {
                 not_ready = true;
             }
@@ -195,7 +195,7 @@ where
         }
     }
 
-    fn call(&mut self, mut req: Publish) -> Self::Future {
+    fn call(&self, mut req: Publish) -> Self::Future {
         if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
             self.handlers[*idx].call(req)
         } else {

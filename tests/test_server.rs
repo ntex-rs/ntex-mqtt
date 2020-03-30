@@ -22,7 +22,7 @@ async fn test_simple() -> std::io::Result<()> {
 
     struct Client;
 
-    let mut client = client::Client::new(ByteString::from_static("user"))
+    let client = client::Client::new(ByteString::from_static("user"))
         .state(|ack: client::ConnectAck<_>| async move {
             ack.sink()
                 .publish_qos0(ByteString::from_static("#"), Bytes::new(), false);
