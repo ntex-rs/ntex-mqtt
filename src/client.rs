@@ -111,7 +111,7 @@ where
     pub fn state<C, F>(self, state: F) -> ServiceBuilder<Io, St, C>
     where
         F: IntoService<C>,
-        Io: AsyncRead + AsyncWrite,
+        Io: AsyncRead + AsyncWrite + Unpin,
         C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>>,
         C::Error: fmt::Debug + 'static,
     {
@@ -165,7 +165,7 @@ pub struct ServiceBuilder<Io, St, C: Service> {
 impl<Io, St, C> ServiceBuilder<Io, St, C>
 where
     St: 'static,
-    Io: AsyncRead + AsyncWrite + 'static,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
     C::Error: fmt::Debug + 'static,
 {
@@ -233,7 +233,7 @@ struct ConnectService<Io, St, C> {
 impl<Io, St, C> Service for ConnectService<Io, St, C>
 where
     St: 'static,
-    Io: AsyncRead + AsyncWrite + 'static,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
     C::Error: fmt::Debug + 'static,
 {
@@ -348,7 +348,7 @@ impl<Io> ConnectAck<Io> {
 
 impl<Io> Stream for ConnectAck<Io>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: AsyncRead + AsyncWrite + Unpin + Unpin,
 {
     type Item = Result<mqtt::Packet, mqtt::ParseError>;
 

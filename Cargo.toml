@@ -40,9 +40,4 @@ ntex-mqtt = { path = "." }
 ntex-mqtt-codec = { path = "codec" }
 
 ntex = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-rt = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-codec = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-router = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-macros = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-web-macros = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-service = { git = "https://github.com/ntex-rs/ntex.git" }

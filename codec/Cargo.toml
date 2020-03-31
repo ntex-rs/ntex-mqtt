@@ -12,7 +12,7 @@ edition = "2018"
 workspace = ".."
 
 [dependencies]
-bitflags = "1.0"
-bytes = "0.5.2"
-bytestring = "0.1.4"
+bitflags = "1.2"
+bytes = "0.5.4"
+bytestring = "0.1.5"
 ntex-codec = "0.1.0"

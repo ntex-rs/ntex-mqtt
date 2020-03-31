@@ -170,7 +170,7 @@ where
         publish: F,
     ) -> impl ServiceFactory<Config = (), Request = Io, Response = (), Error = MqttError<C::Error>>
     where
-        Io: AsyncRead + AsyncWrite + 'static,
+        Io: AsyncRead + AsyncWrite + Unpin + 'static,
         F: IntoServiceFactory<P> + 'static,
         P: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,
         C::Error: From<P::Error> + From<P::InitError> + fmt::Debug,
@@ -223,7 +223,7 @@ fn connect_service_factory<Io, St, C>(
     Error = MqttError<C::Error>,
 >
 where
-    Io: AsyncRead + AsyncWrite,
+    Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>,
     C::Error: fmt::Debug,
 {
