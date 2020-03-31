@@ -58,12 +58,7 @@ impl MqttSink {
     }
 
     /// Send publish packet
-    pub fn publish_qos1(
-        &mut self,
-        topic: ByteString,
-        payload: Bytes,
-        dup: bool,
-    ) -> impl Future<Output = Result<(), ()>> {
+    pub fn publish_qos1(&self, topic: ByteString, payload: Bytes, dup: bool) -> impl Future<Output = Result<(), ()>> {
         let mut inner = self.0.borrow_mut();
 
         if inner.sink.is_some() {
