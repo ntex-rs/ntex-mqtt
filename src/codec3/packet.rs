@@ -2,7 +2,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use std::num::NonZeroU16;
 
-use crate::proto::{Protocol, QoS};
+use super::proto::{Protocol, QoS};
 
 #[repr(u8)]
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]

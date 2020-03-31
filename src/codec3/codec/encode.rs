@@ -1,7 +1,7 @@
 use bytes::{BufMut, BytesMut};
 
-use crate::packet::*;
-use crate::proto::*;
+use crate::codec3::packet::*;
+use crate::codec3::proto::*;
 
 use super::{ConnectFlags, WILL_QOS_SHIFT};
 

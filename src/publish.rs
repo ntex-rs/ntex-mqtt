@@ -4,9 +4,10 @@ use std::num::NonZeroU16;
 use bytes::Bytes;
 use bytestring::ByteString;
 use ntex::router::Path;
-use ntex_mqtt_codec as mqtt;
 use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
+
+use crate::codec3 as mqtt;
 
 /// Publish message
 pub struct Publish {

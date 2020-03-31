@@ -1,7 +1,4 @@
-#[macro_use]
-extern crate bitflags;
-
-extern crate bytestring;
+//! MQTT v3.1.1 Protocol codec
 
 mod error;
 #[macro_use]

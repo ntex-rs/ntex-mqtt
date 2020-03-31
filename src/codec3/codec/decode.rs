@@ -4,9 +4,9 @@ use std::num::{NonZeroU16, NonZeroU32};
 use bytes::{Buf, Bytes};
 use bytestring::ByteString;
 
-use crate::error::ParseError;
-use crate::packet::*;
-use crate::proto::*;
+use crate::codec3::error::ParseError;
+use crate::codec3::packet::*;
+use crate::codec3::proto::*;
 
 use super::{ConnectAckFlags, ConnectFlags, FixedHeader, WILL_QOS_SHIFT};
 

@@ -1,8 +1,11 @@
 #![allow(clippy::type_complexity, clippy::new_ret_no_self)]
 //! MQTT v3.1.1 Server framework
 
-// mod cell;
+#[macro_use]
+extern crate bitflags;
+
 pub mod client;
+pub mod codec3;
 mod connect;
 mod default;
 mod dispatcher;
@@ -23,8 +26,3 @@ pub use self::server::MqttServer;
 pub use self::session::Session;
 pub use self::sink::MqttSink;
 pub use self::subs::{Subscribe, SubscribeIter, SubscribeResult, Subscription, Unsubscribe};
-
-pub mod codec {
-    //! MQTT v3.1.1 Protocol codec
-    pub use ntex_mqtt_codec::*;
-}

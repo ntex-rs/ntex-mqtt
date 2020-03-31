@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use ntex::channel::mpsc;
 use ntex::framed;
-use ntex_mqtt_codec as mqtt;
 
+use crate::codec3 as mqtt;
 use crate::sink::MqttSink;
 
 /// Connect message

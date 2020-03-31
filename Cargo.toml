@@ -11,18 +11,12 @@ license = "MIT"
 exclude = [".gitignore", ".travis.yml", ".cargo/config"]
 edition = "2018"
 
-[workspace]
-members = [
-  ".",
-  "codec",
-]
-
 [dependencies]
 ntex = "0.1.1"
-ntex-mqtt-codec = "0.3.0"
-
-derive_more = "0.99.2"
+ntex-codec = "0.1.0"
+bitflags = "1.2"
 bytes = "0.5.3"
+derive_more = "0.99.2"
 either = "1.5.2"
 futures = "0.3.1"
 pin-project = "0.4.6"
@@ -36,8 +30,5 @@ uuid = { version = "0.8", features = ["v4"] }
 env_logger = "0.6"
 
 [patch.crates-io]
-ntex-mqtt = { path = "." }
-ntex-mqtt-codec = { path = "codec" }
-
 ntex = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-web-macros = { git = "https://github.com/ntex-rs/ntex.git" }

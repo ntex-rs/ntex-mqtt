@@ -14,8 +14,8 @@ use ntex::util::inflight::InFlightService;
 use ntex::util::keepalive::KeepAliveService;
 use ntex::util::order::{InOrder, InOrderError};
 use ntex::util::time::LowResTimeService;
-use ntex_mqtt_codec as mqtt;
 
+use crate::codec3 as mqtt;
 use crate::error::MqttError;
 use crate::publish::Publish;
 use crate::session::Session;

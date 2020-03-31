@@ -11,8 +11,8 @@ use ntex::framed;
 use ntex::service::{apply, apply_fn, boxed, fn_factory, pipeline_factory, unit_config};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
-use ntex_mqtt_codec as mqtt;
 
+use crate::codec3 as mqtt;
 use crate::connect::{Connect, ConnectAck};
 use crate::default::{SubsNotImplemented, UnsubsNotImplemented};
 use crate::dispatcher::factory;

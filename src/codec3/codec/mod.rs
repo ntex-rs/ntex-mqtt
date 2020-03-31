@@ -1,9 +1,9 @@
 use bytes::{buf::Buf, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
-use crate::error::ParseError;
-use crate::proto::QoS;
-use crate::{Packet, Publish};
+use crate::codec3::error::ParseError;
+use crate::codec3::proto::QoS;
+use crate::codec3::{Packet, Publish};
 
 mod decode;
 mod encode;

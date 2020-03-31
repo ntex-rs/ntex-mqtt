@@ -1,7 +1,7 @@
 use std::fmt::{self, Write};
 use std::{io, ops, str::FromStr};
 
-use crate::error::TopicError;
+use super::error::TopicError;
 
 #[inline]
 fn is_metadata<T: AsRef<str>>(s: T) -> bool {

@@ -14,8 +14,8 @@ use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::framed;
 use ntex::service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
-use ntex_mqtt_codec as mqtt;
 
+use crate::codec3 as mqtt;
 use crate::default::{SubsNotImplemented, UnsubsNotImplemented};
 use crate::dispatcher::factory;
 use crate::error::MqttError;

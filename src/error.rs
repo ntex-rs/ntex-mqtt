@@ -6,9 +6,9 @@ pub enum MqttError<E> {
     /// Message handler service error
     Service(E),
     /// Mqtt parse error
-    Protocol(ntex_mqtt_codec::ParseError),
+    Protocol(crate::codec3::ParseError),
     /// Unexpected packet
-    Unexpected(ntex_mqtt_codec::Packet, &'static str),
+    Unexpected(crate::codec3::Packet, &'static str),
     /// "SUBSCRIBE, UNSUBSCRIBE, and PUBLISH (in cases where QoS > 0) Control Packets MUST contain a non-zero 16-bit Packet Identifier [MQTT-2.3.1-1]."
     PacketIdRequired,
     /// Keep alive timeout
@@ -21,8 +21,8 @@ pub enum MqttError<E> {
     Io(io::Error),
 }
 
-impl<E> From<ntex_mqtt_codec::ParseError> for MqttError<E> {
-    fn from(err: ntex_mqtt_codec::ParseError) -> Self {
+impl<E> From<crate::codec3::ParseError> for MqttError<E> {
+    fn from(err: crate::codec3::ParseError) -> Self {
         MqttError::Protocol(err)
     }
 }
