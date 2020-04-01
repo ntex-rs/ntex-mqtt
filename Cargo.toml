@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "0.3.0"
+version = "0.1.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "MQTT v3.1.1 Client/Server framework"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -15,11 +15,11 @@ edition = "2018"
 ntex = "0.1.1"
 ntex-codec = "0.1.0"
 bitflags = "1.2"
-bytes = "0.5.3"
-derive_more = "0.99.2"
-either = "1.5.2"
-futures = "0.3.1"
-pin-project = "0.4.6"
+bytes = "0.5.4"
+derive_more = "0.99.5"
+either = "1.5.3"
+futures = "0.3.4"
+pin-project = "0.4.8"
 log = "0.4"
 bytestring = "0.1.5"
 serde = "1.0"
@@ -27,8 +27,4 @@ serde_json = "1.0"
 uuid = { version = "0.8", features = ["v4"] }
 
 [dev-dependencies]
-env_logger = "0.6"
-
-[patch.crates-io]
-ntex = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-web-macros = { git = "https://github.com/ntex-rs/ntex.git" }
+env_logger = "0.7"

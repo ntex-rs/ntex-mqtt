@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.0] - 2020-04-01
+
+* For to ntex namespace
+
 ## [0.2.3] - 2020-03-10
 
 * Add server handshake timeout
