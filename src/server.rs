@@ -42,7 +42,8 @@ pub struct MqttServer<Io, St, C: ServiceFactory> {
     disconnect: Option<Rc<dyn Fn(&Session<St>, bool)>>,
     max_size: usize,
     inflight: usize,
-    handshake_timeout: u64,
+    handshake_timeout: usize,
+    disconnect_timeout: usize,
     _t: PhantomData<(Io, St)>,
 }
 
@@ -74,6 +75,7 @@ where
             inflight: 15,
             disconnect: None,
             handshake_timeout: 0,
+            disconnect_timeout: 3000,
             _t: PhantomData,
         }
     }
@@ -90,8 +92,21 @@ where
     ///
     /// Handshake includes `connect` packet and response `connect-ack`.
     /// By default handshake timeuot is disabled.
-    pub fn handshake_timeout(mut self, timeout: u64) -> Self {
+    pub fn handshake_timeout(mut self, timeout: usize) -> Self {
         self.handshake_timeout = timeout;
+        self
+    }
+
+    /// Set server connection disconnect timeout in milliseconds.
+    ///
+    /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
+    /// within this time, the connection get dropped.
+    ///
+    /// To disable timeout set value to 0.
+    ///
+    /// By default disconnect timeout is set to 3 seconds.
+    pub fn disconnect_timeout(mut self, val: usize) -> Self {
+        self.disconnect_timeout = val;
         self
     }
 
@@ -179,6 +194,7 @@ where
         let max_size = self.max_size;
         let handshake_timeout = self.handshake_timeout;
         let disconnect = self.disconnect;
+        let disconnect_timeout = self.disconnect_timeout;
         let publish = publish
             .into_factory()
             .map_err(|e| MqttError::Service(e.into()))
@@ -191,6 +207,7 @@ where
                 self.inflight,
                 handshake_timeout,
             ))
+            .disconnect_timeout(disconnect_timeout)
             .build(factory(
                 publish,
                 self.subscribe,
@@ -210,7 +227,7 @@ fn connect_service_factory<Io, St, C>(
     factory: C,
     max_size: usize,
     inflight: usize,
-    handshake_timeout: u64,
+    handshake_timeout: usize,
 ) -> impl ServiceFactory<
     Config = (),
     Request = framed::Connect<Io, mqtt::Codec>,
@@ -228,7 +245,7 @@ where
     C::Error: fmt::Debug,
 {
     apply(
-        Timeout::new(Duration::from_millis(handshake_timeout)),
+        Timeout::new(Duration::from_millis(handshake_timeout as u64)),
         fn_factory(move || {
             let fut = factory.new_service(());
 

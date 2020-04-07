@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.1] - 2020-04-07
+
+* Add disconnect timeout
+
 ## [0.1.0] - 2020-04-01
 
 * For to ntex namespace
