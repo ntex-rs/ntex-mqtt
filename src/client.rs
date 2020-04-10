@@ -29,7 +29,6 @@ use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 pub struct Client<Io, St> {
     client_id: ByteString,
     clean_session: bool,
-    protocol: mqtt::Protocol,
     keep_alive: u16,
     last_will: Option<mqtt::LastWill>,
     username: Option<ByteString>,
@@ -47,7 +46,6 @@ where
         Client {
             client_id,
             clean_session: true,
-            protocol: mqtt::Protocol::default(),
             keep_alive: 30,
             last_will: None,
             username: None,
@@ -55,12 +53,6 @@ where
             inflight: 15,
             _t: PhantomData,
         }
-    }
-
-    /// Mqtt protocol version
-    pub fn protocol(mut self, val: mqtt::Protocol) -> Self {
-        self.protocol = val;
-        self
     }
 
     /// The handling of the Session state.
@@ -120,7 +112,6 @@ where
             packet: mqtt::Connect {
                 client_id: self.client_id,
                 clean_session: self.clean_session,
-                protocol: self.protocol,
                 keep_alive: self.keep_alive,
                 last_will: self.last_will,
                 username: self.username,
@@ -216,7 +207,7 @@ where
         ))
         .map_err(|e| match e {
             framed::ServiceError::Service(e) => e,
-            framed::ServiceError::Encoder(e) => MqttError::Protocol(e),
+            framed::ServiceError::Encoder(e) => MqttError::Protocol2(e),
             framed::ServiceError::Decoder(e) => MqttError::Protocol(e),
         })
     }
@@ -268,7 +259,7 @@ where
             framed
                 .send(mqtt::Packet::Connect(packet))
                 .await
-                .map_err(MqttError::Protocol)?;
+                .map_err(MqttError::Protocol2)?;
 
             let packet = framed
                 .next()
@@ -361,7 +352,7 @@ impl<Io> Sink<mqtt::Packet> for ConnectAck<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Error = mqtt::ParseError;
+    type Error = mqtt::EncodeError;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         Pin::new(&mut self.io).poll_ready(cx)
@@ -401,7 +392,7 @@ impl<Io, St> Sink<mqtt::Packet> for ConnectAckResult<Io, St>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Error = mqtt::ParseError;
+    type Error = mqtt::EncodeError;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         Pin::new(&mut self.io).poll_ready(cx)

@@ -1,39 +1,15 @@
-use bytes::{buf::Buf, BytesMut};
+use super::decode::{decode_packet, decode_variable_length};
+use super::encode::EncodeLtd;
+use super::error::{EncodeError, ParseError};
+use super::{Packet, MAX_PACKET_SIZE};
+use bytes::{Buf, BytesMut};
 use ntex_codec::{Decoder, Encoder};
-
-use crate::codec3::error::{EncodeError, ParseError};
-use crate::codec3::QoS;
-use crate::codec3::{Packet, Publish};
-
-mod decode;
-mod encode;
-
-use self::decode::*;
-use self::encode::*;
-
-bitflags::bitflags! {
-    pub struct ConnectFlags: u8 {
-        const USERNAME      = 0b1000_0000;
-        const PASSWORD      = 0b0100_0000;
-        const WILL_RETAIN   = 0b0010_0000;
-        const WILL_QOS      = 0b0001_1000;
-        const WILL          = 0b0000_0100;
-        const CLEAN_SESSION = 0b0000_0010;
-    }
-}
-
-pub const WILL_QOS_SHIFT: u8 = 3;
-
-bitflags::bitflags! {
-    pub struct ConnectAckFlags: u8 {
-        const SESSION_PRESENT = 0b0000_0001;
-    }
-}
 
 #[derive(Debug)]
 pub struct Codec {
     state: DecodeState,
     max_size: usize,
+    max_packet_size: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -48,6 +24,7 @@ impl Codec {
         Codec {
             state: DecodeState::FrameHeader,
             max_size: 0,
+            max_packet_size: None,
         }
     }
 
@@ -83,7 +60,7 @@ impl Decoder for Codec {
                     match decode_variable_length(&src_slice[1..])? {
                         Some((remaining_length, consumed)) => {
                             // check max message size
-                            if self.max_size != 0 && self.max_size < remaining_length {
+                            if self.max_size != 0 && self.max_size < remaining_length as usize {
                                 return Err(ParseError::MaxSizeExceeded);
                             }
                             src.advance(consumed + 1);
@@ -92,6 +69,7 @@ impl Decoder for Codec {
                                 remaining_length,
                             });
                             // todo: validate remaining_length against max frame size config
+                            let remaining_length = remaining_length as usize;
                             if src.len() < remaining_length {
                                 // todo: subtract?
                                 src.reserve(remaining_length); // extend receiving buffer to fit the whole frame -- todo: too eager?
@@ -104,13 +82,13 @@ impl Decoder for Codec {
                     }
                 }
                 DecodeState::Frame(fixed) => {
-                    if src.len() < fixed.remaining_length {
+                    if src.len() < fixed.remaining_length as usize {
                         return Ok(None);
                     }
-                    let packet_buf = src.split_to(fixed.remaining_length);
-                    let packet = decode_packet(packet_buf.freeze(), fixed.first_byte)?;
+                    let packet_buf = src.split_to(fixed.remaining_length as usize).freeze();
+                    let packet = decode_packet(packet_buf, fixed.first_byte)?;
                     self.state = DecodeState::FrameHeader;
-                    src.reserve(2);
+                    src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
                     return Ok(Some(packet));
                 }
             }
@@ -123,14 +101,14 @@ impl Encoder for Codec {
     type Error = EncodeError;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
-        if let Packet::Publish(Publish { qos, packet_id, .. }) = item {
-            if (qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce) && packet_id.is_none() {
-                return Err(EncodeError::PacketIdRequired);
-            }
+        let max_size = self.max_packet_size.map_or(MAX_PACKET_SIZE, |v| v - 5); // fixed header = 1, var_len(remaining.max_value()) = 4
+        let content_size = item.encoded_size(max_size);
+        if content_size > max_size as usize {
+            return Err(EncodeError::InvalidLength); // todo: separate error code
         }
-        let content_size = get_encoded_size(&item);
         dst.reserve(content_size + 5);
-        encode(&item, dst, content_size)?;
+        item.encode(dst, content_size as u32)?; // safe: max_size <= u32 max value
+
         Ok(())
     }
 }
@@ -141,7 +119,7 @@ pub(crate) struct FixedHeader {
     pub first_byte: u8,
     /// the number of bytes remaining within the current packet,
     /// including data in the variable header and the payload.
-    pub remaining_length: usize,
+    pub remaining_length: u32,
 }
 
 #[cfg(test)]
