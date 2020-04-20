@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use ntex::channel::mpsc;
 use ntex::framed;
+use ntex_codec::Framed;
 
 use crate::codec3 as mqtt;
 use crate::sink::MqttSink;
@@ -33,14 +34,9 @@ impl<Io> Connect<Io> {
         }
     }
 
-    /// Returns reference to io object
-    pub fn get_ref(&self) -> &Io {
-        self.io.get_ref()
-    }
-
-    /// Returns mutable reference to io object
-    pub fn get_mut(&mut self) -> &mut Io {
-        self.io.get_mut()
+    #[inline]
+    pub fn io(&mut self) -> &mut Framed<Io, mqtt::Codec> {
+        self.io.io()
     }
 
     /// Returns mqtt server sink

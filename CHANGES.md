@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.2] - 2020-04-20
+
+* Update ntex
+
 ## [0.1.1] - 2020-04-07
 
 * Add disconnect timeout
