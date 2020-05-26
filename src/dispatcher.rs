@@ -7,8 +7,9 @@ use std::rc::Rc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures::future::{join3, ok, Either, FutureExt, LocalBoxFuture, Ready};
+use futures::future::{err, join3, ok, Either, FutureExt, LocalBoxFuture, Ready};
 use futures::ready;
+use fxhash::FxHashSet;
 use ntex::service::{boxed, fn_factory_with_config, pipeline, Service, ServiceFactory};
 use ntex::util::inflight::InFlightService;
 use ntex::util::keepalive::KeepAliveService;
@@ -75,7 +76,7 @@ where
             let (publish, subscribe, unsubscribe) = fut.await;
 
             // mqtt dispatcher
-            Ok(Dispatcher::new(
+            Ok(Dispatcher::<_, _, E>::new(
                 cfg,
                 // keep-alive connection
                 pipeline(KeepAliveService::new(timeout, time, || {
@@ -101,17 +102,18 @@ where
 }
 
 /// PUBLIS/SUBSCRIBER/UNSUBSCRIBER packets dispatcher
-pub(crate) struct Dispatcher<St, T: Service> {
+pub(crate) struct Dispatcher<St, T: Service<Error = MqttError<E>>, E> {
     session: Session<St>,
     publish: T,
     subscribe: boxed::BoxService<Subscribe, SubscribeResult, T::Error>,
     unsubscribe: boxed::BoxService<Unsubscribe, (), T::Error>,
     disconnect: RefCell<Option<Rc<dyn Fn(&Session<St>, bool)>>>,
+    inflight: Rc<RefCell<FxHashSet<NonZeroU16>>>,
 }
 
-impl<St, T> Dispatcher<St, T>
+impl<St, T, E> Dispatcher<St, T, E>
 where
-    T: Service<Request = Publish, Response = ()>,
+    T: Service<Request = Publish, Response = (), Error = MqttError<E>>,
 {
     pub(crate) fn new(
         session: Session<St>,
@@ -126,24 +128,25 @@ where
             subscribe,
             unsubscribe,
             disconnect: RefCell::new(disconnect),
+            inflight: Rc::new(RefCell::new(FxHashSet::default())),
         }
     }
 }
 
-impl<St, T> Service for Dispatcher<St, T>
+impl<St, T, E> Service for Dispatcher<St, T, E>
 where
-    T: Service<Request = Publish, Response = ()>,
-    T::Error: 'static,
+    T: Service<Request = Publish, Response = (), Error = MqttError<E>>,
+    E: 'static,
 {
     type Request = mqtt::Packet;
     type Response = Option<mqtt::Packet>;
-    type Error = T::Error;
+    type Error = MqttError<E>;
     type Future = Either<
         Either<
-            Ready<Result<Self::Response, T::Error>>,
-            LocalBoxFuture<'static, Result<Self::Response, T::Error>>,
+            Ready<Result<Self::Response, MqttError<E>>>,
+            LocalBoxFuture<'static, Result<Self::Response, MqttError<E>>>,
         >,
-        PublishResponse<T::Future, T::Error>,
+        PublishResponse<T::Future, MqttError<E>>,
     >;
 
     fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
@@ -173,9 +176,18 @@ where
             }
             mqtt::Packet::Disconnect => Either::Left(Either::Left(ok(None))),
             mqtt::Packet::Publish(publish) => {
+                let inflight = self.inflight.clone();
                 let packet_id = publish.packet_id;
+
+                // check for duplicated packet id
+                if let Some(pid) = packet_id {
+                    if !inflight.borrow_mut().insert(pid) {
+                        return Either::Left(Either::Left(err(MqttError::DuplicatedPacketId)));
+                    }
+                }
                 Either::Right(PublishResponse {
                     packet_id,
+                    inflight,
                     fut: self.publish.call(Publish::new(publish)),
                     _t: PhantomData,
                 })
@@ -214,6 +226,7 @@ pub(crate) struct PublishResponse<T, E> {
     #[pin]
     fut: T,
     packet_id: Option<NonZeroU16>,
+    inflight: Rc<RefCell<FxHashSet<NonZeroU16>>>,
     _t: PhantomData<E>,
 }
 
@@ -228,6 +241,7 @@ where
 
         ready!(this.fut.poll(cx))?;
         if let Some(packet_id) = this.packet_id {
+            this.inflight.borrow_mut().remove(&packet_id);
             Poll::Ready(Ok(Some(mqtt::Packet::PublishAck {
                 packet_id: *packet_id,
             })))

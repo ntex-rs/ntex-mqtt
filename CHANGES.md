@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.3] - 2020-05-26
+
+* Check for duplicated in-flight packet ids
+
 ## [0.1.2] - 2020-04-20
 
 * Update ntex
