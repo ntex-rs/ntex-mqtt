@@ -221,7 +221,7 @@ impl EncodeLtd for ConnectAck {
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
         // todo: move upstream: write_variable_length(size, buf);
         let start_len = buf.len();
-        
+
         buf.put_slice(&[
             if self.session_present { 0x01 } else { 0x00 },
             self.reason_code.into(),
