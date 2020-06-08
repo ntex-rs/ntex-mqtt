@@ -216,7 +216,7 @@ where
             ))
             .map_err(|e| match e {
                 framed::ServiceError::Service(e) => e,
-                framed::ServiceError::Encoder(e) => MqttError::Protocol(e),
+                framed::ServiceError::Encoder(e) => MqttError::Protocol2(e),
                 framed::ServiceError::Decoder(e) => MqttError::Protocol(e),
             }),
         )
@@ -336,7 +336,7 @@ where
                                 packet => {
                                     log::info!(
                                         "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
-                                        packet.packet_type()
+                                        1 //packet.packet_type()
                                     );
                                     Err(MqttError::Unexpected(
                                         packet,

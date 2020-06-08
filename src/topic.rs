@@ -1,11 +1,15 @@
 use std::fmt::{self, Write};
 use std::{io, ops, str::FromStr};
 
-use super::error::TopicError;
-
 #[inline]
 fn is_metadata<T: AsRef<str>>(s: T) -> bool {
     s.as_ref().chars().nth(0) == Some('$')
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum TopicError {
+    InvalidTopic,
+    InvalidLevel,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]

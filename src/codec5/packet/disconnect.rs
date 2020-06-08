@@ -1,0 +1,137 @@
+use crate::codec5::{decode::*, encode::*, property_type as pt, EncodeError, ParseError};
+use crate::codec5::{UserProperties, UserProperty};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytestring::ByteString;
+use std::convert::TryInto;
+
+/// DISCONNECT message
+#[derive(Debug, PartialEq, Clone)]
+pub struct Disconnect {
+    pub reason_code: DisconnectReasonCode,
+    pub session_expiry_interval_secs: Option<u32>,
+    pub server_reference: Option<ByteString>,
+    pub reason_string: Option<ByteString>,
+    pub user_properties: UserProperties,
+}
+
+prim_enum! {
+    /// DISCONNECT reason codes
+    pub enum DisconnectReasonCode {
+        NormalDisconnection = 0,
+        DisconnectWithWillMessage = 4,
+        UnspecifiedError = 128,
+        MalformedPacket = 129,
+        ProtocolError = 130,
+        ImplementationSpecificError = 131,
+        NotAuthorized = 135,
+        ServerBusy = 137,
+        ServerShuttingDown = 139,
+        BadAuthenticationMethod = 140,
+        KeepAliveTimeout = 141,
+        SessionTakenOver = 142,
+        TopicFilterInvalid = 143,
+        TopicNameInvalid = 144,
+        ReceiveMaximumExceeded = 147,
+        TopicAliasInvalid = 148,
+        PacketTooLarge = 149,
+        MessageRateTooHigh = 150,
+        QuotaExceeded = 151,
+        AdministrativeAction = 152,
+        PayloadFormatInvalid = 153,
+        RetainNotSupported = 154,
+        QosNotSupported = 155,
+        UseAnotherServer = 156,
+        ServerMoved = 157,
+        SharedSubsriptionNotSupported = 158,
+        ConnectionRateExceeded = 159,
+        MaximumConnectTime = 160,
+        SubscriptionIdentifiersNotSupported = 161,
+        WildcardSubscriptionsNotSupported = 162
+    }
+}
+
+impl Disconnect {
+    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
+        if src.has_remaining() {
+            let reason_code = src.get_u8().try_into()?;
+
+            let mut session_expiry_interval_secs = None;
+            let mut server_reference = None;
+            let mut reason_string = None;
+            let mut user_properties = Vec::new();
+
+            let prop_src = &mut take_properties(src)?;
+            while prop_src.has_remaining() {
+                match prop_src.get_u8() {
+                    pt::SESS_EXPIRY_INT => session_expiry_interval_secs.read_value(prop_src)?,
+                    pt::REASON_STRING => reason_string.read_value(prop_src)?,
+                    pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
+                    pt::SERVER_REF => server_reference.read_value(prop_src)?,
+                    _ => return Err(ParseError::MalformedPacket),
+                }
+            }
+            ensure!(!src.has_remaining(), ParseError::InvalidLength);
+
+            Ok(Disconnect {
+                reason_code,
+                session_expiry_interval_secs,
+                server_reference,
+                reason_string,
+                user_properties,
+            })
+        } else {
+            Ok(Disconnect {
+                reason_code: DisconnectReasonCode::NormalDisconnection,
+                session_expiry_interval_secs: None,
+                server_reference: None,
+                reason_string: None,
+                user_properties: Vec::new(),
+            })
+        }
+    }
+}
+
+impl Default for Disconnect {
+    fn default() -> Self {
+        Self {
+            reason_code: DisconnectReasonCode::NormalDisconnection,
+            session_expiry_interval_secs: None,
+            server_reference: None,
+            reason_string: None,
+            user_properties: Vec::new(),
+        }
+    }
+}
+
+impl EncodeLtd for Disconnect {
+    fn encoded_size(&self, limit: u32) -> usize {
+        const HEADER_LEN: usize = 1; // reason code
+
+        let mut prop_len = encoded_property_size(&self.session_expiry_interval_secs)
+            + encoded_property_size(&self.server_reference);
+        let diag_len = encoded_size_opt_props(
+            &self.user_properties,
+            &self.reason_string,
+            reduce_limit(limit, prop_len + HEADER_LEN + 4),
+        ); // exclude other props and max of 4 bytes for property length value
+        prop_len += diag_len;
+        HEADER_LEN + var_int_len(prop_len) as usize + prop_len
+    }
+
+    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
+        let start_len = buf.len();
+        buf.put_u8(self.reason_code.into());
+
+        let prop_len = var_int_len_from_size(size - 1);
+        write_variable_length(prop_len, buf);
+        encode_property(&self.session_expiry_interval_secs, pt::SESS_EXPIRY_INT, buf)?;
+        encode_property(&self.server_reference, pt::SERVER_REF, buf)?;
+        println!("size: {}, buf len: {}", size, buf.len());
+        encode_opt_props(
+            &self.user_properties,
+            &self.reason_string,
+            buf,
+            size - (buf.len() - start_len) as u32,
+        )
+    }
+}

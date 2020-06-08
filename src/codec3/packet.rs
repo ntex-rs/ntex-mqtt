@@ -1,30 +1,27 @@
+use super::QoS;
 use bytes::Bytes;
 use bytestring::ByteString;
 use std::num::NonZeroU16;
 
-use super::proto::{Protocol, QoS};
-
-#[repr(u8)]
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-/// Connect Return Code
-pub enum ConnectCode {
-    /// Connection accepted
-    ConnectionAccepted = 0,
-    /// Connection Refused, unacceptable protocol version
-    UnacceptableProtocolVersion = 1,
-    /// Connection Refused, identifier rejected
-    IdentifierRejected = 2,
-    /// Connection Refused, Server unavailable
-    ServiceUnavailable = 3,
-    /// Connection Refused, bad user name or password
-    BadUserNameOrPassword = 4,
-    /// Connection Refused, not authorized
-    NotAuthorized = 5,
-    /// Reserved
-    Reserved = 6,
+prim_enum! {
+    /// Connect Return Code
+    pub enum ConnectCode {
+        /// Connection accepted
+        ConnectionAccepted = 0,
+        /// Connection Refused, unacceptable protocol version
+        UnacceptableProtocolVersion = 1,
+        /// Connection Refused, identifier rejected
+        IdentifierRejected = 2,
+        /// Connection Refused, Server unavailable
+        ServiceUnavailable = 3,
+        /// Connection Refused, bad user name or password
+        BadUserNameOrPassword = 4,
+        /// Connection Refused, not authorized
+        NotAuthorized = 5,
+        /// Reserved
+        Reserved = 6
+    }
 }
-
-const_enum!(ConnectCode: u8);
 
 impl ConnectCode {
     pub fn reason(self) -> &'static str {
@@ -60,8 +57,6 @@ pub struct LastWill {
 #[derive(Debug, PartialEq, Clone)]
 /// Connect packet content
 pub struct Connect {
-    /// mqtt protocol version
-    pub protocol: Protocol,
     /// the handling of the Session state.
     pub clean_session: bool,
     /// a time interval measured in seconds.
@@ -173,56 +168,6 @@ pub enum Packet {
     Disconnect,
 }
 
-impl Packet {
-    #[inline]
-    /// MQTT Control Packet type
-    pub fn packet_type(&self) -> u8 {
-        match *self {
-            Packet::Connect { .. } => CONNECT,
-            Packet::ConnectAck { .. } => CONNACK,
-            Packet::Publish { .. } => PUBLISH,
-            Packet::PublishAck { .. } => PUBACK,
-            Packet::PublishReceived { .. } => PUBREC,
-            Packet::PublishRelease { .. } => PUBREL,
-            Packet::PublishComplete { .. } => PUBCOMP,
-            Packet::Subscribe { .. } => SUBSCRIBE,
-            Packet::SubscribeAck { .. } => SUBACK,
-            Packet::Unsubscribe { .. } => UNSUBSCRIBE,
-            Packet::UnsubscribeAck { .. } => UNSUBACK,
-            Packet::PingRequest => PINGREQ,
-            Packet::PingResponse => PINGRESP,
-            Packet::Disconnect => DISCONNECT,
-        }
-    }
-
-    /// Flags specific to each MQTT Control Packet type
-    pub fn packet_flags(&self) -> u8 {
-        match *self {
-            Packet::Publish(Publish {
-                dup, qos, retain, ..
-            }) => {
-                let mut b = qos as u8;
-
-                b <<= 1;
-
-                if dup {
-                    b |= 0b1000;
-                }
-
-                if retain {
-                    b |= 0b0001;
-                }
-
-                b
-            }
-            Packet::PublishRelease { .. }
-            | Packet::Subscribe { .. }
-            | Packet::Unsubscribe { .. } => 0b0010,
-            _ => 0,
-        }
-    }
-}
-
 impl From<Connect> for Packet {
     fn from(val: Connect) -> Packet {
         Packet::Connect(val)
@@ -235,17 +180,20 @@ impl From<Publish> for Packet {
     }
 }
 
-pub const CONNECT: u8 = 1;
-pub const CONNACK: u8 = 2;
-pub const PUBLISH: u8 = 3;
-pub const PUBACK: u8 = 4;
-pub const PUBREC: u8 = 5;
-pub const PUBREL: u8 = 6;
-pub const PUBCOMP: u8 = 7;
-pub const SUBSCRIBE: u8 = 8;
-pub const SUBACK: u8 = 9;
-pub const UNSUBSCRIBE: u8 = 10;
-pub const UNSUBACK: u8 = 11;
-pub const PINGREQ: u8 = 12;
-pub const PINGRESP: u8 = 13;
-pub const DISCONNECT: u8 = 14;
+pub(super) mod packet_type {
+    pub const CONNECT: u8 = 0b0001_0000;
+    pub const CONNACK: u8 = 0b0010_0000;
+    pub const PUBLISH_START: u8 = 0b0011_0000;
+    pub const PUBLISH_END: u8 = 0b0011_1111;
+    pub const PUBACK: u8 = 0b0100_0000;
+    pub const PUBREC: u8 = 0b0101_0000;
+    pub const PUBREL: u8 = 0b0110_0010;
+    pub const PUBCOMP: u8 = 0b0111_0000;
+    pub const SUBSCRIBE: u8 = 0b1000_0010;
+    pub const SUBACK: u8 = 0b1001_0000;
+    pub const UNSUBSCRIBE: u8 = 0b1010_0010;
+    pub const UNSUBACK: u8 = 0b1011_0000;
+    pub const PINGREQ: u8 = 0b1100_0000;
+    pub const PINGRESP: u8 = 0b1101_0000;
+    pub const DISCONNECT: u8 = 0b1110_0000;
+}
