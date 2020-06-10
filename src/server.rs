@@ -216,8 +216,8 @@ where
             ))
             .map_err(|e| match e {
                 framed::ServiceError::Service(e) => e,
-                framed::ServiceError::Encoder(e) => MqttError::Protocol2(e),
-                framed::ServiceError::Decoder(e) => MqttError::Protocol(e),
+                framed::ServiceError::Encoder(e) => MqttError::Encode(e),
+                framed::ServiceError::Decoder(e) => MqttError::Decode(e),
             }),
         )
     }
@@ -274,7 +274,7 @@ where
                                             "Error is received during mqtt handshake: {:?}",
                                             e
                                         );
-                                        MqttError::Protocol(e)
+                                        MqttError::Decode(e)
                                     })
                                 })?;
 

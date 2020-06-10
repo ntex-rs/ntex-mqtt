@@ -1,8 +1,10 @@
-use crate::codec5::{decode::*, encode::*, property_type as pt, EncodeError, ParseError};
-use crate::codec5::{UserProperties, UserProperty};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::convert::TryInto;
+
+use crate::codec5::{decode::*, encode::*, property_type as pt};
+use crate::codec5::{UserProperties, UserProperty};
+use crate::error::{DecodeError, EncodeError};
 
 /// AUTH message
 #[derive(Debug, PartialEq, Clone)]
@@ -24,9 +26,9 @@ prim_enum! {
 }
 
 impl Auth {
-    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
+    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         if src.has_remaining() {
-            ensure!(src.remaining() > 1, ParseError::InvalidLength);
+            ensure!(src.remaining() > 1, DecodeError::InvalidLength);
             let reason_code = src.get_u8().try_into()?;
 
             let mut auth_method = None;
@@ -42,10 +44,10 @@ impl Auth {
                         pt::AUTH_DATA => auth_data.read_value(prop_src)?,
                         pt::REASON_STRING => reason_string.read_value(prop_src)?,
                         pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
-                        _ => return Err(ParseError::MalformedPacket),
+                        _ => return Err(DecodeError::MalformedPacket),
                     }
                 }
-                ensure!(!src.has_remaining(), ParseError::InvalidLength);
+                ensure!(!src.has_remaining(), DecodeError::InvalidLength);
             }
 
             Ok(Auth {

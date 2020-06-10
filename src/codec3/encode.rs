@@ -1,9 +1,12 @@
+use std::{convert::TryFrom, num::NonZeroU16};
+
+use bytes::{BufMut, Bytes, BytesMut};
+use bytestring::ByteString;
+
 use super::{ConnectFlags, WILL_QOS_SHIFT};
 use crate::codec3::packet::*;
 use crate::codec3::*;
-use bytes::{BufMut, Bytes, BytesMut};
-use bytestring::ByteString;
-use std::{convert::TryFrom, num::NonZeroU16};
+use crate::error::EncodeError;
 
 pub fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {

@@ -1,9 +1,11 @@
-use crate::codec5::{decode::*, encode::*, property_type as pt, EncodeError, ParseError};
-use crate::codec5::{QoS, UserProperties};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::convert::TryFrom;
 use std::num::{NonZeroU16, NonZeroU32};
+
+use crate::codec5::{decode::*, encode::*, property_type as pt};
+use crate::codec5::{QoS, UserProperties};
+use crate::error::{DecodeError, EncodeError};
 
 /// PUBLISH message
 #[derive(Debug, PartialEq, Clone)]
@@ -49,7 +51,7 @@ impl Default for PublishProperties {
 }
 
 impl Publish {
-    pub(crate) fn decode(mut src: Bytes, packet_flags: u8) -> Result<Self, ParseError> {
+    pub(crate) fn decode(mut src: Bytes, packet_flags: u8) -> Result<Self, DecodeError> {
         let topic = ByteString::decode(&mut src)?;
         let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
         let packet_id = if qos == QoS::AtMostOnce {
@@ -73,7 +75,7 @@ impl Publish {
     }
 }
 
-fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, ParseError> {
+fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, DecodeError> {
     let prop_src = &mut take_properties(src)?;
 
     let mut message_expiry_interval = None;
@@ -96,11 +98,11 @@ fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, ParseE
                 let id = decode_variable_length_cursor(prop_src)?;
                 subscription_ids
                     .get_or_insert_with(Vec::new)
-                    .push(NonZeroU32::new(id).ok_or(ParseError::MalformedPacket)?);
+                    .push(NonZeroU32::new(id).ok_or(DecodeError::MalformedPacket)?);
             }
             pt::TOPIC_ALIAS => topic_alias.read_value(prop_src)?,
             pt::USER => user_props.push(<(ByteString, ByteString)>::decode(prop_src)?),
-            _ => return Err(ParseError::MalformedPacket),
+            _ => return Err(DecodeError::MalformedPacket),
         }
     }
 

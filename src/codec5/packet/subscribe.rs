@@ -1,10 +1,12 @@
-use super::ack_props;
-use crate::codec5::{decode::*, encode::*, property_type as pt, EncodeError, ParseError};
-use crate::codec5::{QoS, UserProperties, UserProperty};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::convert::TryInto;
 use std::num::{NonZeroU16, NonZeroU32};
+
+use super::ack_props;
+use crate::codec5::{decode::*, encode::*, property_type as pt};
+use crate::codec5::{QoS, UserProperties, UserProperty};
+use crate::error::{DecodeError, EncodeError};
 
 // Represents SUBSCRIBE packet
 #[derive(Debug, PartialEq, Clone)]
@@ -96,7 +98,7 @@ prim_enum! {
 }
 
 impl Subscribe {
-    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
+    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
         let prop_src = &mut take_properties(src)?;
         let mut sub_id = None;
@@ -105,12 +107,12 @@ impl Subscribe {
             let prop_id = prop_src.get_u8();
             match prop_id {
                 pt::SUB_ID => {
-                    ensure!(sub_id.is_none(), ParseError::MalformedPacket); // can't appear twice
+                    ensure!(sub_id.is_none(), DecodeError::MalformedPacket); // can't appear twice
                     let val = decode_variable_length_cursor(prop_src)?;
-                    sub_id = Some(NonZeroU32::new(val).ok_or(ParseError::MalformedPacket)?);
+                    sub_id = Some(NonZeroU32::new(val).ok_or(DecodeError::MalformedPacket)?);
                 }
                 pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
-                _ => return Err(ParseError::MalformedPacket),
+                _ => return Err(DecodeError::MalformedPacket),
             }
         }
 
@@ -131,7 +133,7 @@ impl Subscribe {
 }
 
 impl SubscribeAck {
-    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
+    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
         let (properties, reason_string) = ack_props::decode(src)?;
         let mut status = Vec::with_capacity(src.remaining());
@@ -148,7 +150,7 @@ impl SubscribeAck {
 }
 
 impl Unsubscribe {
-    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
+    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
 
         let prop_src = &mut take_properties(src)?;
@@ -157,7 +159,7 @@ impl Unsubscribe {
             let prop_id = prop_src.get_u8();
             match prop_id {
                 pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
-                _ => return Err(ParseError::MalformedPacket),
+                _ => return Err(DecodeError::MalformedPacket),
             }
         }
 
@@ -175,7 +177,7 @@ impl Unsubscribe {
 }
 
 impl UnsubscribeAck {
-    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
+    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
         let (properties, reason_string) = ack_props::decode(src)?;
         let mut status = Vec::with_capacity(src.remaining());
@@ -221,8 +223,8 @@ impl EncodeLtd for Subscribe {
 }
 
 impl Decode for SubscriptionOptions {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
-        ensure!(src.has_remaining(), ParseError::InvalidLength);
+    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+        ensure!(src.has_remaining(), DecodeError::InvalidLength);
         let val = src.get_u8();
         let qos = (val & 0b0000_0011).try_into()?;
         let retain_handling = ((val & 0b0011_0000) >> 4).try_into()?;

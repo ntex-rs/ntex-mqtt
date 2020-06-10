@@ -30,11 +30,11 @@ macro_rules! prim_enum {
             ),+
         }
         impl std::convert::TryFrom<u8> for $name {
-            type Error = $crate::codec5::error::ParseError;
+            type Error = $crate::error::DecodeError;
             fn try_from(v: u8) -> Result<Self, Self::Error> {
                 match v {
                     $($val => Ok($name::$var)),+
-                    ,_ => Err($crate::codec5::error::ParseError::MalformedPacket)
+                    ,_ => Err($crate::error::DecodeError::MalformedPacket)
                 }
             }
         }

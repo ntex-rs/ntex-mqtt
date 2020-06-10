@@ -1,13 +1,16 @@
-use super::{ConnectAckFlags, ConnectFlags, WILL_QOS_SHIFT};
-use crate::codec3::error::ParseError;
-use crate::codec3::packet::*;
-use crate::codec3::*;
-use bytes::{Buf, Bytes};
-use bytestring::ByteString;
 use std::convert::{TryFrom, TryInto};
 use std::num::NonZeroU16;
 
-pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, ParseError> {
+use bytes::{Buf, Bytes};
+use bytestring::ByteString;
+
+use super::{ConnectAckFlags, ConnectFlags, QoS, MQTT_LEVEL, WILL_QOS_SHIFT};
+use crate::codec3::packet::{
+    packet_type, Connect, LastWill, Packet, Publish, SubscribeReturnCode,
+};
+use crate::error::DecodeError;
+
+pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
         packet_type::CONNECT => decode_connect_packet(&mut src),
         packet_type::CONNACK => decode_connect_ack_packet(&mut src),
@@ -33,16 +36,16 @@ pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, Pa
         packet_type::PINGREQ => Ok(Packet::PingRequest),
         packet_type::PINGRESP => Ok(Packet::PingResponse),
         packet_type::DISCONNECT => Ok(Packet::Disconnect),
-        _ => Err(ParseError::UnsupportedPacketType),
+        _ => Err(DecodeError::UnsupportedPacketType),
     }
 }
 
 pub(crate) trait Decode: Sized {
-    fn decode(src: &mut Bytes) -> Result<Self, ParseError>;
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError>;
 }
 
 /// Decodes variable length and returns tuple of (length, bytes consumed)
-pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>, ParseError> {
+pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>, DecodeError> {
     if let Some((len, consumed, more)) = src
         .iter()
         .enumerate()
@@ -56,7 +59,7 @@ pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>, Pars
         })
         .last()
     {
-        ensure!(!more || consumed < 4, ParseError::InvalidLength);
+        ensure!(!more || consumed < 4, DecodeError::InvalidLength);
         return Ok(Some((len, consumed)));
     }
 
@@ -64,34 +67,34 @@ pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>, Pars
 }
 
 #[inline]
-fn decode_ack(mut src: Bytes, f: impl Fn(NonZeroU16) -> Packet) -> Result<Packet, ParseError> {
+fn decode_ack(mut src: Bytes, f: impl Fn(NonZeroU16) -> Packet) -> Result<Packet, DecodeError> {
     let packet_id = NonZeroU16::decode(&mut src)?;
-    ensure!(!src.has_remaining(), ParseError::InvalidLength);
+    ensure!(!src.has_remaining(), DecodeError::InvalidLength);
     Ok(f(packet_id))
 }
 
-fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
-    ensure!(src.remaining() >= 10, ParseError::InvalidLength);
+fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
+    ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
     let len = src.get_u16();
 
     ensure!(
         len == 4 && &src.bytes()[0..4] == b"MQTT",
-        ParseError::InvalidProtocol
+        DecodeError::InvalidProtocol
     );
     src.advance(4);
 
     let level = src.get_u8();
-    ensure!(level == MQTT_LEVEL, ParseError::UnsupportedProtocolLevel);
+    ensure!(level == MQTT_LEVEL, DecodeError::UnsupportedProtocolLevel);
 
     let flags = ConnectFlags::from_bits(src.get_u8())
-        .ok_or_else(|| ParseError::ConnectReservedFlagSet)?;
+        .ok_or_else(|| DecodeError::ConnectReservedFlagSet)?;
 
     let keep_alive = u16::decode(src)?;
     let client_id = ByteString::decode(src)?;
 
     ensure!(
         !client_id.is_empty() || flags.contains(ConnectFlags::CLEAN_SESSION),
-        ParseError::InvalidClientId
+        DecodeError::InvalidClientId
     );
 
     let last_will = if flags.contains(ConnectFlags::WILL) {
@@ -126,10 +129,10 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
     }))
 }
 
-fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
-    ensure!(src.remaining() >= 2, ParseError::InvalidLength);
+fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
+    ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
     let flags = ConnectAckFlags::from_bits(src.get_u8())
-        .ok_or_else(|| ParseError::ConnAckReservedFlagSet)?;
+        .ok_or_else(|| DecodeError::ConnAckReservedFlagSet)?;
 
     let return_code = src.get_u8().try_into()?;
     Ok(Packet::ConnectAck {
@@ -138,7 +141,7 @@ fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
     })
 }
 
-fn decode_publish_packet(src: &mut Bytes, packet_flags: u8) -> Result<Packet, ParseError> {
+fn decode_publish_packet(src: &mut Bytes, packet_flags: u8) -> Result<Packet, DecodeError> {
     let topic = ByteString::decode(src)?;
     let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
     let packet_id = if qos == QoS::AtMostOnce {
@@ -157,12 +160,12 @@ fn decode_publish_packet(src: &mut Bytes, packet_flags: u8) -> Result<Packet, Pa
     }))
 }
 
-fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
+fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let packet_id = NonZeroU16::decode(src)?;
     let mut topic_filters = Vec::new();
     while src.has_remaining() {
         let topic = ByteString::decode(src)?;
-        ensure!(src.remaining() >= 1, ParseError::InvalidLength);
+        ensure!(src.remaining() >= 1, DecodeError::InvalidLength);
         let qos = (src.get_u8() & 0b0000_0011).try_into()?;
         topic_filters.push((topic, qos));
     }
@@ -173,7 +176,7 @@ fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
     })
 }
 
-fn decode_subscribe_ack_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
+fn decode_subscribe_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let packet_id = NonZeroU16::decode(src)?;
     let mut status = Vec::with_capacity(src.len());
     for code in src.as_ref().iter() {
@@ -186,7 +189,7 @@ fn decode_subscribe_ack_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
     Ok(Packet::SubscribeAck { packet_id, status })
 }
 
-fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
+fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let packet_id = NonZeroU16::decode(src)?;
     let mut topic_filters = Vec::new();
     while src.remaining() > 0 {
@@ -199,28 +202,28 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, ParseError> {
 }
 
 impl Decode for u16 {
-    fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
-        ensure!(src.remaining() >= 2, ParseError::InvalidLength);
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
+        ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
         Ok(src.get_u16())
     }
 }
 
 impl Decode for NonZeroU16 {
-    fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
-        Ok(NonZeroU16::new(u16::decode(src)?).ok_or(ParseError::MalformedPacket)?)
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
+        Ok(NonZeroU16::new(u16::decode(src)?).ok_or(DecodeError::MalformedPacket)?)
     }
 }
 
 impl Decode for Bytes {
-    fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let len = u16::decode(src)? as usize;
-        ensure!(src.remaining() >= len, ParseError::InvalidLength);
+        ensure!(src.remaining() >= len, DecodeError::InvalidLength);
         Ok(src.split_to(len))
     }
 }
 
 impl Decode for ByteString {
-    fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let bytes = Bytes::decode(src)?;
         Ok(ByteString::try_from(bytes)?)
     }
@@ -229,6 +232,7 @@ impl Decode for ByteString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec3::ConnectCode;
 
     macro_rules! assert_decode_packet (
         ($bytes:expr, $res:expr) => {{
@@ -260,7 +264,7 @@ mod tests {
         //assert_eq!(decode_variable_length(b"\xff\xff\xff"), Ok(None));
         assert_eq!(
             decode_variable_length(b"\xff\xff\xff\xff\xff\xff"),
-            Err(ParseError::InvalidLength)
+            Err(DecodeError::InvalidLength)
         );
 
         assert_variable_length!(b"\x00", (0, 1));
@@ -310,27 +314,27 @@ mod tests {
 
         assert_eq!(
             decode_connect_packet(&mut Bytes::from_static(b"\x00\x02MQ00000000000000000000")),
-            Err(ParseError::InvalidProtocol),
+            Err(DecodeError::InvalidProtocol),
         );
         assert_eq!(
             decode_connect_packet(&mut Bytes::from_static(b"\x00\x10MQ00000000000000000000")),
-            Err(ParseError::InvalidProtocol),
+            Err(DecodeError::InvalidProtocol),
         );
         assert_eq!(
             decode_connect_packet(&mut Bytes::from_static(b"\x00\x04MQAA00000000000000000000")),
-            Err(ParseError::InvalidProtocol),
+            Err(DecodeError::InvalidProtocol),
         );
         assert_eq!(
             decode_connect_packet(&mut Bytes::from_static(
                 b"\x00\x04MQTT\x0300000000000000000000"
             )),
-            Err(ParseError::UnsupportedProtocolLevel),
+            Err(DecodeError::UnsupportedProtocolLevel),
         );
         assert_eq!(
             decode_connect_packet(&mut Bytes::from_static(
                 b"\x00\x04MQTT\x04\xff00000000000000000000"
             )),
-            Err(ParseError::ConnectReservedFlagSet)
+            Err(DecodeError::ConnectReservedFlagSet)
         );
 
         assert_eq!(
@@ -343,7 +347,7 @@ mod tests {
 
         assert_eq!(
             decode_connect_ack_packet(&mut Bytes::from_static(b"\x03\x04")),
-            Err(ParseError::ConnAckReservedFlagSet)
+            Err(DecodeError::ConnAckReservedFlagSet)
         );
 
         assert_decode_packet!(

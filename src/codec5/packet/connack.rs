@@ -1,8 +1,10 @@
-use crate::codec5::{decode::*, encode::*, property_type as pt, EncodeError, ParseError};
-use crate::codec5::{QoS, UserProperties, UserProperty};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::{convert::TryInto, num::NonZeroU16};
+
+use crate::codec5::{decode::*, encode::*, property_type as pt};
+use crate::codec5::{QoS, UserProperties, UserProperty};
+use crate::error::{DecodeError, EncodeError};
 
 bitflags::bitflags! {
     pub struct ConnectAckFlags: u8 {
@@ -109,10 +111,10 @@ impl ConnectAckReasonCode {
 }
 
 impl ConnectAck {
-    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
-        ensure!(src.remaining() >= 2, ParseError::InvalidLength);
+    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
+        ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
         let flags = ConnectAckFlags::from_bits(src.get_u8())
-            .ok_or_else(|| ParseError::ConnAckReservedFlagSet)?;
+            .ok_or_else(|| DecodeError::ConnAckReservedFlagSet)?;
 
         let reason_code = src.get_u8().try_into()?;
 
@@ -140,8 +142,8 @@ impl ConnectAck {
                 pt::SESS_EXPIRY_INT => session_expiry_interval_secs.read_value(prop_src)?,
                 pt::RECEIVE_MAX => receive_max.read_value(prop_src)?,
                 pt::MAX_QOS => {
-                    ensure!(max_qos.is_none(), ParseError::MalformedPacket); // property is set twice while not allowed
-                    ensure!(prop_src.has_remaining(), ParseError::InvalidLength);
+                    ensure!(max_qos.is_none(), DecodeError::MalformedPacket); // property is set twice while not allowed
+                    ensure!(prop_src.has_remaining(), DecodeError::InvalidLength);
                     max_qos = Some(prop_src.get_u8().try_into()?);
                 }
                 pt::RETAIN_AVAIL => retain_available.read_value(prop_src)?,
@@ -158,10 +160,10 @@ impl ConnectAck {
                 pt::SERVER_REF => server_reference.read_value(prop_src)?,
                 pt::AUTH_METHOD => auth_method.read_value(prop_src)?,
                 pt::AUTH_DATA => auth_data.read_value(prop_src)?,
-                _ => return Err(ParseError::MalformedPacket),
+                _ => return Err(DecodeError::MalformedPacket),
             }
         }
-        ensure!(!src.has_remaining(), ParseError::InvalidLength);
+        ensure!(!src.has_remaining(), DecodeError::InvalidLength);
 
         Ok(ConnectAck {
             session_present: flags.contains(ConnectAckFlags::SESSION_PRESENT),

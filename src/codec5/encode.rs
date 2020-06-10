@@ -1,11 +1,11 @@
-use super::error::EncodeError;
-use super::packet::{property_type as pt, *};
-use super::{UserProperties, UserProperty};
 use bytes::{BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::convert::TryFrom;
-
 use std::num::{NonZeroU16, NonZeroU32};
+
+use super::packet::{property_type as pt, *};
+use super::{UserProperties, UserProperty};
+use crate::error::EncodeError;
 
 pub(super) trait EncodeLtd {
     fn encoded_size(&self, limit: u32) -> usize;

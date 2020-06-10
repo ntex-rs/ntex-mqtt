@@ -1,9 +1,11 @@
-use crate::codec5::{decode::*, encode::*, property_type as pt, EncodeError, ParseError};
-use crate::codec5::{QoS, UserProperties, UserProperty, MQTT_LEVEL};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::convert::TryFrom;
 use std::num::{NonZeroU16, NonZeroU32};
+
+use crate::codec5::{decode::*, encode::*, property_type as pt};
+use crate::codec5::{QoS, UserProperties, UserProperty, MQTT_LEVEL};
+use crate::error::{DecodeError, EncodeError};
 
 const WILL_QOS_SHIFT: u8 = 3;
 
@@ -95,21 +97,21 @@ impl Connect {
         prop_len
     }
 
-    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
-        ensure!(src.remaining() >= 10, ParseError::InvalidLength);
+    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
+        ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
         let len = src.get_u16();
 
         ensure!(
             len == 4 && &src.bytes()[0..4] == b"MQTT",
-            ParseError::InvalidProtocol
+            DecodeError::InvalidProtocol
         );
         src.advance(4);
 
         let level = src.get_u8();
-        ensure!(level == MQTT_LEVEL, ParseError::UnsupportedProtocolLevel);
+        ensure!(level == MQTT_LEVEL, DecodeError::UnsupportedProtocolLevel);
 
         let flags = ConnectFlags::from_bits(src.get_u8())
-            .ok_or_else(|| ParseError::ConnectReservedFlagSet)?;
+            .ok_or_else(|| DecodeError::ConnectReservedFlagSet)?;
 
         let keep_alive = src.get_u16();
 
@@ -135,7 +137,7 @@ impl Connect {
                 pt::TOPIC_ALIAS_MAX => topic_alias_max.read_value(prop_src)?,
                 pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
                 pt::MAX_PACKET_SIZE => max_packet_size.read_value(prop_src)?,
-                _ => return Err(ParseError::MalformedPacket),
+                _ => return Err(DecodeError::MalformedPacket),
             }
         }
 
@@ -144,7 +146,7 @@ impl Connect {
         ensure!(
             // todo: [MQTT-3.1.3-8]?
             !client_id.is_empty() || flags.contains(ConnectFlags::CLEAN_START),
-            ParseError::InvalidClientId
+            DecodeError::InvalidClientId
         );
 
         let last_will = if flags.contains(ConnectFlags::WILL) {
@@ -186,7 +188,7 @@ impl Connect {
     }
 }
 
-fn decode_last_will(src: &mut Bytes, flags: ConnectFlags) -> Result<LastWill, ParseError> {
+fn decode_last_will(src: &mut Bytes, flags: ConnectFlags) -> Result<LastWill, DecodeError> {
     let mut will_delay_interval_sec = None;
     let mut correlation_data = None;
     let mut message_expiry_interval = None;
@@ -204,7 +206,7 @@ fn decode_last_will(src: &mut Bytes, flags: ConnectFlags) -> Result<LastWill, Pa
             pt::UTF8_PAYLOAD => is_utf8_payload.read_value(prop_src)?,
             pt::RESP_TOPIC => response_topic.read_value(prop_src)?,
             pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
-            _ => return Err(ParseError::MalformedPacket),
+            _ => return Err(DecodeError::MalformedPacket),
         }
     }
 

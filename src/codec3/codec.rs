@@ -1,34 +1,8 @@
 use bytes::{buf::Buf, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
-use crate::codec3::error::{EncodeError, ParseError};
-use crate::codec3::QoS;
-use crate::codec3::{Packet, Publish};
-
-mod decode;
-mod encode;
-
-use self::decode::*;
-use self::encode::*;
-
-bitflags::bitflags! {
-    pub struct ConnectFlags: u8 {
-        const USERNAME      = 0b1000_0000;
-        const PASSWORD      = 0b0100_0000;
-        const WILL_RETAIN   = 0b0010_0000;
-        const WILL_QOS      = 0b0001_1000;
-        const WILL          = 0b0000_0100;
-        const CLEAN_SESSION = 0b0000_0010;
-    }
-}
-
-pub const WILL_QOS_SHIFT: u8 = 3;
-
-bitflags::bitflags! {
-    pub struct ConnectAckFlags: u8 {
-        const SESSION_PRESENT = 0b0000_0001;
-    }
-}
+use super::{decode, encode, Packet, Publish, QoS};
+use crate::error::{DecodeError, EncodeError};
 
 #[derive(Debug)]
 pub struct Codec {
@@ -69,9 +43,9 @@ impl Default for Codec {
 
 impl Decoder for Codec {
     type Item = Packet;
-    type Error = ParseError;
+    type Error = DecodeError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, ParseError> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
         loop {
             match self.state {
                 DecodeState::FrameHeader => {
@@ -80,11 +54,11 @@ impl Decoder for Codec {
                     }
                     let src_slice = src.as_ref();
                     let first_byte = src_slice[0];
-                    match decode_variable_length(&src_slice[1..])? {
+                    match super::decode::decode_variable_length(&src_slice[1..])? {
                         Some((remaining_length, consumed)) => {
                             // check max message size
                             if self.max_size != 0 && self.max_size < remaining_length {
-                                return Err(ParseError::MaxSizeExceeded);
+                                return Err(DecodeError::MaxSizeExceeded);
                             }
                             src.advance(consumed + 1);
                             self.state = DecodeState::Frame(FixedHeader {
@@ -108,7 +82,7 @@ impl Decoder for Codec {
                         return Ok(None);
                     }
                     let packet_buf = src.split_to(fixed.remaining_length);
-                    let packet = decode_packet(packet_buf.freeze(), fixed.first_byte)?;
+                    let packet = decode::decode_packet(packet_buf.freeze(), fixed.first_byte)?;
                     self.state = DecodeState::FrameHeader;
                     src.reserve(2);
                     return Ok(Some(packet));
@@ -128,9 +102,9 @@ impl Encoder for Codec {
                 return Err(EncodeError::PacketIdRequired);
             }
         }
-        let content_size = get_encoded_size(&item);
+        let content_size = encode::get_encoded_size(&item);
         dst.reserve(content_size + 5);
-        encode(&item, dst, content_size)?;
+        encode::encode(&item, dst, content_size)?;
         Ok(())
     }
 }
@@ -154,6 +128,6 @@ mod tests {
 
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
-        assert_eq!(codec.decode(&mut buf), Err(ParseError::MaxSizeExceeded));
+        assert_eq!(codec.decode(&mut buf), Err(DecodeError::MaxSizeExceeded));
     }
 }

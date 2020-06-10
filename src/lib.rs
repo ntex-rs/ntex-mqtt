@@ -4,13 +4,13 @@
 pub mod client;
 pub mod codec3;
 pub mod codec5;
+pub mod error;
 
 #[macro_use]
 mod topic;
 mod connect;
 mod default;
 mod dispatcher;
-mod error;
 mod publish;
 mod router;
 mod server;

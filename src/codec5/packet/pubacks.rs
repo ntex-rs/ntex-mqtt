@@ -1,8 +1,10 @@
-use super::ack_props;
-use crate::codec5::{decode::*, encode::*, EncodeError, ParseError, UserProperties};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::{convert::TryInto, num::NonZeroU16};
+
+use super::ack_props;
+use crate::codec5::{decode::*, encode::*, UserProperties};
+use crate::error::{DecodeError, EncodeError};
 
 const HEADER_LEN: u32 = 2 + 1; // packet id + reason code
 
@@ -51,12 +53,12 @@ prim_enum! {
 }
 
 impl PublishAck {
-    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
+    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
         let (reason_code, properties, reason_string) = if src.has_remaining() {
             let reason_code = src.get_u8().try_into()?;
             let (properties, reason_string) = ack_props::decode(src)?;
-            ensure!(!src.has_remaining(), ParseError::InvalidLength); // no bytes should be left
+            ensure!(!src.has_remaining(), DecodeError::InvalidLength); // no bytes should be left
             (reason_code, properties, reason_string)
         } else {
             (
@@ -76,12 +78,12 @@ impl PublishAck {
 }
 
 impl PublishAck2 {
-    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, ParseError> {
+    pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
         let (reason_code, properties, reason_string) = if src.has_remaining() {
             let reason_code = src.get_u8().try_into()?;
             let (properties, reason_string) = ack_props::decode(src)?;
-            ensure!(!src.has_remaining(), ParseError::InvalidLength); // no bytes should be left
+            ensure!(!src.has_remaining(), DecodeError::InvalidLength); // no bytes should be left
             (reason_code, properties, reason_string)
         } else {
             (

@@ -1,6 +1,7 @@
-use super::UserProperties;
-use super::{decode::*, encode::*, property_type as pt, EncodeError, ParseError};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+
+use super::{decode::*, encode::*, property_type as pt, UserProperties};
+use crate::error::{DecodeError, EncodeError};
 
 mod auth;
 mod connack;
@@ -144,7 +145,7 @@ mod ack_props {
     /// Parses ACK properties (User and Reason String properties) from `src`
     pub(crate) fn decode(
         src: &mut Bytes,
-    ) -> Result<(UserProperties, Option<ByteString>), ParseError> {
+    ) -> Result<(UserProperties, Option<ByteString>), DecodeError> {
         let prop_src = &mut take_properties(src)?;
         let mut reason_string = None;
         let mut user_props = Vec::new();
@@ -153,7 +154,7 @@ mod ack_props {
             match prop_id {
                 pt::REASON_STRING => reason_string.read_value(prop_src)?,
                 pt::USER => user_props.push(<(ByteString, ByteString)>::decode(prop_src)?),
-                _ => return Err(ParseError::MalformedPacket),
+                _ => return Err(DecodeError::MalformedPacket),
             }
         }
 

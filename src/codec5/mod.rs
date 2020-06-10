@@ -7,11 +7,9 @@ mod utils;
 mod codec;
 mod decode;
 mod encode;
-mod error;
 mod packet;
 
 pub use self::codec::Codec;
-pub use self::error::{EncodeError, ParseError};
 pub use self::packet::*;
 
 pub const MQTT_LEVEL: u8 = 5;

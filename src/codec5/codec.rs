@@ -1,9 +1,10 @@
-use super::decode::{decode_packet, decode_variable_length};
-use super::encode::EncodeLtd;
-use super::error::{EncodeError, ParseError};
-use super::{Packet, MAX_PACKET_SIZE};
 use bytes::{Buf, BytesMut};
 use ntex_codec::{Decoder, Encoder};
+
+use super::decode::{decode_packet, decode_variable_length};
+use super::encode::EncodeLtd;
+use super::{Packet, MAX_PACKET_SIZE};
+use crate::error::{DecodeError, EncodeError};
 
 #[derive(Debug)]
 pub struct Codec {
@@ -46,9 +47,9 @@ impl Default for Codec {
 
 impl Decoder for Codec {
     type Item = Packet;
-    type Error = ParseError;
+    type Error = DecodeError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, ParseError> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
         loop {
             match self.state {
                 DecodeState::FrameHeader => {
@@ -61,7 +62,7 @@ impl Decoder for Codec {
                         Some((remaining_length, consumed)) => {
                             // check max message size
                             if self.max_size != 0 && self.max_size < remaining_length as usize {
-                                return Err(ParseError::MaxSizeExceeded);
+                                return Err(DecodeError::MaxSizeExceeded);
                             }
                             src.advance(consumed + 1);
                             self.state = DecodeState::Frame(FixedHeader {
@@ -132,6 +133,6 @@ mod tests {
 
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
-        assert_eq!(codec.decode(&mut buf), Err(ParseError::MaxSizeExceeded));
+        assert_eq!(codec.decode(&mut buf), Err(DecodeError::MaxSizeExceeded));
     }
 }

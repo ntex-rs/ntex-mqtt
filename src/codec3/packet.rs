@@ -1,7 +1,8 @@
-use super::QoS;
 use bytes::Bytes;
 use bytestring::ByteString;
 use std::num::NonZeroU16;
+
+use super::QoS;
 
 prim_enum! {
     /// Connect Return Code

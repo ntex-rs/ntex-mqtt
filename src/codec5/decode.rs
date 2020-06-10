@@ -1,4 +1,3 @@
-use super::{error::ParseError, packet::*, UserProperty};
 use bytes::buf::ext::{BufExt, Take};
 use bytes::{Buf, Bytes};
 use bytestring::ByteString;
@@ -6,7 +5,10 @@ use std::convert::TryFrom;
 use std::io::Cursor;
 use std::num::{NonZeroU16, NonZeroU32};
 
-pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, ParseError> {
+use super::{packet::*, UserProperty};
+use crate::error::DecodeError;
+
+pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
         packet_type::PUBLISH_START..=packet_type::PUBLISH_END => Ok(Packet::Publish(
             Publish::decode(src, first_byte & 0b0000_1111)?,
@@ -25,7 +27,7 @@ pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, Pa
         packet_type::PUBREC => Ok(Packet::PublishReceived(PublishAck::decode(&mut src)?)),
         packet_type::PUBREL => Ok(Packet::PublishRelease(PublishAck2::decode(&mut src)?)),
         packet_type::PUBCOMP => Ok(Packet::PublishComplete(PublishAck2::decode(&mut src)?)),
-        _ => Err(ParseError::UnsupportedPacketType),
+        _ => Err(DecodeError::UnsupportedPacketType),
     }
 }
 
@@ -34,11 +36,11 @@ pub(super) trait ByteBuf: Buf {
 }
 
 pub(super) trait Decode: Sized {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError>;
+    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError>;
 }
 
 pub(super) trait Property {
-    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), ParseError>;
+    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), DecodeError>;
 }
 
 impl ByteBuf for Bytes {
@@ -54,111 +56,111 @@ impl ByteBuf for Take<&mut Bytes> {
 }
 
 impl<T: Decode> Property for Option<T> {
-    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), ParseError> {
-        ensure!(self.is_none(), ParseError::MalformedPacket); // property is set twice while not allowed
+    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), DecodeError> {
+        ensure!(self.is_none(), DecodeError::MalformedPacket); // property is set twice while not allowed
         *self = Some(T::decode(src)?);
         Ok(())
     }
 }
 
 impl<T: Decode> Property for Vec<T> {
-    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), ParseError> {
+    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), DecodeError> {
         self.push(T::decode(src)?);
         Ok(())
     }
 }
 
 impl Decode for bool {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
-        ensure!(src.has_remaining(), ParseError::InvalidLength); // expected more data within the field
+    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+        ensure!(src.has_remaining(), DecodeError::InvalidLength); // expected more data within the field
         let v = src.get_u8();
-        ensure!(v <= 0x1, ParseError::MalformedPacket); // value is invalid
+        ensure!(v <= 0x1, DecodeError::MalformedPacket); // value is invalid
         Ok(v == 0x1)
     }
 }
 
 impl Decode for u16 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
-        ensure!(src.remaining() >= 2, ParseError::InvalidLength);
+    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+        ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
         Ok(src.get_u16())
     }
 }
 
 impl Decode for u32 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
-        ensure!(src.remaining() >= 4, ParseError::InvalidLength); // expected more data within the field
+    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+        ensure!(src.remaining() >= 4, DecodeError::InvalidLength); // expected more data within the field
         let val = src.get_u32();
         Ok(val)
     }
 }
 
 impl Decode for NonZeroU32 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
-        let val = NonZeroU32::new(u32::decode(src)?).ok_or(ParseError::MalformedPacket)?;
+    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+        let val = NonZeroU32::new(u32::decode(src)?).ok_or(DecodeError::MalformedPacket)?;
         Ok(val)
     }
 }
 
 impl Decode for NonZeroU16 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
-        Ok(NonZeroU16::new(u16::decode(src)?).ok_or(ParseError::MalformedPacket)?)
+    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+        Ok(NonZeroU16::new(u16::decode(src)?).ok_or(DecodeError::MalformedPacket)?)
     }
 }
 
 impl Decode for Bytes {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
         let len = u16::decode(src)? as usize;
-        ensure!(src.remaining() >= len, ParseError::InvalidLength);
+        ensure!(src.remaining() >= len, DecodeError::InvalidLength);
         Ok(src.inner_mut().split_to(len))
     }
 }
 
 impl Decode for ByteString {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
         let bytes = Bytes::decode(src)?;
         Ok(ByteString::try_from(bytes)?)
     }
 }
 
 impl Decode for UserProperty {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
+    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
         let key = ByteString::decode(src)?;
         let val = ByteString::decode(src)?;
         Ok((key, val))
     }
 }
 
-pub fn decode_variable_length(src: &[u8]) -> Result<Option<(u32, usize)>, ParseError> {
+pub fn decode_variable_length(src: &[u8]) -> Result<Option<(u32, usize)>, DecodeError> {
     let mut cur = Cursor::new(src);
     match decode_variable_length_cursor(&mut cur) {
         Ok(len) => Ok(Some((len, cur.position() as usize))),
-        Err(ParseError::MalformedPacket) => Ok(None),
+        Err(DecodeError::MalformedPacket) => Ok(None),
         Err(e) => Err(e),
     }
 }
 
 #[allow(clippy::cast_lossless)] // safe: allow cast through `as` because it is type-safe
-pub fn decode_variable_length_cursor<B: Buf>(src: &mut B) -> Result<u32, ParseError> {
+pub fn decode_variable_length_cursor<B: Buf>(src: &mut B) -> Result<u32, DecodeError> {
     let mut shift: u32 = 0;
     let mut len: u32 = 0;
     loop {
-        ensure!(src.has_remaining(), ParseError::MalformedPacket);
+        ensure!(src.has_remaining(), DecodeError::MalformedPacket);
         let val = src.get_u8();
         len += ((val & 0b0111_1111u8) as u32) << shift;
         if val & 0b1000_0000 == 0 {
             return Ok(len);
         } else {
-            ensure!(shift < 21, ParseError::InvalidLength);
+            ensure!(shift < 21, DecodeError::InvalidLength);
             shift += 7;
         }
     }
 }
 
-pub(crate) fn take_properties(src: &mut Bytes) -> Result<Take<&mut Bytes>, ParseError> {
+pub(crate) fn take_properties(src: &mut Bytes) -> Result<Take<&mut Bytes>, DecodeError> {
     let prop_len = decode_variable_length_cursor(src)?;
     ensure!(
         src.remaining() >= prop_len as usize,
-        ParseError::InvalidLength
+        DecodeError::InvalidLength
     );
 
     Ok(src.take(prop_len as usize))
@@ -206,7 +208,7 @@ mod tests {
 
         assert_eq!(
             decode_variable_length(b"\xff\xff\xff\xff\xff\xff"),
-            Err(ParseError::InvalidLength)
+            Err(DecodeError::InvalidLength)
         );
 
         assert_variable_length(b"\x00", (0, 1));
@@ -281,23 +283,23 @@ mod tests {
 
         assert_eq!(
             Connect::decode(&mut Bytes::from_static(b"\x00\x02MQ00000000000000000000")),
-            Err(ParseError::InvalidProtocol),
+            Err(DecodeError::InvalidProtocol),
         );
         assert_eq!(
             Connect::decode(&mut Bytes::from_static(b"\x00\x04MQAA00000000000000000000")),
-            Err(ParseError::InvalidProtocol),
+            Err(DecodeError::InvalidProtocol),
         );
         assert_eq!(
             Connect::decode(&mut Bytes::from_static(
                 b"\x00\x04MQTT\x0300000000000000000000"
             )),
-            Err(ParseError::UnsupportedProtocolLevel),
+            Err(DecodeError::UnsupportedProtocolLevel),
         );
         assert_eq!(
             Connect::decode(&mut Bytes::from_static(
                 b"\x00\x04MQTT\x05\xff00000000000000000000"
             )),
-            Err(ParseError::ConnectReservedFlagSet)
+            Err(DecodeError::ConnectReservedFlagSet)
         );
 
         assert_eq!(
@@ -311,7 +313,7 @@ mod tests {
 
         assert_eq!(
             ConnectAck::decode(&mut Bytes::from_static(b"\x03\x86\x00")),
-            Err(ParseError::ConnAckReservedFlagSet)
+            Err(DecodeError::ConnAckReservedFlagSet)
         );
 
         assert_decode_packet(
