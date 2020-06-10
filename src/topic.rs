@@ -1,9 +1,8 @@
 use std::fmt::{self, Write};
 use std::{io, ops, str::FromStr};
 
-#[inline]
 fn is_metadata<T: AsRef<str>>(s: T) -> bool {
-    s.as_ref().chars().nth(0) == Some('$')
+    s.as_ref().starts_with('$')
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -31,7 +30,7 @@ impl Level {
             panic!("invalid normal level `{}` contains +|#", s.as_ref());
         }
 
-        if s.as_ref().chars().nth(0) == Some('$') {
+        if s.as_ref().starts_with('$') {
             panic!("invalid normal level `{}` starts with $", s.as_ref())
         }
 
@@ -43,7 +42,7 @@ impl Level {
             panic!("invalid metadata level `{}` contains +|#", s.as_ref());
         }
 
-        if s.as_ref().chars().nth(0) != Some('$') {
+        if !s.as_ref().starts_with('$') {
             panic!("invalid metadata level `{}` not starts with $", s.as_ref())
         }
 
@@ -80,10 +79,10 @@ impl Level {
     pub fn is_valid(&self) -> bool {
         match *self {
             Level::Normal(ref s) => {
-                s.chars().nth(0) != Some('$') && !s.contains(|c| c == '+' || c == '#')
+                !s.starts_with('$') && !s.contains(|c| c == '+' || c == '#')
             }
             Level::Metadata(ref s) => {
-                s.chars().nth(0) == Some('$') && !s.contains(|c| c == '+' || c == '#')
+                s.starts_with('$') && !s.contains(|c| c == '+' || c == '#')
             }
             _ => true,
         }

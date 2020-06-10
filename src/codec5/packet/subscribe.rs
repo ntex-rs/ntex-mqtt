@@ -204,7 +204,7 @@ impl EncodeLtd for Subscribe {
         self.packet_id.encoded_size() + var_int_len(prop_len) as usize + prop_len + payload_len
     }
 
-    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytesMut, _: u32) -> Result<(), EncodeError> {
         self.packet_id.encode(buf)?;
 
         let prop_len = self.id.map_or(0, |v| var_int_len(v.get() as usize))

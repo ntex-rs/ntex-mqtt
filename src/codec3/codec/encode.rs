@@ -8,31 +8,28 @@ use std::{convert::TryFrom, num::NonZeroU16};
 pub fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {
         Packet::Connect ( ref connect ) => {
-            match *connect {
-                Connect {ref last_will, ref client_id, ref username, ref password, ..} =>
-                {
-                    // Protocol Name + Protocol Level + Connect Flags + Keep Alive
-                    let mut n = 2 + 4 + 1 + 1 + 2;
+            let Connect {ref last_will, ref client_id, ref username, ref password, ..} = *connect;
 
-                    // Client Id
-                    n += 2 + client_id.len();
+            // Protocol Name + Protocol Level + Connect Flags + Keep Alive
+            let mut n = 2 + 4 + 1 + 1 + 2;
 
-                    // Will Topic + Will Message
-                    if let Some(LastWill { ref topic, ref message, .. }) = *last_will {
-                        n += 2 + topic.len() + 2 + message.len();
-                    }
+            // Client Id
+            n += 2 + client_id.len();
 
-                    if let Some(ref s) = *username {
-                        n += 2 + s.len();
-                    }
-
-                    if let Some(ref s) = *password {
-                        n += 2 + s.len();
-                    }
-
-                    n
-                }
+            // Will Topic + Will Message
+            if let Some(LastWill { ref topic, ref message, .. }) = *last_will {
+                n += 2 + topic.len() + 2 + message.len();
             }
+
+            if let Some(ref s) = *username {
+                n += 2 + s.len();
+            }
+
+            if let Some(ref s) = *password {
+                n += 2 + s.len();
+            }
+
+            n
         }
 
         Packet::Publish( Publish{ qos, ref topic, ref payload, .. }) => {
@@ -180,66 +177,62 @@ pub fn encode(
 }
 
 fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeError> {
-    match *connect {
-        Connect {
-            clean_session,
-            keep_alive,
-            ref last_will,
-            ref client_id,
-            ref username,
-            ref password,
-        } => {
-            Bytes::from_static(b"MQTT").encode(dst)?;
+    let Connect {
+        clean_session,
+        keep_alive,
+        ref last_will,
+        ref client_id,
+        ref username,
+        ref password,
+    } = *connect;
 
-            let mut flags = ConnectFlags::empty();
+    b"MQTT".as_ref().encode(dst)?;
 
-            if username.is_some() {
-                flags |= ConnectFlags::USERNAME;
-            }
-            if password.is_some() {
-                flags |= ConnectFlags::PASSWORD;
-            }
+    let mut flags = ConnectFlags::empty();
 
-            if let Some(LastWill { qos, retain, .. }) = *last_will {
-                flags |= ConnectFlags::WILL;
+    if username.is_some() {
+        flags |= ConnectFlags::USERNAME;
+    }
+    if password.is_some() {
+        flags |= ConnectFlags::PASSWORD;
+    }
 
-                if retain {
-                    flags |= ConnectFlags::WILL_RETAIN;
-                }
+    if let Some(LastWill { qos, retain, .. }) = *last_will {
+        flags |= ConnectFlags::WILL;
 
-                let b: u8 = qos as u8;
-
-                flags |= ConnectFlags::from_bits_truncate(b << WILL_QOS_SHIFT);
-            }
-
-            if clean_session {
-                flags |= ConnectFlags::CLEAN_SESSION;
-            }
-
-            dst.put_slice(&[MQTT_LEVEL, flags.bits()]);
-
-            dst.put_u16(keep_alive);
-
-            client_id.encode(dst)?;
-
-            if let Some(LastWill {
-                ref topic,
-                ref message,
-                ..
-            }) = *last_will
-            {
-                topic.encode(dst)?;
-                message.encode(dst)?;
-            }
-
-            if let Some(ref s) = *username {
-                s.encode(dst)?;
-            }
-
-            if let Some(ref s) = *password {
-                s.encode(dst)?;
-            }
+        if retain {
+            flags |= ConnectFlags::WILL_RETAIN;
         }
+
+        let b: u8 = qos as u8;
+
+        flags |= ConnectFlags::from_bits_truncate(b << WILL_QOS_SHIFT);
+    }
+
+    if clean_session {
+        flags |= ConnectFlags::CLEAN_SESSION;
+    }
+
+    dst.put_slice(&[MQTT_LEVEL, flags.bits()]);
+    dst.put_u16(keep_alive);
+    client_id.encode(dst)?;
+
+    if let Some(LastWill {
+        ref topic,
+        ref message,
+        ..
+    }) = *last_will
+    {
+        topic.encode(dst)?;
+        message.encode(dst)?;
+    }
+
+    if let Some(ref s) = *username {
+        s.encode(dst)?;
+    }
+
+    if let Some(ref s) = *password {
+        s.encode(dst)?;
     }
     Ok(())
 }
@@ -247,7 +240,6 @@ fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeErr
 trait Encode {
     fn encoded_size(&self) -> usize;
 
-    #[must_use]
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError>;
 }
 
@@ -279,6 +271,18 @@ impl Encode for ByteString {
     }
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         self.get_ref().encode(buf)
+    }
+}
+
+impl<'a> Encode for &'a [u8] {
+    fn encoded_size(&self) -> usize {
+        2 + self.len()
+    }
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+        let len = u16::try_from(self.len()).map_err(|_| EncodeError::InvalidLength)?;
+        buf.put_u16(len);
+        buf.extend_from_slice(self);
+        Ok(())
     }
 }
 

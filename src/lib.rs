@@ -1,5 +1,5 @@
 #![allow(clippy::type_complexity, clippy::new_ret_no_self)]
-//! MQTT v3.1.1 Server framework
+//! MQTT Client/Server framework
 
 pub mod client;
 pub mod codec3;

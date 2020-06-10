@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity, clippy::new_ret_no_self)]
 //! MQTT v5 Protocol codec
 
 use bytestring::ByteString;

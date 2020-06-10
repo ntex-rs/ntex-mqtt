@@ -21,6 +21,16 @@ pub struct Router<S, E> {
     default: Handler<S, E>,
 }
 
+impl<S, E> Default for Router<S, E>
+where
+    S: Clone + 'static,
+    E: 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<S, E> Router<S, E>
 where
     S: Clone + 'static,

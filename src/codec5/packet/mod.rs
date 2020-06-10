@@ -103,11 +103,13 @@ pub(super) mod property_type {
 }
 
 mod ack_props {
-    use super::*;
     use bytestring::ByteString;
 
+    use super::*;
+    use crate::codec5::UserProperty;
+
     pub(crate) fn encoded_size(
-        properties: &UserProperties,
+        properties: &[UserProperty],
         reason_string: &Option<ByteString>,
         limit: u32,
     ) -> usize {
@@ -121,7 +123,7 @@ mod ack_props {
     }
 
     pub(crate) fn encode(
-        properties: &UserProperties,
+        properties: &[UserProperty],
         reason_string: &Option<ByteString>,
         buf: &mut BytesMut,
         size: u32,

@@ -228,9 +228,9 @@ where
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
     C::Error: fmt::Debug + 'static,
 {
-    type Request = framed::Connect<Io, mqtt::Codec>;
+    type Request = framed::Handshake<Io, mqtt::Codec>;
     type Response =
-        framed::ConnectResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>;
+        framed::HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>;
     type Error = MqttError<C::Error>;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -300,7 +300,7 @@ where
 }
 
 pub struct ConnectAck<Io> {
-    io: framed::ConnectResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
     sink: MqttSink,
     session_present: bool,
     return_code: mqtt::ConnectCode,
@@ -374,7 +374,7 @@ where
 #[pin_project::pin_project]
 pub struct ConnectAckResult<Io, St> {
     state: Session<St>,
-    io: framed::ConnectResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
 }
 
 impl<Io, St> Stream for ConnectAckResult<Io, St>

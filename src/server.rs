@@ -230,8 +230,8 @@ fn connect_service_factory<Io, St, C>(
     handshake_timeout: usize,
 ) -> impl ServiceFactory<
     Config = (),
-    Request = framed::Connect<Io, mqtt::Codec>,
-    Response = framed::ConnectResult<
+    Request = framed::Handshake<Io, mqtt::Codec>,
+    Response = framed::HandshakeResult<
         Io,
         Session<St>,
         mqtt::Codec,
@@ -254,7 +254,7 @@ where
 
                 Ok::<_, C::InitError>(apply_fn(
                     service.map_err(MqttError::Service),
-                    move |conn: framed::Connect<Io, mqtt::Codec>, service| {
+                    move |conn: framed::Handshake<Io, mqtt::Codec>, service| {
                         log::trace!("Starting mqtt handshake");
                         let srv = service.clone();
                         let mut framed = conn.codec(mqtt::Codec::new().max_size(max_size));

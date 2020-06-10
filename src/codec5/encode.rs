@@ -1,9 +1,10 @@
 use super::error::EncodeError;
 use super::packet::{property_type as pt, *};
-use super::UserProperties;
+use super::{UserProperties, UserProperty};
 use bytes::{BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::convert::TryFrom;
+
 use std::num::{NonZeroU16, NonZeroU32};
 
 pub(super) trait EncodeLtd {
@@ -14,7 +15,6 @@ pub(super) trait EncodeLtd {
 pub(super) trait Encode {
     fn encoded_size(&self) -> usize;
 
-    #[must_use]
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError>;
 }
 
@@ -124,7 +124,7 @@ impl EncodeLtd for Packet {
 }
 
 pub(crate) fn encoded_size_opt_props(
-    user_props: &UserProperties,
+    user_props: &[UserProperty],
     reason_str: &Option<ByteString>,
     mut limit: u32,
 ) -> usize {
@@ -149,7 +149,7 @@ pub(crate) fn encoded_size_opt_props(
 }
 
 pub(crate) fn encode_opt_props(
-    user_props: &UserProperties,
+    user_props: &[UserProperty],
     reason_str: &Option<ByteString>,
     buf: &mut BytesMut,
     mut size: u32,
