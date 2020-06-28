@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 
-use futures::{FutureExt, SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::framed;
@@ -121,13 +121,13 @@ where
 
     /// Number of in-flight concurrent messages.
     ///
-    /// in-flight is set to 15 messages
+    /// By default in-flight is set to 15 messages
     pub fn inflight(mut self, val: usize) -> Self {
         self.inflight = val;
         self
     }
 
-    /// Service to execute for subscribe packet
+    /// Service to handle subscribe packets
     pub fn subscribe<F, Srv>(mut self, subscribe: F) -> Self
     where
         F: IntoServiceFactory<Srv>,
@@ -147,7 +147,7 @@ where
         self
     }
 
-    /// Service to execute for unsubscribe packet
+    /// Service to handle unsubscribe packets
     pub fn unsubscribe<F, Srv>(mut self, unsubscribe: F) -> Self
     where
         F: IntoServiceFactory<Srv>,
@@ -164,9 +164,9 @@ where
         self
     }
 
-    /// Callback to execute on disconnect
+    /// Callback to execute on socket disconnect
     ///
-    /// Second parameter indicates error occured during disconnect.
+    /// Second parameter indicates if error occured during disconnect.
     pub fn disconnect<F, Out>(mut self, disconnect: F) -> Self
     where
         F: Fn(&Session<St>, bool) -> Out + 'static,
@@ -179,7 +179,7 @@ where
         self
     }
 
-    /// Set service to execute for publish packet and create service factory
+    /// Set service to handle publish packets and create mqtt server factory
     pub fn finish<F, P>(
         self,
         publish: F,
@@ -201,7 +201,7 @@ where
             .map_init_err(|e| MqttError::Service(e.into()));
 
         unit_config(
-            framed::FactoryBuilder::new(connect_service_factory(
+            framed::FactoryBuilder::new(handshake_service_factory(
                 connect,
                 max_size,
                 self.inflight,
@@ -223,7 +223,7 @@ where
     }
 }
 
-fn connect_service_factory<Io, St, C>(
+fn handshake_service_factory<Io, St, C>(
     factory: C,
     max_size: usize,
     inflight: usize,
@@ -247,111 +247,110 @@ where
     apply(
         Timeout::new(Duration::from_millis(handshake_timeout as u64)),
         fn_factory(move || {
-            let fut = factory.new_service(());
-
-            async move {
-                let service = Rc::new(fut.await?);
-
-                Ok::<_, C::InitError>(apply_fn(
-                    service.map_err(MqttError::Service),
-                    move |conn: framed::Handshake<Io, mqtt::Codec>, service| {
-                        log::trace!("Starting mqtt handshake");
-                        let srv = service.clone();
-                        let mut framed = conn.codec(mqtt::Codec::new().max_size(max_size));
-
-                        async move {
-                            // read first packet
-                            let packet = framed
-                                .next()
-                                .await
-                                .ok_or_else(|| {
-                                    log::trace!("Server mqtt is disconnected during handshake");
-                                    MqttError::Disconnected
-                                })
-                                .and_then(|res| {
-                                    res.map_err(|e| {
-                                        log::trace!(
-                                            "Error is received during mqtt handshake: {:?}",
-                                            e
-                                        );
-                                        MqttError::Decode(e)
-                                    })
-                                })?;
-
-                            match packet {
-                                mqtt::Packet::Connect(connect) => {
-                                    let (tx, rx) = mpsc::channel();
-                                    let sink = MqttSink::new(tx);
-
-                                    // authenticate mqtt connection
-                                    let mut ack = srv
-                                        .call(Connect::new(connect, framed, sink, inflight))
-                                        .await?;
-
-                                    match ack.session {
-                                        Some(session) => {
-                                            log::trace!(
-                                                "Sending: {:#?}",
-                                                mqtt::Packet::ConnectAck {
-                                                    session_present: ack.session_present,
-                                                    return_code:
-                                                        mqtt::ConnectCode::ConnectionAccepted,
-                                                }
-                                            );
-                                            let sink = ack.sink;
-                                            ack.io
-                                                .send(mqtt::Packet::ConnectAck {
-                                                    session_present: ack.session_present,
-                                                    return_code:
-                                                        mqtt::ConnectCode::ConnectionAccepted,
-                                                })
-                                                .await?;
-
-                                            Ok(ack.io.out(rx).state(Session::new(
-                                                session,
-                                                sink,
-                                                ack.keep_alive,
-                                                ack.inflight,
-                                            )))
-                                        }
-                                        None => {
-                                            log::trace!(
-                                                "Sending: {:#?}",
-                                                mqtt::Packet::ConnectAck {
-                                                    session_present: false,
-                                                    return_code: ack.return_code,
-                                                }
-                                            );
-
-                                            ack.io
-                                                .send(mqtt::Packet::ConnectAck {
-                                                    session_present: false,
-                                                    return_code: ack.return_code,
-                                                })
-                                                .await?;
-                                            Err(MqttError::Disconnected)
-                                        }
-                                    }
-                                }
-                                packet => {
-                                    log::info!(
-                                        "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
-                                        1 //packet.packet_type()
-                                    );
-                                    Err(MqttError::Unexpected(
-                                        packet,
-                                        "MQTT-3.1.0-1: Expected CONNECT packet",
-                                    ))
-                                }
-                            }
-                        }
-                    },
-                ))
-            }
+            factory.new_service(()).map_ok(move |service| {
+                let service = Rc::new(service.map_err(MqttError::Service));
+                apply_fn(service, move |conn, service| {
+                    handshake(conn, service.clone(), max_size, inflight)
+                })
+            })
         }),
     )
     .map_err(|e| match e {
         TimeoutError::Service(e) => e,
         TimeoutError::Timeout => MqttError::HandshakeTimeout,
     })
+}
+
+async fn handshake<Io, S, St, E>(
+    conn: framed::Handshake<Io, mqtt::Codec>,
+    service: S,
+    max_size: usize,
+    inflight: usize,
+) -> Result<
+    framed::HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    S::Error,
+>
+where
+    Io: AsyncRead + AsyncWrite + Unpin,
+    S: Service<Request = Connect<Io>, Response = ConnectAck<Io, St>, Error = MqttError<E>>,
+{
+    log::trace!("Starting mqtt handshake");
+    let mut framed = conn.codec(mqtt::Codec::new().max_size(max_size));
+
+    // read first packet
+    let packet = framed
+        .next()
+        .await
+        .ok_or_else(|| {
+            log::trace!("Server mqtt is disconnected during handshake");
+            MqttError::Disconnected
+        })
+        .and_then(|res| {
+            res.map_err(|e| {
+                log::trace!("Error is received during mqtt handshake: {:?}", e);
+                MqttError::Decode(e)
+            })
+        })?;
+
+    match packet {
+        mqtt::Packet::Connect(connect) => {
+            let (tx, rx) = mpsc::channel();
+            let sink = MqttSink::new(tx);
+
+            // authenticate mqtt connection
+            let mut ack = service
+                .call(Connect::new(connect, framed, sink, inflight))
+                .await?;
+
+            match ack.session {
+                Some(session) => {
+                    log::trace!(
+                        "Sending: {:#?}",
+                        mqtt::Packet::ConnectAck {
+                            session_present: ack.session_present,
+                            return_code: mqtt::ConnectCode::ConnectionAccepted,
+                        }
+                    );
+                    let sink = ack.sink;
+                    ack.io
+                        .send(mqtt::Packet::ConnectAck {
+                            session_present: ack.session_present,
+                            return_code: mqtt::ConnectCode::ConnectionAccepted,
+                        })
+                        .await?;
+
+                    Ok(ack.io.out(rx).state(Session::new(
+                        session,
+                        sink,
+                        ack.keep_alive,
+                        ack.inflight,
+                    )))
+                }
+                None => {
+                    log::trace!(
+                        "Sending: {:#?}",
+                        mqtt::Packet::ConnectAck {
+                            session_present: false,
+                            return_code: ack.return_code,
+                        }
+                    );
+
+                    ack.io
+                        .send(mqtt::Packet::ConnectAck {
+                            session_present: false,
+                            return_code: ack.return_code,
+                        })
+                        .await?;
+                    Err(MqttError::Disconnected)
+                }
+            }
+        }
+        packet => {
+            log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {}", 1);
+            Err(MqttError::Unexpected(
+                packet,
+                "MQTT-3.1.0-1: Expected CONNECT packet",
+            ))
+        }
+    }
 }

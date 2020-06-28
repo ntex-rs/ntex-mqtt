@@ -22,7 +22,7 @@ use crate::publish::Publish;
 use crate::session::Session;
 use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
 
-/// dispatcher factory
+/// mqtt3 protocol dispatcher
 pub(super) fn factory<St, T, E>(
     publish: T,
     subscribe: boxed::BoxServiceFactory<
