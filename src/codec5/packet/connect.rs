@@ -4,8 +4,9 @@ use std::convert::TryFrom;
 use std::num::{NonZeroU16, NonZeroU32};
 
 use crate::codec5::{decode::*, encode::*, property_type as pt};
-use crate::codec5::{QoS, UserProperties, UserProperty, MQTT_LEVEL};
+use crate::codec5::{UserProperties, UserProperty, MQTT_LEVEL};
 use crate::error::{DecodeError, EncodeError};
+use crate::types::QoS;
 
 const WILL_QOS_SHIFT: u8 = 3;
 

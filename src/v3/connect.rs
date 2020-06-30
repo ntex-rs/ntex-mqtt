@@ -3,11 +3,11 @@ use std::ops::Deref;
 use std::time::Duration;
 
 use ntex::channel::mpsc;
+use ntex::codec::Framed;
 use ntex::framed;
-use ntex_codec::Framed;
 
-use crate::codec3 as mqtt;
-use crate::sink::MqttSink;
+use super::codec as mqtt;
+use super::sink::MqttSink;
 
 /// Connect message
 pub struct Connect<Io> {

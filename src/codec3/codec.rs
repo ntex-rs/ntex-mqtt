@@ -1,8 +1,9 @@
 use bytes::{buf::Buf, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
-use super::{decode, encode, Packet, Publish, QoS};
+use super::{decode, encode, Packet, Publish};
 use crate::error::{DecodeError, EncodeError};
+use crate::types::QoS;
 
 #[derive(Debug)]
 pub struct Codec {

@@ -170,6 +170,7 @@ pub(crate) fn take_properties(src: &mut Bytes) -> Result<Take<&mut Bytes>, Decod
 mod tests {
     use super::*;
     use crate::codec5::*;
+    use crate::types::QoS;
     use bytestring::ByteString;
 
     fn packet_id(v: u16) -> NonZeroU16 {

@@ -1,32 +1,21 @@
 #![allow(clippy::type_complexity, clippy::new_ret_no_self)]
 //! MQTT Client/Server framework
 
-pub mod client;
+#[macro_use]
+mod topic;
+#[macro_use]
+mod utils;
+
 pub mod codec3;
 pub mod codec5;
 pub mod error;
+pub mod v3;
 
-#[macro_use]
-mod topic;
-mod connect;
-mod default;
-mod dispatcher;
-mod publish;
-mod router;
-mod server;
 mod session;
-mod sink;
-mod subs;
+pub mod types;
 
-pub use self::client::Client;
-pub use self::connect::{Connect, ConnectAck};
 pub use self::error::MqttError;
-pub use self::publish::Publish;
-pub use self::router::Router;
-pub use self::server::MqttServer;
 pub use self::session::Session;
-pub use self::sink::MqttSink;
-pub use self::subs::{Subscribe, SubscribeIter, SubscribeResult, Subscription, Unsubscribe};
 
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
 pub const TCP_PORT: u16 = 1883;

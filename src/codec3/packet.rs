@@ -2,7 +2,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use std::num::NonZeroU16;
 
-use super::QoS;
+use crate::types::QoS;
 
 prim_enum! {
     /// Connect Return Code

@@ -1,4 +1,4 @@
-use ntex_mqtt::{Connect, ConnectAck, MqttServer, Publish};
+use ntex_mqtt::v3::{Connect, ConnectAck, MqttServer, Publish};
 
 #[derive(Clone)]
 struct Session;

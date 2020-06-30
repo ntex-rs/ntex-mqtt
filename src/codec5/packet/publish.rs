@@ -3,9 +3,9 @@ use bytestring::ByteString;
 use std::convert::TryFrom;
 use std::num::{NonZeroU16, NonZeroU32};
 
-use crate::codec5::{decode::*, encode::*, property_type as pt};
-use crate::codec5::{QoS, UserProperties};
+use crate::codec5::{decode::*, encode::*, property_type as pt, UserProperties};
 use crate::error::{DecodeError, EncodeError};
+use crate::types::QoS;
 
 /// PUBLISH message
 #[derive(Debug, PartialEq, Clone)]

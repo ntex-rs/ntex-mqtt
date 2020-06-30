@@ -4,7 +4,7 @@ use futures::future::ok;
 use ntex::server;
 use ntex::service::Service;
 
-use ntex_mqtt::{client, Connect, ConnectAck, MqttServer, Publish, Session};
+use ntex_mqtt::v3::{client, Connect, ConnectAck, MqttServer, Publish, Session};
 
 struct St;
 

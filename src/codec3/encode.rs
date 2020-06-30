@@ -5,8 +5,8 @@ use bytestring::ByteString;
 
 use super::{ConnectFlags, WILL_QOS_SHIFT};
 use crate::codec3::packet::*;
-use crate::codec3::*;
 use crate::error::EncodeError;
+use crate::types::{QoS, MQTT_LEVEL_3};
 
 pub fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {
@@ -216,7 +216,7 @@ fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeErr
         flags |= ConnectFlags::CLEAN_SESSION;
     }
 
-    dst.put_slice(&[MQTT_LEVEL, flags.bits()]);
+    dst.put_slice(&[MQTT_LEVEL_3, flags.bits()]);
     dst.put_u16(keep_alive);
     client_id.encode(dst)?;
 

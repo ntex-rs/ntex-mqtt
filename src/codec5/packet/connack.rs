@@ -2,9 +2,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::{convert::TryInto, num::NonZeroU16};
 
-use crate::codec5::{decode::*, encode::*, property_type as pt};
-use crate::codec5::{QoS, UserProperties, UserProperty};
+use crate::codec5::{decode::*, encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
+use crate::types::QoS;
 
 bitflags::bitflags! {
     pub struct ConnectAckFlags: u8 {

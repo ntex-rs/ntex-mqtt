@@ -1,26 +1,24 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::sink::MqttSink;
-
 /// Mqtt connection session
-pub struct Session<St>(Rc<SessionInner<St>>);
+pub struct Session<T, St>(Rc<SessionInner<T, St>>);
 
-struct SessionInner<St> {
+struct SessionInner<T, St> {
     st: St,
-    sink: MqttSink,
+    sink: T,
     timeout: Duration,
     in_flight: usize,
 }
 
-impl<St> Clone for Session<St> {
+impl<T, St> Clone for Session<T, St> {
     fn clone(&self) -> Self {
         Session(self.0.clone())
     }
 }
 
-impl<St> Session<St> {
-    pub(crate) fn new(st: St, sink: MqttSink, timeout: Duration, in_flight: usize) -> Self {
+impl<T, St> Session<T, St> {
+    pub(crate) fn new(st: St, sink: T, timeout: Duration, in_flight: usize) -> Self {
         Session(Rc::new(SessionInner {
             st,
             sink,
@@ -29,7 +27,7 @@ impl<St> Session<St> {
         }))
     }
 
-    pub fn sink(&self) -> &MqttSink {
+    pub fn sink(&self) -> &T {
         &self.0.sink
     }
 

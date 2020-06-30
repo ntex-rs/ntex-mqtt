@@ -8,7 +8,7 @@ use ntex::router::{IntoPattern, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex::service::{fn_service, IntoServiceFactory, Service, ServiceFactory};
 
-use crate::publish::Publish;
+use super::publish::Publish;
 
 type Handler<S, E> = BoxServiceFactory<S, Publish, (), E, E>;
 type HandlerService<E> = BoxService<Publish, (), E>;

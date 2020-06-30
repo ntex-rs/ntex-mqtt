@@ -1,45 +1,31 @@
 use std::fmt;
-use std::future::Future;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 
-use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
+use futures::{SinkExt, StreamExt, TryFutureExt};
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::framed;
-use ntex::service::{apply, apply_fn, boxed, fn_factory, pipeline_factory, unit_config};
+use ntex::service::{apply, apply_fn, fn_factory, unit_config};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
 
-use crate::codec3 as mqtt;
-use crate::connect::{Connect, ConnectAck};
-use crate::default::{SubsNotImplemented, UnsubsNotImplemented};
-use crate::dispatcher::factory;
 use crate::error::MqttError;
-use crate::publish::Publish;
-use crate::session::Session;
-use crate::sink::MqttSink;
-use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
+
+use super::codec as mqtt;
+use super::connect::{Connect, ConnectAck};
+use super::control::{ControlPacket, ControlResult};
+use super::default::DefaultControlService;
+use super::dispatcher::factory;
+use super::publish::Publish;
+use super::sink::MqttSink;
+use super::Session;
 
 /// Mqtt Server
-pub struct MqttServer<Io, St, C: ServiceFactory> {
+pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory> {
     connect: C,
-    subscribe: boxed::BoxServiceFactory<
-        Session<St>,
-        Subscribe,
-        SubscribeResult,
-        MqttError<C::Error>,
-        MqttError<C::Error>,
-    >,
-    unsubscribe: boxed::BoxServiceFactory<
-        Session<St>,
-        Unsubscribe,
-        (),
-        MqttError<C::Error>,
-        MqttError<C::Error>,
-    >,
-    disconnect: Option<Rc<dyn Fn(&Session<St>, bool)>>,
+    control: Cn,
     max_size: usize,
     inflight: usize,
     handshake_timeout: usize,
@@ -47,7 +33,7 @@ pub struct MqttServer<Io, St, C: ServiceFactory> {
     _t: PhantomData<(Io, St)>,
 }
 
-impl<Io, St, C> MqttServer<Io, St, C>
+impl<Io, St, C> MqttServer<Io, St, C, DefaultControlService<St, C::Error>>
 where
     St: 'static,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
@@ -55,25 +41,15 @@ where
     C::Error: fmt::Debug,
 {
     /// Create server factory and provide connect service
-    pub fn new<F>(connect: F) -> MqttServer<Io, St, C>
+    pub fn new<F>(connect: F) -> MqttServer<Io, St, C, DefaultControlService<St, C::Error>>
     where
         F: IntoServiceFactory<C>,
     {
         MqttServer {
             connect: connect.into_factory(),
-            subscribe: boxed::factory(
-                pipeline_factory(SubsNotImplemented::default())
-                    .map_err(MqttError::Service)
-                    .map_init_err(MqttError::Service),
-            ),
-            unsubscribe: boxed::factory(
-                pipeline_factory(UnsubsNotImplemented::default())
-                    .map_err(MqttError::Service)
-                    .map_init_err(MqttError::Service),
-            ),
+            control: DefaultControlService::default(),
             max_size: 0,
             inflight: 15,
-            disconnect: None,
             handshake_timeout: 0,
             disconnect_timeout: 3000,
             _t: PhantomData,
@@ -81,12 +57,15 @@ where
     }
 }
 
-impl<Io, St, C> MqttServer<Io, St, C>
+impl<Io, St, C, Cn> MqttServer<Io, St, C, Cn>
 where
     St: 'static,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
         + 'static,
     C::Error: fmt::Debug,
+    Cn: ServiceFactory<Config = Session<St>, Request = ControlPacket, Response = ControlResult>
+        + 'static,
+    C::Error: From<Cn::Error> + From<Cn::InitError>,
 {
     /// Set handshake timeout in millis.
     ///
@@ -127,56 +106,26 @@ where
         self
     }
 
-    /// Service to handle subscribe packets
-    pub fn subscribe<F, Srv>(mut self, subscribe: F) -> Self
+    /// Service to handle control packets
+    pub fn control<F, Srv>(self, service: F) -> MqttServer<Io, St, C, Srv>
     where
         F: IntoServiceFactory<Srv>,
         Srv: ServiceFactory<
                 Config = Session<St>,
-                Request = Subscribe,
-                Response = SubscribeResult,
+                Request = ControlPacket,
+                Response = ControlResult,
             > + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError>,
     {
-        self.subscribe = boxed::factory(
-            subscribe
-                .into_factory()
-                .map_err(|e| MqttError::Service(e.into()))
-                .map_init_err(|e| MqttError::Service(e.into())),
-        );
-        self
-    }
-
-    /// Service to handle unsubscribe packets
-    pub fn unsubscribe<F, Srv>(mut self, unsubscribe: F) -> Self
-    where
-        F: IntoServiceFactory<Srv>,
-        Srv: ServiceFactory<Config = Session<St>, Request = Unsubscribe, Response = ()>
-            + 'static,
-        C::Error: From<Srv::Error> + From<Srv::InitError>,
-    {
-        self.unsubscribe = boxed::factory(
-            unsubscribe
-                .into_factory()
-                .map_err(|e| MqttError::Service(e.into()))
-                .map_init_err(|e| MqttError::Service(e.into())),
-        );
-        self
-    }
-
-    /// Callback to execute on socket disconnect
-    ///
-    /// Second parameter indicates if error occured during disconnect.
-    pub fn disconnect<F, Out>(mut self, disconnect: F) -> Self
-    where
-        F: Fn(&Session<St>, bool) -> Out + 'static,
-        Out: Future + 'static,
-    {
-        self.disconnect = Some(Rc::new(move |st: &Session<St>, err| {
-            let fut = disconnect(st, err);
-            ntex::rt::spawn(fut.map(|_| ()));
-        }));
-        self
+        MqttServer {
+            connect: self.connect,
+            control: service.into_factory(),
+            max_size: self.max_size,
+            inflight: self.inflight,
+            handshake_timeout: self.handshake_timeout,
+            disconnect_timeout: self.disconnect_timeout,
+            _t: PhantomData,
+        }
     }
 
     /// Set service to handle publish packets and create mqtt server factory
@@ -193,10 +142,13 @@ where
         let connect = self.connect;
         let max_size = self.max_size;
         let handshake_timeout = self.handshake_timeout;
-        let disconnect = self.disconnect;
         let disconnect_timeout = self.disconnect_timeout;
         let publish = publish
             .into_factory()
+            .map_err(|e| MqttError::Service(e.into()))
+            .map_init_err(|e| MqttError::Service(e.into()));
+        let control = self
+            .control
             .map_err(|e| MqttError::Service(e.into()))
             .map_init_err(|e| MqttError::Service(e.into()));
 
@@ -208,12 +160,7 @@ where
                 handshake_timeout,
             ))
             .disconnect_timeout(disconnect_timeout)
-            .build(factory(
-                publish,
-                self.subscribe,
-                self.unsubscribe,
-                disconnect,
-            ))
+            .build(factory(publish, control))
             .map_err(|e| match e {
                 framed::ServiceError::Service(e) => e,
                 framed::ServiceError::Encoder(e) => MqttError::Encode(e),

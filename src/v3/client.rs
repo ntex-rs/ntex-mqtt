@@ -1,5 +1,4 @@
 use std::fmt;
-use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -15,14 +14,14 @@ use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::framed;
 use ntex::service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
 
-use crate::codec3 as mqtt;
-use crate::default::{SubsNotImplemented, UnsubsNotImplemented};
-use crate::dispatcher::factory;
 use crate::error::{DecodeError, EncodeError, MqttError};
-use crate::publish::Publish;
-use crate::session::Session;
-use crate::sink::MqttSink;
-use crate::subs::{Subscribe, SubscribeResult, Unsubscribe};
+
+use super::control::{ControlPacket, ControlResult};
+use super::default::DefaultControlService;
+use super::dispatcher::factory;
+use super::publish::Publish;
+use super::sink::MqttSink;
+use super::{codec as mqtt, Session};
 
 /// Mqtt client
 #[derive(Clone)]
@@ -117,9 +116,11 @@ where
                 username: self.username,
                 password: self.password,
             },
-            subscribe: boxed::factory(SubsNotImplemented::default()),
-            unsubscribe: boxed::factory(UnsubsNotImplemented::default()),
-            disconnect: None,
+            control: boxed::factory(
+                DefaultControlService::default()
+                    .map_init_err(|_: C::Error| unreachable!())
+                    .map_err(|_| unreachable!()),
+            ),
             keep_alive: self.keep_alive.into(),
             inflight: self.inflight,
             _t: PhantomData,
@@ -130,25 +131,15 @@ where
 pub struct ServiceBuilder<Io, St, C: Service> {
     state: Rc<C>,
     packet: mqtt::Connect,
-    subscribe: boxed::BoxServiceFactory<
-        Session<St>,
-        Subscribe,
-        SubscribeResult,
-        MqttError<C::Error>,
-        MqttError<C::Error>,
-    >,
-
-    unsubscribe: boxed::BoxServiceFactory<
-        Session<St>,
-        Unsubscribe,
-        (),
-        MqttError<C::Error>,
-        MqttError<C::Error>,
-    >,
-
-    disconnect: Option<Rc<dyn Fn(&Session<St>, bool)>>,
     keep_alive: u64,
     inflight: usize,
+    control: boxed::BoxServiceFactory<
+        Session<St>,
+        ControlPacket,
+        ControlResult,
+        MqttError<C::Error>,
+        MqttError<C::Error>,
+    >,
 
     _t: PhantomData<(Io, St, C)>,
 }
@@ -160,20 +151,20 @@ where
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
     C::Error: fmt::Debug + 'static,
 {
-    /// Callback to execute on disconnect
-    ///
-    /// Second parameter indicates error occured during disconnect.
-    pub fn disconnect<F, Out>(mut self, disconnect: F) -> ServiceBuilder<Io, St, C>
-    where
-        F: Fn(&Session<St>, bool) -> Out + 'static,
-        Out: Future + 'static,
-    {
-        self.disconnect = Some(Rc::new(move |st: &Session<St>, err| {
-            let fut = disconnect(st, err);
-            ntex::rt::spawn(fut.map(|_| ()));
-        }));
-        self
-    }
+    // /// Callback to execute on disconnect
+    // ///
+    // /// Second parameter indicates error occured during disconnect.
+    // pub fn disconnect<F, Out>(mut self, disconnect: F) -> ServiceBuilder<Io, St, C>
+    // where
+    //     F: Fn(&Session<St>, bool) -> Out + 'static,
+    //     Out: Future + 'static,
+    // {
+    //     self.disconnect = Some(Rc::new(move |st: &Session<St>, err| {
+    //         let fut = disconnect(st, err);
+    //         ntex::rt::spawn(fut.map(|_| ()));
+    //     }));
+    //     self
+    // }
 
     pub fn finish<F, T>(
         self,
@@ -201,9 +192,7 @@ where
                 .into_factory()
                 .map_err(MqttError::Service)
                 .map_init_err(MqttError::Service),
-            self.subscribe,
-            self.unsubscribe,
-            self.disconnect,
+            self.control,
         ))
         .map_err(|e| match e {
             framed::ServiceError::Service(e) => e,

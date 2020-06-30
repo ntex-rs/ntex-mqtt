@@ -4,11 +4,12 @@ use std::num::NonZeroU16;
 use bytes::{Buf, Bytes};
 use bytestring::ByteString;
 
-use super::{ConnectAckFlags, ConnectFlags, QoS, MQTT_LEVEL, WILL_QOS_SHIFT};
+use super::{ConnectAckFlags, ConnectFlags, WILL_QOS_SHIFT};
 use crate::codec3::packet::{
     packet_type, Connect, LastWill, Packet, Publish, SubscribeReturnCode,
 };
 use crate::error::DecodeError;
+use crate::types::{QoS, MQTT_LEVEL_3};
 
 pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
@@ -84,7 +85,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     src.advance(4);
 
     let level = src.get_u8();
-    ensure!(level == MQTT_LEVEL, DecodeError::UnsupportedProtocolLevel);
+    ensure!(level == MQTT_LEVEL_3, DecodeError::UnsupportedProtocolLevel);
 
     let flags = ConnectFlags::from_bits(src.get_u8())
         .ok_or_else(|| DecodeError::ConnectReservedFlagSet)?;

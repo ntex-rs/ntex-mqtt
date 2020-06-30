@@ -4,9 +4,9 @@ use std::convert::TryInto;
 use std::num::{NonZeroU16, NonZeroU32};
 
 use super::ack_props;
-use crate::codec5::{decode::*, encode::*, property_type as pt};
-use crate::codec5::{QoS, UserProperties, UserProperty};
+use crate::codec5::{decode::*, encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
+use crate::types::QoS;
 
 // Represents SUBSCRIBE packet
 #[derive(Debug, PartialEq, Clone)]
@@ -36,7 +36,7 @@ prim_enum! {
     }
 }
 
-// Represents SUBACK packet
+/// Represents SUBACK packet
 #[derive(Debug, PartialEq, Clone)]
 pub struct SubscribeAck {
     pub packet_id: NonZeroU16,
