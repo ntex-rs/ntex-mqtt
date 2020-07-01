@@ -3,8 +3,9 @@ use ntex_codec::{Decoder, Encoder};
 
 use super::decode::{decode_packet, decode_variable_length};
 use super::encode::EncodeLtd;
-use super::{Packet, MAX_PACKET_SIZE};
+use super::Packet;
 use crate::error::{DecodeError, EncodeError};
+use crate::types::MAX_PACKET_SIZE;
 
 #[derive(Debug)]
 pub struct Codec {

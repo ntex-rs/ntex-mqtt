@@ -383,8 +383,7 @@ pub(super) fn reduce_limit(limit: u32, reduction: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec5::MAX_PACKET_SIZE;
-    use crate::types::QoS;
+    use crate::types::{QoS, MAX_PACKET_SIZE};
     use bytes::Bytes;
     use bytestring::ByteString;
 

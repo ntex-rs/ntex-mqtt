@@ -4,9 +4,9 @@ use std::convert::TryFrom;
 use std::num::{NonZeroU16, NonZeroU32};
 
 use crate::codec5::{decode::*, encode::*, property_type as pt};
-use crate::codec5::{UserProperties, UserProperty, MQTT_LEVEL};
+use crate::codec5::{UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
-use crate::types::QoS;
+use crate::types::{QoS, MQTT_LEVEL_5};
 
 const WILL_QOS_SHIFT: u8 = 3;
 
@@ -109,7 +109,7 @@ impl Connect {
         src.advance(4);
 
         let level = src.get_u8();
-        ensure!(level == MQTT_LEVEL, DecodeError::UnsupportedProtocolLevel);
+        ensure!(level == MQTT_LEVEL_5, DecodeError::UnsupportedProtocolLevel);
 
         let flags = ConnectFlags::from_bits(src.get_u8())
             .ok_or_else(|| DecodeError::ConnectReservedFlagSet)?;
@@ -272,7 +272,7 @@ impl EncodeLtd for Connect {
             flags |= ConnectFlags::CLEAN_START;
         }
 
-        buf.put_slice(&[MQTT_LEVEL, flags.bits()]);
+        buf.put_slice(&[MQTT_LEVEL_5, flags.bits()]);
 
         self.keep_alive.encode(buf)?;
 
