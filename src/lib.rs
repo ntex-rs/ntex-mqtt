@@ -13,6 +13,7 @@ pub mod v3;
 
 mod session;
 pub mod types;
+mod version;
 
 pub use self::error::MqttError;
 pub use self::session::Session;

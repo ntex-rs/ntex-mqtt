@@ -3,8 +3,9 @@ use bytestring::ByteString;
 use std::{convert::TryInto, num::NonZeroU16};
 
 use super::ack_props;
-use crate::codec5::{decode::*, encode::*, UserProperties};
+use crate::codec5::{encode::*, UserProperties};
 use crate::error::{DecodeError, EncodeError};
+use crate::utils::{self, Decode, Encode};
 
 const HEADER_LEN: u32 = 2 + 1; // packet id + reason code
 
@@ -113,7 +114,7 @@ impl EncodeLtd for PublishAck {
     }
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
-        write_variable_length(size, buf);
+        utils::write_variable_length(size, buf);
         self.packet_id.get().encode(buf)?;
         buf.put_u8(self.reason_code.into());
         ack_props::encode(
@@ -138,7 +139,7 @@ impl EncodeLtd for PublishAck2 {
     }
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
-        write_variable_length(size, buf);
+        utils::write_variable_length(size, buf);
         self.packet_id.get().encode(buf)?;
         buf.put_u8(self.reason_code.into());
         ack_props::encode(&self.properties, &self.reason_string, buf, size - 3)?;

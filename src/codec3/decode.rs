@@ -4,12 +4,11 @@ use std::num::NonZeroU16;
 use bytes::{Buf, Bytes};
 use bytestring::ByteString;
 
-use super::{ConnectAckFlags, ConnectFlags, WILL_QOS_SHIFT};
-use crate::codec3::packet::{
-    packet_type, Connect, LastWill, Packet, Publish, SubscribeReturnCode,
-};
+use super::{ConnectAckFlags, ConnectFlags};
+use crate::codec3::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
 use crate::error::DecodeError;
-use crate::types::{QoS, MQTT_LEVEL_3};
+use crate::types::{packet_type, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
+use crate::utils::Decode;
 
 pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
@@ -41,32 +40,6 @@ pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, De
     }
 }
 
-pub(crate) trait Decode: Sized {
-    fn decode(src: &mut Bytes) -> Result<Self, DecodeError>;
-}
-
-/// Decodes variable length and returns tuple of (length, bytes consumed)
-pub fn decode_variable_length(src: &[u8]) -> Result<Option<(usize, usize)>, DecodeError> {
-    if let Some((len, consumed, more)) = src
-        .iter()
-        .enumerate()
-        .scan((0, true), |state, (idx, x)| {
-            if !state.1 || idx > 3 {
-                return None;
-            }
-            state.0 += ((x & 0x7F) as usize) << (idx * 7);
-            state.1 = x & 0x80 != 0;
-            Some((state.0, idx + 1, state.1))
-        })
-        .last()
-    {
-        ensure!(!more || consumed < 4, DecodeError::InvalidLength);
-        return Ok(Some((len, consumed)));
-    }
-
-    Ok(None)
-}
-
 #[inline]
 fn decode_ack(mut src: Bytes, f: impl Fn(NonZeroU16) -> Packet) -> Result<Packet, DecodeError> {
     let packet_id = NonZeroU16::decode(&mut src)?;
@@ -79,7 +52,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let len = src.get_u16();
 
     ensure!(
-        len == 4 && &src.bytes()[0..4] == b"MQTT",
+        len == 4 && &src.bytes()[0..4] == MQTT,
         DecodeError::InvalidProtocol
     );
     src.advance(4);
@@ -94,7 +67,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let client_id = ByteString::decode(src)?;
 
     ensure!(
-        !client_id.is_empty() || flags.contains(ConnectFlags::CLEAN_SESSION),
+        !client_id.is_empty() || flags.contains(ConnectFlags::CLEAN_START),
         DecodeError::InvalidClientId
     );
 
@@ -121,7 +94,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
         None
     };
     Ok(Packet::Connect(Connect {
-        clean_session: flags.contains(ConnectFlags::CLEAN_SESSION),
+        clean_session: flags.contains(ConnectFlags::CLEAN_START),
         keep_alive,
         client_id,
         last_will,
@@ -202,38 +175,11 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     })
 }
 
-impl Decode for u16 {
-    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
-        Ok(src.get_u16())
-    }
-}
-
-impl Decode for NonZeroU16 {
-    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        Ok(NonZeroU16::new(u16::decode(src)?).ok_or(DecodeError::MalformedPacket)?)
-    }
-}
-
-impl Decode for Bytes {
-    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        let len = u16::decode(src)? as usize;
-        ensure!(src.remaining() >= len, DecodeError::InvalidLength);
-        Ok(src.split_to(len))
-    }
-}
-
-impl Decode for ByteString {
-    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        let bytes = Bytes::decode(src)?;
-        Ok(ByteString::try_from(bytes)?)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::codec3::ConnectCode;
+    use crate::utils::decode_variable_length;
 
     macro_rules! assert_decode_packet (
         ($bytes:expr, $res:expr) => {{
@@ -246,36 +192,6 @@ mod tests {
 
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
-    }
-
-    #[test]
-    fn test_decode_variable_length() {
-        macro_rules! assert_variable_length (
-            ($bytes:expr, $res:expr) => {{
-                assert_eq!(decode_variable_length($bytes), Ok(Some($res)));
-            }};
-
-            ($bytes:expr, $res:expr, $rest:expr) => {{
-                assert_eq!(decode_variable_length($bytes), Ok(Some($res)));
-            }};
-        );
-
-        assert_variable_length!(b"\x7f\x7f", (127, 1), b"\x7f");
-
-        //assert_eq!(decode_variable_length(b"\xff\xff\xff"), Ok(None));
-        assert_eq!(
-            decode_variable_length(b"\xff\xff\xff\xff\xff\xff"),
-            Err(DecodeError::InvalidLength)
-        );
-
-        assert_variable_length!(b"\x00", (0, 1));
-        assert_variable_length!(b"\x7f", (127, 1));
-        assert_variable_length!(b"\x80\x01", (128, 2));
-        assert_variable_length!(b"\xff\x7f", (16383, 2));
-        assert_variable_length!(b"\x80\x80\x01", (16384, 3));
-        assert_variable_length!(b"\xff\xff\x7f", (2097151, 3));
-        assert_variable_length!(b"\x80\x80\x80\x01", (2097152, 4));
-        assert_variable_length!(b"\xff\xff\xff\x7f", (268435455, 4));
     }
 
     #[test]

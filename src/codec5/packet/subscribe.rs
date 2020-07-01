@@ -4,9 +4,10 @@ use std::convert::TryInto;
 use std::num::{NonZeroU16, NonZeroU32};
 
 use super::ack_props;
-use crate::codec5::{decode::*, encode::*, property_type as pt, UserProperties, UserProperty};
+use crate::codec5::{encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;
+use crate::utils::{self, ByteBuf, Decode, Encode};
 
 // Represents SUBSCRIBE packet
 #[derive(Debug, PartialEq, Clone)]
@@ -100,7 +101,7 @@ prim_enum! {
 impl Subscribe {
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
-        let prop_src = &mut take_properties(src)?;
+        let prop_src = &mut utils::take_properties(src)?;
         let mut sub_id = None;
         let mut user_properties = Vec::new();
         while prop_src.has_remaining() {
@@ -108,7 +109,7 @@ impl Subscribe {
             match prop_id {
                 pt::SUB_ID => {
                     ensure!(sub_id.is_none(), DecodeError::MalformedPacket); // can't appear twice
-                    let val = decode_variable_length_cursor(prop_src)?;
+                    let val = utils::decode_variable_length_cursor(prop_src)?;
                     sub_id = Some(NonZeroU32::new(val).ok_or(DecodeError::MalformedPacket)?);
                 }
                 pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
@@ -153,7 +154,7 @@ impl Unsubscribe {
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
 
-        let prop_src = &mut take_properties(src)?;
+        let prop_src = &mut utils::take_properties(src)?;
         let mut user_properties = Vec::new();
         while prop_src.has_remaining() {
             let prop_id = prop_src.get_u8();
@@ -211,7 +212,7 @@ impl EncodeLtd for Subscribe {
 
         let prop_len = self.id.map_or(0, |v| var_int_len(v.get() as usize))
             + self.user_properties.encoded_size() as u32; // safe: size was already checked against maximum
-        write_variable_length(prop_len, buf);
+        utils::write_variable_length(prop_len, buf);
         encode_property(&self.id, pt::SUB_ID, buf)?;
         for (filter, opts) in self.topic_filters.iter() {
             filter.encode(buf)?;
@@ -291,7 +292,7 @@ impl EncodeLtd for Unsubscribe {
     fn encode(&self, buf: &mut BytesMut, _size: u32) -> Result<(), EncodeError> {
         self.packet_id.encode(buf)?;
         let prop_len = self.user_properties.encoded_size();
-        write_variable_length(prop_len as u32, buf); // safe: max size check is done already
+        utils::write_variable_length(prop_len as u32, buf); // safe: max size check is done already
         for filter in self.topic_filters.iter() {
             filter.encode(buf)?;
         }

@@ -1,11 +1,12 @@
 use bytes::{Buf, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
-use super::decode::{decode_packet, decode_variable_length};
+use super::decode::decode_packet;
 use super::encode::EncodeLtd;
 use super::Packet;
 use crate::error::{DecodeError, EncodeError};
-use crate::types::MAX_PACKET_SIZE;
+use crate::types::{FixedHeader, MAX_PACKET_SIZE};
+use crate::utils::decode_variable_length;
 
 #[derive(Debug)]
 pub struct Codec {
@@ -113,15 +114,6 @@ impl Encoder for Codec {
 
         Ok(())
     }
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub(crate) struct FixedHeader {
-    /// Fixed Header byte
-    pub first_byte: u8,
-    /// the number of bytes remaining within the current packet,
-    /// including data in the variable header and the payload.
-    pub remaining_length: u32,
 }
 
 #[cfg(test)]

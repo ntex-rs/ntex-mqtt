@@ -3,12 +3,13 @@ use ntex_codec::{Decoder, Encoder};
 
 use super::{decode, encode, Packet, Publish};
 use crate::error::{DecodeError, EncodeError};
-use crate::types::QoS;
+use crate::types::{FixedHeader, QoS};
+use crate::utils::decode_variable_length;
 
 #[derive(Debug)]
 pub struct Codec {
     state: DecodeState,
-    max_size: usize,
+    max_size: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -30,7 +31,7 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_size(mut self, size: usize) -> Self {
+    pub fn max_size(mut self, size: u32) -> Self {
         self.max_size = size;
         self
     }
@@ -55,7 +56,7 @@ impl Decoder for Codec {
                     }
                     let src_slice = src.as_ref();
                     let first_byte = src_slice[0];
-                    match super::decode::decode_variable_length(&src_slice[1..])? {
+                    match decode_variable_length(&src_slice[1..])? {
                         Some((remaining_length, consumed)) => {
                             // check max message size
                             if self.max_size != 0 && self.max_size < remaining_length {
@@ -67,6 +68,7 @@ impl Decoder for Codec {
                                 remaining_length,
                             });
                             // todo: validate remaining_length against max frame size config
+                            let remaining_length = remaining_length as usize;
                             if src.len() < remaining_length {
                                 // todo: subtract?
                                 src.reserve(remaining_length); // extend receiving buffer to fit the whole frame -- todo: too eager?
@@ -79,10 +81,10 @@ impl Decoder for Codec {
                     }
                 }
                 DecodeState::Frame(fixed) => {
-                    if src.len() < fixed.remaining_length {
+                    if src.len() < fixed.remaining_length as usize {
                         return Ok(None);
                     }
-                    let packet_buf = src.split_to(fixed.remaining_length);
+                    let packet_buf = src.split_to(fixed.remaining_length as usize);
                     let packet = decode::decode_packet(packet_buf.freeze(), fixed.first_byte)?;
                     self.state = DecodeState::FrameHeader;
                     src.reserve(2);
@@ -105,18 +107,9 @@ impl Encoder for Codec {
         }
         let content_size = encode::get_encoded_size(&item);
         dst.reserve(content_size + 5);
-        encode::encode(&item, dst, content_size)?;
+        encode::encode(&item, dst, content_size as u32)?;
         Ok(())
     }
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub(crate) struct FixedHeader {
-    /// Fixed Header byte
-    pub first_byte: u8,
-    /// the number of bytes remaining within the current packet,
-    /// including data in the variable header and the payload.
-    pub remaining_length: usize,
 }
 
 #[cfg(test)]

@@ -1,12 +1,10 @@
-use bytes::buf::ext::{BufExt, Take};
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use bytestring::ByteString;
-use std::convert::TryFrom;
-use std::io::Cursor;
-use std::num::{NonZeroU16, NonZeroU32};
 
 use super::{packet::*, UserProperty};
 use crate::error::DecodeError;
+use crate::types::packet_type;
+use crate::utils::{ByteBuf, Decode};
 
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
@@ -31,97 +29,6 @@ pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, De
     }
 }
 
-pub(super) trait ByteBuf: Buf {
-    fn inner_mut(&mut self) -> &mut Bytes;
-}
-
-pub(super) trait Decode: Sized {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError>;
-}
-
-pub(super) trait Property {
-    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), DecodeError>;
-}
-
-impl ByteBuf for Bytes {
-    fn inner_mut(&mut self) -> &mut Bytes {
-        self
-    }
-}
-
-impl ByteBuf for Take<&mut Bytes> {
-    fn inner_mut(&mut self) -> &mut Bytes {
-        self.get_mut()
-    }
-}
-
-impl<T: Decode> Property for Option<T> {
-    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), DecodeError> {
-        ensure!(self.is_none(), DecodeError::MalformedPacket); // property is set twice while not allowed
-        *self = Some(T::decode(src)?);
-        Ok(())
-    }
-}
-
-impl<T: Decode> Property for Vec<T> {
-    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), DecodeError> {
-        self.push(T::decode(src)?);
-        Ok(())
-    }
-}
-
-impl Decode for bool {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
-        ensure!(src.has_remaining(), DecodeError::InvalidLength); // expected more data within the field
-        let v = src.get_u8();
-        ensure!(v <= 0x1, DecodeError::MalformedPacket); // value is invalid
-        Ok(v == 0x1)
-    }
-}
-
-impl Decode for u16 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
-        ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
-        Ok(src.get_u16())
-    }
-}
-
-impl Decode for u32 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
-        ensure!(src.remaining() >= 4, DecodeError::InvalidLength); // expected more data within the field
-        let val = src.get_u32();
-        Ok(val)
-    }
-}
-
-impl Decode for NonZeroU32 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
-        let val = NonZeroU32::new(u32::decode(src)?).ok_or(DecodeError::MalformedPacket)?;
-        Ok(val)
-    }
-}
-
-impl Decode for NonZeroU16 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
-        Ok(NonZeroU16::new(u16::decode(src)?).ok_or(DecodeError::MalformedPacket)?)
-    }
-}
-
-impl Decode for Bytes {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
-        let len = u16::decode(src)? as usize;
-        ensure!(src.remaining() >= len, DecodeError::InvalidLength);
-        Ok(src.inner_mut().split_to(len))
-    }
-}
-
-impl Decode for ByteString {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
-        let bytes = Bytes::decode(src)?;
-        Ok(ByteString::try_from(bytes)?)
-    }
-}
-
 impl Decode for UserProperty {
     fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
         let key = ByteString::decode(src)?;
@@ -130,48 +37,15 @@ impl Decode for UserProperty {
     }
 }
 
-pub fn decode_variable_length(src: &[u8]) -> Result<Option<(u32, usize)>, DecodeError> {
-    let mut cur = Cursor::new(src);
-    match decode_variable_length_cursor(&mut cur) {
-        Ok(len) => Ok(Some((len, cur.position() as usize))),
-        Err(DecodeError::MalformedPacket) => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-#[allow(clippy::cast_lossless)] // safe: allow cast through `as` because it is type-safe
-pub fn decode_variable_length_cursor<B: Buf>(src: &mut B) -> Result<u32, DecodeError> {
-    let mut shift: u32 = 0;
-    let mut len: u32 = 0;
-    loop {
-        ensure!(src.has_remaining(), DecodeError::MalformedPacket);
-        let val = src.get_u8();
-        len += ((val & 0b0111_1111u8) as u32) << shift;
-        if val & 0b1000_0000 == 0 {
-            return Ok(len);
-        } else {
-            ensure!(shift < 21, DecodeError::InvalidLength);
-            shift += 7;
-        }
-    }
-}
-
-pub(crate) fn take_properties(src: &mut Bytes) -> Result<Take<&mut Bytes>, DecodeError> {
-    let prop_len = decode_variable_length_cursor(src)?;
-    ensure!(
-        src.remaining() >= prop_len as usize,
-        DecodeError::InvalidLength
-    );
-
-    Ok(src.take(prop_len as usize))
-}
-
 #[cfg(test)]
 mod tests {
+    use bytestring::ByteString;
+    use std::num::NonZeroU16;
+
     use super::*;
     use crate::codec5::*;
     use crate::types::QoS;
-    use bytestring::ByteString;
+    use crate::utils::decode_variable_length;
 
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
@@ -195,31 +69,6 @@ mod tests {
             panic!("decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}", res, decoded, tmp.as_ref());
         }
         //assert_eq!(, Ok(res));
-    }
-
-    #[test]
-    fn test_decode_variable_length() {
-        fn assert_variable_length<B: AsRef<[u8]> + 'static>(bytes: B, res: (u32, usize)) {
-            assert_eq!(decode_variable_length(bytes.as_ref()), Ok(Some(res)));
-        }
-
-        assert_variable_length(b"\x7f\x7f", (127, 1));
-
-        assert_eq!(decode_variable_length(b"\xff\xff\xff"), Ok(None));
-
-        assert_eq!(
-            decode_variable_length(b"\xff\xff\xff\xff\xff\xff"),
-            Err(DecodeError::InvalidLength)
-        );
-
-        assert_variable_length(b"\x00", (0, 1));
-        assert_variable_length(b"\x7f", (127, 1));
-        assert_variable_length(b"\x80\x01", (128, 2));
-        assert_variable_length(b"\xff\x7f", (16383, 2));
-        assert_variable_length(b"\x80\x80\x01", (16384, 3));
-        assert_variable_length(b"\xff\xff\x7f", (2_097_151, 3));
-        assert_variable_length(b"\x80\x80\x80\x01", (2_097_152, 4));
-        assert_variable_length(b"\xff\xff\xff\x7f", (268_435_455, 4));
     }
 
     #[test]

@@ -26,7 +26,7 @@ use super::Session;
 pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory> {
     connect: C,
     control: Cn,
-    max_size: usize,
+    max_size: u32,
     inflight: usize,
     handshake_timeout: usize,
     disconnect_timeout: usize,
@@ -93,7 +93,7 @@ where
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_size(mut self, size: usize) -> Self {
+    pub fn max_size(mut self, size: u32) -> Self {
         self.max_size = size;
         self
     }
@@ -172,7 +172,7 @@ where
 
 fn handshake_service_factory<Io, St, C>(
     factory: C,
-    max_size: usize,
+    max_size: u32,
     inflight: usize,
     handshake_timeout: usize,
 ) -> impl ServiceFactory<
@@ -211,7 +211,7 @@ where
 async fn handshake<Io, S, St, E>(
     conn: framed::Handshake<Io, mqtt::Codec>,
     service: S,
-    max_size: usize,
+    max_size: u32,
     inflight: usize,
 ) -> Result<
     framed::HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,

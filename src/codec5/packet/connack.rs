@@ -2,15 +2,10 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::{convert::TryInto, num::NonZeroU16};
 
-use crate::codec5::{decode::*, encode::*, property_type as pt, UserProperties, UserProperty};
+use crate::codec5::{encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
-use crate::types::QoS;
-
-bitflags::bitflags! {
-    pub struct ConnectAckFlags: u8 {
-        const SESSION_PRESENT = 0b0000_0001;
-    }
-}
+use crate::types::{ConnectAckFlags, QoS};
+use crate::utils::{self, Decode, Encode, Property};
 
 /// Connect acknowledgment
 #[derive(Debug, PartialEq, Clone)]
@@ -118,7 +113,7 @@ impl ConnectAck {
 
         let reason_code = src.get_u8().try_into()?;
 
-        let prop_src = &mut take_properties(src)?;
+        let prop_src = &mut utils::take_properties(src)?;
 
         let mut session_expiry_interval_secs = None;
         let mut receive_max = None;
@@ -230,7 +225,7 @@ impl EncodeLtd for ConnectAck {
         ]);
 
         let prop_len = var_int_len_from_size(size - 2);
-        write_variable_length(prop_len, buf);
+        utils::write_variable_length(prop_len, buf);
 
         encode_property(&self.session_expiry_interval_secs, pt::SESS_EXPIRY_INT, buf)?;
         encode_property(&self.receive_max, pt::RECEIVE_MAX, buf)?;

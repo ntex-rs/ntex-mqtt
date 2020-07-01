@@ -2,9 +2,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::convert::TryInto;
 
-use crate::codec5::{decode::*, encode::*, property_type as pt};
-use crate::codec5::{UserProperties, UserProperty};
+use crate::codec5::{encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
+use crate::utils::{self, Decode, Property};
 
 /// AUTH message
 #[derive(Debug, PartialEq, Clone)]
@@ -37,7 +37,7 @@ impl Auth {
             let mut user_properties = Vec::new();
 
             if reason_code != AuthReasonCode::Success || src.has_remaining() {
-                let prop_src = &mut take_properties(src)?;
+                let prop_src = &mut utils::take_properties(src)?;
                 while prop_src.has_remaining() {
                     match prop_src.get_u8() {
                         pt::AUTH_METHOD => auth_method.read_value(prop_src)?,
@@ -101,7 +101,7 @@ impl EncodeLtd for Auth {
         buf.put_u8(self.reason_code.into());
 
         let prop_len = var_int_len_from_size(size - 1);
-        write_variable_length(prop_len, buf);
+        utils::write_variable_length(prop_len, buf);
         encode_property(&self.auth_method, pt::AUTH_METHOD, buf)?;
         encode_property(&self.auth_data, pt::AUTH_DATA, buf)?;
         encode_opt_props(

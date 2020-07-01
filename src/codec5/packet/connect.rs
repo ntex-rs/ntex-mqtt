@@ -3,23 +3,10 @@ use bytestring::ByteString;
 use std::convert::TryFrom;
 use std::num::{NonZeroU16, NonZeroU32};
 
-use crate::codec5::{decode::*, encode::*, property_type as pt};
-use crate::codec5::{UserProperties, UserProperty};
+use crate::codec5::{encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{QoS, MQTT_LEVEL_5};
-
-const WILL_QOS_SHIFT: u8 = 3;
-
-bitflags::bitflags! {
-    pub struct ConnectFlags: u8 {
-        const USERNAME    = 0b1000_0000;
-        const PASSWORD    = 0b0100_0000;
-        const WILL_RETAIN = 0b0010_0000;
-        const WILL_QOS    = 0b0001_1000;
-        const WILL        = 0b0000_0100;
-        const CLEAN_START = 0b0000_0010;
-    }
-}
+use crate::types::{ConnectFlags, QoS, MQTT, MQTT_LEVEL_5, WILL_QOS_SHIFT};
+use crate::utils::{self, Decode, Encode, Property};
 
 #[derive(Debug, PartialEq, Clone)]
 /// Connect packet content
@@ -103,7 +90,7 @@ impl Connect {
         let len = src.get_u16();
 
         ensure!(
-            len == 4 && &src.bytes()[0..4] == b"MQTT",
+            len == 4 && &src.bytes()[0..4] == MQTT,
             DecodeError::InvalidProtocol
         );
         src.advance(4);
@@ -126,7 +113,7 @@ impl Connect {
         let mut topic_alias_max = None;
         let mut user_properties = Vec::new();
         let mut max_packet_size = None;
-        let prop_src = &mut take_properties(src)?;
+        let prop_src = &mut utils::take_properties(src)?;
         while prop_src.has_remaining() {
             match prop_src.get_u8() {
                 pt::SESS_EXPIRY_INT => session_expiry_interval_secs.read_value(prop_src)?,
@@ -197,7 +184,7 @@ fn decode_last_will(src: &mut Bytes, flags: ConnectFlags) -> Result<LastWill, De
     let mut user_properties = Vec::new();
     let mut is_utf8_payload = None;
     let mut response_topic = None;
-    let prop_src = &mut take_properties(src)?;
+    let prop_src = &mut utils::take_properties(src)?;
     while prop_src.has_remaining() {
         match prop_src.get_u8() {
             pt::WILL_DELAY_INT => will_delay_interval_sec.read_value(prop_src)?,
@@ -277,7 +264,7 @@ impl EncodeLtd for Connect {
         self.keep_alive.encode(buf)?;
 
         let prop_len = self.properties_len();
-        write_variable_length(prop_len as u32, buf); // safe: whole message size is vetted via max size check in codec
+        utils::write_variable_length(prop_len as u32, buf); // safe: whole message size is vetted via max size check in codec
         encode_property(&self.session_expiry_interval_secs, pt::SESS_EXPIRY_INT, buf)?;
         encode_property(&self.auth_method, pt::AUTH_METHOD, buf)?;
         encode_property(&self.auth_data, pt::AUTH_DATA, buf)?;
@@ -295,7 +282,7 @@ impl EncodeLtd for Connect {
 
         if let Some(will) = self.last_will.as_ref() {
             let prop_len = will.properties_len();
-            write_variable_length(prop_len as u32, buf); // safe: whole message size is checked for max already
+            utils::write_variable_length(prop_len as u32, buf); // safe: whole message size is checked for max already
 
             will.topic.encode(buf)?;
             will.message.encode(buf)?;

@@ -3,9 +3,10 @@ use bytestring::ByteString;
 use std::convert::TryFrom;
 use std::num::{NonZeroU16, NonZeroU32};
 
-use crate::codec5::{decode::*, encode::*, property_type as pt, UserProperties};
+use crate::codec5::{encode::*, property_type as pt, UserProperties};
 use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;
+use crate::utils::{self, Decode, Encode, Property};
 
 /// PUBLISH message
 #[derive(Debug, PartialEq, Clone)]
@@ -76,7 +77,7 @@ impl Publish {
 }
 
 fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, DecodeError> {
-    let prop_src = &mut take_properties(src)?;
+    let prop_src = &mut utils::take_properties(src)?;
 
     let mut message_expiry_interval = None;
     let mut topic_alias = None;
@@ -95,7 +96,7 @@ fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, Decode
             pt::RESP_TOPIC => response_topic.read_value(prop_src)?,
             pt::CORR_DATA => correlation_data.read_value(prop_src)?,
             pt::SUB_ID => {
-                let id = decode_variable_length_cursor(prop_src)?;
+                let id = utils::decode_variable_length_cursor(prop_src)?;
                 subscription_ids
                     .get_or_insert_with(Vec::new)
                     .push(NonZeroU32::new(id).ok_or(DecodeError::MalformedPacket)?);
@@ -167,7 +168,7 @@ impl EncodeLtd for PublishProperties {
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
         let prop_len = var_int_len_from_size(size);
-        write_variable_length(prop_len, buf);
+        utils::write_variable_length(prop_len, buf);
         encode_property(&self.topic_alias, pt::TOPIC_ALIAS, buf)?;
         encode_property(&self.correlation_data, pt::CORR_DATA, buf)?;
         encode_property(&self.message_expiry_interval, pt::MSG_EXPIRY_INT, buf)?;

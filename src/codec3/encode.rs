@@ -1,12 +1,9 @@
-use std::{convert::TryFrom, num::NonZeroU16};
+use bytes::{BufMut, BytesMut};
 
-use bytes::{BufMut, Bytes, BytesMut};
-use bytestring::ByteString;
-
-use super::{ConnectFlags, WILL_QOS_SHIFT};
 use crate::codec3::packet::*;
 use crate::error::EncodeError;
-use crate::types::{QoS, MQTT_LEVEL_3};
+use crate::types::{packet_type, ConnectFlags, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
+use crate::utils::{write_variable_length, Encode};
 
 pub fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {
@@ -67,7 +64,7 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
 pub fn encode(
     packet: &Packet,
     dst: &mut BytesMut,
-    content_size: usize,
+    content_size: u32,
 ) -> Result<(), EncodeError> {
     match packet {
         Packet::Connect(connect) => {
@@ -189,7 +186,7 @@ fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeErr
         ref password,
     } = *connect;
 
-    b"MQTT".as_ref().encode(dst)?;
+    MQTT.as_ref().encode(dst)?;
 
     let mut flags = ConnectFlags::empty();
 
@@ -213,7 +210,7 @@ fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeErr
     }
 
     if clean_session {
-        flags |= ConnectFlags::CLEAN_SESSION;
+        flags |= ConnectFlags::CLEAN_START;
     }
 
     dst.put_slice(&[MQTT_LEVEL_3, flags.bits()]);
@@ -240,82 +237,6 @@ fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeErr
     Ok(())
 }
 
-trait Encode {
-    fn encoded_size(&self) -> usize;
-
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError>;
-}
-
-impl Encode for NonZeroU16 {
-    fn encoded_size(&self) -> usize {
-        2
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        buf.put_u16(self.get());
-        Ok(())
-    }
-}
-
-impl Encode for Bytes {
-    fn encoded_size(&self) -> usize {
-        2 + self.len()
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        let len = u16::try_from(self.len()).map_err(|_| EncodeError::InvalidLength)?;
-        buf.put_u16(len);
-        buf.extend_from_slice(self.as_ref());
-        Ok(())
-    }
-}
-
-impl Encode for ByteString {
-    fn encoded_size(&self) -> usize {
-        self.get_ref().encoded_size()
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        self.get_ref().encode(buf)
-    }
-}
-
-impl<'a> Encode for &'a [u8] {
-    fn encoded_size(&self) -> usize {
-        2 + self.len()
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        let len = u16::try_from(self.len()).map_err(|_| EncodeError::InvalidLength)?;
-        buf.put_u16(len);
-        buf.extend_from_slice(self);
-        Ok(())
-    }
-}
-
-#[inline]
-fn write_variable_length(size: usize, dst: &mut BytesMut) {
-    // todo: verify at higher level
-    // if size > MAX_VARIABLE_LENGTH {
-    //     Err(Error::new(ErrorKind::Other, "out of range"))
-    if size <= 127 {
-        dst.put_u8(size as u8);
-    } else if size <= 16383 {
-        // 127 + 127 << 7
-        dst.put_slice(&[((size % 128) | 0x80) as u8, (size >> 7) as u8]);
-    } else if size <= 2_097_151 {
-        // 127 + 127 << 7 + 127 << 14
-        dst.put_slice(&[
-            ((size % 128) | 0x80) as u8,
-            (((size >> 7) % 128) | 0x80) as u8,
-            (size >> 14) as u8,
-        ]);
-    } else {
-        dst.put_slice(&[
-            ((size % 128) | 0x80) as u8,
-            (((size >> 7) % 128) | 0x80) as u8,
-            (((size >> 14) % 128) | 0x80) as u8,
-            (size >> 21) as u8,
-        ]);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
@@ -326,36 +247,6 @@ mod tests {
 
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
-    }
-
-    #[test]
-    fn test_encode_variable_length() {
-        let mut v = BytesMut::new();
-
-        write_variable_length(123, &mut v);
-        assert_eq!(v, [123].as_ref());
-
-        v.clear();
-
-        write_variable_length(129, &mut v);
-        assert_eq!(v, b"\x81\x01".as_ref());
-
-        v.clear();
-
-        write_variable_length(16383, &mut v);
-        assert_eq!(v, b"\xff\x7f".as_ref());
-
-        v.clear();
-
-        write_variable_length(2097151, &mut v);
-        assert_eq!(v, b"\xff\xff\x7f".as_ref());
-
-        v.clear();
-
-        write_variable_length(268435455, &mut v);
-        assert_eq!(v, b"\xff\xff\xff\x7f".as_ref());
-
-        // assert!(v.write_variable_length(MAX_VARIABLE_LENGTH + 1).is_err())
     }
 
     #[test]
@@ -385,7 +276,7 @@ mod tests {
 
     fn assert_encode_packet(packet: &Packet, expected: &[u8]) {
         let mut v = BytesMut::with_capacity(1024);
-        encode(packet, &mut v, get_encoded_size(packet)).unwrap();
+        encode(packet, &mut v, get_encoded_size(packet) as u32).unwrap();
         assert_eq!(expected.len(), v.len());
         assert_eq!(&expected[..], &v[..]);
     }

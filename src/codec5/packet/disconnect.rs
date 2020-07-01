@@ -2,9 +2,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::convert::TryInto;
 
-use crate::codec5::{decode::*, encode::*, property_type as pt};
-use crate::codec5::{UserProperties, UserProperty};
+use crate::codec5::{encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
+use crate::utils::{self, Decode, Property};
 
 /// DISCONNECT message
 #[derive(Debug, PartialEq, Clone)]
@@ -62,7 +62,7 @@ impl Disconnect {
             let mut reason_string = None;
             let mut user_properties = Vec::new();
 
-            let prop_src = &mut take_properties(src)?;
+            let prop_src = &mut utils::take_properties(src)?;
             while prop_src.has_remaining() {
                 match prop_src.get_u8() {
                     pt::SESS_EXPIRY_INT => session_expiry_interval_secs.read_value(prop_src)?,
@@ -125,10 +125,9 @@ impl EncodeLtd for Disconnect {
         buf.put_u8(self.reason_code.into());
 
         let prop_len = var_int_len_from_size(size - 1);
-        write_variable_length(prop_len, buf);
+        utils::write_variable_length(prop_len, buf);
         encode_property(&self.session_expiry_interval_secs, pt::SESS_EXPIRY_INT, buf)?;
         encode_property(&self.server_reference, pt::SERVER_REF, buf)?;
-        println!("size: {}, buf len: {}", size, buf.len());
         encode_opt_props(
             &self.user_properties,
             &self.reason_string,

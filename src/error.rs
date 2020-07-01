@@ -57,7 +57,7 @@ pub enum DecodeError {
     // MQTT v3 only
     PacketIdRequired,
     MaxSizeExceeded,
-    IoError(io::Error),
+    Io(io::Error),
     Utf8Error(std::str::Utf8Error),
 }
 
@@ -66,7 +66,7 @@ pub enum EncodeError {
     InvalidLength,
     MalformedPacket,
     PacketIdRequired,
-    IoError(io::Error),
+    Io(io::Error),
 }
 
 impl PartialEq for DecodeError {
@@ -84,7 +84,7 @@ impl PartialEq for DecodeError {
             (DecodeError::PacketIdRequired, DecodeError::PacketIdRequired) => true,
             (DecodeError::MaxSizeExceeded, DecodeError::MaxSizeExceeded) => true,
             (DecodeError::MalformedPacket, DecodeError::MalformedPacket) => true,
-            (DecodeError::IoError(_), _) => false,
+            (DecodeError::Io(_), _) => false,
             (DecodeError::Utf8Error(_), _) => false,
             _ => false,
         }

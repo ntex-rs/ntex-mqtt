@@ -1,7 +1,10 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use super::{decode::*, encode::*, property_type as pt, UserProperties};
+pub use crate::types::{ConnectFlags, QoS};
+
+use super::{encode::*, property_type as pt, UserProperties};
 use crate::error::{DecodeError, EncodeError};
+use crate::utils::{take_properties, write_variable_length, Decode, Property};
 
 mod auth;
 mod connack;
@@ -52,25 +55,6 @@ pub enum Packet {
     Disconnect(Disconnect),
     /// Auth exchange
     Auth(Auth),
-}
-
-pub(super) mod packet_type {
-    pub const CONNECT: u8 = 0b0001_0000;
-    pub const CONNACK: u8 = 0b0010_0000;
-    pub const PUBLISH_START: u8 = 0b0011_0000;
-    pub const PUBLISH_END: u8 = 0b0011_1111;
-    pub const PUBACK: u8 = 0b0100_0000;
-    pub const PUBREC: u8 = 0b0101_0000;
-    pub const PUBREL: u8 = 0b0110_0010;
-    pub const PUBCOMP: u8 = 0b0111_0000;
-    pub const SUBSCRIBE: u8 = 0b1000_0010;
-    pub const SUBACK: u8 = 0b1001_0000;
-    pub const UNSUBSCRIBE: u8 = 0b1010_0010;
-    pub const UNSUBACK: u8 = 0b1011_0000;
-    pub const PINGREQ: u8 = 0b1100_0000;
-    pub const PINGRESP: u8 = 0b1101_0000;
-    pub const DISCONNECT: u8 = 0b1110_0000;
-    pub const AUTH: u8 = 0b1111_0000;
 }
 
 pub(super) mod property_type {

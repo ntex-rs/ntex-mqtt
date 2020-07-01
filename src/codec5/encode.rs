@@ -1,21 +1,16 @@
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{BufMut, BytesMut};
 use bytestring::ByteString;
-use std::convert::TryFrom;
-use std::num::{NonZeroU16, NonZeroU32};
 
 use super::packet::{property_type as pt, *};
 use super::{UserProperties, UserProperty};
 use crate::error::EncodeError;
+use crate::types::packet_type;
+use crate::utils::{write_variable_length, Encode};
 
 pub(super) trait EncodeLtd {
     fn encoded_size(&self, limit: u32) -> usize;
+
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError>;
-}
-
-pub(super) trait Encode {
-    fn encoded_size(&self) -> usize;
-
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError>;
 }
 
 impl EncodeLtd for Packet {
@@ -231,131 +226,6 @@ pub(crate) fn var_int_len_from_size(val: u32) -> u32 {
     val - var_int_len_u32(res)
 }
 
-pub(crate) fn write_variable_length(len: u32, dst: &mut BytesMut) {
-    match len {
-        0..=127 => dst.put_u8(len as u8),
-        128..=16_383 => {
-            dst.put_slice(&[((len & 0b0111_1111) | 0b1000_0000) as u8, (len >> 7) as u8])
-        }
-        16_384..=2_097_151 => {
-            dst.put_slice(&[
-                ((len & 0b0111_1111) | 0b1000_0000) as u8,
-                (((len >> 7) & 0b0111_1111) | 0b1000_0000) as u8,
-                (len >> 14) as u8,
-            ]);
-        }
-        2_097_152..=268_435_455 => {
-            dst.put_slice(&[
-                ((len & 0b0111_1111) | 0b1000_0000) as u8,
-                (((len >> 7) & 0b0111_1111) | 0b1000_0000) as u8,
-                (((len >> 14) & 0b0111_1111) | 0b1000_0000) as u8,
-                (len >> 21) as u8,
-            ]);
-        }
-        _ => panic!("length is too big"), // todo: verify at higher level
-    }
-}
-
-impl<T: Encode> Encode for Option<T> {
-    fn encoded_size(&self) -> usize {
-        if let Some(v) = self {
-            v.encoded_size()
-        } else {
-            0
-        }
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        if let Some(v) = self {
-            v.encode(buf)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl Encode for bool {
-    fn encoded_size(&self) -> usize {
-        1
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        if *self {
-            buf.put_u8(0x1);
-        } else {
-            buf.put_u8(0x0);
-        }
-        Ok(())
-    }
-}
-
-impl Encode for u16 {
-    fn encoded_size(&self) -> usize {
-        2
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        buf.put_u16(*self);
-        Ok(())
-    }
-}
-
-impl Encode for NonZeroU16 {
-    fn encoded_size(&self) -> usize {
-        2
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        self.get().encode(buf)
-    }
-}
-
-impl Encode for u32 {
-    fn encoded_size(&self) -> usize {
-        4
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        buf.put_u32(*self);
-        Ok(())
-    }
-}
-
-impl Encode for NonZeroU32 {
-    fn encoded_size(&self) -> usize {
-        4
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        self.get().encode(buf)
-    }
-}
-
-impl Encode for Bytes {
-    fn encoded_size(&self) -> usize {
-        2 + self.len()
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        let len = u16::try_from(self.len()).map_err(|_| EncodeError::InvalidLength)?;
-        buf.put_u16(len);
-        buf.extend_from_slice(self.as_ref());
-        Ok(())
-    }
-}
-
-impl Encode for ByteString {
-    fn encoded_size(&self) -> usize {
-        self.get_ref().encoded_size()
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        self.get_ref().encode(buf)
-    }
-}
-
-impl Encode for (ByteString, ByteString) {
-    fn encoded_size(&self) -> usize {
-        self.0.encoded_size() + self.1.encoded_size()
-    }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        self.0.encode(buf)?;
-        self.1.encode(buf)
-    }
-}
-
 impl Encode for UserProperties {
     fn encoded_size(&self) -> usize {
         let mut len = 0;
@@ -386,39 +256,10 @@ mod tests {
     use crate::types::{QoS, MAX_PACKET_SIZE};
     use bytes::Bytes;
     use bytestring::ByteString;
+    use std::num::NonZeroU16;
 
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
-    }
-
-    #[test]
-    fn test_encode_variable_length() {
-        let mut v = BytesMut::new();
-
-        write_variable_length(123, &mut v);
-        assert_eq!(v, [123].as_ref());
-
-        v.clear();
-
-        write_variable_length(129, &mut v);
-        assert_eq!(v, b"\x81\x01".as_ref());
-
-        v.clear();
-
-        write_variable_length(16_383, &mut v);
-        assert_eq!(v, b"\xff\x7f".as_ref());
-
-        v.clear();
-
-        write_variable_length(2_097_151, &mut v);
-        assert_eq!(v, b"\xff\xff\x7f".as_ref());
-
-        v.clear();
-
-        write_variable_length(268_435_455, &mut v);
-        assert_eq!(v, b"\xff\xff\xff\x7f".as_ref());
-
-        // assert!(v.write_variable_length(MAX_VARIABLE_LENGTH + 1).is_err())
     }
 
     #[test]
