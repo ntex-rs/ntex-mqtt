@@ -18,7 +18,7 @@ use super::connect::{Connect, ConnectAck};
 use super::control::{ControlPacket, ControlResult};
 use super::default::DefaultControlService;
 use super::dispatcher::factory;
-use super::publish::Publish;
+use super::publish::{Publish, PublishAck};
 use super::sink::MqttSink;
 use super::Session;
 
@@ -30,6 +30,7 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory> {
     inflight: usize,
     handshake_timeout: usize,
     disconnect_timeout: usize,
+    max_topic_alias: u16,
     _t: PhantomData<(Io, St)>,
 }
 
@@ -52,6 +53,7 @@ where
             inflight: 15,
             handshake_timeout: 0,
             disconnect_timeout: 3000,
+            max_topic_alias: 32,
             _t: PhantomData,
         }
     }
@@ -106,6 +108,14 @@ where
         self
     }
 
+    /// Number of topic aliases.
+    ///
+    /// By default value is set to 32
+    pub fn max_topic_alias(mut self, val: u16) -> Self {
+        self.max_topic_alias = val;
+        self
+    }
+
     /// Service to handle control packets
     pub fn control<F, Srv>(self, service: F) -> MqttServer<Io, St, C, Srv>
     where
@@ -122,6 +132,7 @@ where
             control: service.into_factory(),
             max_size: self.max_size,
             inflight: self.inflight,
+            max_topic_alias: self.max_topic_alias,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             _t: PhantomData,
@@ -136,7 +147,8 @@ where
     where
         Io: AsyncRead + AsyncWrite + Unpin + 'static,
         F: IntoServiceFactory<P> + 'static,
-        P: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,
+        P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck>
+            + 'static,
         C::Error: From<P::Error> + From<P::InitError> + fmt::Debug,
     {
         let connect = self.connect;
@@ -157,6 +169,7 @@ where
                 connect,
                 max_size,
                 self.inflight,
+                self.max_topic_alias,
                 handshake_timeout,
             ))
             .disconnect_timeout(disconnect_timeout)
@@ -174,6 +187,7 @@ fn handshake_service_factory<Io, St, C>(
     factory: C,
     max_size: u32,
     inflight: usize,
+    max_topic_alias: u16,
     handshake_timeout: usize,
 ) -> impl ServiceFactory<
     Config = (),
@@ -197,7 +211,7 @@ where
             factory.new_service(()).map_ok(move |service| {
                 let service = Rc::new(service.map_err(MqttError::Service));
                 apply_fn(service, move |conn, service| {
-                    handshake(conn, service.clone(), max_size, inflight)
+                    handshake(conn, service.clone(), max_size, max_topic_alias, inflight)
                 })
             })
         }),
@@ -212,6 +226,7 @@ async fn handshake<Io, S, St, E>(
     conn: framed::Handshake<Io, mqtt::Codec>,
     service: S,
     max_size: u32,
+    max_topic_alias: u16,
     inflight: usize,
 ) -> Result<
     framed::HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
@@ -246,25 +261,20 @@ where
 
             // authenticate mqtt connection
             let mut ack = service
-                .call(Connect::new(connect, framed, sink, inflight))
+                .call(Connect::new(
+                    connect,
+                    framed,
+                    sink,
+                    max_topic_alias,
+                    inflight,
+                ))
                 .await?;
 
             match ack.session {
                 Some(session) => {
-                    log::trace!(
-                        "Sending: {:#?}",
-                        mqtt::Packet::ConnectAck {
-                            session_present: ack.session_present,
-                            return_code: mqtt::ConnectAckReason::ConnectionAccepted,
-                        }
-                    );
+                    log::trace!("Sending: {:#?}", ack.packet);
                     let sink = ack.sink;
-                    ack.io
-                        .send(mqtt::Packet::ConnectAck {
-                            session_present: ack.session_present,
-                            return_code: mqtt::ConnectAckReason::ConnectionAccepted,
-                        })
-                        .await?;
+                    ack.io.send(mqtt::Packet::ConnectAck(ack.packet)).await?;
 
                     Ok(ack.io.out(rx).state(Session::new(
                         session,
@@ -274,20 +284,9 @@ where
                     )))
                 }
                 None => {
-                    log::trace!(
-                        "Sending: {:#?}",
-                        mqtt::Packet::ConnectAck {
-                            session_present: false,
-                            return_code: ack.return_code,
-                        }
-                    );
+                    log::trace!("Failed to complete handshake: {:#?}", ack.packet);
 
-                    ack.io
-                        .send(mqtt::Packet::ConnectAck {
-                            session_present: false,
-                            return_code: ack.return_code,
-                        })
-                        .await?;
+                    ack.io.send(mqtt::Packet::ConnectAck(ack.packet)).await?;
                     Err(MqttError::Disconnected)
                 }
             }

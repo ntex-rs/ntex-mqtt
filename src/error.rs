@@ -11,7 +11,7 @@ pub enum MqttError<E> {
     /// Mqtt encode error
     Encode(EncodeError),
     /// Unexpected packet
-    Unexpected(crate::codec3::Packet, &'static str),
+    Unexpected(u8, &'static str),
     /// "SUBSCRIBE, UNSUBSCRIBE, and PUBLISH (in cases where QoS > 0) Control Packets MUST contain a non-zero 16-bit Packet Identifier [MQTT-2.3.1-1]."
     PacketIdRequired,
     /// Multiple in-flight publish packet with same package_id

@@ -10,6 +10,7 @@ pub mod codec3;
 pub mod codec5;
 pub mod error;
 pub mod v3;
+pub mod v5;
 
 mod session;
 pub mod types;

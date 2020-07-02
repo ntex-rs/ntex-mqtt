@@ -433,9 +433,9 @@ mod tests {
                 properties: UserProperties::default(),
                 reason_string: None,
                 status: vec![
-                    SubscribeAckReasonCode::GrantedQos1,
-                    SubscribeAckReasonCode::UnspecifiedError,
-                    SubscribeAckReasonCode::GrantedQos2,
+                    SubscribeAckReason::GrantedQos1,
+                    SubscribeAckReason::UnspecifiedError,
+                    SubscribeAckReason::GrantedQos2,
                 ],
             }),
             b"\x90\x06\x12\x34\x00\x01\x80\x02",
@@ -459,8 +459,8 @@ mod tests {
                 properties: UserProperties::default(),
                 reason_string: None,
                 status: vec![
-                    UnsubscribeAckReasonCode::Success,
-                    UnsubscribeAckReasonCode::NotAuthorized,
+                    UnsubscribeAckReason::Success,
+                    UnsubscribeAckReason::NotAuthorized,
                 ],
             }),
             b"\xb0\x05\x43\x21\x00\x00\x87",

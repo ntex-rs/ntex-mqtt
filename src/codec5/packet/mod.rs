@@ -4,6 +4,7 @@ pub use crate::types::{ConnectFlags, QoS};
 
 use super::{encode::*, property_type as pt, UserProperties};
 use crate::error::{DecodeError, EncodeError};
+use crate::types::packet_type;
 use crate::utils::{take_properties, write_variable_length, Decode, Property};
 
 mod auth;
@@ -55,6 +56,28 @@ pub enum Packet {
     Disconnect(Disconnect),
     /// Auth exchange
     Auth(Auth),
+}
+
+impl Packet {
+    pub fn packet_type(&self) -> u8 {
+        match self {
+            Packet::Connect(_) => packet_type::CONNECT,
+            Packet::ConnectAck(_) => packet_type::CONNACK,
+            Packet::Publish(_) => packet_type::PUBLISH_START,
+            Packet::PublishAck(_) => packet_type::PUBACK,
+            Packet::PublishReceived(_) => packet_type::PUBREC,
+            Packet::PublishRelease(_) => packet_type::PUBREL,
+            Packet::PublishComplete(_) => packet_type::PUBCOMP,
+            Packet::Subscribe(_) => packet_type::SUBSCRIBE,
+            Packet::SubscribeAck(_) => packet_type::SUBACK,
+            Packet::Unsubscribe(_) => packet_type::UNSUBSCRIBE,
+            Packet::UnsubscribeAck(_) => packet_type::UNSUBACK,
+            Packet::PingRequest => packet_type::PINGREQ,
+            Packet::PingResponse => packet_type::PINGRESP,
+            Packet::Disconnect(_) => packet_type::DISCONNECT,
+            Packet::Auth(_) => packet_type::AUTH,
+        }
+    }
 }
 
 pub(super) mod property_type {

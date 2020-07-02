@@ -2,11 +2,11 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use std::num::NonZeroU16;
 
-use crate::types::QoS;
+use crate::types::{packet_type, QoS};
 
 prim_enum! {
     /// Connect Return Code
-    pub enum ConnectCode {
+    pub enum ConnectAckReason {
         /// Connection accepted
         ConnectionAccepted = 0,
         /// Connection Refused, unacceptable protocol version
@@ -24,19 +24,19 @@ prim_enum! {
     }
 }
 
-impl ConnectCode {
+impl ConnectAckReason {
     pub fn reason(self) -> &'static str {
         match self {
-            ConnectCode::ConnectionAccepted => "Connection Accepted",
-            ConnectCode::UnacceptableProtocolVersion => {
+            ConnectAckReason::ConnectionAccepted => "Connection Accepted",
+            ConnectAckReason::UnacceptableProtocolVersion => {
                 "Connection Refused, unacceptable protocol version"
             }
-            ConnectCode::IdentifierRejected => "Connection Refused, identifier rejected",
-            ConnectCode::ServiceUnavailable => "Connection Refused, Server unavailable",
-            ConnectCode::BadUserNameOrPassword => {
+            ConnectAckReason::IdentifierRejected => "Connection Refused, identifier rejected",
+            ConnectAckReason::ServiceUnavailable => "Connection Refused, Server unavailable",
+            ConnectAckReason::BadUserNameOrPassword => {
                 "Connection Refused, bad user name or password"
             }
-            ConnectCode::NotAuthorized => "Connection Refused, not authorized",
+            ConnectAckReason::NotAuthorized => "Connection Refused, not authorized",
             _ => "Connection Refused",
         }
     }
@@ -106,7 +106,7 @@ pub enum Packet {
         /// enables a Client to establish whether the Client and Server have a consistent view
         /// about whether there is already stored Session state.
         session_present: bool,
-        return_code: ConnectCode,
+        return_code: ConnectAckReason,
     },
 
     /// Publish message
@@ -178,5 +178,26 @@ impl From<Connect> for Packet {
 impl From<Publish> for Packet {
     fn from(val: Publish) -> Packet {
         Packet::Publish(val)
+    }
+}
+
+impl Packet {
+    pub fn packet_type(&self) -> u8 {
+        match self {
+            Packet::Connect(_) => packet_type::CONNECT,
+            Packet::ConnectAck { .. } => packet_type::CONNACK,
+            Packet::Publish(_) => packet_type::PUBLISH_START,
+            Packet::PublishAck { .. } => packet_type::PUBACK,
+            Packet::PublishReceived { .. } => packet_type::PUBREC,
+            Packet::PublishRelease { .. } => packet_type::PUBREL,
+            Packet::PublishComplete { .. } => packet_type::PUBCOMP,
+            Packet::Subscribe { .. } => packet_type::SUBSCRIBE,
+            Packet::SubscribeAck { .. } => packet_type::SUBACK,
+            Packet::Unsubscribe { .. } => packet_type::UNSUBSCRIBE,
+            Packet::UnsubscribeAck { .. } => packet_type::UNSUBACK,
+            Packet::PingRequest => packet_type::PINGREQ,
+            Packet::PingResponse => packet_type::PINGRESP,
+            Packet::Disconnect => packet_type::DISCONNECT,
+        }
     }
 }

@@ -178,7 +178,7 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec3::ConnectCode;
+    use crate::codec3::ConnectAckReason;
     use crate::utils::decode_variable_length;
 
     macro_rules! assert_decode_packet (
@@ -258,7 +258,7 @@ mod tests {
             decode_connect_ack_packet(&mut Bytes::from_static(b"\x01\x04")),
             Ok(Packet::ConnectAck {
                 session_present: true,
-                return_code: ConnectCode::BadUserNameOrPassword
+                return_code: ConnectAckReason::BadUserNameOrPassword
             })
         );
 
@@ -271,7 +271,7 @@ mod tests {
             b"\x20\x02\x01\x04",
             Packet::ConnectAck {
                 session_present: true,
-                return_code: ConnectCode::BadUserNameOrPassword,
+                return_code: ConnectAckReason::BadUserNameOrPassword,
             }
         );
 

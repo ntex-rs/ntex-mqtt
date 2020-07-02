@@ -281,7 +281,10 @@ where
                         .map_err(MqttError::Service)
                         .map(move |ack| ack.io.out(rx).state(ack.state))?)
                 }
-                p => Err(MqttError::Unexpected(p, "Expected CONNECT-ACK packet")),
+                p => Err(MqttError::Unexpected(
+                    p.packet_type(),
+                    "Expected CONNECT-ACK packet",
+                )),
             }
         }
         .boxed_local()
@@ -292,7 +295,7 @@ pub struct ConnectAck<Io> {
     io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
     sink: MqttSink,
     session_present: bool,
-    return_code: mqtt::ConnectCode,
+    return_code: mqtt::ConnectAckReason,
     keep_alive: Duration,
     inflight: usize,
 }
@@ -306,7 +309,7 @@ impl<Io> ConnectAck<Io> {
 
     #[inline]
     /// Connect return code
-    pub fn return_code(&self) -> mqtt::ConnectCode {
+    pub fn return_code(&self) -> mqtt::ConnectAckReason {
         self.return_code
     }
 

@@ -9,7 +9,7 @@ use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;
 use crate::utils::{self, ByteBuf, Decode, Encode};
 
-// Represents SUBSCRIBE packet
+/// Represents SUBSCRIBE packet
 #[derive(Debug, PartialEq, Clone)]
 pub struct Subscribe {
     /// Packet Identifier
@@ -44,7 +44,7 @@ pub struct SubscribeAck {
     pub properties: UserProperties,
     pub reason_string: Option<ByteString>,
     /// corresponds to a Topic Filter in the SUBSCRIBE Packet being acknowledged.
-    pub status: Vec<SubscribeAckReasonCode>,
+    pub status: Vec<SubscribeAckReason>,
 }
 
 /// Represents UNSUBSCRIBE packet
@@ -64,12 +64,12 @@ pub struct UnsubscribeAck {
     pub packet_id: NonZeroU16,
     pub properties: UserProperties,
     pub reason_string: Option<ByteString>,
-    pub status: Vec<UnsubscribeAckReasonCode>,
+    pub status: Vec<UnsubscribeAckReason>,
 }
 
 prim_enum! {
     /// SUBACK reason codes
-    pub enum SubscribeAckReasonCode {
+    pub enum SubscribeAckReason {
         GrantedQos0 = 0,
         GrantedQos1 = 1,
         GrantedQos2 = 2,
@@ -87,7 +87,7 @@ prim_enum! {
 
 prim_enum! {
     /// UNSUBACK reason codes
-    pub enum UnsubscribeAckReasonCode {
+    pub enum UnsubscribeAckReason {
         Success = 0,
         NoSubscriptionExisted = 17,
         UnspecifiedError = 128,

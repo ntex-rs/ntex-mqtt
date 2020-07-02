@@ -14,7 +14,7 @@ const HEADER_LEN: u32 = 2 + 1; // packet id + reason code
 pub struct PublishAck {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
-    pub reason_code: PublishAckReasonCode,
+    pub reason_code: PublishAckReason,
     pub properties: UserProperties,
     pub reason_string: Option<ByteString>,
 }
@@ -24,14 +24,14 @@ pub struct PublishAck {
 pub struct PublishAck2 {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
-    pub reason_code: PublishAck2ReasonCode,
+    pub reason_code: PublishAck2Reason,
     pub properties: UserProperties,
     pub reason_string: Option<ByteString>,
 }
 
 prim_enum! {
     /// PUBACK / PUBREC reason codes
-    pub enum PublishAckReasonCode {
+    pub enum PublishAckReason {
         Success = 0,
         NoMatchingSubscribers = 16,
         UnspecifiedError = 128,
@@ -47,7 +47,7 @@ prim_enum! {
 
 prim_enum! {
     /// PUBREL / PUBCOMP reason codes
-    pub enum PublishAck2ReasonCode {
+    pub enum PublishAck2Reason {
         Success = 0,
         PacketIdNotFound = 146
     }
@@ -62,11 +62,7 @@ impl PublishAck {
             ensure!(!src.has_remaining(), DecodeError::InvalidLength); // no bytes should be left
             (reason_code, properties, reason_string)
         } else {
-            (
-                PublishAckReasonCode::Success,
-                UserProperties::default(),
-                None,
-            )
+            (PublishAckReason::Success, UserProperties::default(), None)
         };
 
         Ok(Self {
@@ -87,11 +83,7 @@ impl PublishAck2 {
             ensure!(!src.has_remaining(), DecodeError::InvalidLength); // no bytes should be left
             (reason_code, properties, reason_string)
         } else {
-            (
-                PublishAck2ReasonCode::Success,
-                UserProperties::default(),
-                None,
-            )
+            (PublishAck2Reason::Success, UserProperties::default(), None)
         };
 
         Ok(Self {

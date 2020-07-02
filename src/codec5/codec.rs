@@ -11,7 +11,7 @@ use crate::utils::decode_variable_length;
 #[derive(Debug)]
 pub struct Codec {
     state: DecodeState,
-    max_size: usize,
+    max_size: u32,
     max_packet_size: Option<u32>,
 }
 
@@ -35,7 +35,7 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_size(mut self, size: usize) -> Self {
+    pub fn max_size(mut self, size: u32) -> Self {
         self.max_size = size;
         self
     }
@@ -63,7 +63,7 @@ impl Decoder for Codec {
                     match decode_variable_length(&src_slice[1..])? {
                         Some((remaining_length, consumed)) => {
                             // check max message size
-                            if self.max_size != 0 && self.max_size < remaining_length as usize {
+                            if self.max_size != 0 && self.max_size < remaining_length {
                                 return Err(DecodeError::MaxSizeExceeded);
                             }
                             src.advance(consumed + 1);

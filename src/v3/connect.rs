@@ -63,7 +63,7 @@ impl<Io> Connect<Io> {
             sink: self.sink,
             session: None,
             session_present: false,
-            return_code: mqtt::ConnectCode::IdentifierRejected,
+            return_code: mqtt::ConnectAckReason::IdentifierRejected,
             keep_alive: Duration::from_secs(5),
             inflight: 15,
         }
@@ -76,7 +76,7 @@ impl<Io> Connect<Io> {
             sink: self.sink,
             session: None,
             session_present: false,
-            return_code: mqtt::ConnectCode::BadUserNameOrPassword,
+            return_code: mqtt::ConnectAckReason::BadUserNameOrPassword,
             keep_alive: Duration::from_secs(5),
             inflight: 15,
         }
@@ -89,7 +89,7 @@ impl<Io> Connect<Io> {
             sink: self.sink,
             session: None,
             session_present: false,
-            return_code: mqtt::ConnectCode::NotAuthorized,
+            return_code: mqtt::ConnectAckReason::NotAuthorized,
             keep_alive: Duration::from_secs(5),
             inflight: 15,
         }
@@ -115,7 +115,7 @@ pub struct ConnectAck<Io, St> {
     pub(crate) io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
     pub(crate) session: Option<St>,
     pub(crate) session_present: bool,
-    pub(crate) return_code: mqtt::ConnectCode,
+    pub(crate) return_code: mqtt::ConnectAckReason,
     pub(crate) keep_alive: Duration,
     pub(crate) inflight: usize,
     pub(crate) sink: MqttSink,
@@ -138,7 +138,7 @@ impl<Io, St> ConnectAck<Io, St> {
             keep_alive,
             inflight,
             session: Some(session),
-            return_code: mqtt::ConnectCode::ConnectionAccepted,
+            return_code: mqtt::ConnectAckReason::ConnectionAccepted,
         }
     }
 

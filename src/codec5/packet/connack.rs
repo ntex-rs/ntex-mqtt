@@ -7,14 +7,13 @@ use crate::error::{DecodeError, EncodeError};
 use crate::types::{ConnectAckFlags, QoS};
 use crate::utils::{self, Decode, Encode, Property};
 
-/// Connect acknowledgment
+/// Connect acknowledgment packet
 #[derive(Debug, PartialEq, Clone)]
-/// Connect packet content
 pub struct ConnectAck {
     /// enables a Client to establish whether the Client and Server have a consistent view
     /// about whether there is already stored Session state.
     pub session_present: bool,
-    pub reason_code: ConnectAckReasonCode,
+    pub reason_code: ConnectAckReason,
 
     pub session_expiry_interval_secs: Option<u32>,
     pub receive_max: Option<NonZeroU16>,
@@ -39,7 +38,7 @@ impl Default for ConnectAck {
     fn default() -> ConnectAck {
         ConnectAck {
             session_present: false,
-            reason_code: ConnectAckReasonCode::Success,
+            reason_code: ConnectAckReason::Success,
             session_expiry_interval_secs: None,
             receive_max: None,
             max_qos: None,
@@ -63,7 +62,7 @@ impl Default for ConnectAck {
 
 prim_enum! {
     /// CONNACK reason codes
-    pub enum ConnectAckReasonCode {
+    pub enum ConnectAckReason {
         Success = 0,
         UnspecifiedError = 128,
         MalformedPacket = 129,
@@ -89,17 +88,15 @@ prim_enum! {
     }
 }
 
-impl ConnectAckReasonCode {
+impl ConnectAckReason {
     pub fn reason(self) -> &'static str {
         match self {
-            ConnectAckReasonCode::Success => "Connection Accepted",
-            ConnectAckReasonCode::UnsupportedProtocolVersion => {
-                "protocol version is not supported"
-            }
-            ConnectAckReasonCode::ClientIdentifierNotValid => "client identifier is invalid",
-            ConnectAckReasonCode::ServerUnavailable => "Server unavailable",
-            ConnectAckReasonCode::BadUserNameOrPassword => "bad user name or password",
-            ConnectAckReasonCode::NotAuthorized => "not authorized",
+            ConnectAckReason::Success => "Connection Accepted",
+            ConnectAckReason::UnsupportedProtocolVersion => "protocol version is not supported",
+            ConnectAckReason::ClientIdentifierNotValid => "client identifier is invalid",
+            ConnectAckReason::ServerUnavailable => "Server unavailable",
+            ConnectAckReason::BadUserNameOrPassword => "bad user name or password",
+            ConnectAckReason::NotAuthorized => "not authorized",
             _ => "Connection Refused",
         }
     }

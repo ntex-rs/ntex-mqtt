@@ -156,7 +156,7 @@ mod tests {
             ConnectAck::decode(&mut Bytes::from_static(b"\x01\x86\x00")),
             Ok(ConnectAck {
                 session_present: true,
-                reason_code: ConnectAckReasonCode::BadUserNameOrPassword,
+                reason_code: ConnectAckReason::BadUserNameOrPassword,
                 ..ConnectAck::default()
             })
         );
@@ -170,7 +170,7 @@ mod tests {
             b"\x20\x03\x01\x86\x00",
             Packet::ConnectAck(ConnectAck {
                 session_present: true,
-                reason_code: ConnectAckReasonCode::BadUserNameOrPassword,
+                reason_code: ConnectAckReason::BadUserNameOrPassword,
                 ..ConnectAck::default()
             }),
         );
@@ -226,7 +226,7 @@ mod tests {
             b"\x40\x02\x43\x21",
             Packet::PublishAck(PublishAck {
                 packet_id: packet_id(0x4321),
-                reason_code: PublishAckReasonCode::Success,
+                reason_code: PublishAckReason::Success,
                 properties: UserProperties::default(),
                 reason_string: None,
             }),
@@ -235,7 +235,7 @@ mod tests {
             b"\x50\x02\x43\x21",
             Packet::PublishReceived(PublishAck {
                 packet_id: packet_id(0x4321),
-                reason_code: PublishAckReasonCode::Success,
+                reason_code: PublishAckReason::Success,
                 properties: UserProperties::default(),
                 reason_string: None,
             }),
@@ -244,7 +244,7 @@ mod tests {
             b"\x62\x02\x43\x21",
             Packet::PublishRelease(PublishAck2 {
                 packet_id: packet_id(0x4321),
-                reason_code: PublishAck2ReasonCode::Success,
+                reason_code: PublishAck2Reason::Success,
                 properties: UserProperties::default(),
                 reason_string: None,
             }),
@@ -253,7 +253,7 @@ mod tests {
             b"\x70\x02\x43\x21",
             Packet::PublishComplete(PublishAck2 {
                 packet_id: packet_id(0x4321),
-                reason_code: PublishAck2ReasonCode::Success,
+                reason_code: PublishAck2Reason::Success,
                 properties: UserProperties::default(),
                 reason_string: None,
             }),
@@ -293,9 +293,9 @@ mod tests {
         let p = Packet::SubscribeAck(SubscribeAck {
             packet_id: packet_id(0x1234),
             status: vec![
-                SubscribeAckReasonCode::GrantedQos1,
-                SubscribeAckReasonCode::UnspecifiedError,
-                SubscribeAckReasonCode::GrantedQos2,
+                SubscribeAckReason::GrantedQos1,
+                SubscribeAckReason::UnspecifiedError,
+                SubscribeAckReason::GrantedQos2,
             ],
             properties: UserProperties::default(),
             reason_string: None,
