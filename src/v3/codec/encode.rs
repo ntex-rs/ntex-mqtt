@@ -1,9 +1,9 @@
 use bytes::{BufMut, BytesMut};
 
-use crate::codec3::packet::*;
 use crate::error::EncodeError;
 use crate::types::{packet_type, ConnectFlags, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
 use crate::utils::{write_variable_length, Encode};
+use crate::v3::codec::packet::*;
 
 pub fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {

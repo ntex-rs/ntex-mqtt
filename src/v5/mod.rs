@@ -1,6 +1,7 @@
 //! MQTT 3.1.1 Client/Server framework
 
 // pub mod client;
+pub mod codec;
 mod connect;
 pub mod control;
 mod default;
@@ -9,8 +10,6 @@ mod publish;
 mod router;
 mod server;
 mod sink;
-
-pub use crate::codec5 as codec;
 
 pub type Session<St> = crate::Session<MqttSink, St>;
 

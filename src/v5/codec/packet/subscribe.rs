@@ -4,10 +4,10 @@ use std::convert::TryInto;
 use std::num::{NonZeroU16, NonZeroU32};
 
 use super::ack_props;
-use crate::codec5::{encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;
 use crate::utils::{self, ByteBuf, Decode, Encode};
+use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 
 /// Represents SUBSCRIBE packet
 #[derive(Debug, PartialEq, Clone)]

@@ -43,9 +43,9 @@ mod tests {
     use std::num::NonZeroU16;
 
     use super::*;
-    use crate::codec5::*;
     use crate::types::QoS;
     use crate::utils::decode_variable_length;
+    use crate::v5::codec::*;
 
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
@@ -57,12 +57,8 @@ mod tests {
         let (_len, consumed) = decode_variable_length(&bytes[1..]).unwrap().unwrap();
         let cur = Bytes::copy_from_slice(&bytes[consumed + 1..]);
         let mut tmp = bytes::BytesMut::with_capacity(4096);
-        ntex_codec::Encoder::encode(
-            &mut crate::codec5::codec::Codec::new(),
-            res.clone(),
-            &mut tmp,
-        )
-        .unwrap();
+        ntex_codec::Encoder::encode(&mut crate::v5::codec::Codec::new(), res.clone(), &mut tmp)
+            .unwrap();
         let decoded = decode_packet(cur, fixed);
         let res = Ok(res);
         if decoded != res {

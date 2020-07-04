@@ -3,10 +3,10 @@ use bytestring::ByteString;
 use std::convert::TryFrom;
 use std::num::{NonZeroU16, NonZeroU32};
 
-use crate::codec5::{encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{ConnectFlags, QoS, MQTT, MQTT_LEVEL_5, WILL_QOS_SHIFT};
 use crate::utils::{self, Decode, Encode, Property};
+use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 
 #[derive(Debug, PartialEq, Clone)]
 /// Connect packet content

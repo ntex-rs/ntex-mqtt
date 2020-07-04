@@ -7,7 +7,7 @@ use ntex::router::Path;
 use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
 
-use crate::codec3 as mqtt;
+use super::codec as mqtt;
 
 /// Publish message
 pub struct Publish {

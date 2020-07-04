@@ -114,7 +114,7 @@ mod ack_props {
     use bytestring::ByteString;
 
     use super::*;
-    use crate::codec5::UserProperty;
+    use crate::v5::codec::UserProperty;
 
     pub(crate) fn encoded_size(
         properties: &[UserProperty],

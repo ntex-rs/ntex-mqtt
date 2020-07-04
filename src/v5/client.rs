@@ -19,7 +19,7 @@ use crate::error::{DecodeError, EncodeError, MqttError};
 use super::control::{ControlPacket, ControlResult};
 use super::default::DefaultControlService;
 use super::dispatcher::factory;
-use super::publish::Publish;
+use super::publish::{Publish, PublishAck};
 use super::sink::MqttSink;
 use super::{codec as mqtt, Session};
 
@@ -160,7 +160,7 @@ where
         T: ServiceFactory<
                 Config = Session<St>,
                 Request = Publish,
-                Response = (),
+                Response = PublishAck,
                 Error = C::Error,
                 InitError = C::Error,
             > + 'static,
@@ -245,10 +245,7 @@ where
                 .and_then(|res| res.map_err(MqttError::Decode))?;
 
             match packet {
-                mqtt::Packet::ConnectAck {
-                    session_present,
-                    return_code,
-                } => {
+                mqtt::Packet::ConnectAck(packet) => {
                     let (tx, rx) = mpsc::channel();
                     let sink = MqttSink::new(tx);
                     let ack = ConnectAck {
@@ -257,6 +254,7 @@ where
                         return_code,
                         keep_alive,
                         inflight,
+                        packet,
                         io: framed,
                     };
                     Ok(srv
@@ -279,17 +277,16 @@ where
 pub struct ConnectAck<Io> {
     io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
     sink: MqttSink,
-    session_present: bool,
-    return_code: mqtt::ConnectAckReason,
     keep_alive: Duration,
     inflight: usize,
+    packet: mqtt::ConnectAck,
 }
 
 impl<Io> ConnectAck<Io> {
     #[inline]
     /// Indicates whether there is already stored Session state
     pub fn session_present(&self) -> bool {
-        self.session_present
+        self.packet.session_present
     }
 
     #[inline]

@@ -3,7 +3,7 @@ use std::num::NonZeroU16;
 
 use bytestring::ByteString;
 
-use crate::codec3;
+use super::codec;
 use crate::types::QoS;
 
 pub enum ControlPacket {
@@ -64,19 +64,19 @@ impl Disconnect {
 pub struct Subscribe {
     packet_id: NonZeroU16,
     topics: Vec<(ByteString, QoS)>,
-    codes: Vec<codec3::SubscribeReturnCode>,
+    codes: Vec<codec::SubscribeReturnCode>,
 }
 
 /// Result of a subscribe message
 pub struct SubscribeResult {
-    pub(crate) codes: Vec<codec3::SubscribeReturnCode>,
+    pub(crate) codes: Vec<codec::SubscribeReturnCode>,
     pub(crate) packet_id: NonZeroU16,
 }
 
 impl Subscribe {
     pub(crate) fn new(packet_id: NonZeroU16, topics: Vec<(ByteString, QoS)>) -> Self {
         let mut codes = Vec::with_capacity(topics.len());
-        (0..topics.len()).for_each(|_| codes.push(codec3::SubscribeReturnCode::Failure));
+        (0..topics.len()).for_each(|_| codes.push(codec::SubscribeReturnCode::Failure));
 
         Self {
             topics,
@@ -154,7 +154,7 @@ impl<'a> Iterator for SubscribeIter<'a> {
 pub struct Subscription<'a> {
     topic: &'a ByteString,
     qos: QoS,
-    code: &'a mut codec3::SubscribeReturnCode,
+    code: &'a mut codec::SubscribeReturnCode,
 }
 
 impl<'a> Subscription<'a> {
@@ -173,13 +173,13 @@ impl<'a> Subscription<'a> {
     #[inline]
     /// fail to subscribe to the topic
     pub fn fail(&mut self) {
-        *self.code = codec3::SubscribeReturnCode::Failure
+        *self.code = codec::SubscribeReturnCode::Failure
     }
 
     #[inline]
     /// subscribe to a topic with specific qos
     pub fn subscribe(&mut self, qos: QoS) {
-        *self.code = codec3::SubscribeReturnCode::Success(qos)
+        *self.code = codec::SubscribeReturnCode::Success(qos)
     }
 }
 

@@ -2,10 +2,10 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use std::{convert::TryInto, num::NonZeroU16};
 
-use crate::codec5::{encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{ConnectAckFlags, QoS};
 use crate::utils::{self, Decode, Encode, Property};
+use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 
 /// Connect acknowledgment packet
 #[derive(Debug, PartialEq, Clone)]

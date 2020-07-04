@@ -9,7 +9,7 @@ use bytestring::ByteString;
 use futures::future::{err, Either, Future, TryFutureExt};
 use ntex::channel::{mpsc, oneshot};
 
-use crate::codec3 as mqtt;
+use super::codec as mqtt;
 
 pub struct MqttSink(Rc<RefCell<MqttSinkInner>>);
 

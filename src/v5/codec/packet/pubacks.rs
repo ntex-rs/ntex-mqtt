@@ -3,9 +3,9 @@ use bytestring::ByteString;
 use std::{convert::TryInto, num::NonZeroU16};
 
 use super::ack_props;
-use crate::codec5::{encode::*, UserProperties};
 use crate::error::{DecodeError, EncodeError};
 use crate::utils::{self, Decode, Encode};
+use crate::v5::codec::{encode::*, UserProperties};
 
 const HEADER_LEN: u32 = 2 + 1; // packet id + reason code
 
