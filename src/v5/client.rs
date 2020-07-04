@@ -21,18 +21,14 @@ use super::default::DefaultControlService;
 use super::dispatcher::factory;
 use super::publish::{Publish, PublishAck};
 use super::sink::MqttSink;
-use super::{codec as mqtt, Session};
+use super::{codec, Session};
 
 /// Mqtt client
 #[derive(Clone)]
 pub struct Client<Io, St> {
-    client_id: ByteString,
-    clean_session: bool,
     keep_alive: u16,
-    last_will: Option<mqtt::LastWill>,
-    username: Option<ByteString>,
-    password: Option<Bytes>,
     inflight: usize,
+    connect: codec::Connect,
     _t: PhantomData<(Io, St)>,
 }
 
@@ -43,20 +39,19 @@ where
     /// Create new client and provide client id
     pub fn new(client_id: ByteString) -> Self {
         Client {
-            client_id,
-            clean_session: true,
             keep_alive: 30,
-            last_will: None,
-            username: None,
-            password: None,
             inflight: 15,
+            connect: codec::Connect {
+                client_id,
+                ..Default::default()
+            },
             _t: PhantomData,
         }
     }
 
     /// The handling of the Session state.
-    pub fn clean_session(mut self, val: bool) -> Self {
-        self.clean_session = val;
+    pub fn clean_start(mut self) -> Self {
+        self.connect.clean_start = true;
         self
     }
 
@@ -64,27 +59,27 @@ where
     ///
     /// keep-alive is set to 30 seconds by default.
     pub fn keep_alive(mut self, val: u16) -> Self {
-        self.keep_alive = val;
+        self.connect.keep_alive = val;
         self
     }
 
     /// Will Message be stored on the Server and associated with the Network Connection.
     ///
     /// by default last will value is not set
-    pub fn last_will(mut self, val: mqtt::LastWill) -> Self {
-        self.last_will = Some(val);
+    pub fn last_will(mut self, val: codec::LastWill) -> Self {
+        self.connect.last_will = Some(val);
         self
     }
 
     /// Username can be used by the Server for authentication and authorization.
     pub fn username(mut self, val: ByteString) -> Self {
-        self.username = Some(val);
+        self.connect.username = Some(val);
         self
     }
 
     /// Password can be used by the Server for authentication and authorization.
     pub fn password(mut self, val: Bytes) -> Self {
-        self.password = Some(val);
+        self.connect.password = Some(val);
         self
     }
 
@@ -107,15 +102,8 @@ where
         C::Error: fmt::Debug + 'static,
     {
         ServiceBuilder {
+            packet: self.connect.clone(),
             state: Rc::new(state.into_service()),
-            packet: mqtt::Connect {
-                client_id: self.client_id,
-                clean_session: self.clean_session,
-                keep_alive: self.keep_alive,
-                last_will: self.last_will,
-                username: self.username,
-                password: self.password,
-            },
             control: boxed::factory(
                 DefaultControlService::default()
                     .map_init_err(|_: C::Error| unreachable!())
@@ -130,7 +118,7 @@ where
 
 pub struct ServiceBuilder<Io, St, C: Service> {
     state: Rc<C>,
-    packet: mqtt::Connect,
+    packet: codec::Connect,
     keep_alive: u64,
     inflight: usize,
     control: boxed::BoxServiceFactory<
@@ -189,7 +177,7 @@ where
 
 struct ConnectService<Io, St, C> {
     connect: Rc<C>,
-    packet: mqtt::Connect,
+    packet: codec::Connect,
     keep_alive: u64,
     inflight: usize,
     _t: PhantomData<(Io, St)>,
@@ -202,9 +190,9 @@ where
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
     C::Error: fmt::Debug + 'static,
 {
-    type Request = framed::Handshake<Io, mqtt::Codec>;
+    type Request = framed::Handshake<Io, codec::Codec>;
     type Response =
-        framed::HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>;
+        framed::HandshakeResult<Io, Session<St>, codec::Codec, mpsc::Receiver<codec::Packet>>;
     type Error = MqttError<C::Error>;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -229,9 +217,9 @@ where
 
         // send Connect packet
         async move {
-            let mut framed = req.codec(mqtt::Codec::new());
+            let mut framed = req.codec(codec::Codec::new());
             framed
-                .send(mqtt::Packet::Connect(packet))
+                .send(codec::Packet::Connect(packet))
                 .await
                 .map_err(MqttError::Encode)?;
 
@@ -245,13 +233,11 @@ where
                 .and_then(|res| res.map_err(MqttError::Decode))?;
 
             match packet {
-                mqtt::Packet::ConnectAck(packet) => {
+                codec::Packet::ConnectAck(packet) => {
                     let (tx, rx) = mpsc::channel();
                     let sink = MqttSink::new(tx);
                     let ack = ConnectAck {
                         sink,
-                        session_present,
-                        return_code,
                         keep_alive,
                         inflight,
                         packet,
@@ -275,11 +261,11 @@ where
 }
 
 pub struct ConnectAck<Io> {
-    io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    io: framed::HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
     sink: MqttSink,
     keep_alive: Duration,
     inflight: usize,
-    packet: mqtt::ConnectAck,
+    packet: codec::ConnectAck,
 }
 
 impl<Io> ConnectAck<Io> {
@@ -291,8 +277,8 @@ impl<Io> ConnectAck<Io> {
 
     #[inline]
     /// Connect return code
-    pub fn return_code(&self) -> mqtt::ConnectAckReason {
-        self.return_code
+    pub fn reason_code(&self) -> codec::ConnectAckReason {
+        self.packet.reason_code
     }
 
     #[inline]
@@ -315,14 +301,14 @@ impl<Io> Stream for ConnectAck<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin + Unpin,
 {
-    type Item = Result<mqtt::Packet, DecodeError>;
+    type Item = Result<codec::Packet, DecodeError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.io).poll_next(cx)
     }
 }
 
-impl<Io> Sink<mqtt::Packet> for ConnectAck<Io>
+impl<Io> Sink<codec::Packet> for ConnectAck<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
@@ -332,7 +318,7 @@ where
         Pin::new(&mut self.io).poll_ready(cx)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: mqtt::Packet) -> Result<(), Self::Error> {
+    fn start_send(mut self: Pin<&mut Self>, item: codec::Packet) -> Result<(), Self::Error> {
         Pin::new(&mut self.io).start_send(item)
     }
 
@@ -348,21 +334,21 @@ where
 #[pin_project::pin_project]
 pub struct ConnectAckResult<Io, St> {
     state: Session<St>,
-    io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    io: framed::HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
 }
 
 impl<Io, St> Stream for ConnectAckResult<Io, St>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Item = Result<mqtt::Packet, DecodeError>;
+    type Item = Result<codec::Packet, DecodeError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.io).poll_next(cx)
     }
 }
 
-impl<Io, St> Sink<mqtt::Packet> for ConnectAckResult<Io, St>
+impl<Io, St> Sink<codec::Packet> for ConnectAckResult<Io, St>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
@@ -372,7 +358,7 @@ where
         Pin::new(&mut self.io).poll_ready(cx)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: mqtt::Packet) -> Result<(), Self::Error> {
+    fn start_send(mut self: Pin<&mut Self>, item: codec::Packet) -> Result<(), Self::Error> {
         Pin::new(&mut self.io).start_send(item)
     }
 

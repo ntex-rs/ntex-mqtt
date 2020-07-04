@@ -4,6 +4,8 @@
 
 * Add mqtt v5 protocol support
 
+* Refactor control packets handling
+
 ## [0.1.3] - 2020-05-26
 
 * Check for duplicated in-flight packet ids

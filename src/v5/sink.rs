@@ -114,7 +114,7 @@ impl<'a> PublishBuilder<'a> {
     }
 
     /// Send publish packet with QoS 0
-    pub fn publish_at_most_once(&mut self) {
+    pub fn at_most_once(&mut self) {
         if let Some(packet) = self.packet.take() {
             if let Some(ref sink) = self.sink.0.borrow().sink {
                 log::trace!("Publish (QoS-0) to {:?}", packet.topic);
@@ -128,7 +128,7 @@ impl<'a> PublishBuilder<'a> {
     }
 
     /// Send publish packet with QoS 1
-    pub fn publish_at_least_once(&mut self) -> impl Future<Output = Result<(), ()>> {
+    pub fn at_least_once(&mut self) -> impl Future<Output = Result<(), ()>> {
         if let Some(mut packet) = self.packet.take() {
             let mut inner = self.sink.0.borrow_mut();
 
