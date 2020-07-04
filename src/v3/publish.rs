@@ -7,17 +7,18 @@ use ntex::router::Path;
 use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
 
-use super::codec as mqtt;
+use crate::router::Route;
+use crate::v3::codec;
 
 /// Publish message
 pub struct Publish {
-    publish: mqtt::Publish,
+    publish: codec::Publish,
     topic: Path<ByteString>,
     query: Option<ByteString>,
 }
 
 impl Publish {
-    pub(crate) fn new(publish: mqtt::Publish) -> Self {
+    pub(crate) fn new(publish: codec::Publish) -> Self {
         let (topic, query) = if let Some(pos) = publish.topic.find('?') {
             (
                 ByteString::try_from(publish.topic.get_ref().slice(0..pos)).unwrap(),
@@ -52,7 +53,7 @@ impl Publish {
 
     #[inline]
     /// the level of assurance for delivery of an Application Message.
-    pub fn qos(&self) -> mqtt::QoS {
+    pub fn qos(&self) -> codec::QoS {
         self.publish.qos
     }
 
@@ -84,7 +85,7 @@ impl Publish {
     }
 
     #[inline]
-    pub fn packet(&self) -> &mqtt::Publish {
+    pub fn packet(&self) -> &codec::Publish {
         &self.publish
     }
 
@@ -102,6 +103,18 @@ impl Publish {
     /// Loads and parse `application/json` encoded body.
     pub fn json<T: DeserializeOwned>(&mut self) -> Result<T, JsonError> {
         serde_json::from_slice(&self.publish.payload)
+    }
+}
+
+impl Route for Publish {
+    #[inline]
+    fn publish_topic(&self) -> &Path<ByteString> {
+        &self.topic
+    }
+
+    #[inline]
+    fn publish_topic_mut(&mut self) -> &mut Path<ByteString> {
+        &mut self.topic
     }
 }
 

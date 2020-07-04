@@ -10,11 +10,13 @@ pub mod error;
 pub mod v3;
 pub mod v5;
 
+mod router;
 mod session;
 pub mod types;
 mod version;
 
 pub use self::error::MqttError;
+pub use self::router::Router;
 pub use self::session::Session;
 
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
