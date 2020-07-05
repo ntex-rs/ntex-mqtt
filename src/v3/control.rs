@@ -7,10 +7,15 @@ use super::codec;
 use crate::types::QoS;
 
 pub enum ControlPacket {
+    /// Ping packet
     Ping(Ping),
+    /// Disconnect packet
     Disconnect(Disconnect),
+    /// Subscribe packet
     Subscribe(Subscribe),
+    /// Unsubscribe packet
     Unsubscribe(Unsubscribe),
+    /// Connection dropped
     Closed(Closed),
 }
 
@@ -68,7 +73,7 @@ pub struct Subscribe {
 }
 
 /// Result of a subscribe message
-pub struct SubscribeResult {
+pub(crate) struct SubscribeResult {
     pub(crate) codes: Vec<codec::SubscribeReturnCode>,
     pub(crate) packet_id: NonZeroU16,
 }
@@ -190,7 +195,7 @@ pub struct Unsubscribe {
 }
 
 /// Result of a unsubscribe message
-pub struct UnsubscribeResult {
+pub(crate) struct UnsubscribeResult {
     pub(crate) packet_id: NonZeroU16,
 }
 

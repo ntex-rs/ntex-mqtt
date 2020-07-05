@@ -129,7 +129,7 @@ where
     }
 
     /// Set service to handle publish packets and create mqtt server factory
-    pub fn finish<F, P>(
+    pub fn publish<F, P>(
         self,
         publish: F,
     ) -> impl ServiceFactory<Config = (), Request = Io, Response = (), Error = MqttError<C::Error>>
