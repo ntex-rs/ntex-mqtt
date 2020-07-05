@@ -42,6 +42,17 @@ impl<Io, Err, InitErr>
     }
 }
 
+impl<Io, V3, V5, Err, InitErr> MqttServer<Io, V3, V5, Err, InitErr> {
+    /// Set handshake timeout in millis.
+    ///
+    /// Handshake includes `connect` packet.
+    /// By default handshake timeuot is disabled.
+    pub fn handshake_timeout(mut self, timeout: usize) -> Self {
+        self.handshake_timeout = timeout;
+        self
+    }
+}
+
 impl<Io, V3, V5, Err, InitErr> MqttServer<Io, V3, V5, Err, InitErr>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
@@ -60,15 +71,6 @@ where
         InitError = InitErr,
     >,
 {
-    /// Set handshake timeout in millis.
-    ///
-    /// Handshake includes `connect` packet.
-    /// By default handshake timeuot is disabled.
-    pub fn handshake_timeout(mut self, timeout: usize) -> Self {
-        self.handshake_timeout = timeout;
-        self
-    }
-
     /// Service to handle v3 protocol
     pub fn v3<St, C, Cn, P>(
         self,
