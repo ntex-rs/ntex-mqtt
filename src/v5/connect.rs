@@ -121,8 +121,8 @@ impl<Io, St> ConnectAck<Io, St> {
     }
 
     /// Set if server has saved session.
-    pub fn session_present(mut self) -> Self {
-        self.packet.session_present = true;
+    pub fn session_present(mut self, val: bool) -> Self {
+        self.packet.session_present = val;
         self
     }
 

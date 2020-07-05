@@ -14,6 +14,12 @@ pub type Session<St> = crate::Session<MqttSink, St>;
 
 pub use self::client::Client;
 pub use self::connect::{Connect, ConnectAck};
-pub use self::publish::Publish;
+pub use self::control::{ControlPacket, ControlResult};
+pub use self::publish::{Publish, PublishAck};
 pub use self::server::MqttServer;
 pub use self::sink::MqttSink;
+
+pub use crate::error::MqttError;
+pub use crate::router::Router;
+pub use crate::topic::Topic;
+pub use crate::types::QoS;
