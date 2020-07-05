@@ -89,9 +89,9 @@ pub struct PublishBuilder<'a> {
 
 impl<'a> PublishBuilder<'a> {
     /// this might be re-delivery of an earlier attempt to send the Packet.
-    pub fn dup(&mut self) -> &mut Self {
+    pub fn dup(&mut self, val: bool) -> &mut Self {
         if let Some(ref mut packet) = self.packet {
-            packet.dup = true;
+            packet.dup = val;
         }
         self
     }
