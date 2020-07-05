@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use ntex::channel::mpsc;
 use ntex::codec::Framed;
-use ntex::framed;
 
 use super::codec as mqtt;
 use super::sink::MqttSink;
+use crate::handshake::HandshakeResult;
 
 /// Connect message
 pub struct Connect<Io> {
@@ -15,13 +15,13 @@ pub struct Connect<Io> {
     sink: MqttSink,
     keep_alive: Duration,
     inflight: usize,
-    io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
 }
 
 impl<Io> Connect<Io> {
     pub(crate) fn new(
         connect: mqtt::Connect,
-        io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+        io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
         sink: MqttSink,
         inflight: usize,
     ) -> Self {
@@ -112,7 +112,7 @@ impl<T> fmt::Debug for Connect<T> {
 
 /// Ack connect message
 pub struct ConnectAck<Io, St> {
-    pub(crate) io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    pub(crate) io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
     pub(crate) session: Option<St>,
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectAckReason,
@@ -124,7 +124,7 @@ pub struct ConnectAck<Io, St> {
 impl<Io, St> ConnectAck<Io, St> {
     /// Create connect ack, `session_present` indicates that previous session is presents
     pub(crate) fn new(
-        io: framed::HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+        io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
         sink: MqttSink,
         session: St,
         session_present: bool,

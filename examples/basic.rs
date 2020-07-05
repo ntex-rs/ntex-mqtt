@@ -24,7 +24,7 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::Server::build()
         .bind("mqtt", "127.0.0.1:1883", || {
-            MqttServer::new(connect).publish(publish)
+            MqttServer::new(connect).publish(publish).finish()
         })?
         .workers(1)
         .run()

@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use ntex::channel::mpsc;
 use ntex::codec::Framed;
-use ntex::framed;
 
 use super::{codec, sink::MqttSink};
+use crate::handshake::HandshakeResult;
 
 /// Connect message
 pub struct Connect<Io> {
@@ -15,13 +15,13 @@ pub struct Connect<Io> {
     keep_alive: Duration,
     inflight: usize,
     max_topic_alias: u16,
-    io: framed::HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
+    io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
 }
 
 impl<Io> Connect<Io> {
     pub(crate) fn new(
         connect: codec::Connect,
-        io: framed::HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
+        io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
         sink: MqttSink,
         max_topic_alias: u16,
         inflight: usize,
@@ -95,7 +95,7 @@ impl<T> fmt::Debug for Connect<T> {
 
 /// Ack connect message
 pub struct ConnectAck<Io, St> {
-    pub(crate) io: framed::HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
+    pub(crate) io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
     pub(crate) session: Option<St>,
     pub(crate) keep_alive: Duration,
     pub(crate) inflight: usize,

@@ -35,6 +35,14 @@ impl Codec {
         self.max_size = size;
         self
     }
+
+    /// Set max inbound frame size.
+    ///
+    /// If max size is set to `0`, size is unlimited.
+    /// By default max size is set to `0`
+    pub fn set_max_size(&mut self, size: u32) {
+        self.max_size = size;
+    }
 }
 
 impl Default for Codec {

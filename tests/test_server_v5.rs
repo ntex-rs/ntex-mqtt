@@ -18,7 +18,11 @@ async fn test_simple() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
     env_logger::init();
 
-    let srv = server::test_server(|| MqttServer::new(connect).finish(|p: Publish| ok(p.ack())));
+    let srv = server::test_server(|| {
+        MqttServer::new(connect)
+            .publish(|p: Publish| ok(p.ack()))
+            .finish()
+    });
 
     struct Client;
 
