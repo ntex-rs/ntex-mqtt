@@ -39,59 +39,18 @@ impl MqttSink {
         let _ = self.0.borrow_mut().sink.take();
     }
 
-    /// Send publish packet with qos set to 0
-    pub fn publish_qos0(&self, topic: ByteString, payload: Bytes, dup: bool) {
-        if let Some(ref sink) = self.0.borrow().sink {
-            log::trace!("Publish (QoS-0) to {:?}", topic);
-            let publish = mqtt::Publish {
+    /// Create publish message builder
+    pub fn publish(&self, topic: ByteString, payload: Bytes) -> PublishBuilder<'_> {
+        PublishBuilder {
+            packet: Some(mqtt::Publish {
                 topic,
                 payload,
-                dup,
+                dup: false,
                 retain: false,
                 qos: mqtt::QoS::AtMostOnce,
                 packet_id: None,
-            };
-            let _ = sink.send(mqtt::Packet::Publish(publish));
-        } else {
-            log::error!("Mqtt sink is disconnected");
-        }
-    }
-
-    /// Send publish packet
-    pub fn publish_qos1(
-        &self,
-        topic: ByteString,
-        payload: Bytes,
-        dup: bool,
-    ) -> impl Future<Output = Result<(), ()>> {
-        let mut inner = self.0.borrow_mut();
-
-        if inner.sink.is_some() {
-            let (tx, rx) = oneshot::channel();
-
-            inner.idx += 1;
-            if inner.idx == 0 {
-                inner.idx = 1
-            }
-            let idx = inner.idx;
-            inner.queue.push_back((idx, tx));
-
-            let publish = mqtt::Packet::Publish(mqtt::Publish {
-                topic,
-                payload,
-                dup,
-                retain: false,
-                qos: mqtt::QoS::AtLeastOnce,
-                packet_id: NonZeroU16::new(inner.idx),
-            });
-            log::trace!("Publish (QoS1) to {:#?}", publish);
-            if inner.sink.as_ref().unwrap().send(publish).is_err() {
-                Either::Right(err(()))
-            } else {
-                Either::Left(rx.map_err(|_| ()))
-            }
-        } else {
-            Either::Right(err(()))
+            }),
+            sink: self,
         }
     }
 
@@ -118,5 +77,79 @@ impl MqttSink {
 impl fmt::Debug for MqttSink {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("MqttSink").finish()
+    }
+}
+
+pub struct PublishBuilder<'a> {
+    sink: &'a MqttSink,
+    packet: Option<mqtt::Publish>,
+}
+
+impl<'a> PublishBuilder<'a> {
+    /// this might be re-delivery of an earlier attempt to send the Packet.
+    pub fn dup(&mut self) -> &mut Self {
+        if let Some(ref mut packet) = self.packet {
+            packet.dup = true;
+        }
+        self
+    }
+
+    pub fn retain(&mut self) -> &mut Self {
+        if let Some(ref mut packet) = self.packet {
+            packet.retain = true;
+        }
+        self
+    }
+
+    /// Send publish packet with QoS 0
+    pub fn at_most_once(&mut self) {
+        if let Some(packet) = self.packet.take() {
+            if let Some(ref sink) = self.sink.0.borrow().sink {
+                log::trace!("Publish (QoS-0) to {:?}", packet.topic);
+                let _ = sink.send(mqtt::Packet::Publish(packet));
+            } else {
+                log::error!("Mqtt sink is disconnected");
+            }
+        } else {
+            panic!("PublishBuilder can be used only once.");
+        }
+    }
+
+    /// Send publish packet with QoS 1
+    pub fn at_least_once(&mut self) -> impl Future<Output = Result<(), ()>> {
+        if let Some(mut packet) = self.packet.take() {
+            let mut inner = self.sink.0.borrow_mut();
+
+            if inner.sink.is_some() {
+                let (tx, rx) = oneshot::channel();
+
+                inner.idx += 1;
+                if inner.idx == 0 {
+                    inner.idx = 1
+                }
+                let idx = inner.idx;
+                inner.queue.push_back((idx, tx));
+
+                packet.qos = mqtt::QoS::AtLeastOnce;
+                packet.packet_id = NonZeroU16::new(inner.idx);
+
+                log::trace!("Publish (QoS1) to {:#?}", packet);
+                if inner
+                    .sink
+                    .as_ref()
+                    .unwrap()
+                    .send(mqtt::Packet::Publish(packet))
+                    .is_err()
+                {
+                    Either::Right(err(()))
+                } else {
+                    Either::Left(rx.map_err(|_| ()))
+                }
+            } else {
+                Either::Right(err(()))
+            }
+        } else {
+            panic!("PublishBuilder can be used only once.");
+        }
     }
 }
