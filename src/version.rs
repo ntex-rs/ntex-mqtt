@@ -31,7 +31,7 @@ impl Decoder for VersionCodec {
         let first_byte = src_slice[0];
         match utils::decode_variable_length(&src_slice[1..])? {
             Some((_, mut consumed)) => {
-                consumed += 2;
+                consumed += 1;
 
                 if first_byte == packet_type::CONNECT {
                     if len <= consumed + 5 {
@@ -79,30 +79,26 @@ mod tests {
     #[test]
     fn test_decode_connect_packets() {
         let mut buf = BytesMut::from(
-            b"\x10\x7f\x7f\x00\x04MQTT\x04\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"
-                .as_ref(),
-        );
-        assert_eq!(
-            ProtocolVersion::MQTT3,
-            VersionCodec.decode(&mut buf).unwrap().unwrap()
-        );
-
-        let mut buf = BytesMut::from(
-            b"\x10\x7f\x7f\x00\x04MQTT\x05\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"
-                .as_ref(),
-        );
-        assert_eq!(
-            ProtocolVersion::MQTT5,
-            VersionCodec.decode(&mut buf).unwrap().unwrap()
-        );
-
-        let mut buf = BytesMut::from(
             b"\x10\x7f\x7f\x00\x04MQTT\x06\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"
                 .as_ref(),
         );
         assert_eq!(
             Err(DecodeError::InvalidProtocol),
             VersionCodec.decode(&mut buf)
+        );
+
+        let mut buf =
+            BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x04\xc0\0\x0f\0\x02d1\0|testhub.".as_ref());
+        assert_eq!(
+            ProtocolVersion::MQTT3,
+            VersionCodec.decode(&mut buf).unwrap().unwrap()
+        );
+
+        let mut buf =
+            BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x05\xc0\0\x0f\0\x02d1\0|testhub.".as_ref());
+        assert_eq!(
+            ProtocolVersion::MQTT5,
+            VersionCodec.decode(&mut buf).unwrap().unwrap()
         );
     }
 }
