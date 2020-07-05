@@ -1,13 +1,15 @@
-use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
+use std::{fmt, io};
 
+use futures::future::{select, Either, FutureExt};
 use futures::{ready, Stream};
 
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
+use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::framed::{Dispatcher, DispatcherError};
 
@@ -365,7 +367,7 @@ where
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Config = Cfg;
-    type Request = Framed<Io, Codec>;
+    type Request = (Framed<Io, Codec>, Option<Delay>);
     type Response = ();
     type Error = DispatcherError<C::Error, Codec>;
     type InitError = C::InitError;
@@ -480,7 +482,7 @@ where
     <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
-    type Request = Framed<Io, Codec>;
+    type Request = (Framed<Io, Codec>, Option<Delay>);
     type Response = ();
     type Error = DispatcherError<C::Error, Codec>;
     type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
@@ -496,7 +498,7 @@ where
     }
 
     #[inline]
-    fn call(&self, req: Framed<Io, Codec>) -> Self::Future {
+    fn call(&self, (req, delay): (Framed<Io, Codec>, Option<Delay>)) -> Self::Future {
         log::trace!("Start connection handshake");
 
         let handler = self.handler.clone();
@@ -504,16 +506,46 @@ where
         let handshake = self.connect.call(Handshake::with_codec(req));
 
         Box::pin(async move {
-            let result = handshake.await.map_err(|e| {
-                log::trace!("Connection handshake failed: {:?}", e);
-                e
-            })?;
-            log::trace!("Connection handshake succeeded");
+            let (framed, out, handler) = if let Some(delay) = delay {
+                let res = select(
+                    delay,
+                    async {
+                        let result = handshake.await.map_err(|e| {
+                            log::trace!("Connection handshake failed: {:?}", e);
+                            e
+                        })?;
+                        log::trace!("Connection handshake succeeded");
 
-            let handler = handler.new_service(result.state).await?;
-            log::trace!("Connection handler is created, starting dispatcher");
+                        let handler = handler.new_service(result.state).await?;
+                        log::trace!("Connection handler is created, starting dispatcher");
 
-            Dispatcher::with(result.framed, result.out, handler)
+                        Ok::<_, C::Error>((result.framed, result.out, handler))
+                    }
+                    .boxed_local(),
+                )
+                .await;
+
+                match res {
+                    Either::Left(_) => {
+                        return Err(DispatcherError::Decoder(
+                            io::Error::new(io::ErrorKind::Other, "handshake error").into(),
+                        ))
+                    }
+                    Either::Right(item) => item.0?,
+                }
+            } else {
+                let result = handshake.await.map_err(|e| {
+                    log::trace!("Connection handshake failed: {:?}", e);
+                    e
+                })?;
+                log::trace!("Connection handshake succeeded");
+
+                let handler = handler.new_service(result.state).await?;
+                log::trace!("Connection handler is created, starting dispatcher");
+                (result.framed, result.out, handler)
+            };
+
+            Dispatcher::with(framed, out, handler)
                 .disconnect_timeout(timeout as u64)
                 .await
         })

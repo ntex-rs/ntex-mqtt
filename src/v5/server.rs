@@ -8,6 +8,7 @@ use futures::future::{ok, Ready};
 use futures::{SinkExt, StreamExt, TryFutureExt};
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite, Framed};
+use ntex::rt::time::Delay;
 use ntex::service::{apply, apply_fn, fn_factory, unit_config};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::framed::DispatcherError;
@@ -221,7 +222,7 @@ where
         self,
     ) -> impl ServiceFactory<
         Config = (),
-        Request = Framed<Io, mqtt::Codec>,
+        Request = (Framed<Io, mqtt::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<C::Error>,
         InitError = C::InitError,
