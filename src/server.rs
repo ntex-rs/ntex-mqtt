@@ -58,14 +58,14 @@ where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     V3: ServiceFactory<
         Config = (),
-        Request = Framed<Io, v3::codec::Codec>,
+        Request = (Framed<Io, v3::codec::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
         Config = (),
-        Request = Framed<Io, v5::codec::Codec>,
+        Request = (Framed<Io, v5::codec::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
