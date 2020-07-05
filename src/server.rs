@@ -323,7 +323,7 @@ where
     }
 }
 
-struct DefaultProtocolServer<Io, Err, InitErr, Codec> {
+pub struct DefaultProtocolServer<Io, Err, InitErr, Codec> {
     ver: ProtocolVersion,
     _t: PhantomData<(Io, Err, InitErr, Codec)>,
 }
