@@ -183,22 +183,21 @@ where
                 self.session.sink().complete_publish_qos1(packet.packet_id);
                 Either::Right(Either::Left(ok(None)))
             }
+            codec::Packet::Auth(pkt) => Either::Right(Either::Right(ControlResponse {
+                fut: self.control.call(ControlPacket::auth(pkt)),
+            })),
             codec::Packet::PingRequest => Either::Right(Either::Right(ControlResponse {
                 fut: self.control.call(ControlPacket::ping()),
             })),
-            codec::Packet::Disconnect(packet) => {
-                Either::Right(Either::Right(ControlResponse {
-                    fut: self.control.call(ControlPacket::disconnect()),
-                }))
-            }
-            codec::Packet::Subscribe(packet) => Either::Right(Either::Right(ControlResponse {
-                fut: self.control.call(control::Subscribe::create(packet)),
+            codec::Packet::Disconnect(pkt) => Either::Right(Either::Right(ControlResponse {
+                fut: self.control.call(ControlPacket::disconnect(pkt)),
             })),
-            codec::Packet::Unsubscribe(packet) => {
-                Either::Right(Either::Right(ControlResponse {
-                    fut: self.control.call(control::Unsubscribe::create(packet)),
-                }))
-            }
+            codec::Packet::Subscribe(pkt) => Either::Right(Either::Right(ControlResponse {
+                fut: self.control.call(control::Subscribe::create(pkt)),
+            })),
+            codec::Packet::Unsubscribe(pkt) => Either::Right(Either::Right(ControlResponse {
+                fut: self.control.call(control::Unsubscribe::create(pkt)),
+            })),
             _ => Either::Right(Either::Left(ok(None))),
         }
     }

@@ -84,10 +84,11 @@ impl<S, E> Service for DefaultControlService<S, E> {
     }
 
     #[inline]
-    fn call(&self, subs: ControlPacket) -> Self::Future {
+    fn call(&self, pkt: ControlPacket) -> Self::Future {
         log::warn!("MQTT Subscribe is not supported");
 
-        ok(match subs {
+        ok(match pkt {
+            ControlPacket::Auth(auth) => auth.ack(),
             ControlPacket::Ping(ping) => ping.ack(),
             ControlPacket::Disconnect(disc) => disc.ack(),
             ControlPacket::Subscribe(subs) => {

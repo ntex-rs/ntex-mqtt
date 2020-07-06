@@ -5,6 +5,7 @@ use bytestring::ByteString;
 use super::codec::{self, QoS};
 
 pub enum ControlPacket {
+    Auth(Auth),
     Ping(Ping),
     Disconnect(Disconnect),
     Subscribe(Subscribe),
@@ -17,16 +18,32 @@ pub struct ControlResult {
 }
 
 impl ControlPacket {
+    pub(crate) fn auth(pkt: codec::Auth) -> Self {
+        ControlPacket::Auth(Auth(pkt))
+    }
+
     pub(crate) fn ping() -> Self {
         ControlPacket::Ping(Ping)
     }
 
-    pub(crate) fn disconnect() -> Self {
-        ControlPacket::Disconnect(Disconnect)
+    pub(crate) fn disconnect(pkt: codec::Disconnect) -> Self {
+        ControlPacket::Disconnect(Disconnect(pkt))
     }
 
     pub(crate) fn closed(is_error: bool) -> Self {
         ControlPacket::Closed(Closed::new(is_error))
+    }
+}
+
+pub struct Auth(codec::Auth);
+
+impl Auth {
+    pub fn packet(&self) -> &codec::Auth {
+        &self.0
+    }
+
+    pub fn ack(self) -> ControlResult {
+        ControlResult { packet: None }
     }
 }
 
@@ -40,9 +57,13 @@ impl Ping {
     }
 }
 
-pub struct Disconnect;
+pub struct Disconnect(codec::Disconnect);
 
 impl Disconnect {
+    pub fn packet(&self) -> &codec::Disconnect {
+        &self.0
+    }
+
     pub fn ack(self) -> ControlResult {
         ControlResult { packet: None }
     }
