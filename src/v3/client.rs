@@ -349,10 +349,11 @@ where
     }
 }
 
-#[pin_project::pin_project]
-pub struct ConnectAckResult<Io, St> {
-    state: Session<St>,
-    io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+pin_project_lite::pin_project! {
+    pub struct ConnectAckResult<Io, St> {
+        state: Session<St>,
+        io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    }
 }
 
 impl<Io, St> Stream for ConnectAckResult<Io, St>

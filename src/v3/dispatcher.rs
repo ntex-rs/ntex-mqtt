@@ -214,14 +214,15 @@ where
     }
 }
 
-/// Publish service response future
-#[pin_project::pin_project]
-pub(crate) struct PublishResponse<T, E> {
-    #[pin]
-    fut: T,
-    packet_id: Option<NonZeroU16>,
-    inflight: Rc<RefCell<FxHashSet<NonZeroU16>>>,
-    _t: PhantomData<E>,
+pin_project_lite::pin_project! {
+    /// Publish service response future
+    pub(crate) struct PublishResponse<T, E> {
+        #[pin]
+        fut: T,
+        packet_id: Option<NonZeroU16>,
+        inflight: Rc<RefCell<FxHashSet<NonZeroU16>>>,
+        _t: PhantomData<E>,
+    }
 }
 
 impl<T, E> Future for PublishResponse<T, E>
@@ -245,14 +246,15 @@ where
     }
 }
 
-/// Control service response future
-#[pin_project::pin_project]
-pub(crate) struct ControlResponse<T, E>
-where
-    T: Future<Output = Result<ControlResult, MqttError<E>>>,
-{
-    #[pin]
-    fut: T,
+pin_project_lite::pin_project! {
+    /// Control service response future
+    pub(crate) struct ControlResponse<T, E>
+    where
+        T: Future<Output = Result<ControlResult, MqttError<E>>>,
+    {
+        #[pin]
+        fut: T,
+    }
 }
 
 impl<T, E> Future for ControlResponse<T, E>
