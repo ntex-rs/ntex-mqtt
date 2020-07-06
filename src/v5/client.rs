@@ -11,10 +11,12 @@ use futures::future::{FutureExt, LocalBoxFuture};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite};
-use ntex::framed;
 use ntex::service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
+use ntex::util::framed::DispatcherError;
 
 use crate::error::{DecodeError, EncodeError, MqttError};
+use crate::handshake::{Handshake, HandshakeResult};
+use crate::service::Builder;
 
 use super::control::{ControlPacket, ControlResult};
 use super::default::DefaultControlService;
@@ -153,7 +155,7 @@ where
                 InitError = C::Error,
             > + 'static,
     {
-        framed::Builder::new(ConnectService {
+        Builder::new(ConnectService {
             connect: self.state,
             packet: self.packet,
             keep_alive: self.keep_alive,
@@ -168,9 +170,9 @@ where
             self.control,
         ))
         .map_err(|e| match e {
-            framed::ServiceError::Service(e) => e,
-            framed::ServiceError::Encoder(e) => MqttError::Encode(e),
-            framed::ServiceError::Decoder(e) => MqttError::Decode(e),
+            DispatcherError::Service(e) => e,
+            DispatcherError::Encoder(e) => MqttError::Encode(e),
+            DispatcherError::Decoder(e) => MqttError::Decode(e),
         })
     }
 }
@@ -190,9 +192,9 @@ where
     C: Service<Request = ConnectAck<Io>, Response = ConnectAckResult<Io, St>> + 'static,
     C::Error: fmt::Debug + 'static,
 {
-    type Request = framed::Handshake<Io, codec::Codec>;
+    type Request = Handshake<Io, codec::Codec>;
     type Response =
-        framed::HandshakeResult<Io, Session<St>, codec::Codec, mpsc::Receiver<codec::Packet>>;
+        HandshakeResult<Io, Session<St>, codec::Codec, mpsc::Receiver<codec::Packet>>;
     type Error = MqttError<C::Error>;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -261,7 +263,7 @@ where
 }
 
 pub struct ConnectAck<Io> {
-    io: framed::HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
+    io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
     sink: MqttSink,
     keep_alive: Duration,
     inflight: usize,
@@ -334,7 +336,7 @@ where
 #[pin_project::pin_project]
 pub struct ConnectAckResult<Io, St> {
     state: Session<St>,
-    io: framed::HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
+    io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
 }
 
 impl<Io, St> Stream for ConnectAckResult<Io, St>

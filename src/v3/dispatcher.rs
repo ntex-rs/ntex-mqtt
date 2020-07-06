@@ -11,6 +11,7 @@ use futures::future::{err, join, ok, Either, FutureExt, Ready};
 use futures::ready;
 use fxhash::FxHashSet;
 use ntex::service::{fn_factory_with_config, pipeline, Service, ServiceFactory};
+use ntex::util::buffer::BufferService;
 use ntex::util::inflight::InFlightService;
 use ntex::util::keepalive::KeepAliveService;
 use ntex::util::order::{InOrder, InOrderError};
@@ -84,7 +85,12 @@ where
                         }),
                     ),
                 ),
-                control?,
+                BufferService::new(
+                    16,
+                    || MqttError::Disconnected,
+                    // limit number of in-flight messages
+                    InFlightService::new(1, control?),
+                ),
             ))
         }
     })

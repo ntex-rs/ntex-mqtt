@@ -12,7 +12,7 @@ exclude = [".gitignore", ".travis.yml", ".cargo/config"]
 edition = "2018"
 
 [dependencies]
-ntex = "0.1.19"
+ntex = "0.1.20"
 ntex-codec = "0.1.2"
 bitflags = "1.2"
 bytes = "0.5.4"

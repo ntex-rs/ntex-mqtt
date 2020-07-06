@@ -10,13 +10,62 @@ use futures::{ready, Stream};
 
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 use ntex::rt::time::Delay;
-use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{IntoService, IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::framed::{Dispatcher, DispatcherError};
 
 use super::handshake::{Handshake, HandshakeResult};
 
 type RequestItem<U> = <U as Decoder>::Item;
 type ResponseItem<U> = Option<<U as Encoder>::Item>;
+
+/// Service builder - structure that follows the builder pattern
+/// for building instances for framed services.
+pub(crate) struct Builder<St, C, Io, Codec, Out> {
+    connect: C,
+    _t: PhantomData<(St, Io, Codec, Out)>,
+}
+
+impl<St, C, Io, Codec, Out> Builder<St, C, Io, Codec, Out>
+where
+    C: Service<Request = Handshake<Io, Codec>, Response = HandshakeResult<Io, St, Codec, Out>>,
+    C::Error: fmt::Debug,
+    Io: AsyncRead + AsyncWrite + Unpin,
+    Codec: Decoder + Encoder,
+    <Codec as Encoder>::Item: 'static,
+    <Codec as Encoder>::Error: std::fmt::Debug,
+    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
+{
+    /// Construct framed handler service with specified connect service
+    pub(crate) fn new<F>(connect: F) -> Builder<St, C, Io, Codec, Out>
+    where
+        F: IntoService<C>,
+    {
+        Builder {
+            connect: connect.into_service(),
+            _t: PhantomData,
+        }
+    }
+
+    /// Provide stream items handler service and construct service factory.
+    pub(crate) fn build<F, T>(self, service: F) -> FramedServiceImpl<St, C, T, Io, Codec, Out>
+    where
+        F: IntoServiceFactory<T>,
+        T: ServiceFactory<
+            Config = St,
+            Request = RequestItem<Codec>,
+            Response = ResponseItem<Codec>,
+            Error = C::Error,
+            InitError = C::Error,
+        >,
+    {
+        FramedServiceImpl {
+            connect: self.connect,
+            handler: Rc::new(service.into_factory()),
+            disconnect_timeout: 3000,
+            _t: PhantomData,
+        }
+    }
+}
 
 /// Service builder - structure that follows the builder pattern
 /// for building instances for framed services.
