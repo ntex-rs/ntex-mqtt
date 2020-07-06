@@ -74,6 +74,17 @@ impl PublishAck {
     }
 }
 
+impl Default for PublishAck {
+    fn default() -> Self {
+        Self {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            reason_code: PublishAckReason::Success,
+            properties: UserProperties::default(),
+            reason_string: None,
+        }
+    }
+}
+
 impl PublishAck2 {
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
