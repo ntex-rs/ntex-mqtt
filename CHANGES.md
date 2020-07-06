@@ -1,6 +1,6 @@
 # Changes
 
-## [0.2.0] - 2020-07-06
+## [0.2.0-beta.1] - 2020-07-06
 
 * Add mqtt v5 protocol support
 
