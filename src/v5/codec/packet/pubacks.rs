@@ -4,7 +4,7 @@ use std::{convert::TryInto, num::NonZeroU16};
 
 use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
-use crate::utils::{self, Decode, Encode};
+use crate::utils::{Decode, Encode};
 use crate::v5::codec::{encode::*, UserProperties};
 
 const HEADER_LEN: u32 = 2 + 1; // packet id + reason code
@@ -106,7 +106,6 @@ impl EncodeLtd for PublishAck {
     }
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
-        utils::write_variable_length(size, buf);
         self.packet_id.get().encode(buf)?;
         buf.put_u8(self.reason_code.into());
         ack_props::encode(
@@ -131,7 +130,6 @@ impl EncodeLtd for PublishAck2 {
     }
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
-        utils::write_variable_length(size, buf);
         self.packet_id.get().encode(buf)?;
         buf.put_u8(self.reason_code.into());
         ack_props::encode(&self.properties, &self.reason_string, buf, size - 3)?;
