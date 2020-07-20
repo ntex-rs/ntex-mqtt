@@ -90,6 +90,11 @@ impl Publish {
     }
 
     #[inline]
+    pub fn packet_mut(&mut self) -> &mut codec::Publish {
+        &mut self.publish
+    }
+
+    #[inline]
     /// the Application Message that is being published.
     pub fn payload(&self) -> &Bytes {
         &self.publish.payload
