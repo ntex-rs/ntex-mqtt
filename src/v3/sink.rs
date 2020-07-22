@@ -106,7 +106,9 @@ impl<'a> PublishBuilder<'a> {
         if let Some(packet) = self.packet.take() {
             if let Some(ref sink) = self.sink.0.borrow().sink {
                 log::trace!("Publish (QoS-0) to {:?}", packet.topic);
-                let _ = sink.send(mqtt::Packet::Publish(packet));
+                let _ = sink.send(mqtt::Packet::Publish(packet)).map_err(|_| {
+                    log::error!("Mqtt sink is disconnected");
+                });
             } else {
                 log::error!("Mqtt sink is disconnected");
             }

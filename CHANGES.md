@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.0-beta.2] - 2020-07-22
+
+* Add Publish::packet_mut() method
+
 ## [0.2.0-beta.1] - 2020-07-06
 
 * Add mqtt v5 protocol support

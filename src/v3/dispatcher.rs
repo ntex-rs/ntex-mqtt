@@ -235,6 +235,8 @@ where
         let this = self.project();
 
         ready!(this.fut.poll(cx))?;
+        log::trace!("Publish result for packet {:?} is ready", this.packet_id);
+
         if let Some(packet_id) = this.packet_id {
             this.inflight.borrow_mut().remove(&packet_id);
             Poll::Ready(Ok(Some(codec::Packet::PublishAck {
