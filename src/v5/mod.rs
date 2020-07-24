@@ -17,7 +17,7 @@ pub use self::connect::{Connect, ConnectAck};
 pub use self::control::{ControlPacket, ControlResult};
 pub use self::publish::{Publish, PublishAck};
 pub use self::server::MqttServer;
-pub use self::sink::MqttSink;
+pub use self::sink::{MqttSink, PublishBuilder};
 
 pub use crate::error::MqttError;
 pub use crate::router::Router;
