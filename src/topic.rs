@@ -116,7 +116,6 @@ macro_rules! match_topic {
     }};
 }
 
-// #[derive(Debug, Eq, Clone)]
 #[derive(Debug, Clone)]
 pub struct Topic(Vec<Level>);
 
@@ -144,19 +143,14 @@ impl Topic {
             .is_none()
     }
 
-    pub fn match_topic(&self, topic: &Topic) -> bool {
+    pub fn matches(&self, topic: &Topic) -> bool {
         match_topic!(self, &topic.0)
     }
 
-    pub fn match_topic_str<S: AsRef<str> + ?Sized>(&self, topic: &S) -> bool {
+    pub fn matches_str<S: AsRef<str> + ?Sized>(&self, topic: &S) -> bool {
         match_topic!(self, topic.as_ref().split('/'))
     }
 }
-
-// impl PartialEq for Topic {
-//     fn eq(&self, other: &Topic) -> bool {
-//     }
-// }
 
 impl<'a> From<&'a [Level]> for Topic {
     fn from(s: &[Level]) -> Self {
