@@ -64,15 +64,15 @@ impl MqttSink {
                     idx,
                     packet_id
                 );
-                self.close();
             } else {
                 log::trace!("Ack publish packet with id: {}", packet_id);
                 let _ = tx.send(());
+                return;
             }
         } else {
             log::trace!("Unexpected PublishAck packet");
-            self.close();
         }
+        self.close();
     }
 }
 
