@@ -155,12 +155,9 @@ where
                 Request = v5::Publish,
                 Response = v5::PublishAck,
             > + 'static,
-        C::Error: From<Cn::Error>
-            + From<Cn::InitError>
-            + From<P::Error>
-            + From<P::InitError>
-            + fmt::Debug,
-        v5::PublishAck: TryFrom<P::Error, Error = P::Error>,
+        P::Error: fmt::Debug,
+        C::Error: From<Cn::Error> + From<Cn::InitError> + From<P::InitError> + fmt::Debug,
+        v5::PublishAck: TryFrom<P::Error, Error = C::Error>,
     {
         MqttServer {
             v3: self.v3,

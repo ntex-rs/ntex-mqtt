@@ -4,8 +4,10 @@ use std::io;
 /// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug)]
 pub enum MqttError<E> {
-    /// Message handler service error
+    /// Publish handler service error
     Service(E),
+    /// Publish service readiness error
+    PublishReadyError,
     /// Mqtt parse error
     Decode(DecodeError),
     /// Mqtt encode error

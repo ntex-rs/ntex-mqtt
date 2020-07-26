@@ -180,6 +180,7 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
 mod tests {
     use super::*;
     use crate::utils::decode_variable_length;
+    use crate::v3::codec::ConnectAckReason;
 
     macro_rules! assert_decode_packet (
         ($bytes:expr, $res:expr) => {{

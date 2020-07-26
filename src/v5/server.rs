@@ -1,14 +1,17 @@
 use std::convert::TryFrom;
 use std::fmt;
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
+use futures::future::{ok, Future, Ready, TryFutureExt};
+use futures::{SinkExt, StreamExt};
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::Delay;
-use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{IntoServiceFactory, Service, ServiceFactory, Transform};
 use ntex::util::framed::DispatcherError;
 use ntex::util::timeout::{Timeout, TimeoutError};
 
@@ -28,8 +31,8 @@ use super::Session;
 /// Mqtt Server
 pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceFactory> {
     connect: C,
-    control: Cn,
-    publish: P,
+    srv_control: Cn,
+    srv_publish: P,
     max_size: u32,
     inflight: usize,
     handshake_timeout: usize,
@@ -59,8 +62,8 @@ where
     {
         MqttServer {
             connect: connect.into_factory(),
-            control: DefaultControlService::default(),
-            publish: DefaultPublishService::default(),
+            srv_control: DefaultControlService::default(),
+            srv_publish: DefaultPublishService::default(),
             max_size: 0,
             inflight: 15,
             handshake_timeout: 0,
@@ -81,12 +84,9 @@ where
     Cn: ServiceFactory<Config = Session<St>, Request = ControlPacket, Response = ControlResult>
         + 'static,
     P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
-    C::Error: From<Cn::Error>
-        + From<Cn::InitError>
-        + From<P::Error>
-        + From<P::InitError>
-        + fmt::Debug,
-    PublishAck: TryFrom<P::Error, Error = P::Error>,
+    P::Error: fmt::Debug,
+    C::Error: From<Cn::Error> + From<Cn::InitError> + From<P::InitError> + fmt::Debug,
+    PublishAck: TryFrom<P::Error, Error = C::Error>,
 {
     /// Set handshake timeout in millis.
     ///
@@ -151,8 +151,8 @@ where
     {
         MqttServer {
             connect: self.connect,
-            publish: self.publish,
-            control: service.into_factory(),
+            srv_publish: self.srv_publish,
+            srv_control: service.into_factory(),
             max_size: self.max_size,
             inflight: self.inflight,
             max_topic_alias: self.max_topic_alias,
@@ -168,13 +168,14 @@ where
         F: IntoServiceFactory<Srv> + 'static,
         Srv: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck>
             + 'static,
+        Srv::Error: fmt::Debug,
         C::Error: From<Srv::InitError> + From<Srv::Error>,
-        PublishAck: TryFrom<Srv::Error, Error = Srv::Error>,
+        PublishAck: TryFrom<Srv::Error, Error = C::Error>,
     {
         MqttServer {
             connect: self.connect,
-            publish: publish.into_factory(),
-            control: self.control,
+            srv_publish: publish.into_factory(),
+            srv_control: self.srv_control,
             max_size: self.max_size,
             inflight: self.inflight,
             max_topic_alias: self.max_topic_alias,
@@ -190,16 +191,13 @@ where
     ) -> impl ServiceFactory<Config = (), Request = Io, Response = (), Error = MqttError<C::Error>>
     {
         let connect = self.connect;
-        let publish = ntex::apply_fn_factory(self.publish, |req, srv| {
-            srv.call(req).map(|result| match result {
-                Ok(ack) => Ok(ack),
-                Err(e) => PublishAck::try_from(e),
-            })
-        })
-        .map_err(|e| MqttError::Service(e.into()))
-        .map_init_err(|e| MqttError::Service(e.into()));
+        let publish = ntex::apply(
+            PublishServiceTransform(PhantomData),
+            self.srv_publish
+                .map_init_err(|e| MqttError::Service(e.into())),
+        );
         let control = self
-            .control
+            .srv_control
             .map_err(|e| MqttError::Service(e.into()))
             .map_init_err(|e| MqttError::Service(e.into()));
 
@@ -232,16 +230,13 @@ where
         InitError = C::InitError,
     > {
         let connect = self.connect;
-        let publish = ntex::apply_fn_factory(self.publish, |req, srv| {
-            srv.call(req).map(|result| match result {
-                Ok(ack) => Ok(ack),
-                Err(e) => PublishAck::try_from(e),
-            })
-        })
-        .map_err(|e| MqttError::Service(e.into()))
-        .map_init_err(|e| MqttError::Service(e.into()));
+        let publish = ntex::apply(
+            PublishServiceTransform(PhantomData),
+            self.srv_publish
+                .map_init_err(|e| MqttError::Service(e.into())),
+        );
         let control = self
-            .control
+            .srv_control
             .map_err(|e| MqttError::Service(e.into()))
             .map_init_err(|e| MqttError::Service(e.into()));
 
@@ -412,6 +407,98 @@ where
                 packet.packet_type(),
                 "MQTT-3.1.0-1: Expected CONNECT packet",
             ))
+        }
+    }
+}
+
+struct PublishServiceTransform<E>(PhantomData<E>);
+
+impl<S, E> Transform<S> for PublishServiceTransform<E>
+where
+    S: Service<Response = PublishAck>,
+    S::Error: fmt::Debug,
+    PublishAck: TryFrom<S::Error, Error = E>,
+{
+    type Request = S::Request;
+    type Response = PublishAck;
+    type Error = MqttError<E>;
+    type Transform = PublishService<S, E>;
+    type InitError = MqttError<E>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    /// Creates and returns a new Transform component, asynchronously
+    fn new_transform(&self, service: S) -> Self::Future {
+        ok(PublishService {
+            srv: service,
+            _t: PhantomData,
+        })
+    }
+}
+
+struct PublishService<S, E> {
+    srv: S,
+    _t: PhantomData<E>,
+}
+
+impl<S, E> Service for PublishService<S, E>
+where
+    S: Service<Response = PublishAck>,
+    S::Error: fmt::Debug,
+    PublishAck: TryFrom<S::Error, Error = E>,
+{
+    type Request = S::Request;
+    type Response = PublishAck;
+    type Error = MqttError<E>;
+    type Future = PublishServiceResponse<S, E>;
+
+    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.srv.poll_ready(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(e)) => {
+                log::error!("Publish service readiness error: {:?}", e);
+                Poll::Ready(Err(MqttError::PublishReadyError))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+        self.srv.poll_shutdown(cx, is_error)
+    }
+
+    fn call(&self, req: Self::Request) -> Self::Future {
+        PublishServiceResponse {
+            fut: self.srv.call(req),
+            _t: PhantomData,
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    struct PublishServiceResponse<S: Service, E>{
+        #[pin]
+        fut: S::Future,
+        _t: PhantomData<E>,
+    }
+}
+
+impl<S, E> Future for PublishServiceResponse<S, E>
+where
+    S: Service<Response = PublishAck>,
+    PublishAck: TryFrom<S::Error, Error = E>,
+{
+    type Output = Result<PublishAck, MqttError<E>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+
+        match this.fut.poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(ack)) => Poll::Ready(Ok(ack)),
+            Poll::Ready(Err(e)) => match PublishAck::try_from(e) {
+                Ok(ack) => Poll::Ready(Ok(ack)),
+                Err(err) => Poll::Ready(Err(MqttError::Service(err))),
+            },
         }
     }
 }

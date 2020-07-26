@@ -3,12 +3,30 @@ use bytestring::ByteString;
 use futures::future::ok;
 use ntex::server;
 use ntex::service::Service;
+use std::convert::TryFrom;
 
-use ntex_mqtt::v5::{client, Connect, ConnectAck, MqttServer, Publish, Session};
+use ntex_mqtt::v5::{client, Connect, ConnectAck, MqttServer, Publish, PublishAck, Session};
 
 struct St;
 
-async fn connect<Io>(packet: Connect<Io>) -> Result<ConnectAck<Io, St>, ()> {
+#[derive(Debug)]
+struct TestError;
+
+impl From<()> for TestError {
+    fn from(_: ()) -> Self {
+        TestError
+    }
+}
+
+impl TryFrom<TestError> for PublishAck {
+    type Error = TestError;
+
+    fn try_from(err: TestError) -> Result<Self, Self::Error> {
+        Err(err)
+    }
+}
+
+async fn connect<Io>(packet: Connect<Io>) -> Result<ConnectAck<Io, St>, TestError> {
     println!("CONNECT: {:?}", packet);
     Ok(packet.ack(St))
 }
@@ -20,7 +38,7 @@ async fn test_simple() -> std::io::Result<()> {
 
     let srv = server::test_server(|| {
         MqttServer::new(connect)
-            .publish(|p: Publish| ok(p.ack()))
+            .publish(|p: Publish| ok::<_, TestError>(p.ack()))
             .finish()
     });
 
