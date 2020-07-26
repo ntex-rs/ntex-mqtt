@@ -1,15 +1,12 @@
 use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures::future::{ok, Ready};
 use futures::{SinkExt, StreamExt, TryFutureExt};
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::Delay;
-use ntex::service::{apply, apply_fn, fn_factory, unit_config};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::framed::DispatcherError;
 use ntex::util::timeout::{Timeout, TimeoutError};
@@ -21,13 +18,13 @@ use crate::service::{FactoryBuilder, FactoryBuilder2};
 use super::codec as mqtt;
 use super::connect::{Connect, ConnectAck};
 use super::control::{ControlPacket, ControlResult};
-use super::default::DefaultControlService;
+use super::default::{DefaultControlService, DefaultPublishService};
 use super::dispatcher::factory;
 use super::publish::Publish;
 use super::sink::MqttSink;
 use super::Session;
 
-/// Mqtt Server
+/// Mqtt v3.1.1 Server
 pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceFactory> {
     connect: C,
     control: Cn,
@@ -176,9 +173,6 @@ where
     ) -> impl ServiceFactory<Config = (), Request = Io, Response = (), Error = MqttError<C::Error>>
     {
         let connect = self.connect;
-        let max_size = self.max_size;
-        let handshake_timeout = self.handshake_timeout;
-        let disconnect_timeout = self.disconnect_timeout;
         let publish = self
             .publish
             .into_factory()
@@ -189,14 +183,14 @@ where
             .map_err(|e| MqttError::Service(e.into()))
             .map_init_err(|e| MqttError::Service(e.into()));
 
-        unit_config(
+        ntex::unit_config(
             FactoryBuilder::new(handshake_service_factory(
                 connect,
-                max_size,
+                self.max_size,
                 self.inflight,
-                handshake_timeout,
+                self.handshake_timeout,
             ))
-            .disconnect_timeout(disconnect_timeout)
+            .disconnect_timeout(self.disconnect_timeout)
             .build(factory(publish, control))
             .map_err(|e| match e {
                 DispatcherError::Service(e) => e,
@@ -217,9 +211,6 @@ where
         InitError = C::InitError,
     > {
         let connect = self.connect;
-        let max_size = self.max_size;
-        let handshake_timeout = self.handshake_timeout;
-        let disconnect_timeout = self.disconnect_timeout;
         let publish = self
             .publish
             .into_factory()
@@ -230,14 +221,14 @@ where
             .map_err(|e| MqttError::Service(e.into()))
             .map_init_err(|e| MqttError::Service(e.into()));
 
-        unit_config(
+        ntex::unit_config(
             FactoryBuilder2::new(handshake_service_factory2(
                 connect,
-                max_size,
+                self.max_size,
                 self.inflight,
-                handshake_timeout,
+                self.handshake_timeout,
             ))
-            .disconnect_timeout(disconnect_timeout)
+            .disconnect_timeout(self.disconnect_timeout)
             .build(factory(publish, control))
             .map_err(|e| match e {
                 DispatcherError::Service(e) => e,
@@ -264,12 +255,12 @@ where
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>,
     C::Error: fmt::Debug,
 {
-    apply(
+    ntex::apply(
         Timeout::new(Duration::from_millis(handshake_timeout as u64)),
-        fn_factory(move || {
+        ntex::fn_factory(move || {
             factory.new_service(()).map_ok(move |service| {
                 let service = Rc::new(service.map_err(MqttError::Service));
-                apply_fn(service, move |conn: Handshake<Io, mqtt::Codec>, service| {
+                ntex::apply_fn(service, move |conn: Handshake<Io, mqtt::Codec>, service| {
                     handshake(
                         conn.codec(mqtt::Codec::new()),
                         service.clone(),
@@ -303,12 +294,12 @@ where
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>,
     C::Error: fmt::Debug,
 {
-    apply(
+    ntex::apply(
         Timeout::new(Duration::from_millis(handshake_timeout as u64)),
-        fn_factory(move || {
+        ntex::fn_factory(move || {
             factory.new_service(()).map_ok(move |service| {
                 let service = Rc::new(service.map_err(MqttError::Service));
-                apply_fn(service, move |conn, service| {
+                ntex::apply_fn(service, move |conn, service| {
                     handshake(conn, service.clone(), max_size, inflight)
                 })
             })
@@ -403,51 +394,14 @@ where
             }
         }
         packet => {
-            log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {}", 1);
+            log::info!(
+                "MQTT-3.1.0-1: Expected CONNECT packet, received {:?}",
+                packet
+            );
             Err(MqttError::Unexpected(
                 packet.packet_type(),
                 "MQTT-3.1.0-1: Expected CONNECT packet",
             ))
         }
-    }
-}
-
-pub struct DefaultPublishService<St, Err> {
-    _t: PhantomData<(St, Err)>,
-}
-
-impl<St, Err> Default for DefaultPublishService<St, Err> {
-    fn default() -> Self {
-        Self { _t: PhantomData }
-    }
-}
-
-impl<St, Err> ServiceFactory for DefaultPublishService<St, Err> {
-    type Config = Session<St>;
-    type Request = Publish;
-    type Response = ();
-    type Error = Err;
-    type Service = DefaultPublishService<St, Err>;
-    type InitError = Err;
-    type Future = Ready<Result<Self::Service, Self::InitError>>;
-
-    fn new_service(&self, _: Session<St>) -> Self::Future {
-        ok(DefaultPublishService { _t: PhantomData })
-    }
-}
-
-impl<St, Err> Service for DefaultPublishService<St, Err> {
-    type Request = Publish;
-    type Response = ();
-    type Error = Err;
-    type Future = Ready<Result<Self::Response, Self::Error>>;
-
-    fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&self, _: Publish) -> Self::Future {
-        log::warn!("Publish service is disabled");
-        ok(())
     }
 }

@@ -403,13 +403,11 @@ mod tests {
 
     #[test]
     fn test_parse_topic() {
-        assert!(
-            topic!("sport/tennis/player1").matches(&Topic::from(vec![
-                Level::normal("sport"),
-                Level::normal("tennis"),
-                Level::normal("player1")
-            ]))
-        );
+        assert!(topic!("sport/tennis/player1").matches(&Topic::from(vec![
+            Level::normal("sport"),
+            Level::normal("tennis"),
+            Level::normal("player1")
+        ])));
 
         assert!(topic!("").matches(&Topic(vec![Level::Blank])));
         assert!(topic!("/finance")

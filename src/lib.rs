@@ -22,6 +22,7 @@ pub use self::error::MqttError;
 pub use self::router::Router;
 pub use self::server::MqttServer;
 pub use self::session::Session;
+pub use self::topic::Topic;
 
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
 pub const TCP_PORT: u16 = 1883;

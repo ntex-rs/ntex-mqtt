@@ -1,6 +1,7 @@
+use std::num::NonZeroU16;
+
 use bytes::Bytes;
 use bytestring::ByteString;
-use std::num::NonZeroU16;
 
 use crate::types::{packet_type, QoS};
 

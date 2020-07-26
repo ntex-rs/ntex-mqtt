@@ -7,6 +7,7 @@ use crate::types::{FixedHeader, QoS};
 use crate::utils::decode_variable_length;
 
 #[derive(Debug)]
+/// Mqtt v3.1.1 protocol codec
 pub struct Codec {
     state: DecodeState,
     max_size: u32,

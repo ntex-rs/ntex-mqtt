@@ -4,11 +4,12 @@ use std::num::NonZeroU16;
 use bytes::{Buf, Bytes};
 use bytestring::ByteString;
 
-use super::{ConnectAckFlags, ConnectFlags};
 use crate::error::DecodeError;
 use crate::types::{packet_type, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
 use crate::utils::Decode;
-use crate::v3::codec::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
+
+use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
+use super::{ConnectAckFlags, ConnectFlags};
 
 pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
@@ -179,7 +180,6 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
 mod tests {
     use super::*;
     use crate::utils::decode_variable_length;
-    use crate::v3::codec::ConnectAckReason;
 
     macro_rules! assert_decode_packet (
         ($bytes:expr, $res:expr) => {{
