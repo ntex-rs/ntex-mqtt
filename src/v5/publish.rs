@@ -116,6 +116,7 @@ impl std::fmt::Debug for Publish {
     }
 }
 
+/// Publish ack
 pub struct PublishAck {
     pub(crate) reason_code: codec::PublishAckReason,
     pub(crate) properties: codec::UserProperties,
@@ -123,6 +124,16 @@ pub struct PublishAck {
 }
 
 impl PublishAck {
+    /// Create new `PublishAck` instance
+    pub fn new(code: codec::PublishAckReason) -> Self {
+        PublishAck {
+            reason_code: code,
+            properties: codec::UserProperties::default(),
+            reason_string: None,
+        }
+    }
+
+    /// Update user properties
     pub fn properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::UserProperties),
@@ -131,6 +142,7 @@ impl PublishAck {
         self
     }
 
+    /// Set ack reason string
     pub fn reason(mut self, reason: ByteString) -> Self {
         self.reason_string = Some(reason);
         self

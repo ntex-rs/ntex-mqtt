@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -159,6 +160,7 @@ where
             + From<P::Error>
             + From<P::InitError>
             + fmt::Debug,
+        v5::PublishAck: TryFrom<P::Error, Error = P::Error>,
     {
         MqttServer {
             v3: self.v3,

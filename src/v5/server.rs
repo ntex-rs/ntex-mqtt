@@ -1,9 +1,10 @@
+use std::convert::TryFrom;
 use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 
-use futures::{SinkExt, StreamExt, TryFutureExt};
+use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::Delay;
@@ -85,6 +86,7 @@ where
         + From<P::Error>
         + From<P::InitError>
         + fmt::Debug,
+    PublishAck: TryFrom<P::Error, Error = P::Error>,
 {
     /// Set handshake timeout in millis.
     ///
@@ -166,7 +168,8 @@ where
         F: IntoServiceFactory<Srv> + 'static,
         Srv: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck>
             + 'static,
-        C::Error: From<Srv::Error> + From<Srv::InitError> + fmt::Debug,
+        C::Error: From<Srv::InitError> + From<Srv::Error>,
+        PublishAck: TryFrom<Srv::Error, Error = Srv::Error>,
     {
         MqttServer {
             connect: self.connect,
@@ -187,10 +190,14 @@ where
     ) -> impl ServiceFactory<Config = (), Request = Io, Response = (), Error = MqttError<C::Error>>
     {
         let connect = self.connect;
-        let publish = self
-            .publish
-            .map_err(|e| MqttError::Service(e.into()))
-            .map_init_err(|e| MqttError::Service(e.into()));
+        let publish = ntex::apply_fn_factory(self.publish, |req, srv| {
+            srv.call(req).map(|result| match result {
+                Ok(ack) => Ok(ack),
+                Err(e) => PublishAck::try_from(e),
+            })
+        })
+        .map_err(|e| MqttError::Service(e.into()))
+        .map_init_err(|e| MqttError::Service(e.into()));
         let control = self
             .control
             .map_err(|e| MqttError::Service(e.into()))
@@ -225,11 +232,14 @@ where
         InitError = C::InitError,
     > {
         let connect = self.connect;
-        let publish = self
-            .publish
-            .into_factory()
-            .map_err(|e| MqttError::Service(e.into()))
-            .map_init_err(|e| MqttError::Service(e.into()));
+        let publish = ntex::apply_fn_factory(self.publish, |req, srv| {
+            srv.call(req).map(|result| match result {
+                Ok(ack) => Ok(ack),
+                Err(e) => PublishAck::try_from(e),
+            })
+        })
+        .map_err(|e| MqttError::Service(e.into()))
+        .map_init_err(|e| MqttError::Service(e.into()));
         let control = self
             .control
             .map_err(|e| MqttError::Service(e.into()))
