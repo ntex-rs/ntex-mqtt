@@ -1,5 +1,13 @@
 # Changes
 
+## [0.2.0] - 2020-07-28
+
+* Fix v5 server constraints
+
+* Add v3::Connect::service_unavailable()
+
+* Refactor Topics matching
+
 ## [0.2.0-beta.2] - 2020-07-22
 
 * Add Publish::packet_mut() method
