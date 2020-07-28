@@ -124,6 +124,8 @@ impl Encoder for Codec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use bytestring::ByteString;
 
     #[test]
     fn test_max_size() {
@@ -132,5 +134,31 @@ mod tests {
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
         assert_eq!(codec.decode(&mut buf), Err(DecodeError::MaxSizeExceeded));
+    }
+
+    #[test]
+    fn test_packet() {
+        let mut codec = Codec::new();
+
+        let mut buf = BytesMut::new();
+
+        let pkt = Publish {
+            dup: false,
+            retain: false,
+            qos: QoS::AtMostOnce,
+            topic: ByteString::from_static("/test"),
+            packet_id: None,
+            payload: Bytes::from(Vec::from("a".repeat(260 * 1024))),
+        };
+        codec
+            .encode(Packet::Publish(pkt.clone()), &mut buf)
+            .unwrap();
+
+        let pkt2 = if let Packet::Publish(v) = codec.decode(&mut buf).unwrap().unwrap() {
+            v
+        } else {
+            panic!()
+        };
+        assert_eq!(pkt, pkt2);
     }
 }
