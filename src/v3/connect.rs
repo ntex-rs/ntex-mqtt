@@ -1,5 +1,4 @@
 use std::fmt;
-use std::ops::Deref;
 use std::time::Duration;
 
 use ntex::channel::mpsc;

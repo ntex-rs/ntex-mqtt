@@ -84,9 +84,6 @@ where
     Cn: ServiceFactory<Config = Session<St>, Request = ControlPacket, Response = ControlResult>
         + 'static,
     P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
-    P::Error: fmt::Debug,
-    C::Error: From<Cn::Error> + From<Cn::InitError> + From<P::InitError> + fmt::Debug,
-    PublishAck: TryFrom<P::Error, Error = C::Error>,
 {
     /// Set handshake timeout in millis.
     ///
@@ -166,10 +163,10 @@ where
     pub fn publish<F, Srv>(self, publish: F) -> MqttServer<Io, St, C, Cn, Srv>
     where
         F: IntoServiceFactory<Srv> + 'static,
+        C::Error: From<Srv::InitError>,
         Srv: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck>
             + 'static,
         Srv::Error: fmt::Debug,
-        C::Error: From<Srv::InitError> + From<Srv::Error>,
         PublishAck: TryFrom<Srv::Error, Error = C::Error>,
     {
         MqttServer {
@@ -184,7 +181,21 @@ where
             _t: PhantomData,
         }
     }
+}
 
+impl<Io, St, C, Cn, P> MqttServer<Io, St, C, Cn, P>
+where
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    St: 'static,
+    C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
+        + 'static,
+    C::Error: From<Cn::Error> + From<Cn::InitError> + From<P::InitError> + fmt::Debug,
+    Cn: ServiceFactory<Config = Session<St>, Request = ControlPacket, Response = ControlResult>
+        + 'static,
+    P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
+    P::Error: fmt::Debug,
+    PublishAck: TryFrom<P::Error, Error = C::Error>,
+{
     /// Set service to handle publish packets and create mqtt server factory
     pub fn finish(
         self,
