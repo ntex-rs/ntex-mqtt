@@ -104,14 +104,6 @@ impl<Io> Connect<Io> {
     }
 }
 
-impl<Io> Deref for Connect<Io> {
-    type Target = mqtt::Connect;
-
-    fn deref(&self) -> &Self::Target {
-        &self.connect
-    }
-}
-
 impl<T> fmt::Debug for Connect<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.connect.fmt(f)
