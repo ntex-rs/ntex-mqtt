@@ -36,6 +36,14 @@ impl<Io> Connect<Io> {
         }
     }
 
+    pub fn packet(&self) -> &codec::Connect {
+        &self.connect
+    }
+
+    pub fn packet_mut(&mut self) -> &mut codec::Connect {
+        &mut self.connect
+    }
+
     #[inline]
     pub fn io(&mut self) -> &mut Framed<Io, codec::Codec> {
         self.io.io()
@@ -76,14 +84,6 @@ impl<Io> Connect<Io> {
             inflight: self.inflight,
             packet,
         }
-    }
-}
-
-impl<Io> Deref for Connect<Io> {
-    type Target = codec::Connect;
-
-    fn deref(&self) -> &Self::Target {
-        &self.connect
     }
 }
 

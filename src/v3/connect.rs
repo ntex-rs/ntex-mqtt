@@ -34,6 +34,14 @@ impl<Io> Connect<Io> {
         }
     }
 
+    pub fn packet(&self) -> &mqtt::Connect {
+        &self.connect
+    }
+
+    pub fn packet_mut(&mut self) -> &mut mqtt::Connect {
+        &mut self.connect
+    }
+
     #[inline]
     pub fn io(&mut self) -> &mut Framed<Io, mqtt::Codec> {
         self.io.io()
@@ -93,14 +101,6 @@ impl<Io> Connect<Io> {
             keep_alive: Duration::from_secs(5),
             inflight: 15,
         }
-    }
-}
-
-impl<Io> Deref for Connect<Io> {
-    type Target = mqtt::Connect;
-
-    fn deref(&self) -> &Self::Target {
-        &self.connect
     }
 }
 
