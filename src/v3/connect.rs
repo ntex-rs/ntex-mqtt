@@ -34,6 +34,14 @@ impl<Io> Connect<Io> {
         }
     }
 
+    pub fn packet(&self) -> &mqtt::Connect {
+        &self.connect
+    }
+
+    pub fn packet_mut(&mut self) -> &mut mqtt::Connect {
+        &mut self.connect
+    }
+
     #[inline]
     pub fn io(&mut self) -> &mut Framed<Io, mqtt::Codec> {
         self.io.io()
