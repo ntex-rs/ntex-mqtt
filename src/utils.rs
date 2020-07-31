@@ -2,7 +2,6 @@ use std::convert::TryFrom;
 use std::io::Cursor;
 use std::num::{NonZeroU16, NonZeroU32};
 
-use bytes::buf::ext::{BufExt, Take};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 
@@ -56,32 +55,16 @@ macro_rules! prim_enum {
     };
 }
 
-pub(crate) trait ByteBuf: Buf {
-    fn inner_mut(&mut self) -> &mut Bytes;
-}
-
 pub(crate) trait Decode: Sized {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError>;
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError>;
 }
 
 pub(super) trait Property {
-    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), DecodeError>;
-}
-
-impl ByteBuf for Bytes {
-    fn inner_mut(&mut self) -> &mut Bytes {
-        self
-    }
-}
-
-impl ByteBuf for Take<&mut Bytes> {
-    fn inner_mut(&mut self) -> &mut Bytes {
-        self.get_mut()
-    }
+    fn read_value(&mut self, src: &mut Bytes) -> Result<(), DecodeError>;
 }
 
 impl<T: Decode> Property for Option<T> {
-    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), DecodeError> {
+    fn read_value(&mut self, src: &mut Bytes) -> Result<(), DecodeError> {
         ensure!(self.is_none(), DecodeError::MalformedPacket); // property is set twice while not allowed
         *self = Some(T::decode(src)?);
         Ok(())
@@ -89,14 +72,14 @@ impl<T: Decode> Property for Option<T> {
 }
 
 impl<T: Decode> Property for Vec<T> {
-    fn read_value<B: ByteBuf>(&mut self, src: &mut B) -> Result<(), DecodeError> {
+    fn read_value(&mut self, src: &mut Bytes) -> Result<(), DecodeError> {
         self.push(T::decode(src)?);
         Ok(())
     }
 }
 
 impl Decode for bool {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         ensure!(src.has_remaining(), DecodeError::InvalidLength); // expected more data within the field
         let v = src.get_u8();
         ensure!(v <= 0x1, DecodeError::MalformedPacket); // value is invalid
@@ -105,14 +88,14 @@ impl Decode for bool {
 }
 
 impl Decode for u16 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
         Ok(src.get_u16())
     }
 }
 
 impl Decode for u32 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         ensure!(src.remaining() >= 4, DecodeError::InvalidLength); // expected more data within the field
         let val = src.get_u32();
         Ok(val)
@@ -120,41 +103,41 @@ impl Decode for u32 {
 }
 
 impl Decode for NonZeroU32 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let val = NonZeroU32::new(u32::decode(src)?).ok_or(DecodeError::MalformedPacket)?;
         Ok(val)
     }
 }
 
 impl Decode for NonZeroU16 {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         Ok(NonZeroU16::new(u16::decode(src)?).ok_or(DecodeError::MalformedPacket)?)
     }
 }
 
 impl Decode for Bytes {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let len = u16::decode(src)? as usize;
         ensure!(src.remaining() >= len, DecodeError::InvalidLength);
-        Ok(src.inner_mut().split_to(len))
+        Ok(src.split_to(len))
     }
 }
 
 impl Decode for ByteString {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let bytes = Bytes::decode(src)?;
         Ok(ByteString::try_from(bytes)?)
     }
 }
 
-pub(crate) fn take_properties(src: &mut Bytes) -> Result<Take<&mut Bytes>, DecodeError> {
+pub(crate) fn take_properties(src: &mut Bytes) -> Result<Bytes, DecodeError> {
     let prop_len = decode_variable_length_cursor(src)?;
     ensure!(
         src.remaining() >= prop_len as usize,
         DecodeError::InvalidLength
     );
 
-    Ok(src.take(prop_len as usize))
+    Ok(src.split_to(prop_len as usize))
 }
 
 pub(crate) fn decode_variable_length(src: &[u8]) -> Result<Option<(u32, usize)>, DecodeError> {

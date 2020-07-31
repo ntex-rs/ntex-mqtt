@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.1] - 2020-07-31
+
+* Fix v5 decoding for properties going beyond properties boundary
+
 ## [0.2.0] - 2020-07-28
 
 * Fix v5 server constraints

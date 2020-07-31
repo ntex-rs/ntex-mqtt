@@ -4,7 +4,7 @@ use bytestring::ByteString;
 use super::{packet::*, UserProperty};
 use crate::error::DecodeError;
 use crate::types::packet_type;
-use crate::utils::{ByteBuf, Decode};
+use crate::utils::Decode;
 
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
@@ -30,7 +30,7 @@ pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, De
 }
 
 impl Decode for UserProperty {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let key = ByteString::decode(src)?;
         let val = ByteString::decode(src)?;
         Ok((key, val))
