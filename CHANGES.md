@@ -1,6 +1,6 @@
 # Changes
 
-## [0.2.1] - 2020-07-31
+## [0.2.1] - 2020-08-03
 
 * Fix v5 decoding for properties going beyond properties boundary
 
