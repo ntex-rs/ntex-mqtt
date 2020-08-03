@@ -119,7 +119,6 @@ impl Encoder for Codec {
         }
         dst.reserve(content_size + 5);
         item.encode(dst, content_size as u32)?; // safe: max_size <= u32 max value
-
         Ok(())
     }
 }

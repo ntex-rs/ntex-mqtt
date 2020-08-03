@@ -6,7 +6,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;
-use crate::utils::{self, ByteBuf, Decode, Encode};
+use crate::utils::{self, Decode, Encode};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 
 /// Represents SUBSCRIBE packet
@@ -224,7 +224,7 @@ impl EncodeLtd for Subscribe {
 }
 
 impl Decode for SubscriptionOptions {
-    fn decode<B: ByteBuf>(src: &mut B) -> Result<Self, DecodeError> {
+    fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         ensure!(src.has_remaining(), DecodeError::InvalidLength);
         let val = src.get_u8();
         let qos = (val & 0b0000_0011).try_into()?;
