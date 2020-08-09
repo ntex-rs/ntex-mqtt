@@ -28,6 +28,7 @@ use super::{codec, Session};
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
+    max_topic_alias: u16,
 ) -> impl ServiceFactory<
     Config = Session<St>,
     Request = codec::Packet,
@@ -68,6 +69,7 @@ where
             // mqtt dispatcher
             Ok(Dispatcher::<_, _, _, E>::new(
                 cfg,
+                max_topic_alias,
                 // keep-alive connection
                 pipeline(KeepAliveService::new(timeout, time, || MqttError::KeepAliveTimeout))
                     .and_then(
@@ -97,6 +99,7 @@ pub(crate) struct Dispatcher<St, T: Service<Error = MqttError<E>>, C, E> {
     session: Session<St>,
     publish: T,
     shutdown: Cell<bool>,
+    max_topic_alias: u16,
     info: Rc<(RefCell<PublishInfo>, C, MqttSink)>,
 }
 
@@ -110,11 +113,17 @@ where
     T: Service<Request = Publish, Response = PublishAck, Error = MqttError<E>>,
     C: Service<Request = ControlPacket<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    pub(crate) fn new(session: Session<St>, publish: T, control: C) -> Self {
+    pub(crate) fn new(
+        session: Session<St>,
+        max_topic_alias: u16,
+        publish: T,
+        control: C,
+    ) -> Self {
         let sink = session.sink().clone();
         Self {
             session,
             publish,
+            max_topic_alias,
             shutdown: Cell::new(false),
             info: Rc::new((
                 RefCell::new(PublishInfo {
@@ -199,6 +208,16 @@ where
                                 }));
                             }
                         } else {
+                            if alias.get() > self.max_topic_alias {
+                                return Either::Right(Either::Right(ControlResponse {
+                                    fut: self.info.1.call(ControlPacket::ctl_error(
+                                        MqttError::MaxTopicAlias,
+                                    )),
+                                    error: true,
+                                    info: self.info.clone(),
+                                }));
+                            }
+
                             // record new alias
                             inner.aliases.insert(alias);
                         }

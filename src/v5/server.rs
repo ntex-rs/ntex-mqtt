@@ -226,7 +226,7 @@ where
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control))
+            .build(factory(publish, control, self.max_topic_alias))
             .map_err(|e| match e {
                 DispatcherError::Service(e) => e,
                 DispatcherError::Encoder(e) => MqttError::Encode(e),
@@ -264,7 +264,7 @@ where
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control))
+            .build(factory(publish, control, self.max_topic_alias))
             .map_err(|e| match e {
                 DispatcherError::Service(e) => e,
                 DispatcherError::Encoder(e) => MqttError::Encode(e),

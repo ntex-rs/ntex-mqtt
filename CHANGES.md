@@ -1,5 +1,11 @@
 # Changes
 
+## [0.2.2] - 2020-08-xx
+
+* v5: Add topic aliases support
+
+* v5: Forward publish errors to control service
+
 ## [0.2.1] - 2020-08-03
 
 * Fix v5 decoding for properties going beyond properties boundary

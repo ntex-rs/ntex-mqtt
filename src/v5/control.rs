@@ -12,7 +12,7 @@ pub enum ControlPacket<E> {
     Subscribe(Subscribe),
     Unsubscribe(Unsubscribe),
     Closed(Closed),
-    Error(MqttError<E>),
+    Error(Error<E>),
 }
 
 pub struct ControlResult {
@@ -38,7 +38,7 @@ impl<E> ControlPacket<E> {
     }
 
     pub(super) fn ctl_error(err: MqttError<E>) -> Self {
-        ControlPacket::Error(err)
+        ControlPacket::Error(Error { err })
     }
 
     pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlResult {
@@ -49,6 +49,7 @@ impl<E> ControlPacket<E> {
 pub struct Auth(codec::Auth);
 
 impl Auth {
+    /// Returns reference to dusconnect packet
     pub fn packet(&self) -> &codec::Auth {
         &self.0
     }
@@ -69,10 +70,12 @@ impl Ping {
 pub struct Disconnect(codec::Disconnect);
 
 impl Disconnect {
+    /// Returns reference to dusconnect packet
     pub fn packet(&self) -> &codec::Disconnect {
         &self.0
     }
 
+    /// Ack disconnect message
     pub fn ack(self) -> ControlResult {
         ControlResult { packet: None, disconnect: true }
     }
@@ -348,5 +351,32 @@ impl Closed {
     /// convert packet to a result
     pub fn ack(self) -> ControlResult {
         ControlResult { packet: None, disconnect: false }
+    }
+}
+
+/// Connection failed message
+pub struct Error<E> {
+    err: MqttError<E>,
+}
+
+impl<E> Error<E> {
+    /// Returns reference to mqtt error
+    pub fn err(&self) -> &MqttError<E> {
+        &self.err
+    }
+
+    #[inline]
+    /// convert packet to a result
+    pub fn ack(self, pkt: codec::Disconnect) -> ControlResult {
+        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    }
+
+    #[inline]
+    /// convert packet to a result
+    pub fn ack_default(self) -> ControlResult {
+        ControlResult {
+            packet: Some(codec::Packet::Disconnect(codec::Disconnect::default())),
+            disconnect: true,
+        }
     }
 }
