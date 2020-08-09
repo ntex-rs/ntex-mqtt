@@ -18,6 +18,7 @@ use ntex::util::order::{InOrder, InOrderError};
 use ntex::util::time::LowResTimeService;
 
 use crate::error::MqttError;
+use crate::framed::CodecError;
 
 use super::control::{self, ControlPacket, ControlResult};
 use super::publish::{Publish, PublishAck};
@@ -31,7 +32,7 @@ pub(super) fn factory<St, T, C, E>(
     max_topic_alias: u16,
 ) -> impl ServiceFactory<
     Config = Session<St>,
-    Request = codec::Packet,
+    Request = Result<codec::Packet, CodecError<codec::Codec>>,
     Response = Option<codec::Packet>,
     Error = MqttError<E>,
     InitError = MqttError<E>,
@@ -144,7 +145,7 @@ where
     C::Future: 'static,
     E: 'static,
 {
-    type Request = codec::Packet;
+    type Request = Result<codec::Packet, CodecError<codec::Codec>>;
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
     type Future = Either<
@@ -171,10 +172,11 @@ where
         Poll::Ready(())
     }
 
-    fn call(&self, packet: codec::Packet) -> Self::Future {
-        log::trace!("Dispatch packet: {:#?}", packet);
-        match packet {
-            codec::Packet::Publish(publish) => {
+    fn call(&self, request: Self::Request) -> Self::Future {
+        log::trace!("Dispatch packet: {:#?}", request);
+
+        match request {
+            Ok(codec::Packet::Publish(publish)) => {
                 let info = self.info.clone();
                 let packet_id = publish.packet_id;
 
@@ -233,36 +235,47 @@ where
                     _t: PhantomData,
                 })
             }
-            codec::Packet::PublishAck(packet) => {
+            Ok(codec::Packet::PublishAck(packet)) => {
                 self.session.sink().complete_publish_qos1(packet.packet_id);
                 Either::Right(Either::Left(ok(None)))
             }
-            codec::Packet::Auth(pkt) => Either::Right(Either::Right(ControlResponse {
+            Ok(codec::Packet::Auth(pkt)) => Either::Right(Either::Right(ControlResponse {
                 fut: self.info.1.call(ControlPacket::ctl_auth(pkt)),
                 info: self.info.clone(),
                 error: false,
             })),
-            codec::Packet::PingRequest => Either::Right(Either::Right(ControlResponse {
+            Ok(codec::Packet::PingRequest) => Either::Right(Either::Right(ControlResponse {
                 fut: self.info.1.call(ControlPacket::ctl_ping()),
                 info: self.info.clone(),
                 error: false,
             })),
-            codec::Packet::Disconnect(pkt) => Either::Right(Either::Right(ControlResponse {
-                fut: self.info.1.call(ControlPacket::ctl_disconnect(pkt)),
+            Ok(codec::Packet::Disconnect(pkt)) => {
+                Either::Right(Either::Right(ControlResponse {
+                    fut: self.info.1.call(ControlPacket::ctl_disconnect(pkt)),
+                    info: self.info.clone(),
+                    error: false,
+                }))
+            }
+            Ok(codec::Packet::Subscribe(pkt)) => {
+                Either::Right(Either::Right(ControlResponse {
+                    fut: self.info.1.call(control::Subscribe::create(pkt)),
+                    info: self.info.clone(),
+                    error: false,
+                }))
+            }
+            Ok(codec::Packet::Unsubscribe(pkt)) => {
+                Either::Right(Either::Right(ControlResponse {
+                    fut: self.info.1.call(control::Unsubscribe::create(pkt)),
+                    info: self.info.clone(),
+                    error: false,
+                }))
+            }
+            Ok(_) => Either::Right(Either::Left(ok(None))),
+            Err(e) => Either::Right(Either::Right(ControlResponse {
+                fut: self.info.1.call(ControlPacket::ctl_error(e.into())),
                 info: self.info.clone(),
                 error: false,
             })),
-            codec::Packet::Subscribe(pkt) => Either::Right(Either::Right(ControlResponse {
-                fut: self.info.1.call(control::Subscribe::create(pkt)),
-                info: self.info.clone(),
-                error: false,
-            })),
-            codec::Packet::Unsubscribe(pkt) => Either::Right(Either::Right(ControlResponse {
-                fut: self.info.1.call(control::Unsubscribe::create(pkt)),
-                info: self.info.clone(),
-                error: false,
-            })),
-            _ => Either::Right(Either::Left(ok(None))),
         }
     }
 }

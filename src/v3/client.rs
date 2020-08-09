@@ -7,14 +7,16 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::{FutureExt, LocalBoxFuture};
+use futures::future::{err, Either, FutureExt, LocalBoxFuture};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite};
-use ntex::service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{
+    apply_fn_factory, boxed, IntoService, IntoServiceFactory, Service, ServiceFactory,
+};
 
 use crate::error::{DecodeError, EncodeError, MqttError};
-use crate::framed::DispatcherError;
+use crate::framed::CodecError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::Builder;
 
@@ -174,15 +176,19 @@ where
             inflight: self.inflight,
             _t: PhantomData,
         })
-        .build(factory(
-            service.into_factory().map_err(MqttError::Service).map_init_err(MqttError::Service),
-            self.control,
+        .build(apply_fn_factory(
+            factory(
+                service
+                    .into_factory()
+                    .map_err(MqttError::Service)
+                    .map_init_err(MqttError::Service),
+                self.control,
+            ),
+            |req: Result<_, CodecError<mqtt::Codec>>, srv| match req {
+                Ok(req) => Either::Left(srv.call(req)),
+                Err(e) => Either::Right(err(MqttError::from(e))),
+            },
         ))
-        .map_err(|e| match e {
-            DispatcherError::Service(e) => e,
-            DispatcherError::Encoder(e) => MqttError::Encode(e),
-            DispatcherError::Decoder(e) => MqttError::Decode(e),
-        })
     }
 }
 

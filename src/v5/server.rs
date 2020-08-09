@@ -15,7 +15,6 @@ use ntex::service::{IntoServiceFactory, Service, ServiceFactory, Transform};
 use ntex::util::timeout::{Timeout, TimeoutError};
 
 use crate::error::MqttError;
-use crate::framed::DispatcherError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
@@ -226,12 +225,7 @@ where
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control, self.max_topic_alias))
-            .map_err(|e| match e {
-                DispatcherError::Service(e) => e,
-                DispatcherError::Encoder(e) => MqttError::Encode(e),
-                DispatcherError::Decoder(e) => MqttError::Decode(e),
-            }),
+            .build(factory(publish, control, self.max_topic_alias)),
         )
     }
 
@@ -264,12 +258,7 @@ where
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control, self.max_topic_alias))
-            .map_err(|e| match e {
-                DispatcherError::Service(e) => e,
-                DispatcherError::Encoder(e) => MqttError::Encode(e),
-                DispatcherError::Decoder(e) => MqttError::Decode(e),
-            }),
+            .build(factory(publish, control, self.max_topic_alias)),
         )
     }
 }

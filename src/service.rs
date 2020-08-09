@@ -1,9 +1,9 @@
+use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
-use std::{fmt, io};
 
 use futures::future::{select, Either, FutureExt};
 use futures::{ready, Stream};
@@ -12,7 +12,7 @@ use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 use ntex::rt::time::Delay;
 use ntex::service::{IntoService, IntoServiceFactory, Service, ServiceFactory};
 
-use super::framed::{Dispatcher, DispatcherError};
+use super::framed::{CodecError, Dispatcher};
 use super::handshake::{Handshake, HandshakeResult};
 
 type RequestItem<U> = <U as Decoder>::Item;
@@ -49,7 +49,7 @@ where
         F: IntoServiceFactory<T>,
         T: ServiceFactory<
             Config = St,
-            Request = RequestItem<Codec>,
+            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -118,7 +118,7 @@ where
         F: IntoServiceFactory<T>,
         T: ServiceFactory<
             Config = St,
-            Request = RequestItem<Codec>,
+            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -153,7 +153,7 @@ where
     <C::Service as Service>::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = RequestItem<Codec>,
+            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -168,7 +168,7 @@ where
     type Config = Cfg;
     type Request = Io;
     type Response = ();
-    type Error = DispatcherError<C::Error, Codec>;
+    type Error = C::Error;
     type InitError = C::InitError;
     type Service = FramedServiceImpl<St, C::Service, T, Io, Codec, Out>;
     type Future = FramedServiceResponse<St, C, T, Io, Codec, Out>;
@@ -195,7 +195,7 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = RequestItem<Codec>,
+        Request = Result<RequestItem<Codec>, CodecError<Codec>>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -224,7 +224,7 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = RequestItem<Codec>,
+        Request = Result<RequestItem<Codec>, CodecError<Codec>>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -266,7 +266,7 @@ where
     C::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = RequestItem<Codec>,
+            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -280,7 +280,7 @@ where
 {
     type Request = Io;
     type Response = ();
-    type Error = DispatcherError<C::Error, Codec>;
+    type Error = C::Error;
     type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
 
     #[inline]
@@ -365,7 +365,7 @@ where
         F: IntoServiceFactory<T>,
         T: ServiceFactory<
             Config = St,
-            Request = RequestItem<Codec>,
+            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -400,7 +400,7 @@ where
     <C::Service as Service>::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = RequestItem<Codec>,
+            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -415,7 +415,7 @@ where
     type Config = Cfg;
     type Request = (Framed<Io, Codec>, Option<Delay>);
     type Response = ();
-    type Error = DispatcherError<C::Error, Codec>;
+    type Error = C::Error;
     type InitError = C::InitError;
     type Service = FramedServiceImpl2<St, C::Service, T, Io, Codec, Out>;
     type Future = FramedServiceResponse2<St, C, T, Io, Codec, Out>;
@@ -442,7 +442,7 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = RequestItem<Codec>,
+        Request = Result<RequestItem<Codec>, CodecError<Codec>>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -471,7 +471,7 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = RequestItem<Codec>,
+        Request = Result<RequestItem<Codec>, CodecError<Codec>>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -516,7 +516,7 @@ where
     C::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = RequestItem<Codec>,
+            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -530,7 +530,7 @@ where
 {
     type Request = (Framed<Io, Codec>, Option<Delay>);
     type Response = ();
-    type Error = DispatcherError<C::Error, Codec>;
+    type Error = C::Error;
     type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
 
     #[inline]
@@ -573,9 +573,8 @@ where
 
                 match res {
                     Either::Left(_) => {
-                        return Err(DispatcherError::Decoder(
-                            io::Error::new(io::ErrorKind::Other, "handshake error").into(),
-                        ))
+                        log::warn!("Handshake timed out");
+                        return Ok(());
                     }
                     Either::Right(item) => item.0?,
                 }

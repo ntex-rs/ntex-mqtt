@@ -1,6 +1,8 @@
 use derive_more::From;
 use std::io;
 
+use super::framed::CodecError;
+
 /// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug)]
 pub enum MqttError<E> {
@@ -47,6 +49,24 @@ impl<E> From<EncodeError> for MqttError<E> {
 impl<E> From<io::Error> for MqttError<E> {
     fn from(err: io::Error) -> Self {
         MqttError::Io(err)
+    }
+}
+
+impl<E> From<CodecError<crate::v3::codec::Codec>> for MqttError<E> {
+    fn from(err: CodecError<crate::v3::codec::Codec>) -> Self {
+        match err {
+            CodecError::Encoder(err) => MqttError::Encode(err),
+            CodecError::Decoder(err) => MqttError::Decode(err),
+        }
+    }
+}
+
+impl<E> From<CodecError<crate::v5::codec::Codec>> for MqttError<E> {
+    fn from(err: CodecError<crate::v5::codec::Codec>) -> Self {
+        match err {
+            CodecError::Encoder(err) => MqttError::Encode(err),
+            CodecError::Decoder(err) => MqttError::Decode(err),
+        }
     }
 }
 

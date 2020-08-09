@@ -3,15 +3,16 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 
+use futures::future::{err, Either};
 use futures::{SinkExt, StreamExt, TryFutureExt};
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::Delay;
-use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{apply_fn_factory, IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
 
 use crate::error::MqttError;
-use crate::framed::DispatcherError;
+use crate::framed::CodecError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
@@ -191,12 +192,13 @@ where
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control))
-            .map_err(|e| match e {
-                DispatcherError::Service(e) => e,
-                DispatcherError::Encoder(e) => MqttError::Encode(e),
-                DispatcherError::Decoder(e) => MqttError::Decode(e),
-            }),
+            .build(apply_fn_factory(
+                factory(publish, control),
+                |req: Result<_, CodecError<mqtt::Codec>>, srv| match req {
+                    Ok(req) => Either::Left(srv.call(req)),
+                    Err(e) => Either::Right(err(MqttError::from(e))),
+                },
+            )),
         )
     }
 
@@ -229,12 +231,13 @@ where
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control))
-            .map_err(|e| match e {
-                DispatcherError::Service(e) => e,
-                DispatcherError::Encoder(e) => MqttError::Encode(e),
-                DispatcherError::Decoder(e) => MqttError::Decode(e),
-            }),
+            .build(apply_fn_factory(
+                factory(publish, control),
+                |req: Result<_, CodecError<mqtt::Codec>>, srv| match req {
+                    Ok(req) => Either::Left(srv.call(req)),
+                    Err(e) => Either::Right(err(MqttError::from(e))),
+                },
+            )),
         )
     }
 }

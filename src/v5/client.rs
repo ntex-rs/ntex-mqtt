@@ -14,7 +14,6 @@ use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
 
 use crate::error::{DecodeError, EncodeError, MqttError};
-use crate::framed::DispatcherError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::Builder;
 
@@ -164,11 +163,6 @@ where
             self.control,
             0,
         ))
-        .map_err(|e| match e {
-            DispatcherError::Service(e) => e,
-            DispatcherError::Encoder(e) => MqttError::Encode(e),
-            DispatcherError::Decoder(e) => MqttError::Decode(e),
-        })
     }
 }
 
