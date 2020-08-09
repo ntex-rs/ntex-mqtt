@@ -78,6 +78,32 @@ where
     inner: InnerDispatcher<S, T, U, Out>,
 }
 
+#[cfg(test)]
+impl<S, T, U> Dispatcher<S, T, U, mpsc::Receiver<<U as Encoder>::Item>>
+where
+    S: Service<Request = Request<U>, Response = Option<Response<U>>>,
+    S::Error: 'static,
+    S::Future: 'static,
+    T: AsyncRead + AsyncWrite + Unpin,
+    U: Decoder + Encoder,
+    <U as Encoder>::Item: 'static,
+    <U as Encoder>::Error: std::fmt::Debug,
+{
+    /// Construct new `Dispatcher` instance
+    pub fn new<F: IntoService<S>>(framed: Framed<T, U>, service: F) -> Self {
+        Dispatcher {
+            inner: InnerDispatcher {
+                framed,
+                sink: None,
+                rx: mpsc::channel().1,
+                service: service.into_service(),
+                state: FramedState::Processing,
+                disconnect_timeout: 1000,
+            },
+        }
+    }
+}
+
 impl<S, T, U, In> Dispatcher<S, T, U, In>
 where
     S: Service<Request = Request<U>, Response = Option<Response<U>>>,
@@ -380,11 +406,12 @@ mod tests {
     use futures::future::ok;
     use std::io;
 
+    use ntex::channel::mpsc;
+    use ntex::codec::{BytesCodec, Framed};
+    use ntex::rt::time::delay_for;
+    use ntex::testing::Io;
+
     use super::*;
-    use crate::channel::mpsc;
-    use crate::codec::{BytesCodec, Framed};
-    use crate::rt::time::delay_for;
-    use crate::testing::Io;
 
     #[test]
     fn test_err() {
@@ -402,7 +429,7 @@ mod tests {
         assert_eq!(format!("{}", err), "TestError");
     }
 
-    #[ntex_rt::test]
+    #[ntex::test]
     async fn test_basic() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -411,12 +438,12 @@ mod tests {
         let framed = Framed::new(server, BytesCodec);
         let disp = Dispatcher::new(
             framed,
-            crate::fn_service(|msg: BytesMut| async move {
+            ntex::fn_service(|msg: BytesMut| async move {
                 delay_for(Duration::from_millis(50)).await;
                 Ok::<_, ()>(Some(msg.freeze()))
             }),
         );
-        crate::rt::spawn(disp.map(|_| ()));
+        ntex::rt::spawn(disp.map(|_| ()));
 
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
@@ -425,7 +452,7 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    #[ntex_rt::test]
+    #[ntex::test]
     async fn test_sink() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -436,10 +463,10 @@ mod tests {
         let disp = Dispatcher::with(
             framed,
             Some(rx),
-            crate::fn_service(|msg: BytesMut| ok::<_, ()>(Some(msg.freeze()))),
+            ntex::fn_service(|msg: BytesMut| ok::<_, ()>(Some(msg.freeze()))),
         )
         .disconnect_timeout(25);
-        crate::rt::spawn(disp.map(|_| ()));
+        ntex::rt::spawn(disp.map(|_| ()));
 
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
@@ -453,7 +480,7 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    #[ntex_rt::test]
+    #[ntex::test]
     async fn test_err_in_service() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(0);
@@ -464,9 +491,9 @@ mod tests {
 
         let disp = Dispatcher::new(
             framed,
-            crate::fn_service(|_: BytesMut| async { Err::<Option<Bytes>, _>(()) }),
+            ntex::fn_service(|_: BytesMut| async { Err::<Option<Bytes>, _>(()) }),
         );
-        crate::rt::spawn(disp.map(|_| ()));
+        ntex::rt::spawn(disp.map(|_| ()));
 
         let buf = client.read_any();
         assert_eq!(buf, Bytes::from_static(b""));
