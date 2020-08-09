@@ -101,8 +101,13 @@ pub(crate) struct Dispatcher<St, T: Service<Error = MqttError<E>>, C, E> {
     session: Session<St>,
     publish: T,
     control: C,
-    inflight: Rc<RefCell<FxHashSet<NonZeroU16>>>,
     shutdown: Cell<bool>,
+    info: Rc<RefCell<PublishInfo>>,
+}
+
+struct PublishInfo {
+    inflight: FxHashSet<NonZeroU16>,
+    aliases: FxHashSet<NonZeroU16>,
 }
 
 impl<St, T, C, E> Dispatcher<St, T, C, E>
@@ -115,8 +120,11 @@ where
             session,
             publish,
             control,
-            inflight: Rc::new(RefCell::new(FxHashSet::default())),
             shutdown: Cell::new(false),
+            info: Rc::new(RefCell::new(PublishInfo {
+                inflight: FxHashSet::default(),
+                aliases: FxHashSet::default(),
+            })),
         }
     }
 }
@@ -163,18 +171,40 @@ where
         log::trace!("Dispatch packet: {:#?}", packet);
         match packet {
             codec::Packet::Publish(publish) => {
-                let inflight = self.inflight.clone();
+                let info = self.info.clone();
                 let packet_id = publish.packet_id;
 
-                // check for duplicated packet id
-                if let Some(pid) = packet_id {
-                    if !inflight.borrow_mut().insert(pid) {
-                        return Either::Right(Either::Left(err(MqttError::DuplicatedPacketId)));
+                {
+                    let mut inner = info.borrow_mut();
+
+                    // check for duplicated packet id
+                    if let Some(pid) = packet_id {
+                        if !inner.inflight.insert(pid) {
+                            return Either::Right(Either::Left(err(
+                                MqttError::DuplicatedPacketId,
+                            )));
+                        }
+                    }
+
+                    // handle topic aliases
+                    if let Some(alias) = publish.properties.topic_alias {
+                        // check existing topic
+                        if publish.topic.is_empty() {
+                            if !inner.aliases.contains(&alias) {
+                                return Either::Right(Either::Left(err(
+                                    MqttError::UnknownTopicAlias,
+                                )));
+                            }
+                        } else {
+                            // record new alias
+                            inner.aliases.insert(alias);
+                        }
                     }
                 }
+
                 Either::Left(PublishResponse {
                     packet_id,
-                    inflight,
+                    info,
                     fut: self.publish.call(Publish::new(publish)),
                     _t: PhantomData,
                 })
@@ -209,7 +239,7 @@ pin_project_lite::pin_project! {
         #[pin]
         fut: T,
         packet_id: Option<NonZeroU16>,
-        inflight: Rc<RefCell<FxHashSet<NonZeroU16>>>,
+        info: Rc<RefCell<PublishInfo>>,
         _t: PhantomData<E>,
     }
 }
@@ -225,7 +255,7 @@ where
 
         let ack = ready!(this.fut.poll(cx))?;
         if let Some(packet_id) = this.packet_id {
-            this.inflight.borrow_mut().remove(&packet_id);
+            this.info.borrow_mut().inflight.remove(&packet_id);
             let ack = codec::PublishAck {
                 packet_id: *packet_id,
                 reason_code: ack.reason_code,

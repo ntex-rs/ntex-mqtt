@@ -18,6 +18,8 @@ pub enum MqttError<E> {
     PacketIdRequired,
     /// Multiple in-flight publish packet with same package_id
     DuplicatedPacketId,
+    /// Unknown topic alias
+    UnknownTopicAlias,
     /// Keep alive timeout
     KeepAliveTimeout,
     /// Handshake timeout
