@@ -1,4 +1,5 @@
 #![allow(clippy::type_complexity, clippy::new_ret_no_self)]
+#![type_length_limit = "1154393"]
 //! MQTT Client/Server framework
 
 #[macro_use]
