@@ -7,7 +7,6 @@ use ntex::router::Path;
 use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
 
-use crate::router::Route;
 use crate::v3::codec;
 
 /// Publish message
@@ -108,18 +107,6 @@ impl Publish {
     /// Loads and parse `application/json` encoded body.
     pub fn json<T: DeserializeOwned>(&mut self) -> Result<T, JsonError> {
         serde_json::from_slice(&self.publish.payload)
-    }
-}
-
-impl Route for Publish {
-    #[inline]
-    fn publish_topic(&self) -> &Path<ByteString> {
-        &self.topic
-    }
-
-    #[inline]
-    fn publish_topic_mut(&mut self) -> &mut Path<ByteString> {
-        &mut self.topic
     }
 }
 

@@ -20,7 +20,6 @@ pub struct Publish {
     pub packet_id: Option<NonZeroU16>,
     pub topic: ByteString,
     pub payload: Bytes,
-
     pub properties: PublishProperties,
 }
 

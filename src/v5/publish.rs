@@ -6,8 +6,7 @@ use ntex::router::Path;
 use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
 
-use crate::router::Route;
-use crate::v5::codec;
+use super::codec;
 
 /// Publish message
 pub struct Publish {
@@ -95,18 +94,6 @@ impl Publish {
             properties: codec::UserProperties::default(),
             reason_string: None,
         }
-    }
-}
-
-impl Route for Publish {
-    #[inline]
-    fn publish_topic(&self) -> &Path<ByteString> {
-        &self.topic
-    }
-
-    #[inline]
-    fn publish_topic_mut(&mut self) -> &mut Path<ByteString> {
-        &mut self.topic
     }
 }
 
