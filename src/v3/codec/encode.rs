@@ -73,10 +73,7 @@ pub fn encode(
             write_variable_length(content_size, dst);
             encode_connect(connect, dst)?;
         }
-        Packet::ConnectAck {
-            session_present,
-            return_code,
-        } => {
+        Packet::ConnectAck { session_present, return_code } => {
             dst.put_u8(packet_type::CONNACK);
             write_variable_length(content_size, dst);
             let flags_byte = if *session_present { 0x01 } else { 0x00 };
@@ -97,10 +94,7 @@ pub fn encode(
                     return Err(EncodeError::MalformedPacket); // packet id must not be set
                 }
             } else {
-                publish
-                    .packet_id
-                    .ok_or(EncodeError::PacketIdRequired)?
-                    .encode(dst)?;
+                publish.packet_id.ok_or(EncodeError::PacketIdRequired)?.encode(dst)?;
             }
             dst.put(publish.payload.as_ref());
         }
@@ -125,10 +119,7 @@ pub fn encode(
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;
         }
-        Packet::Subscribe {
-            packet_id,
-            ref topic_filters,
-        } => {
+        Packet::Subscribe { packet_id, ref topic_filters } => {
             dst.put_u8(packet_type::SUBSCRIBE);
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;
@@ -137,10 +128,7 @@ pub fn encode(
                 dst.put_u8(qos.into());
             }
         }
-        Packet::SubscribeAck {
-            packet_id,
-            ref status,
-        } => {
+        Packet::SubscribeAck { packet_id, ref status } => {
             dst.put_u8(packet_type::SUBACK);
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;
@@ -153,10 +141,7 @@ pub fn encode(
                 .collect();
             dst.put_slice(&buf);
         }
-        Packet::Unsubscribe {
-            packet_id,
-            ref topic_filters,
-        } => {
+        Packet::Unsubscribe { packet_id, ref topic_filters } => {
             dst.put_u8(packet_type::UNSUBSCRIBE);
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;
@@ -218,12 +203,7 @@ fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeErr
     dst.put_u16(keep_alive);
     client_id.encode(dst)?;
 
-    if let Some(LastWill {
-        ref topic,
-        ref message,
-        ..
-    }) = *last_will
-    {
+    if let Some(LastWill { ref topic, ref message, .. }) = *last_will {
         topic.encode(dst)?;
         message.encode(dst)?;
     }
@@ -382,9 +362,7 @@ mod tests {
         );
 
         assert_encode_packet(
-            &Packet::UnsubscribeAck {
-                packet_id: packet_id(0x4321),
-            },
+            &Packet::UnsubscribeAck { packet_id: packet_id(0x4321) },
             b"\xb0\x02\x43\x21",
         );
     }

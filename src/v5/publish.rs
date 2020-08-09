@@ -16,10 +16,7 @@ pub struct Publish {
 
 impl Publish {
     pub(crate) fn new(publish: codec::Publish) -> Self {
-        Self {
-            topic: Path::new(publish.topic.clone()),
-            publish,
-        }
+        Self { topic: Path::new(publish.topic.clone()), publish }
     }
 
     #[inline]

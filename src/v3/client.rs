@@ -12,9 +12,9 @@ use futures::{Sink, SinkExt, Stream, StreamExt};
 use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::service::{boxed, IntoService, IntoServiceFactory, Service, ServiceFactory};
-use ntex::util::framed::DispatcherError;
 
 use crate::error::{DecodeError, EncodeError, MqttError};
+use crate::framed::DispatcherError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::Builder;
 
@@ -175,10 +175,7 @@ where
             _t: PhantomData,
         })
         .build(factory(
-            service
-                .into_factory()
-                .map_err(MqttError::Service)
-                .map_init_err(MqttError::Service),
+            service.into_factory().map_err(MqttError::Service).map_init_err(MqttError::Service),
             self.control,
         ))
         .map_err(|e| match e {
@@ -211,10 +208,7 @@ where
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connect
-            .as_ref()
-            .poll_ready(cx)
-            .map_err(MqttError::Service)
+        self.connect.as_ref().poll_ready(cx).map_err(MqttError::Service)
     }
 
     #[inline]
@@ -231,10 +225,7 @@ where
         // send Connect packet
         async move {
             let mut framed = req.codec(mqtt::Codec::new());
-            framed
-                .send(mqtt::Packet::Connect(packet))
-                .await
-                .map_err(MqttError::Encode)?;
+            framed.send(mqtt::Packet::Connect(packet)).await.map_err(MqttError::Encode)?;
 
             let packet = framed
                 .next()
@@ -246,10 +237,7 @@ where
                 .and_then(|res| res.map_err(MqttError::Decode))?;
 
             match packet {
-                mqtt::Packet::ConnectAck {
-                    session_present,
-                    return_code,
-                } => {
+                mqtt::Packet::ConnectAck { session_present, return_code } => {
                     let (tx, rx) = mpsc::channel();
                     let sink = MqttSink::new(tx);
                     let ack = ConnectAck {
@@ -267,10 +255,7 @@ where
                         .map_err(MqttError::Service)
                         .map(move |ack| ack.io.out(rx).state(ack.state))?)
                 }
-                p => Err(MqttError::Unexpected(
-                    p.packet_type(),
-                    "Expected CONNECT-ACK packet",
-                )),
+                p => Err(MqttError::Unexpected(p.packet_type(), "Expected CONNECT-ACK packet")),
             }
         }
         .boxed_local()

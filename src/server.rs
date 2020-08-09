@@ -147,7 +147,7 @@ where
             > + 'static,
         Cn: ServiceFactory<
                 Config = v5::Session<St>,
-                Request = v5::ControlPacket,
+                Request = v5::ControlPacket<C::Error>,
                 Response = v5::ControlResult,
             > + 'static,
         P: ServiceFactory<
@@ -266,9 +266,7 @@ where
 
     fn call(&self, req: Io) -> Self::Future {
         let delay = if self.handshake_timeout > 0 {
-            Some(delay_for(time::Duration::from_secs(
-                self.handshake_timeout as u64,
-            )))
+            Some(delay_for(time::Duration::from_secs(self.handshake_timeout as u64)))
         } else {
             None
         };
@@ -376,10 +374,7 @@ pub struct DefaultProtocolServer<Io, Err, InitErr, Codec> {
 
 impl<Io, Err, InitErr, Codec> DefaultProtocolServer<Io, Err, InitErr, Codec> {
     fn new(ver: ProtocolVersion) -> Self {
-        Self {
-            ver,
-            _t: PhantomData,
-        }
+        Self { ver, _t: PhantomData }
     }
 }
 
@@ -395,10 +390,7 @@ impl<Io, Err, InitErr, Codec> ServiceFactory
     type Future = Ready<Result<Self::Service, Self::InitError>>;
 
     fn new_service(&self, _: ()) -> Self::Future {
-        ok(DefaultProtocolServer {
-            ver: self.ver,
-            _t: PhantomData,
-        })
+        ok(DefaultProtocolServer { ver: self.ver, _t: PhantomData })
     }
 }
 

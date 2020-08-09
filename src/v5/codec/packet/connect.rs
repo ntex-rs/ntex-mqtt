@@ -89,10 +89,7 @@ impl Connect {
         ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
         let len = src.get_u16();
 
-        ensure!(
-            len == 4 && &src.bytes()[0..4] == MQTT,
-            DecodeError::InvalidProtocol
-        );
+        ensure!(len == 4 && &src.bytes()[0..4] == MQTT, DecodeError::InvalidProtocol);
         src.advance(4);
 
         let level = src.get_u8();

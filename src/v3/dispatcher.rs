@@ -59,10 +59,7 @@ where
         let (timeout, inflight) = cfg.params();
 
         // create services
-        let fut = join(
-            publish.new_service(cfg.clone()),
-            control.new_service(cfg.clone()),
-        );
+        let fut = join(publish.new_service(cfg.clone()), control.new_service(cfg.clone()));
 
         async move {
             let (publish, control) = fut.await;
@@ -71,20 +68,18 @@ where
             Ok(Dispatcher::<_, _, _, E>::new(
                 cfg,
                 // keep-alive connection
-                pipeline(KeepAliveService::new(timeout, time, || {
-                    MqttError::KeepAliveTimeout
-                }))
-                .and_then(
-                    // limit number of in-flight messages
-                    InFlightService::new(
-                        inflight,
-                        // mqtt spec requires ack ordering, so enforce response ordering
-                        InOrder::service(publish?).map_err(|e| match e {
-                            InOrderError::Service(e) => e,
-                            InOrderError::Disconnected => MqttError::Disconnected,
-                        }),
+                pipeline(KeepAliveService::new(timeout, time, || MqttError::KeepAliveTimeout))
+                    .and_then(
+                        // limit number of in-flight messages
+                        InFlightService::new(
+                            inflight,
+                            // mqtt spec requires ack ordering, so enforce response ordering
+                            InOrder::service(publish?).map_err(|e| match e {
+                                InOrderError::Service(e) => e,
+                                InOrderError::Disconnected => MqttError::Disconnected,
+                            }),
+                        ),
                     ),
-                ),
                 BufferService::new(
                     16,
                     || MqttError::Disconnected,
@@ -150,11 +145,7 @@ where
     fn poll_shutdown(&self, _: &mut Context<'_>, is_error: bool) -> Poll<()> {
         if !self.shutdown.get() {
             self.shutdown.set(true);
-            ntex::rt::spawn(
-                self.control
-                    .call(ControlPacket::closed(is_error))
-                    .map(|_| ()),
-            );
+            ntex::rt::spawn(self.control.call(ControlPacket::closed(is_error)).map(|_| ()));
         }
         Poll::Ready(())
     }
@@ -189,26 +180,22 @@ where
             codec::Packet::Disconnect => Either::Right(Either::Right(ControlResponse {
                 fut: self.control.call(ControlPacket::disconnect()),
             })),
-            codec::Packet::Subscribe {
-                packet_id,
-                topic_filters,
-            } => Either::Right(Either::Right(ControlResponse {
-                fut: self.control.call(ControlPacket::Subscribe(Subscribe::new(
-                    packet_id,
-                    topic_filters,
-                ))),
-            })),
-            codec::Packet::Unsubscribe {
-                packet_id,
-                topic_filters,
-            } => Either::Right(Either::Right(ControlResponse {
-                fut: self
-                    .control
-                    .call(ControlPacket::Unsubscribe(Unsubscribe::new(
+            codec::Packet::Subscribe { packet_id, topic_filters } => {
+                Either::Right(Either::Right(ControlResponse {
+                    fut: self.control.call(ControlPacket::Subscribe(Subscribe::new(
                         packet_id,
                         topic_filters,
                     ))),
-            })),
+                }))
+            }
+            codec::Packet::Unsubscribe { packet_id, topic_filters } => {
+                Either::Right(Either::Right(ControlResponse {
+                    fut: self.control.call(ControlPacket::Unsubscribe(Unsubscribe::new(
+                        packet_id,
+                        topic_filters,
+                    ))),
+                }))
+            }
             _ => Either::Right(Either::Left(ok(None))),
         }
     }
@@ -239,9 +226,7 @@ where
 
         if let Some(packet_id) = this.packet_id {
             this.inflight.borrow_mut().remove(&packet_id);
-            Poll::Ready(Ok(Some(codec::Packet::PublishAck {
-                packet_id: *packet_id,
-            })))
+            Poll::Ready(Ok(Some(codec::Packet::PublishAck { packet_id: *packet_id })))
         } else {
             Poll::Ready(Ok(None))
         }
@@ -272,9 +257,9 @@ where
                 status: res.codes,
                 packet_id: res.packet_id,
             }),
-            ControlResultKind::Unsubscribe(res) => Some(codec::Packet::UnsubscribeAck {
-                packet_id: res.packet_id,
-            }),
+            ControlResultKind::Unsubscribe(res) => {
+                Some(codec::Packet::UnsubscribeAck { packet_id: res.packet_id })
+            }
             ControlResultKind::Disconnect => None,
             ControlResultKind::Closed => None,
         };

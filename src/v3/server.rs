@@ -8,10 +8,10 @@ use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
-use ntex::util::framed::DispatcherError;
 use ntex::util::timeout::{Timeout, TimeoutError};
 
 use crate::error::MqttError;
+use crate::framed::DispatcherError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
@@ -346,9 +346,7 @@ where
             let sink = MqttSink::new(tx);
 
             // authenticate mqtt connection
-            let mut ack = service
-                .call(Connect::new(connect, framed, sink, inflight))
-                .await?;
+            let mut ack = service.call(Connect::new(connect, framed, sink, inflight)).await?;
 
             match ack.session {
                 Some(session) => {
@@ -394,10 +392,7 @@ where
             }
         }
         packet => {
-            log::info!(
-                "MQTT-3.1.0-1: Expected CONNECT packet, received {:?}",
-                packet
-            );
+            log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
             Err(MqttError::Unexpected(
                 packet.packet_type(),
                 "MQTT-3.1.0-1: Expected CONNECT packet",

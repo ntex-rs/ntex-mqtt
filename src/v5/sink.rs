@@ -146,13 +146,7 @@ impl<'a> PublishBuilder<'a> {
                 packet.packet_id = NonZeroU16::new(inner.idx);
 
                 log::trace!("Publish (QoS1) to {:#?}", packet);
-                if inner
-                    .sink
-                    .as_ref()
-                    .unwrap()
-                    .send(mqtt::Packet::Publish(packet))
-                    .is_err()
-                {
+                if inner.sink.as_ref().unwrap().send(mqtt::Packet::Publish(packet)).is_err() {
                     Either::Right(err(()))
                 } else {
                     Either::Left(rx.map_err(|_| ()))

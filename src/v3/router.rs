@@ -56,9 +56,7 @@ where
         Err: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
-        self.handlers.push(boxed::factory(
-            service.into_factory().map_init_err(Err::from),
-        ));
+        self.handlers.push(boxed::factory(service.into_factory().map_init_err(Err::from)));
         self
     }
 }
@@ -97,11 +95,8 @@ where
     type Future = RouterFactoryFut<Err>;
 
     fn new_service(&self, session: S) -> Self::Future {
-        let fut: Vec<_> = self
-            .handlers
-            .iter()
-            .map(|h| h.new_service(session.clone()))
-            .collect();
+        let fut: Vec<_> =
+            self.handlers.iter().map(|h| h.new_service(session.clone())).collect();
 
         RouterFactoryFut {
             router: self.router.clone(),

@@ -19,12 +19,7 @@ impl<T, St> Clone for Session<T, St> {
 
 impl<T, St> Session<T, St> {
     pub(crate) fn new(st: St, sink: T, timeout: Duration, in_flight: usize) -> Self {
-        Session(Rc::new(SessionInner {
-            st,
-            sink,
-            timeout,
-            in_flight,
-        }))
+        Session(Rc::new(SessionInner { st, sink, timeout, in_flight }))
     }
 
     pub fn sink(&self) -> &T {

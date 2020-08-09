@@ -64,10 +64,7 @@ impl Encoder for VersionCodec {
     type Error = EncodeError;
 
     fn encode(&mut self, _: Self::Item, _: &mut BytesMut) -> Result<(), EncodeError> {
-        Err(EncodeError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            "Unsupported",
-        )))
+        Err(EncodeError::Io(io::Error::new(io::ErrorKind::Other, "Unsupported")))
     }
 }
 
@@ -82,23 +79,14 @@ mod tests {
             b"\x10\x7f\x7f\x00\x04MQTT\x06\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"
                 .as_ref(),
         );
-        assert_eq!(
-            Err(DecodeError::InvalidProtocol),
-            VersionCodec.decode(&mut buf)
-        );
+        assert_eq!(Err(DecodeError::InvalidProtocol), VersionCodec.decode(&mut buf));
 
         let mut buf =
             BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x04\xc0\0\x0f\0\x02d1\0|testhub.".as_ref());
-        assert_eq!(
-            ProtocolVersion::MQTT3,
-            VersionCodec.decode(&mut buf).unwrap().unwrap()
-        );
+        assert_eq!(ProtocolVersion::MQTT3, VersionCodec.decode(&mut buf).unwrap().unwrap());
 
         let mut buf =
             BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x05\xc0\0\x0f\0\x02d1\0|testhub.".as_ref());
-        assert_eq!(
-            ProtocolVersion::MQTT5,
-            VersionCodec.decode(&mut buf).unwrap().unwrap()
-        );
+        assert_eq!(ProtocolVersion::MQTT5, VersionCodec.decode(&mut buf).unwrap().unwrap());
     }
 }

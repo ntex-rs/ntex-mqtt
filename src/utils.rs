@@ -132,10 +132,7 @@ impl Decode for ByteString {
 
 pub(crate) fn take_properties(src: &mut Bytes) -> Result<Bytes, DecodeError> {
     let prop_len = decode_variable_length_cursor(src)?;
-    ensure!(
-        src.remaining() >= prop_len as usize,
-        DecodeError::InvalidLength
-    );
+    ensure!(src.remaining() >= prop_len as usize, DecodeError::InvalidLength);
 
     Ok(src.split_to(prop_len as usize))
 }

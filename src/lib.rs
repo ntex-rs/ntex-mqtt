@@ -10,6 +10,7 @@ pub mod error;
 pub mod v3;
 pub mod v5;
 
+mod framed;
 mod handshake;
 mod server;
 mod service;

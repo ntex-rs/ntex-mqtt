@@ -12,10 +12,10 @@ use ntex::channel::mpsc;
 use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory, Transform};
-use ntex::util::framed::DispatcherError;
 use ntex::util::timeout::{Timeout, TimeoutError};
 
 use crate::error::MqttError;
+use crate::framed::DispatcherError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
@@ -81,8 +81,11 @@ where
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
         + 'static,
     C::Error: fmt::Debug,
-    Cn: ServiceFactory<Config = Session<St>, Request = ControlPacket, Response = ControlResult>
-        + 'static,
+    Cn: ServiceFactory<
+            Config = Session<St>,
+            Request = ControlPacket<C::Error>,
+            Response = ControlResult,
+        > + 'static,
     P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
 {
     /// Set handshake timeout in millis.
@@ -141,7 +144,7 @@ where
         F: IntoServiceFactory<Srv>,
         Srv: ServiceFactory<
                 Config = Session<St>,
-                Request = ControlPacket,
+                Request = ControlPacket<C::Error>,
                 Response = ControlResult,
             > + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError>,
@@ -190,8 +193,11 @@ where
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
         + 'static,
     C::Error: From<Cn::Error> + From<Cn::InitError> + From<P::InitError> + fmt::Debug,
-    Cn: ServiceFactory<Config = Session<St>, Request = ControlPacket, Response = ControlResult>
-        + 'static,
+    Cn: ServiceFactory<
+            Config = Session<St>,
+            Request = ControlPacket<C::Error>,
+            Response = ControlResult,
+        > + 'static,
     P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
     P::Error: fmt::Debug,
     PublishAck: TryFrom<P::Error, Error = C::Error>,
@@ -204,8 +210,7 @@ where
         let connect = self.connect;
         let publish = ntex::apply(
             PublishServiceTransform(PhantomData),
-            self.srv_publish
-                .map_init_err(|e| MqttError::Service(e.into())),
+            self.srv_publish.map_init_err(|e| MqttError::Service(e.into())),
         );
         let control = self
             .srv_control
@@ -243,8 +248,7 @@ where
         let connect = self.connect;
         let publish = ntex::apply(
             PublishServiceTransform(PhantomData),
-            self.srv_publish
-                .map_init_err(|e| MqttError::Service(e.into())),
+            self.srv_publish.map_init_err(|e| MqttError::Service(e.into())),
         );
         let control = self
             .srv_control
@@ -382,13 +386,7 @@ where
 
             // authenticate mqtt connection
             let mut ack = service
-                .call(Connect::new(
-                    connect,
-                    framed,
-                    sink,
-                    max_topic_alias,
-                    inflight,
-                ))
+                .call(Connect::new(connect, framed, sink, max_topic_alias, inflight))
                 .await?;
 
             match ack.session {
@@ -439,10 +437,7 @@ where
 
     /// Creates and returns a new Transform component, asynchronously
     fn new_transform(&self, service: S) -> Self::Future {
-        ok(PublishService {
-            srv: service,
-            _t: PhantomData,
-        })
+        ok(PublishService { srv: service, _t: PhantomData })
     }
 }
 
@@ -478,10 +473,7 @@ where
     }
 
     fn call(&self, req: Self::Request) -> Self::Future {
-        PublishServiceResponse {
-            fut: self.srv.call(req),
-            _t: PhantomData,
-        }
+        PublishServiceResponse { fut: self.srv.call(req), _t: PhantomData }
     }
 }
 

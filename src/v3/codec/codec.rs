@@ -22,10 +22,7 @@ enum DecodeState {
 impl Codec {
     /// Create `Codec` instance
     pub fn new() -> Self {
-        Codec {
-            state: DecodeState::FrameHeader,
-            max_size: 0,
-        }
+        Codec { state: DecodeState::FrameHeader, max_size: 0 }
     }
 
     /// Set max inbound frame size.
@@ -150,9 +147,7 @@ mod tests {
             packet_id: None,
             payload: Bytes::from(Vec::from("a".repeat(260 * 1024))),
         };
-        codec
-            .encode(Packet::Publish(pkt.clone()), &mut buf)
-            .unwrap();
+        codec.encode(Packet::Publish(pkt.clone()), &mut buf).unwrap();
 
         let pkt2 = if let Packet::Publish(v) = codec.decode(&mut buf).unwrap().unwrap() {
             v

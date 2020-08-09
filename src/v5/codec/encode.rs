@@ -290,9 +290,7 @@ mod tests {
 
     fn assert_encode_packet(packet: &Packet, expected: &[u8]) {
         let mut v = BytesMut::with_capacity(1024);
-        packet
-            .encode(&mut v, packet.encoded_size(1024) as u32)
-            .unwrap();
+        packet.encode(&mut v, packet.encoded_size(1024) as u32).unwrap();
         assert_eq!(expected.len(), v.len());
         assert_eq!(&expected[..], &v[..]);
     }

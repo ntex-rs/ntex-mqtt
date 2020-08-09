@@ -46,7 +46,7 @@ where
         > + 'static,
     C: ServiceFactory<
             Config = Session<St>,
-            Request = ControlPacket,
+            Request = ControlPacket<E>,
             Response = ControlResult,
             Error = MqttError<E>,
             InitError = MqttError<E>,
@@ -59,10 +59,7 @@ where
         let (timeout, inflight) = cfg.params();
 
         // create services
-        let fut = join(
-            publish.new_service(cfg.clone()),
-            control.new_service(cfg.clone()),
-        );
+        let fut = join(publish.new_service(cfg.clone()), control.new_service(cfg.clone()));
 
         async move {
             let (publish, control) = fut.await;
@@ -71,20 +68,18 @@ where
             Ok(Dispatcher::<_, _, _, E>::new(
                 cfg,
                 // keep-alive connection
-                pipeline(KeepAliveService::new(timeout, time, || {
-                    MqttError::KeepAliveTimeout
-                }))
-                .and_then(
-                    // limit number of in-flight messages
-                    InFlightService::new(
-                        inflight,
-                        // mqtt spec requires ack ordering, so enforce response ordering
-                        InOrder::service(publish?).map_err(|e| match e {
-                            InOrderError::Service(e) => e,
-                            InOrderError::Disconnected => MqttError::Disconnected,
-                        }),
+                pipeline(KeepAliveService::new(timeout, time, || MqttError::KeepAliveTimeout))
+                    .and_then(
+                        // limit number of in-flight messages
+                        InFlightService::new(
+                            inflight,
+                            // mqtt spec requires ack ordering, so enforce response ordering
+                            InOrder::service(publish?).map_err(|e| match e {
+                                InOrderError::Service(e) => e,
+                                InOrderError::Disconnected => MqttError::Disconnected,
+                            }),
+                        ),
                     ),
-                ),
                 BufferService::new(
                     16,
                     || MqttError::Disconnected,
@@ -113,7 +108,7 @@ struct PublishInfo {
 impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
     T: Service<Request = Publish, Response = PublishAck, Error = MqttError<E>>,
-    C: Service<Request = ControlPacket, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Request = ControlPacket<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     pub(crate) fn new(session: Session<St>, publish: T, control: C) -> Self {
         Self {
@@ -132,7 +127,7 @@ where
 impl<St, T, C, E> Service for Dispatcher<St, T, C, E>
 where
     T: Service<Request = Publish, Response = PublishAck, Error = MqttError<E>>,
-    C: Service<Request = ControlPacket, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Request = ControlPacket<E>, Response = ControlResult, Error = MqttError<E>>,
     C::Future: 'static,
     E: 'static,
 {
@@ -158,11 +153,7 @@ where
     fn poll_shutdown(&self, _: &mut Context<'_>, is_error: bool) -> Poll<()> {
         if !self.shutdown.get() {
             self.shutdown.set(true);
-            ntex::rt::spawn(
-                self.control
-                    .call(ControlPacket::closed(is_error))
-                    .map(|_| ()),
-            );
+            ntex::rt::spawn(self.control.call(ControlPacket::ctl_closed(is_error)).map(|_| ()));
         }
         Poll::Ready(())
     }
@@ -214,13 +205,13 @@ where
                 Either::Right(Either::Left(ok(None)))
             }
             codec::Packet::Auth(pkt) => Either::Right(Either::Right(ControlResponse {
-                fut: self.control.call(ControlPacket::auth(pkt)),
+                fut: self.control.call(ControlPacket::ctl_auth(pkt)),
             })),
             codec::Packet::PingRequest => Either::Right(Either::Right(ControlResponse {
-                fut: self.control.call(ControlPacket::ping()),
+                fut: self.control.call(ControlPacket::ctl_ping()),
             })),
             codec::Packet::Disconnect(pkt) => Either::Right(Either::Right(ControlResponse {
-                fut: self.control.call(ControlPacket::disconnect(pkt)),
+                fut: self.control.call(ControlPacket::ctl_disconnect(pkt)),
             })),
             codec::Packet::Subscribe(pkt) => Either::Right(Either::Right(ControlResponse {
                 fut: self.control.call(control::Subscribe::create(pkt)),

@@ -131,14 +131,11 @@ impl Topic {
             .iter()
             .position(|level| !level.is_valid())
             .or_else(|| {
-                self.0
-                    .iter()
-                    .enumerate()
-                    .position(|(pos, level)| match *level {
-                        Level::MultiWildcard => pos != self.0.len() - 1,
-                        Level::Metadata(_) => pos != 0,
-                        _ => false,
-                    })
+                self.0.iter().enumerate().position(|(pos, level)| match *level {
+                    Level::MultiWildcard => pos != self.0.len() - 1,
+                    Level::Metadata(_) => pos != 0,
+                    _ => false,
+                })
             })
             .is_none()
     }
@@ -264,13 +261,15 @@ impl FromStr for Topic {
             .map(|level| Level::from_str(level))
             .collect::<Result<Vec<_>, TopicError>>()
             .map(Topic)
-            .and_then(|topic| {
-                if topic.is_valid() {
-                    Ok(topic)
-                } else {
-                    Err(TopicError::InvalidTopic)
-                }
-            })
+            .and_then(
+                |topic| {
+                    if topic.is_valid() {
+                        Ok(topic)
+                    } else {
+                        Err(TopicError::InvalidTopic)
+                    }
+                },
+            )
     }
 }
 
@@ -452,12 +451,8 @@ mod tests {
     #[test]
     fn test_write_topic() {
         let mut v = vec![];
-        let t = vec![
-            Level::SingleWildcard,
-            Level::normal("tennis"),
-            Level::MultiWildcard,
-        ]
-        .into();
+        let t =
+            vec![Level::SingleWildcard, Level::normal("tennis"), Level::MultiWildcard].into();
 
         assert_eq!(v.write_topic(&t).unwrap(), 10);
         assert_eq!(v, b"+/tennis/#");
@@ -499,8 +494,6 @@ mod tests {
             .unwrap()
             .matches_str("$SYS/monitor/Clients"));
         assert!(Topic::from_str(&"$SYS/#").unwrap().matches_str("$SYS/"));
-        assert!(Topic::from_str("$SYS/monitor/+")
-            .unwrap()
-            .matches_str("$SYS/monitor/Clients"));
+        assert!(Topic::from_str("$SYS/monitor/+").unwrap().matches_str("$SYS/monitor/Clients"));
     }
 }

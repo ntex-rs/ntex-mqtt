@@ -8,9 +8,9 @@ use crate::utils::Decode;
 
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
-        packet_type::PUBLISH_START..=packet_type::PUBLISH_END => Ok(Packet::Publish(
-            Publish::decode(src, first_byte & 0b0000_1111)?,
-        )),
+        packet_type::PUBLISH_START..=packet_type::PUBLISH_END => {
+            Ok(Packet::Publish(Publish::decode(src, first_byte & 0b0000_1111)?))
+        }
         packet_type::PUBACK => Ok(Packet::PublishAck(PublishAck::decode(&mut src)?)),
         packet_type::PINGREQ => Ok(Packet::PingRequest),
         packet_type::PINGRESP => Ok(Packet::PingResponse),
@@ -136,9 +136,7 @@ mod tests {
             Err(DecodeError::InvalidProtocol),
         );
         assert_eq!(
-            Connect::decode(&mut Bytes::from_static(
-                b"\x00\x04MQTT\x0300000000000000000000"
-            )),
+            Connect::decode(&mut Bytes::from_static(b"\x00\x04MQTT\x0300000000000000000000")),
             Err(DecodeError::UnsupportedProtocolLevel),
         );
         assert_eq!(

@@ -60,9 +60,7 @@ where
         Err: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
-        self.handlers.push(boxed::factory(
-            service.into_factory().map_init_err(Err::from),
-        ));
+        self.handlers.push(boxed::factory(service.into_factory().map_init_err(Err::from)));
         self
     }
 }
@@ -101,11 +99,8 @@ where
     type Future = RouterFactoryFut<Err>;
 
     fn new_service(&self, session: S) -> Self::Future {
-        let fut: Vec<_> = self
-            .handlers
-            .iter()
-            .map(|h| h.new_service(session.clone()))
-            .collect();
+        let fut: Vec<_> =
+            self.handlers.iter().map(|h| h.new_service(session.clone())).collect();
 
         RouterFactoryFut {
             router: self.router.clone(),
@@ -192,9 +187,7 @@ impl<Err> Service for RouterService<Err> {
             if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
                 // save info for topic alias
                 if let Some(alias) = req.packet().properties.topic_alias {
-                    self.aliases
-                        .borrow_mut()
-                        .insert(alias, (*idx, req.topic().clone()));
+                    self.aliases.borrow_mut().insert(alias, (*idx, req.topic().clone()));
                 }
                 return self.handlers[*idx].call(req);
             }

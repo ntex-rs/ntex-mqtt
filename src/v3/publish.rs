@@ -32,11 +32,7 @@ impl Publish {
             (publish.topic.clone(), None)
         };
         let topic = Path::new(topic);
-        Self {
-            publish,
-            topic,
-            query,
-        }
+        Self { publish, topic, query }
     }
 
     #[inline]

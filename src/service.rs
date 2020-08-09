@@ -11,8 +11,8 @@ use futures::{ready, Stream};
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 use ntex::rt::time::Delay;
 use ntex::service::{IntoService, IntoServiceFactory, Service, ServiceFactory};
-use ntex::util::framed::{Dispatcher, DispatcherError};
 
+use super::framed::{Dispatcher, DispatcherError};
 use super::handshake::{Handshake, HandshakeResult};
 
 type RequestItem<U> = <U as Decoder>::Item;
@@ -40,10 +40,7 @@ where
     where
         F: IntoService<C>,
     {
-        Builder {
-            connect: connect.into_service(),
-            _t: PhantomData,
-        }
+        Builder { connect: connect.into_service(), _t: PhantomData }
     }
 
     /// Provide stream items handler service and construct service factory.
@@ -594,9 +591,7 @@ where
                 (result.framed, result.out, handler)
             };
 
-            Dispatcher::with(framed, out, handler)
-                .disconnect_timeout(timeout as u64)
-                .await
+            Dispatcher::with(framed, out, handler).disconnect_timeout(timeout as u64).await
         })
     }
 }

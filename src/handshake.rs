@@ -20,26 +20,15 @@ where
     Codec: Encoder + Decoder,
 {
     pub(crate) fn new(io: Io) -> Self {
-        Self {
-            io,
-            _t: PhantomData,
-        }
+        Self { io, _t: PhantomData }
     }
 
     pub(crate) fn with_codec(framed: Framed<Io, Codec>) -> HandshakeResult<Io, (), Codec, Out> {
-        HandshakeResult {
-            state: (),
-            out: None,
-            framed,
-        }
+        HandshakeResult { state: (), out: None, framed }
     }
 
     pub fn codec(self, codec: Codec) -> HandshakeResult<Io, (), Codec, Out> {
-        HandshakeResult {
-            state: (),
-            out: None,
-            framed: Framed::new(self.io, codec),
-        }
+        HandshakeResult { state: (), out: None, framed: Framed::new(self.io, codec) }
     }
 }
 
@@ -65,20 +54,12 @@ impl<Io, St, Codec: Encoder + Decoder, Out: Unpin> HandshakeResult<Io, St, Codec
     where
         U: Stream<Item = <Codec as Encoder>::Item> + Unpin,
     {
-        HandshakeResult {
-            state: self.state,
-            framed: self.framed,
-            out: Some(out),
-        }
+        HandshakeResult { state: self.state, framed: self.framed, out: Some(out) }
     }
 
     #[inline]
     pub fn state<S>(self, state: S) -> HandshakeResult<Io, S, Codec, Out> {
-        HandshakeResult {
-            state,
-            framed: self.framed,
-            out: self.out,
-        }
+        HandshakeResult { state, framed: self.framed, out: self.out }
     }
 }
 
@@ -155,37 +136,25 @@ mod tests {
         client.remote_buffer_cap(1024);
         let server = Framed::new(server, BytesCodec);
 
-        let mut hnd = HandshakeResult {
-            state: (),
-            out: Some(()),
-            framed: server,
-        };
+        let mut hnd = HandshakeResult { state: (), out: Some(()), framed: server };
 
         client.write(BLOB);
         let item = hnd.next().await.unwrap().unwrap();
         assert_eq!(item, BLOB);
 
-        assert!(lazy(|cx| Pin::new(&mut hnd).poll_ready(cx))
-            .await
-            .is_ready());
+        assert!(lazy(|cx| Pin::new(&mut hnd).poll_ready(cx)).await.is_ready());
 
         Pin::new(&mut hnd).start_send(BLOB).unwrap();
         assert_eq!(client.read_any(), b"".as_ref());
         assert_eq!(hnd.io().read_buf(), b"".as_ref());
         assert_eq!(hnd.io().write_buf(), &BLOB[..]);
 
-        assert!(lazy(|cx| Pin::new(&mut hnd).poll_flush(cx))
-            .await
-            .is_ready());
+        assert!(lazy(|cx| Pin::new(&mut hnd).poll_flush(cx)).await.is_ready());
         assert_eq!(client.read_any(), &BLOB[..]);
 
-        assert!(lazy(|cx| Pin::new(&mut hnd).poll_close(cx))
-            .await
-            .is_pending());
+        assert!(lazy(|cx| Pin::new(&mut hnd).poll_close(cx)).await.is_pending());
         client.close().await;
-        assert!(lazy(|cx| Pin::new(&mut hnd).poll_close(cx))
-            .await
-            .is_ready());
+        assert!(lazy(|cx| Pin::new(&mut hnd).poll_close(cx)).await.is_ready());
         assert!(client.is_closed());
     }
 }

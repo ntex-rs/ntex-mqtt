@@ -49,9 +49,7 @@ pub struct Ping;
 
 impl Ping {
     pub fn ack(self) -> ControlResult {
-        ControlResult {
-            result: ControlResultKind::Ping,
-        }
+        ControlResult { result: ControlResultKind::Ping }
     }
 }
 
@@ -59,9 +57,7 @@ pub struct Disconnect;
 
 impl Disconnect {
     pub fn ack(self) -> ControlResult {
-        ControlResult {
-            result: ControlResultKind::Disconnect,
-        }
+        ControlResult { result: ControlResultKind::Disconnect }
     }
 }
 
@@ -83,21 +79,13 @@ impl Subscribe {
         let mut codes = Vec::with_capacity(topics.len());
         (0..topics.len()).for_each(|_| codes.push(codec::SubscribeReturnCode::Failure));
 
-        Self {
-            topics,
-            codes,
-            packet_id,
-        }
+        Self { topics, codes, packet_id }
     }
 
     #[inline]
     /// returns iterator over subscription topics
     pub fn iter_mut(&mut self) -> SubscribeIter {
-        SubscribeIter {
-            subs: self as *const _ as *mut _,
-            entry: 0,
-            lt: PhantomData,
-        }
+        SubscribeIter { subs: self as *const _ as *mut _, entry: 0, lt: PhantomData }
     }
 
     #[inline]
@@ -238,8 +226,6 @@ impl Closed {
     #[inline]
     /// convert packet to a result
     pub fn ack(self) -> ControlResult {
-        ControlResult {
-            result: ControlResultKind::Closed,
-        }
+        ControlResult { result: ControlResultKind::Closed }
     }
 }
