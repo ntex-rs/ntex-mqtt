@@ -54,8 +54,8 @@ impl Auth {
         &self.0
     }
 
-    pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None, disconnect: false }
+    pub fn ack(self, response: codec::Auth) -> ControlResult {
+        ControlResult { packet: Some(codec::Packet::Auth(response)), disconnect: false }
     }
 }
 
