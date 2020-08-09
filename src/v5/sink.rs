@@ -35,8 +35,22 @@ impl MqttSink {
         })))
     }
 
-    /// Close mqtt connection
+    /// Close mqtt connection with default Disconnect message
     pub fn close(&self) {
+        if let Some(sink) = self.0.borrow_mut().sink.take() {
+            let _ = sink.send(mqtt::Packet::Disconnect(mqtt::Disconnect::default()));
+        }
+    }
+
+    /// Close mqtt connection
+    pub fn close_with_reason(&self, pkt: mqtt::Disconnect) {
+        if let Some(sink) = self.0.borrow_mut().sink.take() {
+            let _ = sink.send(mqtt::Packet::Disconnect(pkt));
+        }
+    }
+
+    /// Close mqtt connection, dont send disconnect message
+    pub(super) fn drop_sink(&self) {
         let _ = self.0.borrow_mut().sink.take();
     }
 

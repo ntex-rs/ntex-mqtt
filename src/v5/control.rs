@@ -17,6 +17,7 @@ pub enum ControlPacket<E> {
 
 pub struct ControlResult {
     pub(crate) packet: Option<codec::Packet>,
+    pub(crate) disconnect: bool,
 }
 
 impl<E> ControlPacket<E> {
@@ -36,8 +37,12 @@ impl<E> ControlPacket<E> {
         ControlPacket::Closed(Closed::new(is_error))
     }
 
+    pub(super) fn ctl_error(err: MqttError<E>) -> Self {
+        ControlPacket::Error(err)
+    }
+
     pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)) }
+        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
 }
 
@@ -49,7 +54,7 @@ impl Auth {
     }
 
     pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None }
+        ControlResult { packet: None, disconnect: false }
     }
 }
 
@@ -57,7 +62,7 @@ pub struct Ping;
 
 impl Ping {
     pub fn ack(self) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::PingResponse) }
+        ControlResult { packet: Some(codec::Packet::PingResponse), disconnect: false }
     }
 }
 
@@ -69,7 +74,7 @@ impl Disconnect {
     }
 
     pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None }
+        ControlResult { packet: None, disconnect: true }
     }
 }
 
@@ -104,7 +109,10 @@ impl Subscribe {
     #[inline]
     /// Ack Subscribe packet
     pub fn ack(self) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::SubscribeAck(self.result)) }
+        ControlResult {
+            packet: Some(codec::Packet::SubscribeAck(self.result)),
+            disconnect: false,
+        }
     }
 }
 
@@ -246,7 +254,10 @@ impl Unsubscribe {
     #[inline]
     /// convert packet to a result
     pub fn ack(self) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::UnsubscribeAck(self.result)) }
+        ControlResult {
+            packet: Some(codec::Packet::UnsubscribeAck(self.result)),
+            disconnect: false,
+        }
     }
 }
 
@@ -336,6 +347,6 @@ impl Closed {
     #[inline]
     /// convert packet to a result
     pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None }
+        ControlResult { packet: None, disconnect: false }
     }
 }
