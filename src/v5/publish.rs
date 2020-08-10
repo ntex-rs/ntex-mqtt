@@ -117,6 +117,11 @@ impl PublishAck {
         }
     }
 
+    pub fn code(mut self, code: codec::PublishAckReason) -> Self {
+        self.reason_code = code;
+        self
+    }
+    
     /// Update user properties
     pub fn properties<F>(mut self, f: F) -> Self
     where
