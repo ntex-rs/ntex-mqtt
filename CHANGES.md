@@ -8,6 +8,10 @@
 
 * Move keep-alive timeout to Framed dispatcher
 
+* Rename PublishBuilder::at_most_once/at_least_once into send_at_most_once/send_at_least_once
+
+* Replace ConnectAck::properties with ConnectAck::with
+
 ## [0.2.1] - 2020-08-03
 
 * Fix v5 decoding for properties going beyond properties boundary

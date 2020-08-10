@@ -84,7 +84,7 @@ impl Publish {
         serde_json::from_slice(&self.publish.payload)
     }
 
-    /// Successfully ack publish packet
+    /// Create acknowledgement for this packet
     pub fn ack(self) -> PublishAck {
         PublishAck {
             reason_code: codec::PublishAckReason::Success,
@@ -117,12 +117,15 @@ impl PublishAck {
         }
     }
 
-    pub fn code(mut self, code: codec::PublishAckReason) -> Self {
-        self.reason_code = code;
+    /// Set acknowledgement's Reason Code
+    #[inline]
+    pub fn reason_code(mut self, reason_code: codec::PublishAckReason) -> Self {
+        self.reason_code = reason_code;
         self
     }
 
     /// Update user properties
+    #[inline]
     pub fn properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::UserProperties),
@@ -132,6 +135,7 @@ impl PublishAck {
     }
 
     /// Set ack reason string
+    #[inline]
     pub fn reason(mut self, reason: ByteString) -> Self {
         self.reason_string = Some(reason);
         self

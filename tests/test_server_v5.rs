@@ -44,7 +44,7 @@ async fn test_simple() -> std::io::Result<()> {
 
     let client = client::Client::new(ByteString::from_static("user"))
         .state(|ack: client::ConnectAck<_>| async move {
-            ack.sink().publish(ByteString::from_static("#"), Bytes::new()).at_most_once();
+            ack.sink().publish(ByteString::from_static("#"), Bytes::new()).send_at_most_once();
             ack.sink().close();
             Ok(ack.state(Client))
         })
