@@ -62,7 +62,6 @@ impl<Io> Connect<Io> {
         ConnectAck {
             io: self.io,
             sink: self.sink,
-            keep_alive: self.keep_alive,
             inflight: self.inflight,
             session: Some(st),
             packet,
@@ -79,7 +78,6 @@ impl<Io> Connect<Io> {
             io: self.io,
             sink: self.sink,
             session: None,
-            keep_alive: self.keep_alive,
             inflight: self.inflight,
             packet,
         }
@@ -96,7 +94,6 @@ impl<T> fmt::Debug for Connect<T> {
 pub struct ConnectAck<Io, St> {
     pub(crate) io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
     pub(crate) session: Option<St>,
-    pub(crate) keep_alive: Duration,
     pub(crate) inflight: usize,
     pub(crate) sink: MqttSink,
     pub(crate) packet: codec::ConnectAck,
@@ -107,8 +104,14 @@ impl<Io, St> ConnectAck<Io, St> {
     ///
     /// By default idle time-out is set to 300000 milliseconds
     pub fn idle_timeout(mut self, timeout: Duration) -> Self {
-        self.keep_alive = timeout;
         self.io.set_keepalive_timeout(timeout);
+        self
+    }
+
+    /// Allows modifications to conneck acknowledgement packet
+    #[inline]
+    pub fn with(mut self, f: impl FnOnce(&mut codec::ConnectAck)) -> Self {
+        f(&mut self.packet);
         self
     }
 
@@ -117,21 +120,6 @@ impl<Io, St> ConnectAck<Io, St> {
     /// By default in-flight count is set to 15
     pub fn in_flight(mut self, in_flight: usize) -> Self {
         self.inflight = in_flight;
-        self
-    }
-
-    /// Set if server has saved session.
-    pub fn session_present(mut self, val: bool) -> Self {
-        self.packet.session_present = val;
-        self
-    }
-
-    /// Update user properties for connect ack packet.
-    pub fn properties<F>(mut self, f: F) -> Self
-    where
-        F: FnOnce(&mut codec::UserProperties),
-    {
-        f(&mut self.packet.user_properties);
         self
     }
 }
