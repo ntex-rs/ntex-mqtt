@@ -1,7 +1,5 @@
-use std::io;
-use std::marker::PhantomData;
-use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::{io, marker::PhantomData, pin::Pin, time::Duration};
 
 use either::Either;
 use futures::Stream;
@@ -26,11 +24,16 @@ where
     }
 
     pub(crate) fn with_codec(framed: Framed<Io, Codec>) -> HandshakeResult<Io, (), Codec, Out> {
-        HandshakeResult { state: (), out: None, framed }
+        HandshakeResult { state: (), out: None, keepalive: Duration::from_secs(0), framed }
     }
 
     pub fn codec(self, codec: Codec) -> HandshakeResult<Io, (), Codec, Out> {
-        HandshakeResult { state: (), out: None, framed: Framed::new(self.io, codec) }
+        HandshakeResult {
+            state: (),
+            out: None,
+            framed: Framed::new(self.io, codec),
+            keepalive: Duration::from_secs(0),
+        }
     }
 }
 
@@ -39,6 +42,7 @@ pin_project_lite::pin_project! {
         pub(crate) state: St,
         pub(crate) out: Option<Out>,
         pub(crate) framed: Framed<Io, Codec>,
+        pub(crate) keepalive: Duration,
     }
 }
 
@@ -56,12 +60,22 @@ impl<Io, St, Codec: Encoder + Decoder, Out: Unpin> HandshakeResult<Io, St, Codec
     where
         U: Stream<Item = <Codec as Encoder>::Item> + Unpin,
     {
-        HandshakeResult { state: self.state, framed: self.framed, out: Some(out) }
+        HandshakeResult {
+            state: self.state,
+            framed: self.framed,
+            keepalive: self.keepalive,
+            out: Some(out),
+        }
     }
 
     #[inline]
     pub fn state<S>(self, state: S) -> HandshakeResult<Io, S, Codec, Out> {
-        HandshakeResult { state, framed: self.framed, out: self.out }
+        HandshakeResult { state, framed: self.framed, out: self.out, keepalive: self.keepalive }
+    }
+
+    #[inline]
+    pub fn set_keepalive_timeout(&mut self, timeout: Duration) {
+        self.keepalive = timeout;
     }
 }
 
@@ -137,7 +151,12 @@ mod tests {
         client.remote_buffer_cap(1024);
         let server = Framed::new(server, BytesCodec);
 
-        let mut hnd = HandshakeResult { state: (), out: Some(()), framed: server };
+        let mut hnd = HandshakeResult {
+            state: (),
+            out: Some(()),
+            framed: server,
+            keepalive: Duration::from_secs(0),
+        };
 
         client.write(BLOB);
         let item = hnd.next().await.unwrap().unwrap();

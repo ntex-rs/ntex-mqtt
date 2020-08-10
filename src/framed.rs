@@ -166,9 +166,9 @@ where
         }
     }
 
-    /// Set keep-alive timeout in millis.
-    pub fn keepalive_timeout(mut self, timeout: usize) -> Self {
-        self.inner.keepalive_timeout = Duration::from_millis(timeout as u64);
+    /// Set keep-alive timeout.
+    pub fn keepalive_timeout(mut self, timeout: Duration) -> Self {
+        self.inner.keepalive_timeout = timeout;
 
         let expire = RtInstant::from_std(self.inner.time.now() + self.inner.keepalive_timeout);
         self.inner.keepalive.reset(expire);

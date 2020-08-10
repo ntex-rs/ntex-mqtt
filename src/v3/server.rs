@@ -370,12 +370,7 @@ where
                         })
                         .await?;
 
-                    Ok(ack.io.out(rx).state(Session::new(
-                        session,
-                        sink,
-                        ack.keep_alive,
-                        ack.inflight,
-                    )))
+                    Ok(ack.io.out(rx).state(Session::new(session, sink, ack.inflight)))
                 }
                 None => {
                     log::trace!(

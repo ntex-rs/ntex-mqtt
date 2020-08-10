@@ -152,6 +152,7 @@ impl<Io, St> ConnectAck<Io, St> {
     /// By default idle time-out is set to 300000 milliseconds
     pub fn idle_timeout(mut self, timeout: Duration) -> Self {
         self.keep_alive = timeout;
+        self.io.set_keepalive_timeout(timeout);
         self
     }
 

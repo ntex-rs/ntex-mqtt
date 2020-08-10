@@ -338,6 +338,7 @@ where
 
             Dispatcher::with(result.framed, result.out, handler, time)
                 .max_size(max_size)
+                .keepalive_timeout(result.keepalive)
                 .disconnect_timeout(timeout as u64)
                 .await
         })
@@ -603,7 +604,7 @@ where
         let time = self.time.clone();
 
         Box::pin(async move {
-            let (framed, out, handler) = if let Some(delay) = delay {
+            let (framed, out, ka, handler) = if let Some(delay) = delay {
                 let res = select(
                     delay,
                     async {
@@ -616,7 +617,12 @@ where
                         let handler = handler.new_service(result.state).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 
-                        Ok::<_, C::Error>((result.framed, result.out, handler))
+                        Ok::<_, C::Error>((
+                            result.framed,
+                            result.out,
+                            result.keepalive,
+                            handler,
+                        ))
                     }
                     .boxed_local(),
                 )
@@ -638,11 +644,12 @@ where
 
                 let handler = handler.new_service(result.state).await?;
                 log::trace!("Connection handler is created, starting dispatcher");
-                (result.framed, result.out, handler)
+                (result.framed, result.out, result.keepalive, handler)
             };
 
             Dispatcher::with(framed, out, handler, time)
                 .max_size(max_size)
+                .keepalive_timeout(ka)
                 .disconnect_timeout(timeout as u64)
                 .await
         })

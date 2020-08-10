@@ -5,17 +5,13 @@ use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
-use std::time::Duration;
 
 use futures::future::{join, ok, Either, FutureExt, Ready};
 use futures::ready;
 use fxhash::FxHashSet;
-use ntex::service::{fn_factory_with_config, pipeline, Service, ServiceFactory};
-use ntex::util::buffer::BufferService;
-use ntex::util::inflight::InFlightService;
-use ntex::util::keepalive::KeepAliveService;
+use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::order::{InOrder, InOrderError};
-use ntex::util::time::LowResTimeService;
+use ntex::util::{buffer::BufferService, inflight::InFlightService};
 
 use crate::error::MqttError;
 use crate::framed::CodecError;
@@ -55,11 +51,8 @@ where
             InitError = MqttError<E>,
         > + 'static,
 {
-    let time = LowResTimeService::with(Duration::from_secs(1));
-
     fn_factory_with_config(move |cfg: Session<St>| {
-        let time = time.clone();
-        let (timeout, inflight) = cfg.params();
+        let inflight = cfg.max_inflight();
 
         // create services
         let fut = join(publish.new_service(cfg.clone()), control.new_service(cfg.clone()));
@@ -71,19 +64,15 @@ where
             Ok(Dispatcher::<_, _, _, E>::new(
                 cfg,
                 max_topic_alias,
-                // keep-alive connection
-                pipeline(KeepAliveService::new(timeout, time, || MqttError::KeepAliveTimeout))
-                    .and_then(
-                        // limit number of in-flight messages
-                        InFlightService::new(
-                            inflight,
-                            // mqtt spec requires ack ordering, so enforce response ordering
-                            InOrder::service(publish?).map_err(|e| match e {
-                                InOrderError::Service(e) => e,
-                                InOrderError::Disconnected => MqttError::Disconnected,
-                            }),
-                        ),
-                    ),
+                // limit number of in-flight messages
+                InFlightService::new(
+                    inflight,
+                    // mqtt spec requires ack ordering, so enforce response ordering
+                    InOrder::service(publish?).map_err(|e| match e {
+                        InOrderError::Service(e) => e,
+                        InOrderError::Disconnected => MqttError::Disconnected,
+                    }),
+                ),
                 BufferService::new(
                     16,
                     || MqttError::Disconnected,

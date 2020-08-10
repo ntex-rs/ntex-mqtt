@@ -227,6 +227,7 @@ where
         // send Connect packet
         async move {
             let mut framed = req.codec(mqtt::Codec::new());
+            framed.set_keepalive_timeout(keep_alive);
             framed.send(mqtt::Packet::Connect(packet)).await.map_err(MqttError::from)?;
 
             let packet = framed
@@ -242,14 +243,8 @@ where
                 mqtt::Packet::ConnectAck { session_present, return_code } => {
                     let (tx, rx) = mpsc::channel();
                     let sink = MqttSink::new(tx);
-                    let ack = ConnectAck {
-                        sink,
-                        session_present,
-                        return_code,
-                        keep_alive,
-                        inflight,
-                        io: framed,
-                    };
+                    let ack =
+                        ConnectAck { sink, session_present, return_code, inflight, io: framed };
                     Ok(srv
                         .as_ref()
                         .call(ack)
@@ -269,7 +264,6 @@ pub struct ConnectAck<Io> {
     sink: MqttSink,
     session_present: bool,
     return_code: mqtt::ConnectAckReason,
-    keep_alive: Duration,
     inflight: usize,
 }
 
@@ -295,10 +289,7 @@ impl<Io> ConnectAck<Io> {
     #[inline]
     /// Set connection state and create result object
     pub fn state<St>(self, state: St) -> ConnectAckResult<Io, St> {
-        ConnectAckResult {
-            io: self.io,
-            state: Session::new(state, self.sink, self.keep_alive, self.inflight),
-        }
+        ConnectAckResult { io: self.io, state: Session::new(state, self.sink, self.inflight) }
     }
 }
 
