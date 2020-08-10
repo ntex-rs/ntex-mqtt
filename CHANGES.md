@@ -1,10 +1,14 @@
 # Changes
 
-## [0.2.2] - 2020-08-xx
+## [0.3.0] - 2020-08-xx
 
 * v5: Add topic aliases support
 
 * v5: Forward publish errors to control service
+
+* Move max packet size check to Framed dispatcher
+
+* Move keep-alive timeout to Framed dispatcher
 
 ## [0.2.1] - 2020-08-03
 

@@ -1,15 +1,13 @@
-use std::fmt;
-use std::future::Future;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::rc::Rc;
 use std::task::{Context, Poll};
+use std::time::Duration;
+use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
 
 use futures::future::{select, Either, FutureExt};
 use futures::{ready, Stream};
 
 use ntex::rt::time::Delay;
 use ntex::service::{IntoService, IntoServiceFactory, Service, ServiceFactory};
+use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 
 use super::framed::{CodecError, Dispatcher};
@@ -58,7 +56,9 @@ where
         FramedServiceImpl {
             connect: self.connect,
             handler: Rc::new(service.into_factory()),
+            max_size: 0,
             disconnect_timeout: 3000,
+            time: LowResTimeService::with(Duration::from_secs(1)),
             _t: PhantomData,
         }
     }
@@ -68,6 +68,7 @@ where
 /// for building instances for framed services.
 pub(crate) struct FactoryBuilder<St, C, Io, Codec, Out> {
     connect: C,
+    max_size: usize,
     disconnect_timeout: usize,
     _t: PhantomData<(St, Io, Codec, Out)>,
 }
@@ -92,9 +93,19 @@ where
     {
         FactoryBuilder {
             connect: connect.into_factory(),
+            max_size: 0,
             disconnect_timeout: 3000,
             _t: PhantomData,
         }
+    }
+
+    /// Set max inbound frame size.
+    ///
+    /// If max size is set to `0`, size is unlimited.
+    /// By default max size is set to `0`
+    pub fn max_size(mut self, size: usize) -> Self {
+        self.max_size = size;
+        self
     }
 
     /// Set connection disconnect timeout in milliseconds.
@@ -127,7 +138,9 @@ where
         FramedService {
             connect: self.connect,
             handler: Rc::new(service.into_factory()),
+            max_size: self.max_size,
             disconnect_timeout: self.disconnect_timeout,
+            time: LowResTimeService::with(Duration::from_secs(1)),
             _t: PhantomData,
         }
     }
@@ -136,7 +149,9 @@ where
 pub(crate) struct FramedService<St, C, T, Io, Codec, Out, Cfg> {
     connect: C,
     handler: Rc<T>,
+    max_size: usize,
     disconnect_timeout: usize,
+    time: LowResTimeService,
     _t: PhantomData<(St, Io, Codec, Out, Cfg)>,
 }
 
@@ -178,7 +193,9 @@ where
         FramedServiceResponse {
             fut: self.connect.new_service(()),
             handler: self.handler.clone(),
+            max_size: self.max_size,
             disconnect_timeout: self.disconnect_timeout,
+            time: self.time.clone(),
         }
     }
 }
@@ -210,7 +227,9 @@ where
     #[pin]
     fut: C::Future,
     handler: Rc<T>,
+    max_size: usize,
     disconnect_timeout: usize,
+    time: LowResTimeService,
 }
 
 impl<St, C, T, Io, Codec, Out> Future for FramedServiceResponse<St, C, T, Io, Codec, Out>
@@ -245,7 +264,9 @@ where
         Poll::Ready(Ok(FramedServiceImpl {
             connect,
             handler: this.handler.clone(),
+            max_size: *this.max_size,
             disconnect_timeout: *this.disconnect_timeout,
+            time: this.time.clone(),
             _t: PhantomData,
         }))
     }
@@ -254,7 +275,9 @@ where
 pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec, Out> {
     connect: C,
     handler: Rc<T>,
+    max_size: usize,
     disconnect_timeout: usize,
+    time: LowResTimeService,
     _t: PhantomData<(St, Io, Codec, Out)>,
 }
 
@@ -298,8 +321,10 @@ where
         log::trace!("Start connection handshake");
 
         let handler = self.handler.clone();
+        let max_size = self.max_size;
         let timeout = self.disconnect_timeout;
         let handshake = self.connect.call(Handshake::new(req));
+        let time = self.time.clone();
 
         Box::pin(async move {
             let result = handshake.await.map_err(|e| {
@@ -311,7 +336,8 @@ where
             let handler = handler.new_service(result.state).await?;
             log::trace!("Connection handler is created, starting dispatcher");
 
-            Dispatcher::with(result.framed, result.out, handler)
+            Dispatcher::with(result.framed, result.out, handler, time)
+                .max_size(max_size)
                 .disconnect_timeout(timeout as u64)
                 .await
         })
@@ -322,6 +348,7 @@ where
 /// for building instances for framed services.
 pub(crate) struct FactoryBuilder2<St, C, Io, Codec, Out> {
     connect: C,
+    max_size: usize,
     disconnect_timeout: usize,
     _t: PhantomData<(St, Io, Codec, Out)>,
 }
@@ -346,9 +373,19 @@ where
     {
         FactoryBuilder2 {
             connect: connect.into_factory(),
+            max_size: 0,
             disconnect_timeout: 3000,
             _t: PhantomData,
         }
+    }
+
+    /// Set max inbound frame size.
+    ///
+    /// If max size is set to `0`, size is unlimited.
+    /// By default max size is set to `0`
+    pub fn max_size(mut self, size: usize) -> Self {
+        self.max_size = size;
+        self
     }
 
     /// Set connection disconnect timeout in milliseconds.
@@ -374,7 +411,9 @@ where
         FramedService2 {
             connect: self.connect,
             handler: Rc::new(service.into_factory()),
+            max_size: self.max_size,
             disconnect_timeout: self.disconnect_timeout,
+            time: LowResTimeService::with(Duration::from_secs(1)),
             _t: PhantomData,
         }
     }
@@ -383,7 +422,9 @@ where
 pub(crate) struct FramedService2<St, C, T, Io, Codec, Out, Cfg> {
     connect: C,
     handler: Rc<T>,
+    max_size: usize,
     disconnect_timeout: usize,
+    time: LowResTimeService,
     _t: PhantomData<(St, Io, Codec, Out, Cfg)>,
 }
 
@@ -425,7 +466,9 @@ where
         FramedServiceResponse2 {
             fut: self.connect.new_service(()),
             handler: self.handler.clone(),
+            max_size: self.max_size,
             disconnect_timeout: self.disconnect_timeout,
+            time: self.time.clone(),
         }
     }
 }
@@ -457,7 +500,9 @@ where
     #[pin]
     fut: C::Future,
     handler: Rc<T>,
+    max_size: usize,
     disconnect_timeout: usize,
+    time: LowResTimeService,
 }
 
 impl<St, C, T, Io, Codec, Out> Future for FramedServiceResponse2<St, C, T, Io, Codec, Out>
@@ -492,7 +537,9 @@ where
         Poll::Ready(Ok(FramedServiceImpl2 {
             connect,
             handler: this.handler.clone(),
+            max_size: *this.max_size,
             disconnect_timeout: *this.disconnect_timeout,
+            time: this.time.clone(),
             _t: PhantomData,
         }))
     }
@@ -501,7 +548,9 @@ where
 pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec, Out> {
     connect: C,
     handler: Rc<T>,
+    max_size: usize,
     disconnect_timeout: usize,
+    time: LowResTimeService,
     _t: PhantomData<(St, Io, Codec, Out)>,
 }
 
@@ -548,8 +597,10 @@ where
         log::trace!("Start connection handshake");
 
         let handler = self.handler.clone();
+        let max_size = self.max_size;
         let timeout = self.disconnect_timeout;
         let handshake = self.connect.call(Handshake::with_codec(req));
+        let time = self.time.clone();
 
         Box::pin(async move {
             let (framed, out, handler) = if let Some(delay) = delay {
@@ -590,7 +641,10 @@ where
                 (result.framed, result.out, handler)
             };
 
-            Dispatcher::with(framed, out, handler).disconnect_timeout(timeout as u64).await
+            Dispatcher::with(framed, out, handler, time)
+                .max_size(max_size)
+                .disconnect_timeout(timeout as u64)
+                .await
         })
     }
 }

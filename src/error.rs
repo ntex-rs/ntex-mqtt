@@ -25,6 +25,8 @@ pub enum MqttError<E> {
     MaxTopicAlias,
     /// Unknown topic alias
     UnknownTopicAlias,
+    /// Max packet size exceeded
+    MaxSizeExceeded,
     /// Keep alive timeout
     KeepAliveTimeout,
     /// Handshake timeout
@@ -74,6 +76,7 @@ impl<E> From<io::Error> for MqttError<E> {
 impl<E> From<CodecError<crate::v3::codec::Codec>> for MqttError<E> {
     fn from(err: CodecError<crate::v3::codec::Codec>) -> Self {
         match err {
+            CodecError::MaxSizeExceeded => MqttError::MaxSizeExceeded,
             CodecError::KeepAlive => MqttError::KeepAliveTimeout,
             CodecError::Encoder(err) => MqttError::Encode(err),
             CodecError::Decoder(err) => MqttError::Decode(err),
@@ -85,6 +88,7 @@ impl<E> From<CodecError<crate::v3::codec::Codec>> for MqttError<E> {
 impl<E> From<CodecError<crate::v5::codec::Codec>> for MqttError<E> {
     fn from(err: CodecError<crate::v5::codec::Codec>) -> Self {
         match err {
+            CodecError::MaxSizeExceeded => MqttError::MaxSizeExceeded,
             CodecError::KeepAlive => MqttError::KeepAliveTimeout,
             CodecError::Encoder(err) => MqttError::Encode(err),
             CodecError::Decoder(err) => MqttError::Decode(err),

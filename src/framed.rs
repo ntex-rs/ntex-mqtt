@@ -2,15 +2,16 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fmt, io};
 
 use either::Either;
 use futures::{ready, FutureExt, Stream};
 use log::debug;
 use ntex::channel::mpsc;
-use ntex::rt::time::{delay_for, Delay};
+use ntex::rt::time::{delay_for, delay_until, Delay, Instant as RtInstant};
 use ntex::service::{IntoService, Service};
+use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 
 type Request<U> = <U as Decoder>::Item;
@@ -18,13 +19,16 @@ type Response<U> = <U as Encoder>::Item;
 
 bitflags::bitflags! {
     struct Errors: u8 {
-        const IO     = 0b0000_0001;
-        const WRITE  = 0b0000_0100;
+        const IO         = 0b0000_0001;
+        const WRITE      = 0b0000_0010;
+        const KEEP_ALIVE = 0b0000_0100;
     }
 }
 
 /// Framed transport errors
 pub enum CodecError<U: Encoder + Decoder> {
+    /// Max packet size exceeded
+    MaxSizeExceeded,
     /// Keep alive timeout
     KeepAlive,
     /// Encoder parse error
@@ -42,6 +46,7 @@ where
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
+            CodecError::MaxSizeExceeded => write!(fmt, "CodecError::MaxSizeExceeded"),
             CodecError::KeepAlive => write!(fmt, "CodecError::KeepAlive"),
             CodecError::Encoder(ref e) => write!(fmt, "CodecError::Encoder({:?})", e),
             CodecError::Decoder(ref e) => write!(fmt, "CodecError::Decoder({:?})", e),
@@ -57,6 +62,7 @@ where
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
+            CodecError::MaxSizeExceeded => write!(fmt, "CodecError::MaxSizeExceeded"),
             CodecError::KeepAlive => write!(fmt, "CodecError::KeepAlive"),
             CodecError::Encoder(ref e) => write!(fmt, "{:?}", e),
             CodecError::Decoder(ref e) => write!(fmt, "{:?}", e),
@@ -95,9 +101,17 @@ where
 {
     /// Construct new `Dispatcher` instance
     pub fn new<F: IntoService<S>>(framed: Framed<T, U>, service: F) -> Self {
+        let time = LowResTimeService::with(Duration::from_secs(1));
+        let keepalive_timeout = Duration::from_secs(30);
+        let updated = time.now();
+        let expire = RtInstant::from_std(updated + keepalive_timeout);
+
         Dispatcher {
             inner: InnerDispatcher {
                 framed,
+                time,
+                updated,
+                keepalive_timeout,
                 sink: None,
                 rx: mpsc::channel().1,
                 service: service.into_service(),
@@ -105,6 +119,8 @@ where
                 errors: Errors::empty(),
                 state: FramedState::Processing,
                 disconnect_timeout: 1000,
+                keepalive: delay_until(expire),
+                max_size: 0,
             },
         }
     }
@@ -122,19 +138,51 @@ where
     In: Stream<Item = <U as Encoder>::Item> + Unpin,
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
-    pub fn with<F: IntoService<S>>(framed: Framed<T, U>, sink: Option<In>, service: F) -> Self {
+    pub fn with<F: IntoService<S>>(
+        framed: Framed<T, U>,
+        sink: Option<In>,
+        service: F,
+        time: LowResTimeService,
+    ) -> Self {
+        let keepalive_timeout = Duration::from_secs(30);
+        let expire = RtInstant::from_std(time.now() + keepalive_timeout);
+
         Dispatcher {
             inner: InnerDispatcher {
-                framed,
-                sink,
                 rx: mpsc::channel().1,
                 service: service.into_service(),
                 error: None,
                 errors: Errors::empty(),
                 state: FramedState::Processing,
                 disconnect_timeout: 1000,
+                updated: time.now(),
+                max_size: 0,
+                keepalive: delay_until(expire),
+                framed,
+                sink,
+                time,
+                keepalive_timeout,
             },
         }
+    }
+
+    /// Set keep-alive timeout in millis.
+    pub fn keepalive_timeout(mut self, timeout: usize) -> Self {
+        self.inner.keepalive_timeout = Duration::from_millis(timeout as u64);
+
+        let expire = RtInstant::from_std(self.inner.time.now() + self.inner.keepalive_timeout);
+        self.inner.keepalive.reset(expire);
+
+        self
+    }
+
+    /// Set max inbound frame size.
+    ///
+    /// If max size is set to `0`, size is unlimited.
+    /// By default max size is set to `0`
+    pub fn max_size(mut self, size: usize) -> Self {
+        self.inner.max_size = size;
+        self
     }
 
     /// Set connection disconnect timeout in milliseconds.
@@ -198,9 +246,14 @@ where
     state: FramedState<S>,
     framed: Framed<T, U>,
     rx: mpsc::Receiver<Result<<U as Encoder>::Item, S::Error>>,
+    max_size: usize,
+    keepalive: Delay,
+    keepalive_timeout: Duration,
     disconnect_timeout: u64,
     error: Option<CodecError<U>>,
     errors: Errors,
+    time: LowResTimeService,
+    updated: Instant,
 }
 
 impl<S, T, U, Out> InnerDispatcher<S, T, U, Out>
@@ -236,7 +289,10 @@ where
                     // read data from io
                     let mut error = false;
                     let item = match self.framed.next_item(cx) {
-                        Poll::Ready(Some(Ok(el))) => Ok(el),
+                        Poll::Ready(Some(Ok(el))) => {
+                            self.updated = self.time.now();
+                            Ok(el)
+                        }
                         Poll::Ready(Some(Err(err))) => {
                             error = true;
                             match err {
@@ -251,7 +307,15 @@ where
                                 }
                             }
                         }
-                        Poll::Pending => return PollResult::Pending,
+                        Poll::Pending => {
+                            // check frame max size
+                            if self.max_size > 0 && self.max_size < self.framed.read_buf().len()
+                            {
+                                Err(CodecError::MaxSizeExceeded)
+                            } else {
+                                return PollResult::Pending;
+                            }
+                        }
                         Poll::Ready(None) => {
                             log::trace!("Client disconnected");
                             self.errors.insert(Errors::IO);
@@ -361,6 +425,24 @@ where
     }
 
     pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
+        // keepalive timer
+        if !self.errors.contains(Errors::KEEP_ALIVE) {
+            match Pin::new(&mut self.keepalive).poll(cx) {
+                Poll::Ready(_) => {
+                    if self.keepalive.deadline() <= RtInstant::from_std(self.updated) {
+                        self.error = Some(CodecError::KeepAlive);
+                        self.errors.insert(Errors::KEEP_ALIVE);
+                    } else {
+                        let expire =
+                            RtInstant::from_std(self.time.now() + self.keepalive_timeout);
+                        self.keepalive.reset(expire);
+                        let _ = Pin::new(&mut self.keepalive).poll(cx);
+                    }
+                }
+                Poll::Pending => (),
+            }
+        }
+
         loop {
             match self.state {
                 FramedState::Processing => {
@@ -508,7 +590,9 @@ mod tests {
             ntex::fn_service(|msg: Result<BytesMut, CodecError<BytesCodec>>| {
                 ok::<_, ()>(Some(msg.unwrap().freeze()))
             }),
+            LowResTimeService::with(Duration::from_secs(1)),
         )
+        .max_size(999999)
         .disconnect_timeout(25);
         ntex::rt::spawn(disp.map(|_| ()));
 
