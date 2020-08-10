@@ -50,13 +50,7 @@ impl Auth {
                 ensure!(!src.has_remaining(), DecodeError::InvalidLength);
             }
 
-            Ok(Auth {
-                reason_code,
-                auth_method,
-                auth_data,
-                reason_string,
-                user_properties,
-            })
+            Ok(Auth { reason_code, auth_method, auth_data, reason_string, user_properties })
         } else {
             Ok(Auth {
                 reason_code: AuthReasonCode::Success,

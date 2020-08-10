@@ -124,12 +124,7 @@ impl Subscribe {
             topic_filters.push((topic, opts));
         }
 
-        Ok(Self {
-            packet_id,
-            id: sub_id,
-            user_properties,
-            topic_filters,
-        })
+        Ok(Self { packet_id, id: sub_id, user_properties, topic_filters })
     }
 }
 
@@ -141,12 +136,7 @@ impl SubscribeAck {
         for code in src.as_ref().iter().copied() {
             status.push(code.try_into()?);
         }
-        Ok(Self {
-            packet_id,
-            properties,
-            reason_string,
-            status,
-        })
+        Ok(Self { packet_id, properties, reason_string, status })
     }
 }
 
@@ -169,11 +159,7 @@ impl Unsubscribe {
             topic_filters.push(ByteString::decode(src)?);
         }
 
-        Ok(Self {
-            packet_id,
-            user_properties,
-            topic_filters,
-        })
+        Ok(Self { packet_id, user_properties, topic_filters })
     }
 }
 
@@ -185,20 +171,13 @@ impl UnsubscribeAck {
         for code in src.as_ref().iter().copied() {
             status.push(code.try_into()?);
         }
-        Ok(Self {
-            packet_id,
-            properties,
-            reason_string,
-            status,
-        })
+        Ok(Self { packet_id, properties, reason_string, status })
     }
 }
 
 impl EncodeLtd for Subscribe {
     fn encoded_size(&self, _limit: u32) -> usize {
-        let prop_len = self
-            .id
-            .map_or(0, |v| var_int_len(v.get() as usize) as usize)
+        let prop_len = self.id.map_or(0, |v| var_int_len(v.get() as usize) as usize)
             + self.user_properties.encoded_size();
         let payload_len = self
             .topic_filters
@@ -283,10 +262,7 @@ impl EncodeLtd for Unsubscribe {
         let prop_len = self.user_properties.encoded_size();
         2 + var_int_len(prop_len) as usize
             + prop_len
-            + self
-                .topic_filters
-                .iter()
-                .fold(0, |acc, filter| acc + 2 + filter.len())
+            + self.topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
     }
 
     fn encode(&self, buf: &mut BytesMut, _size: u32) -> Result<(), EncodeError> {

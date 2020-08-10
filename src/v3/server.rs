@@ -3,15 +3,16 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 
+use futures::future::{err, Either};
 use futures::{SinkExt, StreamExt, TryFutureExt};
 use ntex::channel::mpsc;
-use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::Delay;
-use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
-use ntex::util::framed::DispatcherError;
+use ntex::service::{apply_fn_factory, IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
+use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
 use crate::error::MqttError;
+use crate::framed::CodecError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
@@ -191,12 +192,13 @@ where
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control))
-            .map_err(|e| match e {
-                DispatcherError::Service(e) => e,
-                DispatcherError::Encoder(e) => MqttError::Encode(e),
-                DispatcherError::Decoder(e) => MqttError::Decode(e),
-            }),
+            .build(apply_fn_factory(
+                factory(publish, control),
+                |req: Result<_, CodecError<mqtt::Codec>>, srv| match req {
+                    Ok(req) => Either::Left(srv.call(req)),
+                    Err(e) => Either::Right(err(MqttError::from(e))),
+                },
+            )),
         )
     }
 
@@ -229,12 +231,13 @@ where
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control))
-            .map_err(|e| match e {
-                DispatcherError::Service(e) => e,
-                DispatcherError::Encoder(e) => MqttError::Encode(e),
-                DispatcherError::Decoder(e) => MqttError::Decode(e),
-            }),
+            .build(apply_fn_factory(
+                factory(publish, control),
+                |req: Result<_, CodecError<mqtt::Codec>>, srv| match req {
+                    Ok(req) => Either::Left(srv.call(req)),
+                    Err(e) => Either::Right(err(MqttError::from(e))),
+                },
+            )),
         )
     }
 }
@@ -336,7 +339,7 @@ where
         .and_then(|res| {
             res.map_err(|e| {
                 log::trace!("Error is received during mqtt handshake: {:?}", e);
-                MqttError::Decode(e)
+                MqttError::from(e)
             })
         })?;
 
@@ -346,9 +349,7 @@ where
             let sink = MqttSink::new(tx);
 
             // authenticate mqtt connection
-            let mut ack = service
-                .call(Connect::new(connect, framed, sink, inflight))
-                .await?;
+            let mut ack = service.call(Connect::new(connect, framed, sink, inflight)).await?;
 
             match ack.session {
                 Some(session) => {
@@ -367,12 +368,7 @@ where
                         })
                         .await?;
 
-                    Ok(ack.io.out(rx).state(Session::new(
-                        session,
-                        sink,
-                        ack.keep_alive,
-                        ack.inflight,
-                    )))
+                    Ok(ack.io.out(rx).state(Session::new(session, sink, ack.inflight)))
                 }
                 None => {
                     log::trace!(
@@ -394,10 +390,7 @@ where
             }
         }
         packet => {
-            log::info!(
-                "MQTT-3.1.0-1: Expected CONNECT packet, received {:?}",
-                packet
-            );
+            log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
             Err(MqttError::Unexpected(
                 packet.packet_type(),
                 "MQTT-3.1.0-1: Expected CONNECT packet",

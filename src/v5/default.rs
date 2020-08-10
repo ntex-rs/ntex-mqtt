@@ -60,7 +60,7 @@ impl<S, E> Default for DefaultControlService<S, E> {
 
 impl<S, E> ServiceFactory for DefaultControlService<S, E> {
     type Config = Session<S>;
-    type Request = ControlPacket;
+    type Request = ControlPacket<E>;
     type Response = ControlResult;
     type Error = E;
     type InitError = E;
@@ -73,7 +73,7 @@ impl<S, E> ServiceFactory for DefaultControlService<S, E> {
 }
 
 impl<S, E> Service for DefaultControlService<S, E> {
-    type Request = ControlPacket;
+    type Request = ControlPacket<E>;
     type Response = ControlResult;
     type Error = E;
     type Future = Ready<Result<Self::Response, Self::Error>>;
@@ -84,22 +84,11 @@ impl<S, E> Service for DefaultControlService<S, E> {
     }
 
     #[inline]
-    fn call(&self, pkt: ControlPacket) -> Self::Future {
-        log::warn!("MQTT Subscribe is not supported");
+    fn call(&self, pkt: Self::Request) -> Self::Future {
+        log::warn!("MQTT Control service is not configured");
 
-        ok(match pkt {
-            ControlPacket::Auth(auth) => auth.ack(),
-            ControlPacket::Ping(ping) => ping.ack(),
-            ControlPacket::Disconnect(disc) => disc.ack(),
-            ControlPacket::Subscribe(subs) => {
-                log::warn!("MQTT Subscribe is not supported");
-                subs.ack()
-            }
-            ControlPacket::Unsubscribe(unsubs) => {
-                log::warn!("MQTT Unsubscribe is not supported");
-                unsubs.ack()
-            }
-            ControlPacket::Closed(msg) => msg.ack(),
-        })
+        ok(pkt.disconnect(super::codec::Disconnect::new(
+            super::codec::DisconnectReasonCode::UnspecifiedError,
+        )))
     }
 }

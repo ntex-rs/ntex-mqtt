@@ -2,7 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use ntex::channel::mpsc;
-use ntex::codec::Framed;
+use ntex_codec::Framed;
 
 use super::{codec, sink::MqttSink};
 use crate::handshake::HandshakeResult;
@@ -108,6 +108,7 @@ impl<Io, St> ConnectAck<Io, St> {
     /// By default idle time-out is set to 300000 milliseconds
     pub fn idle_timeout(mut self, timeout: Duration) -> Self {
         self.keep_alive = timeout;
+        self.io.set_keepalive_timeout(timeout);
         self
     }
 

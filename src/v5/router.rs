@@ -1,36 +1,33 @@
+use std::cell::RefCell;
 use std::future::Future;
+use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
 use bytestring::ByteString;
 use futures::future::{join_all, JoinAll, LocalBoxFuture};
+use fxhash::FxHashMap;
 use ntex::router::{IntoPattern, Path, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 
-type Handler<S, Req, Res, E> = BoxServiceFactory<S, Req, Res, E, E>;
-type HandlerService<Req, Res, E> = BoxService<Req, Res, E>;
+use super::publish::{Publish, PublishAck};
 
-pub trait Route {
-    fn publish_topic(&self) -> &Path<ByteString>;
-
-    fn publish_topic_mut(&mut self) -> &mut Path<ByteString>;
-}
+type Handler<S, E> = BoxServiceFactory<S, Publish, PublishAck, E, E>;
+type HandlerService<E> = BoxService<Publish, PublishAck, E>;
 
 /// Router - structure that follows the builder pattern
 /// for building publish packet router instances for mqtt server.
-pub struct Router<S, Req, Res, Err> {
+pub struct Router<S, Err> {
     router: RouterBuilder<usize>,
-    handlers: Vec<Handler<S, Req, Res, Err>>,
-    default: Handler<S, Req, Res, Err>,
+    handlers: Vec<Handler<S, Err>>,
+    default: Handler<S, Err>,
 }
 
-impl<S, Req, Res, Err> Router<S, Req, Res, Err>
+impl<S, Err> Router<S, Err>
 where
     S: Clone + 'static,
-    Req: Route + 'static,
-    Res: 'static,
     Err: 'static,
 {
     /// Create mqtt application router.
@@ -41,8 +38,8 @@ where
         F: IntoServiceFactory<U>,
         U: ServiceFactory<
             Config = S,
-            Request = Req,
-            Response = Res,
+            Request = Publish,
+            Response = PublishAck,
             Error = Err,
             InitError = Err,
         >,
@@ -59,26 +56,21 @@ where
     where
         T: IntoPattern,
         F: IntoServiceFactory<U>,
-        U: ServiceFactory<Config = S, Request = Req, Response = Res, Error = Err>,
+        U: ServiceFactory<Config = S, Request = Publish, Response = PublishAck, Error = Err>,
         Err: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
-        self.handlers.push(boxed::factory(
-            service.into_factory().map_init_err(Err::from),
-        ));
+        self.handlers.push(boxed::factory(service.into_factory().map_init_err(Err::from)));
         self
     }
 }
 
-impl<S, Req, Res, Err> IntoServiceFactory<RouterFactory<S, Req, Res, Err>>
-    for Router<S, Req, Res, Err>
+impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>> for Router<S, Err>
 where
     S: Clone + 'static,
-    Req: Route + 'static,
-    Res: 'static,
     Err: 'static,
 {
-    fn into_factory(self) -> RouterFactory<S, Req, Res, Err> {
+    fn into_factory(self) -> RouterFactory<S, Err> {
         RouterFactory {
             router: Rc::new(self.router.finish()),
             handlers: self.handlers,
@@ -87,33 +79,28 @@ where
     }
 }
 
-pub struct RouterFactory<S, Req, Res, Err> {
+pub struct RouterFactory<S, Err> {
     router: Rc<ntex::router::Router<usize>>,
-    handlers: Vec<Handler<S, Req, Res, Err>>,
-    default: Handler<S, Req, Res, Err>,
+    handlers: Vec<Handler<S, Err>>,
+    default: Handler<S, Err>,
 }
 
-impl<S, Req, Res, Err> ServiceFactory for RouterFactory<S, Req, Res, Err>
+impl<S, Err> ServiceFactory for RouterFactory<S, Err>
 where
     S: Clone + 'static,
-    Req: Route + 'static,
-    Res: 'static,
     Err: 'static,
 {
     type Config = S;
-    type Request = Req;
-    type Response = Res;
+    type Request = Publish;
+    type Response = PublishAck;
     type Error = Err;
     type InitError = Err;
-    type Service = RouterService<Req, Res, Err>;
-    type Future = RouterFactoryFut<Req, Res, Err>;
+    type Service = RouterService<Err>;
+    type Future = RouterFactoryFut<Err>;
 
     fn new_service(&self, session: S) -> Self::Future {
-        let fut: Vec<_> = self
-            .handlers
-            .iter()
-            .map(|h| h.new_service(session.clone()))
-            .collect();
+        let fut: Vec<_> =
+            self.handlers.iter().map(|h| h.new_service(session.clone())).collect();
 
         RouterFactoryFut {
             router: self.router.clone(),
@@ -123,19 +110,19 @@ where
     }
 }
 
-pub struct RouterFactoryFut<Req, Res, Err> {
+pub struct RouterFactoryFut<Err> {
     router: Rc<ntex::router::Router<usize>>,
-    handlers: JoinAll<LocalBoxFuture<'static, Result<HandlerService<Req, Res, Err>, Err>>>,
+    handlers: JoinAll<LocalBoxFuture<'static, Result<HandlerService<Err>, Err>>>,
     default: Option<
         either::Either<
-            LocalBoxFuture<'static, Result<HandlerService<Req, Res, Err>, Err>>,
-            HandlerService<Req, Res, Err>,
+            LocalBoxFuture<'static, Result<HandlerService<Err>, Err>>,
+            HandlerService<Err>,
         >,
     >,
 }
 
-impl<Req, Res, Err> Future for RouterFactoryFut<Req, Res, Err> {
-    type Output = Result<RouterService<Req, Res, Err>, Err>;
+impl<Err> Future for RouterFactoryFut<Err> {
+    type Output = Result<RouterService<Err>, Err>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let res = match self.default.as_mut().unwrap() {
@@ -162,22 +149,21 @@ impl<Req, Res, Err> Future for RouterFactoryFut<Req, Res, Err> {
             handlers,
             router: self.router.clone(),
             default: self.default.take().unwrap().right().unwrap(),
+            aliases: RefCell::new(FxHashMap::default()),
         }))
     }
 }
 
-pub struct RouterService<Req, Res, Err> {
+pub struct RouterService<Err> {
     router: Rc<ntex::router::Router<usize>>,
-    handlers: Vec<BoxService<Req, Res, Err>>,
-    default: BoxService<Req, Res, Err>,
+    handlers: Vec<HandlerService<Err>>,
+    default: HandlerService<Err>,
+    aliases: RefCell<FxHashMap<NonZeroU16, (usize, Path<ByteString>)>>,
 }
 
-impl<Req, Res, Err> Service for RouterService<Req, Res, Err>
-where
-    Req: Route,
-{
-    type Request = Req;
-    type Response = Res;
+impl<Err> Service for RouterService<Err> {
+    type Request = Publish;
+    type Response = PublishAck;
     type Error = Err;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -197,10 +183,25 @@ where
     }
 
     fn call(&self, mut req: Self::Request) -> Self::Future {
-        if let Some((idx, _info)) = self.router.recognize(req.publish_topic_mut()) {
-            self.handlers[*idx].call(req)
-        } else {
-            self.default.call(req)
+        if !req.publish_topic().is_empty() {
+            if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
+                // save info for topic alias
+                if let Some(alias) = req.packet().properties.topic_alias {
+                    self.aliases.borrow_mut().insert(alias, (*idx, req.topic().clone()));
+                }
+                return self.handlers[*idx].call(req);
+            }
         }
+        // handle publish with topic alias
+        else if let Some(ref alias) = req.packet().properties.topic_alias {
+            let aliases = self.aliases.borrow();
+            if let Some(item) = aliases.get(alias) {
+                *req.topic_mut() = item.1.clone();
+                return self.handlers[item.0].call(req);
+            } else {
+                log::error!("Unknown topic alias: {:?}", alias);
+            }
+        }
+        self.default.call(req)
     }
 }

@@ -165,7 +165,6 @@ pub enum Packet {
     PingRequest,
     /// PING response
     PingResponse,
-
     /// Client is disconnecting
     Disconnect,
 }

@@ -37,18 +37,14 @@ async fn test_simple() -> std::io::Result<()> {
     env_logger::init();
 
     let srv = server::test_server(|| {
-        MqttServer::new(connect)
-            .publish(|p: Publish| ok::<_, TestError>(p.ack()))
-            .finish()
+        MqttServer::new(connect).publish(|p: Publish| ok::<_, TestError>(p.ack())).finish()
     });
 
     struct Client;
 
     let client = client::Client::new(ByteString::from_static("user"))
         .state(|ack: client::ConnectAck<_>| async move {
-            ack.sink()
-                .publish(ByteString::from_static("#"), Bytes::new())
-                .at_most_once();
+            ack.sink().publish(ByteString::from_static("#"), Bytes::new()).at_most_once();
             ack.sink().close();
             Ok(ack.state(Client))
         })

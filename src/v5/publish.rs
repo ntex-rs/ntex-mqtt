@@ -6,8 +6,7 @@ use ntex::router::Path;
 use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
 
-use crate::router::Route;
-use crate::v5::codec;
+use super::codec;
 
 /// Publish message
 pub struct Publish {
@@ -17,10 +16,7 @@ pub struct Publish {
 
 impl Publish {
     pub(crate) fn new(publish: codec::Publish) -> Self {
-        Self {
-            topic: Path::new(publish.topic.clone()),
-            publish,
-        }
+        Self { topic: Path::new(publish.topic.clone()), publish }
     }
 
     #[inline]
@@ -98,18 +94,6 @@ impl Publish {
     }
 }
 
-impl Route for Publish {
-    #[inline]
-    fn publish_topic(&self) -> &Path<ByteString> {
-        &self.topic
-    }
-
-    #[inline]
-    fn publish_topic_mut(&mut self) -> &mut Path<ByteString> {
-        &mut self.topic
-    }
-}
-
 impl std::fmt::Debug for Publish {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         self.publish.fmt(f)
@@ -131,6 +115,11 @@ impl PublishAck {
             properties: codec::UserProperties::default(),
             reason_string: None,
         }
+    }
+
+    pub fn code(mut self, code: codec::PublishAckReason) -> Self {
+        self.reason_code = code;
+        self
     }
 
     /// Update user properties

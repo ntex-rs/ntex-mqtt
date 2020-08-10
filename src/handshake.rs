@@ -1,10 +1,10 @@
-use std::marker::PhantomData;
-use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::{io, marker::PhantomData, pin::Pin, time::Duration};
 
+use either::Either;
 use futures::Stream;
 use ntex::channel::mpsc::Receiver;
-use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
+use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 
 pub struct Handshake<Io, Codec, Out = Receiver<<Codec as Encoder>::Item>>
 where
@@ -20,18 +20,11 @@ where
     Codec: Encoder + Decoder,
 {
     pub(crate) fn new(io: Io) -> Self {
-        Self {
-            io,
-            _t: PhantomData,
-        }
+        Self { io, _t: PhantomData }
     }
 
     pub(crate) fn with_codec(framed: Framed<Io, Codec>) -> HandshakeResult<Io, (), Codec, Out> {
-        HandshakeResult {
-            state: (),
-            out: None,
-            framed,
-        }
+        HandshakeResult { state: (), out: None, keepalive: Duration::from_secs(0), framed }
     }
 
     pub fn codec(self, codec: Codec) -> HandshakeResult<Io, (), Codec, Out> {
@@ -39,6 +32,7 @@ where
             state: (),
             out: None,
             framed: Framed::new(self.io, codec),
+            keepalive: Duration::from_secs(0),
         }
     }
 }
@@ -48,6 +42,7 @@ pin_project_lite::pin_project! {
         pub(crate) state: St,
         pub(crate) out: Option<Out>,
         pub(crate) framed: Framed<Io, Codec>,
+        pub(crate) keepalive: Duration,
     }
 }
 
@@ -68,17 +63,19 @@ impl<Io, St, Codec: Encoder + Decoder, Out: Unpin> HandshakeResult<Io, St, Codec
         HandshakeResult {
             state: self.state,
             framed: self.framed,
+            keepalive: self.keepalive,
             out: Some(out),
         }
     }
 
     #[inline]
     pub fn state<S>(self, state: S) -> HandshakeResult<Io, S, Codec, Out> {
-        HandshakeResult {
-            state,
-            framed: self.framed,
-            out: self.out,
-        }
+        HandshakeResult { state, framed: self.framed, out: self.out, keepalive: self.keepalive }
+    }
+
+    #[inline]
+    pub fn set_keepalive_timeout(&mut self, timeout: Duration) {
+        self.keepalive = timeout;
     }
 }
 
@@ -87,7 +84,7 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     Codec: Encoder + Decoder,
 {
-    type Item = Result<<Codec as Decoder>::Item, <Codec as Decoder>::Error>;
+    type Item = Result<<Codec as Decoder>::Item, Either<<Codec as Decoder>::Error, io::Error>>;
 
     #[inline]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -99,9 +96,8 @@ impl<Io, St, Codec, Out> futures::Sink<Codec::Item> for HandshakeResult<Io, St, 
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     Codec: Encoder + Unpin,
-    Codec::Error: From<std::io::Error>,
 {
-    type Error = Codec::Error;
+    type Error = Either<Codec::Error, io::Error>;
 
     #[inline]
     fn poll_ready(
@@ -141,8 +137,8 @@ mod tests {
     use bytes::Bytes;
     use futures::future::lazy;
     use futures::{Sink, StreamExt};
-    use ntex::codec::BytesCodec;
     use ntex::testing::Io;
+    use ntex_codec::BytesCodec;
 
     use super::*;
 
@@ -159,33 +155,26 @@ mod tests {
             state: (),
             out: Some(()),
             framed: server,
+            keepalive: Duration::from_secs(0),
         };
 
         client.write(BLOB);
         let item = hnd.next().await.unwrap().unwrap();
         assert_eq!(item, BLOB);
 
-        assert!(lazy(|cx| Pin::new(&mut hnd).poll_ready(cx))
-            .await
-            .is_ready());
+        assert!(lazy(|cx| Pin::new(&mut hnd).poll_ready(cx)).await.is_ready());
 
         Pin::new(&mut hnd).start_send(BLOB).unwrap();
         assert_eq!(client.read_any(), b"".as_ref());
         assert_eq!(hnd.io().read_buf(), b"".as_ref());
         assert_eq!(hnd.io().write_buf(), &BLOB[..]);
 
-        assert!(lazy(|cx| Pin::new(&mut hnd).poll_flush(cx))
-            .await
-            .is_ready());
+        assert!(lazy(|cx| Pin::new(&mut hnd).poll_flush(cx)).await.is_ready());
         assert_eq!(client.read_any(), &BLOB[..]);
 
-        assert!(lazy(|cx| Pin::new(&mut hnd).poll_close(cx))
-            .await
-            .is_pending());
+        assert!(lazy(|cx| Pin::new(&mut hnd).poll_close(cx)).await.is_pending());
         client.close().await;
-        assert!(lazy(|cx| Pin::new(&mut hnd).poll_close(cx))
-            .await
-            .is_ready());
+        assert!(lazy(|cx| Pin::new(&mut hnd).poll_close(cx)).await.is_ready());
         assert!(client.is_closed());
     }
 }

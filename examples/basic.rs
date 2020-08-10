@@ -28,11 +28,7 @@ async fn connect_v3<Io>(
 }
 
 async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
-    log::info!(
-        "incoming publish: {:?} -> {:?}",
-        publish.id(),
-        publish.topic()
-    );
+    log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
     Ok(())
 }
 
@@ -44,11 +40,7 @@ async fn connect_v5<Io>(
 }
 
 async fn publish_v5(publish: v5::Publish) -> Result<v5::PublishAck, ServerError> {
-    log::info!(
-        "incoming publish: {:?} -> {:?}",
-        publish.id(),
-        publish.topic()
-    );
+    log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
     Ok(publish.ack())
 }
 

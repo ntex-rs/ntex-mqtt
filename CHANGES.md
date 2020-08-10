@@ -1,5 +1,13 @@
 # Changes
 
+## [0.3.0] - 2020-08-xx
+
+* v5: Add topic aliases support
+
+* v5: Forward publish errors to control service
+
+* Move keep-alive timeout to Framed dispatcher
+
 ## [0.2.1] - 2020-08-03
 
 * Fix v5 decoding for properties going beyond properties boundary

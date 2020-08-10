@@ -3,47 +3,59 @@ use std::marker::PhantomData;
 use bytestring::ByteString;
 
 use super::codec::{self, QoS};
+use crate::error::MqttError;
 
-pub enum ControlPacket {
+pub enum ControlPacket<E> {
     Auth(Auth),
     Ping(Ping),
     Disconnect(Disconnect),
     Subscribe(Subscribe),
     Unsubscribe(Unsubscribe),
     Closed(Closed),
+    Error(Error<E>),
 }
 
 pub struct ControlResult {
     pub(crate) packet: Option<codec::Packet>,
+    pub(crate) disconnect: bool,
 }
 
-impl ControlPacket {
-    pub(crate) fn auth(pkt: codec::Auth) -> Self {
+impl<E> ControlPacket<E> {
+    pub(super) fn ctl_auth(pkt: codec::Auth) -> Self {
         ControlPacket::Auth(Auth(pkt))
     }
 
-    pub(crate) fn ping() -> Self {
+    pub(super) fn ctl_ping() -> Self {
         ControlPacket::Ping(Ping)
     }
 
-    pub(crate) fn disconnect(pkt: codec::Disconnect) -> Self {
+    pub(super) fn ctl_disconnect(pkt: codec::Disconnect) -> Self {
         ControlPacket::Disconnect(Disconnect(pkt))
     }
 
-    pub(crate) fn closed(is_error: bool) -> Self {
+    pub(super) fn ctl_closed(is_error: bool) -> Self {
         ControlPacket::Closed(Closed::new(is_error))
+    }
+
+    pub(super) fn ctl_error(err: MqttError<E>) -> Self {
+        ControlPacket::Error(Error { err })
+    }
+
+    pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlResult {
+        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
 }
 
 pub struct Auth(codec::Auth);
 
 impl Auth {
+    /// Returns reference to dusconnect packet
     pub fn packet(&self) -> &codec::Auth {
         &self.0
     }
 
-    pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None }
+    pub fn ack(self, response: codec::Auth) -> ControlResult {
+        ControlResult { packet: Some(codec::Packet::Auth(response)), disconnect: false }
     }
 }
 
@@ -51,21 +63,21 @@ pub struct Ping;
 
 impl Ping {
     pub fn ack(self) -> ControlResult {
-        ControlResult {
-            packet: Some(codec::Packet::PingResponse),
-        }
+        ControlResult { packet: Some(codec::Packet::PingResponse), disconnect: false }
     }
 }
 
 pub struct Disconnect(codec::Disconnect);
 
 impl Disconnect {
+    /// Returns reference to dusconnect packet
     pub fn packet(&self) -> &codec::Disconnect {
         &self.0
     }
 
+    /// Ack disconnect message
     pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None }
+        ControlResult { packet: None, disconnect: true }
     }
 }
 
@@ -76,7 +88,7 @@ pub struct Subscribe {
 }
 
 impl Subscribe {
-    pub(crate) fn create(packet: codec::Subscribe) -> ControlPacket {
+    pub(crate) fn create<E>(packet: codec::Subscribe) -> ControlPacket<E> {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
             .for_each(|_| status.push(codec::SubscribeAckReason::UnspecifiedError));
@@ -94,11 +106,7 @@ impl Subscribe {
     #[inline]
     /// returns iterator over subscription topics
     pub fn iter_mut(&mut self) -> SubscribeIter {
-        SubscribeIter {
-            subs: self as *const _ as *mut _,
-            entry: 0,
-            lt: PhantomData,
-        }
+        SubscribeIter { subs: self as *const _ as *mut _, entry: 0, lt: PhantomData }
     }
 
     #[inline]
@@ -106,6 +114,7 @@ impl Subscribe {
     pub fn ack(self) -> ControlResult {
         ControlResult {
             packet: Some(codec::Packet::SubscribeAck(self.result)),
+            disconnect: false,
         }
     }
 }
@@ -197,7 +206,7 @@ pub struct Unsubscribe {
 }
 
 impl Unsubscribe {
-    pub(crate) fn create(packet: codec::Unsubscribe) -> ControlPacket {
+    pub(crate) fn create<E>(packet: codec::Unsubscribe) -> ControlPacket<E> {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
             .for_each(|_| status.push(codec::UnsubscribeAckReason::Success));
@@ -225,11 +234,7 @@ impl Unsubscribe {
     #[inline]
     /// returns iterator over subscription topics
     pub fn iter_mut(&mut self) -> UnsubscribeIter {
-        UnsubscribeIter {
-            subs: self as *const _ as *mut _,
-            entry: 0,
-            lt: PhantomData,
-        }
+        UnsubscribeIter { subs: self as *const _ as *mut _, entry: 0, lt: PhantomData }
     }
 
     #[inline]
@@ -254,6 +259,7 @@ impl Unsubscribe {
     pub fn ack(self) -> ControlResult {
         ControlResult {
             packet: Some(codec::Packet::UnsubscribeAck(self.result)),
+            disconnect: false,
         }
     }
 }
@@ -344,6 +350,33 @@ impl Closed {
     #[inline]
     /// convert packet to a result
     pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None }
+        ControlResult { packet: None, disconnect: false }
+    }
+}
+
+/// Connection failed message
+pub struct Error<E> {
+    err: MqttError<E>,
+}
+
+impl<E> Error<E> {
+    /// Returns reference to mqtt error
+    pub fn err(&self) -> &MqttError<E> {
+        &self.err
+    }
+
+    #[inline]
+    /// convert packet to a result
+    pub fn ack(self, pkt: codec::Disconnect) -> ControlResult {
+        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    }
+
+    #[inline]
+    /// convert packet to a result
+    pub fn ack_default(self) -> ControlResult {
+        ControlResult {
+            packet: Some(codec::Packet::Disconnect(codec::Disconnect::default())),
+            disconnect: true,
+        }
     }
 }

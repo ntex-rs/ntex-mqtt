@@ -7,9 +7,9 @@ use std::{fmt, io, time};
 
 use futures::future::{err, join, ok, LocalBoxFuture, Ready};
 use futures::{ready, Future, FutureExt};
-use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::{delay_for, Delay};
 use ntex::service::{Service, ServiceFactory};
+use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
 use crate::error::MqttError;
 use crate::version::{ProtocolVersion, VersionCodec};
@@ -40,6 +40,20 @@ impl<Io, Err, InitErr>
             handshake_timeout: 0,
             _t: PhantomData,
         }
+    }
+}
+
+impl<Io, Err, InitErr> Default
+    for MqttServer<
+        Io,
+        DefaultProtocolServer<Io, Err, InitErr, v3::codec::Codec>,
+        DefaultProtocolServer<Io, Err, InitErr, v5::codec::Codec>,
+        Err,
+        InitErr,
+    >
+{
+    fn default() -> Self {
+        MqttServer::new()
     }
 }
 
@@ -147,7 +161,7 @@ where
             > + 'static,
         Cn: ServiceFactory<
                 Config = v5::Session<St>,
-                Request = v5::ControlPacket,
+                Request = v5::ControlPacket<C::Error>,
                 Response = v5::ControlResult,
             > + 'static,
         P: ServiceFactory<
@@ -266,9 +280,7 @@ where
 
     fn call(&self, req: Io) -> Self::Future {
         let delay = if self.handshake_timeout > 0 {
-            Some(delay_for(time::Duration::from_secs(
-                self.handshake_timeout as u64,
-            )))
+            Some(delay_for(time::Duration::from_secs(self.handshake_timeout as u64)))
         } else {
             None
         };
@@ -376,10 +388,7 @@ pub struct DefaultProtocolServer<Io, Err, InitErr, Codec> {
 
 impl<Io, Err, InitErr, Codec> DefaultProtocolServer<Io, Err, InitErr, Codec> {
     fn new(ver: ProtocolVersion) -> Self {
-        Self {
-            ver,
-            _t: PhantomData,
-        }
+        Self { ver, _t: PhantomData }
     }
 }
 
@@ -395,10 +404,7 @@ impl<Io, Err, InitErr, Codec> ServiceFactory
     type Future = Ready<Result<Self::Service, Self::InitError>>;
 
     fn new_service(&self, _: ()) -> Self::Future {
-        ok(DefaultProtocolServer {
-            ver: self.ver,
-            _t: PhantomData,
-        })
+        ok(DefaultProtocolServer { ver: self.ver, _t: PhantomData })
     }
 }
 

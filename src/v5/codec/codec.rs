@@ -24,11 +24,7 @@ enum DecodeState {
 impl Codec {
     /// Create `Codec` instance
     pub fn new() -> Self {
-        Codec {
-            state: DecodeState::FrameHeader,
-            max_size: 0,
-            max_packet_size: None,
-        }
+        Codec { state: DecodeState::FrameHeader, max_size: 0, max_packet_size: None }
     }
 
     /// Set max inbound frame size.

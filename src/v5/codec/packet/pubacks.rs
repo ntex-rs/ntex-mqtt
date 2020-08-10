@@ -65,12 +65,7 @@ impl PublishAck {
             (PublishAckReason::Success, UserProperties::default(), None)
         };
 
-        Ok(Self {
-            packet_id,
-            reason_code,
-            properties,
-            reason_string,
-        })
+        Ok(Self { packet_id, reason_code, properties, reason_string })
     }
 }
 
@@ -97,12 +92,7 @@ impl PublishAck2 {
             (PublishAck2Reason::Success, UserProperties::default(), None)
         };
 
-        Ok(Self {
-            packet_id,
-            reason_code,
-            properties,
-            reason_string,
-        })
+        Ok(Self { packet_id, reason_code, properties, reason_string })
     }
 }
 
@@ -119,12 +109,7 @@ impl EncodeLtd for PublishAck {
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
         self.packet_id.get().encode(buf)?;
         buf.put_u8(self.reason_code.into());
-        ack_props::encode(
-            &self.properties,
-            &self.reason_string,
-            buf,
-            size - HEADER_LEN,
-        )?;
+        ack_props::encode(&self.properties, &self.reason_string, buf, size - HEADER_LEN)?;
         Ok(())
     }
 }

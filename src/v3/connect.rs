@@ -2,7 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use ntex::channel::mpsc;
-use ntex::codec::Framed;
+use ntex_codec::Framed;
 
 use super::codec as mqtt;
 use super::sink::MqttSink;
@@ -53,14 +53,7 @@ impl<Io> Connect<Io> {
 
     /// Ack connect message and set state
     pub fn ack<St>(self, st: St, session_present: bool) -> ConnectAck<Io, St> {
-        ConnectAck::new(
-            self.io,
-            self.sink,
-            st,
-            session_present,
-            self.keep_alive,
-            self.inflight,
-        )
+        ConnectAck::new(self.io, self.sink, st, session_present, self.keep_alive, self.inflight)
     }
 
     /// Create connect ack object with `identifier rejected` return code
@@ -159,6 +152,7 @@ impl<Io, St> ConnectAck<Io, St> {
     /// By default idle time-out is set to 300000 milliseconds
     pub fn idle_timeout(mut self, timeout: Duration) -> Self {
         self.keep_alive = timeout;
+        self.io.set_keepalive_timeout(timeout);
         self
     }
 

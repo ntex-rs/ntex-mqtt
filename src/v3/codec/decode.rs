@@ -52,10 +52,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
     let len = src.get_u16();
 
-    ensure!(
-        len == 4 && &src.bytes()[0..4] == MQTT,
-        DecodeError::InvalidProtocol
-    );
+    ensure!(len == 4 && &src.bytes()[0..4] == MQTT, DecodeError::InvalidProtocol);
     src.advance(4);
 
     let level = src.get_u8();
@@ -89,11 +86,8 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     } else {
         None
     };
-    let password = if flags.contains(ConnectFlags::PASSWORD) {
-        Some(Bytes::decode(src)?)
-    } else {
-        None
-    };
+    let password =
+        if flags.contains(ConnectFlags::PASSWORD) { Some(Bytes::decode(src)?) } else { None };
     Ok(Packet::Connect(Connect {
         clean_session: flags.contains(ConnectFlags::CLEAN_START),
         keep_alive,
@@ -145,10 +139,7 @@ fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
         topic_filters.push((topic, qos));
     }
 
-    Ok(Packet::Subscribe {
-        packet_id,
-        topic_filters,
-    })
+    Ok(Packet::Subscribe { packet_id, topic_filters })
 }
 
 fn decode_subscribe_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
@@ -170,10 +161,7 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     while src.remaining() > 0 {
         topic_filters.push(ByteString::decode(src)?);
     }
-    Ok(Packet::Unsubscribe {
-        packet_id,
-        topic_filters,
-    })
+    Ok(Packet::Unsubscribe { packet_id, topic_filters })
 }
 
 #[cfg(test)]
@@ -311,27 +299,19 @@ mod tests {
 
         assert_decode_packet!(
             b"\x40\x02\x43\x21",
-            Packet::PublishAck {
-                packet_id: packet_id(0x4321),
-            }
+            Packet::PublishAck { packet_id: packet_id(0x4321) }
         );
         assert_decode_packet!(
             b"\x50\x02\x43\x21",
-            Packet::PublishReceived {
-                packet_id: packet_id(0x4321),
-            }
+            Packet::PublishReceived { packet_id: packet_id(0x4321) }
         );
         assert_decode_packet!(
             b"\x62\x02\x43\x21",
-            Packet::PublishRelease {
-                packet_id: packet_id(0x4321),
-            }
+            Packet::PublishRelease { packet_id: packet_id(0x4321) }
         );
         assert_decode_packet!(
             b"\x70\x02\x43\x21",
-            Packet::PublishComplete {
-                packet_id: packet_id(0x4321),
-            }
+            Packet::PublishComplete { packet_id: packet_id(0x4321) }
         );
     }
 
@@ -340,10 +320,7 @@ mod tests {
         let p = Packet::Subscribe {
             packet_id: packet_id(0x1234),
             topic_filters: vec![
-                (
-                    ByteString::try_from(Bytes::from_static(b"test")).unwrap(),
-                    QoS::AtLeastOnce,
-                ),
+                (ByteString::try_from(Bytes::from_static(b"test")).unwrap(), QoS::AtLeastOnce),
                 (
                     ByteString::try_from(Bytes::from_static(b"filter")).unwrap(),
                     QoS::ExactlyOnce,
@@ -392,9 +369,7 @@ mod tests {
 
         assert_decode_packet!(
             b"\xb0\x02\x43\x21",
-            Packet::UnsubscribeAck {
-                packet_id: packet_id(0x4321),
-            }
+            Packet::UnsubscribeAck { packet_id: packet_id(0x4321) }
         );
     }
 

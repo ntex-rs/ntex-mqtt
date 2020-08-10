@@ -53,6 +53,17 @@ prim_enum! {
 }
 
 impl Disconnect {
+    /// Create new instance of `Disconnect` with specified code
+    pub fn new(reason_code: DisconnectReasonCode) -> Self {
+        Self {
+            reason_code,
+            session_expiry_interval_secs: None,
+            server_reference: None,
+            reason_string: None,
+            user_properties: Vec::new(),
+        }
+    }
+
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         if src.has_remaining() {
             let reason_code = src.get_u8().try_into()?;

@@ -1,5 +1,8 @@
 use derive_more::From;
+use either::Either;
 use std::io;
+
+use super::framed::CodecError;
 
 /// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug)]
@@ -18,6 +21,12 @@ pub enum MqttError<E> {
     PacketIdRequired,
     /// Multiple in-flight publish packet with same package_id
     DuplicatedPacketId,
+    /// Topic alias is greater than max topic alias
+    MaxTopicAlias,
+    /// Unknown topic alias
+    UnknownTopicAlias,
+    /// Max packet size exceeded
+    MaxSizeExceeded,
     /// Keep alive timeout
     KeepAliveTimeout,
     /// Handshake timeout
@@ -34,6 +43,24 @@ impl<E> From<DecodeError> for MqttError<E> {
     }
 }
 
+impl<E> From<Either<DecodeError, io::Error>> for MqttError<E> {
+    fn from(err: Either<DecodeError, io::Error>) -> Self {
+        match err {
+            Either::Left(err) => MqttError::Decode(err),
+            Either::Right(err) => MqttError::Io(err),
+        }
+    }
+}
+
+impl<E> From<Either<EncodeError, io::Error>> for MqttError<E> {
+    fn from(err: Either<EncodeError, io::Error>) -> Self {
+        match err {
+            Either::Left(err) => MqttError::Encode(err),
+            Either::Right(err) => MqttError::Io(err),
+        }
+    }
+}
+
 impl<E> From<EncodeError> for MqttError<E> {
     fn from(err: EncodeError) -> Self {
         MqttError::Encode(err)
@@ -43,6 +70,30 @@ impl<E> From<EncodeError> for MqttError<E> {
 impl<E> From<io::Error> for MqttError<E> {
     fn from(err: io::Error) -> Self {
         MqttError::Io(err)
+    }
+}
+
+impl<E> From<CodecError<crate::v3::codec::Codec>> for MqttError<E> {
+    fn from(err: CodecError<crate::v3::codec::Codec>) -> Self {
+        match err {
+            CodecError::MaxSizeExceeded => MqttError::MaxSizeExceeded,
+            CodecError::KeepAlive => MqttError::KeepAliveTimeout,
+            CodecError::Encoder(err) => MqttError::Encode(err),
+            CodecError::Decoder(err) => MqttError::Decode(err),
+            CodecError::Io(err) => MqttError::Io(err),
+        }
+    }
+}
+
+impl<E> From<CodecError<crate::v5::codec::Codec>> for MqttError<E> {
+    fn from(err: CodecError<crate::v5::codec::Codec>) -> Self {
+        match err {
+            CodecError::MaxSizeExceeded => MqttError::MaxSizeExceeded,
+            CodecError::KeepAlive => MqttError::KeepAliveTimeout,
+            CodecError::Encoder(err) => MqttError::Encode(err),
+            CodecError::Decoder(err) => MqttError::Decode(err),
+            CodecError::Io(err) => MqttError::Io(err),
+        }
     }
 }
 
@@ -59,7 +110,6 @@ pub enum DecodeError {
     // MQTT v3 only
     PacketIdRequired,
     MaxSizeExceeded,
-    Io(io::Error),
     Utf8Error(std::str::Utf8Error),
 }
 
@@ -68,7 +118,7 @@ pub enum EncodeError {
     InvalidLength,
     MalformedPacket,
     PacketIdRequired,
-    Io(io::Error),
+    UnsupportedVersion,
 }
 
 impl PartialEq for DecodeError {
@@ -86,7 +136,6 @@ impl PartialEq for DecodeError {
             (DecodeError::PacketIdRequired, DecodeError::PacketIdRequired) => true,
             (DecodeError::MaxSizeExceeded, DecodeError::MaxSizeExceeded) => true,
             (DecodeError::MalformedPacket, DecodeError::MalformedPacket) => true,
-            (DecodeError::Io(_), _) => false,
             (DecodeError::Utf8Error(_), _) => false,
             _ => false,
         }

@@ -1,4 +1,5 @@
 #![allow(clippy::type_complexity, clippy::new_ret_no_self)]
+#![type_length_limit = "1154393"]
 //! MQTT Client/Server framework
 
 #[macro_use]
@@ -10,8 +11,8 @@ pub mod error;
 pub mod v3;
 pub mod v5;
 
+mod framed;
 mod handshake;
-mod router;
 mod server;
 mod service;
 mod session;
@@ -19,7 +20,6 @@ pub mod types;
 mod version;
 
 pub use self::error::MqttError;
-pub use self::router::Router;
 pub use self::server::MqttServer;
 pub use self::session::Session;
 pub use self::topic::Topic;

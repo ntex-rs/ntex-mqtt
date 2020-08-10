@@ -236,21 +236,9 @@ impl EncodeLtd for ConnectAck {
             buf.put_u8(pt::TOPIC_ALIAS_MAX);
             self.topic_alias_max.encode(buf)?;
         }
-        encode_property(
-            &self.wildcard_subscription_available,
-            pt::WILDCARD_SUB_AVAIL,
-            buf,
-        )?;
-        encode_property(
-            &self.subscription_identifiers_available,
-            pt::SUB_IDS_AVAIL,
-            buf,
-        )?;
-        encode_property(
-            &self.shared_subscription_available,
-            pt::SHARED_SUB_AVAIL,
-            buf,
-        )?;
+        encode_property(&self.wildcard_subscription_available, pt::WILDCARD_SUB_AVAIL, buf)?;
+        encode_property(&self.subscription_identifiers_available, pt::SUB_IDS_AVAIL, buf)?;
+        encode_property(&self.shared_subscription_available, pt::SHARED_SUB_AVAIL, buf)?;
         encode_property(&self.server_keepalive_sec, pt::SERVER_KA, buf)?;
         encode_property(&self.response_info, pt::RESP_INFO, buf)?;
         encode_property(&self.server_reference, pt::SERVER_REF, buf)?;

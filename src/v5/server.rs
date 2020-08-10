@@ -9,11 +9,10 @@ use std::time::Duration;
 use futures::future::{ok, Future, Ready, TryFutureExt};
 use futures::{SinkExt, StreamExt};
 use ntex::channel::mpsc;
-use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory, Transform};
-use ntex::util::framed::DispatcherError;
 use ntex::util::timeout::{Timeout, TimeoutError};
+use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
 use crate::error::MqttError;
 use crate::handshake::{Handshake, HandshakeResult};
@@ -81,8 +80,11 @@ where
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
         + 'static,
     C::Error: fmt::Debug,
-    Cn: ServiceFactory<Config = Session<St>, Request = ControlPacket, Response = ControlResult>
-        + 'static,
+    Cn: ServiceFactory<
+            Config = Session<St>,
+            Request = ControlPacket<C::Error>,
+            Response = ControlResult,
+        > + 'static,
     P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
 {
     /// Set handshake timeout in millis.
@@ -141,7 +143,7 @@ where
         F: IntoServiceFactory<Srv>,
         Srv: ServiceFactory<
                 Config = Session<St>,
-                Request = ControlPacket,
+                Request = ControlPacket<C::Error>,
                 Response = ControlResult,
             > + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError>,
@@ -190,8 +192,11 @@ where
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
         + 'static,
     C::Error: From<Cn::Error> + From<Cn::InitError> + From<P::InitError> + fmt::Debug,
-    Cn: ServiceFactory<Config = Session<St>, Request = ControlPacket, Response = ControlResult>
-        + 'static,
+    Cn: ServiceFactory<
+            Config = Session<St>,
+            Request = ControlPacket<C::Error>,
+            Response = ControlResult,
+        > + 'static,
     P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
     P::Error: fmt::Debug,
     PublishAck: TryFrom<P::Error, Error = C::Error>,
@@ -204,8 +209,7 @@ where
         let connect = self.connect;
         let publish = ntex::apply(
             PublishServiceTransform(PhantomData),
-            self.srv_publish
-                .map_init_err(|e| MqttError::Service(e.into())),
+            self.srv_publish.map_init_err(|e| MqttError::Service(e.into())),
         );
         let control = self
             .srv_control
@@ -221,12 +225,7 @@ where
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control))
-            .map_err(|e| match e {
-                DispatcherError::Service(e) => e,
-                DispatcherError::Encoder(e) => MqttError::Encode(e),
-                DispatcherError::Decoder(e) => MqttError::Decode(e),
-            }),
+            .build(factory(publish, control, self.max_topic_alias)),
         )
     }
 
@@ -243,8 +242,7 @@ where
         let connect = self.connect;
         let publish = ntex::apply(
             PublishServiceTransform(PhantomData),
-            self.srv_publish
-                .map_init_err(|e| MqttError::Service(e.into())),
+            self.srv_publish.map_init_err(|e| MqttError::Service(e.into())),
         );
         let control = self
             .srv_control
@@ -254,18 +252,13 @@ where
         ntex::unit_config(
             FactoryBuilder2::new(handshake_service_factory2(
                 connect,
-                self.max_size,
+                self.max_size as u32,
                 self.inflight,
                 self.max_topic_alias,
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control))
-            .map_err(|e| match e {
-                DispatcherError::Service(e) => e,
-                DispatcherError::Encoder(e) => MqttError::Encode(e),
-                DispatcherError::Decoder(e) => MqttError::Decode(e),
-            }),
+            .build(factory(publish, control, self.max_topic_alias)),
         )
     }
 }
@@ -371,7 +364,7 @@ where
         .and_then(|res| {
             res.map_err(|e| {
                 log::trace!("Error is received during mqtt handshake: {:?}", e);
-                MqttError::Decode(e)
+                MqttError::from(e)
             })
         })?;
 
@@ -382,13 +375,7 @@ where
 
             // authenticate mqtt connection
             let mut ack = service
-                .call(Connect::new(
-                    connect,
-                    framed,
-                    sink,
-                    max_topic_alias,
-                    inflight,
-                ))
+                .call(Connect::new(connect, framed, sink, max_topic_alias, inflight))
                 .await?;
 
             match ack.session {
@@ -397,12 +384,7 @@ where
                     let sink = ack.sink;
                     ack.io.send(mqtt::Packet::ConnectAck(ack.packet)).await?;
 
-                    Ok(ack.io.out(rx).state(Session::new(
-                        session,
-                        sink,
-                        ack.keep_alive,
-                        ack.inflight,
-                    )))
+                    Ok(ack.io.out(rx).state(Session::new(session, sink, ack.inflight)))
                 }
                 None => {
                     log::trace!("Failed to complete handshake: {:#?}", ack.packet);
@@ -439,10 +421,7 @@ where
 
     /// Creates and returns a new Transform component, asynchronously
     fn new_transform(&self, service: S) -> Self::Future {
-        ok(PublishService {
-            srv: service,
-            _t: PhantomData,
-        })
+        ok(PublishService { srv: service, _t: PhantomData })
     }
 }
 
@@ -478,10 +457,7 @@ where
     }
 
     fn call(&self, req: Self::Request) -> Self::Future {
-        PublishServiceResponse {
-            fut: self.srv.call(req),
-            _t: PhantomData,
-        }
+        PublishServiceResponse { fut: self.srv.call(req), _t: PhantomData }
     }
 }
 
