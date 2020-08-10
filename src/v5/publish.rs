@@ -121,7 +121,7 @@ impl PublishAck {
         self.reason_code = code;
         self
     }
-    
+
     /// Update user properties
     pub fn properties<F>(mut self, f: F) -> Self
     where

@@ -308,7 +308,7 @@ where
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connect.poll_ready(cx).map_err(|e| e.into())
+        self.connect.poll_ready(cx)
     }
 
     #[inline]
@@ -585,7 +585,7 @@ where
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connect.poll_ready(cx).map_err(|e| e.into())
+        self.connect.poll_ready(cx)
     }
 
     #[inline]

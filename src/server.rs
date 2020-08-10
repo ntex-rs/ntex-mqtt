@@ -43,6 +43,20 @@ impl<Io, Err, InitErr>
     }
 }
 
+impl<Io, Err, InitErr> Default
+    for MqttServer<
+        Io,
+        DefaultProtocolServer<Io, Err, InitErr, v3::codec::Codec>,
+        DefaultProtocolServer<Io, Err, InitErr, v5::codec::Codec>,
+        Err,
+        InitErr,
+    >
+{
+    fn default() -> Self {
+        MqttServer::new()
+    }
+}
+
 impl<Io, V3, V5, Err, InitErr> MqttServer<Io, V3, V5, Err, InitErr> {
     /// Set handshake timeout in millis.
     ///
