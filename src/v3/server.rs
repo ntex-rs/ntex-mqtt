@@ -30,7 +30,7 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     connect: C,
     control: Cn,
     publish: P,
-    max_size: usize,
+    max_size: u32,
     inflight: usize,
     handshake_timeout: usize,
     disconnect_timeout: usize,
@@ -111,7 +111,7 @@ where
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
     pub fn max_size(mut self, size: u32) -> Self {
-        self.max_size = size as usize;
+        self.max_size = size;
         self
     }
 
@@ -187,11 +187,10 @@ where
         ntex::unit_config(
             FactoryBuilder::new(handshake_service_factory(
                 connect,
-                self.max_size as u32,
+                self.max_size,
                 self.inflight,
                 self.handshake_timeout,
             ))
-            .max_size(self.max_size)
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
                 factory(publish, control),
@@ -227,11 +226,10 @@ where
         ntex::unit_config(
             FactoryBuilder2::new(handshake_service_factory2(
                 connect,
-                self.max_size as u32,
+                self.max_size,
                 self.inflight,
                 self.handshake_timeout,
             ))
-            .max_size(self.max_size)
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
                 factory(publish, control),

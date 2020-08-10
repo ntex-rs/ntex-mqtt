@@ -32,7 +32,7 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     connect: C,
     srv_control: Cn,
     srv_publish: P,
-    max_size: usize,
+    max_size: u32,
     inflight: usize,
     handshake_timeout: usize,
     disconnect_timeout: usize,
@@ -113,7 +113,7 @@ where
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_size(mut self, size: usize) -> Self {
+    pub fn max_size(mut self, size: u32) -> Self {
         self.max_size = size;
         self
     }
@@ -224,7 +224,6 @@ where
                 self.max_topic_alias,
                 self.handshake_timeout,
             ))
-            .max_size(self.max_size)
             .disconnect_timeout(self.disconnect_timeout)
             .build(factory(publish, control, self.max_topic_alias)),
         )
@@ -258,7 +257,6 @@ where
                 self.max_topic_alias,
                 self.handshake_timeout,
             ))
-            .max_size(self.max_size)
             .disconnect_timeout(self.disconnect_timeout)
             .build(factory(publish, control, self.max_topic_alias)),
         )
@@ -267,7 +265,7 @@ where
 
 fn handshake_service_factory<Io, St, C>(
     factory: C,
-    max_size: usize,
+    max_size: u32,
     inflight: usize,
     max_topic_alias: u16,
     handshake_timeout: usize,
@@ -291,7 +289,7 @@ where
                     handshake(
                         conn.codec(mqtt::Codec::new()),
                         service.clone(),
-                        max_size as u32,
+                        max_size,
                         max_topic_alias,
                         inflight,
                     )

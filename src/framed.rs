@@ -120,7 +120,6 @@ where
                 state: FramedState::Processing,
                 disconnect_timeout: 1000,
                 keepalive: delay_until(expire),
-                max_size: 0,
             },
         }
     }
@@ -156,7 +155,6 @@ where
                 state: FramedState::Processing,
                 disconnect_timeout: 1000,
                 updated: time.now(),
-                max_size: 0,
                 keepalive: delay_until(expire),
                 framed,
                 sink,
@@ -173,15 +171,6 @@ where
         let expire = RtInstant::from_std(self.inner.time.now() + self.inner.keepalive_timeout);
         self.inner.keepalive.reset(expire);
 
-        self
-    }
-
-    /// Set max inbound frame size.
-    ///
-    /// If max size is set to `0`, size is unlimited.
-    /// By default max size is set to `0`
-    pub fn max_size(mut self, size: usize) -> Self {
-        self.inner.max_size = size;
         self
     }
 
@@ -246,7 +235,6 @@ where
     state: FramedState<S>,
     framed: Framed<T, U>,
     rx: mpsc::Receiver<Result<<U as Encoder>::Item, S::Error>>,
-    max_size: usize,
     keepalive: Delay,
     keepalive_timeout: Duration,
     disconnect_timeout: u64,
@@ -307,15 +295,7 @@ where
                                 }
                             }
                         }
-                        Poll::Pending => {
-                            // check frame max size
-                            if self.max_size > 0 && self.max_size < self.framed.read_buf().len()
-                            {
-                                Err(CodecError::MaxSizeExceeded)
-                            } else {
-                                return PollResult::Pending;
-                            }
-                        }
+                        Poll::Pending => return PollResult::Pending,
                         Poll::Ready(None) => {
                             log::trace!("Client disconnected");
                             self.errors.insert(Errors::IO);
@@ -592,7 +572,6 @@ mod tests {
             }),
             LowResTimeService::with(Duration::from_secs(1)),
         )
-        .max_size(999999)
         .disconnect_timeout(25);
         ntex::rt::spawn(disp.map(|_| ()));
 

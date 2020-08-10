@@ -6,8 +6,6 @@
 
 * v5: Forward publish errors to control service
 
-* Move max packet size check to Framed dispatcher
-
 * Move keep-alive timeout to Framed dispatcher
 
 ## [0.2.1] - 2020-08-03
