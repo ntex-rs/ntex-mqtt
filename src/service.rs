@@ -10,7 +10,7 @@ use ntex::service::{IntoService, IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 
-use super::framed::{CodecError, Dispatcher};
+use super::framed::{Dispatcher, DispatcherError};
 use super::handshake::{Handshake, HandshakeResult};
 
 type RequestItem<U> = <U as Decoder>::Item;
@@ -47,7 +47,7 @@ where
         F: IntoServiceFactory<T>,
         T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -117,7 +117,7 @@ where
         F: IntoServiceFactory<T>,
         T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -154,7 +154,7 @@ where
     <C::Service as Service>::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -197,7 +197,7 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+        Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -227,7 +227,7 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+        Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -271,7 +271,7 @@ where
     C::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -372,7 +372,7 @@ where
         F: IntoServiceFactory<T>,
         T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -409,7 +409,7 @@ where
     <C::Service as Service>::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -452,7 +452,7 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+        Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -482,7 +482,7 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+        Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -529,7 +529,7 @@ where
     C::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, CodecError<Codec>>,
+            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,

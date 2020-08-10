@@ -26,9 +26,7 @@ bitflags::bitflags! {
 }
 
 /// Framed transport errors
-pub enum CodecError<U: Encoder + Decoder> {
-    /// Max packet size exceeded
-    MaxSizeExceeded,
+pub enum DispatcherError<U: Encoder + Decoder> {
     /// Keep alive timeout
     KeepAlive,
     /// Encoder parse error
@@ -39,34 +37,32 @@ pub enum CodecError<U: Encoder + Decoder> {
     Io(io::Error),
 }
 
-impl<U: Encoder + Decoder> fmt::Debug for CodecError<U>
+impl<U: Encoder + Decoder> fmt::Debug for DispatcherError<U>
 where
     <U as Encoder>::Error: fmt::Debug,
     <U as Decoder>::Error: fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            CodecError::MaxSizeExceeded => write!(fmt, "CodecError::MaxSizeExceeded"),
-            CodecError::KeepAlive => write!(fmt, "CodecError::KeepAlive"),
-            CodecError::Encoder(ref e) => write!(fmt, "CodecError::Encoder({:?})", e),
-            CodecError::Decoder(ref e) => write!(fmt, "CodecError::Decoder({:?})", e),
-            CodecError::Io(ref e) => write!(fmt, "CodecError::Io({:?})", e),
+            DispatcherError::KeepAlive => write!(fmt, "DispatcherError::KeepAlive"),
+            DispatcherError::Encoder(ref e) => write!(fmt, "DispatcherError::Encoder({:?})", e),
+            DispatcherError::Decoder(ref e) => write!(fmt, "DispatcherError::Decoder({:?})", e),
+            DispatcherError::Io(ref e) => write!(fmt, "DispatcherError::Io({:?})", e),
         }
     }
 }
 
-impl<U: Encoder + Decoder> fmt::Display for CodecError<U>
+impl<U: Encoder + Decoder> fmt::Display for DispatcherError<U>
 where
     <U as Encoder>::Error: fmt::Debug,
     <U as Decoder>::Error: fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            CodecError::MaxSizeExceeded => write!(fmt, "CodecError::MaxSizeExceeded"),
-            CodecError::KeepAlive => write!(fmt, "CodecError::KeepAlive"),
-            CodecError::Encoder(ref e) => write!(fmt, "{:?}", e),
-            CodecError::Decoder(ref e) => write!(fmt, "{:?}", e),
-            CodecError::Io(ref e) => write!(fmt, "CodecError::Io({:?})", e),
+            DispatcherError::KeepAlive => write!(fmt, "DispatcherError::KeepAlive"),
+            DispatcherError::Encoder(ref e) => write!(fmt, "{:?}", e),
+            DispatcherError::Decoder(ref e) => write!(fmt, "{:?}", e),
+            DispatcherError::Io(ref e) => write!(fmt, "DispatcherError::Io({:?})", e),
         }
     }
 }
@@ -76,7 +72,10 @@ where
 #[pin_project::pin_project]
 pub struct Dispatcher<S, T, U, Out>
 where
-    S: Service<Request = Result<Request<U>, CodecError<U>>, Response = Option<Response<U>>>,
+    S: Service<
+        Request = Result<Request<U>, DispatcherError<U>>,
+        Response = Option<Response<U>>,
+    >,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -91,7 +90,10 @@ where
 #[cfg(test)]
 impl<S, T, U> Dispatcher<S, T, U, mpsc::Receiver<<U as Encoder>::Item>>
 where
-    S: Service<Request = Result<Request<U>, CodecError<U>>, Response = Option<Response<U>>>,
+    S: Service<
+        Request = Result<Request<U>, DispatcherError<U>>,
+        Response = Option<Response<U>>,
+    >,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -127,7 +129,10 @@ where
 
 impl<S, T, U, In> Dispatcher<S, T, U, In>
 where
-    S: Service<Request = Result<Request<U>, CodecError<U>>, Response = Option<Response<U>>>,
+    S: Service<
+        Request = Result<Request<U>, DispatcherError<U>>,
+        Response = Option<Response<U>>,
+    >,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -190,7 +195,10 @@ where
 
 impl<S, T, U, In> Future for Dispatcher<S, T, U, In>
 where
-    S: Service<Request = Result<Request<U>, CodecError<U>>, Response = Option<Response<U>>>,
+    S: Service<
+        Request = Result<Request<U>, DispatcherError<U>>,
+        Response = Option<Response<U>>,
+    >,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -221,7 +229,10 @@ enum PollResult {
 
 struct InnerDispatcher<S, T, U, Out>
 where
-    S: Service<Request = Result<Request<U>, CodecError<U>>, Response = Option<Response<U>>>,
+    S: Service<
+        Request = Result<Request<U>, DispatcherError<U>>,
+        Response = Option<Response<U>>,
+    >,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -238,7 +249,7 @@ where
     keepalive: Delay,
     keepalive_timeout: Duration,
     disconnect_timeout: u64,
-    error: Option<CodecError<U>>,
+    error: Option<DispatcherError<U>>,
     errors: Errors,
     time: LowResTimeService,
     updated: Instant,
@@ -246,7 +257,10 @@ where
 
 impl<S, T, U, Out> InnerDispatcher<S, T, U, Out>
 where
-    S: Service<Request = Result<Request<U>, CodecError<U>>, Response = Option<Response<U>>>,
+    S: Service<
+        Request = Result<Request<U>, DispatcherError<U>>,
+        Response = Option<Response<U>>,
+    >,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -286,12 +300,12 @@ where
                             match err {
                                 Either::Left(err) => {
                                     log::warn!("Framed decode error");
-                                    Err(CodecError::Decoder(err))
+                                    Err(DispatcherError::Decoder(err))
                                 }
                                 Either::Right(err) => {
                                     log::trace!("Framed io error: {:?}", err);
                                     self.errors.insert(Errors::IO);
-                                    Err(CodecError::Io(err))
+                                    Err(DispatcherError::Io(err))
                                 }
                             }
                         }
@@ -347,7 +361,7 @@ where
                         if let Err(err) = self.framed.write(msg) {
                             log::trace!("Framed write error: {:?}", err);
                             self.errors.insert(Errors::WRITE);
-                            self.error = Some(CodecError::Encoder(err));
+                            self.error = Some(DispatcherError::Encoder(err));
                             return PollResult::Continue;
                         }
                         continue;
@@ -367,7 +381,7 @@ where
                             if let Err(err) = self.framed.write(msg) {
                                 log::trace!("Framed write error from sink: {:?}", err);
                                 self.errors.insert(Errors::WRITE);
-                                self.error = Some(CodecError::Encoder(err));
+                                self.error = Some(DispatcherError::Encoder(err));
                                 return PollResult::Continue;
                             }
                             continue;
@@ -392,7 +406,7 @@ where
                     Poll::Ready(Err(err)) => {
                         debug!("Error sending data: {:?}", err);
                         let _ = self.sink.take();
-                        self.error = Some(CodecError::Io(err));
+                        self.error = Some(DispatcherError::Io(err));
                         self.errors.insert(Errors::WRITE | Errors::IO);
                         return PollResult::Continue;
                     }
@@ -410,7 +424,7 @@ where
             match Pin::new(&mut self.keepalive).poll(cx) {
                 Poll::Ready(_) => {
                     if self.keepalive.deadline() <= RtInstant::from_std(self.updated) {
-                        self.error = Some(CodecError::KeepAlive);
+                        self.error = Some(DispatcherError::KeepAlive);
                         self.errors.insert(Errors::KEEP_ALIVE);
                     } else {
                         let expire =
@@ -524,12 +538,12 @@ mod tests {
 
     #[test]
     fn test_err() {
-        type T = CodecError<BytesCodec>;
+        type T = DispatcherError<BytesCodec>;
         let err = T::Encoder(io::Error::new(io::ErrorKind::Other, "err"));
-        assert!(format!("{:?}", err).contains("CodecError::Encoder"));
+        assert!(format!("{:?}", err).contains("DispatcherError::Encoder"));
         assert!(format!("{}", err).contains("Custom"));
         let err = T::Decoder(io::Error::new(io::ErrorKind::Other, "err"));
-        assert!(format!("{:?}", err).contains("CodecError::Decoder"));
+        assert!(format!("{:?}", err).contains("DispatcherError::Decoder"));
         assert!(format!("{}", err).contains("Custom"));
     }
 
@@ -542,7 +556,7 @@ mod tests {
         let framed = Framed::new(server, BytesCodec);
         let disp = Dispatcher::new(
             framed,
-            ntex::fn_service(|msg: Result<BytesMut, CodecError<BytesCodec>>| async move {
+            ntex::fn_service(|msg: Result<BytesMut, DispatcherError<BytesCodec>>| async move {
                 delay_for(Duration::from_millis(50)).await;
                 Ok::<_, ()>(Some(msg.unwrap().freeze()))
             }),
@@ -567,7 +581,7 @@ mod tests {
         let disp = Dispatcher::with(
             framed,
             Some(rx),
-            ntex::fn_service(|msg: Result<BytesMut, CodecError<BytesCodec>>| {
+            ntex::fn_service(|msg: Result<BytesMut, DispatcherError<BytesCodec>>| {
                 ok::<_, ()>(Some(msg.unwrap().freeze()))
             }),
             LowResTimeService::with(Duration::from_secs(1)),
@@ -598,7 +612,7 @@ mod tests {
 
         let disp = Dispatcher::new(
             framed,
-            ntex::fn_service(|_: Result<BytesMut, CodecError<BytesCodec>>| async {
+            ntex::fn_service(|_: Result<BytesMut, DispatcherError<BytesCodec>>| async {
                 Err::<Option<Bytes>, _>(())
             }),
         );

@@ -2,7 +2,7 @@ use derive_more::From;
 use either::Either;
 use std::io;
 
-use super::framed::CodecError;
+use super::framed::DispatcherError;
 
 /// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug)]
@@ -25,8 +25,6 @@ pub enum MqttError<E> {
     MaxTopicAlias,
     /// Unknown topic alias
     UnknownTopicAlias,
-    /// Max packet size exceeded
-    MaxSizeExceeded,
     /// Keep alive timeout
     KeepAliveTimeout,
     /// Handshake timeout
@@ -73,26 +71,24 @@ impl<E> From<io::Error> for MqttError<E> {
     }
 }
 
-impl<E> From<CodecError<crate::v3::codec::Codec>> for MqttError<E> {
-    fn from(err: CodecError<crate::v3::codec::Codec>) -> Self {
+impl<E> From<DispatcherError<crate::v3::codec::Codec>> for MqttError<E> {
+    fn from(err: DispatcherError<crate::v3::codec::Codec>) -> Self {
         match err {
-            CodecError::MaxSizeExceeded => MqttError::MaxSizeExceeded,
-            CodecError::KeepAlive => MqttError::KeepAliveTimeout,
-            CodecError::Encoder(err) => MqttError::Encode(err),
-            CodecError::Decoder(err) => MqttError::Decode(err),
-            CodecError::Io(err) => MqttError::Io(err),
+            DispatcherError::KeepAlive => MqttError::KeepAliveTimeout,
+            DispatcherError::Encoder(err) => MqttError::Encode(err),
+            DispatcherError::Decoder(err) => MqttError::Decode(err),
+            DispatcherError::Io(err) => MqttError::Io(err),
         }
     }
 }
 
-impl<E> From<CodecError<crate::v5::codec::Codec>> for MqttError<E> {
-    fn from(err: CodecError<crate::v5::codec::Codec>) -> Self {
+impl<E> From<DispatcherError<crate::v5::codec::Codec>> for MqttError<E> {
+    fn from(err: DispatcherError<crate::v5::codec::Codec>) -> Self {
         match err {
-            CodecError::MaxSizeExceeded => MqttError::MaxSizeExceeded,
-            CodecError::KeepAlive => MqttError::KeepAliveTimeout,
-            CodecError::Encoder(err) => MqttError::Encode(err),
-            CodecError::Decoder(err) => MqttError::Decode(err),
-            CodecError::Io(err) => MqttError::Io(err),
+            DispatcherError::KeepAlive => MqttError::KeepAliveTimeout,
+            DispatcherError::Encoder(err) => MqttError::Encode(err),
+            DispatcherError::Decoder(err) => MqttError::Decode(err),
+            DispatcherError::Io(err) => MqttError::Io(err),
         }
     }
 }

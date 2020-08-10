@@ -14,7 +14,7 @@ use ntex::util::order::{InOrder, InOrderError};
 use ntex::util::{buffer::BufferService, inflight::InFlightService};
 
 use crate::error::MqttError;
-use crate::framed::CodecError;
+use crate::framed::DispatcherError;
 
 use super::control::{self, ControlPacket, ControlResult};
 use super::publish::{Publish, PublishAck};
@@ -28,7 +28,7 @@ pub(super) fn factory<St, T, C, E>(
     max_topic_alias: u16,
 ) -> impl ServiceFactory<
     Config = Session<St>,
-    Request = Result<codec::Packet, CodecError<codec::Codec>>,
+    Request = Result<codec::Packet, DispatcherError<codec::Codec>>,
     Response = Option<codec::Packet>,
     Error = MqttError<E>,
     InitError = MqttError<E>,
@@ -134,7 +134,7 @@ where
     C::Future: 'static,
     E: 'static,
 {
-    type Request = Result<codec::Packet, CodecError<codec::Codec>>;
+    type Request = Result<codec::Packet, DispatcherError<codec::Codec>>;
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
     type Future = Either<

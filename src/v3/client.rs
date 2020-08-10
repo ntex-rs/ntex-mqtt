@@ -12,7 +12,7 @@ use ntex::service::{
 use ntex_codec::{AsyncRead, AsyncWrite};
 
 use crate::error::{DecodeError, EncodeError, MqttError};
-use crate::framed::CodecError;
+use crate::framed::DispatcherError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::Builder;
 
@@ -180,7 +180,7 @@ where
                     .map_init_err(MqttError::Service),
                 self.control,
             ),
-            |req: Result<_, CodecError<mqtt::Codec>>, srv| match req {
+            |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
                 Ok(req) => Either::Left(srv.call(req)),
                 Err(e) => Either::Right(err(MqttError::from(e))),
             },

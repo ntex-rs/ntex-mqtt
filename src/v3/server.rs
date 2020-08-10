@@ -12,7 +12,7 @@ use ntex::util::timeout::{Timeout, TimeoutError};
 use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
 use crate::error::MqttError;
-use crate::framed::CodecError;
+use crate::framed::DispatcherError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
@@ -194,7 +194,7 @@ where
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
                 factory(publish, control),
-                |req: Result<_, CodecError<mqtt::Codec>>, srv| match req {
+                |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
                     Ok(req) => Either::Left(srv.call(req)),
                     Err(e) => Either::Right(err(MqttError::from(e))),
                 },
@@ -233,7 +233,7 @@ where
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
                 factory(publish, control),
-                |req: Result<_, CodecError<mqtt::Codec>>, srv| match req {
+                |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
                     Ok(req) => Either::Left(srv.call(req)),
                     Err(e) => Either::Right(err(MqttError::from(e))),
                 },
