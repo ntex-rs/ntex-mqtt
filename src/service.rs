@@ -8,9 +8,9 @@ use std::task::{Context, Poll};
 use futures::future::{select, Either, FutureExt};
 use futures::{ready, Stream};
 
-use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 use ntex::rt::time::Delay;
 use ntex::service::{IntoService, IntoServiceFactory, Service, ServiceFactory};
+use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 
 use super::framed::{CodecError, Dispatcher};
 use super::handshake::{Handshake, HandshakeResult};

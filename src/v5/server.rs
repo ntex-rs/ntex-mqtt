@@ -9,10 +9,10 @@ use std::time::Duration;
 use futures::future::{ok, Future, Ready, TryFutureExt};
 use futures::{SinkExt, StreamExt};
 use ntex::channel::mpsc;
-use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory, Transform};
 use ntex::util::timeout::{Timeout, TimeoutError};
+use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
 use crate::error::MqttError;
 use crate::handshake::{Handshake, HandshakeResult};
@@ -364,7 +364,7 @@ where
         .and_then(|res| {
             res.map_err(|e| {
                 log::trace!("Error is received during mqtt handshake: {:?}", e);
-                MqttError::Decode(e)
+                MqttError::from(e)
             })
         })?;
 

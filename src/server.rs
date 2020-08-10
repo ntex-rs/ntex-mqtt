@@ -7,9 +7,9 @@ use std::{fmt, io, time};
 
 use futures::future::{err, join, ok, LocalBoxFuture, Ready};
 use futures::{ready, Future, FutureExt};
-use ntex::codec::{AsyncRead, AsyncWrite, Framed};
 use ntex::rt::time::{delay_for, Delay};
 use ntex::service::{Service, ServiceFactory};
+use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
 use crate::error::MqttError;
 use crate::version::{ProtocolVersion, VersionCodec};

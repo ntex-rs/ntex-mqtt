@@ -1,8 +1,6 @@
-use std::convert::TryInto;
-use std::io;
-
 use bytes::BytesMut;
 use ntex_codec::{Decoder, Encoder};
+use std::convert::TryInto;
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{packet_type, MQTT, MQTT_LEVEL_3, MQTT_LEVEL_5};
@@ -64,7 +62,7 @@ impl Encoder for VersionCodec {
     type Error = EncodeError;
 
     fn encode(&mut self, _: Self::Item, _: &mut BytesMut) -> Result<(), EncodeError> {
-        Err(EncodeError::Io(io::Error::new(io::ErrorKind::Other, "Unsupported")))
+        Err(EncodeError::UnsupportedVersion)
     }
 }
 

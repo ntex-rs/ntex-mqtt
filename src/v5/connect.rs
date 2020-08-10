@@ -2,7 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use ntex::channel::mpsc;
-use ntex::codec::Framed;
+use ntex_codec::Framed;
 
 use super::{codec, sink::MqttSink};
 use crate::handshake::HandshakeResult;

@@ -1,34 +1,38 @@
 //! Framed transport dispatcher
-use std::collections::VecDeque;
-use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use std::{fmt, io};
 
+use either::Either;
 use futures::{ready, FutureExt, Stream};
 use log::debug;
 use ntex::channel::mpsc;
-use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 use ntex::rt::time::{delay_for, Delay};
 use ntex::service::{IntoService, Service};
+use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = <U as Encoder>::Item;
 
 bitflags::bitflags! {
-    struct Flags: u8 {
-        const READ_ERR    = 0b0000_0001;
-        const WRITE_ERR   = 0b0000_0010;
+    struct Errors: u8 {
+        const IO     = 0b0000_0001;
+        const WRITE  = 0b0000_0100;
     }
 }
 
 /// Framed transport errors
 pub enum CodecError<U: Encoder + Decoder> {
+    /// Keep alive timeout
+    KeepAlive,
     /// Encoder parse error
     Encoder(<U as Encoder>::Error),
     /// Decoder parse error
     Decoder(<U as Decoder>::Error),
+    /// Unexpected io error
+    Io(io::Error),
 }
 
 impl<U: Encoder + Decoder> fmt::Debug for CodecError<U>
@@ -38,8 +42,10 @@ where
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
+            CodecError::KeepAlive => write!(fmt, "CodecError::KeepAlive"),
             CodecError::Encoder(ref e) => write!(fmt, "CodecError::Encoder({:?})", e),
             CodecError::Decoder(ref e) => write!(fmt, "CodecError::Decoder({:?})", e),
+            CodecError::Io(ref e) => write!(fmt, "CodecError::Io({:?})", e),
         }
     }
 }
@@ -51,8 +57,10 @@ where
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
+            CodecError::KeepAlive => write!(fmt, "CodecError::KeepAlive"),
             CodecError::Encoder(ref e) => write!(fmt, "{:?}", e),
             CodecError::Decoder(ref e) => write!(fmt, "{:?}", e),
+            CodecError::Io(ref e) => write!(fmt, "CodecError::Io({:?})", e),
         }
     }
 }
@@ -93,9 +101,9 @@ where
                 sink: None,
                 rx: mpsc::channel().1,
                 service: service.into_service(),
-                flags: Flags::empty(),
+                error: None,
+                errors: Errors::empty(),
                 state: FramedState::Processing,
-                errors: VecDeque::new(),
                 disconnect_timeout: 1000,
             },
         }
@@ -121,9 +129,9 @@ where
                 sink,
                 rx: mpsc::channel().1,
                 service: service.into_service(),
-                flags: Flags::empty(),
+                error: None,
+                errors: Errors::empty(),
                 state: FramedState::Processing,
-                errors: VecDeque::new(),
                 disconnect_timeout: 1000,
             },
         }
@@ -191,8 +199,8 @@ where
     framed: Framed<T, U>,
     rx: mpsc::Receiver<Result<<U as Encoder>::Item, S::Error>>,
     disconnect_timeout: u64,
-    flags: Flags,
-    errors: VecDeque<CodecError<U>>,
+    error: Option<CodecError<U>>,
+    errors: Errors,
 }
 
 impl<S, T, U, Out> InnerDispatcher<S, T, U, Out>
@@ -207,16 +215,11 @@ where
     Out: Stream<Item = <U as Encoder>::Item> + Unpin,
 {
     fn poll_read(&mut self, cx: &mut Context<'_>) -> PollResult {
-        // do not read after read error
-        if self.flags.contains(Flags::READ_ERR) {
-            return PollResult::Continue;
-        }
-
         loop {
             match self.service.poll_ready(cx) {
                 Poll::Ready(Ok(_)) => {
-                    // handle errors queue
-                    if let Some(err) = self.errors.pop_front() {
+                    // handle write error
+                    if let Some(err) = self.error.take() {
                         let tx = self.rx.sender();
                         ntex::rt::spawn(self.service.call(Err(err)).map(move |item| {
                             let item = match item {
@@ -226,24 +229,38 @@ where
                             };
                             let _ = tx.send(item);
                         }));
-                        continue;
+                        self.state = FramedState::FlushAndStop(None);
+                        return PollResult::Continue;
                     }
 
+                    // read data from io
+                    let mut error = false;
                     let item = match self.framed.next_item(cx) {
                         Poll::Ready(Some(Ok(el))) => Ok(el),
                         Poll::Ready(Some(Err(err))) => {
-                            log::trace!("Framed decode error");
-                            self.flags.insert(Flags::READ_ERR);
-                            Err(CodecError::Decoder(err))
+                            error = true;
+                            match err {
+                                Either::Left(err) => {
+                                    log::warn!("Framed decode error");
+                                    Err(CodecError::Decoder(err))
+                                }
+                                Either::Right(err) => {
+                                    log::trace!("Framed io error: {:?}", err);
+                                    self.errors.insert(Errors::IO);
+                                    Err(CodecError::Io(err))
+                                }
+                            }
                         }
                         Poll::Pending => return PollResult::Pending,
                         Poll::Ready(None) => {
                             log::trace!("Client disconnected");
-                            self.state = FramedState::Shutdown(None);
+                            self.errors.insert(Errors::IO);
+                            self.state = FramedState::FlushAndStop(None);
                             return PollResult::Continue;
                         }
                     };
 
+                    // call service
                     let tx = self.rx.sender();
                     ntex::rt::spawn(self.service.call(item).map(move |item| {
                         let item = match item {
@@ -253,9 +270,16 @@ where
                         };
                         let _ = tx.send(item);
                     }));
+
+                    // handle read error
+                    if error {
+                        self.state = FramedState::FlushAndStop(None);
+                        return PollResult::Continue;
+                    }
                 }
                 Poll::Pending => return PollResult::Pending,
                 Poll::Ready(Err(err)) => {
+                    // service readiness error
                     self.state = FramedState::FlushAndStop(Some(err));
                     return PollResult::Continue;
                 }
@@ -265,38 +289,8 @@ where
 
     /// write to framed object
     fn poll_write(&mut self, cx: &mut Context<'_>) -> PollResult {
-        if self.flags.contains(Flags::WRITE_ERR) {
-            // drain back queue
-            loop {
-                match Pin::new(&mut self.rx).poll_next(cx) {
-                    Poll::Ready(Some(Ok(_))) => continue,
-                    Poll::Ready(Some(Err(err))) => {
-                        self.state = FramedState::Shutdown(Some(err));
-                        return PollResult::Continue;
-                    }
-                    Poll::Ready(None) => {
-                        self.state = FramedState::Shutdown(None);
-                        return PollResult::Continue;
-                    }
-                    Poll::Pending => break,
-                }
-            }
-
-            // drain sink
-            loop {
-                if let Some(ref mut sink) = self.sink {
-                    match Pin::new(sink).poll_next(cx) {
-                        Poll::Ready(Some(_)) => continue,
-                        Poll::Ready(None) => {
-                            let _ = self.sink.take();
-                            self.state = FramedState::FlushAndStop(None);
-                            return PollResult::Continue;
-                        }
-                        Poll::Pending => break,
-                    }
-                }
-            }
-
+        // if WRITE error occured, dont do anything just drain queues
+        if self.errors.contains(Errors::WRITE) {
             return PollResult::Pending;
         }
 
@@ -308,11 +302,13 @@ where
                         // so error here is from encoder
                         if let Err(err) = self.framed.write(msg) {
                             log::trace!("Framed write error: {:?}", err);
-                            self.errors.push_back(CodecError::Encoder(err));
+                            self.errors.insert(Errors::WRITE);
+                            self.error = Some(CodecError::Encoder(err));
                             return PollResult::Continue;
                         }
                         continue;
                     }
+                    // service call ended up with error
                     Poll::Ready(Some(Err(err))) => {
                         self.state = FramedState::FlushAndStop(Some(err));
                         return PollResult::Continue;
@@ -320,16 +316,19 @@ where
                     Poll::Ready(None) | Poll::Pending => {}
                 }
 
+                // handle sink queue
                 if let Some(ref mut sink) = self.sink {
                     match Pin::new(sink).poll_next(cx) {
                         Poll::Ready(Some(msg)) => {
                             if let Err(err) = self.framed.write(msg) {
                                 log::trace!("Framed write error from sink: {:?}", err);
-                                self.errors.push_back(CodecError::Encoder(err));
+                                self.errors.insert(Errors::WRITE);
+                                self.error = Some(CodecError::Encoder(err));
                                 return PollResult::Continue;
                             }
                             continue;
                         }
+                        // sink closed
                         Poll::Ready(None) => {
                             let _ = self.sink.take();
                             self.state = FramedState::FlushAndStop(None);
@@ -341,15 +340,16 @@ where
                 break;
             }
 
+            // flush framed instance, do actual IO
             if !self.framed.is_write_buf_empty() {
                 match self.framed.flush(cx) {
                     Poll::Pending => break,
                     Poll::Ready(Ok(_)) => (),
                     Poll::Ready(Err(err)) => {
                         debug!("Error sending data: {:?}", err);
-                        self.flags.insert(Flags::WRITE_ERR);
-                        self.errors.push_back(CodecError::Encoder(err));
                         let _ = self.sink.take();
+                        self.error = Some(CodecError::Io(err));
+                        self.errors.insert(Errors::WRITE | Errors::IO);
                         return PollResult::Continue;
                     }
                 }
@@ -384,23 +384,25 @@ where
                         }
                         Poll::Ready(Some(Err(err))) => {
                             log::trace!("Sink poll error");
-                            self.state = FramedState::Shutdown(Some(err.into()));
+                            self.state = FramedState::Shutdown(Some(err));
                             continue;
                         }
                         Poll::Ready(None) | Poll::Pending => (),
                     }
 
                     // flush io
-                    if !self.framed.is_write_buf_empty() {
-                        match self.framed.flush(cx) {
-                            Poll::Ready(Err(err)) => {
-                                debug!("Error sending data: {:?}", err);
+                    if !self.errors.contains(Errors::IO) {
+                        if !self.framed.is_write_buf_empty() {
+                            match self.framed.flush(cx) {
+                                Poll::Ready(Err(err)) => {
+                                    debug!("Error sending data: {:?}", err);
+                                }
+                                Poll::Pending => return Poll::Pending,
+                                Poll::Ready(_) => (),
                             }
-                            Poll::Pending => return Poll::Pending,
-                            Poll::Ready(_) => (),
                         }
-                    };
-                    log::trace!("Framed flushed, shutdown");
+                        log::trace!("Framed flushed, shutdown");
+                    }
                     self.state = FramedState::Shutdown(err.take());
                 }
                 FramedState::Shutdown(ref mut err) => {
@@ -408,12 +410,12 @@ where
                         let result = if let Some(err) = err.take() { Err(err) } else { Ok(()) };
 
                         // no need for io shutdown because io error occured
-                        if self.flags.contains(Flags::WRITE_ERR) {
+                        if self.errors.contains(Errors::IO) {
                             return Poll::Ready(result);
                         }
 
-                        // frame close, closes io WR side and waits for disconnect
-                        // on read side. we need disconnect timeout, because it
+                        // close frame, closes io WR side and waits for disconnect
+                        // on read side. we need disconnect timeout, otherwise it
                         // could hang forever.
                         let pending = self.framed.close(cx).is_pending();
                         if self.disconnect_timeout != 0 && pending {
@@ -452,9 +454,9 @@ mod tests {
     use std::io;
 
     use ntex::channel::mpsc;
-    use ntex::codec::{BytesCodec, Framed};
     use ntex::rt::time::delay_for;
     use ntex::testing::Io;
+    use ntex_codec::{BytesCodec, Framed};
 
     use super::*;
 

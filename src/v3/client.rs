@@ -1,19 +1,15 @@
-use std::fmt;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::rc::Rc;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::{fmt, io, marker::PhantomData, pin::Pin, rc::Rc, time::Duration};
 
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::{err, Either, FutureExt, LocalBoxFuture};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use ntex::channel::mpsc;
-use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::service::{
     apply_fn_factory, boxed, IntoService, IntoServiceFactory, Service, ServiceFactory,
 };
+use ntex_codec::{AsyncRead, AsyncWrite};
 
 use crate::error::{DecodeError, EncodeError, MqttError};
 use crate::framed::CodecError;
@@ -231,7 +227,7 @@ where
         // send Connect packet
         async move {
             let mut framed = req.codec(mqtt::Codec::new());
-            framed.send(mqtt::Packet::Connect(packet)).await.map_err(MqttError::Encode)?;
+            framed.send(mqtt::Packet::Connect(packet)).await.map_err(MqttError::from)?;
 
             let packet = framed
                 .next()
@@ -240,7 +236,7 @@ where
                     log::trace!("Client mqtt is disconnected during handshake");
                     MqttError::Disconnected
                 })
-                .and_then(|res| res.map_err(MqttError::Decode))?;
+                .and_then(|res| res.map_err(From::from))?;
 
             match packet {
                 mqtt::Packet::ConnectAck { session_present, return_code } => {
@@ -310,7 +306,7 @@ impl<Io> Stream for ConnectAck<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin + Unpin,
 {
-    type Item = Result<mqtt::Packet, DecodeError>;
+    type Item = Result<mqtt::Packet, either::Either<DecodeError, io::Error>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.io).poll_next(cx)
@@ -321,7 +317,7 @@ impl<Io> Sink<mqtt::Packet> for ConnectAck<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Error = EncodeError;
+    type Error = either::Either<EncodeError, io::Error>;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         Pin::new(&mut self.io).poll_ready(cx)
@@ -351,7 +347,7 @@ impl<Io, St> Stream for ConnectAckResult<Io, St>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Item = Result<mqtt::Packet, DecodeError>;
+    type Item = Result<mqtt::Packet, either::Either<DecodeError, io::Error>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.io).poll_next(cx)
@@ -362,7 +358,7 @@ impl<Io, St> Sink<mqtt::Packet> for ConnectAckResult<Io, St>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Error = EncodeError;
+    type Error = either::Either<EncodeError, io::Error>;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         Pin::new(&mut self.io).poll_ready(cx)

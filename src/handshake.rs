@@ -1,10 +1,12 @@
+use std::io;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use either::Either;
 use futures::Stream;
 use ntex::channel::mpsc::Receiver;
-use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
+use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 
 pub struct Handshake<Io, Codec, Out = Receiver<<Codec as Encoder>::Item>>
 where
@@ -68,7 +70,7 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     Codec: Encoder + Decoder,
 {
-    type Item = Result<<Codec as Decoder>::Item, <Codec as Decoder>::Error>;
+    type Item = Result<<Codec as Decoder>::Item, Either<<Codec as Decoder>::Error, io::Error>>;
 
     #[inline]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -80,9 +82,8 @@ impl<Io, St, Codec, Out> futures::Sink<Codec::Item> for HandshakeResult<Io, St, 
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     Codec: Encoder + Unpin,
-    Codec::Error: From<std::io::Error>,
 {
-    type Error = Codec::Error;
+    type Error = Either<Codec::Error, io::Error>;
 
     #[inline]
     fn poll_ready(
@@ -122,8 +123,8 @@ mod tests {
     use bytes::Bytes;
     use futures::future::lazy;
     use futures::{Sink, StreamExt};
-    use ntex::codec::BytesCodec;
     use ntex::testing::Io;
+    use ntex_codec::BytesCodec;
 
     use super::*;
 
