@@ -70,9 +70,9 @@ impl<Io> Connect<Io> {
     }
 
     /// Create connect ack object with error
-    pub fn failed<St>(self) -> ConnectAck<Io, St> {
+    pub fn failed<St>(self, reason: codec::ConnectAckReason) -> ConnectAck<Io, St> {
         let mut packet = codec::ConnectAck::default();
-        packet.reason_code = codec::ConnectAckReason::UnspecifiedError;
+        packet.reason_code = reason;
         packet.topic_alias_max = self.max_topic_alias;
 
         ConnectAck {

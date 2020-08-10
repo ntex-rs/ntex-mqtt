@@ -37,11 +37,7 @@ pub enum DispatcherError<U: Encoder + Decoder> {
     Io(io::Error),
 }
 
-impl<U: Encoder + Decoder> fmt::Debug for DispatcherError<U>
-where
-    <U as Encoder>::Error: fmt::Debug,
-    <U as Decoder>::Error: fmt::Debug,
-{
+impl<U: Encoder + Decoder> fmt::Debug for DispatcherError<U> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             DispatcherError::KeepAlive => write!(fmt, "DispatcherError::KeepAlive"),
@@ -52,11 +48,7 @@ where
     }
 }
 
-impl<U: Encoder + Decoder> fmt::Display for DispatcherError<U>
-where
-    <U as Encoder>::Error: fmt::Debug,
-    <U as Decoder>::Error: fmt::Debug,
-{
+impl<U: Encoder + Decoder> fmt::Display for DispatcherError<U> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             DispatcherError::KeepAlive => write!(fmt, "DispatcherError::KeepAlive"),
@@ -81,7 +73,6 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
-    <U as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <U as Encoder>::Item> + Unpin,
 {
     inner: InnerDispatcher<S, T, U, Out>,
@@ -99,7 +90,6 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Decoder + Encoder,
     <U as Encoder>::Item: 'static,
-    <U as Encoder>::Error: std::fmt::Debug,
 {
     /// Construct new `Dispatcher` instance
     pub fn new<F: IntoService<S>>(framed: Framed<T, U>, service: F) -> Self {
@@ -138,7 +128,6 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Decoder + Encoder,
     <U as Encoder>::Item: 'static,
-    <U as Encoder>::Error: std::fmt::Debug,
     In: Stream<Item = <U as Encoder>::Item> + Unpin,
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
@@ -204,7 +193,6 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Decoder + Encoder,
     <U as Encoder>::Item: 'static,
-    <U as Encoder>::Error: std::fmt::Debug,
     In: Stream<Item = <U as Encoder>::Item> + Unpin,
 {
     type Output = Result<(), S::Error>;
@@ -238,7 +226,6 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
-    <U as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <U as Encoder>::Item> + Unpin,
 {
     service: S,
@@ -266,7 +253,6 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Decoder + Encoder,
     <U as Encoder>::Item: 'static,
-    <U as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <U as Encoder>::Item> + Unpin,
 {
     fn poll_read(&mut self, cx: &mut Context<'_>) -> PollResult {

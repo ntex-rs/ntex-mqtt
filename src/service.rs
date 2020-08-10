@@ -30,7 +30,6 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     /// Construct framed handler service with specified connect service
@@ -81,7 +80,6 @@ where
     >,
     C::Error: fmt::Debug,
     Codec: Decoder + Encoder,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     /// Construct framed handler service factory with specified connect service
@@ -163,7 +161,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Config = Cfg;
@@ -206,7 +203,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     #[pin]
@@ -236,7 +232,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Output = Result<FramedServiceImpl<St, C::Service, T, Io, Codec, Out>, C::InitError>;
@@ -280,7 +275,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Request = Io;
@@ -343,7 +337,6 @@ where
     >,
     C::Error: fmt::Debug,
     Codec: Decoder + Encoder,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     /// Construct framed handler service factory with specified connect service
@@ -418,7 +411,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Config = Cfg;
@@ -461,7 +453,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     #[pin]
@@ -491,7 +482,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Output = Result<FramedServiceImpl2<St, C::Service, T, Io, Codec, Out>, C::InitError>;
@@ -538,7 +528,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    <Codec as Encoder>::Error: std::fmt::Debug,
     Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Request = (Framed<Io, Codec>, Option<Delay>);
