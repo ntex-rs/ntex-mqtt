@@ -21,6 +21,8 @@ pub enum MqttError<E> {
     PacketIdRequired,
     /// Multiple in-flight publish packet with same package_id
     DuplicatedPacketId,
+    /// Packet id of publish ack packet does not match of send publish packet
+    PacketIdMismatch,
     /// Topic alias is greater than max topic alias
     MaxTopicAlias,
     /// Unknown topic alias

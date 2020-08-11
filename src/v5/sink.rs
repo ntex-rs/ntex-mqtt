@@ -70,7 +70,7 @@ impl MqttSink {
         }
     }
 
-    pub(crate) fn complete_publish_qos1(&self, packet_id: NonZeroU16) {
+    pub(crate) fn complete_publish_qos1(&self, packet_id: NonZeroU16) -> bool {
         if let Some((idx, tx)) = self.0.borrow_mut().queue.pop_front() {
             if idx != packet_id.get() {
                 log::trace!(
@@ -81,12 +81,12 @@ impl MqttSink {
             } else {
                 log::trace!("Ack publish packet with id: {}", packet_id);
                 let _ = tx.send(());
-                return;
+                return true;
             }
         } else {
             log::trace!("Unexpected PublishAck packet");
         }
-        self.close();
+        false
     }
 }
 

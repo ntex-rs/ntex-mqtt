@@ -225,8 +225,18 @@ where
                 })
             }
             Ok(codec::Packet::PublishAck(packet)) => {
-                self.session.sink().complete_publish_qos1(packet.packet_id);
-                Either::Right(Either::Left(ok(None)))
+                if !self.session.sink().complete_publish_qos1(packet.packet_id) {
+                    Either::Right(Either::Right(ControlResponse {
+                        fut: self
+                            .info
+                            .1
+                            .call(ControlPacket::ctl_error(MqttError::PacketIdMismatch)),
+                        info: self.info.clone(),
+                        error: true,
+                    }))
+                } else {
+                    Either::Right(Either::Left(ok(None)))
+                }
             }
             Ok(codec::Packet::Auth(pkt)) => Either::Right(Either::Right(ControlResponse {
                 fut: self.info.1.call(ControlPacket::ctl_auth(pkt)),
