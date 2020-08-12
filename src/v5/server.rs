@@ -371,7 +371,8 @@ where
     match packet {
         mqtt::Packet::Connect(connect) => {
             let (tx, rx) = mpsc::channel();
-            let sink = MqttSink::new(tx);
+            let sink =
+                MqttSink::new(tx, connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize);
 
             // authenticate mqtt connection
             let mut ack = service.call(Connect::new(connect, framed, sink)).await?;

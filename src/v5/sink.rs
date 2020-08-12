@@ -1,13 +1,11 @@
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::fmt;
-use std::num::NonZeroU16;
-use std::rc::Rc;
+use std::task::{Context, Poll};
+use std::{cell::RefCell, collections::VecDeque, fmt, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::{err, Either, Future, TryFutureExt};
+use futures::future::Future;
 use ntex::channel::{mpsc, oneshot};
+use ntex::util::counter::Counter;
 
 use super::codec as mqtt;
 use crate::types::QoS;
@@ -16,8 +14,10 @@ pub struct MqttSink(Rc<RefCell<MqttSinkInner>>);
 
 pub(crate) struct MqttSinkInner {
     idx: u16,
+    cap: usize,
     queue: VecDeque<(u16, oneshot::Sender<()>)>,
     sink: Option<mpsc::Sender<mqtt::Packet>>,
+    inflight: CheckInFlight,
 }
 
 impl Clone for MqttSink {
@@ -27,12 +27,20 @@ impl Clone for MqttSink {
 }
 
 impl MqttSink {
-    pub(crate) fn new(sink: mpsc::Sender<mqtt::Packet>) -> Self {
+    pub(crate) fn new(sink: mpsc::Sender<mqtt::Packet>, max_receive: usize) -> Self {
         MqttSink(Rc::new(RefCell::new(MqttSinkInner {
             idx: 0,
+            cap: max_receive,
             sink: Some(sink),
             queue: VecDeque::new(),
+            inflight: CheckInFlight(Counter::new(max_receive)),
         })))
+    }
+
+    /// Get client receive credit
+    pub fn credit(&self) -> usize {
+        let inner = self.0.borrow();
+        inner.cap - inner.inflight.0.total()
     }
 
     /// Close mqtt connection with default Disconnect message
@@ -144,32 +152,63 @@ impl<'a> PublishBuilder<'a> {
     /// Send publish packet with QoS 1
     pub fn send_at_least_once(&mut self) -> impl Future<Output = Result<(), ()>> {
         if let Some(mut packet) = self.packet.take() {
-            let mut inner = self.sink.0.borrow_mut();
+            let sink = self.sink.clone();
+            let mut inflight = self.sink.0.borrow().inflight.clone();
 
-            if inner.sink.is_some() {
-                let (tx, rx) = oneshot::channel();
+            async move {
+                // receive max
+                (&mut inflight).await;
+                let guard = inflight.0.get();
 
-                inner.idx += 1;
-                if inner.idx == 0 {
-                    inner.idx = 1
-                }
-                let idx = inner.idx;
-                inner.queue.push_back((idx, tx));
+                let mut inner = sink.0.borrow_mut();
+                let result = if inner.sink.is_some() {
+                    let (tx, rx) = oneshot::channel();
 
-                packet.qos = QoS::AtLeastOnce;
-                packet.packet_id = NonZeroU16::new(inner.idx);
+                    inner.idx += 1;
+                    if inner.idx == 0 {
+                        inner.idx = 1
+                    }
+                    let idx = inner.idx;
+                    inner.queue.push_back((idx, tx));
 
-                log::trace!("Publish (QoS1) to {:#?}", packet);
-                if inner.sink.as_ref().unwrap().send(mqtt::Packet::Publish(packet)).is_err() {
-                    Either::Right(err(()))
+                    packet.qos = QoS::AtLeastOnce;
+                    packet.packet_id = NonZeroU16::new(inner.idx);
+
+                    log::trace!("Publish (QoS1) to {:#?}", packet);
+
+                    let send_result =
+                        inner.sink.as_ref().unwrap().send(mqtt::Packet::Publish(packet));
+                    drop(inner);
+
+                    if send_result.is_err() {
+                        Err(())
+                    } else {
+                        rx.await.map_err(|_| ())
+                    }
                 } else {
-                    Either::Left(rx.map_err(|_| ()))
-                }
-            } else {
-                Either::Right(err(()))
+                    Err(())
+                };
+
+                drop(guard);
+                result
             }
         } else {
             panic!("PublishBuilder can be used only once.");
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CheckInFlight(Counter);
+
+impl Future for CheckInFlight {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.0.available(cx) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
         }
     }
 }
