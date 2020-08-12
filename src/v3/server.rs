@@ -188,12 +188,11 @@ where
             FactoryBuilder::new(handshake_service_factory(
                 connect,
                 self.max_size,
-                self.inflight,
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
-                factory(publish, control),
+                factory(publish, control, self.inflight),
                 |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
                     Ok(req) => Either::Left(srv.call(req)),
                     Err(e) => Either::Right(err(MqttError::Protocol(From::from(e)))),
@@ -227,12 +226,11 @@ where
             FactoryBuilder2::new(handshake_service_factory2(
                 connect,
                 self.max_size,
-                self.inflight,
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
-                factory(publish, control),
+                factory(publish, control, self.inflight),
                 |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
                     Ok(req) => Either::Left(srv.call(req)),
                     Err(e) => Either::Right(err(MqttError::Protocol(From::from(e)))),
@@ -245,7 +243,6 @@ where
 fn handshake_service_factory<Io, St, C>(
     factory: C,
     max_size: u32,
-    inflight: usize,
     handshake_timeout: usize,
 ) -> impl ServiceFactory<
     Config = (),
@@ -264,12 +261,7 @@ where
             factory.new_service(()).map_ok(move |service| {
                 let service = Rc::new(service.map_err(MqttError::Service));
                 ntex::apply_fn(service, move |conn: Handshake<Io, mqtt::Codec>, service| {
-                    handshake(
-                        conn.codec(mqtt::Codec::new()),
-                        service.clone(),
-                        max_size,
-                        inflight,
-                    )
+                    handshake(conn.codec(mqtt::Codec::new()), service.clone(), max_size)
                 })
             })
         }),
@@ -283,7 +275,6 @@ where
 fn handshake_service_factory2<Io, St, C>(
     factory: C,
     max_size: u32,
-    inflight: usize,
     handshake_timeout: usize,
 ) -> impl ServiceFactory<
     Config = (),
@@ -303,7 +294,7 @@ where
             factory.new_service(()).map_ok(move |service| {
                 let service = Rc::new(service.map_err(MqttError::Service));
                 ntex::apply_fn(service, move |conn, service| {
-                    handshake(conn, service.clone(), max_size, inflight)
+                    handshake(conn, service.clone(), max_size)
                 })
             })
         }),
@@ -318,7 +309,6 @@ async fn handshake<Io, S, St, E>(
     mut framed: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
     service: S,
     max_size: u32,
-    inflight: usize,
 ) -> Result<HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>, S::Error>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
@@ -349,7 +339,7 @@ where
             let sink = MqttSink::new(tx);
 
             // authenticate mqtt connection
-            let mut ack = service.call(Connect::new(connect, framed, sink, inflight)).await?;
+            let mut ack = service.call(Connect::new(connect, framed, sink)).await?;
 
             match ack.session {
                 Some(session) => {
@@ -368,7 +358,7 @@ where
                         })
                         .await?;
 
-                    Ok(ack.io.out(rx).state(Session::new(session, sink, ack.inflight)))
+                    Ok(ack.io.out(rx).state(Session::new(session, sink)))
                 }
                 None => {
                     log::trace!(

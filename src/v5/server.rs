@@ -1,11 +1,8 @@
-use std::convert::TryFrom;
-use std::fmt;
-use std::marker::PhantomData;
-use std::rc::Rc;
-use std::time::Duration;
+use std::{
+    convert::TryFrom, fmt, marker::PhantomData, num::NonZeroU16, rc::Rc, time::Duration,
+};
 
-use futures::future::TryFutureExt;
-use futures::{SinkExt, StreamExt};
+use futures::{future::TryFutureExt, SinkExt, StreamExt};
 use ntex::channel::mpsc;
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
@@ -31,7 +28,7 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     srv_control: Cn,
     srv_publish: P,
     max_size: u32,
-    inflight: usize,
+    max_receive: u16,
     handshake_timeout: usize,
     disconnect_timeout: usize,
     max_topic_alias: u16,
@@ -62,7 +59,7 @@ where
             srv_control: DefaultControlService::default(),
             srv_publish: DefaultPublishService::default(),
             max_size: 0,
-            inflight: 15,
+            max_receive: 15,
             handshake_timeout: 0,
             disconnect_timeout: 3000,
             max_topic_alias: 32,
@@ -116,11 +113,12 @@ where
         self
     }
 
-    /// Number of in-flight concurrent messages.
+    /// Set `receive max`
     ///
-    /// By default in-flight is set to 15 messages
-    pub fn inflight(mut self, val: usize) -> Self {
-        self.inflight = val;
+    /// Number of in-flight publish packets. By default receive max is set to 15 packets.
+    /// To disable timeout set value to 0.
+    pub fn receive_max(mut self, val: u16) -> Self {
+        self.max_receive = val;
         self
     }
 
@@ -151,7 +149,7 @@ where
             srv_publish: self.srv_publish,
             srv_control: service.into_factory(),
             max_size: self.max_size,
-            inflight: self.inflight,
+            max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
@@ -174,7 +172,7 @@ where
             srv_publish: publish.into_factory(),
             srv_control: self.srv_control,
             max_size: self.max_size,
-            inflight: self.inflight,
+            max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
@@ -215,12 +213,17 @@ where
             FactoryBuilder::new(handshake_service_factory(
                 connect,
                 self.max_size,
-                self.inflight,
+                self.max_receive,
                 self.max_topic_alias,
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control, self.max_topic_alias)),
+            .build(factory(
+                publish,
+                control,
+                self.max_receive,
+                self.max_topic_alias,
+            )),
         )
     }
 
@@ -244,13 +247,18 @@ where
         ntex::unit_config(
             FactoryBuilder2::new(handshake_service_factory2(
                 connect,
-                self.max_size as u32,
-                self.inflight,
+                self.max_size,
+                self.max_receive,
                 self.max_topic_alias,
                 self.handshake_timeout,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control, self.max_topic_alias)),
+            .build(factory(
+                publish,
+                control,
+                self.max_receive,
+                self.max_topic_alias,
+            )),
         )
     }
 }
@@ -258,7 +266,7 @@ where
 fn handshake_service_factory<Io, St, C>(
     factory: C,
     max_size: u32,
-    inflight: usize,
+    max_receive: u16,
     max_topic_alias: u16,
     handshake_timeout: usize,
 ) -> impl ServiceFactory<
@@ -282,8 +290,8 @@ where
                         conn.codec(mqtt::Codec::new()),
                         service.clone(),
                         max_size,
+                        max_receive,
                         max_topic_alias,
-                        inflight,
                     )
                 })
             })
@@ -298,7 +306,7 @@ where
 fn handshake_service_factory2<Io, St, C>(
     factory: C,
     max_size: u32,
-    inflight: usize,
+    max_receive: u16,
     max_topic_alias: u16,
     handshake_timeout: usize,
 ) -> impl ServiceFactory<
@@ -319,7 +327,7 @@ where
             factory.new_service(()).map_ok(move |service| {
                 let service = Rc::new(service.map_err(MqttError::Service));
                 ntex::apply_fn(service, move |conn, service| {
-                    handshake(conn, service.clone(), max_size, max_topic_alias, inflight)
+                    handshake(conn, service.clone(), max_size, max_receive, max_topic_alias)
                 })
             })
         }),
@@ -334,8 +342,8 @@ async fn handshake<Io, S, St, E>(
     mut framed: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
     service: S,
     max_size: u32,
+    max_receive: u16,
     max_topic_alias: u16,
-    inflight: usize,
 ) -> Result<HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>, S::Error>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
@@ -366,17 +374,20 @@ where
             let sink = MqttSink::new(tx);
 
             // authenticate mqtt connection
-            let mut ack = service
-                .call(Connect::new(connect, framed, sink, max_topic_alias, inflight))
-                .await?;
+            let mut ack = service.call(Connect::new(connect, framed, sink)).await?;
 
             match ack.session {
                 Some(session) => {
                     log::trace!("Sending: {:#?}", ack.packet);
                     let sink = ack.sink;
+
+                    if max_receive != 0 {
+                        ack.packet.receive_max = Some(NonZeroU16::new(max_receive).unwrap());
+                    }
+                    ack.packet.topic_alias_max = max_topic_alias;
                     ack.io.send(mqtt::Packet::ConnectAck(ack.packet)).await?;
 
-                    Ok(ack.io.out(rx).state(Session::new(session, sink, ack.inflight)))
+                    Ok(ack.io.out(rx).state(Session::new(session, sink)))
                 }
                 None => {
                     log::trace!("Failed to complete handshake: {:#?}", ack.packet);

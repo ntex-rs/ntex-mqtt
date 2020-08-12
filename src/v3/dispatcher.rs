@@ -20,6 +20,7 @@ use super::{codec, Session};
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
+    inflight: usize,
 ) -> impl ServiceFactory<
     Config = Session<St>,
     Request = codec::Packet,
@@ -46,8 +47,6 @@ where
         > + 'static,
 {
     fn_factory_with_config(move |cfg: Session<St>| {
-        let inflight = cfg.max_inflight();
-
         // create services
         let fut = join(publish.new_service(cfg.clone()), control.new_service(cfg.clone()));
 

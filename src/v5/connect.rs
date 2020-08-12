@@ -1,5 +1,4 @@
-use std::fmt;
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use ntex::channel::mpsc;
 use ntex_codec::Framed;
@@ -11,8 +10,6 @@ use crate::handshake::HandshakeResult;
 pub struct Connect<Io> {
     connect: codec::Connect,
     sink: MqttSink,
-    inflight: usize,
-    max_topic_alias: u16,
     io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
 }
 
@@ -21,10 +18,8 @@ impl<Io> Connect<Io> {
         connect: codec::Connect,
         io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
         sink: MqttSink,
-        max_topic_alias: u16,
-        inflight: usize,
     ) -> Self {
-        Self { connect, io, sink, inflight, max_topic_alias }
+        Self { connect, io, sink }
     }
 
     pub fn packet(&self) -> &codec::Connect {
@@ -49,30 +44,16 @@ impl<Io> Connect<Io> {
     pub fn ack<St>(self, st: St) -> ConnectAck<Io, St> {
         let mut packet = codec::ConnectAck::default();
         packet.reason_code = codec::ConnectAckReason::Success;
-        packet.topic_alias_max = self.max_topic_alias;
 
-        ConnectAck {
-            io: self.io,
-            sink: self.sink,
-            inflight: self.inflight,
-            session: Some(st),
-            packet,
-        }
+        ConnectAck { io: self.io, sink: self.sink, session: Some(st), packet }
     }
 
     /// Create connect ack object with error
     pub fn failed<St>(self, reason: codec::ConnectAckReason) -> ConnectAck<Io, St> {
         let mut packet = codec::ConnectAck::default();
         packet.reason_code = reason;
-        packet.topic_alias_max = self.max_topic_alias;
 
-        ConnectAck {
-            io: self.io,
-            sink: self.sink,
-            session: None,
-            inflight: self.inflight,
-            packet,
-        }
+        ConnectAck { io: self.io, sink: self.sink, session: None, packet }
     }
 }
 
@@ -86,7 +67,6 @@ impl<T> fmt::Debug for Connect<T> {
 pub struct ConnectAck<Io, St> {
     pub(crate) io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
     pub(crate) session: Option<St>,
-    pub(crate) inflight: usize,
     pub(crate) sink: MqttSink,
     pub(crate) packet: codec::ConnectAck,
 }
@@ -105,14 +85,6 @@ impl<Io, St> ConnectAck<Io, St> {
     #[inline]
     pub fn with(mut self, f: impl FnOnce(&mut codec::ConnectAck)) -> Self {
         f(&mut self.packet);
-        self
-    }
-
-    /// Set in-flight count. Total number of `in-flight` packets
-    ///
-    /// By default in-flight count is set to 15
-    pub fn in_flight(mut self, in_flight: usize) -> Self {
-        self.inflight = in_flight;
         self
     }
 }

@@ -22,27 +22,27 @@ pub struct ControlResult {
 }
 
 impl<E> ControlPacket<E> {
-    pub(super) fn ctl_auth(pkt: codec::Auth) -> Self {
+    pub(super) fn auth(pkt: codec::Auth) -> Self {
         ControlPacket::Auth(Auth(pkt))
     }
 
-    pub(super) fn ctl_ping() -> Self {
+    pub(super) fn ping() -> Self {
         ControlPacket::Ping(Ping)
     }
 
-    pub(super) fn ctl_disconnect(pkt: codec::Disconnect) -> Self {
+    pub(super) fn dis(pkt: codec::Disconnect) -> Self {
         ControlPacket::Disconnect(Disconnect(pkt))
     }
 
-    pub(super) fn ctl_closed(is_error: bool) -> Self {
+    pub(super) fn closed(is_error: bool) -> Self {
         ControlPacket::Closed(Closed::new(is_error))
     }
 
-    pub(super) fn ctl_error(err: E) -> Self {
+    pub(super) fn error(err: E) -> Self {
         ControlPacket::Error(Error::new(err))
     }
 
-    pub(super) fn ctl_proto_error(err: error::ProtocolError) -> Self {
+    pub(super) fn proto_error(err: error::ProtocolError) -> Self {
         ControlPacket::ProtocolError(ProtocolError::new(err))
     }
 
@@ -432,12 +432,17 @@ impl ProtocolError {
                 reason_string: None,
                 user_properties: UserProperties::default(),
                 reason_code: match err {
-                    // DisconnectReasonCode,
                     error::ProtocolError::Decode(error::DecodeError::InvalidLength) => {
                         DisconnectReasonCode::MalformedPacket
                     }
+                    error::ProtocolError::Decode(error::DecodeError::MaxSizeExceeded) => {
+                        DisconnectReasonCode::PacketTooLarge
+                    }
                     error::ProtocolError::Unexpected(_, _) => {
                         DisconnectReasonCode::ProtocolError
+                    }
+                    error::ProtocolError::ReceiveMaximumExceeded => {
+                        DisconnectReasonCode::ReceiveMaximumExceeded
                     }
                     error::ProtocolError::DuplicatedPacketId => {
                         DisconnectReasonCode::ProtocolError

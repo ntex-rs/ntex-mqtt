@@ -12,8 +12,6 @@ use crate::handshake::HandshakeResult;
 pub struct Connect<Io> {
     connect: mqtt::Connect,
     sink: MqttSink,
-    keep_alive: Duration,
-    inflight: usize,
     io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
 }
 
@@ -22,15 +20,8 @@ impl<Io> Connect<Io> {
         connect: mqtt::Connect,
         io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
         sink: MqttSink,
-        inflight: usize,
     ) -> Self {
-        Self {
-            keep_alive: Duration::from_secs(connect.keep_alive as u64),
-            connect,
-            io,
-            sink,
-            inflight,
-        }
+        Self { connect, io, sink }
     }
 
     pub fn packet(&self) -> &mqtt::Connect {
@@ -53,7 +44,7 @@ impl<Io> Connect<Io> {
 
     /// Ack connect message and set state
     pub fn ack<St>(self, st: St, session_present: bool) -> ConnectAck<Io, St> {
-        ConnectAck::new(self.io, self.sink, st, session_present, self.inflight)
+        ConnectAck::new(self.io, self.sink, st, session_present)
     }
 
     /// Create connect ack object with `identifier rejected` return code
@@ -64,7 +55,6 @@ impl<Io> Connect<Io> {
             session: None,
             session_present: false,
             return_code: mqtt::ConnectAckReason::IdentifierRejected,
-            inflight: 15,
         }
     }
 
@@ -76,7 +66,6 @@ impl<Io> Connect<Io> {
             session: None,
             session_present: false,
             return_code: mqtt::ConnectAckReason::BadUserNameOrPassword,
-            inflight: 15,
         }
     }
 
@@ -88,7 +77,6 @@ impl<Io> Connect<Io> {
             session: None,
             session_present: false,
             return_code: mqtt::ConnectAckReason::NotAuthorized,
-            inflight: 15,
         }
     }
 
@@ -100,7 +88,6 @@ impl<Io> Connect<Io> {
             session: None,
             session_present: false,
             return_code: mqtt::ConnectAckReason::ServiceUnavailable,
-            inflight: 15,
         }
     }
 }
@@ -117,7 +104,6 @@ pub struct ConnectAck<Io, St> {
     pub(crate) session: Option<St>,
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectAckReason,
-    pub(crate) inflight: usize,
     pub(crate) sink: MqttSink,
 }
 
@@ -128,13 +114,11 @@ impl<Io, St> ConnectAck<Io, St> {
         sink: MqttSink,
         session: St,
         session_present: bool,
-        inflight: usize,
     ) -> Self {
         Self {
             io,
             sink,
             session_present,
-            inflight,
             session: Some(session),
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
         }
@@ -145,14 +129,6 @@ impl<Io, St> ConnectAck<Io, St> {
     /// By default idle time-out is set to 300000 milliseconds
     pub fn idle_timeout(mut self, timeout: Duration) -> Self {
         self.io.set_keepalive_timeout(timeout);
-        self
-    }
-
-    /// Set in-flight count. Total number of `in-flight` packets
-    ///
-    /// By default in-flight count is set to 15
-    pub fn in_flight(mut self, in_flight: usize) -> Self {
-        self.inflight = in_flight;
         self
     }
 }

@@ -38,6 +38,8 @@ pub enum ProtocolError {
     PacketIdMismatch,
     /// Topic alias is greater than max topic alias
     MaxTopicAlias,
+    /// Number of in-flight messages exceeded
+    ReceiveMaximumExceeded,
     /// Unknown topic alias
     UnknownTopicAlias,
     /// Keep alive timeout

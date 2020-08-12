@@ -169,7 +169,6 @@ where
             connect: self.state,
             packet: self.packet,
             keep_alive: self.keep_alive,
-            inflight: self.inflight,
             _t: PhantomData,
         })
         .build(apply_fn_factory(
@@ -179,6 +178,7 @@ where
                     .map_err(MqttError::Service)
                     .map_init_err(MqttError::Service),
                 self.control,
+                self.inflight,
             ),
             |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
                 Ok(req) => Either::Left(srv.call(req)),
@@ -192,7 +192,6 @@ struct ConnectService<Io, St, C> {
     connect: Rc<C>,
     packet: mqtt::Connect,
     keep_alive: u64,
-    inflight: usize,
     _t: PhantomData<(Io, St)>,
 }
 
@@ -222,7 +221,6 @@ where
         let srv = self.connect.clone();
         let packet = self.packet.clone();
         let keep_alive = Duration::from_secs(self.keep_alive as u64);
-        let inflight = self.inflight;
 
         // send Connect packet
         async move {
@@ -243,8 +241,7 @@ where
                 mqtt::Packet::ConnectAck { session_present, return_code } => {
                     let (tx, rx) = mpsc::channel();
                     let sink = MqttSink::new(tx);
-                    let ack =
-                        ConnectAck { sink, session_present, return_code, inflight, io: framed };
+                    let ack = ConnectAck { sink, session_present, return_code, io: framed };
                     Ok(srv
                         .as_ref()
                         .call(ack)
@@ -267,7 +264,6 @@ pub struct ConnectAck<Io> {
     sink: MqttSink,
     session_present: bool,
     return_code: mqtt::ConnectAckReason,
-    inflight: usize,
 }
 
 impl<Io> ConnectAck<Io> {
@@ -292,7 +288,7 @@ impl<Io> ConnectAck<Io> {
     #[inline]
     /// Set connection state and create result object
     pub fn state<St>(self, state: St) -> ConnectAckResult<Io, St> {
-        ConnectAckResult { io: self.io, state: Session::new(state, self.sink, self.inflight) }
+        ConnectAckResult { io: self.io, state: Session::new(state, self.sink) }
     }
 }
 

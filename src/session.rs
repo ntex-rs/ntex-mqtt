@@ -6,7 +6,6 @@ pub struct Session<T, St>(Rc<SessionInner<T, St>>);
 struct SessionInner<T, St> {
     st: St,
     sink: T,
-    in_flight: usize,
 }
 
 impl<T, St> Clone for Session<T, St> {
@@ -16,8 +15,8 @@ impl<T, St> Clone for Session<T, St> {
 }
 
 impl<T, St> Session<T, St> {
-    pub(crate) fn new(st: St, sink: T, in_flight: usize) -> Self {
-        Session(Rc::new(SessionInner { st, sink, in_flight }))
+    pub(crate) fn new(st: St, sink: T) -> Self {
+        Session(Rc::new(SessionInner { st, sink }))
     }
 
     pub fn sink(&self) -> &T {
@@ -26,9 +25,5 @@ impl<T, St> Session<T, St> {
 
     pub fn state(&self) -> &St {
         &self.0.st
-    }
-
-    pub(super) fn max_inflight(&self) -> usize {
-        self.0.as_ref().in_flight
     }
 }
