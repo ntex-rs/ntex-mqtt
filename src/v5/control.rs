@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bytestring::ByteString;
 
-use super::codec::{self, QoS};
+use super::codec::{self, DisconnectReasonCode, QoS, UserProperties};
 use crate::error;
 
 pub enum ControlPacket<E> {
@@ -43,7 +43,7 @@ impl<E> ControlPacket<E> {
     }
 
     pub(super) fn ctl_proto_error(err: error::ProtocolError) -> Self {
-        ControlPacket::ProtocolError(ProtocolError { err })
+        ControlPacket::ProtocolError(ProtocolError::new(err))
     }
 
     pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlResult {
@@ -389,26 +389,73 @@ impl<E> Error<E> {
 /// Connection failed message
 pub struct ProtocolError {
     err: error::ProtocolError,
+    pkt: codec::Disconnect,
 }
 
 impl ProtocolError {
+    pub fn new(err: error::ProtocolError) -> Self {
+        Self {
+            pkt: codec::Disconnect {
+                session_expiry_interval_secs: None,
+                server_reference: None,
+                reason_string: None,
+                user_properties: UserProperties::default(),
+                reason_code: match err {
+                    // DisconnectReasonCode,
+                    error::ProtocolError::Decode(error::DecodeError::InvalidLength) => {
+                        DisconnectReasonCode::MalformedPacket
+                    }
+                    error::ProtocolError::Unexpected(_, _) => {
+                        DisconnectReasonCode::ProtocolError
+                    }
+                    error::ProtocolError::DuplicatedPacketId => {
+                        DisconnectReasonCode::ProtocolError
+                    }
+                    error::ProtocolError::KeepAliveTimeout => {
+                        DisconnectReasonCode::KeepAliveTimeout
+                    }
+                    error::ProtocolError::UnknownTopicAlias => {
+                        DisconnectReasonCode::TopicAliasInvalid
+                    }
+                    error::ProtocolError::Encode(_) => {
+                        DisconnectReasonCode::ImplementationSpecificError
+                    }
+                    _ => DisconnectReasonCode::ImplementationSpecificError,
+                },
+            },
+            err,
+        }
+    }
+
     /// Returns reference to a protocol error
-    pub fn err(&self) -> &error::ProtocolError {
+    pub fn get_ref(&self) -> &error::ProtocolError {
         &self.err
     }
 
     #[inline]
-    /// convert packet to a result
-    pub fn ack(self, pkt: codec::Disconnect) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    /// Set reason code for disconnect packet
+    pub fn reason_code(mut self, reason: DisconnectReasonCode) -> Self {
+        self.pkt.reason_code = reason;
+        self
     }
 
     #[inline]
-    /// convert packet to a result
-    pub fn ack_default(self) -> ControlResult {
-        ControlResult {
-            packet: Some(codec::Packet::Disconnect(codec::Disconnect::default())),
-            disconnect: true,
-        }
+    /// Set reason string for disconnect packet
+    pub fn reason_string(mut self, reason: ByteString) -> Self {
+        self.pkt.reason_string = Some(reason);
+        self
+    }
+
+    #[inline]
+    /// Set server reference for disconnect packet
+    pub fn server_reference(mut self, reference: ByteString) -> Self {
+        self.pkt.server_reference = Some(reference);
+        self
+    }
+
+    #[inline]
+    /// Ack protocol error, return disconnect packet and close connection.
+    pub fn ack(self) -> ControlResult {
+        ControlResult { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true }
     }
 }
