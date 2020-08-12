@@ -1,6 +1,6 @@
 # Changes
 
-## [0.3.0] - 2020-08-xx
+## [0.3.0] - 2020-08-12
 
 * v5: Add topic aliases support
 
