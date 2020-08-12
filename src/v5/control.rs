@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use bytestring::ByteString;
 
 use super::codec::{self, QoS};
-use crate::error::MqttError;
+use crate::error;
 
 pub enum ControlPacket<E> {
     Auth(Auth),
@@ -13,6 +13,7 @@ pub enum ControlPacket<E> {
     Unsubscribe(Unsubscribe),
     Closed(Closed),
     Error(Error<E>),
+    ProtocolError(ProtocolError),
 }
 
 pub struct ControlResult {
@@ -37,8 +38,12 @@ impl<E> ControlPacket<E> {
         ControlPacket::Closed(Closed::new(is_error))
     }
 
-    pub(super) fn ctl_error(err: MqttError<E>) -> Self {
+    pub(super) fn ctl_error(err: E) -> Self {
         ControlPacket::Error(Error { err })
+    }
+
+    pub(super) fn ctl_proto_error(err: error::ProtocolError) -> Self {
+        ControlPacket::ProtocolError(ProtocolError { err })
     }
 
     pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlResult {
@@ -354,14 +359,41 @@ impl Closed {
     }
 }
 
-/// Connection failed message
+/// Service level error
 pub struct Error<E> {
-    err: MqttError<E>,
+    err: E,
 }
 
 impl<E> Error<E> {
     /// Returns reference to mqtt error
-    pub fn err(&self) -> &MqttError<E> {
+    pub fn err(&self) -> &E {
+        &self.err
+    }
+
+    #[inline]
+    /// convert packet to a result
+    pub fn ack(self, pkt: codec::Disconnect) -> ControlResult {
+        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    }
+
+    #[inline]
+    /// convert packet to a result
+    pub fn ack_default(self) -> ControlResult {
+        ControlResult {
+            packet: Some(codec::Packet::Disconnect(codec::Disconnect::default())),
+            disconnect: true,
+        }
+    }
+}
+
+/// Connection failed message
+pub struct ProtocolError {
+    err: error::ProtocolError,
+}
+
+impl ProtocolError {
+    /// Returns reference to a protocol error
+    pub fn err(&self) -> &error::ProtocolError {
         &self.err
     }
 

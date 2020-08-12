@@ -9,6 +9,8 @@ use super::framed::DispatcherError;
 pub enum MqttError<E> {
     /// Publish handler service error
     Service(E),
+    /// Protocol error
+    Protocol(ProtocolError),
     /// Publish service readiness error
     PublishReadyError,
     /// Mqtt parse error
@@ -35,6 +37,46 @@ pub enum MqttError<E> {
     Disconnected,
     /// Unexpected io error
     Io(io::Error),
+}
+
+/// Protocol level errors
+#[derive(Debug)]
+pub enum ProtocolError {
+    /// Publish service readiness error
+    PublishReadyError,
+    /// Mqtt parse error
+    Decode(DecodeError),
+    /// Mqtt encode error
+    Encode(EncodeError),
+    /// Unexpected packet
+    Unexpected(u8, &'static str),
+    /// "SUBSCRIBE, UNSUBSCRIBE, and PUBLISH (in cases where QoS > 0) Control Packets MUST contain a non-zero 16-bit Packet Identifier [MQTT-2.3.1-1]."
+    PacketIdRequired,
+    /// Multiple in-flight publish packet with same package_id
+    DuplicatedPacketId,
+    /// Packet id of publish ack packet does not match of send publish packet
+    PacketIdMismatch,
+    /// Topic alias is greater than max topic alias
+    MaxTopicAlias,
+    /// Unknown topic alias
+    UnknownTopicAlias,
+    /// Keep alive timeout
+    KeepAliveTimeout,
+    /// Handshake timeout
+    HandshakeTimeout,
+    /// Peer disconnect
+    Disconnected,
+    /// Unexpected io error
+    Io(io::Error),
+}
+
+impl<E> From<Either<E, ProtocolError>> for MqttError<E> {
+    fn from(err: Either<E, ProtocolError>) -> Self {
+        match err {
+            Either::Left(e) => MqttError::Service(e),
+            Either::Right(e) => MqttError::Protocol(e),
+        }
+    }
 }
 
 impl<E> From<DecodeError> for MqttError<E> {
@@ -95,6 +137,28 @@ impl<E> From<DispatcherError<crate::v5::codec::Codec>> for MqttError<E> {
     }
 }
 
+impl From<DispatcherError<crate::v3::codec::Codec>> for ProtocolError {
+    fn from(err: DispatcherError<crate::v3::codec::Codec>) -> Self {
+        match err {
+            DispatcherError::KeepAlive => ProtocolError::KeepAliveTimeout,
+            DispatcherError::Encoder(err) => ProtocolError::Encode(err),
+            DispatcherError::Decoder(err) => ProtocolError::Decode(err),
+            DispatcherError::Io(err) => ProtocolError::Io(err),
+        }
+    }
+}
+
+impl From<DispatcherError<crate::v5::codec::Codec>> for ProtocolError {
+    fn from(err: DispatcherError<crate::v5::codec::Codec>) -> Self {
+        match err {
+            DispatcherError::KeepAlive => ProtocolError::KeepAliveTimeout,
+            DispatcherError::Encoder(err) => ProtocolError::Encode(err),
+            DispatcherError::Decoder(err) => ProtocolError::Decode(err),
+            DispatcherError::Io(err) => ProtocolError::Io(err),
+        }
+    }
+}
+
 #[derive(Debug, From)]
 pub enum DecodeError {
     InvalidProtocol,
@@ -111,7 +175,7 @@ pub enum DecodeError {
     Utf8Error(std::str::Utf8Error),
 }
 
-#[derive(Debug, From)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum EncodeError {
     InvalidLength,
     MalformedPacket,

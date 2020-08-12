@@ -1,16 +1,14 @@
 use std::convert::TryFrom;
 use std::fmt;
 use std::marker::PhantomData;
-use std::pin::Pin;
 use std::rc::Rc;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures::future::{ok, Future, Ready, TryFutureExt};
+use futures::future::TryFutureExt;
 use futures::{SinkExt, StreamExt};
 use ntex::channel::mpsc;
 use ntex::rt::time::Delay;
-use ntex::service::{IntoServiceFactory, Service, ServiceFactory, Transform};
+use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
 use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
@@ -207,13 +205,10 @@ where
     ) -> impl ServiceFactory<Config = (), Request = Io, Response = (), Error = MqttError<C::Error>>
     {
         let connect = self.connect;
-        let publish = ntex::apply(
-            PublishServiceTransform(PhantomData),
-            self.srv_publish.map_init_err(|e| MqttError::Service(e.into())),
-        );
+        let publish = self.srv_publish.map_init_err(|e| MqttError::Service(e.into()));
         let control = self
             .srv_control
-            .map_err(|e| MqttError::Service(e.into()))
+            .map_err(<C::Error>::from)
             .map_init_err(|e| MqttError::Service(e.into()));
 
         ntex::unit_config(
@@ -240,13 +235,10 @@ where
         InitError = C::InitError,
     > {
         let connect = self.connect;
-        let publish = ntex::apply(
-            PublishServiceTransform(PhantomData),
-            self.srv_publish.map_init_err(|e| MqttError::Service(e.into())),
-        );
+        let publish = self.srv_publish.map_init_err(|e| MqttError::Service(e.into()));
         let control = self
             .srv_control
-            .map_err(|e| MqttError::Service(e.into()))
+            .map_err(<C::Error>::from)
             .map_init_err(|e| MqttError::Service(e.into()));
 
         ntex::unit_config(
@@ -400,92 +392,6 @@ where
                 packet.packet_type(),
                 "MQTT-3.1.0-1: Expected CONNECT packet",
             ))
-        }
-    }
-}
-
-struct PublishServiceTransform<E>(PhantomData<E>);
-
-impl<S, E> Transform<S> for PublishServiceTransform<E>
-where
-    S: Service<Response = PublishAck>,
-    S::Error: fmt::Debug,
-    PublishAck: TryFrom<S::Error, Error = E>,
-{
-    type Request = S::Request;
-    type Response = PublishAck;
-    type Error = MqttError<E>;
-    type Transform = PublishService<S, E>;
-    type InitError = MqttError<E>;
-    type Future = Ready<Result<Self::Transform, Self::InitError>>;
-
-    /// Creates and returns a new Transform component, asynchronously
-    fn new_transform(&self, service: S) -> Self::Future {
-        ok(PublishService { srv: service, _t: PhantomData })
-    }
-}
-
-struct PublishService<S, E> {
-    srv: S,
-    _t: PhantomData<E>,
-}
-
-impl<S, E> Service for PublishService<S, E>
-where
-    S: Service<Response = PublishAck>,
-    S::Error: fmt::Debug,
-    PublishAck: TryFrom<S::Error, Error = E>,
-{
-    type Request = S::Request;
-    type Response = PublishAck;
-    type Error = MqttError<E>;
-    type Future = PublishServiceResponse<S, E>;
-
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.srv.poll_ready(cx) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(e)) => {
-                log::error!("Publish service readiness error: {:?}", e);
-                Poll::Ready(Err(MqttError::PublishReadyError))
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        self.srv.poll_shutdown(cx, is_error)
-    }
-
-    fn call(&self, req: Self::Request) -> Self::Future {
-        PublishServiceResponse { fut: self.srv.call(req), _t: PhantomData }
-    }
-}
-
-pin_project_lite::pin_project! {
-    struct PublishServiceResponse<S: Service, E>{
-        #[pin]
-        fut: S::Future,
-        _t: PhantomData<E>,
-    }
-}
-
-impl<S, E> Future for PublishServiceResponse<S, E>
-where
-    S: Service<Response = PublishAck>,
-    PublishAck: TryFrom<S::Error, Error = E>,
-{
-    type Output = Result<PublishAck, MqttError<E>>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-
-        match this.fut.poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(ack)) => Poll::Ready(Ok(ack)),
-            Poll::Ready(Err(e)) => match PublishAck::try_from(e) {
-                Ok(ack) => Poll::Ready(Ok(ack)),
-                Err(err) => Poll::Ready(Err(MqttError::Service(err))),
-            },
         }
     }
 }

@@ -11,7 +11,6 @@ use crate::handshake::HandshakeResult;
 pub struct Connect<Io> {
     connect: codec::Connect,
     sink: MqttSink,
-    keep_alive: Duration,
     inflight: usize,
     max_topic_alias: u16,
     io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
@@ -25,14 +24,7 @@ impl<Io> Connect<Io> {
         max_topic_alias: u16,
         inflight: usize,
     ) -> Self {
-        Self {
-            keep_alive: Duration::from_secs(connect.keep_alive as u64),
-            connect,
-            io,
-            sink,
-            inflight,
-            max_topic_alias,
-        }
+        Self { connect, io, sink, inflight, max_topic_alias }
     }
 
     pub fn packet(&self) -> &codec::Connect {
@@ -100,11 +92,12 @@ pub struct ConnectAck<Io, St> {
 }
 
 impl<Io, St> ConnectAck<Io, St> {
-    /// Set idle time-out for the connection in milliseconds
+    /// Set idle keep-alive for the connection in seconds.
     ///
-    /// By default idle time-out is set to 300000 milliseconds
-    pub fn idle_timeout(mut self, timeout: Duration) -> Self {
-        self.io.set_keepalive_timeout(timeout);
+    /// By default idle keep-alive is set to 30 seconds
+    pub fn keep_alive(mut self, timeout: u32) -> Self {
+        self.packet.session_expiry_interval_secs = Some(timeout);
+        self.io.set_keepalive_timeout(Duration::from_secs(timeout as u64));
         self
     }
 
