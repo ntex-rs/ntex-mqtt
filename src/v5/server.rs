@@ -385,6 +385,7 @@ where
                     if max_receive != 0 {
                         ack.packet.receive_max = Some(NonZeroU16::new(max_receive).unwrap());
                     }
+                    ack.packet.max_packet_size = Some(max_size.into());
                     ack.packet.topic_alias_max = max_topic_alias;
                     ack.io.send(mqtt::Packet::ConnectAck(ack.packet)).await?;
 

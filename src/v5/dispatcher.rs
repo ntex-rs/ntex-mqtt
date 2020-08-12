@@ -205,7 +205,12 @@ where
 
                     if let Some(pid) = packet_id {
                         // check for receive maximum
-                        if self.max_receive > inner.inflight.len() {
+                        if self.max_receive != 0 && inner.inflight.len() >= self.max_receive {
+                            log::trace!(
+                                "Receive maximum exceeded: max: {} inflight: {}",
+                                self.max_receive,
+                                inner.inflight.len()
+                            );
                             return Either::Right(Either::Right(ControlResponse::new(
                                 ControlPacket::proto_error(
                                     ProtocolError::ReceiveMaximumExceeded,

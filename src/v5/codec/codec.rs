@@ -68,6 +68,11 @@ impl Decoder for Codec {
                         Some((remaining_length, consumed)) => {
                             // check max message size
                             if self.max_size != 0 && self.max_size < remaining_length {
+                                log::debug!(
+                                    "MaxSizeExceeded max-size: {}, remaining: {}",
+                                    self.max_size,
+                                    remaining_length
+                                );
                                 return Err(DecodeError::MaxSizeExceeded);
                             }
                             src.advance(consumed + 1);

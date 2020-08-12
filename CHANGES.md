@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.1] - 2020-08-12
+
+* v5: Fix max inflight check
+
 ## [0.3.0] - 2020-08-12
 
 * v5: Add topic aliases support
