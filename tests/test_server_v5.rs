@@ -5,7 +5,7 @@ use ntex::server;
 use ntex::service::Service;
 use std::convert::TryFrom;
 
-use ntex_mqtt::v5::{client, Connect, ConnectAck, MqttServer, Publish, PublishAck, Session};
+use ntex_mqtt::v5::{Connect, ConnectAck, MqttServer, Publish, PublishAck, Session};
 
 struct St;
 
@@ -31,38 +31,38 @@ async fn connect<Io>(packet: Connect<Io>) -> Result<ConnectAck<Io, St>, TestErro
     Ok(packet.ack(St))
 }
 
-#[ntex::test]
-async fn test_simple() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
-    env_logger::init();
+// #[ntex::test]
+// async fn test_simple() -> std::io::Result<()> {
+//     std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
+//     env_logger::init();
 
-    let srv = server::test_server(|| {
-        MqttServer::new(connect).publish(|p: Publish| ok::<_, TestError>(p.ack())).finish()
-    });
+//     let srv = server::test_server(|| {
+//         MqttServer::new(connect).publish(|p: Publish| ok::<_, TestError>(p.ack())).finish()
+//     });
 
-    struct Client;
+//     struct Client;
 
-    let client = client::Client::new(ByteString::from_static("user"))
-        .state(|ack: client::ConnectAck<_>| async move {
-            ack.sink().publish(ByteString::from_static("#"), Bytes::new()).send_at_most_once();
-            ack.sink().close();
-            Ok(ack.state(Client))
-        })
-        .finish(ntex::fn_factory_with_config(|session: Session<Client>| {
-            let session = session.clone();
+//     let client = client::Client::new(ByteString::from_static("user"))
+//         .state(|ack: client::ConnectAck<_>| async move {
+//             ack.sink().publish(ByteString::from_static("#"), Bytes::new()).send_at_most_once();
+//             ack.sink().close();
+//             Ok(ack.state(Client))
+//         })
+//         .finish(ntex::fn_factory_with_config(|session: Session<Client>| {
+//             let session = session.clone();
 
-            ok::<_, ()>(ntex::into_service(move |p: Publish| {
-                session.sink().close();
-                ok(p.ack())
-            }))
-        }));
+//             ok::<_, ()>(ntex::into_service(move |p: Publish| {
+//                 session.sink().close();
+//                 ok(p.ack())
+//             }))
+//         }));
 
-    let conn = ntex::connect::Connector::default()
-        .call(ntex::connect::Connect::with(String::new(), srv.addr()))
-        .await
-        .unwrap();
+//     let conn = ntex::connect::Connector::default()
+//         .call(ntex::connect::Connect::with(String::new(), srv.addr()))
+//         .await
+//         .unwrap();
 
-    client.call(conn).await.unwrap();
+//     client.call(conn).await.unwrap();
 
-    Ok(())
-}
+//     Ok(())
+// }
