@@ -39,7 +39,7 @@ impl<E> ControlPacket<E> {
     }
 
     pub(super) fn ctl_error(err: E) -> Self {
-        ControlPacket::Error(Error { err })
+        ControlPacket::Error(Error::new(err))
     }
 
     pub(super) fn ctl_proto_error(err: error::ProtocolError) -> Self {
@@ -362,27 +362,58 @@ impl Closed {
 /// Service level error
 pub struct Error<E> {
     err: E,
+    pkt: codec::Disconnect,
 }
 
 impl<E> Error<E> {
+    pub fn new(err: E) -> Self {
+        Self {
+            err,
+            pkt: codec::Disconnect {
+                session_expiry_interval_secs: None,
+                server_reference: None,
+                reason_string: None,
+                user_properties: UserProperties::default(),
+                reason_code: DisconnectReasonCode::ImplementationSpecificError,
+            },
+        }
+    }
+
+    #[inline]
     /// Returns reference to mqtt error
-    pub fn err(&self) -> &E {
+    pub fn get_err(&self) -> &E {
         &self.err
     }
 
     #[inline]
-    /// convert packet to a result
-    pub fn ack(self, pkt: codec::Disconnect) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    /// Set reason string for disconnect packet
+    pub fn reason_string(mut self, reason: ByteString) -> Self {
+        self.pkt.reason_string = Some(reason);
+        self
+    }
+
+    #[inline]
+    /// Set server reference for disconnect packet
+    pub fn server_reference(mut self, reference: ByteString) -> Self {
+        self.pkt.server_reference = Some(reference);
+        self
+    }
+
+    #[inline]
+    /// Update disconnect packet properties
+    pub fn properties<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&mut codec::UserProperties),
+    {
+        f(&mut self.pkt.user_properties);
+        self
     }
 
     #[inline]
     /// convert packet to a result
-    pub fn ack_default(self) -> ControlResult {
-        ControlResult {
-            packet: Some(codec::Packet::Disconnect(codec::Disconnect::default())),
-            disconnect: true,
-        }
+    pub fn ack(mut self, reason: DisconnectReasonCode) -> ControlResult {
+        self.pkt.reason_code = reason;
+        ControlResult { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true }
     }
 }
 
@@ -427,6 +458,7 @@ impl ProtocolError {
         }
     }
 
+    #[inline]
     /// Returns reference to a protocol error
     pub fn get_ref(&self) -> &error::ProtocolError {
         &self.err
@@ -450,6 +482,16 @@ impl ProtocolError {
     /// Set server reference for disconnect packet
     pub fn server_reference(mut self, reference: ByteString) -> Self {
         self.pkt.server_reference = Some(reference);
+        self
+    }
+
+    #[inline]
+    /// Update disconnect packet properties
+    pub fn properties<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&mut codec::UserProperties),
+    {
+        f(&mut self.pkt.user_properties);
         self
     }
 
