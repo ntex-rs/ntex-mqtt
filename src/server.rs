@@ -11,7 +11,7 @@ use ntex::rt::time::{delay_for, Delay};
 use ntex::service::{Service, ServiceFactory};
 use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
-use crate::error::MqttError;
+use crate::error::{MqttError, ProtocolError};
 use crate::version::{ProtocolVersion, VersionCodec};
 use crate::{v3, v5};
 
@@ -419,9 +419,9 @@ impl<Io, Err, InitErr, Codec> Service for DefaultProtocolServer<Io, Err, InitErr
     }
 
     fn call(&self, _: Self::Request) -> Self::Future {
-        err(MqttError::Io(io::Error::new(
+        err(MqttError::Protocol(ProtocolError::Io(io::Error::new(
             io::ErrorKind::Other,
             format!("Protocol is not supported: {:?}", self.ver),
-        )))
+        ))))
     }
 }

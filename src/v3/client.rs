@@ -11,7 +11,7 @@ use ntex::service::{
 };
 use ntex_codec::{AsyncRead, AsyncWrite};
 
-use crate::error::{DecodeError, EncodeError, MqttError};
+use crate::error::{DecodeError, EncodeError, MqttError, ProtocolError};
 use crate::framed::DispatcherError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::Builder;
@@ -182,7 +182,7 @@ where
             ),
             |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
                 Ok(req) => Either::Left(srv.call(req)),
-                Err(e) => Either::Right(err(MqttError::from(e))),
+                Err(e) => Either::Right(err(MqttError::Protocol(From::from(e)))),
             },
         ))
     }
@@ -252,7 +252,10 @@ where
                         .map_err(MqttError::Service)
                         .map(move |ack| ack.io.out(rx).state(ack.state))?)
                 }
-                p => Err(MqttError::Unexpected(p.packet_type(), "Expected CONNECT-ACK packet")),
+                p => Err(MqttError::Protocol(ProtocolError::Unexpected(
+                    p.packet_type(),
+                    "Expected CONNECT-ACK packet",
+                ))),
             }
         }
         .boxed_local()

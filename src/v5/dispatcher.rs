@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::convert::TryFrom;
 use std::task::{Context, Poll};
-use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
+use std::{future::Future, io, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use futures::future::{join, ok, Either, FutureExt, Ready};
 use futures::ready;
@@ -67,14 +67,19 @@ where
                     // mqtt spec requires ack ordering, so enforce response ordering
                     InOrder::service(publish?).map_err(|e| match e {
                         InOrderError::Service(e) => either::Either::Left(e),
-                        InOrderError::Disconnected => {
-                            either::Either::Right(ProtocolError::Disconnected)
-                        }
+                        InOrderError::Disconnected => either::Either::Right(ProtocolError::Io(
+                            io::Error::new(io::ErrorKind::Other, "Service dropped"),
+                        )),
                     }),
                 ),
                 BufferService::new(
                     16,
-                    || either::Either::Right(ProtocolError::Disconnected),
+                    || {
+                        either::Either::Right(ProtocolError::Io(io::Error::new(
+                            io::ErrorKind::Other,
+                            "Service dropped",
+                        )))
+                    },
                     // limit number of in-flight messages
                     InFlightService::new(1, control?.map_err(either::Either::Left)),
                 ),

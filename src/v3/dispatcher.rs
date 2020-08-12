@@ -10,7 +10,7 @@ use ntex::util::buffer::BufferService;
 use ntex::util::inflight::InFlightService;
 use ntex::util::order::{InOrder, InOrderError};
 
-use crate::error::MqttError;
+use crate::error::{MqttError, ProtocolError};
 
 use super::control::{ControlPacket, ControlResult, ControlResultKind, Subscribe, Unsubscribe};
 use super::publish::Publish;
@@ -146,7 +146,9 @@ where
                 // check for duplicated packet id
                 if let Some(pid) = packet_id {
                     if !inflight.borrow_mut().insert(pid) {
-                        return Either::Right(Either::Left(err(MqttError::DuplicatedPacketId)));
+                        return Either::Right(Either::Left(err(MqttError::Protocol(
+                            ProtocolError::DuplicatedPacketId,
+                        ))));
                     }
                 }
                 Either::Left(PublishResponse {

@@ -13,30 +13,10 @@ pub enum MqttError<E> {
     Protocol(ProtocolError),
     /// Publish service readiness error
     PublishReadyError,
-    /// Mqtt parse error
-    Decode(DecodeError),
-    /// Mqtt encode error
-    Encode(EncodeError),
-    /// Unexpected packet
-    Unexpected(u8, &'static str),
-    /// "SUBSCRIBE, UNSUBSCRIBE, and PUBLISH (in cases where QoS > 0) Control Packets MUST contain a non-zero 16-bit Packet Identifier [MQTT-2.3.1-1]."
-    PacketIdRequired,
-    /// Multiple in-flight publish packet with same package_id
-    DuplicatedPacketId,
-    /// Packet id of publish ack packet does not match of send publish packet
-    PacketIdMismatch,
-    /// Topic alias is greater than max topic alias
-    MaxTopicAlias,
-    /// Unknown topic alias
-    UnknownTopicAlias,
-    /// Keep alive timeout
-    KeepAliveTimeout,
     /// Handshake timeout
     HandshakeTimeout,
     /// Peer disconnect
     Disconnected,
-    /// Unexpected io error
-    Io(io::Error),
 }
 
 /// Protocol level errors
@@ -62,10 +42,6 @@ pub enum ProtocolError {
     UnknownTopicAlias,
     /// Keep alive timeout
     KeepAliveTimeout,
-    /// Handshake timeout
-    HandshakeTimeout,
-    /// Peer disconnect
-    Disconnected,
     /// Unexpected io error
     Io(io::Error),
 }
@@ -79,17 +55,11 @@ impl<E> From<Either<E, ProtocolError>> for MqttError<E> {
     }
 }
 
-impl<E> From<DecodeError> for MqttError<E> {
-    fn from(err: DecodeError) -> Self {
-        MqttError::Decode(err)
-    }
-}
-
 impl<E> From<Either<DecodeError, io::Error>> for MqttError<E> {
     fn from(err: Either<DecodeError, io::Error>) -> Self {
         match err {
-            Either::Left(err) => MqttError::Decode(err),
-            Either::Right(err) => MqttError::Io(err),
+            Either::Left(err) => MqttError::Protocol(ProtocolError::Decode(err)),
+            Either::Right(err) => MqttError::Protocol(ProtocolError::Io(err)),
         }
     }
 }
@@ -97,42 +67,8 @@ impl<E> From<Either<DecodeError, io::Error>> for MqttError<E> {
 impl<E> From<Either<EncodeError, io::Error>> for MqttError<E> {
     fn from(err: Either<EncodeError, io::Error>) -> Self {
         match err {
-            Either::Left(err) => MqttError::Encode(err),
-            Either::Right(err) => MqttError::Io(err),
-        }
-    }
-}
-
-impl<E> From<EncodeError> for MqttError<E> {
-    fn from(err: EncodeError) -> Self {
-        MqttError::Encode(err)
-    }
-}
-
-impl<E> From<io::Error> for MqttError<E> {
-    fn from(err: io::Error) -> Self {
-        MqttError::Io(err)
-    }
-}
-
-impl<E> From<DispatcherError<crate::v3::codec::Codec>> for MqttError<E> {
-    fn from(err: DispatcherError<crate::v3::codec::Codec>) -> Self {
-        match err {
-            DispatcherError::KeepAlive => MqttError::KeepAliveTimeout,
-            DispatcherError::Encoder(err) => MqttError::Encode(err),
-            DispatcherError::Decoder(err) => MqttError::Decode(err),
-            DispatcherError::Io(err) => MqttError::Io(err),
-        }
-    }
-}
-
-impl<E> From<DispatcherError<crate::v5::codec::Codec>> for MqttError<E> {
-    fn from(err: DispatcherError<crate::v5::codec::Codec>) -> Self {
-        match err {
-            DispatcherError::KeepAlive => MqttError::KeepAliveTimeout,
-            DispatcherError::Encoder(err) => MqttError::Encode(err),
-            DispatcherError::Decoder(err) => MqttError::Decode(err),
-            DispatcherError::Io(err) => MqttError::Io(err),
+            Either::Left(err) => MqttError::Protocol(ProtocolError::Encode(err)),
+            Either::Right(err) => MqttError::Protocol(ProtocolError::Io(err)),
         }
     }
 }

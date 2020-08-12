@@ -12,7 +12,7 @@ use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
 use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
-use crate::error::MqttError;
+use crate::error::{MqttError, ProtocolError};
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
@@ -388,10 +388,10 @@ where
         }
         packet => {
             log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {}", 1);
-            Err(MqttError::Unexpected(
+            Err(MqttError::Protocol(ProtocolError::Unexpected(
                 packet.packet_type(),
                 "MQTT-3.1.0-1: Expected CONNECT packet",
-            ))
+            )))
         }
     }
 }

@@ -11,7 +11,7 @@ use ntex::service::{apply_fn_factory, IntoServiceFactory, Service, ServiceFactor
 use ntex::util::timeout::{Timeout, TimeoutError};
 use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
-use crate::error::MqttError;
+use crate::error::{MqttError, ProtocolError};
 use crate::framed::DispatcherError;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
@@ -196,7 +196,7 @@ where
                 factory(publish, control),
                 |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
                     Ok(req) => Either::Left(srv.call(req)),
-                    Err(e) => Either::Right(err(MqttError::from(e))),
+                    Err(e) => Either::Right(err(MqttError::Protocol(From::from(e)))),
                 },
             )),
         )
@@ -235,7 +235,7 @@ where
                 factory(publish, control),
                 |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
                     Ok(req) => Either::Left(srv.call(req)),
-                    Err(e) => Either::Right(err(MqttError::from(e))),
+                    Err(e) => Either::Right(err(MqttError::Protocol(From::from(e)))),
                 },
             )),
         )
@@ -391,10 +391,10 @@ where
         }
         packet => {
             log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
-            Err(MqttError::Unexpected(
+            Err(MqttError::Protocol(ProtocolError::Unexpected(
                 packet.packet_type(),
                 "MQTT-3.1.0-1: Expected CONNECT packet",
-            ))
+            )))
         }
     }
 }
