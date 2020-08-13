@@ -222,11 +222,13 @@ where
 
                         // check for duplicated packet id
                         if !inner.inflight.insert(pid) {
-                            return Either::Right(Either::Right(ControlResponse::new(
-                                ControlPacket::proto_error(ProtocolError::DuplicatedPacketId),
-                                &self.inner,
-                                true,
-                            )));
+                            return Either::Right(Either::Left(ok(Some(
+                                codec::Packet::PublishAck(codec::PublishAck {
+                                    packet_id: pid,
+                                    reason_code: codec::PublishAckReason::PacketIdentifierInUse,
+                                    ..Default::default()
+                                }),
+                            ))));
                         }
                     }
 

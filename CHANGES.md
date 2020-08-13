@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.2] - 2020-08-13
+
+* v5: Respond with PublishAck for PacketIdentifierInUse error instead of disconnect
+
 ## [0.3.1] - 2020-08-12
 
 * v5: Fix max inflight check
