@@ -2,7 +2,9 @@
 
 ## [0.3.2] - 2020-08-13
 
-* v5: Respond with PublishAck for PacketIdentifierInUse error instead of disconnect
+* v5: Handle packet id in use for publish, subscribe and unsubscribe packets
+
+* v5: Handle 16 concurrent control service requests
 
 ## [0.3.1] - 2020-08-12
 
