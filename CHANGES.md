@@ -1,5 +1,11 @@
 # Changes
 
+## [0.3.4] - 2020-08-xx
+
+* v5: set `max_qos` to `AtLeastOnce` for server `ConnectAck` response
+
+* v5: do not set `session_expiry_interval_secs` prop
+
 ## [0.3.3] - 2020-08-13
 
 * v5: do not convert publish error to ack for QoS0 packets

@@ -391,6 +391,7 @@ where
                     }
                     ack.packet.max_packet_size = Some(max_size);
                     ack.packet.topic_alias_max = max_topic_alias;
+                    ack.packet.max_qos = Some(mqtt::QoS::AtLeastOnce);
                     ack.io.send(mqtt::Packet::ConnectAck(ack.packet)).await?;
 
                     Ok(ack.io.out(rx).state(Session::new(session, sink)))
