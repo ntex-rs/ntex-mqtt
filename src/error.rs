@@ -11,8 +11,6 @@ pub enum MqttError<E> {
     Service(E),
     /// Protocol error
     Protocol(ProtocolError),
-    /// Publish service readiness error
-    PublishReadyError,
     /// Handshake timeout
     HandshakeTimeout,
     /// Peer disconnect

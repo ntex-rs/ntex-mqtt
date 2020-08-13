@@ -32,7 +32,7 @@ pub(super) fn factory<St, T, C, E>(
     InitError = MqttError<E>,
 >
 where
-    E: 'static,
+    E: From<T::Error> + 'static,
     St: 'static,
     T: ServiceFactory<
             Config = Session<St>,
@@ -160,7 +160,7 @@ where
         Error = either::Either<E, ProtocolError>,
     >,
     C::Future: 'static,
-    E: 'static,
+    E: From<E2> + 'static,
 {
     type Request = Result<codec::Packet, DispatcherError<codec::Codec>>;
     type Response = Option<codec::Packet>;
@@ -171,7 +171,10 @@ where
     >;
 
     fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
-        let res1 = self.publish.poll_ready(cx).map_err(|_| MqttError::PublishReadyError)?;
+        let res1 = self.publish.poll_ready(cx).map_err(|e| match e {
+            either::Either::Left(e) => MqttError::Service(e.into()),
+            either::Either::Right(e) => MqttError::Protocol(e),
+        })?;
         let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::from)?;
 
         if res1.is_pending() || res2.is_pending() {
@@ -373,6 +376,7 @@ enum PublishResponseState<T: Service, C: Service, E> {
 
 impl<T, C, E, E2> Future for PublishResponse<T, C, E, E2>
 where
+    E: From<E2>,
     T: Service<
         Request = Publish,
         Response = PublishAck,
@@ -395,16 +399,32 @@ where
                 let ack = match ready!(fut.poll(cx)) {
                     Ok(ack) => ack,
                     Err(e) => match e {
-                        either::Either::Left(e) => match PublishAck::try_from(e) {
-                            Ok(ack) => ack,
-                            Err(e) => {
+                        either::Either::Left(e) => {
+                            if *this.packet_id != 0 {
+                                match PublishAck::try_from(e) {
+                                    Ok(ack) => ack,
+                                    Err(e) => {
+                                        this.state.set(PublishResponseState::Control(
+                                            ControlResponse::new(
+                                                ControlPacket::error(e),
+                                                this.inner,
+                                            )
+                                            .error(),
+                                        ));
+                                        return self.poll(cx);
+                                    }
+                                }
+                            } else {
                                 this.state.set(PublishResponseState::Control(
-                                    ControlResponse::new(ControlPacket::error(e), this.inner)
-                                        .error(),
+                                    ControlResponse::new(
+                                        ControlPacket::error(e.into()),
+                                        this.inner,
+                                    )
+                                    .error(),
                                 ));
                                 return self.poll(cx);
                             }
-                        },
+                        }
                         either::Either::Right(e) => {
                             this.state.set(PublishResponseState::Control(
                                 ControlResponse::new(ControlPacket::proto_error(e), this.inner)

@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.3] - 2020-08-13
+
+* v5: do not convert publish error to ack for QoS0 packets
+
 ## [0.3.2] - 2020-08-13
 
 * v5: Handle packet id in use for publish, subscribe and unsubscribe packets

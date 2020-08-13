@@ -170,7 +170,11 @@ where
                 Response = v5::PublishAck,
             > + 'static,
         P::Error: fmt::Debug,
-        C::Error: From<Cn::Error> + From<Cn::InitError> + From<P::InitError> + fmt::Debug,
+        C::Error: From<Cn::Error>
+            + From<Cn::InitError>
+            + From<P::Error>
+            + From<P::InitError>
+            + fmt::Debug,
         v5::PublishAck: TryFrom<P::Error, Error = C::Error>,
     {
         MqttServer {

@@ -161,7 +161,7 @@ where
     pub fn publish<F, Srv>(self, publish: F) -> MqttServer<Io, St, C, Cn, Srv>
     where
         F: IntoServiceFactory<Srv> + 'static,
-        C::Error: From<Srv::InitError>,
+        C::Error: From<Srv::Error> + From<Srv::InitError>,
         Srv: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck>
             + 'static,
         Srv::Error: fmt::Debug,
@@ -187,7 +187,11 @@ where
     St: 'static,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
         + 'static,
-    C::Error: From<Cn::Error> + From<Cn::InitError> + From<P::InitError> + fmt::Debug,
+    C::Error: From<Cn::Error>
+        + From<Cn::InitError>
+        + From<P::Error>
+        + From<P::InitError>
+        + fmt::Debug,
     Cn: ServiceFactory<
             Config = Session<St>,
             Request = ControlPacket<C::Error>,
