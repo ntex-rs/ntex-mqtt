@@ -1,3 +1,4 @@
+#![type_length_limit = "1134953"]
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::ok;
