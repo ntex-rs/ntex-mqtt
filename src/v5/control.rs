@@ -444,9 +444,6 @@ impl ProtocolError {
                     error::ProtocolError::ReceiveMaximumExceeded => {
                         DisconnectReasonCode::ReceiveMaximumExceeded
                     }
-                    error::ProtocolError::DuplicatedPacketId => {
-                        DisconnectReasonCode::ProtocolError
-                    }
                     error::ProtocolError::KeepAliveTimeout => {
                         DisconnectReasonCode::KeepAliveTimeout
                     }

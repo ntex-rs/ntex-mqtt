@@ -10,6 +10,8 @@
 
 * v3: Handle 16 concurrent control service requests
 
+* Removed ProtocolError::DuplicatedPacketId error
+
 ## [0.3.1] - 2020-08-12
 
 * v5: Fix max inflight check

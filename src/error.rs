@@ -17,23 +17,19 @@ pub enum MqttError<E> {
     HandshakeTimeout,
     /// Peer disconnect
     Disconnected,
+    /// Protocol specific unhandled error (for v3.1.1 only)
+    V3ProtocolError,
 }
 
 /// Protocol level errors
 #[derive(Debug)]
 pub enum ProtocolError {
-    /// Publish service readiness error
-    PublishReadyError,
     /// Mqtt parse error
     Decode(DecodeError),
     /// Mqtt encode error
     Encode(EncodeError),
     /// Unexpected packet
     Unexpected(u8, &'static str),
-    /// "SUBSCRIBE, UNSUBSCRIBE, and PUBLISH (in cases where QoS > 0) Control Packets MUST contain a non-zero 16-bit Packet Identifier [MQTT-2.3.1-1]."
-    PacketIdRequired,
-    /// Multiple in-flight publish packet with same package_id
-    DuplicatedPacketId,
     /// Packet id of publish ack packet does not match of send publish packet
     PacketIdMismatch,
     /// Topic alias is greater than max topic alias

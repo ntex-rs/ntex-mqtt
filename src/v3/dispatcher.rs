@@ -9,7 +9,7 @@ use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::inflight::InFlightService;
 use ntex::util::order::{InOrder, InOrderError};
 
-use crate::error::{MqttError, ProtocolError};
+use crate::error::MqttError;
 
 use super::control::{ControlPacket, ControlResult, ControlResultKind, Subscribe, Unsubscribe};
 use super::publish::Publish;
@@ -147,9 +147,7 @@ where
                 if let Some(pid) = packet_id {
                     if !inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
-                        return Either::Right(Either::Left(err(MqttError::Protocol(
-                            ProtocolError::DuplicatedPacketId,
-                        ))));
+                        return Either::Right(Either::Left(err(MqttError::V3ProtocolError)));
                     }
                 }
                 Either::Left(PublishResponse {
@@ -174,9 +172,7 @@ where
             codec::Packet::Subscribe { packet_id, topic_filters } => {
                 if !self.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
-                    return Either::Right(Either::Left(err(MqttError::Protocol(
-                        ProtocolError::DuplicatedPacketId,
-                    ))));
+                    return Either::Right(Either::Left(err(MqttError::V3ProtocolError)));
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
@@ -190,9 +186,7 @@ where
             codec::Packet::Unsubscribe { packet_id, topic_filters } => {
                 if !self.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
-                    return Either::Right(Either::Left(err(MqttError::Protocol(
-                        ProtocolError::DuplicatedPacketId,
-                    ))));
+                    return Either::Right(Either::Left(err(MqttError::V3ProtocolError)));
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
