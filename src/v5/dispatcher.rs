@@ -68,16 +68,16 @@ where
                         io::Error::new(io::ErrorKind::Other, "Service dropped"),
                     )),
                 }),
-                InOrder::service(
-                    // limit number of in-flight control messages
-                    InFlightService::new(16, control?),
-                )
-                .map_err(|e| match e {
-                    InOrderError::Service(e) => either::Either::Left(e),
-                    InOrderError::Disconnected => either::Either::Right(ProtocolError::Io(
-                        io::Error::new(io::ErrorKind::Other, "Service dropped"),
-                    )),
-                }),
+                // limit number of in-flight control messages
+                InFlightService::new(
+                    16,
+                    InOrder::service(control?).map_err(|e| match e {
+                        InOrderError::Service(e) => either::Either::Left(e),
+                        InOrderError::Disconnected => either::Either::Right(ProtocolError::Io(
+                            io::Error::new(io::ErrorKind::Other, "Service dropped"),
+                        )),
+                    }),
+                ),
             ))
         }
     })

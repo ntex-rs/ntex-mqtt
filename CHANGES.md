@@ -6,6 +6,10 @@
 
 * v5: Handle 16 concurrent control service requests
 
+* v3: Handle packet id in use for subscribe and unsubscribe packets
+
+* v3: Handle 16 concurrent control service requests
+
 ## [0.3.1] - 2020-08-12
 
 * v5: Fix max inflight check
