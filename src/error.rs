@@ -22,6 +22,8 @@ pub enum MqttError<E> {
 /// Errors which can occur when attempting to handle mqtt client connection.
 #[derive(Debug, From)]
 pub enum ClientError {
+    /// Connect negotiation failed
+    Ack(super::v5::codec::ConnectAck),
     /// Protocol error
     Protocol(ProtocolError),
     /// Handshake timeout

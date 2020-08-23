@@ -16,10 +16,8 @@ use ntex::connect::openssl::{OpensslConnector, SslConnector};
 
 #[cfg(feature = "rustls")]
 use ntex::connect::rustls::{ClientConfig, RustlsConnector};
-#[cfg(feature = "rustls")]
-use std::sync::Arc;
 
-use super::{codec, connect::ConnectAck, ClientError, ProtocolError};
+use super::{codec, connection::Client, ClientError, ProtocolError};
 
 /// Mqtt client connector
 pub struct MqttConnector<A, T> {
@@ -176,7 +174,7 @@ where
     }
 
     #[cfg(feature = "openssl")]
-    /// Use openssl connector.
+    /// Use openssl connector
     pub fn openssl(self, connector: SslConnector) -> MqttConnector<A, OpensslConnector<A>> {
         MqttConnector {
             pkt: self.pkt,
@@ -187,20 +185,20 @@ where
     }
 
     #[cfg(feature = "rustls")]
-    /// Use rustls connector.
-    pub fn rustls(self, config: Arc<ClientConfig>) -> MqttConnector<A, RustlsConnector<A>> {
+    /// Use rustls connector
+    pub fn rustls(self, config: ClientConfig) -> MqttConnector<A, RustlsConnector<A>> {
+        use std::sync::Arc;
+
         MqttConnector {
             pkt: self.pkt,
             address: self.address,
-            connector: RustlsConnector::new(config),
+            connector: RustlsConnector::new(Arc::new(config)),
             handshake_timeout: self.handshake_timeout,
         }
     }
 
     /// Connect to mqtt server
-    pub fn connect(
-        &self,
-    ) -> impl Future<Output = Result<ConnectAck<T::Response>, ClientError>> {
+    pub fn connect(&self) -> impl Future<Output = Result<Client<T::Response>, ClientError>> {
         if self.handshake_timeout > 0 {
             Either::Left(
                 Select {
@@ -217,7 +215,7 @@ where
         }
     }
 
-    fn _connect(&self) -> impl Future<Output = Result<ConnectAck<T::Response>, ClientError>> {
+    fn _connect(&self) -> impl Future<Output = Result<Client<T::Response>, ClientError>> {
         let fut = self.connector.call(Connect::new(self.address.clone()));
         let pkt = self.pkt.clone();
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
@@ -240,7 +238,13 @@ where
                 .and_then(|res| res.map_err(|e| ClientError::from(ProtocolError::from(e))))?;
 
             match packet {
-                codec::Packet::ConnectAck(pkt) => Ok(ConnectAck::new(pkt, framed)),
+                codec::Packet::ConnectAck(pkt) => {
+                    if pkt.reason_code == codec::ConnectAckReason::Success {
+                        Ok(Client::new(framed, pkt, max_receive))
+                    } else {
+                        Err(ClientError::Ack(pkt))
+                    }
+                }
                 p => Err(ProtocolError::Unexpected(
                     p.packet_type(),
                     "Expected CONNECT-ACK packet",

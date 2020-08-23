@@ -23,6 +23,67 @@ pub struct Client<Io> {
     keepalive: Option<(Duration, Delay)>,
     disconnect_timeout: u64,
     errors: Errors,
+    max_receive: usize,
+    pkt: codec::ConnectAck,
+}
+
+impl<T> Client<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    /// Construct new `Dispatcher` instance with outgoing messages stream.
+    pub(super) fn new(
+        io: Framed<T, codec::Codec>,
+        pkt: codec::ConnectAck,
+        max_receive: u16,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel();
+
+        let keepalive = pkt.server_keepalive_sec.unwrap_or(0) as u64;
+        let keepalive = if keepalive > 0 {
+            let keepalive = Duration::from_secs(keepalive);
+            let expire = RtInstant::from_std(Instant::now() + keepalive);
+            Some((keepalive, delay_until(expire)))
+        } else {
+            None
+        };
+        let server_max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
+
+        Client {
+            io,
+            rx,
+            pkt,
+            keepalive,
+            sink: MqttSink::new(tx, server_max_receive as usize),
+            errors: Errors::empty(),
+            disconnect_timeout: 1000,
+            state: State::Processing,
+            max_receive: max_receive as usize,
+        }
+    }
+
+    #[inline]
+    /// Indicates whether there is already stored Session state
+    pub fn session_present(&self) -> bool {
+        self.pkt.session_present
+    }
+
+    #[inline]
+    /// Get reference to `ConnectAck` packet
+    pub fn packet(&self) -> &codec::ConnectAck {
+        &self.pkt
+    }
+
+    #[inline]
+    /// Get mutable reference to `ConnectAck` packet
+    pub fn packet_mut(&mut self) -> &mut codec::ConnectAck {
+        &mut self.pkt
+    }
+
+    fn disconnect_timeout(mut self, val: u64) -> Self {
+        self.disconnect_timeout = val;
+        self
+    }
 }
 
 impl<T> Stream for Client<T>
@@ -75,32 +136,6 @@ impl<T> Client<T>
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
-    /// Construct new `Dispatcher` instance with outgoing messages stream.
-    fn new(io: Framed<T, codec::Codec>) -> Self {
-        let (tx, rx) = mpsc::channel();
-
-        Client {
-            io,
-            rx,
-            sink: MqttSink::new(tx, 16),
-            errors: Errors::empty(),
-            keepalive: None,
-            disconnect_timeout: 1000,
-            state: State::Processing,
-        }
-    }
-
-    fn keepalive_timeout(mut self, timeout: Duration) -> Self {
-        let expire = RtInstant::from_std(Instant::now() + timeout);
-        self.keepalive = Some((timeout, delay_until(expire)));
-        self
-    }
-
-    fn disconnect_timeout(mut self, val: u64) -> Self {
-        self.disconnect_timeout = val;
-        self
-    }
-
     fn poll_keepalive(&mut self, cx: &mut Context<'_>) -> () {
         // server keepalive timer
         if let Some(ref mut item) = self.keepalive {
