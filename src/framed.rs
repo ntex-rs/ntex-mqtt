@@ -59,7 +59,7 @@ impl<U: Encoder + Decoder> fmt::Display for DispatcherError<U> {
     }
 }
 
-/// FramedTransport - is a future that reads frames from Framed object
+/// Framed dispatcher - is a future that reads frames from Framed object
 /// and pass then to the service.
 #[pin_project::pin_project]
 pub struct Dispatcher<S, T, U, Out>

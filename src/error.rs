@@ -19,6 +19,19 @@ pub enum MqttError<E> {
     V3ProtocolError,
 }
 
+/// Errors which can occur when attempting to handle mqtt client connection.
+#[derive(Debug, From)]
+pub enum ClientError {
+    /// Protocol error
+    Protocol(ProtocolError),
+    /// Handshake timeout
+    HandshakeTimeout,
+    /// Peer disconnect
+    Disconnected,
+    /// Connect error
+    Connect(ntex::connect::ConnectError),
+}
+
 /// Protocol level errors
 #[derive(Debug)]
 pub enum ProtocolError {
@@ -65,6 +78,24 @@ impl<E> From<Either<EncodeError, io::Error>> for MqttError<E> {
         match err {
             Either::Left(err) => MqttError::Protocol(ProtocolError::Encode(err)),
             Either::Right(err) => MqttError::Protocol(ProtocolError::Io(err)),
+        }
+    }
+}
+
+impl From<Either<EncodeError, io::Error>> for ClientError {
+    fn from(err: Either<EncodeError, io::Error>) -> Self {
+        match err {
+            Either::Left(err) => ClientError::Protocol(ProtocolError::Encode(err)),
+            Either::Right(err) => ClientError::Protocol(ProtocolError::Io(err)),
+        }
+    }
+}
+
+impl From<Either<DecodeError, io::Error>> for ProtocolError {
+    fn from(err: Either<DecodeError, io::Error>) -> Self {
+        match err {
+            Either::Left(err) => ProtocolError::Decode(err),
+            Either::Right(err) => ProtocolError::Io(err),
         }
     }
 }
