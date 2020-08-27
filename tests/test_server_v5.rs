@@ -5,7 +5,7 @@ use bytestring::ByteString;
 use futures::future::ok;
 use ntex::server;
 
-use ntex_mqtt::v5::{client, codec, Connect, ConnectAck, MqttServer, Publish, PublishAck};
+use ntex_mqtt::v5::{client, Connect, ConnectAck, MqttServer, Publish, PublishAck};
 
 struct St;
 
@@ -50,12 +50,9 @@ async fn test_simple() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
-    let res = sink
-        .publish(ByteString::from_static("#"), Bytes::new())
-        .send_at_least_once()
-        .await
-        .unwrap();
-    assert_eq!(res.reason_code, codec::PublishAckReason::Success);
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_ok());
 
     sink.close();
     Ok(())

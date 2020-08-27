@@ -5,16 +5,16 @@ use bytestring::ByteString;
 use futures::future::Future;
 use ntex::channel::{mpsc, oneshot};
 
-use super::codec as mqtt;
-use crate::types::QoS;
+use super::error::PublishError;
+use crate::{types::QoS, v5::codec};
 
 pub struct MqttSink(Rc<RefCell<MqttSinkInner>>);
 
 pub(crate) struct MqttSinkInner {
     idx: u16,
     cap: usize,
-    sink: Option<mpsc::Sender<mqtt::Packet>>,
-    queue: VecDeque<(u16, oneshot::Sender<()>)>,
+    sink: Option<mpsc::Sender<codec::Packet>>,
+    queue: VecDeque<(u16, oneshot::Sender<codec::PublishAck>)>,
     waiters: VecDeque<oneshot::Sender<()>>,
 }
 
@@ -25,7 +25,7 @@ impl Clone for MqttSink {
 }
 
 impl MqttSink {
-    pub(crate) fn new(sink: mpsc::Sender<mqtt::Packet>, max_receive: usize) -> Self {
+    pub(crate) fn new(sink: mpsc::Sender<codec::Packet>, max_receive: usize) -> Self {
         MqttSink(Rc::new(RefCell::new(MqttSinkInner {
             idx: 0,
             cap: max_receive,
@@ -44,14 +44,14 @@ impl MqttSink {
     /// Close mqtt connection with default Disconnect message
     pub fn close(&self) {
         if let Some(sink) = self.0.borrow_mut().sink.take() {
-            let _ = sink.send(mqtt::Packet::Disconnect(mqtt::Disconnect::default()));
+            let _ = sink.send(codec::Packet::Disconnect(codec::Disconnect::default()));
         }
     }
 
     /// Close mqtt connection
-    pub fn close_with_reason(&self, pkt: mqtt::Disconnect) {
+    pub fn close_with_reason(&self, pkt: codec::Disconnect) {
         if let Some(sink) = self.0.borrow_mut().sink.take() {
-            let _ = sink.send(mqtt::Packet::Disconnect(pkt));
+            let _ = sink.send(codec::Packet::Disconnect(pkt));
         }
     }
 
@@ -63,33 +63,34 @@ impl MqttSink {
     /// Send publish packet
     pub fn publish(&self, topic: ByteString, payload: Bytes) -> PublishBuilder<'_> {
         PublishBuilder {
-            packet: Some(mqtt::Publish {
+            packet: Some(codec::Publish {
                 topic,
                 payload,
                 dup: false,
                 retain: false,
                 qos: QoS::AtMostOnce,
                 packet_id: None,
-                properties: mqtt::PublishProperties::default(),
+                properties: codec::PublishProperties::default(),
             }),
             sink: self,
         }
     }
 
-    pub(crate) fn complete_publish_qos1(&self, packet_id: NonZeroU16) -> bool {
+    pub(super) fn complete_publish_qos1(&self, pkt: codec::PublishAck) -> bool {
         let mut inner = self.0.borrow_mut();
 
         if let Some((idx, tx)) = inner.queue.pop_front() {
-            if idx != packet_id.get() {
+            if idx != pkt.packet_id.get() {
                 log::trace!(
                     "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
                     idx,
-                    packet_id
+                    pkt.packet_id
                 );
             } else {
-                log::trace!("Ack publish packet with id: {}", packet_id);
-                let _ = tx.send(());
+                log::trace!("Ack publish packet with id: {}", pkt.packet_id);
+                let _ = tx.send(pkt);
 
+                // wake up queued request (receive max limit)
                 while let Some(tx) = inner.waiters.pop_front() {
                     if tx.send(()).is_ok() {
                         break;
@@ -112,7 +113,7 @@ impl fmt::Debug for MqttSink {
 
 pub struct PublishBuilder<'a> {
     sink: &'a MqttSink,
-    packet: Option<mqtt::Publish>,
+    packet: Option<codec::Publish>,
 }
 
 impl<'a> PublishBuilder<'a> {
@@ -133,7 +134,7 @@ impl<'a> PublishBuilder<'a> {
 
     pub fn properties<F>(&mut self, f: F) -> &mut Self
     where
-        F: FnOnce(&mut mqtt::PublishProperties),
+        F: FnOnce(&mut codec::PublishProperties),
     {
         if let Some(ref mut packet) = self.packet {
             f(&mut packet.properties);
@@ -146,7 +147,7 @@ impl<'a> PublishBuilder<'a> {
         if let Some(packet) = self.packet.take() {
             if let Some(ref sink) = self.sink.0.borrow().sink {
                 log::trace!("Publish (QoS-0) to {:?}", packet.topic);
-                let _ = sink.send(mqtt::Packet::Publish(packet));
+                let _ = sink.send(codec::Packet::Publish(packet));
             } else {
                 log::error!("Mqtt sink is disconnected");
             }
@@ -156,7 +157,9 @@ impl<'a> PublishBuilder<'a> {
     }
 
     /// Send publish packet with QoS 1
-    pub fn send_at_least_once(&mut self) -> impl Future<Output = Result<(), ()>> {
+    pub fn send_at_least_once(
+        &mut self,
+    ) -> impl Future<Output = Result<codec::PublishAck, PublishError>> {
         if let Some(mut packet) = self.packet.take() {
             let sink = self.sink.0.clone();
 
@@ -170,7 +173,7 @@ impl<'a> PublishBuilder<'a> {
 
                         drop(inner);
                         if rx.await.is_err() {
-                            return Err(());
+                            return Err(PublishError::Disconnected);
                         }
 
                         inner = sink.borrow_mut();
@@ -192,16 +195,21 @@ impl<'a> PublishBuilder<'a> {
                     log::trace!("Publish (QoS1) to {:#?}", packet);
 
                     let send_result =
-                        inner.sink.as_ref().unwrap().send(mqtt::Packet::Publish(packet));
+                        inner.sink.as_ref().unwrap().send(codec::Packet::Publish(packet));
                     drop(inner);
 
                     if send_result.is_err() {
-                        Err(())
+                        Err(PublishError::Disconnected)
                     } else {
-                        rx.await.map_err(|_| ())
+                        rx.await.map_err(|_| PublishError::Disconnected).and_then(|pkt| {
+                            match pkt.reason_code {
+                                codec::PublishAckReason::Success => Ok(pkt),
+                                _ => Err(PublishError::Fail(pkt)),
+                            }
+                        })
                     }
                 } else {
-                    Err(())
+                    Err(PublishError::Disconnected)
                 }
             }
         } else {

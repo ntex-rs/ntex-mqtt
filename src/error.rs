@@ -42,25 +42,34 @@ pub enum ClientError {
 impl std::error::Error for ClientError {}
 
 /// Protocol level errors
-#[derive(Debug)]
+#[derive(Debug, Display)]
 pub enum ProtocolError {
     /// Mqtt parse error
+    #[display(fmt = "Decode error: {:?}", _0)]
     Decode(DecodeError),
     /// Mqtt encode error
+    #[display(fmt = "Encode error: {:?}", _0)]
     Encode(EncodeError),
     /// Unexpected packet
+    #[display(fmt = "Unexpected packet {:?}, {}", _0, _1)]
     Unexpected(u8, &'static str),
     /// Packet id of publish ack packet does not match of send publish packet
+    #[display(fmt = "Packet id of publish ack packet does not match of send publish packet")]
     PacketIdMismatch,
     /// Topic alias is greater than max topic alias
+    #[display(fmt = "Topic alias is greater than max topic alias")]
     MaxTopicAlias,
     /// Number of in-flight messages exceeded
+    #[display(fmt = "Number of in-flight messages exceeded")]
     ReceiveMaximumExceeded,
     /// Unknown topic alias
+    #[display(fmt = "Unknown topic alias")]
     UnknownTopicAlias,
     /// Keep alive timeout
+    #[display(fmt = "Keep alive timeout")]
     KeepAliveTimeout,
     /// Unexpected io error
+    #[display(fmt = "Unexpected io error: {}", _0)]
     Io(io::Error),
 }
 

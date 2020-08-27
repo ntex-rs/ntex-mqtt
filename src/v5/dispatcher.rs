@@ -280,7 +280,7 @@ where
                 })
             }
             Ok(codec::Packet::PublishAck(packet)) => {
-                if !self.session.sink().complete_publish_qos1(packet.packet_id) {
+                if !self.session.sink().complete_publish_qos1(packet) {
                     Either::Right(Either::Right(
                         ControlResponse::new(
                             ControlPacket::proto_error(ProtocolError::PacketIdMismatch),

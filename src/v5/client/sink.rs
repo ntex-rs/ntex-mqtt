@@ -5,7 +5,7 @@ use bytestring::ByteString;
 use futures::future::Future;
 use ntex::channel::{mpsc, oneshot};
 
-use crate::{types::QoS, v5::codec};
+use crate::{types::QoS, v5::codec, v5::error::PublishError};
 
 pub struct MqttSink(Rc<RefCell<MqttSinkInner>>);
 
@@ -167,7 +167,7 @@ impl<'a> PublishBuilder<'a> {
     /// Send publish packet with QoS 1
     pub fn send_at_least_once(
         &mut self,
-    ) -> impl Future<Output = Result<codec::PublishAck, ()>> {
+    ) -> impl Future<Output = Result<codec::PublishAck, PublishError>> {
         if let Some(mut packet) = self.packet.take() {
             let sink = self.sink.0.clone();
 
@@ -181,7 +181,7 @@ impl<'a> PublishBuilder<'a> {
 
                         drop(inner);
                         if rx.await.is_err() {
-                            return Err(());
+                            return Err(PublishError::Disconnected);
                         }
 
                         inner = sink.borrow_mut();
@@ -207,12 +207,17 @@ impl<'a> PublishBuilder<'a> {
                     drop(inner);
 
                     if send_result.is_err() {
-                        Err(())
+                        Err(PublishError::Disconnected)
                     } else {
-                        rx.await.map_err(|_| ())
+                        rx.await.map_err(|_| PublishError::Disconnected).and_then(|pkt| {
+                            match pkt.reason_code {
+                                codec::PublishAckReason::Success => Ok(pkt),
+                                _ => Err(PublishError::Fail(pkt)),
+                            }
+                        })
                     }
                 } else {
-                    Err(())
+                    Err(PublishError::Disconnected)
                 }
             }
         } else {

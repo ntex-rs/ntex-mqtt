@@ -17,7 +17,7 @@ use ntex::connect::openssl::{OpensslConnector, SslConnector};
 #[cfg(feature = "rustls")]
 use ntex::connect::rustls::{ClientConfig, RustlsConnector};
 
-use super::{codec, connection::Client, ClientError, ProtocolError};
+use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
 
 /// Mqtt client connector
 pub struct MqttConnector<A, T> {
