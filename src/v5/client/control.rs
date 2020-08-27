@@ -3,13 +3,11 @@ use bytestring::ByteString;
 use super::sink::MqttSink;
 use crate::{error, v5::codec};
 
-pub use crate::v5::control::{Closed, ControlResult, Disconnect, Error, Ping, ProtocolError};
+pub use crate::v5::control::{Closed, ControlResult, Disconnect, Error, ProtocolError};
 
 pub enum ControlMessage<E> {
     /// Unhandled publish packet
     Publish(Publish),
-    /// Ping packet
-    Ping(Ping),
     /// Disconnect packet
     Disconnect(Disconnect),
     /// Application level error from resources and control services
@@ -21,10 +19,6 @@ pub enum ControlMessage<E> {
 }
 
 impl<E> ControlMessage<E> {
-    pub(super) fn ping() -> Self {
-        ControlMessage::Ping(Ping)
-    }
-
     pub(super) fn publish(pkt: codec::Publish) -> Self {
         ControlMessage::Publish(Publish(pkt))
     }

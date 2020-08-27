@@ -54,6 +54,15 @@ impl MqttSink {
         }
     }
 
+    /// Send ping
+    pub(super) fn ping(&self) -> bool {
+        if let Some(sink) = self.0.borrow_mut().sink.take() {
+            sink.send(codec::Packet::PingRequest).is_ok()
+        } else {
+            false
+        }
+    }
+
     /// Close mqtt connection, dont send disconnect message
     pub(super) fn drop_sink(&self) {
         let _ = self.0.borrow_mut().sink.take();

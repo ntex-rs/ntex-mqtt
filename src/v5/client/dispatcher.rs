@@ -265,9 +265,9 @@ where
                     Either::Right(Either::Left(ok(None)))
                 }
             }
-            Ok(codec::Packet::PingRequest) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::ping(), &self.inner),
-            )),
+            Ok(codec::Packet::PingRequest) => {
+                Either::Right(Either::Left(ok(Some(codec::Packet::PingResponse))))
+            }
             Ok(codec::Packet::Disconnect(pkt)) => Either::Right(Either::Right(
                 ControlResponse::new(ControlMessage::dis(pkt), &self.inner),
             )),
@@ -301,7 +301,11 @@ where
                 )
                 .error(),
             )),
-            Ok(_) => Either::Right(Either::Left(ok(None))),
+            Ok(codec::Packet::PingResponse) => Either::Right(Either::Left(ok(None))),
+            Ok(pkt) => {
+                log::debug!("Unsupported packet: {:?}", pkt);
+                Either::Right(Either::Left(ok(None)))
+            }
             Err(e) => Either::Right(Either::Right(ControlResponse::new(
                 ControlMessage::proto_error(e.into()),
                 &self.inner,

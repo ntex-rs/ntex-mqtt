@@ -3,8 +3,8 @@ use std::{fmt, io, marker::PhantomData, pin::Pin, rc::Rc};
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::{err, Either, FutureExt, LocalBoxFuture};
-use futures::{Sink, SinkExt, Stream, StreamExt};
+use futures::future::{err, Either, LocalBoxFuture};
+use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 use ntex::channel::mpsc;
 use ntex::service::{
     apply_fn_factory, boxed, IntoService, IntoServiceFactory, Service, ServiceFactory,

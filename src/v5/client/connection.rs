@@ -27,7 +27,7 @@ pub struct Client<Io> {
     io: Framed<Io, codec::Codec>,
     rx: mpsc::Receiver<codec::Packet>,
     sink: MqttSink,
-    keepalive: Option<(Duration, Delay)>,
+    keepalive: u64,
     disconnect_timeout: u64,
     max_receive: usize,
     pkt: codec::ConnectAck,
@@ -47,13 +47,6 @@ where
         let (tx, rx) = mpsc::channel();
 
         let keepalive = pkt.server_keepalive_sec.unwrap_or(0) as u64;
-        let keepalive = if keepalive > 0 {
-            let keepalive = Duration::from_secs(keepalive);
-            let expire = RtInstant::from_std(Instant::now() + keepalive);
-            Some((keepalive, delay_until(expire)))
-        } else {
-            None
-        };
         let server_max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
 
         Client {
@@ -126,8 +119,12 @@ where
     ///
     /// Default handler closes connection on any control message.
     pub async fn start_default(self) {
+        if self.keepalive > 0 {
+            ntex::rt::spawn(keepalive(self.sink.clone(), self.keepalive));
+        }
+
         let dispatcher = create_dispatcher(
-            self.sink.clone(),
+            self.sink,
             self.max_receive,
             16,
             into_service(|pkt| ok(either::Left(pkt))),
@@ -154,8 +151,12 @@ where
         F: IntoService<S> + 'static,
         S: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
     {
+        if self.keepalive > 0 {
+            ntex::rt::spawn(keepalive(self.sink.clone(), self.keepalive));
+        }
+
         let dispatcher = create_dispatcher(
-            self.sink.clone(),
+            self.sink,
             self.max_receive,
             16,
             into_service(|pkt| ok(either::Left(pkt))),
@@ -183,7 +184,7 @@ pub struct ClientRouter<Io, Err, PErr> {
     io: Framed<Io, codec::Codec>,
     rx: mpsc::Receiver<codec::Packet>,
     sink: MqttSink,
-    keepalive: Option<(Duration, Delay)>,
+    keepalive: u64,
     disconnect_timeout: u64,
     max_receive: usize,
     _t: PhantomData<Err>,
@@ -210,13 +211,15 @@ where
 
     /// Run client with default control messages handler
     pub async fn start_default(self) {
-        let router = self.builder.finish();
+        if self.keepalive > 0 {
+            ntex::rt::spawn(keepalive(self.sink.clone(), self.keepalive));
+        }
 
         let dispatcher = create_dispatcher(
-            self.sink.clone(),
+            self.sink,
             self.max_receive,
             16,
-            dispatch(router, self.handlers),
+            dispatch(self.builder.finish(), self.handlers),
             into_service(|msg: ControlMessage<Err>| {
                 ok(msg.disconnect(codec::Disconnect::default()))
             }),
@@ -240,13 +243,15 @@ where
         S: Service<Request = ControlMessage<Err>, Response = ControlResult, Error = Err>
             + 'static,
     {
-        let router = self.builder.finish();
+        if self.keepalive > 0 {
+            ntex::rt::spawn(keepalive(self.sink.clone(), self.keepalive));
+        }
 
         let dispatcher = create_dispatcher(
-            self.sink.clone(),
+            self.sink,
             self.max_receive,
             16,
-            dispatch(router, self.handlers),
+            dispatch(self.builder.finish(), self.handlers),
             service.into_service(),
         );
 
@@ -317,6 +322,22 @@ where
                 Ok(ack) => Ok(either::Right(ack)),
                 Err(err) => Err(err),
             },
+        }
+    }
+}
+
+async fn keepalive(sink: MqttSink, timeout: u64) {
+    log::debug!("start mqtt client keep-alive task");
+
+    let keepalive = Duration::from_secs(timeout);
+    loop {
+        let expire = RtInstant::from_std(Instant::now() + keepalive);
+        delay_until(expire).await;
+
+        if !sink.ping() {
+            // connection is closed
+            log::debug!("mqtt client connection is closed, stopping keep-alive task");
+            break;
         }
     }
 }
