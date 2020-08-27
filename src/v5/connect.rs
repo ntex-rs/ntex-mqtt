@@ -1,4 +1,4 @@
-use std::{fmt, time::Duration};
+use std::fmt;
 
 use ntex::channel::mpsc;
 use ntex_codec::Framed;
@@ -73,12 +73,15 @@ pub struct ConnectAck<Io, St> {
 
 impl<Io, St> ConnectAck<Io, St> {
     /// Set idle keep-alive for the connection in seconds.
-    /// This method does not set `server_keepalive_sec` property for `ConnectAck`
+    /// This method sets `server_keepalive_sec` property for `ConnectAck`
     /// response packet.
     ///
-    /// By default idle keep-alive is set to 30 seconds
-    pub fn keep_alive(mut self, timeout: u32) -> Self {
-        self.io.set_keepalive_timeout(Duration::from_secs(timeout as u64));
+    /// By default idle keep-alive is set to 30 seconds. Panics if timeout is `0`.
+    pub fn keep_alive(mut self, timeout: u16) -> Self {
+        if timeout == 0 {
+            panic!("Timeout must be greater than 0")
+        }
+        self.io.set_keepalive_timeout(timeout as usize);
         self
     }
 

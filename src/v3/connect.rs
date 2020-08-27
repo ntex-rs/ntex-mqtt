@@ -1,5 +1,4 @@
 use std::fmt;
-use std::time::Duration;
 
 use ntex::channel::mpsc;
 use ntex_codec::Framed;
@@ -124,11 +123,11 @@ impl<Io, St> ConnectAck<Io, St> {
         }
     }
 
-    /// Set idle time-out for the connection in milliseconds
+    /// Set idle time-out for the connection in seconds
     ///
-    /// By default idle time-out is set to 300000 milliseconds
-    pub fn idle_timeout(mut self, timeout: Duration) -> Self {
-        self.io.set_keepalive_timeout(timeout);
+    /// By default idle time-out is set to 30 seconds.
+    pub fn idle_timeout(mut self, timeout: u16) -> Self {
+        self.io.set_keepalive_timeout(timeout as usize);
         self
     }
 }

@@ -5,6 +5,7 @@ use bytestring::ByteString;
 use super::codec::{self, DisconnectReasonCode, QoS, UserProperties};
 use crate::error;
 
+/// Control plain messages
 pub enum ControlPacket<E> {
     Auth(Auth),
     Ping(Ping),
@@ -16,6 +17,7 @@ pub enum ControlPacket<E> {
     ProtocolError(ProtocolError),
 }
 
+/// Control message handling result
 pub struct ControlResult {
     pub(crate) packet: Option<codec::Packet>,
     pub(crate) disconnect: bool,
@@ -72,7 +74,7 @@ impl Ping {
     }
 }
 
-pub struct Disconnect(codec::Disconnect);
+pub struct Disconnect(pub(crate) codec::Disconnect);
 
 impl Disconnect {
     /// Returns reference to dusconnect packet

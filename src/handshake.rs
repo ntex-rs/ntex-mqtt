@@ -1,5 +1,5 @@
 use std::task::{Context, Poll};
-use std::{io, marker::PhantomData, pin::Pin, time::Duration};
+use std::{io, marker::PhantomData, pin::Pin};
 
 use either::Either;
 use futures::Stream;
@@ -24,7 +24,7 @@ where
     }
 
     pub(crate) fn with_codec(framed: Framed<Io, Codec>) -> HandshakeResult<Io, (), Codec, Out> {
-        HandshakeResult { state: (), out: None, keepalive: Duration::from_secs(0), framed }
+        HandshakeResult { state: (), out: None, keepalive: 30, framed }
     }
 
     pub fn codec(self, codec: Codec) -> HandshakeResult<Io, (), Codec, Out> {
@@ -32,7 +32,7 @@ where
             state: (),
             out: None,
             framed: Framed::new(self.io, codec),
-            keepalive: Duration::from_secs(0),
+            keepalive: 30,
         }
     }
 }
@@ -42,7 +42,7 @@ pin_project_lite::pin_project! {
         pub(crate) state: St,
         pub(crate) out: Option<Out>,
         pub(crate) framed: Framed<Io, Codec>,
-        pub(crate) keepalive: Duration,
+        pub(crate) keepalive: usize,
     }
 }
 
@@ -74,7 +74,12 @@ impl<Io, St, Codec: Encoder + Decoder, Out: Unpin> HandshakeResult<Io, St, Codec
     }
 
     #[inline]
-    pub fn set_keepalive_timeout(&mut self, timeout: Duration) {
+    /// Set keep-alive timeout in seconds.
+    ///
+    /// To disable timeout set value to 0.
+    ///
+    /// By default keep-alive timeout is set to 30 seconds.
+    pub fn set_keepalive_timeout(&mut self, timeout: usize) {
         self.keepalive = timeout;
     }
 }
@@ -151,12 +156,8 @@ mod tests {
         client.remote_buffer_cap(1024);
         let server = Framed::new(server, BytesCodec);
 
-        let mut hnd = HandshakeResult {
-            state: (),
-            out: Some(()),
-            framed: server,
-            keepalive: Duration::from_secs(0),
-        };
+        let mut hnd =
+            HandshakeResult { state: (), out: Some(()), framed: server, keepalive: 0 };
 
         client.write(BLOB);
         let item = hnd.next().await.unwrap().unwrap();

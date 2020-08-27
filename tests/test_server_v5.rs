@@ -1,12 +1,11 @@
-#![type_length_limit = "1134953"]
+use std::convert::TryFrom;
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::ok;
 use ntex::server;
-use ntex::service::Service;
-use std::convert::TryFrom;
 
-use ntex_mqtt::v5::{Connect, ConnectAck, MqttServer, Publish, PublishAck, Session};
+use ntex_mqtt::v5::{client, codec, Connect, ConnectAck, MqttServer, Publish, PublishAck};
 
 struct St;
 
@@ -28,42 +27,36 @@ impl TryFrom<TestError> for PublishAck {
 }
 
 async fn connect<Io>(packet: Connect<Io>) -> Result<ConnectAck<Io, St>, TestError> {
-    println!("CONNECT: {:?}", packet);
     Ok(packet.ack(St))
 }
 
-// #[ntex::test]
-// async fn test_simple() -> std::io::Result<()> {
-//     std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
-//     env_logger::init();
+#[ntex::test]
+async fn test_simple() -> std::io::Result<()> {
+    std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
+    env_logger::init();
 
-//     let srv = server::test_server(|| {
-//         MqttServer::new(connect).publish(|p: Publish| ok::<_, TestError>(p.ack())).finish()
-//     });
+    let srv = server::test_server(|| {
+        MqttServer::new(connect).publish(|p: Publish| ok::<_, TestError>(p.ack())).finish()
+    });
 
-//     struct Client;
+    // connect to server
+    let client = client::MqttConnector::new(srv.addr())
+        .client_id(ByteString::from_static("user"))
+        .connect()
+        .await
+        .unwrap();
 
-//     let client = client::Client::new(ByteString::from_static("user"))
-//         .state(|ack: client::ConnectAck<_>| async move {
-//             ack.sink().publish(ByteString::from_static("#"), Bytes::new()).send_at_most_once();
-//             ack.sink().close();
-//             Ok(ack.state(Client))
-//         })
-//         .finish(ntex::fn_factory_with_config(|session: Session<Client>| {
-//             let session = session.clone();
+    let sink = client.sink();
 
-//             ok::<_, ()>(ntex::into_service(move |p: Publish| {
-//                 session.sink().close();
-//                 ok(p.ack())
-//             }))
-//         }));
+    ntex::rt::spawn(client.start_default());
 
-//     let conn = ntex::connect::Connector::default()
-//         .call(ntex::connect::Connect::with(String::new(), srv.addr()))
-//         .await
-//         .unwrap();
+    let res = sink
+        .publish(ByteString::from_static("#"), Bytes::new())
+        .send_at_least_once()
+        .await
+        .unwrap();
+    assert_eq!(res.reason_code, codec::PublishAckReason::Success);
 
-//     client.call(conn).await.unwrap();
-
-//     Ok(())
-// }
+    sink.close();
+    Ok(())
+}

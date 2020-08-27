@@ -92,6 +92,10 @@ impl Publish {
             reason_string: None,
         }
     }
+
+    pub(crate) fn into_inner(self) -> codec::Publish {
+        self.publish
+    }
 }
 
 impl std::fmt::Debug for Publish {

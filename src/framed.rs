@@ -59,7 +59,7 @@ impl<U: Encoder + Decoder> fmt::Display for DispatcherError<U> {
     }
 }
 
-/// FramedTransport - is a future that reads frames from Framed object
+/// Framed dispatcher - is a future that reads frames from Framed object
 /// and pass then to the service.
 #[pin_project::pin_project]
 pub struct Dispatcher<S, T, U, Out>
@@ -158,13 +158,19 @@ where
         }
     }
 
-    /// Set keep-alive timeout.
-    pub fn keepalive_timeout(mut self, timeout: Duration) -> Self {
-        self.inner.keepalive_timeout = timeout;
+    /// Set keep-alive timeout in seconds.
+    ///
+    /// To disable timeout set value to 0.
+    ///
+    /// By default keep-alive timeout is set to 30 seconds.
+    pub fn keepalive_timeout(mut self, timeout: usize) -> Self {
+        self.inner.keepalive_timeout = Duration::from_secs(timeout as u64);
 
-        let expire = RtInstant::from_std(self.inner.time.now() + self.inner.keepalive_timeout);
-        self.inner.keepalive.reset(expire);
-
+        if timeout > 0 {
+            let expire =
+                RtInstant::from_std(self.inner.time.now() + self.inner.keepalive_timeout);
+            self.inner.keepalive.reset(expire);
+        }
         self
     }
 
@@ -406,7 +412,9 @@ where
 
     pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
         // keepalive timer
-        if !self.errors.contains(Errors::KEEP_ALIVE) {
+        if !self.errors.contains(Errors::KEEP_ALIVE)
+            && self.keepalive_timeout != Duration::from_secs(0)
+        {
             match Pin::new(&mut self.keepalive).poll(cx) {
                 Poll::Ready(_) => {
                     if self.keepalive.deadline() <= RtInstant::from_std(self.updated) {
