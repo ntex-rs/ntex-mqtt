@@ -1,28 +1,34 @@
-use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+use std::{cell::RefCell, convert::TryFrom, marker::PhantomData, num::NonZeroU16};
 
-use either::Either;
-use futures::{ready, Future, Stream};
+use bytestring::ByteString;
+use futures::future::{ok, Either, Future, Ready};
+use fxhash::FxHashMap;
 use ntex::channel::mpsc;
+use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex::rt::time::{delay_until, Delay, Instant as RtInstant};
+use ntex::service::boxed::BoxService;
+use ntex::service::{into_service, IntoService, Service};
+use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
-use crate::error::ProtocolError;
-use crate::v5::codec;
+use crate::error::{MqttError, ProtocolError};
+use crate::framed;
+use crate::v5::publish::{Publish, PublishAck};
+use crate::v5::{codec, ControlResult};
 
 use super::control::ControlMessage;
+use super::dispatcher::create_dispatcher;
 use super::sink::MqttSink;
 
-/// Mqtt protocol connection
+/// Mqtt client
 pub struct Client<Io> {
     io: Framed<Io, codec::Codec>,
     rx: mpsc::Receiver<codec::Packet>,
     sink: MqttSink,
-    state: State,
     keepalive: Option<(Duration, Delay)>,
     disconnect_timeout: u64,
-    errors: Errors,
     max_receive: usize,
     pkt: codec::ConnectAck,
 }
@@ -36,6 +42,7 @@ where
         io: Framed<T, codec::Codec>,
         pkt: codec::ConnectAck,
         max_receive: u16,
+        disconnect_timeout: u64,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
 
@@ -54,12 +61,21 @@ where
             rx,
             pkt,
             keepalive,
+            disconnect_timeout,
             sink: MqttSink::new(tx, server_max_receive as usize),
-            errors: Errors::empty(),
-            disconnect_timeout: 1000,
-            state: State::Processing,
             max_receive: max_receive as usize,
         }
+    }
+}
+
+impl<Io> Client<Io>
+where
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+{
+    #[inline]
+    /// Get client sink
+    pub fn sink(&self) -> MqttSink {
+        self.sink.clone()
     }
 
     #[inline]
@@ -80,137 +96,227 @@ where
         &mut self.pkt
     }
 
-    fn disconnect_timeout(mut self, val: u64) -> Self {
-        self.disconnect_timeout = val;
+    /// Configure mqtt resource for a specific topic
+    pub fn resource<T, F, U, E>(self, address: T, service: F) -> ClientRouter<Io, E, U::Error>
+    where
+        T: IntoPattern,
+        F: IntoService<U>,
+        U: Service<Request = Publish, Response = PublishAck> + 'static,
+        E: From<U::Error>,
+        PublishAck: TryFrom<U::Error, Error = E>,
+    {
+        let mut builder = Router::build();
+        builder.path(address, 0);
+        let handlers = vec![ntex::boxed::service(service.into_service())];
+
+        ClientRouter {
+            builder,
+            handlers,
+            io: self.io,
+            rx: self.rx,
+            sink: self.sink,
+            keepalive: self.keepalive,
+            disconnect_timeout: self.disconnect_timeout,
+            max_receive: self.max_receive,
+            _t: PhantomData,
+        }
+    }
+
+    /// Run client with default control messages handler.
+    ///
+    /// Default handler closes connection on any control message.
+    pub async fn start_default(self) {
+        let dispatcher = create_dispatcher(
+            self.sink.clone(),
+            self.max_receive,
+            16,
+            into_service(|pkt| ok(either::Left(pkt))),
+            into_service(|msg: ControlMessage<()>| {
+                ok(msg.disconnect(codec::Disconnect::default()))
+            }),
+        );
+
+        let _ = framed::Dispatcher::with(
+            self.io,
+            Some(self.rx),
+            dispatcher,
+            LowResTimeService::with(Duration::from_secs(1)),
+        )
+        .keepalive_timeout(0)
+        .disconnect_timeout(self.disconnect_timeout)
+        .await;
+    }
+
+    /// Run client with provided control messages handler
+    pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
+    where
+        E: 'static,
+        F: IntoService<S> + 'static,
+        S: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
+    {
+        let dispatcher = create_dispatcher(
+            self.sink.clone(),
+            self.max_receive,
+            16,
+            into_service(|pkt| ok(either::Left(pkt))),
+            service.into_service(),
+        );
+
+        framed::Dispatcher::with(
+            self.io,
+            Some(self.rx),
+            dispatcher,
+            LowResTimeService::with(Duration::from_secs(1)),
+        )
+        .keepalive_timeout(0)
+        .disconnect_timeout(self.disconnect_timeout)
+        .await
+    }
+}
+
+type Handler<E> = BoxService<Publish, PublishAck, E>;
+
+/// Mqtt client with routing capabilities
+pub struct ClientRouter<Io, Err, PErr> {
+    builder: RouterBuilder<usize>,
+    handlers: Vec<Handler<PErr>>,
+    io: Framed<Io, codec::Codec>,
+    rx: mpsc::Receiver<codec::Packet>,
+    sink: MqttSink,
+    keepalive: Option<(Duration, Delay)>,
+    disconnect_timeout: u64,
+    max_receive: usize,
+    _t: PhantomData<Err>,
+}
+
+impl<Io, Err, PErr> ClientRouter<Io, Err, PErr>
+where
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    Err: From<PErr> + 'static,
+    PublishAck: TryFrom<PErr, Error = Err>,
+    PErr: 'static,
+{
+    /// Configure mqtt resource for a specific topic
+    pub fn resource<T, F, S>(mut self, address: T, service: F) -> Self
+    where
+        T: IntoPattern,
+        F: IntoService<S>,
+        S: Service<Request = Publish, Response = PublishAck, Error = PErr> + 'static,
+    {
+        self.builder.path(address, self.handlers.len());
+        self.handlers.push(ntex::boxed::service(service.into_service()));
         self
     }
+
+    /// Run client with default control messages handler
+    pub async fn start_default(self) {
+        let router = self.builder.finish();
+
+        let dispatcher = create_dispatcher(
+            self.sink.clone(),
+            self.max_receive,
+            16,
+            dispatch(router, self.handlers),
+            into_service(|msg: ControlMessage<Err>| {
+                ok(msg.disconnect(codec::Disconnect::default()))
+            }),
+        );
+
+        let _ = framed::Dispatcher::with(
+            self.io,
+            Some(self.rx),
+            dispatcher,
+            LowResTimeService::with(Duration::from_secs(1)),
+        )
+        .keepalive_timeout(0)
+        .disconnect_timeout(self.disconnect_timeout)
+        .await;
+    }
+
+    /// Run client and handle control messages
+    pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
+    where
+        F: IntoService<S> + 'static,
+        S: Service<Request = ControlMessage<Err>, Response = ControlResult, Error = Err>
+            + 'static,
+    {
+        let router = self.builder.finish();
+
+        let dispatcher = create_dispatcher(
+            self.sink.clone(),
+            self.max_receive,
+            16,
+            dispatch(router, self.handlers),
+            service.into_service(),
+        );
+
+        framed::Dispatcher::with(
+            self.io,
+            Some(self.rx),
+            dispatcher,
+            LowResTimeService::with(Duration::from_secs(1)),
+        )
+        .keepalive_timeout(0)
+        .disconnect_timeout(self.disconnect_timeout)
+        .await
+    }
 }
 
-impl<T> Stream for Client<T>
+fn dispatch<Err, PErr>(
+    router: Router<usize>,
+    handlers: Vec<Handler<PErr>>,
+) -> impl Service<Request = Publish, Response = either::Either<Publish, PublishAck>, Error = Err>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    PErr: 'static,
+    PublishAck: TryFrom<PErr, Error = Err>,
 {
-    type Item = ControlMessage;
+    let aliases: RefCell<FxHashMap<NonZeroU16, (usize, Path<ByteString>)>> =
+        RefCell::new(FxHashMap::default());
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.errors.contains(Errors::IO) {
-            Poll::Ready(None)
-        } else {
-            // send keep-alive pings
-            if self.errors.is_empty() {
-                self.poll_keepalive(cx);
+    into_service(move |mut req: Publish| {
+        if !req.publish_topic().is_empty() {
+            if let Some((idx, _info)) = router.recognize(req.topic_mut()) {
+                // save info for topic alias
+                if let Some(alias) = req.packet().properties.topic_alias {
+                    aliases.borrow_mut().insert(alias, (*idx, req.topic().clone()));
+                }
+
+                // exec handler
+                return Either::Left(call(req, &handlers[*idx]));
             }
-
-            // write and flush io
-            if let Err(e) = self.poll_write(cx) {
-                Poll::Ready(Some(ControlMessage::protocol_error(e, &self.sink)))
+        }
+        // handle publish with topic alias
+        else if let Some(ref alias) = req.packet().properties.topic_alias {
+            let aliases = aliases.borrow();
+            if let Some(item) = aliases.get(alias) {
+                *req.topic_mut() = item.1.clone();
+                return Either::Left(call(req, &handlers[item.0]));
             } else {
-                match ready!(self.poll_read(cx)) {
-                    Some(Err(e)) => {
-                        Poll::Ready(Some(ControlMessage::protocol_error(e, &self.sink)))
-                    }
-                    Some(Ok(pkt)) => Poll::Pending,
-                    None => Poll::Pending,
-                }
+                log::error!("Unknown topic alias: {:?}", alias);
             }
         }
-    }
+
+        Either::Right(ok::<_, Err>(either::Left(req)))
+    })
 }
 
-bitflags::bitflags! {
-    struct Errors: u8 {
-        const IO         = 0b0000_0001;
-        const READ       = 0b0000_0010;
-        const WRITE      = 0b0000_0100;
-    }
-}
-
-enum State {
-    Processing,
-    FlushAndStop,
-    Shutdown,
-    ShutdownIo(Delay),
-}
-
-impl<T> Client<T>
+fn call<S, Err>(
+    req: Publish,
+    srv: &S,
+) -> impl Future<Output = Result<either::Either<Publish, PublishAck>, Err>>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    S: Service<Request = Publish, Response = PublishAck>,
+    PublishAck: TryFrom<S::Error, Error = Err>,
 {
-    fn poll_keepalive(&mut self, cx: &mut Context<'_>) -> () {
-        // server keepalive timer
-        if let Some(ref mut item) = self.keepalive {
-            match Pin::new(&mut item.1).poll(cx) {
-                Poll::Ready(_) => {
-                    let expire = RtInstant::from_std(Instant::now() + item.0);
-                    item.1.reset(expire);
-                    let _ = Pin::new(&mut item.1).poll(cx);
-                }
-                Poll::Pending => (),
-            }
-        }
-    }
+    let fut = srv.call(req);
 
-    /// read data from io
-    fn poll_read(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<codec::Packet, ProtocolError>>> {
-        match self.io.next_item(cx) {
-            Poll::Ready(Some(Ok(el))) => Poll::Ready(Some(Ok(el))),
-            Poll::Ready(Some(Err(err))) => match err {
-                Either::Left(err) => {
-                    log::warn!("Framed decode error");
-                    self.errors.insert(Errors::READ);
-                    Poll::Ready(Some(Err(ProtocolError::Decode(err))))
-                }
-                Either::Right(err) => {
-                    log::trace!("Framed io error: {:?}", err);
-                    self.errors.insert(Errors::IO);
-                    Poll::Ready(Some(Err(ProtocolError::Io(err))))
-                }
+    async move {
+        match fut.await {
+            Ok(ack) => Ok(either::Right(ack)),
+            Err(err) => match PublishAck::try_from(err) {
+                Ok(ack) => Ok(either::Right(ack)),
+                Err(err) => Err(err),
             },
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(None) => {
-                log::trace!("Client disconnected");
-                Poll::Ready(None)
-            }
         }
-    }
-
-    fn poll_write(&mut self, cx: &mut Context<'_>) -> Result<(), ProtocolError> {
-        // if WRITE error occured, dont do anything just drain queues
-        loop {
-            while !self.io.is_write_buf_full() {
-                match Pin::new(&mut self.rx).poll_next(cx) {
-                    Poll::Ready(Some(msg)) => {
-                        // write to framed object does not do any io
-                        // so error here is from encoder
-                        if let Err(err) = self.io.write(msg) {
-                            log::trace!("Framed write error: {:?}", err);
-                            return Err(ProtocolError::Encode(err));
-                        }
-                        continue;
-                    }
-                    Poll::Ready(None) | Poll::Pending => {}
-                }
-                break;
-            }
-
-            // flush framed instance, actual IO
-            if !self.io.is_write_buf_empty() {
-                match self.io.flush(cx) {
-                    Poll::Pending => break,
-                    Poll::Ready(Ok(_)) => (),
-                    Poll::Ready(Err(err)) => {
-                        log::debug!("Error sending data: {:?}", err);
-                        self.errors.insert(Errors::IO);
-                        return Err(ProtocolError::Io(err));
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-        Ok(())
     }
 }

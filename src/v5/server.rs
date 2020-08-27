@@ -1,6 +1,5 @@
-use std::{
-    convert::TryFrom, fmt, marker::PhantomData, num::NonZeroU16, rc::Rc, time::Duration,
-};
+use std::num::NonZeroU16;
+use std::{convert::TryFrom, fmt, marker::PhantomData, rc::Rc, time::Duration};
 
 use futures::{future::TryFutureExt, SinkExt, StreamExt};
 use ntex::channel::mpsc;
@@ -130,10 +129,7 @@ where
         self
     }
 
-    /// Service to handle control packets
-    ///
-    /// All control packets are processed sequentially, max buffered
-    /// control packets is 16.
+    /// Service to handle control messages
     pub fn control<F, Srv>(self, service: F) -> MqttServer<Io, St, C, Srv, P>
     where
         F: IntoServiceFactory<Srv>,
@@ -392,6 +388,9 @@ where
                     ack.packet.max_packet_size = Some(max_size);
                     ack.packet.topic_alias_max = max_topic_alias;
                     ack.packet.max_qos = Some(mqtt::QoS::AtLeastOnce);
+                    if ack.packet.server_keepalive_sec.is_none() {
+                        ack.packet.server_keepalive_sec = Some(ack.io.keepalive as u16);
+                    }
                     ack.io.send(mqtt::Packet::ConnectAck(ack.packet)).await?;
 
                     Ok(ack.io.out(rx).state(Session::new(session, sink)))

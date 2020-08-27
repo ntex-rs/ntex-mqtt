@@ -25,6 +25,7 @@ pub struct MqttConnector<A, T> {
     connector: T,
     pkt: codec::Connect,
     handshake_timeout: u64,
+    disconnect_timeout: u64,
 }
 
 impl<A> MqttConnector<A, ()>
@@ -39,6 +40,7 @@ where
             pkt: codec::Connect::default(),
             connector: Connector::default(),
             handshake_timeout: 0,
+            disconnect_timeout: 3000,
         }
     }
 }
@@ -150,12 +152,25 @@ where
         self
     }
 
-    /// Set handshake timeout in millis.
+    /// Set handshake timeout in milliseconds.
     ///
     /// Handshake includes `connect` packet and response `connect-ack`.
     /// By default handshake timeuot is disabled.
     pub fn handshake_timeout(mut self, timeout: usize) -> Self {
         self.handshake_timeout = timeout as u64;
+        self
+    }
+
+    /// Set client connection disconnect timeout in milliseconds.
+    ///
+    /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
+    /// within this time, the connection get dropped.
+    ///
+    /// To disable timeout set value to 0.
+    ///
+    /// By default disconnect timeout is set to 3 seconds.
+    pub fn disconnect_timeout(mut self, timeout: usize) -> Self {
+        self.disconnect_timeout = timeout as u64;
         self
     }
 
@@ -170,6 +185,7 @@ where
             pkt: self.pkt,
             address: self.address,
             handshake_timeout: self.handshake_timeout,
+            disconnect_timeout: self.disconnect_timeout,
         }
     }
 
@@ -181,6 +197,7 @@ where
             address: self.address,
             connector: OpensslConnector::new(connector),
             handshake_timeout: self.handshake_timeout,
+            disconnect_timeout: self.disconnect_timeout,
         }
     }
 
@@ -194,6 +211,7 @@ where
             address: self.address,
             connector: RustlsConnector::new(Arc::new(config)),
             handshake_timeout: self.handshake_timeout,
+            disconnect_timeout: self.disconnect_timeout,
         }
     }
 
@@ -221,6 +239,7 @@ where
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
         let handshake_timeout = self.handshake_timeout;
+        let disconnect_timeout = self.disconnect_timeout;
 
         async move {
             let io = fut.await?;
@@ -239,8 +258,9 @@ where
 
             match packet {
                 codec::Packet::ConnectAck(pkt) => {
+                    log::trace!("Connect ack response from server: {:#?}", pkt);
                     if pkt.reason_code == codec::ConnectAckReason::Success {
-                        Ok(Client::new(framed, pkt, max_receive))
+                        Ok(Client::new(framed, pkt, max_receive, disconnect_timeout))
                     } else {
                         Err(ClientError::Ack(pkt))
                     }

@@ -1,7 +1,8 @@
-#![allow(unused_variables, dead_code)]
+#![allow(unused_variables, dead_code, unused_imports)]
 mod connection;
 mod connector;
-mod control;
+pub mod control;
+mod dispatcher;
 mod sink;
 
 pub use self::connection::Client;

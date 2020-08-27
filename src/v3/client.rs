@@ -1,5 +1,5 @@
 use std::task::{Context, Poll};
-use std::{fmt, io, marker::PhantomData, pin::Pin, rc::Rc, time::Duration};
+use std::{fmt, io, marker::PhantomData, pin::Pin, rc::Rc};
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -220,12 +220,12 @@ where
     fn call(&self, req: Self::Request) -> Self::Future {
         let srv = self.connect.clone();
         let packet = self.packet.clone();
-        let keep_alive = Duration::from_secs(self.keep_alive as u64);
+        let keep_alive = self.keep_alive;
 
         // send Connect packet
         async move {
             let mut framed = req.codec(mqtt::Codec::new());
-            framed.set_keepalive_timeout(keep_alive);
+            framed.set_keepalive_timeout(keep_alive as usize);
             framed.send(mqtt::Packet::Connect(packet)).await.map_err(MqttError::from)?;
 
             let packet = framed
