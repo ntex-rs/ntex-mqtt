@@ -266,7 +266,7 @@ impl<'a> PublishBuilder<'a> {
 
                     // allocate packet id
                     let idx = inner.queue.insert(tx) + 1;
-                    if idx > u16::MAX as usize {
+                    if idx > u16::max_value() as usize {
                         return Err(PublishQos1Error::PacketIdNotAvailable);
                     }
                     inner.queue_order.push_back(idx);
