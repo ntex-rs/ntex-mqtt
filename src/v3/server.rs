@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
 
-use futures::future::{err, Either};
+use futures::future::{err, ok, Either};
 use futures::{SinkExt, StreamExt, TryFutureExt};
 use ntex::channel::mpsc;
 use ntex::rt::time::Delay;
@@ -12,7 +12,7 @@ use ntex::util::timeout::{Timeout, TimeoutError};
 use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::framed::DispatcherError;
+use crate::framed::DispatcherItem;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
@@ -193,9 +193,21 @@ where
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
                 factory(publish, control, self.inflight),
-                |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
-                    Ok(req) => Either::Left(srv.call(req)),
-                    Err(e) => Either::Right(err(MqttError::Protocol(From::from(e)))),
+                |req: DispatcherItem<mqtt::Codec>, srv| match req {
+                    DispatcherItem::Item(req) => Either::Left(srv.call(req)),
+                    DispatcherItem::ItemEncoded(_) => Either::Right(ok(None)),
+                    DispatcherItem::KeepAliveTimeout => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
+                    }
+                    DispatcherItem::EncoderError(_, e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
+                    }
+                    DispatcherItem::DecoderError(e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Decode(e))))
+                    }
+                    DispatcherItem::IoError(e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                    }
                 },
             )),
         )
@@ -231,9 +243,21 @@ where
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
                 factory(publish, control, self.inflight),
-                |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
-                    Ok(req) => Either::Left(srv.call(req)),
-                    Err(e) => Either::Right(err(MqttError::Protocol(From::from(e)))),
+                |req: DispatcherItem<mqtt::Codec>, srv| match req {
+                    DispatcherItem::Item(req) => Either::Left(srv.call(req)),
+                    DispatcherItem::ItemEncoded(_) => Either::Right(ok(None)),
+                    DispatcherItem::KeepAliveTimeout => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
+                    }
+                    DispatcherItem::EncoderError(_, e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
+                    }
+                    DispatcherItem::DecoderError(e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Decode(e))))
+                    }
+                    DispatcherItem::IoError(e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                    }
                 },
             )),
         )
@@ -247,7 +271,7 @@ fn handshake_service_factory<Io, St, C>(
 ) -> impl ServiceFactory<
     Config = (),
     Request = Handshake<Io, mqtt::Codec>,
-    Response = HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    Response = HandshakeResult<Io, Session<St>, mqtt::Codec>,
     Error = MqttError<C::Error>,
 >
 where
@@ -278,8 +302,8 @@ fn handshake_service_factory2<Io, St, C>(
     handshake_timeout: usize,
 ) -> impl ServiceFactory<
     Config = (),
-    Request = HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
-    Response = HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    Request = HandshakeResult<Io, (), mqtt::Codec>,
+    Response = HandshakeResult<Io, Session<St>, mqtt::Codec>,
     Error = MqttError<C::Error>,
     InitError = C::InitError,
 >
@@ -306,10 +330,10 @@ where
 }
 
 async fn handshake<Io, S, St, E>(
-    mut framed: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    mut framed: HandshakeResult<Io, (), mqtt::Codec>,
     service: S,
     max_size: u32,
-) -> Result<HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>, S::Error>
+) -> Result<HandshakeResult<Io, Session<St>, mqtt::Codec>, S::Error>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     S: Service<Request = Connect<Io>, Response = ConnectAck<Io, St>, Error = MqttError<E>>,

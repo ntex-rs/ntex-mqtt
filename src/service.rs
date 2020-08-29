@@ -3,37 +3,35 @@ use std::time::Duration;
 use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
 
 use futures::future::{select, Either, FutureExt};
-use futures::{ready, Stream};
+use futures::ready;
 
 use ntex::rt::time::Delay;
 use ntex::service::{IntoService, IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 
-use super::framed::{Dispatcher, DispatcherError};
+use super::framed::{Dispatcher, DispatcherItem};
 use super::handshake::{Handshake, HandshakeResult};
 
-type RequestItem<U> = <U as Decoder>::Item;
 type ResponseItem<U> = Option<<U as Encoder>::Item>;
 
 /// Service builder - structure that follows the builder pattern
 /// for building instances for framed services.
-pub(crate) struct Builder<St, C, Io, Codec, Out> {
+pub(crate) struct Builder<St, C, Io, Codec> {
     connect: C,
-    _t: PhantomData<(St, Io, Codec, Out)>,
+    _t: PhantomData<(St, Io, Codec)>,
 }
 
-impl<St, C, Io, Codec, Out> Builder<St, C, Io, Codec, Out>
+impl<St, C, Io, Codec> Builder<St, C, Io, Codec>
 where
-    C: Service<Request = Handshake<Io, Codec>, Response = HandshakeResult<Io, St, Codec, Out>>,
+    C: Service<Request = Handshake<Io, Codec>, Response = HandshakeResult<Io, St, Codec>>,
     C::Error: fmt::Debug,
     Io: AsyncRead + AsyncWrite + Unpin,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     /// Construct framed handler service with specified connect service
-    pub(crate) fn new<F>(connect: F) -> Builder<St, C, Io, Codec, Out>
+    pub(crate) fn new<F>(connect: F) -> Builder<St, C, Io, Codec>
     where
         F: IntoService<C>,
     {
@@ -41,12 +39,12 @@ where
     }
 
     /// Provide stream items handler service and construct service factory.
-    pub(crate) fn build<F, T>(self, service: F) -> FramedServiceImpl<St, C, T, Io, Codec, Out>
+    pub(crate) fn build<F, T>(self, service: F) -> FramedServiceImpl<St, C, T, Io, Codec>
     where
         F: IntoServiceFactory<T>,
         T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+            Request = DispatcherItem<Codec>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -64,26 +62,25 @@ where
 
 /// Service builder - structure that follows the builder pattern
 /// for building instances for framed services.
-pub(crate) struct FactoryBuilder<St, C, Io, Codec, Out> {
+pub(crate) struct FactoryBuilder<St, C, Io, Codec> {
     connect: C,
     disconnect_timeout: usize,
-    _t: PhantomData<(St, Io, Codec, Out)>,
+    _t: PhantomData<(St, Io, Codec)>,
 }
 
-impl<St, C, Io, Codec, Out> FactoryBuilder<St, C, Io, Codec, Out>
+impl<St, C, Io, Codec> FactoryBuilder<St, C, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
         Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec, Out>,
+        Response = HandshakeResult<Io, St, Codec>,
     >,
     C::Error: fmt::Debug,
     Codec: Decoder + Encoder,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     /// Construct framed handler service factory with specified connect service
-    pub(crate) fn new<F>(connect: F) -> FactoryBuilder<St, C, Io, Codec, Out>
+    pub(crate) fn new<F>(connect: F) -> FactoryBuilder<St, C, Io, Codec>
     where
         F: IntoServiceFactory<C>,
     {
@@ -107,15 +104,12 @@ where
         self
     }
 
-    pub(crate) fn build<F, T, Cfg>(
-        self,
-        service: F,
-    ) -> FramedService<St, C, T, Io, Codec, Out, Cfg>
+    pub(crate) fn build<F, T, Cfg>(self, service: F) -> FramedService<St, C, T, Io, Codec, Cfg>
     where
         F: IntoServiceFactory<T>,
         T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+            Request = DispatcherItem<Codec>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -131,28 +125,27 @@ where
     }
 }
 
-pub(crate) struct FramedService<St, C, T, Io, Codec, Out, Cfg> {
+pub(crate) struct FramedService<St, C, T, Io, Codec, Cfg> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: usize,
     time: LowResTimeService,
-    _t: PhantomData<(St, Io, Codec, Out, Cfg)>,
+    _t: PhantomData<(St, Io, Codec, Cfg)>,
 }
 
-impl<St, C, T, Io, Codec, Out, Cfg> ServiceFactory
-    for FramedService<St, C, T, Io, Codec, Out, Cfg>
+impl<St, C, T, Io, Codec, Cfg> ServiceFactory for FramedService<St, C, T, Io, Codec, Cfg>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
         Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec, Out>,
+        Response = HandshakeResult<Io, St, Codec>,
     >,
     C::Error: fmt::Debug,
     <C::Service as Service>::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+            Request = DispatcherItem<Codec>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -161,15 +154,14 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Config = Cfg;
     type Request = Io;
     type Response = ();
     type Error = C::Error;
     type InitError = C::InitError;
-    type Service = FramedServiceImpl<St, C::Service, T, Io, Codec, Out>;
-    type Future = FramedServiceResponse<St, C, T, Io, Codec, Out>;
+    type Service = FramedServiceImpl<St, C::Service, T, Io, Codec>;
+    type Future = FramedServiceResponse<St, C, T, Io, Codec>;
 
     fn new_service(&self, _: Cfg) -> Self::Future {
         // create connect service and then create service impl
@@ -183,18 +175,18 @@ where
 }
 
 #[pin_project::pin_project]
-pub(crate) struct FramedServiceResponse<St, C, T, Io, Codec, Out>
+pub(crate) struct FramedServiceResponse<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
         Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec, Out>,
+        Response = HandshakeResult<Io, St, Codec>,
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+        Request = DispatcherItem<Codec>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -203,7 +195,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     #[pin]
     fut: C::Future,
@@ -212,18 +203,18 @@ where
     time: LowResTimeService,
 }
 
-impl<St, C, T, Io, Codec, Out> Future for FramedServiceResponse<St, C, T, Io, Codec, Out>
+impl<St, C, T, Io, Codec> Future for FramedServiceResponse<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
         Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec, Out>,
+        Response = HandshakeResult<Io, St, Codec>,
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+        Request = DispatcherItem<Codec>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -232,9 +223,8 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
-    type Output = Result<FramedServiceImpl<St, C::Service, T, Io, Codec, Out>, C::InitError>;
+    type Output = Result<FramedServiceImpl<St, C::Service, T, Io, Codec>, C::InitError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -250,23 +240,23 @@ where
     }
 }
 
-pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec, Out> {
+pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: usize,
     time: LowResTimeService,
-    _t: PhantomData<(St, Io, Codec, Out)>,
+    _t: PhantomData<(St, Io, Codec)>,
 }
 
-impl<St, C, T, Io, Codec, Out> Service for FramedServiceImpl<St, C, T, Io, Codec, Out>
+impl<St, C, T, Io, Codec> Service for FramedServiceImpl<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: Service<Request = Handshake<Io, Codec>, Response = HandshakeResult<Io, St, Codec, Out>>,
+    C: Service<Request = Handshake<Io, Codec>, Response = HandshakeResult<Io, St, Codec>>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+            Request = DispatcherItem<Codec>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -275,7 +265,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Request = Io;
     type Response = ();
@@ -321,26 +310,25 @@ where
 
 /// Service builder - structure that follows the builder pattern
 /// for building instances for framed services.
-pub(crate) struct FactoryBuilder2<St, C, Io, Codec, Out> {
+pub(crate) struct FactoryBuilder2<St, C, Io, Codec> {
     connect: C,
     disconnect_timeout: usize,
-    _t: PhantomData<(St, Io, Codec, Out)>,
+    _t: PhantomData<(St, Io, Codec)>,
 }
 
-impl<St, C, Io, Codec, Out> FactoryBuilder2<St, C, Io, Codec, Out>
+impl<St, C, Io, Codec> FactoryBuilder2<St, C, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec, Out>,
-        Response = HandshakeResult<Io, St, Codec, Out>,
+        Request = HandshakeResult<Io, (), Codec>,
+        Response = HandshakeResult<Io, St, Codec>,
     >,
     C::Error: fmt::Debug,
     Codec: Decoder + Encoder,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     /// Construct framed handler service factory with specified connect service
-    pub(crate) fn new<F>(connect: F) -> FactoryBuilder2<St, C, Io, Codec, Out>
+    pub(crate) fn new<F>(connect: F) -> FactoryBuilder2<St, C, Io, Codec>
     where
         F: IntoServiceFactory<C>,
     {
@@ -357,15 +345,12 @@ where
         self
     }
 
-    pub(crate) fn build<F, T, Cfg>(
-        self,
-        service: F,
-    ) -> FramedService2<St, C, T, Io, Codec, Out, Cfg>
+    pub(crate) fn build<F, T, Cfg>(self, service: F) -> FramedService2<St, C, T, Io, Codec, Cfg>
     where
         F: IntoServiceFactory<T>,
         T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+            Request = DispatcherItem<Codec>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -381,28 +366,27 @@ where
     }
 }
 
-pub(crate) struct FramedService2<St, C, T, Io, Codec, Out, Cfg> {
+pub(crate) struct FramedService2<St, C, T, Io, Codec, Cfg> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: usize,
     time: LowResTimeService,
-    _t: PhantomData<(St, Io, Codec, Out, Cfg)>,
+    _t: PhantomData<(St, Io, Codec, Cfg)>,
 }
 
-impl<St, C, T, Io, Codec, Out, Cfg> ServiceFactory
-    for FramedService2<St, C, T, Io, Codec, Out, Cfg>
+impl<St, C, T, Io, Codec, Cfg> ServiceFactory for FramedService2<St, C, T, Io, Codec, Cfg>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec, Out>,
-        Response = HandshakeResult<Io, St, Codec, Out>,
+        Request = HandshakeResult<Io, (), Codec>,
+        Response = HandshakeResult<Io, St, Codec>,
     >,
     C::Error: fmt::Debug,
     <C::Service as Service>::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+            Request = DispatcherItem<Codec>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -411,15 +395,14 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Config = Cfg;
     type Request = (Framed<Io, Codec>, Option<Delay>);
     type Response = ();
     type Error = C::Error;
     type InitError = C::InitError;
-    type Service = FramedServiceImpl2<St, C::Service, T, Io, Codec, Out>;
-    type Future = FramedServiceResponse2<St, C, T, Io, Codec, Out>;
+    type Service = FramedServiceImpl2<St, C::Service, T, Io, Codec>;
+    type Future = FramedServiceResponse2<St, C, T, Io, Codec>;
 
     fn new_service(&self, _: Cfg) -> Self::Future {
         // create connect service and then create service impl
@@ -433,18 +416,18 @@ where
 }
 
 #[pin_project::pin_project]
-pub(crate) struct FramedServiceResponse2<St, C, T, Io, Codec, Out>
+pub(crate) struct FramedServiceResponse2<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec, Out>,
-        Response = HandshakeResult<Io, St, Codec, Out>,
+        Request = HandshakeResult<Io, (), Codec>,
+        Response = HandshakeResult<Io, St, Codec>,
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+        Request = DispatcherItem<Codec>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -453,7 +436,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     #[pin]
     fut: C::Future,
@@ -462,18 +444,18 @@ where
     time: LowResTimeService,
 }
 
-impl<St, C, T, Io, Codec, Out> Future for FramedServiceResponse2<St, C, T, Io, Codec, Out>
+impl<St, C, T, Io, Codec> Future for FramedServiceResponse2<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec, Out>,
-        Response = HandshakeResult<Io, St, Codec, Out>,
+        Request = HandshakeResult<Io, (), Codec>,
+        Response = HandshakeResult<Io, St, Codec>,
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
-        Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+        Request = DispatcherItem<Codec>,
         Response = ResponseItem<Codec>,
         Error = C::Error,
         InitError = C::Error,
@@ -482,9 +464,8 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
-    type Output = Result<FramedServiceImpl2<St, C::Service, T, Io, Codec, Out>, C::InitError>;
+    type Output = Result<FramedServiceImpl2<St, C::Service, T, Io, Codec>, C::InitError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -500,26 +481,26 @@ where
     }
 }
 
-pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec, Out> {
+pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: usize,
     time: LowResTimeService,
-    _t: PhantomData<(St, Io, Codec, Out)>,
+    _t: PhantomData<(St, Io, Codec)>,
 }
 
-impl<St, C, T, Io, Codec, Out> Service for FramedServiceImpl2<St, C, T, Io, Codec, Out>
+impl<St, C, T, Io, Codec> Service for FramedServiceImpl2<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: Service<
-        Request = HandshakeResult<Io, (), Codec, Out>,
-        Response = HandshakeResult<Io, St, Codec, Out>,
+        Request = HandshakeResult<Io, (), Codec>,
+        Response = HandshakeResult<Io, St, Codec>,
     >,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
             Config = St,
-            Request = Result<RequestItem<Codec>, DispatcherError<Codec>>,
+            Request = DispatcherItem<Codec>,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -528,7 +509,6 @@ where
     <T::Service as Service>::Future: 'static,
     Codec: Decoder + Encoder,
     <Codec as Encoder>::Item: 'static,
-    Out: Stream<Item = <Codec as Encoder>::Item> + Unpin,
 {
     type Request = (Framed<Io, Codec>, Option<Delay>);
     type Response = ();

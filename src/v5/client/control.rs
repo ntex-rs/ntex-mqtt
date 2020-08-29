@@ -1,6 +1,3 @@
-use bytestring::ByteString;
-
-use super::sink::MqttSink;
 use crate::{error, v5::codec};
 
 pub use crate::v5::control::{Closed, ControlResult, Disconnect, Error, ProtocolError};
@@ -58,9 +55,6 @@ impl Publish {
     }
 
     pub fn ack(self, response: Option<codec::PublishAck>) -> ControlResult {
-        ControlResult {
-            packet: response.map(|pkt| codec::Packet::PublishAck(pkt)),
-            disconnect: false,
-        }
+        ControlResult { packet: response.map(codec::Packet::PublishAck), disconnect: false }
     }
 }

@@ -16,7 +16,7 @@ pub struct MqttSink(Rc<RefCell<MqttSinkInner>>);
 pub(crate) struct MqttSinkInner {
     idx: u16,
     queue: VecDeque<(u16, oneshot::Sender<()>)>,
-    sink: Option<mpsc::Sender<mqtt::Packet>>,
+    sink: Option<mpsc::Sender<(mqtt::Packet, usize)>>,
 }
 
 impl Clone for MqttSink {
@@ -26,7 +26,7 @@ impl Clone for MqttSink {
 }
 
 impl MqttSink {
-    pub(crate) fn new(sink: mpsc::Sender<mqtt::Packet>) -> Self {
+    pub(crate) fn new(sink: mpsc::Sender<(mqtt::Packet, usize)>) -> Self {
         MqttSink(Rc::new(RefCell::new(MqttSinkInner {
             idx: 0,
             sink: Some(sink),
@@ -106,7 +106,7 @@ impl<'a> PublishBuilder<'a> {
         if let Some(packet) = self.packet.take() {
             if let Some(ref sink) = self.sink.0.borrow().sink {
                 log::trace!("Publish (QoS-0) to {:?}", packet.topic);
-                let _ = sink.send(mqtt::Packet::Publish(packet)).map_err(|_| {
+                let _ = sink.send((mqtt::Packet::Publish(packet), 0)).map_err(|_| {
                     log::error!("Mqtt sink is disconnected");
                 });
             } else {
@@ -136,7 +136,13 @@ impl<'a> PublishBuilder<'a> {
                 packet.packet_id = NonZeroU16::new(inner.idx);
 
                 log::trace!("Publish (QoS1) to {:#?}", packet);
-                if inner.sink.as_ref().unwrap().send(mqtt::Packet::Publish(packet)).is_err() {
+                if inner
+                    .sink
+                    .as_ref()
+                    .unwrap()
+                    .send((mqtt::Packet::Publish(packet), 0))
+                    .is_err()
+                {
                     Either::Right(err(()))
                 } else {
                     Either::Left(rx.map_err(|_| ()))

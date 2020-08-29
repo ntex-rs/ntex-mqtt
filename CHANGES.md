@@ -4,6 +4,8 @@
 
 * v5: New client api
 
+* v5: Send publish packet returns ack or publish error
+
 ## [0.3.4] - 2020-08-14
 
 * v5: set `max_qos` to `AtLeastOnce` for server `ConnectAck` response
