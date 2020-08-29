@@ -12,7 +12,7 @@ use ntex::util::timeout::{Timeout, TimeoutError};
 use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::framed::DispatcherError;
+use crate::framed::DispatcherItem;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
@@ -193,12 +193,21 @@ where
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
                 factory(publish, control, self.inflight),
-                |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
-                    Ok(req) => Either::Left(srv.call(req)),
-                    Err(e) => match e {
-                        DispatcherError::EncoderWritten(_) => Either::Right(ok(None)),
-                        _ => Either::Right(err(MqttError::Protocol(From::from(e)))),
-                    },
+                |req: DispatcherItem<mqtt::Codec>, srv| match req {
+                    DispatcherItem::Item(req) => Either::Left(srv.call(req)),
+                    DispatcherItem::ItemEncoded(_) => Either::Right(ok(None)),
+                    DispatcherItem::KeepAliveTimeout => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
+                    }
+                    DispatcherItem::EncoderError(_, e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
+                    }
+                    DispatcherItem::DecoderError(e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Decode(e))))
+                    }
+                    DispatcherItem::IoError(e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                    }
                 },
             )),
         )
@@ -234,12 +243,21 @@ where
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
                 factory(publish, control, self.inflight),
-                |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
-                    Ok(req) => Either::Left(srv.call(req)),
-                    Err(e) => match e {
-                        DispatcherError::EncoderWritten(_) => Either::Right(ok(None)),
-                        _ => Either::Right(err(MqttError::Protocol(From::from(e)))),
-                    },
+                |req: DispatcherItem<mqtt::Codec>, srv| match req {
+                    DispatcherItem::Item(req) => Either::Left(srv.call(req)),
+                    DispatcherItem::ItemEncoded(_) => Either::Right(ok(None)),
+                    DispatcherItem::KeepAliveTimeout => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
+                    }
+                    DispatcherItem::EncoderError(_, e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
+                    }
+                    DispatcherItem::DecoderError(e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Decode(e))))
+                    }
+                    DispatcherItem::IoError(e) => {
+                        Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                    }
                 },
             )),
         )

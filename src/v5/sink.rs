@@ -6,7 +6,7 @@ use futures::future::{err, Either, Future};
 use ntex::channel::{mpsc, pool};
 use slab::Slab;
 
-use crate::v5::error::{EncodeError, PublishError, PublishQos0Error};
+use crate::v5::error::{EncodeError, PublishQos0Error, PublishQos1Error};
 use crate::{types::QoS, v5::codec};
 
 pub struct MqttSink(Rc<RefCell<MqttSinkInner>>);
@@ -220,20 +220,19 @@ impl<'a> PublishBuilder<'a> {
 
             if let Some(ref sink) = inner.sink {
                 log::trace!("Publish (QoS-0) to {:?}", packet.topic);
-                let _ = sink.send((codec::Packet::Publish(packet), info_idx));
-
-                // wait notification from encoder
-                Either::Left(async move {
-                    let info = info_rx.await.map_err(|_| PublishQos0Error::Disconnected)?;
-                    match info {
-                        Info::Written => Ok(()),
-                        Info::Error(err) => Err(PublishQos0Error::Encode(err)),
-                    }
-                })
-            } else {
-                log::error!("Mqtt sink is disconnected");
-                Either::Right(err(PublishQos0Error::Disconnected))
+                if sink.send((codec::Packet::Publish(packet), info_idx)).is_ok() {
+                    // wait notification from encoder
+                    return Either::Left(async move {
+                        let info = info_rx.await.map_err(|_| PublishQos0Error::Disconnected)?;
+                        match info {
+                            Info::Written => Ok(()),
+                            Info::Error(err) => Err(PublishQos0Error::Encode(err)),
+                        }
+                    });
+                }
             }
+            log::error!("Mqtt sink is disconnected");
+            Either::Right(err(PublishQos0Error::Disconnected))
         } else {
             panic!("PublishBuilder can be used only once.");
         }
@@ -242,7 +241,7 @@ impl<'a> PublishBuilder<'a> {
     /// Send publish packet with QoS 1
     pub fn send_at_least_once(
         &mut self,
-    ) -> impl Future<Output = Result<codec::PublishAck, PublishError>> {
+    ) -> impl Future<Output = Result<codec::PublishAck, PublishQos1Error>> {
         if let Some(mut packet) = self.packet.take() {
             let sink = self.sink.0.clone();
 
@@ -256,7 +255,7 @@ impl<'a> PublishBuilder<'a> {
 
                         drop(inner);
                         if rx.await.is_err() {
-                            return Err(PublishError::Disconnected);
+                            return Err(PublishQos1Error::Disconnected);
                         }
 
                         inner = sink.borrow_mut();
@@ -268,7 +267,7 @@ impl<'a> PublishBuilder<'a> {
                     // allocate packet id
                     let idx = inner.queue.insert(tx) + 1;
                     if idx > u16::MAX as usize {
-                        return Err(PublishError::PacketIdNotAvailable);
+                        return Err(PublishQos1Error::PacketIdNotAvailable);
                     }
                     inner.queue_order.push_back(idx);
 
@@ -290,25 +289,25 @@ impl<'a> PublishBuilder<'a> {
                     drop(inner);
 
                     if send_result.is_err() {
-                        Err(PublishError::Disconnected)
+                        Err(PublishQos1Error::Disconnected)
                     } else {
                         // wait notification from encoder
-                        let info = info_rx.await.map_err(|_| PublishError::Disconnected)?;
+                        let info = info_rx.await.map_err(|_| PublishQos1Error::Disconnected)?;
                         match info {
                             Info::Written => (),
-                            Info::Error(err) => return Err(PublishError::Encode(err)),
+                            Info::Error(err) => return Err(PublishQos1Error::Encode(err)),
                         }
 
                         // wait ack from peer
-                        rx.await.map_err(|_| PublishError::Disconnected).and_then(|pkt| {
+                        rx.await.map_err(|_| PublishQos1Error::Disconnected).and_then(|pkt| {
                             match pkt.reason_code {
                                 codec::PublishAckReason::Success => Ok(pkt),
-                                _ => Err(PublishError::Fail(pkt)),
+                                _ => Err(PublishQos1Error::Fail(pkt)),
                             }
                         })
                     }
                 } else {
-                    Err(PublishError::Disconnected)
+                    Err(PublishQos1Error::Disconnected)
                 }
             }
         } else {

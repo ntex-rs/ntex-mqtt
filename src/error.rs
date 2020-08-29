@@ -2,8 +2,6 @@ use derive_more::{Display, From};
 use either::Either;
 use std::io;
 
-use super::framed::DispatcherError;
-
 /// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug)]
 pub enum MqttError<E> {
@@ -114,30 +112,6 @@ impl From<Either<DecodeError, io::Error>> for ProtocolError {
         match err {
             Either::Left(err) => ProtocolError::Decode(err),
             Either::Right(err) => ProtocolError::Io(err),
-        }
-    }
-}
-
-impl From<DispatcherError<crate::v3::codec::Codec>> for ProtocolError {
-    fn from(err: DispatcherError<crate::v3::codec::Codec>) -> Self {
-        match err {
-            DispatcherError::KeepAlive => ProtocolError::KeepAliveTimeout,
-            DispatcherError::Decoder(err) => ProtocolError::Decode(err),
-            DispatcherError::Encoder(_, err) => ProtocolError::Encode(err),
-            DispatcherError::EncoderWritten(_) => panic!("Internal error"),
-            DispatcherError::Io(err) => ProtocolError::Io(err),
-        }
-    }
-}
-
-impl From<DispatcherError<crate::v5::codec::Codec>> for ProtocolError {
-    fn from(err: DispatcherError<crate::v5::codec::Codec>) -> Self {
-        match err {
-            DispatcherError::KeepAlive => ProtocolError::KeepAliveTimeout,
-            DispatcherError::Decoder(err) => ProtocolError::Decode(err),
-            DispatcherError::Encoder(_, err) => ProtocolError::Encode(err),
-            DispatcherError::EncoderWritten(_) => panic!("Internal error"),
-            DispatcherError::Io(err) => ProtocolError::Io(err),
         }
     }
 }

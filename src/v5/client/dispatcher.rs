@@ -10,7 +10,7 @@ use ntex::util::inflight::InFlightService;
 use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::framed::DispatcherError;
+use crate::framed::DispatcherItem;
 use crate::types::packet_type;
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{codec, sink::MqttSink};
@@ -25,7 +25,7 @@ pub(super) fn create_dispatcher<T, C, E>(
     publish: T,
     control: C,
 ) -> impl Service<
-    Request = Result<codec::Packet, DispatcherError<codec::Codec>>,
+    Request = DispatcherItem<codec::Codec>,
     Response = Option<codec::Packet>,
     Error = MqttError<E>,
 >
@@ -133,7 +133,7 @@ where
     >,
     C::Future: 'static,
 {
-    type Request = Result<codec::Packet, DispatcherError<codec::Codec>>;
+    type Request = DispatcherItem<codec::Codec>;
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
     type Future = Either<
@@ -169,7 +169,7 @@ where
         log::trace!("Dispatch packet: {:#?}", request);
 
         match request {
-            Ok(codec::Packet::Publish(publish)) => {
+            DispatcherItem::Item(codec::Packet::Publish(publish)) => {
                 let info = self.inner.clone();
                 let packet_id = publish.packet_id;
 
@@ -250,7 +250,7 @@ where
                     _t: PhantomData,
                 })
             }
-            Ok(codec::Packet::PublishAck(packet)) => {
+            DispatcherItem::Item(codec::Packet::PublishAck(packet)) => {
                 if !self.inner.sink.pkt_publish_ack(packet) {
                     Either::Right(Either::Right(
                         ControlResponse::new(
@@ -263,13 +263,13 @@ where
                     Either::Right(Either::Left(ok(None)))
                 }
             }
-            Ok(codec::Packet::PingRequest) => {
+            DispatcherItem::Item(codec::Packet::PingRequest) => {
                 Either::Right(Either::Left(ok(Some(codec::Packet::PingResponse))))
             }
-            Ok(codec::Packet::Disconnect(pkt)) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::dis(pkt), &self.inner),
-            )),
-            Ok(codec::Packet::Auth(_)) => Either::Right(Either::Right(
+            DispatcherItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(
+                Either::Right(ControlResponse::new(ControlMessage::dis(pkt), &self.inner)),
+            ),
+            DispatcherItem::Item(codec::Packet::Auth(_)) => Either::Right(Either::Right(
                 ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Unexpected(
                         packet_type::AUTH,
@@ -279,7 +279,7 @@ where
                 )
                 .error(),
             )),
-            Ok(codec::Packet::Subscribe(_)) => Either::Right(Either::Right(
+            DispatcherItem::Item(codec::Packet::Subscribe(_)) => Either::Right(Either::Right(
                 ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Unexpected(
                         packet_type::SUBSCRIBE,
@@ -289,42 +289,56 @@ where
                 )
                 .error(),
             )),
-            Ok(codec::Packet::Unsubscribe(_)) => Either::Right(Either::Right(
-                ControlResponse::new(
-                    ControlMessage::proto_error(ProtocolError::Unexpected(
-                        packet_type::UNSUBSCRIBE,
-                        "Unsubscribe packet is not supported",
-                    )),
-                    &self.inner,
-                )
-                .error(),
-            )),
-            Ok(codec::Packet::PingResponse) => Either::Right(Either::Left(ok(None))),
-            Ok(pkt) => {
+            DispatcherItem::Item(codec::Packet::Unsubscribe(_)) => {
+                Either::Right(Either::Right(
+                    ControlResponse::new(
+                        ControlMessage::proto_error(ProtocolError::Unexpected(
+                            packet_type::UNSUBSCRIBE,
+                            "Unsubscribe packet is not supported",
+                        )),
+                        &self.inner,
+                    )
+                    .error(),
+                ))
+            }
+            DispatcherItem::Item(codec::Packet::PingResponse) => {
+                Either::Right(Either::Left(ok(None)))
+            }
+            DispatcherItem::Item(pkt) => {
                 log::debug!("Unsupported packet: {:?}", pkt);
                 Either::Right(Either::Left(ok(None)))
             }
-            Err(e) => match e {
-                DispatcherError::Encoder(idx, err) => {
-                    if idx == 0 {
-                        Either::Right(Either::Right(ControlResponse::new(
-                            ControlMessage::proto_error(e.into()),
-                            &self.inner,
-                        )))
-                    } else {
-                        self.inner.sink.pkt_encode_err(idx, err);
-                        Either::Right(Either::Left(ok(None)))
-                    }
-                }
-                DispatcherError::EncoderWritten(idx) => {
-                    self.inner.sink.pkt_written(idx);
+            DispatcherItem::ItemEncoded(idx) => {
+                self.inner.sink.pkt_written(idx);
+                Either::Right(Either::Left(ok(None)))
+            }
+            DispatcherItem::EncoderError(idx, err) => {
+                if idx == 0 {
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(ProtocolError::Encode(err)),
+                        &self.inner,
+                    )))
+                } else {
+                    self.inner.sink.pkt_encode_err(idx, err);
                     Either::Right(Either::Left(ok(None)))
                 }
-                _ => Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::proto_error(e.into()),
+            }
+            DispatcherItem::DecoderError(err) => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::Decode(err)),
                     &self.inner,
-                ))),
-            },
+                )))
+            }
+            DispatcherItem::IoError(err) => Either::Right(Either::Right(ControlResponse::new(
+                ControlMessage::proto_error(ProtocolError::Io(err)),
+                &self.inner,
+            ))),
+            DispatcherItem::KeepAliveTimeout => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
+                    &self.inner,
+                )))
+            }
         }
     }
 }

@@ -4,10 +4,7 @@ pub use crate::error::*;
 pub use crate::v5::codec;
 
 #[derive(Debug, Display)]
-pub enum PublishError {
-    /// Negative ack from peer
-    #[display(fmt = "Negative ack: {:?}", _0)]
-    Fail(codec::PublishAck),
+pub enum PublishQos0Error {
     /// Encoder error
     Encode(EncodeError),
     /// Can not allocate next packet id
@@ -19,7 +16,10 @@ pub enum PublishError {
 }
 
 #[derive(Debug, Display)]
-pub enum PublishQos0Error {
+pub enum PublishQos1Error {
+    /// Negative ack from peer
+    #[display(fmt = "Negative ack: {:?}", _0)]
+    Fail(codec::PublishAck),
     /// Encoder error
     Encode(EncodeError),
     /// Can not allocate next packet id

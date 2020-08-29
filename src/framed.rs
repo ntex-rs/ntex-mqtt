@@ -24,46 +24,38 @@ bitflags::bitflags! {
     }
 }
 
-/// Framed transport errors
-pub enum DispatcherError<U: Encoder + Decoder> {
-    /// Keep alive timeout
-    KeepAlive,
-    /// Decoder parse error
-    Decoder(<U as Decoder>::Error),
-    /// Encoder parse error
-    Encoder(usize, <U as Encoder>::Error),
+/// Framed transport item
+pub(crate) enum DispatcherItem<U: Encoder + Decoder> {
+    Item(Request<U>),
     /// Item is encoded to buffer
-    EncoderWritten(usize),
+    ItemEncoded(usize),
+    /// Keep alive timeout
+    KeepAliveTimeout,
+    /// Decoder parse error
+    DecoderError(<U as Decoder>::Error),
+    /// Encoder parse error
+    EncoderError(usize, <U as Encoder>::Error),
     /// Unexpected io error
-    Io(io::Error),
+    IoError(io::Error),
 }
 
-impl<U: Encoder + Decoder> fmt::Debug for DispatcherError<U> {
+impl<U> fmt::Debug for DispatcherItem<U>
+where
+    U: Encoder + Decoder,
+    <U as Decoder>::Item: fmt::Debug,
+{
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            DispatcherError::KeepAlive => write!(fmt, "DispatcherError::KeepAlive"),
-            DispatcherError::Encoder(_, ref e) => {
-                write!(fmt, "DispatcherError::Encoder({:?})", e)
+            DispatcherItem::Item(ref item) => write!(fmt, "DispatcherItem::Item({:?})", item),
+            DispatcherItem::ItemEncoded(_) => write!(fmt, "DispatcherItem::ItemEncoded"),
+            DispatcherItem::KeepAliveTimeout => write!(fmt, "DispatcherItem::KeepAliveTimeout"),
+            DispatcherItem::EncoderError(_, ref e) => {
+                write!(fmt, "DispatcherItem::EncoderError({:?})", e)
             }
-            DispatcherError::EncoderWritten(_) => {
-                write!(fmt, "DispatcherError::EncoderWritten")
+            DispatcherItem::DecoderError(ref e) => {
+                write!(fmt, "DispatcherItem::DecoderError({:?})", e)
             }
-            DispatcherError::Decoder(ref e) => write!(fmt, "DispatcherError::Decoder({:?})", e),
-            DispatcherError::Io(ref e) => write!(fmt, "DispatcherError::Io({:?})", e),
-        }
-    }
-}
-
-impl<U: Encoder + Decoder> fmt::Display for DispatcherError<U> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            DispatcherError::KeepAlive => write!(fmt, "DispatcherError::KeepAlive"),
-            DispatcherError::Encoder(_, ref e) => write!(fmt, "{:?}", e),
-            DispatcherError::EncoderWritten(_) => {
-                write!(fmt, "DispatcherError::EncoderWritten")
-            }
-            DispatcherError::Decoder(ref e) => write!(fmt, "{:?}", e),
-            DispatcherError::Io(ref e) => write!(fmt, "DispatcherError::Io({:?})", e),
+            DispatcherItem::IoError(ref e) => write!(fmt, "DispatcherItem::IoError({:?})", e),
         }
     }
 }
@@ -71,12 +63,9 @@ impl<U: Encoder + Decoder> fmt::Display for DispatcherError<U> {
 /// Framed dispatcher - is a future that reads frames from Framed object
 /// and pass then to the service.
 #[pin_project::pin_project]
-pub struct Dispatcher<S, T, U>
+pub(crate) struct Dispatcher<S, T, U>
 where
-    S: Service<
-        Request = Result<Request<U>, DispatcherError<U>>,
-        Response = Option<Response<U>>,
-    >,
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -89,10 +78,7 @@ where
 #[cfg(test)]
 impl<S, T, U> Dispatcher<S, T, U>
 where
-    S: Service<
-        Request = Result<Request<U>, DispatcherError<U>>,
-        Response = Option<Response<U>>,
-    >,
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -119,7 +105,7 @@ where
                 state: FramedState::Processing,
                 disconnect_timeout: 1000,
                 keepalive: delay_until(expire),
-                write_notify: VecDeque::with_capacity(16),
+                write_queue: VecDeque::with_capacity(16),
             },
         }
     }
@@ -127,10 +113,7 @@ where
 
 impl<S, T, U> Dispatcher<S, T, U>
 where
-    S: Service<
-        Request = Result<Request<U>, DispatcherError<U>>,
-        Response = Option<Response<U>>,
-    >,
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -156,7 +139,7 @@ where
                 disconnect_timeout: 1000,
                 updated: time.now(),
                 keepalive: delay_until(expire),
-                write_notify: VecDeque::with_capacity(16),
+                write_queue: VecDeque::with_capacity(16),
                 framed,
                 sink,
                 time,
@@ -197,10 +180,7 @@ where
 
 impl<S, T, U> Future for Dispatcher<S, T, U>
 where
-    S: Service<
-        Request = Result<Request<U>, DispatcherError<U>>,
-        Response = Option<Response<U>>,
-    >,
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -229,10 +209,7 @@ enum PollResult {
 
 struct InnerDispatcher<S, T, U>
 where
-    S: Service<
-        Request = Result<Request<U>, DispatcherError<U>>,
-        Response = Option<Response<U>>,
-    >,
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -248,17 +225,14 @@ where
     keepalive_timeout: Duration,
     disconnect_timeout: u64,
     errors: Errors,
-    write_notify: VecDeque<DispatcherError<U>>,
+    write_queue: VecDeque<DispatcherItem<U>>,
     time: LowResTimeService,
     updated: Instant,
 }
 
 impl<S, T, U> InnerDispatcher<S, T, U>
 where
-    S: Service<
-        Request = Result<Request<U>, DispatcherError<U>>,
-        Response = Option<Response<U>>,
-    >,
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
     S::Error: 'static,
     S::Future: 'static,
     T: AsyncRead + AsyncWrite + Unpin,
@@ -270,9 +244,9 @@ where
             match self.service.poll_ready(cx) {
                 Poll::Ready(Ok(_)) => {
                     // handle write error
-                    if let Some(err) = self.write_notify.pop_front() {
+                    if let Some(item) = self.write_queue.pop_front() {
                         let tx = self.rx.sender();
-                        ntex::rt::spawn(self.service.call(Err(err)).map(move |item| {
+                        ntex::rt::spawn(self.service.call(item).map(move |item| {
                             let item = match item {
                                 Ok(Some(item)) => Ok(item),
                                 Err(err) => Err(err),
@@ -288,19 +262,19 @@ where
                     let item = match self.framed.next_item(cx) {
                         Poll::Ready(Some(Ok(el))) => {
                             self.updated = self.time.now();
-                            Ok(el)
+                            DispatcherItem::Item(el)
                         }
                         Poll::Ready(Some(Err(err))) => {
                             error = true;
                             match err {
                                 Either::Left(err) => {
                                     log::warn!("Framed decode error");
-                                    Err(DispatcherError::Decoder(err))
+                                    DispatcherItem::DecoderError(err)
                                 }
                                 Either::Right(err) => {
                                     log::trace!("Framed io error: {:?}", err);
                                     self.errors.insert(Errors::IO);
-                                    Err(DispatcherError::Io(err))
+                                    DispatcherItem::IoError(err)
                                 }
                             }
                         }
@@ -356,7 +330,7 @@ where
                         // so error here is from encoder
                         if let Err(err) = self.framed.write(msg) {
                             log::trace!("Framed write error: {:?}", err);
-                            self.write_notify.push_back(DispatcherError::Encoder(0, err));
+                            self.write_queue.push_back(DispatcherItem::EncoderError(0, err));
                         }
                         updated = true;
                         continue;
@@ -375,10 +349,10 @@ where
                         Poll::Ready(Some((msg, idx))) => {
                             if let Err(err) = self.framed.write(msg) {
                                 log::trace!("Framed write error from sink: {:?}", err);
-                                self.write_notify.push_back(DispatcherError::Encoder(idx, err));
+                                self.write_queue
+                                    .push_back(DispatcherItem::EncoderError(idx, err));
                             } else if idx != 0 {
-                                self.write_notify
-                                    .push_back(DispatcherError::EncoderWritten(idx));
+                                self.write_queue.push_back(DispatcherItem::ItemEncoded(idx));
                             }
                             updated = true;
                             continue;
@@ -404,7 +378,7 @@ where
                         debug!("Error sending data: {:?}", err);
                         let _ = self.sink.take();
                         updated = true;
-                        self.write_notify.push_back(DispatcherError::Io(err));
+                        self.write_queue.push_back(DispatcherItem::IoError(err));
                         self.errors.insert(Errors::IO);
                     }
                 }
@@ -427,7 +401,7 @@ where
             match Pin::new(&mut self.keepalive).poll(cx) {
                 Poll::Ready(_) => {
                     if self.keepalive.deadline() <= RtInstant::from_std(self.updated) {
-                        self.write_notify.push_back(DispatcherError::KeepAlive);
+                        self.write_queue.push_back(DispatcherItem::KeepAliveTimeout);
                         self.errors.insert(Errors::KEEP_ALIVE);
                     } else {
                         let expire =
@@ -528,9 +502,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use bytes::{Bytes, BytesMut};
-    use futures::future::ok;
-    use std::io;
+    use bytes::Bytes;
 
     use ntex::channel::mpsc;
     use ntex::rt::time::delay_for;
@@ -538,17 +510,6 @@ mod tests {
     use ntex_codec::{BytesCodec, Framed};
 
     use super::*;
-
-    #[test]
-    fn test_err() {
-        type T = DispatcherError<BytesCodec>;
-        let err = T::Encoder(0, io::Error::new(io::ErrorKind::Other, "err"));
-        assert!(format!("{:?}", err).contains("DispatcherError::Encoder"));
-        assert!(format!("{}", err).contains("Custom"));
-        let err = T::Decoder(io::Error::new(io::ErrorKind::Other, "err"));
-        assert!(format!("{:?}", err).contains("DispatcherError::Decoder"));
-        assert!(format!("{}", err).contains("Custom"));
-    }
 
     #[ntex::test]
     async fn test_basic() {
@@ -559,9 +520,13 @@ mod tests {
         let framed = Framed::new(server, BytesCodec);
         let disp = Dispatcher::new(
             framed,
-            ntex::fn_service(|msg: Result<BytesMut, DispatcherError<BytesCodec>>| async move {
+            ntex::fn_service(|msg: DispatcherItem<BytesCodec>| async move {
                 delay_for(Duration::from_millis(50)).await;
-                Ok::<_, ()>(Some(msg.unwrap().freeze()))
+                if let DispatcherItem::Item(msg) = msg {
+                    Ok::<_, ()>(Some(msg.freeze()))
+                } else {
+                    panic!()
+                }
             }),
         );
         ntex::rt::spawn(disp.map(|_| ()));
@@ -584,8 +549,12 @@ mod tests {
         let disp = Dispatcher::with(
             framed,
             Some(rx),
-            ntex::fn_service(|msg: Result<BytesMut, DispatcherError<BytesCodec>>| {
-                ok::<_, ()>(Some(msg.unwrap().freeze()))
+            ntex::fn_service(|msg: DispatcherItem<BytesCodec>| async move {
+                if let DispatcherItem::Item(msg) = msg {
+                    Ok::<_, ()>(Some(msg.freeze()))
+                } else {
+                    panic!()
+                }
             }),
             LowResTimeService::with(Duration::from_secs(1)),
         )
@@ -615,7 +584,7 @@ mod tests {
 
         let disp = Dispatcher::new(
             framed,
-            ntex::fn_service(|_: Result<BytesMut, DispatcherError<BytesCodec>>| async {
+            ntex::fn_service(|_: DispatcherItem<BytesCodec>| async move {
                 Err::<Option<Bytes>, _>(())
             }),
         );
