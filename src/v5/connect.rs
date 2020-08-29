@@ -1,7 +1,5 @@
-use std::fmt;
-
-use ntex::channel::mpsc;
 use ntex_codec::Framed;
+use std::fmt;
 
 use super::{codec, sink::MqttSink};
 use crate::handshake::HandshakeResult;
@@ -10,13 +8,13 @@ use crate::handshake::HandshakeResult;
 pub struct Connect<Io> {
     connect: codec::Connect,
     sink: MqttSink,
-    io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
+    io: HandshakeResult<Io, (), codec::Codec>,
 }
 
 impl<Io> Connect<Io> {
     pub(crate) fn new(
         connect: codec::Connect,
-        io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
+        io: HandshakeResult<Io, (), codec::Codec>,
         sink: MqttSink,
     ) -> Self {
         Self { connect, io, sink }
@@ -65,7 +63,7 @@ impl<T> fmt::Debug for Connect<T> {
 
 /// Ack connect message
 pub struct ConnectAck<Io, St> {
-    pub(crate) io: HandshakeResult<Io, (), codec::Codec, mpsc::Receiver<codec::Packet>>,
+    pub(crate) io: HandshakeResult<Io, (), codec::Codec>,
     pub(crate) session: Option<St>,
     pub(crate) sink: MqttSink,
     pub(crate) packet: codec::ConnectAck,

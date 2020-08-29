@@ -18,7 +18,7 @@ use super::control::{ControlPacket, ControlResult};
 use super::default::{DefaultControlService, DefaultPublishService};
 use super::dispatcher::factory;
 use super::publish::{Publish, PublishAck};
-use super::sink::MqttSink;
+use super::sink::{MqttSink, MqttSinkPool};
 use super::Session;
 
 /// Mqtt Server
@@ -31,6 +31,7 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     handshake_timeout: usize,
     disconnect_timeout: usize,
     max_topic_alias: u16,
+    pool: Rc<MqttSinkPool>,
     _t: PhantomData<(Io, St)>,
 }
 
@@ -62,6 +63,7 @@ where
             handshake_timeout: 0,
             disconnect_timeout: 3000,
             max_topic_alias: 32,
+            pool: Rc::new(MqttSinkPool::default()),
             _t: PhantomData,
         }
     }
@@ -149,6 +151,7 @@ where
             max_topic_alias: self.max_topic_alias,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
+            pool: self.pool,
             _t: PhantomData,
         }
     }
@@ -172,6 +175,7 @@ where
             max_topic_alias: self.max_topic_alias,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
+            pool: self.pool,
             _t: PhantomData,
         }
     }
@@ -216,6 +220,7 @@ where
                 self.max_receive,
                 self.max_topic_alias,
                 self.handshake_timeout,
+                self.pool,
             ))
             .disconnect_timeout(self.disconnect_timeout)
             .build(factory(
@@ -251,6 +256,7 @@ where
                 self.max_receive,
                 self.max_topic_alias,
                 self.handshake_timeout,
+                self.pool,
             ))
             .disconnect_timeout(self.disconnect_timeout)
             .build(factory(
@@ -269,10 +275,11 @@ fn handshake_service_factory<Io, St, C>(
     max_receive: u16,
     max_topic_alias: u16,
     handshake_timeout: usize,
+    pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
     Config = (),
     Request = Handshake<Io, mqtt::Codec>,
-    Response = HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    Response = HandshakeResult<Io, Session<St>, mqtt::Codec>,
     Error = MqttError<C::Error>,
 >
 where
@@ -283,7 +290,10 @@ where
     ntex::apply(
         Timeout::new(Duration::from_millis(handshake_timeout as u64)),
         ntex::fn_factory(move || {
+            let pool = pool.clone();
+
             factory.new_service(()).map_ok(move |service| {
+                let pool = pool.clone();
                 let service = Rc::new(service.map_err(MqttError::Service));
                 ntex::apply_fn(service, move |conn: Handshake<Io, mqtt::Codec>, service| {
                     handshake(
@@ -292,6 +302,7 @@ where
                         max_size,
                         max_receive,
                         max_topic_alias,
+                        pool.clone(),
                     )
                 })
             })
@@ -309,10 +320,11 @@ fn handshake_service_factory2<Io, St, C>(
     max_receive: u16,
     max_topic_alias: u16,
     handshake_timeout: usize,
+    pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
     Config = (),
-    Request = HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
-    Response = HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    Request = HandshakeResult<Io, (), mqtt::Codec>,
+    Response = HandshakeResult<Io, Session<St>, mqtt::Codec>,
     Error = MqttError<C::Error>,
     InitError = C::InitError,
 >
@@ -324,10 +336,19 @@ where
     ntex::apply(
         Timeout::new(Duration::from_millis(handshake_timeout as u64)),
         ntex::fn_factory(move || {
+            let pool = pool.clone();
             factory.new_service(()).map_ok(move |service| {
+                let pool = pool.clone();
                 let service = Rc::new(service.map_err(MqttError::Service));
                 ntex::apply_fn(service, move |conn, service| {
-                    handshake(conn, service.clone(), max_size, max_receive, max_topic_alias)
+                    handshake(
+                        conn,
+                        service.clone(),
+                        max_size,
+                        max_receive,
+                        max_topic_alias,
+                        pool.clone(),
+                    )
                 })
             })
         }),
@@ -339,12 +360,13 @@ where
 }
 
 async fn handshake<Io, S, St, E>(
-    mut framed: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    mut framed: HandshakeResult<Io, (), mqtt::Codec>,
     service: S,
     max_size: u32,
     max_receive: u16,
     max_topic_alias: u16,
-) -> Result<HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>, S::Error>
+    pool: Rc<MqttSinkPool>,
+) -> Result<HandshakeResult<Io, Session<St>, mqtt::Codec>, S::Error>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     S: Service<Request = Connect<Io>, Response = ConnectAck<Io, St>, Error = MqttError<E>>,
@@ -371,8 +393,11 @@ where
     match packet {
         mqtt::Packet::Connect(connect) => {
             let (tx, rx) = mpsc::channel();
-            let sink =
-                MqttSink::new(tx, connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize);
+            let sink = MqttSink::new(
+                tx,
+                connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize,
+                pool,
+            );
 
             // authenticate mqtt connection
             let mut ack = service.call(Connect::new(connect, framed, sink)).await?;

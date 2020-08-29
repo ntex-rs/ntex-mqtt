@@ -1,6 +1,5 @@
 use std::fmt;
 
-use ntex::channel::mpsc;
 use ntex_codec::Framed;
 
 use super::codec as mqtt;
@@ -11,13 +10,13 @@ use crate::handshake::HandshakeResult;
 pub struct Connect<Io> {
     connect: mqtt::Connect,
     sink: MqttSink,
-    io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    io: HandshakeResult<Io, (), mqtt::Codec>,
 }
 
 impl<Io> Connect<Io> {
     pub(crate) fn new(
         connect: mqtt::Connect,
-        io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+        io: HandshakeResult<Io, (), mqtt::Codec>,
         sink: MqttSink,
     ) -> Self {
         Self { connect, io, sink }
@@ -99,7 +98,7 @@ impl<T> fmt::Debug for Connect<T> {
 
 /// Ack connect message
 pub struct ConnectAck<Io, St> {
-    pub(crate) io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    pub(crate) io: HandshakeResult<Io, (), mqtt::Codec>,
     pub(crate) session: Option<St>,
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectAckReason,
@@ -109,7 +108,7 @@ pub struct ConnectAck<Io, St> {
 impl<Io, St> ConnectAck<Io, St> {
     /// Create connect ack, `session_present` indicates that previous session is presents
     pub(crate) fn new(
-        io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+        io: HandshakeResult<Io, (), mqtt::Codec>,
         sink: MqttSink,
         session: St,
         session_present: bool,

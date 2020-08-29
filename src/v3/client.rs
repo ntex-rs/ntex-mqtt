@@ -3,7 +3,7 @@ use std::{fmt, io, marker::PhantomData, pin::Pin, rc::Rc};
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::{err, Either, LocalBoxFuture};
+use futures::future::{err, ok, Either, LocalBoxFuture};
 use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 use ntex::channel::mpsc;
 use ntex::service::{
@@ -182,7 +182,10 @@ where
             ),
             |req: Result<_, DispatcherError<mqtt::Codec>>, srv| match req {
                 Ok(req) => Either::Left(srv.call(req)),
-                Err(e) => Either::Right(err(MqttError::Protocol(From::from(e)))),
+                Err(e) => match e {
+                    DispatcherError::EncoderWritten(_) => Either::Right(ok(None)),
+                    _ => Either::Right(err(MqttError::Protocol(From::from(e)))),
+                },
             },
         ))
     }
@@ -203,7 +206,7 @@ where
     C::Error: fmt::Debug + 'static,
 {
     type Request = Handshake<Io, mqtt::Codec>;
-    type Response = HandshakeResult<Io, Session<St>, mqtt::Codec, mpsc::Receiver<mqtt::Packet>>;
+    type Response = HandshakeResult<Io, Session<St>, mqtt::Codec>;
     type Error = MqttError<C::Error>;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
@@ -239,7 +242,7 @@ where
 
             match packet {
                 mqtt::Packet::ConnectAck { session_present, return_code } => {
-                    let (tx, rx) = mpsc::channel();
+                    let (tx, rx): (_, mpsc::Receiver<(mqtt::Packet, usize)>) = mpsc::channel();
                     let sink = MqttSink::new(tx);
                     let ack = ConnectAck { sink, session_present, return_code, io: framed };
                     Ok(srv
@@ -260,7 +263,7 @@ where
 }
 
 pub struct ConnectAck<Io> {
-    io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+    io: HandshakeResult<Io, (), mqtt::Codec>,
     sink: MqttSink,
     session_present: bool,
     return_code: mqtt::ConnectAckReason,
@@ -329,7 +332,7 @@ where
 pin_project_lite::pin_project! {
     pub struct ConnectAckResult<Io, St> {
         state: Session<St>,
-        io: HandshakeResult<Io, (), mqtt::Codec, mpsc::Receiver<mqtt::Packet>>,
+        io: HandshakeResult<Io, (), mqtt::Codec, >,
     }
 }
 

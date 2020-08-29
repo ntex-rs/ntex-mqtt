@@ -1,9 +1,8 @@
 use std::cell::{Cell, RefCell};
-use std::convert::TryFrom;
 use std::task::{Context, Poll};
 use std::{future::Future, io, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
-use futures::future::{join, ok, Either, FutureExt, Ready};
+use futures::future::{ok, Either, FutureExt, Ready};
 use futures::ready;
 use fxhash::FxHashSet;
 use ntex::service::Service;
@@ -13,11 +12,10 @@ use ntex::util::order::{InOrder, InOrderError};
 use crate::error::{MqttError, ProtocolError};
 use crate::framed::DispatcherError;
 use crate::types::packet_type;
-use crate::v5::codec;
 use crate::v5::publish::{Publish, PublishAck};
+use crate::v5::{codec, sink::MqttSink};
 
-use super::control::{self, ControlMessage, ControlResult};
-use super::sink::MqttSink;
+use super::control::{ControlMessage, ControlResult};
 
 /// mqtt5 protocol dispatcher
 pub(super) fn create_dispatcher<T, C, E>(
@@ -145,7 +143,7 @@ where
 
     fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx).map_err(|e| match e {
-            either::Either::Left(e) => MqttError::Service(e.into()),
+            either::Either::Left(e) => MqttError::Service(e),
             either::Either::Right(e) => MqttError::Protocol(e),
         })?;
         let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::from)?;
@@ -253,7 +251,7 @@ where
                 })
             }
             Ok(codec::Packet::PublishAck(packet)) => {
-                if !self.inner.sink.complete_publish_qos1(packet) {
+                if !self.inner.sink.pkt_publish_ack(packet) {
                     Either::Right(Either::Right(
                         ControlResponse::new(
                             ControlMessage::proto_error(ProtocolError::PacketIdMismatch),
@@ -271,7 +269,7 @@ where
             Ok(codec::Packet::Disconnect(pkt)) => Either::Right(Either::Right(
                 ControlResponse::new(ControlMessage::dis(pkt), &self.inner),
             )),
-            Ok(codec::Packet::Auth(pkt)) => Either::Right(Either::Right(
+            Ok(codec::Packet::Auth(_)) => Either::Right(Either::Right(
                 ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Unexpected(
                         packet_type::AUTH,
@@ -281,7 +279,7 @@ where
                 )
                 .error(),
             )),
-            Ok(codec::Packet::Subscribe(pkt)) => Either::Right(Either::Right(
+            Ok(codec::Packet::Subscribe(_)) => Either::Right(Either::Right(
                 ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Unexpected(
                         packet_type::SUBSCRIBE,
@@ -291,7 +289,7 @@ where
                 )
                 .error(),
             )),
-            Ok(codec::Packet::Unsubscribe(pkt)) => Either::Right(Either::Right(
+            Ok(codec::Packet::Unsubscribe(_)) => Either::Right(Either::Right(
                 ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Unexpected(
                         packet_type::UNSUBSCRIBE,
@@ -306,10 +304,27 @@ where
                 log::debug!("Unsupported packet: {:?}", pkt);
                 Either::Right(Either::Left(ok(None)))
             }
-            Err(e) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(e.into()),
-                &self.inner,
-            ))),
+            Err(e) => match e {
+                DispatcherError::Encoder(idx, err) => {
+                    if idx == 0 {
+                        Either::Right(Either::Right(ControlResponse::new(
+                            ControlMessage::proto_error(e.into()),
+                            &self.inner,
+                        )))
+                    } else {
+                        self.inner.sink.pkt_encode_err(idx, err);
+                        Either::Right(Either::Left(ok(None)))
+                    }
+                }
+                DispatcherError::EncoderWritten(idx) => {
+                    self.inner.sink.pkt_written(idx);
+                    Either::Right(Either::Left(ok(None)))
+                }
+                _ => Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(e.into()),
+                    &self.inner,
+                ))),
+            },
         }
     }
 }
@@ -360,41 +375,31 @@ where
                                     ControlMessage::publish(pkt.into_inner()),
                                     this.inner,
                                 )
-                                .set_packet_id(*this.packet_id),
+                                .packet_id(*this.packet_id),
                             ));
                             return self.poll(cx);
                         }
                     },
-                    Err(e) => match e {
-                        either::Either::Left(e) => {
-                            if *this.packet_id != 0 {
+                    Err(e) => {
+                        match e {
+                            either::Either::Left(e) => {
                                 this.state.set(PublishResponseState::Control(
                                     ControlResponse::new(ControlMessage::error(e), this.inner)
                                         .error(),
                                 ));
-                                return self.poll(cx);
-                            } else {
+                            }
+                            either::Either::Right(e) => {
                                 this.state.set(PublishResponseState::Control(
                                     ControlResponse::new(
-                                        ControlMessage::error(e.into()),
+                                        ControlMessage::proto_error(e),
                                         this.inner,
                                     )
                                     .error(),
                                 ));
-                                return self.poll(cx);
                             }
                         }
-                        either::Either::Right(e) => {
-                            this.state.set(PublishResponseState::Control(
-                                ControlResponse::new(
-                                    ControlMessage::proto_error(e),
-                                    this.inner,
-                                )
-                                .error(),
-                            ));
-                            return self.poll(cx);
-                        }
-                    },
+                        return self.poll(cx);
+                    }
                 };
                 if let Some(id) = NonZeroU16::new(*this.packet_id) {
                     this.inner.info.borrow_mut().inflight.remove(&id);
@@ -450,12 +455,7 @@ where
         self
     }
 
-    fn packet_id(mut self, id: NonZeroU16) -> Self {
-        self.packet_id = id.get();
-        self
-    }
-
-    fn set_packet_id(mut self, id: u16) -> Self {
+    fn packet_id(mut self, id: u16) -> Self {
         self.packet_id = id;
         self
     }

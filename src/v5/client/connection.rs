@@ -1,31 +1,29 @@
-use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, convert::TryFrom, marker::PhantomData, num::NonZeroU16};
 
 use bytestring::ByteString;
-use futures::future::{ok, Either, Future, Ready};
+use futures::future::{ok, Either, Future};
 use fxhash::FxHashMap;
 use ntex::channel::mpsc;
 use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
-use ntex::rt::time::{delay_until, Delay, Instant as RtInstant};
+use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::boxed::BoxService;
 use ntex::service::{into_service, IntoService, Service};
 use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
-use crate::error::{MqttError, ProtocolError};
+use crate::error::MqttError;
 use crate::framed;
 use crate::v5::publish::{Publish, PublishAck};
-use crate::v5::{codec, ControlResult};
+use crate::v5::{codec, sink::MqttSink, ControlResult};
 
 use super::control::ControlMessage;
 use super::dispatcher::create_dispatcher;
-use super::sink::MqttSink;
 
 /// Mqtt client
 pub struct Client<Io> {
     io: Framed<Io, codec::Codec>,
-    rx: mpsc::Receiver<codec::Packet>,
+    rx: mpsc::Receiver<(codec::Packet, usize)>,
     sink: MqttSink,
     keepalive: u64,
     disconnect_timeout: u64,
@@ -55,7 +53,7 @@ where
             pkt,
             keepalive,
             disconnect_timeout,
-            sink: MqttSink::new(tx, server_max_receive as usize),
+            sink: MqttSink::new(tx, server_max_receive as usize, Default::default()),
             max_receive: max_receive as usize,
         }
     }
@@ -182,7 +180,7 @@ pub struct ClientRouter<Io, Err, PErr> {
     builder: RouterBuilder<usize>,
     handlers: Vec<Handler<PErr>>,
     io: Framed<Io, codec::Codec>,
-    rx: mpsc::Receiver<codec::Packet>,
+    rx: mpsc::Receiver<(codec::Packet, usize)>,
     sink: MqttSink,
     keepalive: u64,
     disconnect_timeout: u64,

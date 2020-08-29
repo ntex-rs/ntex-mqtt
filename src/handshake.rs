@@ -3,18 +3,19 @@ use std::{io, marker::PhantomData, pin::Pin};
 
 use either::Either;
 use futures::Stream;
-use ntex::channel::mpsc::Receiver;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 
-pub struct Handshake<Io, Codec, Out = Receiver<<Codec as Encoder>::Item>>
+use super::framed::Receiver;
+
+pub(crate) struct Handshake<Io, Codec>
 where
     Codec: Encoder + Decoder,
 {
     io: Io,
-    _t: PhantomData<(Codec, Out)>,
+    _t: PhantomData<Codec>,
 }
 
-impl<Io, Codec, Out> Handshake<Io, Codec, Out>
+impl<Io, Codec> Handshake<Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     Codec: Encoder + Decoder,
@@ -23,11 +24,11 @@ where
         Self { io, _t: PhantomData }
     }
 
-    pub(crate) fn with_codec(framed: Framed<Io, Codec>) -> HandshakeResult<Io, (), Codec, Out> {
+    pub(crate) fn with_codec(framed: Framed<Io, Codec>) -> HandshakeResult<Io, (), Codec> {
         HandshakeResult { state: (), out: None, keepalive: 30, framed }
     }
 
-    pub fn codec(self, codec: Codec) -> HandshakeResult<Io, (), Codec, Out> {
+    pub fn codec(self, codec: Codec) -> HandshakeResult<Io, (), Codec> {
         HandshakeResult {
             state: (),
             out: None,
@@ -38,15 +39,15 @@ where
 }
 
 pin_project_lite::pin_project! {
-    pub struct HandshakeResult<Io, St, Codec, Out> {
+    pub struct HandshakeResult<Io, St, Codec: Encoder> {
         pub(crate) state: St,
-        pub(crate) out: Option<Out>,
+        pub(crate) out: Option<Receiver<Codec>>,
         pub(crate) framed: Framed<Io, Codec>,
         pub(crate) keepalive: usize,
     }
 }
 
-impl<Io, St, Codec: Encoder + Decoder, Out: Unpin> HandshakeResult<Io, St, Codec, Out> {
+impl<Io, St, Codec: Encoder + Decoder> HandshakeResult<Io, St, Codec> {
     pub(crate) fn get_codec_mut(&mut self) -> &mut Codec {
         self.framed.get_codec_mut()
     }
@@ -56,20 +57,13 @@ impl<Io, St, Codec: Encoder + Decoder, Out: Unpin> HandshakeResult<Io, St, Codec
         &mut self.framed
     }
 
-    pub fn out<U>(self, out: U) -> HandshakeResult<Io, St, Codec, U>
-    where
-        U: Stream<Item = <Codec as Encoder>::Item> + Unpin,
-    {
-        HandshakeResult {
-            state: self.state,
-            framed: self.framed,
-            keepalive: self.keepalive,
-            out: Some(out),
-        }
+    pub fn out(mut self, out: Receiver<Codec>) -> Self {
+        self.out = Some(out);
+        self
     }
 
     #[inline]
-    pub fn state<S>(self, state: S) -> HandshakeResult<Io, S, Codec, Out> {
+    pub fn state<S>(self, state: S) -> HandshakeResult<Io, S, Codec> {
         HandshakeResult { state, framed: self.framed, out: self.out, keepalive: self.keepalive }
     }
 
@@ -84,7 +78,7 @@ impl<Io, St, Codec: Encoder + Decoder, Out: Unpin> HandshakeResult<Io, St, Codec
     }
 }
 
-impl<Io, St, Codec, Out> Stream for HandshakeResult<Io, St, Codec, Out>
+impl<Io, St, Codec> Stream for HandshakeResult<Io, St, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     Codec: Encoder + Decoder,
@@ -97,7 +91,7 @@ where
     }
 }
 
-impl<Io, St, Codec, Out> futures::Sink<Codec::Item> for HandshakeResult<Io, St, Codec, Out>
+impl<Io, St, Codec> futures::Sink<Codec::Item> for HandshakeResult<Io, St, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     Codec: Encoder + Unpin,
@@ -156,8 +150,7 @@ mod tests {
         client.remote_buffer_cap(1024);
         let server = Framed::new(server, BytesCodec);
 
-        let mut hnd =
-            HandshakeResult { state: (), out: Some(()), framed: server, keepalive: 0 };
+        let mut hnd = HandshakeResult { state: (), out: None, framed: server, keepalive: 0 };
 
         client.write(BLOB);
         let item = hnd.next().await.unwrap().unwrap();

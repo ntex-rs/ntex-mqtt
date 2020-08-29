@@ -42,7 +42,7 @@ pub enum ClientError {
 impl std::error::Error for ClientError {}
 
 /// Protocol level errors
-#[derive(Debug, Display)]
+#[derive(Debug, Display, From)]
 pub enum ProtocolError {
     /// Mqtt parse error
     #[display(fmt = "Decode error: {:?}", _0)]
@@ -122,8 +122,9 @@ impl From<DispatcherError<crate::v3::codec::Codec>> for ProtocolError {
     fn from(err: DispatcherError<crate::v3::codec::Codec>) -> Self {
         match err {
             DispatcherError::KeepAlive => ProtocolError::KeepAliveTimeout,
-            DispatcherError::Encoder(err) => ProtocolError::Encode(err),
             DispatcherError::Decoder(err) => ProtocolError::Decode(err),
+            DispatcherError::Encoder(_, err) => ProtocolError::Encode(err),
+            DispatcherError::EncoderWritten(_) => panic!("Internal error"),
             DispatcherError::Io(err) => ProtocolError::Io(err),
         }
     }
@@ -133,14 +134,15 @@ impl From<DispatcherError<crate::v5::codec::Codec>> for ProtocolError {
     fn from(err: DispatcherError<crate::v5::codec::Codec>) -> Self {
         match err {
             DispatcherError::KeepAlive => ProtocolError::KeepAliveTimeout,
-            DispatcherError::Encoder(err) => ProtocolError::Encode(err),
             DispatcherError::Decoder(err) => ProtocolError::Decode(err),
+            DispatcherError::Encoder(_, err) => ProtocolError::Encode(err),
+            DispatcherError::EncoderWritten(_) => panic!("Internal error"),
             DispatcherError::Io(err) => ProtocolError::Io(err),
         }
     }
 }
 
-#[derive(Debug, From)]
+#[derive(Debug, Display, From)]
 pub enum DecodeError {
     InvalidProtocol,
     InvalidLength,
@@ -156,7 +158,7 @@ pub enum DecodeError {
     Utf8Error(std::str::Utf8Error),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, Hash)]
 pub enum EncodeError {
     InvalidLength,
     MalformedPacket,

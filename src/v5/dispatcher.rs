@@ -280,7 +280,7 @@ where
                 })
             }
             Ok(codec::Packet::PublishAck(packet)) => {
-                if !self.session.sink().complete_publish_qos1(packet) {
+                if !self.session.sink().pkt_publish_ack(packet) {
                     Either::Right(Either::Right(
                         ControlResponse::new(
                             ControlPacket::proto_error(ProtocolError::PacketIdMismatch),
@@ -349,10 +349,27 @@ where
                 ))
             }
             Ok(_) => Either::Right(Either::Left(ok(None))),
-            Err(e) => Either::Right(Either::Right(ControlResponse::new(
-                ControlPacket::proto_error(e.into()),
-                &self.inner,
-            ))),
+            Err(e) => match e {
+                DispatcherError::Encoder(idx, err) => {
+                    if idx == 0 {
+                        Either::Right(Either::Right(ControlResponse::new(
+                            ControlPacket::proto_error(e.into()),
+                            &self.inner,
+                        )))
+                    } else {
+                        self.session.sink().pkt_encode_err(idx, err);
+                        Either::Right(Either::Left(ok(None)))
+                    }
+                }
+                DispatcherError::EncoderWritten(idx) => {
+                    self.session.sink().pkt_written(idx);
+                    Either::Right(Either::Left(ok(None)))
+                }
+                _ => Either::Right(Either::Right(ControlResponse::new(
+                    ControlPacket::proto_error(e.into()),
+                    &self.inner,
+                ))),
+            },
         }
     }
 }

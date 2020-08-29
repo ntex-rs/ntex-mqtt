@@ -238,7 +238,6 @@ where
         let pkt = self.pkt.clone();
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
-        let handshake_timeout = self.handshake_timeout;
         let disconnect_timeout = self.disconnect_timeout;
 
         async move {
