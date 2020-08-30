@@ -29,3 +29,27 @@ pub enum PublishQos1Error {
     #[display(fmt = "Peer disconnected")]
     Disconnected,
 }
+
+#[derive(Debug, Display)]
+pub enum SubscribeError {
+    /// Encoder error
+    Encode(EncodeError),
+    /// Can not allocate next packet id
+    #[display(fmt = "Can not allocate next packet id")]
+    PacketIdNotAvailable,
+    /// Peer disconnected
+    #[display(fmt = "Peer disconnected")]
+    Disconnected,
+}
+
+#[derive(Debug, Display)]
+pub enum UnsubscribeError {
+    /// Encoder error
+    Encode(EncodeError),
+    /// Can not allocate next packet id
+    #[display(fmt = "Can not allocate next packet id")]
+    PacketIdNotAvailable,
+    /// Peer disconnected
+    #[display(fmt = "Peer disconnected")]
+    Disconnected,
+}

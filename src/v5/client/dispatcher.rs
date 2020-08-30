@@ -13,7 +13,7 @@ use crate::error::{MqttError, ProtocolError};
 use crate::framed::DispatcherItem;
 use crate::types::packet_type;
 use crate::v5::publish::{Publish, PublishAck};
-use crate::v5::{codec, sink::MqttSink};
+use crate::v5::{codec, sink::Ack, sink::MqttSink};
 
 use super::control::{ControlMessage, ControlResult};
 
@@ -251,13 +251,30 @@ where
                 })
             }
             DispatcherItem::Item(codec::Packet::PublishAck(packet)) => {
-                if !self.inner.sink.pkt_publish_ack(packet) {
+                if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
                     Either::Right(Either::Right(
-                        ControlResponse::new(
-                            ControlMessage::proto_error(ProtocolError::PacketIdMismatch),
-                            &self.inner,
-                        )
-                        .error(),
+                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
+                            .error(),
+                    ))
+                } else {
+                    Either::Right(Either::Left(ok(None)))
+                }
+            }
+            DispatcherItem::Item(codec::Packet::SubscribeAck(packet)) => {
+                if let Err(err) = self.inner.sink.pkt_ack(Ack::Subscribe(packet)) {
+                    Either::Right(Either::Right(
+                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
+                            .error(),
+                    ))
+                } else {
+                    Either::Right(Either::Left(ok(None)))
+                }
+            }
+            DispatcherItem::Item(codec::Packet::UnsubscribeAck(packet)) => {
+                if let Err(err) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet)) {
+                    Either::Right(Either::Right(
+                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
+                            .error(),
                     ))
                 } else {
                     Either::Right(Either::Left(ok(None)))
