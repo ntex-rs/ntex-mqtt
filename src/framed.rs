@@ -20,6 +20,7 @@ pub(crate) type Receiver<T> = mpsc::Receiver<(<T as Encoder>::Item, usize)>;
 bitflags::bitflags! {
     struct Errors: u8 {
         const IO         = 0b0000_0001;
+        const WRITE      = 0b0000_0010;
         const KEEP_ALIVE = 0b0000_0100;
     }
 }
@@ -255,6 +256,9 @@ where
                             let _ = tx.send(item);
                         }));
                         continue;
+                    } else if !self.errors.is_empty() {
+                        self.state = FramedState::FlushAndStop(None);
+                        return PollResult::Continue;
                     }
 
                     // read data from io
@@ -317,7 +321,7 @@ where
     /// write to framed object
     fn poll_write(&mut self, cx: &mut Context<'_>) -> PollResult {
         // if IO error occured, dont do anything just drain queues
-        if self.errors.contains(Errors::IO) {
+        if !self.errors.is_empty() {
             return PollResult::Pending;
         }
         let mut updated = false;
@@ -330,7 +334,10 @@ where
                         // so error here is from encoder
                         if let Err(err) = self.framed.write(msg) {
                             log::trace!("Framed write error: {:?}", err);
+                            self.errors.insert(Errors::WRITE);
+                            self.write_queue.clear();
                             self.write_queue.push_back(DispatcherItem::EncoderError(0, err));
+                            return PollResult::Continue;
                         }
                         updated = true;
                         continue;
@@ -349,6 +356,14 @@ where
                         Poll::Ready(Some((msg, idx))) => {
                             if let Err(err) = self.framed.write(msg) {
                                 log::trace!("Framed write error from sink: {:?}", err);
+                                // app can not handle encoder errors
+                                if idx == 0 {
+                                    self.errors.insert(Errors::WRITE);
+                                    self.write_queue.clear();
+                                    self.write_queue
+                                        .push_back(DispatcherItem::EncoderError(0, err));
+                                    return PollResult::Continue;
+                                }
                                 self.write_queue
                                     .push_back(DispatcherItem::EncoderError(idx, err));
                             } else if idx != 0 {
