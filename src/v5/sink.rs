@@ -31,7 +31,7 @@ impl Default for MqttSinkPool {
 struct MqttSinkInner {
     cap: usize,
     sink: Option<mpsc::Sender<(codec::Packet, usize)>>,
-    info: Slab<pool::Sender<Info>>,
+    info: Slab<(pool::Sender<Info>, usize)>,
     queue: Slab<pool::Sender<codec::PublishAck>>,
     queue_order: VecDeque<usize>,
     waiters: VecDeque<pool::Sender<()>>,
@@ -116,7 +116,7 @@ impl MqttSink {
 
         let idx = idx - 1;
         if inner.info.contains(idx) {
-            let tx = inner.info.remove(idx);
+            let (tx, _) = inner.info.remove(idx);
             let _ = tx.send(Info::Written);
         } else {
             unreachable!("Internal: Can not get notification channel from queue");
@@ -128,47 +128,70 @@ impl MqttSink {
 
         let idx = idx - 1;
         if inner.info.contains(idx) {
-            let tx = inner.info.remove(idx);
+            let (tx, idx) = inner.info.remove(idx);
             let _ = tx.send(Info::Error(err));
+
+            // we have qos1 publish in queue, waiting for ack.
+            // but publish packet is failed to encode,
+            // so we have to cleanup queue
+            if idx != 0 {
+                for item in &mut inner.queue_order {
+                    if *item == idx {
+                        *item = 0;
+                        inner.queue.remove(idx - 1);
+                        if let Some(&0) = inner.queue_order.front() {
+                            let _ = inner.queue_order.pop_front();
+                        }
+                        break;
+                    }
+                }
+            }
         } else {
-            unreachable!("Internal: Can not get notification channel from queue");
+            unreachable!("Internal: Can not get encoder channel");
         }
     }
 
     pub(super) fn pkt_publish_ack(&self, pkt: codec::PublishAck) -> bool {
         let mut inner = self.0.borrow_mut();
 
-        // check ack order
-        if let Some(idx) = inner.queue_order.pop_front() {
-            if idx != pkt.packet_id.get() as usize {
-                log::trace!(
-                    "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
-                    idx,
-                    pkt.packet_id
-                );
-            } else {
-                // get ack notification channel
-                log::trace!("Ack publish packet with id: {}", pkt.packet_id);
-                let idx = (pkt.packet_id.get() - 1) as usize;
-                if inner.queue.contains(idx) {
-                    let tx = inner.queue.remove(idx);
-                    let _ = tx.send(pkt);
-
-                    // wake up queued request (receive max limit)
-                    while let Some(tx) = inner.waiters.pop_front() {
-                        if tx.send(()).is_ok() {
-                            break;
-                        }
-                    }
-                    return true;
-                } else {
-                    unreachable!("Internal: Can not get notification channel from queue")
+        loop {
+            // check ack order
+            if let Some(idx) = inner.queue_order.pop_front() {
+                // errored publish
+                if idx == 0 {
+                    continue;
                 }
+
+                if idx != pkt.packet_id.get() as usize {
+                    log::trace!(
+                        "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
+                        idx,
+                        pkt.packet_id
+                    );
+                } else {
+                    // get publish ack channel
+                    log::trace!("Ack publish packet with id: {}", pkt.packet_id);
+                    let idx = (pkt.packet_id.get() - 1) as usize;
+                    if inner.queue.contains(idx) {
+                        let tx = inner.queue.remove(idx);
+                        let _ = tx.send(pkt);
+
+                        // wake up queued request (receive max limit)
+                        while let Some(tx) = inner.waiters.pop_front() {
+                            if tx.send(()).is_ok() {
+                                break;
+                            }
+                        }
+                        return true;
+                    } else {
+                        unreachable!("Internal: Can not get puublish ack channel")
+                    }
+                }
+            } else {
+                log::trace!("Unexpected PublishAck packet");
             }
-        } else {
-            log::trace!("Unexpected PublishAck packet");
+            return false;
         }
-        false
     }
 }
 
@@ -216,7 +239,7 @@ impl<'a> PublishBuilder<'a> {
 
             // encoder notification channel
             let (info_tx, info_rx) = inner.pool.info.channel();
-            let info_idx = inner.info.insert(info_tx) + 1;
+            let info_idx = inner.info.insert((info_tx, 0)) + 1;
 
             if let Some(ref sink) = inner.sink {
                 log::trace!("Publish (QoS-0) to {:?}", packet.topic);
@@ -243,6 +266,8 @@ impl<'a> PublishBuilder<'a> {
         &mut self,
     ) -> impl Future<Output = Result<codec::PublishAck, PublishQos1Error>> {
         if let Some(mut packet) = self.packet.take() {
+            packet.qos = QoS::AtLeastOnce;
+
             let sink = self.sink.0.clone();
 
             async move {
@@ -253,7 +278,9 @@ impl<'a> PublishBuilder<'a> {
                         let (tx, rx) = inner.pool.waiters.channel();
                         inner.waiters.push_back(tx);
 
+                        // do not borrow cross yield points
                         drop(inner);
+
                         if rx.await.is_err() {
                             return Err(PublishQos1Error::Disconnected);
                         }
@@ -261,7 +288,7 @@ impl<'a> PublishBuilder<'a> {
                         inner = sink.borrow_mut();
                     }
 
-                    // ack notification channel
+                    // publish ack channel
                     let (tx, rx) = inner.pool.queue.channel();
 
                     // allocate packet id
@@ -270,15 +297,13 @@ impl<'a> PublishBuilder<'a> {
                         return Err(PublishQos1Error::PacketIdNotAvailable);
                     }
                     inner.queue_order.push_back(idx);
-
-                    // encoder notification channel
-                    let (info_tx, info_rx) = inner.pool.info.channel();
-                    let info_idx = inner.info.insert(info_tx) + 1;
-
-                    // send publish to client
-                    packet.qos = QoS::AtLeastOnce;
                     packet.packet_id = NonZeroU16::new(idx as u16);
 
+                    // encoder channel (item written/encoder error)
+                    let (info_tx, info_rx) = inner.pool.info.channel();
+                    let info_idx = inner.info.insert((info_tx, idx)) + 1;
+
+                    // send publish to client
                     log::trace!("Publish (QoS1) to {:#?}", packet);
 
                     let send_result = inner
@@ -286,11 +311,13 @@ impl<'a> PublishBuilder<'a> {
                         .as_ref()
                         .unwrap()
                         .send((codec::Packet::Publish(packet), info_idx));
-                    drop(inner);
 
                     if send_result.is_err() {
                         Err(PublishQos1Error::Disconnected)
                     } else {
+                        // do not borrow cross yield points
+                        drop(inner);
+
                         // wait notification from encoder
                         let info = info_rx.await.map_err(|_| PublishQos1Error::Disconnected)?;
                         match info {
