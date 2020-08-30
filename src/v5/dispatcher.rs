@@ -15,7 +15,7 @@ use crate::framed::DispatcherItem;
 
 use super::control::{self, ControlPacket, ControlResult};
 use super::publish::{Publish, PublishAck};
-use super::sink::MqttSink;
+use super::sink::{Ack, MqttSink};
 use super::{codec, Session};
 
 /// mqtt3 protocol dispatcher
@@ -280,13 +280,10 @@ where
                 })
             }
             DispatcherItem::Item(codec::Packet::PublishAck(packet)) => {
-                if !self.session.sink().pkt_publish_ack(packet) {
+                if let Err(err) = self.session.sink().pkt_ack(Ack::Publish(packet)) {
                     Either::Right(Either::Right(
-                        ControlResponse::new(
-                            ControlPacket::proto_error(ProtocolError::PacketIdMismatch),
-                            &self.inner,
-                        )
-                        .error(),
+                        ControlResponse::new(ControlPacket::proto_error(err), &self.inner)
+                            .error(),
                     ))
                 } else {
                     Either::Right(Either::Left(ok(None)))
