@@ -56,7 +56,7 @@ pub struct LastWill {
     pub message: Bytes,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Default, Debug, PartialEq, Clone)]
 /// Connect packet content
 pub struct Connect {
     /// the handling of the Session state.

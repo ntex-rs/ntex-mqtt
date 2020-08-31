@@ -64,17 +64,17 @@ impl Clone for MqttSink {
 impl MqttSink {
     pub(crate) fn new(
         sink: mpsc::Sender<(codec::Packet, usize)>,
-        max_receive: usize,
+        max_send: usize,
         pool: Rc<MqttSinkPool>,
     ) -> Self {
         MqttSink(Rc::new(RefCell::new(MqttSinkInner {
             pool,
-            cap: max_receive,
+            cap: max_send,
             sink: Some(sink),
-            queue: Slab::with_capacity(8),
-            queue_order: VecDeque::new(),
-            waiters: VecDeque::new(),
-            info: Slab::with_capacity(12),
+            queue: Slab::with_capacity(max_send),
+            queue_order: VecDeque::with_capacity(max_send),
+            waiters: VecDeque::with_capacity(8),
+            info: Slab::with_capacity(max_send + 8),
         })))
     }
 

@@ -6,7 +6,7 @@ use bytestring::ByteString;
 use super::codec;
 use crate::types::QoS;
 
-pub enum ControlPacket {
+pub enum ControlMessage {
     /// Ping packet
     Ping(Ping),
     /// Disconnect packet
@@ -24,6 +24,8 @@ pub struct ControlResult {
 }
 
 pub(crate) enum ControlResultKind {
+    Nothing,
+    PublishAck(NonZeroU16),
     Ping,
     Disconnect,
     Subscribe(SubscribeResult),
@@ -31,17 +33,17 @@ pub(crate) enum ControlResultKind {
     Closed,
 }
 
-impl ControlPacket {
+impl ControlMessage {
     pub(crate) fn ping() -> Self {
-        ControlPacket::Ping(Ping)
+        ControlMessage::Ping(Ping)
     }
 
     pub(crate) fn disconnect() -> Self {
-        ControlPacket::Disconnect(Disconnect)
+        ControlMessage::Disconnect(Disconnect)
     }
 
     pub(crate) fn closed(is_error: bool) -> Self {
-        ControlPacket::Closed(Closed::new(is_error))
+        ControlMessage::Closed(Closed::new(is_error))
     }
 }
 

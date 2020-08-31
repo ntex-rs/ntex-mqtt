@@ -11,9 +11,10 @@ use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::MqttError;
 
-use super::control::{ControlPacket, ControlResult, ControlResultKind, Subscribe, Unsubscribe};
-use super::publish::Publish;
-use super::{codec, Session};
+use super::control::{
+    ControlMessage, ControlResult, ControlResultKind, Subscribe, Unsubscribe,
+};
+use super::{codec, publish::Publish, sink::Ack, Session};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
@@ -39,7 +40,7 @@ where
         > + 'static,
     C: ServiceFactory<
             Config = Session<St>,
-            Request = ControlPacket,
+            Request = ControlMessage,
             Response = ControlResult,
             Error = MqttError<E>,
             InitError = MqttError<E>,
@@ -82,14 +83,14 @@ pub(crate) struct Dispatcher<St, T: Service<Error = MqttError<E>>, C, E> {
     session: Session<St>,
     publish: T,
     control: C,
-    inflight: Rc<RefCell<FxHashSet<NonZeroU16>>>,
     shutdown: Cell<bool>,
+    inflight: Rc<RefCell<FxHashSet<NonZeroU16>>>,
 }
 
 impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
     T: Service<Request = Publish, Response = (), Error = MqttError<E>>,
-    C: Service<Request = ControlPacket, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
 {
     pub(crate) fn new(session: Session<St>, publish: T, control: C) -> Self {
         Self {
@@ -105,7 +106,7 @@ where
 impl<St, T, C, E> Service for Dispatcher<St, T, C, E>
 where
     T: Service<Request = Publish, Response = (), Error = MqttError<E>>,
-    C: Service<Request = ControlPacket, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
     C::Future: 'static,
     E: 'static,
 {
@@ -131,7 +132,7 @@ where
     fn poll_shutdown(&self, _: &mut Context<'_>, is_error: bool) -> Poll<()> {
         if !self.shutdown.get() {
             self.shutdown.set(true);
-            ntex::rt::spawn(self.control.call(ControlPacket::closed(is_error)).map(|_| ()));
+            ntex::rt::spawn(self.control.call(ControlMessage::closed(is_error)).map(|_| ()));
         }
         Poll::Ready(())
     }
@@ -158,15 +159,18 @@ where
                 })
             }
             codec::Packet::PublishAck { packet_id } => {
-                self.session.sink().complete_publish_qos1(packet_id);
-                Either::Right(Either::Left(ok(None)))
+                if let Err(e) = self.session.sink().pkt_ack(Ack::Publish(packet_id)) {
+                    Either::Right(Either::Left(err(MqttError::Protocol(e))))
+                } else {
+                    Either::Right(Either::Left(ok(None)))
+                }
             }
             codec::Packet::PingRequest => Either::Right(Either::Right(ControlResponse::new(
-                self.control.call(ControlPacket::ping()),
+                self.control.call(ControlMessage::ping()),
                 &self.inflight,
             ))),
             codec::Packet::Disconnect => Either::Right(Either::Right(ControlResponse::new(
-                self.control.call(ControlPacket::disconnect()),
+                self.control.call(ControlMessage::disconnect()),
                 &self.inflight,
             ))),
             codec::Packet::Subscribe { packet_id, topic_filters } => {
@@ -176,7 +180,7 @@ where
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
-                    self.control.call(ControlPacket::Subscribe(Subscribe::new(
+                    self.control.call(ControlMessage::Subscribe(Subscribe::new(
                         packet_id,
                         topic_filters,
                     ))),
@@ -190,7 +194,7 @@ where
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
-                    self.control.call(ControlPacket::Unsubscribe(Unsubscribe::new(
+                    self.control.call(ControlMessage::Unsubscribe(Unsubscribe::new(
                         packet_id,
                         topic_filters,
                     ))),
@@ -277,8 +281,10 @@ where
                 this.inflight.borrow_mut().remove(&res.packet_id);
                 Some(codec::Packet::UnsubscribeAck { packet_id: res.packet_id })
             }
-            ControlResultKind::Disconnect => None,
-            ControlResultKind::Closed => None,
+            ControlResultKind::Disconnect
+            | ControlResultKind::Closed
+            | ControlResultKind::Nothing => None,
+            ControlResultKind::PublishAck(_) => unreachable!(),
         };
 
         Poll::Ready(Ok(packet))

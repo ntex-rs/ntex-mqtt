@@ -4,7 +4,7 @@ use std::task::{Context, Poll};
 use futures::future::{ok, Ready};
 use ntex::service::{Service, ServiceFactory};
 
-use super::control::{ControlPacket, ControlResult};
+use super::control::{ControlMessage, ControlResult};
 use super::publish::Publish;
 use super::Session;
 
@@ -60,7 +60,7 @@ impl<S, E> Default for DefaultControlService<S, E> {
 
 impl<S, E> ServiceFactory for DefaultControlService<S, E> {
     type Config = Session<S>;
-    type Request = ControlPacket;
+    type Request = ControlMessage;
     type Response = ControlResult;
     type Error = E;
     type InitError = E;
@@ -73,7 +73,7 @@ impl<S, E> ServiceFactory for DefaultControlService<S, E> {
 }
 
 impl<S, E> Service for DefaultControlService<S, E> {
-    type Request = ControlPacket;
+    type Request = ControlMessage;
     type Response = ControlResult;
     type Error = E;
     type Future = Ready<Result<Self::Response, Self::Error>>;
@@ -84,21 +84,21 @@ impl<S, E> Service for DefaultControlService<S, E> {
     }
 
     #[inline]
-    fn call(&self, subs: ControlPacket) -> Self::Future {
+    fn call(&self, subs: ControlMessage) -> Self::Future {
         log::warn!("MQTT Subscribe is not supported");
 
         ok(match subs {
-            ControlPacket::Ping(ping) => ping.ack(),
-            ControlPacket::Disconnect(disc) => disc.ack(),
-            ControlPacket::Subscribe(subs) => {
+            ControlMessage::Ping(ping) => ping.ack(),
+            ControlMessage::Disconnect(disc) => disc.ack(),
+            ControlMessage::Subscribe(subs) => {
                 log::warn!("MQTT Subscribe is not supported");
                 subs.ack()
             }
-            ControlPacket::Unsubscribe(unsubs) => {
+            ControlMessage::Unsubscribe(unsubs) => {
                 log::warn!("MQTT Unsubscribe is not supported");
                 unsubs.ack()
             }
-            ControlPacket::Closed(msg) => msg.ack(),
+            ControlMessage::Closed(msg) => msg.ack(),
         })
     }
 }

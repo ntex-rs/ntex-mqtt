@@ -2,6 +2,8 @@
 
 ## [0.3.5] - 2020-08-xx
 
+* v3: New client api
+
 * v5: New client api
 
 * v5: Send publish packet returns ack or publish error

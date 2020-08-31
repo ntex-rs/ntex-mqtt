@@ -1,4 +1,3 @@
-use std::num::{NonZeroU16, NonZeroU32};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -24,6 +23,9 @@ pub struct MqttConnector<A, T> {
     address: A,
     connector: T,
     pkt: codec::Connect,
+    max_send: usize,
+    max_receive: usize,
+    max_packet_size: u32,
     handshake_timeout: u64,
     disconnect_timeout: u64,
 }
@@ -39,6 +41,9 @@ where
             address,
             pkt: codec::Connect::default(),
             connector: Connector::default(),
+            max_send: 16,
+            max_receive: 16,
+            max_packet_size: 64 * 1024,
             handshake_timeout: 0,
             disconnect_timeout: 3000,
         }
@@ -60,8 +65,8 @@ where
 
     #[inline]
     /// The handling of the Session state.
-    pub fn clean_start(mut self) -> Self {
-        self.pkt.clean_start = true;
+    pub fn clean_session(mut self) -> Self {
+        self.pkt.clean_session = true;
         self
     }
 
@@ -84,14 +89,6 @@ where
     }
 
     #[inline]
-    /// Set auth-method and auth-data for connect packet.
-    pub fn auth(mut self, method: ByteString, data: Bytes) -> Self {
-        self.pkt.auth_method = Some(method);
-        self.pkt.auth_data = Some(data);
-        self
-    }
-
-    #[inline]
     /// Username can be used by the Server for authentication and authorization.
     pub fn username(mut self, val: ByteString) -> Self {
         self.pkt.username = Some(val);
@@ -106,39 +103,31 @@ where
     }
 
     #[inline]
+    /// Set max send packets number
+    ///
+    /// Number of in-flight outgoing publish packets. By default receive max is set to 16 packets.
+    /// To disable in-flight limit set value to 0.
+    pub fn max_send(mut self, val: u16) -> Self {
+        self.max_send = val as usize;
+        self
+    }
+
+    #[inline]
+    /// Set max receive packets number
+    ///
+    /// Number of in-flight incoming publish packets. By default receive max is set to 16 packets.
+    /// To disable in-flight limit set value to 0.
+    pub fn max_receive(mut self, val: u16) -> Self {
+        self.max_receive = val as usize;
+        self
+    }
+
+    #[inline]
     /// Max incoming packet size.
     ///
     /// To disable max size limit set value to 0.
     pub fn max_packet_size(mut self, val: u32) -> Self {
-        if let Some(val) = NonZeroU32::new(val) {
-            self.pkt.max_packet_size = Some(val);
-        } else {
-            self.pkt.max_packet_size = None;
-        }
-        self
-    }
-
-    #[inline]
-    /// Set `receive max`
-    ///
-    /// Number of in-flight incoming publish packets. By default receive max is set to 16 packets.
-    /// To disable in-flight limit set value to 0.
-    pub fn receive_max(mut self, val: u16) -> Self {
-        if let Some(val) = NonZeroU16::new(val) {
-            self.pkt.receive_max = Some(val);
-        } else {
-            self.pkt.receive_max = None;
-        }
-        self
-    }
-
-    #[inline]
-    /// Update connect user properties
-    pub fn properties<F>(mut self, f: F) -> Self
-    where
-        F: FnOnce(&mut codec::UserProperties),
-    {
-        f(&mut self.pkt.user_properties);
+        self.max_packet_size = val;
         self
     }
 
@@ -184,6 +173,9 @@ where
             connector,
             pkt: self.pkt,
             address: self.address,
+            max_send: self.max_send,
+            max_receive: self.max_receive,
+            max_packet_size: self.max_packet_size,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
         }
@@ -195,6 +187,9 @@ where
         MqttConnector {
             pkt: self.pkt,
             address: self.address,
+            max_send: self.max_send,
+            max_receive: self.max_receive,
+            max_packet_size: self.max_packet_size,
             connector: OpensslConnector::new(connector),
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
@@ -209,6 +204,9 @@ where
         MqttConnector {
             pkt: self.pkt,
             address: self.address,
+            max_send: self.max_send,
+            max_receive: self.max_receive,
+            max_packet_size: self.max_packet_size,
             connector: RustlsConnector::new(Arc::new(config)),
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
@@ -236,8 +234,10 @@ where
     fn _connect(&self) -> impl Future<Output = Result<Client<T::Response>, ClientError>> {
         let fut = self.connector.call(Connect::new(self.address.clone()));
         let pkt = self.pkt.clone();
-        let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
-        let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
+        let max_send = self.max_send;
+        let max_receive = self.max_receive;
+        let max_packet_size = self.max_packet_size;
+        let keepalive_timeout = pkt.keep_alive as u64;
         let disconnect_timeout = self.disconnect_timeout;
 
         async move {
@@ -256,12 +256,19 @@ where
                 .and_then(|res| res.map_err(|e| ClientError::from(ProtocolError::from(e))))?;
 
             match packet {
-                codec::Packet::ConnectAck(pkt) => {
-                    log::trace!("Connect ack response from server: {:#?}", pkt);
-                    if pkt.reason_code == codec::ConnectAckReason::Success {
-                        Ok(Client::new(framed, pkt, max_receive, disconnect_timeout))
+                codec::Packet::ConnectAck { session_present, return_code } => {
+                    log::trace!("Connect ack response from server: session: present: {:?}, return code: {:?}", session_present, return_code);
+                    if return_code == codec::ConnectAckReason::ConnectionAccepted {
+                        Ok(Client::new(
+                            framed,
+                            session_present,
+                            keepalive_timeout,
+                            disconnect_timeout,
+                            max_send,
+                            max_receive,
+                        ))
                     } else {
-                        Err(ClientError::Ack(pkt))
+                        Err(ClientError::Ack { session_present, return_code })
                     }
                 }
                 p => Err(ProtocolError::Unexpected(

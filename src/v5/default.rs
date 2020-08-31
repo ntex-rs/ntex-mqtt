@@ -4,7 +4,7 @@ use std::task::{Context, Poll};
 use futures::future::{ok, Ready};
 use ntex::service::{Service, ServiceFactory};
 
-use super::control::{ControlPacket, ControlResult};
+use super::control::{ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
 use super::Session;
 
@@ -60,7 +60,7 @@ impl<S, E> Default for DefaultControlService<S, E> {
 
 impl<S, E> ServiceFactory for DefaultControlService<S, E> {
     type Config = Session<S>;
-    type Request = ControlPacket<E>;
+    type Request = ControlMessage<E>;
     type Response = ControlResult;
     type Error = E;
     type InitError = E;
@@ -73,7 +73,7 @@ impl<S, E> ServiceFactory for DefaultControlService<S, E> {
 }
 
 impl<S, E> Service for DefaultControlService<S, E> {
-    type Request = ControlPacket<E>;
+    type Request = ControlMessage<E>;
     type Response = ControlResult;
     type Error = E;
     type Future = Ready<Result<Self::Response, Self::Error>>;
