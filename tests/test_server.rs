@@ -3,9 +3,8 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::ok;
 use ntex::server;
-use ntex::service::Service;
 
-use ntex_mqtt::v3::{client, Connect, ConnectAck, MqttServer, Publish, Session};
+use ntex_mqtt::v3::{client, Connect, ConnectAck, MqttServer};
 
 struct St;
 
@@ -21,29 +20,21 @@ async fn test_simple() -> std::io::Result<()> {
 
     let srv = server::test_server(|| MqttServer::new(connect).publish(|_t| ok(())).finish());
 
-    struct Client;
-
-    let client = client::Client::new(ByteString::from_static("user"))
-        .state(|ack: client::ConnectAck<_>| async move {
-            ack.sink().publish(ByteString::from_static("#"), Bytes::new()).send_at_most_once();
-            ack.sink().close();
-            Ok(ack.state(Client))
-        })
-        .finish(ntex::fn_factory_with_config(|session: Session<Client>| {
-            let session = session.clone();
-
-            ok::<_, ()>(ntex::into_service(move |_t: Publish| {
-                session.sink().close();
-                async { Ok(()) }
-            }))
-        }));
-
-    let conn = ntex::connect::Connector::default()
-        .call(ntex::connect::Connect::with(String::new(), srv.addr()))
+    // connect to server
+    let client = client::MqttConnector::new(srv.addr())
+        .client_id(ByteString::from_static("user"))
+        .connect()
         .await
         .unwrap();
 
-    client.call(conn).await.unwrap();
+    let sink = client.sink();
 
+    ntex::rt::spawn(client.start_default());
+
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_ok());
+
+    sink.close();
     Ok(())
 }

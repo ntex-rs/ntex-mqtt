@@ -6,6 +6,7 @@ mod connect;
 pub mod control;
 mod default;
 mod dispatcher;
+pub mod error;
 mod publish;
 mod router;
 mod server;

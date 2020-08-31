@@ -6,7 +6,7 @@ use futures::future::{select, Either, FutureExt};
 use futures::ready;
 
 use ntex::rt::time::Delay;
-use ntex::service::{IntoService, IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
 
@@ -14,51 +14,6 @@ use super::framed::{Dispatcher, DispatcherItem};
 use super::handshake::{Handshake, HandshakeResult};
 
 type ResponseItem<U> = Option<<U as Encoder>::Item>;
-
-/// Service builder - structure that follows the builder pattern
-/// for building instances for framed services.
-pub(crate) struct Builder<St, C, Io, Codec> {
-    connect: C,
-    _t: PhantomData<(St, Io, Codec)>,
-}
-
-impl<St, C, Io, Codec> Builder<St, C, Io, Codec>
-where
-    C: Service<Request = Handshake<Io, Codec>, Response = HandshakeResult<Io, St, Codec>>,
-    C::Error: fmt::Debug,
-    Io: AsyncRead + AsyncWrite + Unpin,
-    Codec: Decoder + Encoder,
-    <Codec as Encoder>::Item: 'static,
-{
-    /// Construct framed handler service with specified connect service
-    pub(crate) fn new<F>(connect: F) -> Builder<St, C, Io, Codec>
-    where
-        F: IntoService<C>,
-    {
-        Builder { connect: connect.into_service(), _t: PhantomData }
-    }
-
-    /// Provide stream items handler service and construct service factory.
-    pub(crate) fn build<F, T>(self, service: F) -> FramedServiceImpl<St, C, T, Io, Codec>
-    where
-        F: IntoServiceFactory<T>,
-        T: ServiceFactory<
-            Config = St,
-            Request = DispatcherItem<Codec>,
-            Response = ResponseItem<Codec>,
-            Error = C::Error,
-            InitError = C::Error,
-        >,
-    {
-        FramedServiceImpl {
-            connect: self.connect,
-            handler: Rc::new(service.into_factory()),
-            disconnect_timeout: 3000,
-            time: LowResTimeService::with(Duration::from_secs(1)),
-            _t: PhantomData,
-        }
-    }
-}
 
 /// Service builder - structure that follows the builder pattern
 /// for building instances for framed services.

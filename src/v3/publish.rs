@@ -104,6 +104,10 @@ impl Publish {
     pub fn json<T: DeserializeOwned>(&mut self) -> Result<T, JsonError> {
         serde_json::from_slice(&self.publish.payload)
     }
+
+    pub(super) fn into_inner(self) -> codec::Publish {
+        self.publish
+    }
 }
 
 impl std::fmt::Debug for Publish {

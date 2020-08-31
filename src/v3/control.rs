@@ -24,6 +24,8 @@ pub struct ControlResult {
 }
 
 pub(crate) enum ControlResultKind {
+    Nothing,
+    PublishAck(NonZeroU16),
     Ping,
     Disconnect,
     Subscribe(SubscribeResult),
