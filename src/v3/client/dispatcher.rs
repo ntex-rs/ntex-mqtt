@@ -235,7 +235,7 @@ where
                     this.inner.control.call(ControlMessage::publish(pkt.into_inner())),
                     &*this.inner,
                 )));
-                return self.poll(cx);
+                self.poll(cx)
             }
         }
     }

@@ -142,7 +142,7 @@ impl MqttSink {
             log::trace!("Unexpected PublishAck packet");
         }
         self.close();
-        return Err(ProtocolError::PacketIdMismatch);
+        Err(ProtocolError::PacketIdMismatch)
     }
 }
 
