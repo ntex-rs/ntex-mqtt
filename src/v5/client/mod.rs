@@ -5,7 +5,7 @@ mod dispatcher;
 
 pub use self::connection::Client;
 pub use self::connector::MqttConnector;
-pub use self::control::ControlMessage;
+pub use self::control::{ControlMessage, ControlResult};
 
 pub use crate::topic::Topic;
 pub use crate::types::QoS;

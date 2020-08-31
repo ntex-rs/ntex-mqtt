@@ -18,7 +18,7 @@ use crate::service::{FactoryBuilder, FactoryBuilder2};
 
 use super::codec as mqtt;
 use super::connect::{Connect, ConnectAck};
-use super::control::{ControlPacket, ControlResult};
+use super::control::{ControlMessage, ControlResult};
 use super::default::{DefaultControlService, DefaultPublishService};
 use super::dispatcher::factory;
 use super::publish::Publish;
@@ -75,7 +75,7 @@ where
     St: 'static,
     C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
         + 'static,
-    Cn: ServiceFactory<Config = Session<St>, Request = ControlPacket, Response = ControlResult>
+    Cn: ServiceFactory<Config = Session<St>, Request = ControlMessage, Response = ControlResult>
         + 'static,
     P: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,
     C::Error: From<Cn::Error>
@@ -132,7 +132,7 @@ where
         F: IntoServiceFactory<Srv>,
         Srv: ServiceFactory<
                 Config = Session<St>,
-                Request = ControlPacket,
+                Request = ControlMessage,
                 Response = ControlResult,
             > + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError>,

@@ -6,7 +6,7 @@ use super::codec::{self, DisconnectReasonCode, QoS, UserProperties};
 use crate::error;
 
 /// Control plain messages
-pub enum ControlPacket<E> {
+pub enum ControlMessage<E> {
     Auth(Auth),
     Ping(Ping),
     Disconnect(Disconnect),
@@ -23,29 +23,29 @@ pub struct ControlResult {
     pub(crate) disconnect: bool,
 }
 
-impl<E> ControlPacket<E> {
+impl<E> ControlMessage<E> {
     pub(super) fn auth(pkt: codec::Auth) -> Self {
-        ControlPacket::Auth(Auth(pkt))
+        ControlMessage::Auth(Auth(pkt))
     }
 
     pub(super) fn ping() -> Self {
-        ControlPacket::Ping(Ping)
+        ControlMessage::Ping(Ping)
     }
 
     pub(super) fn dis(pkt: codec::Disconnect) -> Self {
-        ControlPacket::Disconnect(Disconnect(pkt))
+        ControlMessage::Disconnect(Disconnect(pkt))
     }
 
     pub(super) fn closed(is_error: bool) -> Self {
-        ControlPacket::Closed(Closed::new(is_error))
+        ControlMessage::Closed(Closed::new(is_error))
     }
 
     pub(super) fn error(err: E) -> Self {
-        ControlPacket::Error(Error::new(err))
+        ControlMessage::Error(Error::new(err))
     }
 
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        ControlPacket::ProtocolError(ProtocolError::new(err))
+        ControlMessage::ProtocolError(ProtocolError::new(err))
     }
 
     pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlResult {
@@ -95,7 +95,7 @@ pub struct Subscribe {
 }
 
 impl Subscribe {
-    pub(crate) fn create<E>(packet: codec::Subscribe) -> ControlPacket<E> {
+    pub(crate) fn create<E>(packet: codec::Subscribe) -> ControlMessage<E> {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
             .for_each(|_| status.push(codec::SubscribeAckReason::UnspecifiedError));
@@ -107,7 +107,7 @@ impl Subscribe {
             reason_string: None,
         };
 
-        ControlPacket::Subscribe(Self { packet, result })
+        ControlMessage::Subscribe(Self { packet, result })
     }
 
     #[inline]
@@ -213,7 +213,7 @@ pub struct Unsubscribe {
 }
 
 impl Unsubscribe {
-    pub(crate) fn create<E>(packet: codec::Unsubscribe) -> ControlPacket<E> {
+    pub(crate) fn create<E>(packet: codec::Unsubscribe) -> ControlMessage<E> {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
             .for_each(|_| status.push(codec::UnsubscribeAckReason::Success));
@@ -225,7 +225,7 @@ impl Unsubscribe {
             reason_string: None,
         };
 
-        ControlPacket::Unsubscribe(Self { packet, result })
+        ControlMessage::Unsubscribe(Self { packet, result })
     }
 
     /// Unsubscribe packet user properties

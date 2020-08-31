@@ -114,7 +114,7 @@ where
             > + 'static,
         Cn: ServiceFactory<
                 Config = v3::Session<St>,
-                Request = v3::ControlPacket,
+                Request = v3::ControlMessage,
                 Response = v3::ControlResult,
             > + 'static,
         P: ServiceFactory<Config = v3::Session<St>, Request = v3::Publish, Response = ()>
@@ -161,7 +161,7 @@ where
             > + 'static,
         Cn: ServiceFactory<
                 Config = v5::Session<St>,
-                Request = v5::ControlPacket<C::Error>,
+                Request = v5::ControlMessage<C::Error>,
                 Response = v5::ControlResult,
             > + 'static,
         P: ServiceFactory<

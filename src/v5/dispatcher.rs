@@ -13,7 +13,7 @@ use ntex::util::order::{InOrder, InOrderError};
 use crate::error::{MqttError, ProtocolError};
 use crate::framed::DispatcherItem;
 
-use super::control::{self, ControlPacket, ControlResult};
+use super::control::{self, ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
 use super::sink::{Ack, MqttSink};
 use super::{codec, Session};
@@ -42,7 +42,7 @@ where
         > + 'static,
     C: ServiceFactory<
             Config = Session<St>,
-            Request = ControlPacket<E>,
+            Request = ControlMessage<E>,
             Response = ControlResult,
             Error = E,
             InitError = MqttError<E>,
@@ -114,7 +114,7 @@ where
     >,
     PublishAck: TryFrom<E2, Error = E>,
     C: Service<
-        Request = ControlPacket<E>,
+        Request = ControlMessage<E>,
         Response = ControlResult,
         Error = either::Either<E, ProtocolError>,
     >,
@@ -155,7 +155,7 @@ where
     >,
     PublishAck: TryFrom<E2, Error = E>,
     C: Service<
-        Request = ControlPacket<E>,
+        Request = ControlMessage<E>,
         Response = ControlResult,
         Error = either::Either<E, ProtocolError>,
     >,
@@ -188,7 +188,7 @@ where
         if !self.shutdown.get() {
             self.shutdown.set(true);
             ntex::rt::spawn(
-                self.inner.control.call(ControlPacket::closed(is_error)).map(|_| ()),
+                self.inner.control.call(ControlMessage::closed(is_error)).map(|_| ()),
             );
         }
         Poll::Ready(())
@@ -215,7 +215,7 @@ where
                             );
                             return Either::Right(Either::Right(
                                 ControlResponse::new(
-                                    ControlPacket::proto_error(
+                                    ControlMessage::proto_error(
                                         ProtocolError::ReceiveMaximumExceeded,
                                     ),
                                     &self.inner,
@@ -243,7 +243,7 @@ where
                             if !inner.aliases.contains(&alias) {
                                 return Either::Right(Either::Right(
                                     ControlResponse::new(
-                                        ControlPacket::proto_error(
+                                        ControlMessage::proto_error(
                                             ProtocolError::UnknownTopicAlias,
                                         ),
                                         &self.inner,
@@ -255,7 +255,7 @@ where
                             if alias.get() > self.max_topic_alias {
                                 return Either::Right(Either::Right(
                                     ControlResponse::new(
-                                        ControlPacket::proto_error(
+                                        ControlMessage::proto_error(
                                             ProtocolError::MaxTopicAlias,
                                         ),
                                         &self.inner,
@@ -282,7 +282,7 @@ where
             DispatcherItem::Item(codec::Packet::PublishAck(packet)) => {
                 if let Err(err) = self.session.sink().pkt_ack(Ack::Publish(packet)) {
                     Either::Right(Either::Right(
-                        ControlResponse::new(ControlPacket::proto_error(err), &self.inner)
+                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
                             .error(),
                     ))
                 } else {
@@ -290,13 +290,13 @@ where
                 }
             }
             DispatcherItem::Item(codec::Packet::Auth(pkt)) => Either::Right(Either::Right(
-                ControlResponse::new(ControlPacket::auth(pkt), &self.inner),
+                ControlResponse::new(ControlMessage::auth(pkt), &self.inner),
             )),
             DispatcherItem::Item(codec::Packet::PingRequest) => Either::Right(Either::Right(
-                ControlResponse::new(ControlPacket::ping(), &self.inner),
+                ControlResponse::new(ControlMessage::ping(), &self.inner),
             )),
             DispatcherItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(
-                Either::Right(ControlResponse::new(ControlPacket::dis(pkt), &self.inner)),
+                Either::Right(ControlResponse::new(ControlMessage::dis(pkt), &self.inner)),
             ),
             DispatcherItem::Item(codec::Packet::Subscribe(pkt)) => {
                 // register inflight packet id
@@ -348,7 +348,7 @@ where
             DispatcherItem::EncoderError(idx, err) => {
                 if idx == 0 {
                     Either::Right(Either::Right(ControlResponse::new(
-                        ControlPacket::proto_error(ProtocolError::Encode(err)),
+                        ControlMessage::proto_error(ProtocolError::Encode(err)),
                         &self.inner,
                     )))
                 } else {
@@ -362,18 +362,18 @@ where
             }
             DispatcherItem::KeepAliveTimeout => {
                 Either::Right(Either::Right(ControlResponse::new(
-                    ControlPacket::proto_error(ProtocolError::KeepAliveTimeout),
+                    ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
                 )))
             }
             DispatcherItem::DecoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
-                    ControlPacket::proto_error(ProtocolError::Decode(err)),
+                    ControlMessage::proto_error(ProtocolError::Decode(err)),
                     &self.inner,
                 )))
             }
             DispatcherItem::IoError(err) => Either::Right(Either::Right(ControlResponse::new(
-                ControlPacket::proto_error(ProtocolError::Io(err)),
+                ControlMessage::proto_error(ProtocolError::Io(err)),
                 &self.inner,
             ))),
         }
@@ -407,7 +407,7 @@ where
     >,
     PublishAck: TryFrom<E2, Error = E>,
     C: Service<
-        Request = ControlPacket<E>,
+        Request = ControlMessage<E>,
         Response = ControlResult,
         Error = either::Either<E, ProtocolError>,
     >,
@@ -429,7 +429,7 @@ where
                                     Err(e) => {
                                         this.state.set(PublishResponseState::Control(
                                             ControlResponse::new(
-                                                ControlPacket::error(e),
+                                                ControlMessage::error(e),
                                                 this.inner,
                                             )
                                             .error(),
@@ -440,7 +440,7 @@ where
                             } else {
                                 this.state.set(PublishResponseState::Control(
                                     ControlResponse::new(
-                                        ControlPacket::error(e.into()),
+                                        ControlMessage::error(e.into()),
                                         this.inner,
                                     )
                                     .error(),
@@ -450,8 +450,11 @@ where
                         }
                         either::Either::Right(e) => {
                             this.state.set(PublishResponseState::Control(
-                                ControlResponse::new(ControlPacket::proto_error(e), this.inner)
-                                    .error(),
+                                ControlResponse::new(
+                                    ControlMessage::proto_error(e),
+                                    this.inner,
+                                )
+                                .error(),
                             ));
                             return self.poll(cx);
                         }
@@ -491,12 +494,12 @@ pin_project_lite::pin_project! {
 impl<C: Service, E> ControlResponse<C, E>
 where
     C: Service<
-        Request = ControlPacket<E>,
+        Request = ControlMessage<E>,
         Response = ControlResult,
         Error = either::Either<E, ProtocolError>,
     >,
 {
-    fn new(pkt: ControlPacket<E>, inner: &Rc<Inner<C>>) -> Self {
+    fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
         Self {
             fut: inner.control.call(pkt),
             inner: inner.clone(),
@@ -520,7 +523,7 @@ where
 impl<C, E> Future for ControlResponse<C, E>
 where
     C: Service<
-        Request = ControlPacket<E>,
+        Request = ControlMessage<E>,
         Response = ControlResult,
         Error = either::Either<E, ProtocolError>,
     >,
@@ -546,10 +549,10 @@ where
                     *this.error = true;
                     let fut = match err {
                         either::Either::Left(err) => {
-                            this.inner.control.call(ControlPacket::error(err))
+                            this.inner.control.call(ControlMessage::error(err))
                         }
                         either::Either::Right(err) => {
-                            this.inner.control.call(ControlPacket::proto_error(err))
+                            this.inner.control.call(ControlMessage::proto_error(err))
                         }
                     };
                     self.as_mut().project().fut.set(fut);

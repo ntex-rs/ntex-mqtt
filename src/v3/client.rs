@@ -16,7 +16,7 @@ use crate::framed::DispatcherItem;
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::Builder;
 
-use super::control::{ControlPacket, ControlResult};
+use super::control::{ControlMessage, ControlResult};
 use super::default::DefaultControlService;
 use super::dispatcher::factory;
 use super::publish::Publish;
@@ -135,7 +135,7 @@ pub struct ServiceBuilder<Io, St, C: Service> {
     inflight: usize,
     control: boxed::BoxServiceFactory<
         Session<St>,
-        ControlPacket,
+        ControlMessage,
         ControlResult,
         MqttError<C::Error>,
         MqttError<C::Error>,

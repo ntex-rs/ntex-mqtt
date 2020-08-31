@@ -11,7 +11,9 @@ use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::MqttError;
 
-use super::control::{ControlPacket, ControlResult, ControlResultKind, Subscribe, Unsubscribe};
+use super::control::{
+    ControlMessage, ControlResult, ControlResultKind, Subscribe, Unsubscribe,
+};
 use super::publish::Publish;
 use super::{codec, Session};
 
@@ -39,7 +41,7 @@ where
         > + 'static,
     C: ServiceFactory<
             Config = Session<St>,
-            Request = ControlPacket,
+            Request = ControlMessage,
             Response = ControlResult,
             Error = MqttError<E>,
             InitError = MqttError<E>,
@@ -89,7 +91,7 @@ pub(crate) struct Dispatcher<St, T: Service<Error = MqttError<E>>, C, E> {
 impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
     T: Service<Request = Publish, Response = (), Error = MqttError<E>>,
-    C: Service<Request = ControlPacket, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
 {
     pub(crate) fn new(session: Session<St>, publish: T, control: C) -> Self {
         Self {
@@ -105,7 +107,7 @@ where
 impl<St, T, C, E> Service for Dispatcher<St, T, C, E>
 where
     T: Service<Request = Publish, Response = (), Error = MqttError<E>>,
-    C: Service<Request = ControlPacket, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
     C::Future: 'static,
     E: 'static,
 {
@@ -131,7 +133,7 @@ where
     fn poll_shutdown(&self, _: &mut Context<'_>, is_error: bool) -> Poll<()> {
         if !self.shutdown.get() {
             self.shutdown.set(true);
-            ntex::rt::spawn(self.control.call(ControlPacket::closed(is_error)).map(|_| ()));
+            ntex::rt::spawn(self.control.call(ControlMessage::closed(is_error)).map(|_| ()));
         }
         Poll::Ready(())
     }
@@ -162,11 +164,11 @@ where
                 Either::Right(Either::Left(ok(None)))
             }
             codec::Packet::PingRequest => Either::Right(Either::Right(ControlResponse::new(
-                self.control.call(ControlPacket::ping()),
+                self.control.call(ControlMessage::ping()),
                 &self.inflight,
             ))),
             codec::Packet::Disconnect => Either::Right(Either::Right(ControlResponse::new(
-                self.control.call(ControlPacket::disconnect()),
+                self.control.call(ControlMessage::disconnect()),
                 &self.inflight,
             ))),
             codec::Packet::Subscribe { packet_id, topic_filters } => {
@@ -176,7 +178,7 @@ where
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
-                    self.control.call(ControlPacket::Subscribe(Subscribe::new(
+                    self.control.call(ControlMessage::Subscribe(Subscribe::new(
                         packet_id,
                         topic_filters,
                     ))),
@@ -190,7 +192,7 @@ where
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
-                    self.control.call(ControlPacket::Unsubscribe(Unsubscribe::new(
+                    self.control.call(ControlMessage::Unsubscribe(Unsubscribe::new(
                         packet_id,
                         topic_filters,
                     ))),
