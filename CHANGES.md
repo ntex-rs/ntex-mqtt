@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.6] - 2020-09-02
+
+* v5: Add Error::ack_with() helper method
+
 ## [0.3.5] - 2020-08-31
 
 * v3: New client api

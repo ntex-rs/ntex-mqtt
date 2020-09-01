@@ -412,10 +412,20 @@ impl<E> Error<E> {
     }
 
     #[inline]
-    /// convert packet to a result
+    /// Ack service error, return disconnect packet and close connection.
     pub fn ack(mut self, reason: DisconnectReasonCode) -> ControlResult {
         self.pkt.reason_code = reason;
         ControlResult { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true }
+    }
+
+    #[inline]
+    /// Ack service error, return disconnect packet and close connection.
+    pub fn ack_with<F>(self, f: F) -> ControlResult
+    where
+        F: FnOnce(E, codec::Disconnect) -> codec::Disconnect,
+    {
+        let pkt = f(self.err, self.pkt);
+        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
 }
 
