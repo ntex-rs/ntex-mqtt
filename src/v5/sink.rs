@@ -322,17 +322,27 @@ impl PublishBuilder {
         self
     }
 
+    /// Set retain flag
     pub fn retain(mut self) -> Self {
         self.packet.retain = true;
         self
     }
 
+    /// Set publish packet properties
     pub fn properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::PublishProperties),
     {
         f(&mut self.packet.properties);
         self
+    }
+
+    /// Set publish packet properties
+    pub fn set_properties<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut codec::PublishProperties),
+    {
+        f(&mut self.packet.properties);
     }
 
     /// Send publish packet with QoS 0

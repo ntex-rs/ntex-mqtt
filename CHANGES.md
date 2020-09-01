@@ -1,5 +1,11 @@
 # Changes
 
+## [0.3.7] - 2020-09-02
+
+* v5: Add PublishBuilder::set_properties() helper method
+
+* v3: Fix PublishBuilder methods
+
 ## [0.3.6] - 2020-09-02
 
 * v5: Add Error::ack_with() helper method

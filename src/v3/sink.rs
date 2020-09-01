@@ -204,12 +204,12 @@ pub struct PublishBuilder {
 
 impl PublishBuilder {
     /// this might be re-delivery of an earlier attempt to send the Packet.
-    pub fn dup(&mut self, val: bool) -> &mut Self {
+    pub fn dup(mut self, val: bool) -> Self {
         self.packet.dup = val;
         self
     }
 
-    pub fn retain(&mut self) -> &mut Self {
+    pub fn retain(mut self) -> Self {
         self.packet.retain = true;
         self
     }
