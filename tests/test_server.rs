@@ -123,7 +123,7 @@ async fn test_ping() -> std::io::Result<()> {
     });
 
     let io = srv.connect().unwrap();
-    let mut framed = Framed::new(io, codec::Codec::new());
+    let mut framed = Framed::new(io, codec::Codec::default());
     framed
         .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
         .await

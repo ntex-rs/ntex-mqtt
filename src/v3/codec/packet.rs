@@ -212,3 +212,33 @@ impl Packet {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ack_reason() {
+        assert_eq!(ConnectAckReason::ConnectionAccepted.reason(), "Connection Accepted");
+        assert_eq!(
+            ConnectAckReason::UnacceptableProtocolVersion.reason(),
+            "Connection Refused, unacceptable protocol version"
+        );
+        assert_eq!(
+            ConnectAckReason::IdentifierRejected.reason(),
+            "Connection Refused, identifier rejected"
+        );
+        assert_eq!(
+            ConnectAckReason::ServiceUnavailable.reason(),
+            "Connection Refused, Server unavailable"
+        );
+        assert_eq!(
+            ConnectAckReason::BadUserNameOrPassword.reason(),
+            "Connection Refused, bad user name or password"
+        );
+        assert_eq!(
+            ConnectAckReason::NotAuthorized.reason(),
+            "Connection Refused, not authorized"
+        );
+    }
+}
