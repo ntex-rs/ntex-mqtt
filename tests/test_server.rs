@@ -1,3 +1,4 @@
+#![type_length_limit = "1406993"]
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 
 use bytes::Bytes;
