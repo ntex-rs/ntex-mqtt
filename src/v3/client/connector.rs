@@ -58,8 +58,11 @@ where
 {
     #[inline]
     /// Create new client and provide client id
-    pub fn client_id(mut self, client_id: ByteString) -> Self {
-        self.pkt.client_id = client_id;
+    pub fn client_id<U>(mut self, client_id: U) -> Self
+    where
+        ByteString: From<U>,
+    {
+        self.pkt.client_id = client_id.into();
         self
     }
 
@@ -90,8 +93,11 @@ where
 
     #[inline]
     /// Username can be used by the Server for authentication and authorization.
-    pub fn username(mut self, val: ByteString) -> Self {
-        self.pkt.username = Some(val);
+    pub fn username<U>(mut self, val: U) -> Self
+    where
+        ByteString: From<U>,
+    {
+        self.pkt.username = Some(val.into());
         self
     }
 

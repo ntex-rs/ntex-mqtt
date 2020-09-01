@@ -1,11 +1,15 @@
 use std::convert::TryFrom;
+use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::ok;
+use futures::{future::ok, SinkExt, StreamExt};
 use ntex::server;
+use ntex_codec::Framed;
 
-use ntex_mqtt::v5::{client, Connect, ConnectAck, MqttServer, Publish, PublishAck};
+use ntex_mqtt::v5::{
+    client, codec, Connect, ConnectAck, ControlMessage, MqttServer, Publish, PublishAck,
+};
 
 struct St;
 
@@ -55,5 +59,43 @@ async fn test_simple() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     sink.close();
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_ping() -> std::io::Result<()> {
+    let ping = Arc::new(AtomicBool::new(false));
+    let ping2 = ping.clone();
+
+    let srv = server::test_server(move || {
+        let ping = ping2.clone();
+        MqttServer::new(connect)
+            .publish(|p: Publish| ok::<_, TestError>(p.ack()))
+            .control(move |msg| {
+                let ping = ping.clone();
+                match msg {
+                    ControlMessage::Ping(msg) => {
+                        ping.store(true, Relaxed);
+                        ok::<_, TestError>(msg.ack())
+                    }
+                    _ => ok(msg.disconnect(codec::Disconnect::default())),
+                }
+            })
+            .finish()
+    });
+
+    let io = srv.connect().unwrap();
+    let mut framed = Framed::new(io, codec::Codec::new());
+    framed
+        .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
+        .await
+        .unwrap();
+    let _ = framed.next().await.unwrap().unwrap();
+
+    framed.send(codec::Packet::PingRequest).await.unwrap();
+    let pkt = framed.next().await.unwrap().unwrap();
+    assert_eq!(pkt, codec::Packet::PingResponse);
+    assert!(ping.load(Relaxed));
+
     Ok(())
 }

@@ -73,6 +73,17 @@ pub struct Connect {
     pub password: Option<Bytes>,
 }
 
+impl Connect {
+    /// Set client_id value
+    pub fn client_id<T>(mut self, client_id: T) -> Self
+    where
+        ByteString: From<T>,
+    {
+        self.client_id = client_id.into();
+        self
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 /// Publish message
 pub struct Publish {
