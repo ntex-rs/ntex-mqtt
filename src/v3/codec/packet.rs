@@ -73,6 +73,17 @@ pub struct Connect {
     pub password: Option<Bytes>,
 }
 
+impl Connect {
+    /// Set client_id value
+    pub fn client_id<T>(mut self, client_id: T) -> Self
+    where
+        ByteString: From<T>,
+    {
+        self.client_id = client_id.into();
+        self
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 /// Publish message
 pub struct Publish {
@@ -199,5 +210,35 @@ impl Packet {
             Packet::PingResponse => packet_type::PINGRESP,
             Packet::Disconnect => packet_type::DISCONNECT,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ack_reason() {
+        assert_eq!(ConnectAckReason::ConnectionAccepted.reason(), "Connection Accepted");
+        assert_eq!(
+            ConnectAckReason::UnacceptableProtocolVersion.reason(),
+            "Connection Refused, unacceptable protocol version"
+        );
+        assert_eq!(
+            ConnectAckReason::IdentifierRejected.reason(),
+            "Connection Refused, identifier rejected"
+        );
+        assert_eq!(
+            ConnectAckReason::ServiceUnavailable.reason(),
+            "Connection Refused, Server unavailable"
+        );
+        assert_eq!(
+            ConnectAckReason::BadUserNameOrPassword.reason(),
+            "Connection Refused, bad user name or password"
+        );
+        assert_eq!(
+            ConnectAckReason::NotAuthorized.reason(),
+            "Connection Refused, not authorized"
+        );
     }
 }

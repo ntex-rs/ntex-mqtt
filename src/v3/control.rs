@@ -38,12 +38,16 @@ impl ControlMessage {
         ControlMessage::Ping(Ping)
     }
 
-    pub(crate) fn disconnect() -> Self {
+    pub(crate) fn pkt_disconnect() -> Self {
         ControlMessage::Disconnect(Disconnect)
     }
 
     pub(crate) fn closed(is_error: bool) -> Self {
         ControlMessage::Closed(Closed::new(is_error))
+    }
+
+    pub fn disconnect(&self) -> ControlResult {
+        ControlResult { result: ControlResultKind::Disconnect }
     }
 }
 
