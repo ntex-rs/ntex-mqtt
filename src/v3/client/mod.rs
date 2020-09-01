@@ -9,4 +9,4 @@ pub use self::control::{ControlMessage, ControlResult};
 
 pub use crate::topic::Topic;
 pub use crate::types::QoS;
-pub use crate::v3::{codec, error, sink::MqttSink};
+pub use crate::v3::{codec, error, error::ClientError, sink::MqttSink};

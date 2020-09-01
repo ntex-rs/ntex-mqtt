@@ -11,9 +11,13 @@ use ntex_mqtt::v3::{client, codec, Connect, ConnectAck, ControlMessage, MqttServ
 
 struct St;
 
-async fn connect<Io>(packet: Connect<Io>) -> Result<ConnectAck<Io, St>, ()> {
+async fn connect<Io>(mut packet: Connect<Io>) -> Result<ConnectAck<Io, St>, ()> {
     println!("CONNECT: {:?}", packet);
-    Ok(packet.ack(St, false))
+    packet.packet();
+    packet.packet_mut();
+    packet.io();
+    packet.sink();
+    Ok(packet.ack(St, false).idle_timeout(16))
 }
 
 #[ntex::test]
@@ -36,6 +40,63 @@ async fn test_simple() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     sink.close();
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_connect_fail() -> std::io::Result<()> {
+    // bad user name or password
+    let srv = server::test_server(|| {
+        MqttServer::new(|conn: Connect<_>| ok::<_, ()>(conn.bad_username_or_pwd::<St>()))
+            .publish(|_t| ok(()))
+            .finish()
+    });
+    let err =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
+    if let client::ClientError::Ack { session_present, return_code } = err {
+        assert!(!session_present);
+        assert_eq!(return_code, codec::ConnectAckReason::BadUserNameOrPassword);
+    }
+
+    // identifier rejected
+    let srv = server::test_server(|| {
+        MqttServer::new(|conn: Connect<_>| ok::<_, ()>(conn.identifier_rejected::<St>()))
+            .publish(|_t| ok(()))
+            .finish()
+    });
+    let err =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
+    if let client::ClientError::Ack { session_present, return_code } = err {
+        assert!(!session_present);
+        assert_eq!(return_code, codec::ConnectAckReason::IdentifierRejected);
+    }
+
+    // not authorized
+    let srv = server::test_server(|| {
+        MqttServer::new(|conn: Connect<_>| ok::<_, ()>(conn.not_authorized::<St>()))
+            .publish(|_t| ok(()))
+            .finish()
+    });
+    let err =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
+    if let client::ClientError::Ack { session_present, return_code } = err {
+        assert!(!session_present);
+        assert_eq!(return_code, codec::ConnectAckReason::NotAuthorized);
+    }
+
+    // service unavailable
+    let srv = server::test_server(|| {
+        MqttServer::new(|conn: Connect<_>| ok::<_, ()>(conn.service_unavailable::<St>()))
+            .publish(|_t| ok(()))
+            .finish()
+    });
+    let err =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
+    if let client::ClientError::Ack { session_present, return_code } = err {
+        assert!(!session_present);
+        assert_eq!(return_code, codec::ConnectAckReason::ServiceUnavailable);
+    }
+
     Ok(())
 }
 
