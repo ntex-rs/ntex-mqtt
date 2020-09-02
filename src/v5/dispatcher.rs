@@ -263,18 +263,17 @@ where
                 // register inflight packet id
                 if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id
-                    return Either::Right(Either::Left(ok(Some(codec::Packet::SubscribeAck(
-                        codec::SubscribeAck {
-                            packet_id: pkt.packet_id,
-                            status: pkt
-                                .topic_filters
-                                .iter()
-                                .map(|_| codec::SubscribeAckReason::PacketIdentifierInUse)
-                                .collect(),
-                            properties: codec::UserProperties::new(),
-                            reason_string: None,
-                        },
-                    )))));
+                    self.sink.send(codec::Packet::SubscribeAck(codec::SubscribeAck {
+                        packet_id: pkt.packet_id,
+                        status: pkt
+                            .topic_filters
+                            .iter()
+                            .map(|_| codec::SubscribeAckReason::PacketIdentifierInUse)
+                            .collect(),
+                        properties: codec::UserProperties::new(),
+                        reason_string: None,
+                    }));
+                    return Either::Right(Either::Left(ok(None)));
                 }
                 let id = pkt.packet_id;
                 Either::Right(Either::Right(
@@ -286,18 +285,17 @@ where
                 // register inflight packet id
                 if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id
-                    return Either::Right(Either::Left(ok(Some(
-                        codec::Packet::UnsubscribeAck(codec::UnsubscribeAck {
-                            packet_id: pkt.packet_id,
-                            status: pkt
-                                .topic_filters
-                                .iter()
-                                .map(|_| codec::UnsubscribeAckReason::PacketIdentifierInUse)
-                                .collect(),
-                            properties: codec::UserProperties::new(),
-                            reason_string: None,
-                        }),
-                    ))));
+                    self.sink.send(codec::Packet::UnsubscribeAck(codec::UnsubscribeAck {
+                        packet_id: pkt.packet_id,
+                        status: pkt
+                            .topic_filters
+                            .iter()
+                            .map(|_| codec::UnsubscribeAckReason::PacketIdentifierInUse)
+                            .collect(),
+                        properties: codec::UserProperties::new(),
+                        reason_string: None,
+                    }));
+                    return Either::Right(Either::Left(ok(None)));
                 }
                 let id = pkt.packet_id;
                 Either::Right(Either::Right(

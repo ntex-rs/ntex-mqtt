@@ -245,6 +245,42 @@ async fn test_dups() {
         .await
         .unwrap();
 
+    // send subscribe dup
+    framed
+        .send(
+            codec::Subscribe {
+                id: None,
+                packet_id: NonZeroU16::new(1).unwrap(),
+                user_properties: Default::default(),
+                topic_filters: vec![(
+                    ByteString::from("topic1"),
+                    codec::SubscriptionOptions {
+                        qos: codec::QoS::AtLeastOnce,
+                        no_local: false,
+                        retain_as_published: false,
+                        retain_handling: codec::RetainHandling::AtSubscribe,
+                    },
+                )],
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+
+    // send unsubscribe dup
+    framed
+        .send(
+            codec::Unsubscribe {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                user_properties: Default::default(),
+                topic_filters: vec![ByteString::from("topic1")],
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+
+    // PublishAck
     let pkt = framed.next().await.unwrap().unwrap();
     assert_eq!(
         pkt,
@@ -254,6 +290,32 @@ async fn test_dups() {
             properties: Default::default(),
             reason_string: None,
         })
+    );
+
+    // SubscribeAck
+    let pkt = framed.next().await.unwrap().unwrap();
+    assert_eq!(
+        pkt,
+        codec::SubscribeAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            properties: Default::default(),
+            reason_string: None,
+            status: vec![codec::SubscribeAckReason::PacketIdentifierInUse],
+        }
+        .into()
+    );
+
+    // UnsubscribeAck
+    let pkt = framed.next().await.unwrap().unwrap();
+    assert_eq!(
+        pkt,
+        codec::UnsubscribeAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            properties: Default::default(),
+            reason_string: None,
+            status: vec![codec::UnsubscribeAckReason::PacketIdentifierInUse],
+        }
+        .into()
     );
 }
 
