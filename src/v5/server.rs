@@ -405,6 +405,8 @@ where
                 framed.get_codec_mut().set_max_outbound_size(size.get());
             }
 
+            let keep_alive = connect.keep_alive;
+
             // authenticate mqtt connection
             let mut ack = service.call(Connect::new(connect, framed, sink)).await?;
 
@@ -420,7 +422,9 @@ where
                     ack.packet.topic_alias_max = max_topic_alias;
                     ack.packet.max_qos = Some(mqtt::QoS::AtLeastOnce);
                     if ack.packet.server_keepalive_sec.is_none() {
-                        ack.packet.server_keepalive_sec = Some(ack.io.keepalive as u16);
+                        if keep_alive != ack.io.keepalive as u16 {
+                            ack.packet.server_keepalive_sec = Some(ack.io.keepalive as u16);
+                        }
                     }
                     ack.io.send(mqtt::Packet::ConnectAck(ack.packet)).await?;
 

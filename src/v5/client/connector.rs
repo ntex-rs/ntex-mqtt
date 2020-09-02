@@ -239,6 +239,7 @@ where
     fn _connect(&self) -> impl Future<Output = Result<Client<T::Response>, ClientError>> {
         let fut = self.connector.call(Connect::new(self.address.clone()));
         let pkt = self.pkt.clone();
+        let keep_alive = pkt.keep_alive;
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
         let disconnect_timeout = self.disconnect_timeout;
@@ -267,7 +268,16 @@ where
                         if let Some(size) = pkt.max_packet_size {
                             framed.get_codec_mut().set_max_outbound_size(size);
                         }
-                        Ok(Client::new(framed, pkt, max_receive, disconnect_timeout))
+                        // server keep-alive
+                        let keep_alive = pkt.server_keepalive_sec.unwrap_or(keep_alive) as u64;
+
+                        Ok(Client::new(
+                            framed,
+                            pkt,
+                            max_receive,
+                            keep_alive,
+                            disconnect_timeout,
+                        ))
                     } else {
                         Err(ClientError::Ack(pkt))
                     }

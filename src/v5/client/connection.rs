@@ -40,11 +40,11 @@ where
         io: Framed<T, codec::Codec>,
         pkt: codec::ConnectAck,
         max_receive: u16,
+        keepalive: u64,
         disconnect_timeout: u64,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
 
-        let keepalive = pkt.server_keepalive_sec.unwrap_or(0) as u64;
         let server_max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
 
         Client {
