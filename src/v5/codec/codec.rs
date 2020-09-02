@@ -40,7 +40,11 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_outbound_size(mut self, size: u32) -> Self {
+    pub fn max_outbound_size(mut self, mut size: u32) -> Self {
+        if size > 5 {
+            // fixed header = 1, var_len(remaining.max_value()) = 4
+            size = size - 5;
+        }
         self.max_out_size = size;
         self
     }
@@ -130,7 +134,7 @@ impl Encoder for Codec {
     type Error = EncodeError;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
-        let max_size = if self.max_out_size != 0 { self.max_out_size } else { MAX_PACKET_SIZE }; // fixed header = 1, var_len(remaining.max_value()) = 4
+        let max_size = if self.max_out_size != 0 { self.max_out_size } else { MAX_PACKET_SIZE };
         let content_size = item.encoded_size(max_size);
         if content_size > max_size as usize {
             return Err(EncodeError::InvalidLength); // todo: separate error code
@@ -147,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_max_size() {
-        let mut codec = Codec::new().max_size(5);
+        let mut codec = Codec::new().max_inbound_size(5);
 
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
