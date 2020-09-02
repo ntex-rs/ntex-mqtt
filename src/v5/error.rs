@@ -36,7 +36,7 @@ impl From<Either<EncodeError, io::Error>> for ClientError {
     }
 }
 
-#[derive(Debug, Display)]
+#[derive(Debug, Display, PartialEq)]
 pub enum PublishQos0Error {
     /// Encoder error
     Encode(EncodeError),
@@ -48,7 +48,7 @@ pub enum PublishQos0Error {
     Disconnected,
 }
 
-#[derive(Debug, Display)]
+#[derive(Debug, Display, PartialEq)]
 pub enum PublishQos1Error {
     /// Negative ack from peer
     #[display(fmt = "Negative ack: {:?}", _0)]
@@ -63,7 +63,7 @@ pub enum PublishQos1Error {
     Disconnected,
 }
 
-#[derive(Debug, Display)]
+#[derive(Debug, Display, PartialEq)]
 pub enum SubscribeError {
     /// Encoder error
     Encode(EncodeError),
@@ -75,7 +75,7 @@ pub enum SubscribeError {
     Disconnected,
 }
 
-#[derive(Debug, Display)]
+#[derive(Debug, Display, PartialEq)]
 pub enum UnsubscribeError {
     /// Encoder error
     Encode(EncodeError),

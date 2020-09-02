@@ -9,7 +9,7 @@ use ntex::server;
 use ntex_codec::Framed;
 
 use ntex_mqtt::v5::{
-    client, codec, Connect, ConnectAck, ControlMessage, MqttServer, Publish, PublishAck,
+    client, codec, error, Connect, ConnectAck, ControlMessage, MqttServer, Publish, PublishAck,
 };
 
 struct St;
@@ -45,11 +45,8 @@ async fn test_simple() -> std::io::Result<()> {
     });
 
     // connect to server
-    let client = client::MqttConnector::new(srv.addr())
-        .client_id(ByteString::from_static("user"))
-        .connect()
-        .await
-        .unwrap();
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
 
     let sink = client.sink();
 
@@ -382,4 +379,55 @@ async fn test_max_receive() {
             user_properties: Default::default(),
         })
     );
+}
+
+#[ntex::test]
+async fn test_encoder_error() {
+    std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
+    env_logger::init();
+
+    let srv = server::test_server(move || {
+        MqttServer::new(|con: Connect<_>| async move {
+            let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
+                props.user_properties.push((
+                    "ssssssssssssssssssssssssssssssssssss".into(),
+                    "ssssssssssssssssssssssssssssssssssss".into(),
+                ));
+            });
+            ntex::rt::spawn(async move {
+                println!("0000000000000");
+                let res = builder.send_at_least_once().await;
+                println!("0000000000001");
+                assert_eq!(
+                    res,
+                    Err(error::PublishQos1Error::Encode(error::EncodeError::InvalidLength))
+                );
+            });
+            Ok(con.ack(St))
+        })
+        .publish(|p: Publish| {
+            delay_for(Duration::from_millis(50)).map(move |_| Ok::<_, TestError>(p.ack()))
+        })
+        .control(move |msg| match msg {
+            ControlMessage::ProtocolError(msg) => ok::<_, TestError>(msg.ack()),
+            _ => ok(msg.disconnect()),
+        })
+        .finish()
+    });
+
+    // connect to server
+    let client = client::MqttConnector::new(srv.addr())
+        .client_id("user")
+        .max_packet_size(30)
+        .connect()
+        .await
+        .unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_ok());
 }
