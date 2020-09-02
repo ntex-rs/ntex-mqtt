@@ -59,7 +59,7 @@ where
             control: DefaultControlService::default(),
             publish: DefaultPublishService::default(),
             max_size: 0,
-            inflight: 15,
+            inflight: 16,
             handshake_timeout: 0,
             disconnect_timeout: 3000,
             pool: Default::default(),
@@ -116,7 +116,7 @@ where
 
     /// Number of in-flight concurrent messages.
     ///
-    /// By default in-flight is set to 15 messages
+    /// By default in-flight is set to 16 messages
     pub fn inflight(mut self, val: usize) -> Self {
         self.inflight = val;
         self

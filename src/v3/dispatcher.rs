@@ -53,27 +53,19 @@ where
         async move {
             let (publish, control) = fut.await;
 
-            // mqtt dispatcher
-            Ok(Dispatcher::<_, _, _, E>::new(
-                cfg,
+            // mqtt dispatcher.
+            Ok(
                 // limit number of in-flight messages
                 InFlightService::new(
                     inflight,
                     // mqtt spec requires ack ordering, so enforce response ordering
-                    InOrder::service(publish?).map_err(|e| match e {
-                        InOrderError::Service(e) => e,
-                        InOrderError::Disconnected => MqttError::Disconnected,
-                    }),
-                ),
-                // limit number of in-flight control messages
-                InFlightService::new(
-                    16,
-                    InOrder::service(control?).map_err(|e| match e {
-                        InOrderError::Service(e) => e,
-                        InOrderError::Disconnected => MqttError::Disconnected,
-                    }),
-                ),
-            ))
+                    InOrder::service(Dispatcher::<_, _, _, E>::new(cfg, publish?, control?)),
+                )
+                .map_err(|e| match e {
+                    InOrderError::Service(e) => e,
+                    InOrderError::Disconnected => MqttError::Disconnected,
+                }),
+            )
         }
     })
 }

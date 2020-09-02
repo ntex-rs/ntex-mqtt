@@ -6,7 +6,6 @@ use futures::future::{ok, Either, FutureExt, Ready};
 use futures::ready;
 use fxhash::FxHashSet;
 use ntex::service::Service;
-use ntex::util::inflight::InFlightService;
 use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::{MqttError, ProtocolError};
@@ -35,29 +34,21 @@ where
         + 'static,
     C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
 {
-    // mqtt dispatcher.
     // mqtt spec requires ack ordering, so enforce response ordering
-    Dispatcher::<_, _, E>::new(
+    InOrder::service(Dispatcher::<_, _, E>::new(
         sink,
         max_receive as usize,
         max_topic_alias,
-        InOrder::service(publish).map_err(|e| match e {
-            InOrderError::Service(e) => either::Either::Left(e),
-            InOrderError::Disconnected => either::Either::Right(ProtocolError::Io(
-                io::Error::new(io::ErrorKind::Other, "Service dropped"),
-            )),
-        }),
-        // limit number of in-flight control messages
-        InFlightService::new(
-            16,
-            InOrder::service(control).map_err(|e| match e {
-                InOrderError::Service(e) => either::Either::Left(e),
-                InOrderError::Disconnected => either::Either::Right(ProtocolError::Io(
-                    io::Error::new(io::ErrorKind::Other, "Service dropped"),
-                )),
-            }),
-        ),
-    )
+        publish,
+        control,
+    ))
+    .map_err(|e| match e {
+        InOrderError::Service(e) => e,
+        InOrderError::Disconnected => MqttError::Protocol(ProtocolError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "Service dropped",
+        ))),
+    })
 }
 
 /// Mqtt protocol dispatcher
@@ -83,16 +74,8 @@ struct PublishInfo {
 
 impl<T, C, E> Dispatcher<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = either::Either<Publish, PublishAck>,
-        Error = either::Either<E, ProtocolError>,
-    >,
-    C: Service<
-        Request = ControlMessage<E>,
-        Response = ControlResult,
-        Error = either::Either<E, ProtocolError>,
-    >,
+    T: Service<Request = Publish, Response = either::Either<Publish, PublishAck>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     fn new(
         sink: MqttSink,
@@ -121,16 +104,8 @@ where
 
 impl<T, C, E> Service for Dispatcher<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = either::Either<Publish, PublishAck>,
-        Error = either::Either<E, ProtocolError>,
-    >,
-    C: Service<
-        Request = ControlMessage<E>,
-        Response = ControlResult,
-        Error = either::Either<E, ProtocolError>,
-    >,
+    T: Service<Request = Publish, Response = either::Either<Publish, PublishAck>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
     C::Future: 'static,
 {
     type Request = DispatcherItem<codec::Codec>;
@@ -142,11 +117,8 @@ where
     >;
 
     fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
-        let res1 = self.publish.poll_ready(cx).map_err(|e| match e {
-            either::Either::Left(e) => MqttError::Service(e),
-            either::Either::Right(e) => MqttError::Protocol(e),
-        })?;
-        let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::from)?;
+        let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service)?;
+        let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::Service)?;
 
         if res1.is_pending() || res2.is_pending() {
             Poll::Pending
@@ -379,16 +351,8 @@ enum PublishResponseState<T: Service, C: Service, E> {
 
 impl<T, C, E> Future for PublishResponse<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = either::Either<Publish, PublishAck>,
-        Error = either::Either<E, ProtocolError>,
-    >,
-    C: Service<
-        Request = ControlMessage<E>,
-        Response = ControlResult,
-        Error = either::Either<E, ProtocolError>,
-    >,
+    T: Service<Request = Publish, Response = either::Either<Publish, PublishAck>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
@@ -412,23 +376,9 @@ where
                         }
                     },
                     Err(e) => {
-                        match e {
-                            either::Either::Left(e) => {
-                                this.state.set(PublishResponseState::Control(
-                                    ControlResponse::new(ControlMessage::error(e), this.inner)
-                                        .error(),
-                                ));
-                            }
-                            either::Either::Right(e) => {
-                                this.state.set(PublishResponseState::Control(
-                                    ControlResponse::new(
-                                        ControlMessage::proto_error(e),
-                                        this.inner,
-                                    )
-                                    .error(),
-                                ));
-                            }
-                        }
+                        this.state.set(PublishResponseState::Control(
+                            ControlResponse::new(ControlMessage::error(e), this.inner).error(),
+                        ));
                         return self.poll(cx);
                     }
                 };
@@ -465,11 +415,7 @@ pin_project_lite::pin_project! {
 
 impl<C: Service, E> ControlResponse<C, E>
 where
-    C: Service<
-        Request = ControlMessage<E>,
-        Response = ControlResult,
-        Error = either::Either<E, ProtocolError>,
-    >,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
         Self {
@@ -494,11 +440,7 @@ where
 
 impl<C, E> Future for ControlResponse<C, E>
 where
-    C: Service<
-        Request = ControlMessage<E>,
-        Response = ControlResult,
-        Error = either::Either<E, ProtocolError>,
-    >,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
@@ -515,18 +457,11 @@ where
             Err(err) => {
                 // do not handle nested error
                 if *this.error {
-                    return Poll::Ready(Err(MqttError::from(err)));
+                    return Poll::Ready(Err(MqttError::Service(err)));
                 } else {
                     // handle error from control service
                     *this.error = true;
-                    let fut = match err {
-                        either::Either::Left(err) => {
-                            this.inner.control.call(ControlMessage::error(err))
-                        }
-                        either::Either::Right(err) => {
-                            this.inner.control.call(ControlMessage::proto_error(err))
-                        }
-                    };
+                    let fut = this.inner.control.call(ControlMessage::error(err));
                     self.as_mut().project().fut.set(fut);
                     return self.poll(cx);
                 }

@@ -87,7 +87,7 @@ impl<S, E> Service for DefaultControlService<S, E> {
     fn call(&self, pkt: Self::Request) -> Self::Future {
         log::warn!("MQTT Control service is not configured");
 
-        ok(pkt.disconnect(super::codec::Disconnect::new(
+        ok(pkt.disconnect_with(super::codec::Disconnect::new(
             super::codec::DisconnectReasonCode::UnspecifiedError,
         )))
     }

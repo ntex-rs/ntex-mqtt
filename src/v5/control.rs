@@ -48,7 +48,18 @@ impl<E> ControlMessage<E> {
         ControlMessage::ProtocolError(ProtocolError::new(err))
     }
 
-    pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlResult {
+    pub fn disconnect(&self) -> ControlResult {
+        let pkt = codec::Disconnect {
+            reason_code: codec::DisconnectReasonCode::NormalDisconnection,
+            session_expiry_interval_secs: None,
+            server_reference: None,
+            reason_string: None,
+            user_properties: Default::default(),
+        };
+        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    }
+
+    pub fn disconnect_with(&self, pkt: codec::Disconnect) -> ControlResult {
         ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
 }
