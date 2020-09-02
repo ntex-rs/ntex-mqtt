@@ -169,6 +169,10 @@ impl<Err> Service for RouterService<Err> {
             }
         }
 
+        if let Poll::Pending = self.default.poll_ready(cx)? {
+            not_ready = true;
+        }
+
         if not_ready {
             Poll::Pending
         } else {
