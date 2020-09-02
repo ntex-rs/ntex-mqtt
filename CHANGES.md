@@ -4,6 +4,8 @@
 
 * Fix packet ordering
 
+* Check default router service readiness
+
 * v5: Fix in/out bound frame size checks in codec
 
 ## [0.3.7] - 2020-09-02

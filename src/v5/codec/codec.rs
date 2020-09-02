@@ -43,7 +43,7 @@ impl Codec {
     pub fn max_outbound_size(mut self, mut size: u32) -> Self {
         if size > 5 {
             // fixed header = 1, var_len(remaining.max_value()) = 4
-            size = size - 5;
+            size -= 5;
         }
         self.max_out_size = size;
         self
