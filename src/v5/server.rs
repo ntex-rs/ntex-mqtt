@@ -421,10 +421,8 @@ where
                     ack.packet.max_packet_size = Some(max_size);
                     ack.packet.topic_alias_max = max_topic_alias;
                     ack.packet.max_qos = Some(mqtt::QoS::AtLeastOnce);
-                    if ack.packet.server_keepalive_sec.is_none() {
-                        if keep_alive != ack.io.keepalive as u16 {
-                            ack.packet.server_keepalive_sec = Some(ack.io.keepalive as u16);
-                        }
+                    if ack.packet.server_keepalive_sec.is_none() && (keep_alive < ack.io.keepalive as u16) {
+                        ack.packet.server_keepalive_sec = Some(ack.io.keepalive as u16);
                     }
                     ack.io.send(mqtt::Packet::ConnectAck(ack.packet)).await?;
 
