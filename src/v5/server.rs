@@ -217,7 +217,7 @@ where
             FactoryBuilder::new(handshake_service_factory(
                 connect,
                 self.max_size,
-                self.max_receive,
+                self.max_receive + 1,
                 self.max_topic_alias,
                 self.handshake_timeout,
                 self.pool,
@@ -253,7 +253,7 @@ where
             FactoryBuilder2::new(handshake_service_factory2(
                 connect,
                 self.max_size,
-                self.max_receive,
+                self.max_receive + 1,
                 self.max_topic_alias,
                 self.handshake_timeout,
                 self.pool,

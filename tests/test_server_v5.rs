@@ -190,3 +190,134 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[ntex::test]
+async fn test_dups() {
+    let srv = server::test_server(move || {
+        MqttServer::new(connect)
+            .publish(|p: Publish| {
+                delay_for(Duration::from_millis(10000))
+                    .map(move |_| Ok::<_, TestError>(p.ack()))
+            })
+            .finish()
+    });
+
+    let io = srv.connect().unwrap();
+    let mut framed = Framed::new(io, codec::Codec::default());
+    framed
+        .send(codec::Packet::Connect(
+            codec::Connect::default().client_id("user").receive_max(2),
+        ))
+        .await
+        .unwrap();
+    let _ = framed.next().await.unwrap().unwrap();
+
+    framed
+        .send(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                payload: Bytes::new(),
+                properties: Default::default(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+
+    // send packet_id dup
+    framed
+        .send(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                payload: Bytes::new(),
+                properties: Default::default(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+
+    let pkt = framed.next().await.unwrap().unwrap();
+    assert_eq!(
+        pkt,
+        codec::Packet::PublishAck(codec::PublishAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            reason_code: codec::PublishAckReason::PacketIdentifierInUse,
+            properties: Default::default(),
+            reason_string: None,
+        })
+    );
+}
+
+#[ntex::test]
+async fn test_max_receive() {
+    let srv = server::test_server(move || {
+        MqttServer::new(connect)
+            .receive_max(1)
+            .publish(|p: Publish| {
+                delay_for(Duration::from_millis(10000))
+                    .map(move |_| Ok::<_, TestError>(p.ack()))
+            })
+            .control(move |msg| match msg {
+                ControlMessage::ProtocolError(msg) => ok::<_, TestError>(msg.ack()),
+                _ => ok(msg.disconnect()),
+            })
+            .finish()
+    });
+    let io = srv.connect().unwrap();
+    let mut framed = Framed::new(io, codec::Codec::default());
+    framed
+        .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
+        .await
+        .unwrap();
+    let _ = framed.next().await.unwrap().unwrap();
+    framed
+        .send(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                payload: Bytes::new(),
+                properties: Default::default(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    framed
+        .send(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(2).unwrap()),
+                payload: Bytes::new(),
+                properties: Default::default(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    let pkt = framed.next().await.unwrap().unwrap();
+    assert_eq!(
+        pkt,
+        codec::Packet::Disconnect(codec::Disconnect {
+            reason_code: codec::DisconnectReasonCode::ReceiveMaximumExceeded,
+            session_expiry_interval_secs: None,
+            server_reference: None,
+            reason_string: None,
+            user_properties: Default::default(),
+        })
+    );
+}

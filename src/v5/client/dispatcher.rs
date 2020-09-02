@@ -156,26 +156,24 @@ where
                                 self.max_receive,
                                 inner.inflight.len()
                             );
-                            return Either::Right(Either::Right(
-                                ControlResponse::new(
-                                    ControlMessage::proto_error(
-                                        ProtocolError::ReceiveMaximumExceeded,
-                                    ),
-                                    &self.inner,
-                                )
-                                .error(),
-                            ));
+                            return Either::Right(Either::Right(ControlResponse::new(
+                                ControlMessage::proto_error(
+                                    ProtocolError::ReceiveMaximumExceeded,
+                                ),
+                                &self.inner,
+                            )));
                         }
 
                         // check for duplicated packet id
                         if !inner.inflight.insert(pid) {
-                            return Either::Right(Either::Left(ok(Some(
-                                codec::Packet::PublishAck(codec::PublishAck {
+                            self.inner.sink.send(codec::Packet::PublishAck(
+                                codec::PublishAck {
                                     packet_id: pid,
                                     reason_code: codec::PublishAckReason::PacketIdentifierInUse,
                                     ..Default::default()
-                                }),
-                            ))));
+                                },
+                            ));
+                            return Either::Right(Either::Left(ok(None)));
                         }
                     }
 
@@ -184,27 +182,19 @@ where
                         // check existing topic
                         if publish.topic.is_empty() {
                             if !inner.aliases.contains(&alias) {
-                                return Either::Right(Either::Right(
-                                    ControlResponse::new(
-                                        ControlMessage::proto_error(
-                                            ProtocolError::UnknownTopicAlias,
-                                        ),
-                                        &self.inner,
-                                    )
-                                    .error(),
-                                ));
+                                return Either::Right(Either::Right(ControlResponse::new(
+                                    ControlMessage::proto_error(
+                                        ProtocolError::UnknownTopicAlias,
+                                    ),
+                                    &self.inner,
+                                )));
                             }
                         } else {
                             if alias.get() > self.max_topic_alias {
-                                return Either::Right(Either::Right(
-                                    ControlResponse::new(
-                                        ControlMessage::proto_error(
-                                            ProtocolError::MaxTopicAlias,
-                                        ),
-                                        &self.inner,
-                                    )
-                                    .error(),
-                                ));
+                                return Either::Right(Either::Right(ControlResponse::new(
+                                    ControlMessage::proto_error(ProtocolError::MaxTopicAlias),
+                                    &self.inner,
+                                )));
                             }
 
                             // record new alias
@@ -224,30 +214,30 @@ where
             }
             DispatcherItem::Item(codec::Packet::PublishAck(packet)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
-                    Either::Right(Either::Right(
-                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
-                            .error(),
-                    ))
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(err),
+                        &self.inner,
+                    )))
                 } else {
                     Either::Right(Either::Left(ok(None)))
                 }
             }
             DispatcherItem::Item(codec::Packet::SubscribeAck(packet)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Subscribe(packet)) {
-                    Either::Right(Either::Right(
-                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
-                            .error(),
-                    ))
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(err),
+                        &self.inner,
+                    )))
                 } else {
                     Either::Right(Either::Left(ok(None)))
                 }
             }
             DispatcherItem::Item(codec::Packet::UnsubscribeAck(packet)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet)) {
-                    Either::Right(Either::Right(
-                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
-                            .error(),
-                    ))
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(err),
+                        &self.inner,
+                    )))
                 } else {
                     Either::Right(Either::Left(ok(None)))
                 }
@@ -258,37 +248,32 @@ where
             DispatcherItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(
                 Either::Right(ControlResponse::new(ControlMessage::dis(pkt), &self.inner)),
             ),
-            DispatcherItem::Item(codec::Packet::Auth(_)) => Either::Right(Either::Right(
-                ControlResponse::new(
+            DispatcherItem::Item(codec::Packet::Auth(_)) => {
+                Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Unexpected(
                         packet_type::AUTH,
                         "Auth packet is not supported",
                     )),
                     &self.inner,
-                )
-                .error(),
-            )),
-            DispatcherItem::Item(codec::Packet::Subscribe(_)) => Either::Right(Either::Right(
-                ControlResponse::new(
+                )))
+            }
+            DispatcherItem::Item(codec::Packet::Subscribe(_)) => {
+                Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Unexpected(
                         packet_type::SUBSCRIBE,
                         "Subscribe packet is not supported",
                     )),
                     &self.inner,
-                )
-                .error(),
-            )),
+                )))
+            }
             DispatcherItem::Item(codec::Packet::Unsubscribe(_)) => {
-                Either::Right(Either::Right(
-                    ControlResponse::new(
-                        ControlMessage::proto_error(ProtocolError::Unexpected(
-                            packet_type::UNSUBSCRIBE,
-                            "Unsubscribe packet is not supported",
-                        )),
-                        &self.inner,
-                    )
-                    .error(),
-                ))
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::Unexpected(
+                        packet_type::UNSUBSCRIBE,
+                        "Unsubscribe packet is not supported",
+                    )),
+                    &self.inner,
+                )))
             }
             DispatcherItem::Item(codec::Packet::PingResponse) => {
                 Either::Right(Either::Left(ok(None)))
@@ -376,9 +361,10 @@ where
                         }
                     },
                     Err(e) => {
-                        this.state.set(PublishResponseState::Control(
-                            ControlResponse::new(ControlMessage::error(e), this.inner).error(),
-                        ));
+                        this.state.set(PublishResponseState::Control(ControlResponse::new(
+                            ControlMessage::error(e),
+                            this.inner,
+                        )));
                         return self.poll(cx);
                     }
                 };
@@ -418,18 +404,18 @@ where
     C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
+        let error = match pkt {
+            ControlMessage::Error(_) | ControlMessage::ProtocolError(_) => true,
+            _ => false,
+        };
+
         Self {
+            error,
             fut: inner.control.call(pkt),
             inner: inner.clone(),
             packet_id: 0,
-            error: false,
             _t: PhantomData,
         }
-    }
-
-    fn error(mut self) -> Self {
-        self.error = true;
-        self
     }
 
     fn packet_id(mut self, id: u16) -> Self {
@@ -468,10 +454,19 @@ where
             }
         };
 
-        if result.disconnect {
-            self.inner.sink.drop_sink();
+        if self.error {
+            if let Some(pkt) = result.packet {
+                self.inner.sink.send(pkt)
+            }
+            if result.disconnect {
+                self.inner.sink.drop_sink();
+            }
+            Poll::Ready(Ok(None))
+        } else {
+            if result.disconnect {
+                self.inner.sink.drop_sink();
+            }
+            Poll::Ready(Ok(result.packet))
         }
-
-        Poll::Ready(Ok(result.packet))
     }
 }

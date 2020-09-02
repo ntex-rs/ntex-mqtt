@@ -58,8 +58,8 @@ where
             // mqtt dispatcher.
             Ok(
                 // mqtt spec requires ack ordering, so enforce response ordering
-                InOrder::service(Dispatcher::<_, _, _, E, T::Error>::new(
-                    cfg,
+                InOrder::service(Dispatcher::<_, _, E, T::Error>::new(
+                    cfg.sink().clone(),
                     max_receive as usize,
                     max_topic_alias,
                     publish?,
@@ -77,8 +77,8 @@ where
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<St, T, C, E, E2> {
-    session: Session<St>,
+pub(crate) struct Dispatcher<T, C, E, E2> {
+    sink: MqttSink,
     publish: T,
     shutdown: Cell<bool>,
     max_receive: usize,
@@ -98,25 +98,24 @@ struct PublishInfo {
     aliases: FxHashSet<NonZeroU16>,
 }
 
-impl<St, T, C, E, E2> Dispatcher<St, T, C, E, E2>
+impl<T, C, E, E2> Dispatcher<T, C, E, E2>
 where
     T: Service<Request = Publish, Response = PublishAck, Error = E2>,
     PublishAck: TryFrom<E2, Error = E>,
     C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     fn new(
-        session: Session<St>,
+        sink: MqttSink,
         max_receive: usize,
         max_topic_alias: u16,
         publish: T,
         control: C,
     ) -> Self {
-        let sink = session.sink().clone();
         Self {
-            session,
             publish,
             max_receive,
             max_topic_alias,
+            sink: sink.clone(),
             shutdown: Cell::new(false),
             inner: Rc::new(Inner {
                 control,
@@ -131,7 +130,7 @@ where
     }
 }
 
-impl<St, T, C, E, E2> Service for Dispatcher<St, T, C, E, E2>
+impl<T, C, E, E2> Service for Dispatcher<T, C, E, E2>
 where
     T: Service<Request = Publish, Response = PublishAck, Error = E2>,
     PublishAck: TryFrom<E2, Error = E>,
@@ -187,26 +186,22 @@ where
                                 self.max_receive,
                                 inner.inflight.len()
                             );
-                            return Either::Right(Either::Right(
-                                ControlResponse::new(
-                                    ControlMessage::proto_error(
-                                        ProtocolError::ReceiveMaximumExceeded,
-                                    ),
-                                    &self.inner,
-                                )
-                                .error(),
-                            ));
+                            return Either::Right(Either::Right(ControlResponse::new(
+                                ControlMessage::proto_error(
+                                    ProtocolError::ReceiveMaximumExceeded,
+                                ),
+                                &self.inner,
+                            )));
                         }
 
                         // check for duplicated packet id
                         if !inner.inflight.insert(pid) {
-                            return Either::Right(Either::Left(ok(Some(
-                                codec::Packet::PublishAck(codec::PublishAck {
-                                    packet_id: pid,
-                                    reason_code: codec::PublishAckReason::PacketIdentifierInUse,
-                                    ..Default::default()
-                                }),
-                            ))));
+                            self.sink.send(codec::Packet::PublishAck(codec::PublishAck {
+                                packet_id: pid,
+                                reason_code: codec::PublishAckReason::PacketIdentifierInUse,
+                                ..Default::default()
+                            }));
+                            return Either::Right(Either::Left(ok(None)));
                         }
                     }
 
@@ -215,27 +210,19 @@ where
                         // check existing topic
                         if publish.topic.is_empty() {
                             if !inner.aliases.contains(&alias) {
-                                return Either::Right(Either::Right(
-                                    ControlResponse::new(
-                                        ControlMessage::proto_error(
-                                            ProtocolError::UnknownTopicAlias,
-                                        ),
-                                        &self.inner,
-                                    )
-                                    .error(),
-                                ));
+                                return Either::Right(Either::Right(ControlResponse::new(
+                                    ControlMessage::proto_error(
+                                        ProtocolError::UnknownTopicAlias,
+                                    ),
+                                    &self.inner,
+                                )));
                             }
                         } else {
                             if alias.get() > self.max_topic_alias {
-                                return Either::Right(Either::Right(
-                                    ControlResponse::new(
-                                        ControlMessage::proto_error(
-                                            ProtocolError::MaxTopicAlias,
-                                        ),
-                                        &self.inner,
-                                    )
-                                    .error(),
-                                ));
+                                return Either::Right(Either::Right(ControlResponse::new(
+                                    ControlMessage::proto_error(ProtocolError::MaxTopicAlias),
+                                    &self.inner,
+                                )));
                             }
 
                             // record new alias
@@ -254,11 +241,11 @@ where
                 })
             }
             DispatcherItem::Item(codec::Packet::PublishAck(packet)) => {
-                if let Err(err) = self.session.sink().pkt_ack(Ack::Publish(packet)) {
-                    Either::Right(Either::Right(
-                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
-                            .error(),
-                    ))
+                if let Err(err) = self.sink.pkt_ack(Ack::Publish(packet)) {
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(err),
+                        &self.inner,
+                    )))
                 } else {
                     Either::Right(Either::Left(ok(None)))
                 }
@@ -326,12 +313,12 @@ where
                         &self.inner,
                     )))
                 } else {
-                    self.session.sink().pkt_encode_err(idx, err);
+                    self.sink.pkt_encode_err(idx, err);
                     Either::Right(Either::Left(ok(None)))
                 }
             }
             DispatcherItem::ItemEncoded(idx) => {
-                self.session.sink().pkt_written(idx);
+                self.sink.pkt_written(idx);
                 Either::Right(Either::Left(ok(None)))
             }
             DispatcherItem::KeepAliveTimeout => {
@@ -396,8 +383,7 @@ where
                                         ControlResponse::new(
                                             ControlMessage::error(e),
                                             this.inner,
-                                        )
-                                        .error(),
+                                        ),
                                     ));
                                     return self.poll(cx);
                                 }
@@ -407,8 +393,7 @@ where
                                 ControlResponse::new(
                                     ControlMessage::error(e.into()),
                                     this.inner,
-                                )
-                                .error(),
+                                ),
                             ));
                             return self.poll(cx);
                         }
@@ -450,18 +435,18 @@ where
     C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
+        let error = match pkt {
+            ControlMessage::Error(_) | ControlMessage::ProtocolError(_) => true,
+            _ => false,
+        };
+
         Self {
+            error,
             fut: inner.control.call(pkt),
             inner: inner.clone(),
             packet_id: 0,
-            error: false,
             _t: PhantomData,
         }
-    }
-
-    fn error(mut self) -> Self {
-        self.error = true;
-        self
     }
 
     fn packet_id(mut self, id: NonZeroU16) -> Self {
@@ -500,10 +485,19 @@ where
             }
         };
 
-        if result.disconnect {
-            self.inner.sink.drop_sink();
+        if self.error {
+            if let Some(pkt) = result.packet {
+                self.inner.sink.send(pkt)
+            }
+            if result.disconnect {
+                self.inner.sink.drop_sink();
+            }
+            Poll::Ready(Ok(None))
+        } else {
+            if result.disconnect {
+                self.inner.sink.drop_sink();
+            }
+            Poll::Ready(Ok(result.packet))
         }
-
-        Poll::Ready(Ok(result.packet))
     }
 }

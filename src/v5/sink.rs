@@ -98,6 +98,13 @@ impl MqttSink {
         }
     }
 
+    pub(super) fn send(&self, pkt: codec::Packet) {
+        let inner = self.0.borrow();
+        if let Some(ref sink) = inner.sink {
+            let _ = sink.send((pkt, 0));
+        }
+    }
+
     /// Send ping
     pub(super) fn ping(&self) -> bool {
         if let Some(sink) = self.0.borrow_mut().sink.take() {

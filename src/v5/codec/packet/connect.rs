@@ -79,6 +79,16 @@ impl Connect {
         self
     }
 
+    /// Set receive_max value
+    pub fn receive_max(mut self, max: u16) -> Self {
+        if let Some(num) = NonZeroU16::new(max) {
+            self.receive_max = Some(num);
+        } else {
+            self.receive_max = None;
+        }
+        self
+    }
+
     fn properties_len(&self) -> usize {
         let mut prop_len = encoded_property_size(&self.session_expiry_interval_secs)
             + encoded_property_size(&self.auth_method)
