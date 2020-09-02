@@ -42,7 +42,13 @@ impl<Io> Connect<Io> {
 
     /// Ack connect message and set state
     pub fn ack<St>(self, st: St, session_present: bool) -> ConnectAck<Io, St> {
-        ConnectAck::new(self.io, self.sink, st, session_present)
+        ConnectAck {
+            session_present,
+            io: self.io,
+            sink: self.sink,
+            session: Some(st),
+            return_code: mqtt::ConnectAckReason::ConnectionAccepted,
+        }
     }
 
     /// Create connect ack object with `identifier rejected` return code
@@ -106,22 +112,6 @@ pub struct ConnectAck<Io, St> {
 }
 
 impl<Io, St> ConnectAck<Io, St> {
-    /// Create connect ack, `session_present` indicates that previous session is presents
-    pub(crate) fn new(
-        io: HandshakeResult<Io, (), mqtt::Codec>,
-        sink: MqttSink,
-        session: St,
-        session_present: bool,
-    ) -> Self {
-        Self {
-            io,
-            sink,
-            session_present,
-            session: Some(session),
-            return_code: mqtt::ConnectAckReason::ConnectionAccepted,
-        }
-    }
-
     /// Set idle time-out for the connection in seconds
     ///
     /// By default idle time-out is set to 30 seconds.

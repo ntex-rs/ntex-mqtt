@@ -1,9 +1,11 @@
 #![type_length_limit = "1406993"]
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
+use std::{num::NonZeroU16, time::Duration};
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::{future::ok, SinkExt, StreamExt};
+use futures::{future::ok, FutureExt, SinkExt, StreamExt};
+use ntex::rt::time::delay_for;
 use ntex::server;
 use ntex_codec::Framed;
 
@@ -134,6 +136,70 @@ async fn test_ping() -> std::io::Result<()> {
     let pkt = framed.next().await.unwrap().unwrap();
     assert_eq!(pkt, codec::Packet::PingResponse);
     assert!(ping.load(Relaxed));
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_ack_order() -> std::io::Result<()> {
+    let srv = server::test_server(move || {
+        MqttServer::new(connect)
+            .publish(|_| delay_for(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
+            .control(move |msg| match msg {
+                ControlMessage::Subscribe(mut msg) => {
+                    for mut sub in &mut msg {
+                        assert_eq!(sub.qos(), codec::QoS::AtLeastOnce);
+                        sub.topic();
+                        sub.subscribe(codec::QoS::AtLeastOnce);
+                    }
+                    ok(msg.ack())
+                }
+                _ => ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    let io = srv.connect().unwrap();
+    let mut framed = Framed::new(io, codec::Codec::default());
+    framed
+        .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
+        .await
+        .unwrap();
+    let _ = framed.next().await.unwrap().unwrap();
+
+    framed
+        .send(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                payload: Bytes::new(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    framed
+        .send(codec::Packet::Subscribe {
+            packet_id: NonZeroU16::new(2).unwrap(),
+            topic_filters: vec![(ByteString::from("topic1"), codec::QoS::AtLeastOnce)],
+        })
+        .await
+        .unwrap();
+
+    let pkt = framed.next().await.unwrap().unwrap();
+    assert_eq!(pkt, codec::Packet::PublishAck { packet_id: NonZeroU16::new(1).unwrap() });
+
+    let pkt = framed.next().await.unwrap().unwrap();
+    assert_eq!(
+        pkt,
+        codec::Packet::SubscribeAck {
+            packet_id: NonZeroU16::new(2).unwrap(),
+            status: vec![codec::SubscribeReturnCode::Success(codec::QoS::AtLeastOnce)],
+        }
+    );
 
     Ok(())
 }

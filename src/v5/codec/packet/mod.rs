@@ -1,4 +1,5 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use derive_more::From;
 
 pub use crate::types::{ConnectFlags, QoS};
 
@@ -23,7 +24,7 @@ pub use pubacks::*;
 pub use publish::*;
 pub use subscribe::*;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, From)]
 /// MQTT Control Packets
 pub enum Packet {
     /// Client request to connect to Server
@@ -34,10 +35,12 @@ pub enum Packet {
     Publish(Publish),
     /// Publish acknowledgment
     PublishAck(PublishAck),
+    #[from(ignore)]
     /// Publish received (assured delivery part 1)
     PublishReceived(PublishAck),
     /// Publish release (assured delivery part 2)
     PublishRelease(PublishAck2),
+    #[from(ignore)]
     /// Publish complete (assured delivery part 3)
     PublishComplete(PublishAck2),
     /// Client subscribe request

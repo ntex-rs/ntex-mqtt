@@ -6,7 +6,6 @@ use futures::future::{ok, Either, FutureExt, Ready};
 use futures::ready;
 use fxhash::FxHashSet;
 use ntex::service::Service;
-use ntex::util::inflight::InFlightService;
 use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::{MqttError, ProtocolError};
@@ -35,29 +34,21 @@ where
         + 'static,
     C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
 {
-    // mqtt dispatcher.
     // mqtt spec requires ack ordering, so enforce response ordering
-    Dispatcher::<_, _, E>::new(
+    InOrder::service(Dispatcher::<_, _, E>::new(
         sink,
         max_receive as usize,
         max_topic_alias,
-        InOrder::service(publish).map_err(|e| match e {
-            InOrderError::Service(e) => either::Either::Left(e),
-            InOrderError::Disconnected => either::Either::Right(ProtocolError::Io(
-                io::Error::new(io::ErrorKind::Other, "Service dropped"),
-            )),
-        }),
-        // limit number of in-flight control messages
-        InFlightService::new(
-            16,
-            InOrder::service(control).map_err(|e| match e {
-                InOrderError::Service(e) => either::Either::Left(e),
-                InOrderError::Disconnected => either::Either::Right(ProtocolError::Io(
-                    io::Error::new(io::ErrorKind::Other, "Service dropped"),
-                )),
-            }),
-        ),
-    )
+        publish,
+        control,
+    ))
+    .map_err(|e| match e {
+        InOrderError::Service(e) => e,
+        InOrderError::Disconnected => MqttError::Protocol(ProtocolError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "Service dropped",
+        ))),
+    })
 }
 
 /// Mqtt protocol dispatcher
@@ -83,16 +74,8 @@ struct PublishInfo {
 
 impl<T, C, E> Dispatcher<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = either::Either<Publish, PublishAck>,
-        Error = either::Either<E, ProtocolError>,
-    >,
-    C: Service<
-        Request = ControlMessage<E>,
-        Response = ControlResult,
-        Error = either::Either<E, ProtocolError>,
-    >,
+    T: Service<Request = Publish, Response = either::Either<Publish, PublishAck>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     fn new(
         sink: MqttSink,
@@ -121,16 +104,8 @@ where
 
 impl<T, C, E> Service for Dispatcher<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = either::Either<Publish, PublishAck>,
-        Error = either::Either<E, ProtocolError>,
-    >,
-    C: Service<
-        Request = ControlMessage<E>,
-        Response = ControlResult,
-        Error = either::Either<E, ProtocolError>,
-    >,
+    T: Service<Request = Publish, Response = either::Either<Publish, PublishAck>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
     C::Future: 'static,
 {
     type Request = DispatcherItem<codec::Codec>;
@@ -142,11 +117,8 @@ where
     >;
 
     fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
-        let res1 = self.publish.poll_ready(cx).map_err(|e| match e {
-            either::Either::Left(e) => MqttError::Service(e),
-            either::Either::Right(e) => MqttError::Protocol(e),
-        })?;
-        let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::from)?;
+        let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service)?;
+        let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::Service)?;
 
         if res1.is_pending() || res2.is_pending() {
             Poll::Pending
@@ -184,26 +156,24 @@ where
                                 self.max_receive,
                                 inner.inflight.len()
                             );
-                            return Either::Right(Either::Right(
-                                ControlResponse::new(
-                                    ControlMessage::proto_error(
-                                        ProtocolError::ReceiveMaximumExceeded,
-                                    ),
-                                    &self.inner,
-                                )
-                                .error(),
-                            ));
+                            return Either::Right(Either::Right(ControlResponse::new(
+                                ControlMessage::proto_error(
+                                    ProtocolError::ReceiveMaximumExceeded,
+                                ),
+                                &self.inner,
+                            )));
                         }
 
                         // check for duplicated packet id
                         if !inner.inflight.insert(pid) {
-                            return Either::Right(Either::Left(ok(Some(
-                                codec::Packet::PublishAck(codec::PublishAck {
+                            self.inner.sink.send(codec::Packet::PublishAck(
+                                codec::PublishAck {
                                     packet_id: pid,
                                     reason_code: codec::PublishAckReason::PacketIdentifierInUse,
                                     ..Default::default()
-                                }),
-                            ))));
+                                },
+                            ));
+                            return Either::Right(Either::Left(ok(None)));
                         }
                     }
 
@@ -212,27 +182,19 @@ where
                         // check existing topic
                         if publish.topic.is_empty() {
                             if !inner.aliases.contains(&alias) {
-                                return Either::Right(Either::Right(
-                                    ControlResponse::new(
-                                        ControlMessage::proto_error(
-                                            ProtocolError::UnknownTopicAlias,
-                                        ),
-                                        &self.inner,
-                                    )
-                                    .error(),
-                                ));
+                                return Either::Right(Either::Right(ControlResponse::new(
+                                    ControlMessage::proto_error(
+                                        ProtocolError::UnknownTopicAlias,
+                                    ),
+                                    &self.inner,
+                                )));
                             }
                         } else {
                             if alias.get() > self.max_topic_alias {
-                                return Either::Right(Either::Right(
-                                    ControlResponse::new(
-                                        ControlMessage::proto_error(
-                                            ProtocolError::MaxTopicAlias,
-                                        ),
-                                        &self.inner,
-                                    )
-                                    .error(),
-                                ));
+                                return Either::Right(Either::Right(ControlResponse::new(
+                                    ControlMessage::proto_error(ProtocolError::MaxTopicAlias),
+                                    &self.inner,
+                                )));
                             }
 
                             // record new alias
@@ -252,30 +214,30 @@ where
             }
             DispatcherItem::Item(codec::Packet::PublishAck(packet)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
-                    Either::Right(Either::Right(
-                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
-                            .error(),
-                    ))
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(err),
+                        &self.inner,
+                    )))
                 } else {
                     Either::Right(Either::Left(ok(None)))
                 }
             }
             DispatcherItem::Item(codec::Packet::SubscribeAck(packet)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Subscribe(packet)) {
-                    Either::Right(Either::Right(
-                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
-                            .error(),
-                    ))
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(err),
+                        &self.inner,
+                    )))
                 } else {
                     Either::Right(Either::Left(ok(None)))
                 }
             }
             DispatcherItem::Item(codec::Packet::UnsubscribeAck(packet)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet)) {
-                    Either::Right(Either::Right(
-                        ControlResponse::new(ControlMessage::proto_error(err), &self.inner)
-                            .error(),
-                    ))
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(err),
+                        &self.inner,
+                    )))
                 } else {
                     Either::Right(Either::Left(ok(None)))
                 }
@@ -286,37 +248,32 @@ where
             DispatcherItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(
                 Either::Right(ControlResponse::new(ControlMessage::dis(pkt), &self.inner)),
             ),
-            DispatcherItem::Item(codec::Packet::Auth(_)) => Either::Right(Either::Right(
-                ControlResponse::new(
+            DispatcherItem::Item(codec::Packet::Auth(_)) => {
+                Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Unexpected(
                         packet_type::AUTH,
                         "Auth packet is not supported",
                     )),
                     &self.inner,
-                )
-                .error(),
-            )),
-            DispatcherItem::Item(codec::Packet::Subscribe(_)) => Either::Right(Either::Right(
-                ControlResponse::new(
+                )))
+            }
+            DispatcherItem::Item(codec::Packet::Subscribe(_)) => {
+                Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Unexpected(
                         packet_type::SUBSCRIBE,
                         "Subscribe packet is not supported",
                     )),
                     &self.inner,
-                )
-                .error(),
-            )),
+                )))
+            }
             DispatcherItem::Item(codec::Packet::Unsubscribe(_)) => {
-                Either::Right(Either::Right(
-                    ControlResponse::new(
-                        ControlMessage::proto_error(ProtocolError::Unexpected(
-                            packet_type::UNSUBSCRIBE,
-                            "Unsubscribe packet is not supported",
-                        )),
-                        &self.inner,
-                    )
-                    .error(),
-                ))
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::Unexpected(
+                        packet_type::UNSUBSCRIBE,
+                        "Unsubscribe packet is not supported",
+                    )),
+                    &self.inner,
+                )))
             }
             DispatcherItem::Item(codec::Packet::PingResponse) => {
                 Either::Right(Either::Left(ok(None)))
@@ -379,16 +336,8 @@ enum PublishResponseState<T: Service, C: Service, E> {
 
 impl<T, C, E> Future for PublishResponse<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = either::Either<Publish, PublishAck>,
-        Error = either::Either<E, ProtocolError>,
-    >,
-    C: Service<
-        Request = ControlMessage<E>,
-        Response = ControlResult,
-        Error = either::Either<E, ProtocolError>,
-    >,
+    T: Service<Request = Publish, Response = either::Either<Publish, PublishAck>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
@@ -412,23 +361,10 @@ where
                         }
                     },
                     Err(e) => {
-                        match e {
-                            either::Either::Left(e) => {
-                                this.state.set(PublishResponseState::Control(
-                                    ControlResponse::new(ControlMessage::error(e), this.inner)
-                                        .error(),
-                                ));
-                            }
-                            either::Either::Right(e) => {
-                                this.state.set(PublishResponseState::Control(
-                                    ControlResponse::new(
-                                        ControlMessage::proto_error(e),
-                                        this.inner,
-                                    )
-                                    .error(),
-                                ));
-                            }
-                        }
+                        this.state.set(PublishResponseState::Control(ControlResponse::new(
+                            ControlMessage::error(e),
+                            this.inner,
+                        )));
                         return self.poll(cx);
                     }
                 };
@@ -465,25 +401,21 @@ pin_project_lite::pin_project! {
 
 impl<C: Service, E> ControlResponse<C, E>
 where
-    C: Service<
-        Request = ControlMessage<E>,
-        Response = ControlResult,
-        Error = either::Either<E, ProtocolError>,
-    >,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
+        let error = match pkt {
+            ControlMessage::Error(_) | ControlMessage::ProtocolError(_) => true,
+            _ => false,
+        };
+
         Self {
+            error,
             fut: inner.control.call(pkt),
             inner: inner.clone(),
             packet_id: 0,
-            error: false,
             _t: PhantomData,
         }
-    }
-
-    fn error(mut self) -> Self {
-        self.error = true;
-        self
     }
 
     fn packet_id(mut self, id: u16) -> Self {
@@ -494,11 +426,7 @@ where
 
 impl<C, E> Future for ControlResponse<C, E>
 where
-    C: Service<
-        Request = ControlMessage<E>,
-        Response = ControlResult,
-        Error = either::Either<E, ProtocolError>,
-    >,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
@@ -515,28 +443,30 @@ where
             Err(err) => {
                 // do not handle nested error
                 if *this.error {
-                    return Poll::Ready(Err(MqttError::from(err)));
+                    return Poll::Ready(Err(MqttError::Service(err)));
                 } else {
                     // handle error from control service
                     *this.error = true;
-                    let fut = match err {
-                        either::Either::Left(err) => {
-                            this.inner.control.call(ControlMessage::error(err))
-                        }
-                        either::Either::Right(err) => {
-                            this.inner.control.call(ControlMessage::proto_error(err))
-                        }
-                    };
+                    let fut = this.inner.control.call(ControlMessage::error(err));
                     self.as_mut().project().fut.set(fut);
                     return self.poll(cx);
                 }
             }
         };
 
-        if result.disconnect {
-            self.inner.sink.drop_sink();
+        if self.error {
+            if let Some(pkt) = result.packet {
+                self.inner.sink.send(pkt)
+            }
+            if result.disconnect {
+                self.inner.sink.drop_sink();
+            }
+            Poll::Ready(Ok(None))
+        } else {
+            if result.disconnect {
+                self.inner.sink.drop_sink();
+            }
+            Poll::Ready(Ok(result.packet))
         }
-
-        Poll::Ready(Ok(result.packet))
     }
 }

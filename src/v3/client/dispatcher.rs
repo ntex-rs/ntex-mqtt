@@ -31,25 +31,15 @@ where
     C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>
         + 'static,
 {
-    // mqtt dispatcher
-    Dispatcher::<_, _, E>::new(
-        sink,
-        // limit number of in-flight messages
-        InFlightService::new(
-            inflight,
-            // mqtt spec requires ack ordering, so enforce response ordering
-            InOrder::service(publish).map_err(|e| match e {
+    // limit number of in-flight messages
+    InFlightService::new(
+        inflight,
+        // mqtt spec requires ack ordering, so enforce response ordering
+        InOrder::service(Dispatcher::<_, _, E>::new(sink, publish, control)).map_err(
+            |e| match e {
                 InOrderError::Service(e) => e,
                 InOrderError::Disconnected => MqttError::Disconnected,
-            }),
-        ),
-        // limit number of in-flight control messages
-        InFlightService::new(
-            16,
-            InOrder::service(control).map_err(|e| match e {
-                InOrderError::Service(e) => e,
-                InOrderError::Disconnected => MqttError::Disconnected,
-            }),
+            },
         ),
     )
 }

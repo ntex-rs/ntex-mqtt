@@ -11,8 +11,8 @@ use crate::utils::decode_variable_length;
 #[derive(Debug)]
 pub struct Codec {
     state: DecodeState,
-    max_size: u32,
-    max_packet_size: Option<u32>,
+    max_in_size: u32,
+    max_out_size: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -24,15 +24,28 @@ enum DecodeState {
 impl Codec {
     /// Create `Codec` instance
     pub fn new() -> Self {
-        Codec { state: DecodeState::FrameHeader, max_size: 0, max_packet_size: None }
+        Codec { state: DecodeState::FrameHeader, max_in_size: 0, max_out_size: 0 }
     }
 
     /// Set max inbound frame size.
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_size(mut self, size: u32) -> Self {
-        self.max_size = size;
+    pub fn max_inbound_size(mut self, size: u32) -> Self {
+        self.max_in_size = size;
+        self
+    }
+
+    /// Set max outbound frame size.
+    ///
+    /// If max size is set to `0`, size is unlimited.
+    /// By default max size is set to `0`
+    pub fn max_outbound_size(mut self, mut size: u32) -> Self {
+        if size > 5 {
+            // fixed header = 1, var_len(remaining.max_value()) = 4
+            size = size - 5;
+        }
+        self.max_out_size = size;
         self
     }
 
@@ -40,8 +53,16 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn set_max_size(&mut self, size: u32) {
-        self.max_size = size;
+    pub fn set_max_inbound_size(&mut self, size: u32) {
+        self.max_in_size = size;
+    }
+
+    /// Set max outbound frame size.
+    ///
+    /// If max size is set to `0`, size is unlimited.
+    /// By default max size is set to `0`
+    pub fn set_max_outbound_size(&mut self, size: u32) {
+        self.max_out_size = size;
     }
 }
 
@@ -67,10 +88,10 @@ impl Decoder for Codec {
                     match decode_variable_length(&src_slice[1..])? {
                         Some((remaining_length, consumed)) => {
                             // check max message size
-                            if self.max_size != 0 && self.max_size < remaining_length {
+                            if self.max_in_size != 0 && self.max_in_size < remaining_length {
                                 log::debug!(
                                     "MaxSizeExceeded max-size: {}, remaining: {}",
-                                    self.max_size,
+                                    self.max_in_size,
                                     remaining_length
                                 );
                                 return Err(DecodeError::MaxSizeExceeded);
@@ -113,7 +134,7 @@ impl Encoder for Codec {
     type Error = EncodeError;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
-        let max_size = self.max_packet_size.map_or(MAX_PACKET_SIZE, |v| v - 5); // fixed header = 1, var_len(remaining.max_value()) = 4
+        let max_size = if self.max_out_size != 0 { self.max_out_size } else { MAX_PACKET_SIZE };
         let content_size = item.encoded_size(max_size);
         if content_size > max_size as usize {
             return Err(EncodeError::InvalidLength); // todo: separate error code
@@ -130,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_max_size() {
-        let mut codec = Codec::new().max_size(5);
+        let mut codec = Codec::new().max_inbound_size(5);
 
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");

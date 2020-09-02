@@ -98,6 +98,13 @@ impl MqttSink {
         }
     }
 
+    pub(super) fn send(&self, pkt: codec::Packet) {
+        let inner = self.0.borrow();
+        if let Some(ref sink) = inner.sink {
+            let _ = sink.send((pkt, 0));
+        }
+    }
+
     /// Send ping
     pub(super) fn ping(&self) -> bool {
         if let Some(sink) = self.0.borrow_mut().sink.take() {
@@ -203,13 +210,16 @@ impl MqttSink {
     }
 
     /// Create publish packet builder
-    pub fn publish(&self, topic: ByteString, payload: Bytes) -> PublishBuilder {
+    pub fn publish<U>(&self, topic: U, payload: Bytes) -> PublishBuilder
+    where
+        ByteString: From<U>,
+    {
         PublishBuilder {
             packet: codec::Publish {
-                topic,
                 payload,
                 dup: false,
                 retain: false,
+                topic: topic.into(),
                 qos: QoS::AtMostOnce,
                 packet_id: None,
                 properties: codec::PublishProperties::default(),

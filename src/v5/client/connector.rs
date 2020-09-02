@@ -53,8 +53,11 @@ where
 {
     #[inline]
     /// Create new client and provide client id
-    pub fn client_id(mut self, client_id: ByteString) -> Self {
-        self.pkt.client_id = client_id;
+    pub fn client_id<U>(mut self, client_id: U) -> Self
+    where
+        ByteString: From<U>,
+    {
+        self.pkt.client_id = client_id.into();
         self
     }
 
@@ -242,7 +245,8 @@ where
 
         async move {
             let io = fut.await?;
-            let mut framed = Framed::new(io, codec::Codec::new().max_size(max_packet_size));
+            let mut framed =
+                Framed::new(io, codec::Codec::new().max_inbound_size(max_packet_size));
 
             framed.send(codec::Packet::Connect(pkt)).await?;
 
@@ -259,6 +263,10 @@ where
                 codec::Packet::ConnectAck(pkt) => {
                     log::trace!("Connect ack response from server: {:#?}", pkt);
                     if pkt.reason_code == codec::ConnectAckReason::Success {
+                        // set max outbound (encoder) packet size
+                        if let Some(size) = pkt.max_packet_size {
+                            framed.get_codec_mut().set_max_outbound_size(size);
+                        }
                         Ok(Client::new(framed, pkt, max_receive, disconnect_timeout))
                     } else {
                         Err(ClientError::Ack(pkt))

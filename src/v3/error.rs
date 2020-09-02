@@ -35,7 +35,7 @@ impl From<Either<EncodeError, io::Error>> for ClientError {
     }
 }
 
-#[derive(Debug, Display)]
+#[derive(Debug, Display, PartialEq)]
 pub enum SendPacketError {
     /// Encoder error
     Encode(EncodeError),

@@ -217,7 +217,7 @@ where
             FactoryBuilder::new(handshake_service_factory(
                 connect,
                 self.max_size,
-                self.max_receive,
+                self.max_receive + 1,
                 self.max_topic_alias,
                 self.handshake_timeout,
                 self.pool,
@@ -253,7 +253,7 @@ where
             FactoryBuilder2::new(handshake_service_factory2(
                 connect,
                 self.max_size,
-                self.max_receive,
+                self.max_receive + 1,
                 self.max_topic_alias,
                 self.handshake_timeout,
                 self.pool,
@@ -373,7 +373,8 @@ where
 {
     log::trace!("Starting mqtt handshake");
 
-    framed.get_codec_mut().set_max_size(max_size);
+    // set max inbound (decoder) packet size
+    framed.get_codec_mut().set_max_inbound_size(max_size);
 
     // read first packet
     let packet = framed
@@ -398,6 +399,11 @@ where
                 connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize,
                 pool,
             );
+
+            // set max outbound (encoder) packet size
+            if let Some(size) = connect.max_packet_size {
+                framed.get_codec_mut().set_max_outbound_size(size.get());
+            }
 
             // authenticate mqtt connection
             let mut ack = service.call(Connect::new(connect, framed, sink)).await?;

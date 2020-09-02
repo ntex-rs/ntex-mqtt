@@ -55,15 +55,6 @@ impl<E> From<ProtocolError> for MqttError<E> {
     }
 }
 
-impl<E> From<Either<E, ProtocolError>> for MqttError<E> {
-    fn from(err: Either<E, ProtocolError>) -> Self {
-        match err {
-            Either::Left(e) => MqttError::Service(e),
-            Either::Right(e) => MqttError::Protocol(e),
-        }
-    }
-}
-
 impl<E> From<Either<DecodeError, io::Error>> for MqttError<E> {
     fn from(err: Either<DecodeError, io::Error>) -> Self {
         match err {

@@ -1,5 +1,11 @@
 # Changes
 
+## [0.3.8] - 2020-09-03
+
+* Fix packet ordering
+
+* v5: Fix in/out bound frame size checks in codec
+
 ## [0.3.7] - 2020-09-02
 
 * v5: Add PublishBuilder::set_properties() helper method
