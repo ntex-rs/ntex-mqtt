@@ -31,6 +31,18 @@ impl TryFrom<TestError> for PublishAck {
     }
 }
 
+fn pkt_publish() -> codec::Publish {
+    codec::Publish {
+        dup: false,
+        retain: false,
+        qos: codec::QoS::AtLeastOnce,
+        topic: ByteString::from("test"),
+        packet_id: Some(NonZeroU16::new(1).unwrap()),
+        payload: Bytes::new(),
+        properties: Default::default(),
+    }
+}
+
 async fn connect<Io>(packet: Connect<Io>) -> Result<ConnectAck<Io, St>, TestError> {
     Ok(packet.ack(St))
 }
@@ -129,16 +141,8 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     framed
         .send(
-            codec::Publish {
-                dup: false,
-                retain: false,
-                qos: codec::QoS::AtLeastOnce,
-                topic: ByteString::from("test"),
-                packet_id: Some(NonZeroU16::new(1).unwrap()),
-                payload: Bytes::new(),
-                properties: Default::default(),
-            }
-            .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
+                .into(),
         )
         .await
         .unwrap();
@@ -211,16 +215,8 @@ async fn test_dups() {
 
     framed
         .send(
-            codec::Publish {
-                dup: false,
-                retain: false,
-                qos: codec::QoS::AtLeastOnce,
-                topic: ByteString::from("test"),
-                packet_id: Some(NonZeroU16::new(1).unwrap()),
-                payload: Bytes::new(),
-                properties: Default::default(),
-            }
-            .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
+                .into(),
         )
         .await
         .unwrap();
@@ -228,16 +224,8 @@ async fn test_dups() {
     // send packet_id dup
     framed
         .send(
-            codec::Publish {
-                dup: false,
-                retain: false,
-                qos: codec::QoS::AtLeastOnce,
-                topic: ByteString::from("test"),
-                packet_id: Some(NonZeroU16::new(1).unwrap()),
-                payload: Bytes::new(),
-                properties: Default::default(),
-            }
-            .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
+                .into(),
         )
         .await
         .unwrap();
@@ -340,31 +328,15 @@ async fn test_max_receive() {
     let _ = framed.next().await.unwrap().unwrap();
     framed
         .send(
-            codec::Publish {
-                dup: false,
-                retain: false,
-                qos: codec::QoS::AtLeastOnce,
-                topic: ByteString::from("test"),
-                packet_id: Some(NonZeroU16::new(1).unwrap()),
-                payload: Bytes::new(),
-                properties: Default::default(),
-            }
-            .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
+                .into(),
         )
         .await
         .unwrap();
     framed
         .send(
-            codec::Publish {
-                dup: false,
-                retain: false,
-                qos: codec::QoS::AtLeastOnce,
-                topic: ByteString::from("test"),
-                packet_id: Some(NonZeroU16::new(2).unwrap()),
-                payload: Bytes::new(),
-                properties: Default::default(),
-            }
-            .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() }
+                .into(),
         )
         .await
         .unwrap();
