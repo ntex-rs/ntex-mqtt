@@ -1,3 +1,4 @@
+#![type_length_limit = "1406993"]
 use std::convert::TryFrom;
 
 use bytes::Bytes;
