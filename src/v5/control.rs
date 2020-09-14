@@ -6,6 +6,7 @@ use super::codec::{self, DisconnectReasonCode, QoS, UserProperties};
 use crate::error;
 
 /// Control plain messages
+#[derive(Debug)]
 pub enum ControlMessage<E> {
     Auth(Auth),
     Ping(Ping),
@@ -18,6 +19,7 @@ pub enum ControlMessage<E> {
 }
 
 /// Control message handling result
+#[derive(Debug)]
 pub struct ControlResult {
     pub(crate) packet: Option<codec::Packet>,
     pub(crate) disconnect: bool,
@@ -64,6 +66,7 @@ impl<E> ControlMessage<E> {
     }
 }
 
+#[derive(Debug)]
 pub struct Auth(codec::Auth);
 
 impl Auth {
@@ -77,6 +80,7 @@ impl Auth {
     }
 }
 
+#[derive(Debug)]
 pub struct Ping;
 
 impl Ping {
@@ -85,6 +89,7 @@ impl Ping {
     }
 }
 
+#[derive(Debug)]
 pub struct Disconnect(pub(crate) codec::Disconnect);
 
 impl Disconnect {
@@ -100,6 +105,7 @@ impl Disconnect {
 }
 
 /// Subscribe message
+#[derive(Debug)]
 pub struct Subscribe {
     packet: codec::Subscribe,
     result: codec::SubscribeAck,
@@ -181,6 +187,7 @@ impl<'a> Iterator for SubscribeIter<'a> {
 }
 
 /// Subscription topic
+#[derive(Debug)]
 pub struct Subscription<'a> {
     topic: &'a ByteString,
     options: &'a codec::SubscriptionOptions,
@@ -218,6 +225,7 @@ impl<'a> Subscription<'a> {
 }
 
 /// Unsubscribe message
+#[derive(Debug)]
 pub struct Unsubscribe {
     packet: codec::Unsubscribe,
     result: codec::UnsubscribeAck,
@@ -325,6 +333,7 @@ impl<'a> Iterator for UnsubscribeIter<'a> {
 }
 
 /// Subscription topic
+#[derive(Debug)]
 pub struct UnsubscribeItem<'a> {
     topic: &'a ByteString,
     status: &'a mut codec::UnsubscribeAckReason,
@@ -351,6 +360,7 @@ impl<'a> UnsubscribeItem<'a> {
 }
 
 /// Connection closed message
+#[derive(Debug)]
 pub struct Closed {
     is_error: bool,
 }
@@ -373,6 +383,7 @@ impl Closed {
 }
 
 /// Service level error
+#[derive(Debug)]
 pub struct Error<E> {
     err: E,
     pkt: codec::Disconnect,
@@ -441,6 +452,7 @@ impl<E> Error<E> {
 }
 
 /// Connection failed message
+#[derive(Debug)]
 pub struct ProtocolError {
     err: error::ProtocolError,
     pkt: codec::Disconnect,
