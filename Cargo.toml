@@ -32,3 +32,6 @@ uuid = { version = "0.8", features = ["v4"] }
 
 [dev-dependencies]
 env_logger = "0.7"
+
+rustls = "0.18"
+ntex = { features = ["rustls"] }
