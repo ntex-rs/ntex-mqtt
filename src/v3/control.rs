@@ -6,6 +6,7 @@ use bytestring::ByteString;
 use super::codec;
 use crate::types::QoS;
 
+#[derive(Debug)]
 pub enum ControlMessage {
     /// Ping packet
     Ping(Ping),
@@ -19,10 +20,12 @@ pub enum ControlMessage {
     Closed(Closed),
 }
 
+#[derive(Debug)]
 pub struct ControlResult {
     pub(crate) result: ControlResultKind,
 }
 
+#[derive(Debug)]
 pub(crate) enum ControlResultKind {
     Nothing,
     PublishAck(NonZeroU16),
@@ -51,6 +54,7 @@ impl ControlMessage {
     }
 }
 
+#[derive(Debug)]
 pub struct Ping;
 
 impl Ping {
@@ -59,6 +63,7 @@ impl Ping {
     }
 }
 
+#[derive(Debug)]
 pub struct Disconnect;
 
 impl Disconnect {
@@ -68,6 +73,7 @@ impl Disconnect {
 }
 
 /// Subscribe message
+#[derive(Debug)]
 pub struct Subscribe {
     packet_id: NonZeroU16,
     topics: Vec<(ByteString, QoS)>,
@@ -75,6 +81,7 @@ pub struct Subscribe {
 }
 
 /// Result of a subscribe message
+#[derive(Debug)]
 pub(crate) struct SubscribeResult {
     pub(crate) codes: Vec<codec::SubscribeReturnCode>,
     pub(crate) packet_id: NonZeroU16,
@@ -150,6 +157,7 @@ impl<'a> Iterator for SubscribeIter<'a> {
 }
 
 /// Subscription topic
+#[derive(Debug)]
 pub struct Subscription<'a> {
     topic: &'a ByteString,
     qos: QoS,
@@ -183,12 +191,14 @@ impl<'a> Subscription<'a> {
 }
 
 /// Unsubscribe message
+#[derive(Debug)]
 pub struct Unsubscribe {
     packet_id: NonZeroU16,
     topics: Vec<ByteString>,
 }
 
 /// Result of a unsubscribe message
+#[derive(Debug)]
 pub(crate) struct UnsubscribeResult {
     pub(crate) packet_id: NonZeroU16,
 }
@@ -215,6 +225,7 @@ impl Unsubscribe {
 }
 
 /// Connection closed message
+#[derive(Debug)]
 pub struct Closed {
     is_error: bool,
 }

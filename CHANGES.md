@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.9] - not yet released
+
+* `ControlMessage` (v3/v5) and referenced types have `#[derive(Debug)]` added
+
 ## [0.3.8] - 2020-09-03
 
 * Fix packet ordering
