@@ -418,7 +418,9 @@ where
                     if max_receive != 0 {
                         ack.packet.receive_max = Some(NonZeroU16::new(max_receive).unwrap());
                     }
-                    ack.packet.max_packet_size = Some(max_size);
+                    if max_size != 0 {
+                        ack.packet.max_packet_size = Some(max_size);
+                    }
                     ack.packet.topic_alias_max = max_topic_alias;
                     ack.packet.max_qos = Some(mqtt::QoS::AtLeastOnce);
                     if ack.packet.server_keepalive_sec.is_none()
