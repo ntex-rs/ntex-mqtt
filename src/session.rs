@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::rc::Rc;
 
 /// Mqtt connection session
@@ -24,6 +25,14 @@ impl<T, St> Session<T, St> {
     }
 
     pub fn state(&self) -> &St {
+        &self.0.st
+    }
+}
+
+impl<T, St> Deref for Session<T, St> {
+    type Target = St;
+
+    fn deref(&self) -> &St {
         &self.0.st
     }
 }

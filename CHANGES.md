@@ -4,6 +4,10 @@
 
 * `ControlMessage` (v3/v5) and referenced types have `#[derive(Debug)]` added
 
+* Add `Deref` impl for `Session<_>`
+
+* v5: Do not set packet max_size to `ConnectAck` is size is 0
+
 ## [0.3.8] - 2020-09-03
 
 * Fix packet ordering
