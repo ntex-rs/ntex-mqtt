@@ -1,6 +1,6 @@
 # Changes
 
-## [0.3.9] - not yet released
+## [0.3.9] - 2020-09-18
 
 * `ControlMessage` (v3/v5) and referenced types have `#[derive(Debug)]` added
 
