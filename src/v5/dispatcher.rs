@@ -21,8 +21,6 @@ use super::{codec, Session};
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
-    max_receive: u16,
-    max_topic_alias: u16,
 ) -> impl ServiceFactory<
     Config = Session<St>,
     Request = DispatcherItem<codec::Codec>,
@@ -51,6 +49,8 @@ where
     fn_factory_with_config(move |cfg: Session<St>| {
         // create services
         let fut = join(publish.new_service(cfg.clone()), control.new_service(cfg.clone()));
+
+        let (max_receive, max_topic_alias) = cfg.params();
 
         async move {
             let (publish, control) = fut.await;

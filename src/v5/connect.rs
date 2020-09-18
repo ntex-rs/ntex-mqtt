@@ -1,5 +1,5 @@
 use ntex_codec::Framed;
-use std::fmt;
+use std::{fmt, num::NonZeroU16};
 
 use super::{codec, sink::MqttSink};
 use crate::handshake::HandshakeResult;
@@ -9,6 +9,9 @@ pub struct Connect<Io> {
     connect: codec::Connect,
     sink: MqttSink,
     io: HandshakeResult<Io, (), codec::Codec>,
+    max_size: u32,
+    max_receive: u16,
+    max_topic_alias: u16,
 }
 
 impl<Io> Connect<Io> {
@@ -16,8 +19,11 @@ impl<Io> Connect<Io> {
         connect: codec::Connect,
         io: HandshakeResult<Io, (), codec::Codec>,
         sink: MqttSink,
+        max_size: u32,
+        max_receive: u16,
+        max_topic_alias: u16,
     ) -> Self {
-        Self { connect, io, sink }
+        Self { connect, io, sink, max_size, max_receive, max_topic_alias }
     }
 
     pub fn packet(&self) -> &codec::Connect {
@@ -40,8 +46,18 @@ impl<Io> Connect<Io> {
 
     /// Ack connect message and set state
     pub fn ack<St>(self, st: St) -> ConnectAck<Io, St> {
-        let mut packet = codec::ConnectAck::default();
-        packet.reason_code = codec::ConnectAckReason::Success;
+        let mut packet = codec::ConnectAck {
+            max_qos: Some(codec::QoS::AtLeastOnce),
+            reason_code: codec::ConnectAckReason::Success,
+            topic_alias_max: self.max_topic_alias,
+            ..codec::ConnectAck::default()
+        };
+        if self.max_size != 0 {
+            packet.max_packet_size = Some(self.max_size);
+        }
+        if self.max_receive != 0 {
+            packet.receive_max = Some(NonZeroU16::new(self.max_receive).unwrap());
+        }
 
         ConnectAck { io: self.io, sink: self.sink, session: Some(st), packet }
     }
@@ -83,7 +99,7 @@ impl<Io, St> ConnectAck<Io, St> {
         self
     }
 
-    /// Allows modifications to conneck acknowledgement packet
+    /// Access to ConnectAck packet
     #[inline]
     pub fn with(mut self, f: impl FnOnce(&mut codec::ConnectAck)) -> Self {
         f(&mut self.packet);

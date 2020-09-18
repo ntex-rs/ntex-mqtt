@@ -1,4 +1,3 @@
-use std::num::NonZeroU16;
 use std::{convert::TryFrom, fmt, marker::PhantomData, rc::Rc, time::Duration};
 
 use futures::{future::TryFutureExt, SinkExt, StreamExt};
@@ -217,18 +216,13 @@ where
             FactoryBuilder::new(handshake_service_factory(
                 connect,
                 self.max_size,
-                self.max_receive + 1,
+                self.max_receive,
                 self.max_topic_alias,
                 self.handshake_timeout,
                 self.pool,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(
-                publish,
-                control,
-                self.max_receive,
-                self.max_topic_alias,
-            )),
+            .build(factory(publish, control)),
         )
     }
 
@@ -253,18 +247,13 @@ where
             FactoryBuilder2::new(handshake_service_factory2(
                 connect,
                 self.max_size,
-                self.max_receive + 1,
+                self.max_receive,
                 self.max_topic_alias,
                 self.handshake_timeout,
                 self.pool,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(
-                publish,
-                control,
-                self.max_receive,
-                self.max_topic_alias,
-            )),
+            .build(factory(publish, control)),
         )
     }
 }
@@ -363,8 +352,8 @@ async fn handshake<Io, S, St, E>(
     mut framed: HandshakeResult<Io, (), mqtt::Codec>,
     service: S,
     max_size: u32,
-    max_receive: u16,
-    max_topic_alias: u16,
+    mut max_receive: u16,
+    mut max_topic_alias: u16,
     pool: Rc<MqttSinkPool>,
 ) -> Result<HandshakeResult<Io, Session<St>, mqtt::Codec>, S::Error>
 where
@@ -408,21 +397,32 @@ where
             let keep_alive = connect.keep_alive;
 
             // authenticate mqtt connection
-            let mut ack = service.call(Connect::new(connect, framed, sink)).await?;
+            let mut ack = service
+                .call(Connect::new(
+                    connect,
+                    framed,
+                    sink,
+                    max_size,
+                    max_receive,
+                    max_topic_alias,
+                ))
+                .await?;
 
             match ack.session {
                 Some(session) => {
                     log::trace!("Sending: {:#?}", ack.packet);
                     let sink = ack.sink;
 
-                    if max_receive != 0 {
-                        ack.packet.receive_max = Some(NonZeroU16::new(max_receive).unwrap());
+                    max_topic_alias = ack.packet.topic_alias_max;
+
+                    if let Some(num) = ack.packet.receive_max {
+                        max_receive = num.get();
+                    } else {
+                        max_receive = 0;
                     }
-                    if max_size != 0 {
-                        ack.packet.max_packet_size = Some(max_size);
+                    if let Some(size) = ack.packet.max_packet_size {
+                        ack.io.get_codec_mut().set_max_inbound_size(size);
                     }
-                    ack.packet.topic_alias_max = max_topic_alias;
-                    ack.packet.max_qos = Some(mqtt::QoS::AtLeastOnce);
                     if ack.packet.server_keepalive_sec.is_none()
                         && (keep_alive > ack.io.keepalive as u16)
                     {
@@ -430,7 +430,12 @@ where
                     }
                     ack.io.send(mqtt::Packet::ConnectAck(ack.packet)).await?;
 
-                    Ok(ack.io.out(rx).state(Session::new(session, sink)))
+                    Ok(ack.io.out(rx).state(Session::new_v5(
+                        session,
+                        sink,
+                        max_receive,
+                        max_topic_alias,
+                    )))
                 }
                 None => {
                     log::trace!("Failed to complete handshake: {:#?}", ack.packet);

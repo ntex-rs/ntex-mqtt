@@ -321,11 +321,23 @@ async fn test_max_receive() {
     });
     let io = srv.connect().unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
+
     framed
         .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
         .await
         .unwrap();
-    let _ = framed.next().await.unwrap().unwrap();
+    let ack = framed.next().await.unwrap().unwrap();
+    assert_eq!(
+        ack,
+        codec::Packet::ConnectAck(codec::ConnectAck {
+            receive_max: Some(NonZeroU16::new(1).unwrap()),
+            max_qos: Some(codec::QoS::AtLeastOnce),
+            reason_code: codec::ConnectAckReason::Success,
+            topic_alias_max: 32,
+            ..Default::default()
+        })
+    );
+
     framed
         .send(
             codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }

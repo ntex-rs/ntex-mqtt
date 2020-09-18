@@ -6,7 +6,7 @@
 
 * Add `Deref` impl for `Session<_>`
 
-* v5: Do not set packet max_size to `ConnectAck` is size is 0
+* v5: Do not override `max_packet_size`, `receive_max` and `topic_alias_max`
 
 ## [0.3.8] - 2020-09-03
 
