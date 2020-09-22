@@ -65,9 +65,40 @@ impl MqttSink {
         })))
     }
 
+    /// Get client receive credit
+    pub fn credit(&self) -> usize {
+        let inner = self.0.borrow();
+        inner.cap - inner.queue.len()
+    }
+
+    /// Get notification when packet could be send to the peer.
+    ///
+    /// Err(()) indicates disconnected connection
+    pub async fn ready(&self) -> Result<(), ()> {
+        let mut inner = self.0.borrow_mut();
+        if inner.is_closed() {
+            Err(())
+        } else {
+            if inner.queue.len() >= inner.cap {
+                let (tx, rx) = inner.pool.waiters.channel();
+                inner.waiters.push_back(tx);
+                drop(inner);
+                if rx.await.is_ok() {
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     /// Close mqtt connection
     pub fn close(&self) {
-        let _ = self.0.borrow_mut().sink.take();
+        let mut inner = self.0.borrow_mut();
+        let _ = inner.sink.take();
+        inner.waiters.clear();
     }
 
     /// Send ping
@@ -149,6 +180,16 @@ impl MqttSink {
 impl fmt::Debug for MqttSink {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("MqttSink").finish()
+    }
+}
+
+impl MqttSinkInner {
+    fn is_closed(&self) -> bool {
+        if let Some(ref tx) = self.sink {
+            tx.is_closed()
+        } else {
+            true
+        }
     }
 }
 

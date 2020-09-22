@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.10] - 2020-09-22
+
+* Add async fn `MqttSink::ready()` returns when there is available client credit.
+
 ## [0.3.9] - 2020-09-18
 
 * `ControlMessage` (v3/v5) and referenced types have `#[derive(Debug)]` added

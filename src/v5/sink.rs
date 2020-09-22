@@ -84,17 +84,44 @@ impl MqttSink {
         inner.cap - inner.queue.len()
     }
 
+    /// Get notification when packet could be send to the peer.
+    ///
+    /// Err(()) indicates disconnected connection
+    pub async fn ready(&self) -> Result<(), ()> {
+        let mut inner = self.0.borrow_mut();
+        if inner.is_closed() {
+            Err(())
+        } else {
+            if inner.queue.len() >= inner.cap {
+                let (tx, rx) = inner.pool.waiters.channel();
+                inner.waiters.push_back(tx);
+                drop(inner);
+                if rx.await.is_ok() {
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     /// Close mqtt connection with default Disconnect message
     pub fn close(&self) {
-        if let Some(sink) = self.0.borrow_mut().sink.take() {
+        let mut inner = self.0.borrow_mut();
+        if let Some(sink) = inner.sink.take() {
             let _ = sink.send((codec::Packet::Disconnect(codec::Disconnect::default()), 0));
+            inner.waiters.clear();
         }
     }
 
     /// Close mqtt connection
     pub fn close_with_reason(&self, pkt: codec::Disconnect) {
+        let mut inner = self.0.borrow_mut();
         if let Some(sink) = self.0.borrow_mut().sink.take() {
             let _ = sink.send((codec::Packet::Disconnect(pkt), 0));
+            inner.waiters.clear();
         }
     }
 
@@ -116,7 +143,9 @@ impl MqttSink {
 
     /// Close mqtt connection, dont send disconnect message
     pub(super) fn drop_sink(&self) {
-        let _ = self.0.borrow_mut().sink.take();
+        let mut inner = self.0.borrow_mut();
+        inner.waiters.clear();
+        let _ = inner.sink.take();
     }
 
     pub(super) fn pkt_written(&self, idx: usize) {
@@ -145,11 +174,20 @@ impl MqttSink {
             if idx != 0 {
                 for item in &mut inner.queue_order {
                     if *item == idx {
+                        // cleanup ack queue
                         *item = 0;
                         inner.queue.remove(idx - 1);
                         if let Some(&0) = inner.queue_order.front() {
                             let _ = inner.queue_order.pop_front();
                         }
+
+                        // wake up queued request (receive max limit)
+                        while let Some(tx) = inner.waiters.pop_front() {
+                            if tx.send(()).is_ok() {
+                                break;
+                            }
+                        }
+
                         break;
                     }
                 }
@@ -181,6 +219,7 @@ impl MqttSink {
                     log::trace!("Ack packet with id: {}", pkt.packet_id());
                     let idx = (pkt.packet_id() - 1) as usize;
                     if inner.queue.contains(idx) {
+                        // cleanup ack queue
                         let (tx, tp) = inner.queue.remove(idx);
                         if !pkt.is_match(tp) {
                             log::trace!("MQTT protocol error, unexpeted packet");
@@ -257,6 +296,16 @@ impl MqttSink {
 impl fmt::Debug for MqttSink {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("MqttSink").finish()
+    }
+}
+
+impl MqttSinkInner {
+    fn is_closed(&self) -> bool {
+        if let Some(ref tx) = self.sink {
+            tx.is_closed()
+        } else {
+            true
+        }
     }
 }
 

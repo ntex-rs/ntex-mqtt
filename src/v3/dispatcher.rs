@@ -130,6 +130,7 @@ where
 
     fn poll_shutdown(&self, _: &mut Context<'_>, is_error: bool) -> Poll<()> {
         if !self.shutdown.get() {
+            self.inner.sink.close();
             self.shutdown.set(true);
             ntex::rt::spawn(self.control.call(ControlMessage::closed(is_error)).map(|_| ()));
         }
