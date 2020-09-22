@@ -117,7 +117,7 @@ where
         Either<Ready<Result<Self::Response, MqttError<E>>>, ControlResponse<C::Future, E>>,
     >;
 
-    fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx)?;
         let res2 = self.control.poll_ready(cx)?;
 
@@ -223,7 +223,7 @@ where
 {
     type Output = Result<Option<codec::Packet>, E>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
         ready!(this.fut.poll(cx))?;

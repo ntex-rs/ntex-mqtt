@@ -124,7 +124,7 @@ pub struct RouterFactoryFut<Err> {
 impl<Err> Future for RouterFactoryFut<Err> {
     type Output = Result<RouterService<Err>, Err>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let res = match self.default.as_mut().unwrap() {
             either::Either::Left(ref mut fut) => {
                 let default = match futures::ready!(Pin::new(fut).poll(cx)) {
@@ -167,7 +167,7 @@ impl<Err> Service for RouterService<Err> {
     type Error = Err;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;
         for hnd in &self.handlers {
             if let Poll::Pending = hnd.poll_ready(cx)? {

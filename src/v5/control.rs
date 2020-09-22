@@ -129,7 +129,7 @@ impl Subscribe {
 
     #[inline]
     /// returns iterator over subscription topics
-    pub fn iter_mut(&mut self) -> SubscribeIter {
+    pub fn iter_mut(&mut self) -> SubscribeIter<'_> {
         SubscribeIter { subs: self as *const _ as *mut _, entry: 0, lt: PhantomData }
     }
 
@@ -259,7 +259,7 @@ impl Unsubscribe {
 
     #[inline]
     /// returns iterator over subscription topics
-    pub fn iter_mut(&mut self) -> UnsubscribeIter {
+    pub fn iter_mut(&mut self) -> UnsubscribeIter<'_> {
         UnsubscribeIter { subs: self as *const _ as *mut _, entry: 0, lt: PhantomData }
     }
 

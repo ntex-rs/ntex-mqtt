@@ -274,7 +274,7 @@ impl FromStr for Topic {
 }
 
 impl fmt::Display for Level {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Level::Normal(ref s) | Level::Metadata(ref s) => f.write_str(s.as_str()),
             Level::Blank => Ok(()),
@@ -285,7 +285,7 @@ impl fmt::Display for Level {
 }
 
 impl fmt::Display for Topic {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
 
         for level in &self.0 {

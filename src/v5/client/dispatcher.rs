@@ -116,7 +116,7 @@ where
         Either<Ready<Result<Self::Response, MqttError<E>>>, ControlResponse<C, E>>,
     >;
 
-    fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service)?;
         let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::Service)?;
 
@@ -342,7 +342,7 @@ where
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.as_mut().project();
 
         match this.state.as_mut().project() {

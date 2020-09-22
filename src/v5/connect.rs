@@ -72,7 +72,7 @@ impl<Io> Connect<Io> {
 }
 
 impl<T> fmt::Debug for Connect<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.connect.fmt(f)
     }
 }
