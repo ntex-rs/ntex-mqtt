@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::VecDeque, fmt, rc::Rc};
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::{err, Either, Future};
+use futures::future::{err, ok, Either, Future, TryFutureExt};
 use ntex::channel::{mpsc, pool};
 use slab::Slab;
 
@@ -87,22 +87,17 @@ impl MqttSink {
     /// Get notification when packet could be send to the peer.
     ///
     /// Err(()) indicates disconnected connection
-    pub async fn ready(&self) -> Result<(), ()> {
+    pub fn ready(&self) -> impl Future<Output = Result<(), ()>> {
         let mut inner = self.0.borrow_mut();
         if inner.is_closed() {
-            Err(())
+            Either::Left(err(()))
         } else {
             if inner.queue.len() >= inner.cap {
                 let (tx, rx) = inner.pool.waiters.channel();
                 inner.waiters.push_back(tx);
-                drop(inner);
-                if rx.await.is_ok() {
-                    Ok(())
-                } else {
-                    Err(())
-                }
+                Either::Right(rx.map_err(|_| ()))
             } else {
-                Ok(())
+                Either::Left(ok(()))
             }
         }
     }

@@ -1,3 +1,4 @@
+#![deny(rust_2018_idioms)]
 #![allow(clippy::type_complexity, clippy::new_ret_no_self)]
 #![type_length_limit = "1591073"]
 //! MQTT Client/Server framework
