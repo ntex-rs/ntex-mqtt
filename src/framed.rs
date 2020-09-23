@@ -18,10 +18,14 @@ type Response<U> = <U as Encoder>::Item;
 pub(crate) type Receiver<T> = mpsc::Receiver<(<T as Encoder>::Item, usize)>;
 
 bitflags::bitflags! {
-    struct Errors: u8 {
-        const IO         = 0b0000_0001;
-        const WRITE      = 0b0000_0010;
-        const KEEP_ALIVE = 0b0000_0100;
+    struct Flags: u8 {
+        const ERR_IO         = 0b0000_0001;
+        const ERR_WRITE      = 0b0000_0010;
+        const ERR_KEEP_ALIVE = 0b0000_0100;
+        /// io read is not ready
+        const READ_DONE      = 0b0000_1000;
+        /// io read is not ready
+        const WRITE_DONE     = 0b0001_0000;
     }
 }
 
@@ -102,7 +106,7 @@ where
                 sink: None,
                 rx: mpsc::channel().1,
                 service: service.into_service(),
-                errors: Errors::empty(),
+                flags: Flags::empty(),
                 state: FramedState::Processing,
                 disconnect_timeout: 1000,
                 keepalive: delay_until(expire),
@@ -135,7 +139,7 @@ where
             inner: InnerDispatcher {
                 rx: mpsc::channel().1,
                 service: service.into_service(),
-                errors: Errors::empty(),
+                flags: Flags::empty(),
                 state: FramedState::Processing,
                 disconnect_timeout: 1000,
                 updated: time.now(),
@@ -225,7 +229,7 @@ where
     keepalive: Delay,
     keepalive_timeout: Duration,
     disconnect_timeout: u64,
-    errors: Errors,
+    flags: Flags,
     write_queue: VecDeque<DispatcherItem<U>>,
     time: LowResTimeService,
     updated: Instant,
@@ -256,56 +260,63 @@ where
                             let _ = tx.send(item);
                         }));
                         continue;
-                    } else if !self.errors.is_empty() {
+                    } else if self.flags.intersects(Flags::ERR_IO | Flags::ERR_KEEP_ALIVE) {
                         self.state = FramedState::FlushAndStop(None);
                         return PollResult::Continue;
                     }
 
                     // read data from io
-                    let mut error = false;
-                    let item = match self.framed.next_item(cx) {
-                        Poll::Ready(Some(Ok(el))) => {
-                            self.updated = self.time.now();
-                            DispatcherItem::Item(el)
-                        }
-                        Poll::Ready(Some(Err(err))) => {
-                            error = true;
-                            match err {
-                                Either::Left(err) => {
-                                    log::warn!("Framed decode error");
-                                    DispatcherItem::DecoderError(err)
-                                }
-                                Either::Right(err) => {
-                                    log::trace!("Framed io error: {:?}", err);
-                                    self.errors.insert(Errors::IO);
-                                    DispatcherItem::IoError(err)
+                    if !self.flags.contains(Flags::READ_DONE) {
+                        let mut error = false;
+                        let item = match self.framed.next_item(cx) {
+                            Poll::Ready(Some(Ok(el))) => {
+                                self.updated = self.time.now();
+                                DispatcherItem::Item(el)
+                            }
+                            Poll::Ready(Some(Err(err))) => {
+                                error = true;
+                                match err {
+                                    Either::Left(err) => {
+                                        log::warn!("Framed decode error");
+                                        DispatcherItem::DecoderError(err)
+                                    }
+                                    Either::Right(err) => {
+                                        log::trace!("Framed io error: {:?}", err);
+                                        self.flags.insert(Flags::ERR_IO);
+                                        DispatcherItem::IoError(err)
+                                    }
                                 }
                             }
-                        }
-                        Poll::Pending => return PollResult::Pending,
-                        Poll::Ready(None) => {
-                            log::trace!("Client disconnected");
-                            self.errors.insert(Errors::IO);
+                            Poll::Pending => {
+                                self.flags.insert(Flags::READ_DONE);
+                                return PollResult::Pending;
+                            }
+                            Poll::Ready(None) => {
+                                log::trace!("Client disconnected");
+                                self.flags.insert(Flags::ERR_IO);
+                                self.state = FramedState::FlushAndStop(None);
+                                return PollResult::Continue;
+                            }
+                        };
+
+                        // call service
+                        let tx = self.rx.sender();
+                        ntex::rt::spawn(self.service.call(item).map(move |item| {
+                            let item = match item {
+                                Ok(Some(item)) => Ok(item),
+                                Err(err) => Err(err),
+                                _ => return,
+                            };
+                            let _ = tx.send(item);
+                        }));
+
+                        // handle read error
+                        if error {
                             self.state = FramedState::FlushAndStop(None);
                             return PollResult::Continue;
                         }
-                    };
-
-                    // call service
-                    let tx = self.rx.sender();
-                    ntex::rt::spawn(self.service.call(item).map(move |item| {
-                        let item = match item {
-                            Ok(Some(item)) => Ok(item),
-                            Err(err) => Err(err),
-                            _ => return,
-                        };
-                        let _ = tx.send(item);
-                    }));
-
-                    // handle read error
-                    if error {
-                        self.state = FramedState::FlushAndStop(None);
-                        return PollResult::Continue;
+                    } else {
+                        return PollResult::Pending;
                     }
                 }
                 Poll::Pending => return PollResult::Pending,
@@ -321,7 +332,7 @@ where
     /// write to framed object
     fn poll_write(&mut self, cx: &mut Context<'_>) -> PollResult {
         // if IO error occured, dont do anything just drain queues
-        if !self.errors.is_empty() {
+        if self.flags.intersects(Flags::ERR_IO | Flags::ERR_KEEP_ALIVE) {
             return PollResult::Pending;
         }
         let mut updated = false;
@@ -334,7 +345,7 @@ where
                         // so error here is from encoder
                         if let Err(err) = self.framed.write(msg) {
                             log::trace!("Framed write error: {:?}", err);
-                            self.errors.insert(Errors::WRITE);
+                            self.flags.insert(Flags::ERR_WRITE);
                             self.write_queue.clear();
                             self.write_queue.push_back(DispatcherItem::EncoderError(0, err));
                             return PollResult::Continue;
@@ -358,7 +369,7 @@ where
                                 log::trace!("Framed write error from sink: {:?}", err);
                                 // app can not handle encoder errors
                                 if idx == 0 {
-                                    self.errors.insert(Errors::WRITE);
+                                    self.flags.insert(Flags::ERR_WRITE);
                                     self.write_queue.clear();
                                     self.write_queue
                                         .push_back(DispatcherItem::EncoderError(0, err));
@@ -385,16 +396,16 @@ where
             }
 
             // flush framed instance, do actual IO
-            if !self.framed.is_write_buf_empty() {
+            if !self.framed.is_write_buf_empty() && !self.flags.contains(Flags::WRITE_DONE) {
                 match self.framed.flush(cx) {
-                    Poll::Pending => (),
+                    Poll::Pending => self.flags.insert(Flags::WRITE_DONE),
                     Poll::Ready(Ok(_)) => continue,
                     Poll::Ready(Err(err)) => {
                         debug!("Error sending data: {:?}", err);
                         let _ = self.sink.take();
                         updated = true;
                         self.write_queue.push_back(DispatcherItem::IoError(err));
-                        self.errors.insert(Errors::IO);
+                        self.flags.insert(Flags::ERR_IO);
                     }
                 }
             }
@@ -410,14 +421,14 @@ where
 
     pub(super) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
         // keepalive timer
-        if !self.errors.contains(Errors::KEEP_ALIVE)
+        if !self.flags.contains(Flags::ERR_KEEP_ALIVE)
             && self.keepalive_timeout != Duration::from_secs(0)
         {
             match Pin::new(&mut self.keepalive).poll(cx) {
                 Poll::Ready(_) => {
                     if self.keepalive.deadline() <= RtInstant::from_std(self.updated) {
                         self.write_queue.push_back(DispatcherItem::KeepAliveTimeout);
-                        self.errors.insert(Errors::KEEP_ALIVE);
+                        self.flags.insert(Flags::ERR_KEEP_ALIVE);
                     } else {
                         let expire =
                             RtInstant::from_std(self.time.now() + self.keepalive_timeout);
@@ -428,6 +439,8 @@ where
                 Poll::Pending => (),
             }
         }
+
+        self.flags.remove(Flags::READ_DONE | Flags::WRITE_DONE);
 
         loop {
             match self.state {
@@ -459,7 +472,7 @@ where
                     }
 
                     // flush io
-                    if !self.errors.contains(Errors::IO) {
+                    if !self.flags.contains(Flags::ERR_IO) {
                         if !self.framed.is_write_buf_empty() {
                             match self.framed.flush(cx) {
                                 Poll::Ready(Err(err)) => {
@@ -478,7 +491,7 @@ where
                         let result = if let Some(err) = err.take() { Err(err) } else { Ok(()) };
 
                         // no need for io shutdown because io error occured
-                        if self.errors.contains(Errors::IO) {
+                        if self.flags.contains(Flags::ERR_IO) {
                             return Poll::Ready(result);
                         }
 
