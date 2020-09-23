@@ -1,4 +1,4 @@
-#![type_length_limit = "1591073"]
+#![type_length_limit = "1638773"]
 use std::convert::TryFrom;
 
 use bytes::Bytes;

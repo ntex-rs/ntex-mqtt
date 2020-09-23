@@ -1,4 +1,4 @@
-#![type_length_limit = "1591073"]
+#![type_length_limit = "1638773"]
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{num::NonZeroU16, time::Duration};
 

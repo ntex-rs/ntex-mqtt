@@ -1,4 +1,4 @@
-#![type_length_limit = "1295654"]
+#![type_length_limit = "1638773"]
 
 use futures::future::ok;
 use ntex::{fn_factory_with_config, fn_service};
