@@ -94,6 +94,7 @@ impl MqttSink {
     pub fn close(&self) {
         let mut inner = self.0.borrow_mut();
         let _ = inner.sink.take();
+        inner.queue.clear();
         inner.waiters.clear();
     }
 

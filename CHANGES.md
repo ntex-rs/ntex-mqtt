@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.11] - 2020-09-29
+
+* v5: Fix borrow error in MqttSink::close_with_reason()
+
 ## [0.3.10] - 2020-09-22
 
 * Add async fn `MqttSink::ready()` returns when there is available client credit.

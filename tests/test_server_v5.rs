@@ -10,6 +10,7 @@ use ntex_codec::Framed;
 
 use ntex_mqtt::v5::{
     client, codec, error, Connect, ConnectAck, ControlMessage, MqttServer, Publish, PublishAck,
+    Session,
 };
 
 struct St;
@@ -69,6 +70,66 @@ async fn test_simple() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     sink.close();
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_disconnect() -> std::io::Result<()> {
+    let srv = server::test_server(|| {
+        MqttServer::new(connect)
+            .publish(ntex::fn_factory_with_config(|session: Session<St>| {
+                ok::<_, TestError>(ntex::fn_service(move |p: Publish| {
+                    session.sink().close();
+                    ok::<_, TestError>(p.ack())
+                }))
+            }))
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_err());
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_disconnect_with_reason() -> std::io::Result<()> {
+    let srv = server::test_server(|| {
+        MqttServer::new(connect)
+            .publish(ntex::fn_factory_with_config(|session: Session<St>| {
+                ok::<_, TestError>(ntex::fn_service(move |p: Publish| {
+                    let pkt = codec::Disconnect {
+                        reason_code: codec::DisconnectReasonCode::ServerMoved,
+                        ..Default::default()
+                    };
+                    session.sink().close_with_reason(pkt);
+                    ok::<_, TestError>(p.ack())
+                }))
+            }))
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_err());
+
     Ok(())
 }
 

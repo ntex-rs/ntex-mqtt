@@ -114,7 +114,7 @@ impl MqttSink {
     /// Close mqtt connection
     pub fn close_with_reason(&self, pkt: codec::Disconnect) {
         let mut inner = self.0.borrow_mut();
-        if let Some(sink) = self.0.borrow_mut().sink.take() {
+        if let Some(sink) = inner.sink.take() {
             let _ = sink.send((codec::Packet::Disconnect(pkt), 0));
             inner.waiters.clear();
         }
@@ -140,6 +140,8 @@ impl MqttSink {
     pub(super) fn drop_sink(&self) {
         let mut inner = self.0.borrow_mut();
         inner.waiters.clear();
+        inner.info.clear();
+        inner.queue.clear();
         let _ = inner.sink.take();
     }
 
