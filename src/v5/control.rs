@@ -214,13 +214,20 @@ impl<'a> Subscription<'a> {
     }
 
     #[inline]
-    /// subscribe to a topic with specific qos
-    pub fn subscribe(&mut self, qos: QoS) {
+    /// confirm subscription to a topic with specific qos
+    pub fn confirm(&mut self, qos: QoS) {
         match qos {
             QoS::AtMostOnce => *self.status = codec::SubscribeAckReason::GrantedQos0,
             QoS::AtLeastOnce => *self.status = codec::SubscribeAckReason::GrantedQos1,
             QoS::ExactlyOnce => *self.status = codec::SubscribeAckReason::GrantedQos2,
         }
+    }
+
+    #[inline]
+    #[doc(hidden)]
+    /// confirm subscription to a topic with specific qos
+    pub fn subscribe(&mut self, qos: QoS) {
+        self.confirm(qos)
     }
 }
 

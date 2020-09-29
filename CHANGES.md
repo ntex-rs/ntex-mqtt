@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.12] - 2020-xx-xx
+
+* Better name SubscribeIter::confirm()
+
 ## [0.3.11] - 2020-09-29
 
 * v5: Fix borrow error in MqttSink::close_with_reason()
