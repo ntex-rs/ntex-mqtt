@@ -69,6 +69,10 @@ impl<Io> Connect<Io> {
 
         ConnectAck { io: self.io, sink: self.sink, session: None, packet }
     }
+
+    pub fn fail_with<St>(self, ack: codec::ConnectAck) -> ConnectAck<Io, St> {
+        ConnectAck { io: self.io, sink: self.sink, session: None, packet: ack }
+    }
 }
 
 impl<T> fmt::Debug for Connect<T> {
