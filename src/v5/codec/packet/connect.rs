@@ -114,9 +114,8 @@ impl Connect {
         let level = src.get_u8();
         ensure!(level == MQTT_LEVEL_5, DecodeError::UnsupportedProtocolLevel);
 
-        let flags = ConnectFlags::from_bits(src.get_u8())
-            .ok_or_else(|| DecodeError::ConnectReservedFlagSet)?;
-
+        let flags =
+            ConnectFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnectReservedFlagSet)?;
         let keep_alive = src.get_u16();
 
         // reading properties

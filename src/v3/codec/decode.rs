@@ -58,8 +58,8 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let level = src.get_u8();
     ensure!(level == MQTT_LEVEL_3, DecodeError::UnsupportedProtocolLevel);
 
-    let flags = ConnectFlags::from_bits(src.get_u8())
-        .ok_or_else(|| DecodeError::ConnectReservedFlagSet)?;
+    let flags =
+        ConnectFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnectReservedFlagSet)?;
 
     let keep_alive = u16::decode(src)?;
     let client_id = ByteString::decode(src)?;
@@ -100,8 +100,8 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
 
 fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
-    let flags = ConnectAckFlags::from_bits(src.get_u8())
-        .ok_or_else(|| DecodeError::ConnAckReservedFlagSet)?;
+    let flags =
+        ConnectAckFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnAckReservedFlagSet)?;
 
     let return_code = src.get_u8().try_into()?;
     Ok(Packet::ConnectAck {

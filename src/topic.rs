@@ -59,20 +59,12 @@ impl Level {
 
     #[inline]
     pub fn is_normal(&self) -> bool {
-        if let Level::Normal(_) = *self {
-            true
-        } else {
-            false
-        }
+        matches!(*self, Level::Normal(_))
     }
 
     #[inline]
     pub fn is_metadata(&self) -> bool {
-        if let Level::Metadata(_) = *self {
-            true
-        } else {
-            false
-        }
+        matches!(*self, Level::Metadata(_))
     }
 
     #[inline]

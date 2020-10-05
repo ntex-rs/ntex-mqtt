@@ -79,14 +79,12 @@ impl MqttSink {
         let mut inner = self.0.borrow_mut();
         if inner.is_closed() {
             Either::Left(err(()))
+        } else if inner.queue.len() >= inner.cap {
+            let (tx, rx) = inner.pool.waiters.channel();
+            inner.waiters.push_back(tx);
+            Either::Right(rx.map_err(|_| ()))
         } else {
-            if inner.queue.len() >= inner.cap {
-                let (tx, rx) = inner.pool.waiters.channel();
-                inner.waiters.push_back(tx);
-                Either::Right(rx.map_err(|_| ()))
-            } else {
-                Either::Left(ok(()))
-            }
+            Either::Left(ok(()))
         }
     }
 

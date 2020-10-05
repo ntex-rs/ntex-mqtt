@@ -106,7 +106,7 @@ impl ConnectAck {
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
         let flags = ConnectAckFlags::from_bits(src.get_u8())
-            .ok_or_else(|| DecodeError::ConnAckReservedFlagSet)?;
+            .ok_or(DecodeError::ConnAckReservedFlagSet)?;
 
         let reason_code = src.get_u8().try_into()?;
 

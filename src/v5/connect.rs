@@ -70,6 +70,7 @@ impl<Io> Connect<Io> {
         ConnectAck { io: self.io, sink: self.sink, session: None, packet }
     }
 
+    /// Create connect ack object with provided ConnectAck packet
     pub fn fail_with<St>(self, ack: codec::ConnectAck) -> ConnectAck<Io, St> {
         ConnectAck { io: self.io, sink: self.sink, session: None, packet: ack }
     }

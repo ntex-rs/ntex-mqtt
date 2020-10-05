@@ -1,8 +1,10 @@
 # Changes
 
-## [0.3.12] - 2020-xx-xx
+## [0.3.12] - 2020-10-05
 
-* Better name SubscribeIter::confirm()
+* v5: Add helper method Connect::fail_with()
+
+* v5: Better name SubscribeIter::confirm()
 
 ## [0.3.11] - 2020-09-29
 
