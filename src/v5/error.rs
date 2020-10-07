@@ -40,9 +40,9 @@ impl From<Either<EncodeError, io::Error>> for ClientError {
 pub enum PublishQos0Error {
     /// Encoder error
     Encode(EncodeError),
-    /// Can not allocate next packet id
-    #[display(fmt = "Can not allocate next packet id")]
-    PacketIdNotAvailable,
+    /// Provided packet id is in use
+    #[display(fmt = "Provided packet id is in use")]
+    PacketIdInUse(u16),
     /// Peer disconnected
     #[display(fmt = "Peer disconnected")]
     Disconnected,
@@ -55,9 +55,9 @@ pub enum PublishQos1Error {
     Fail(codec::PublishAck),
     /// Encoder error
     Encode(EncodeError),
-    /// Can not allocate next packet id
-    #[display(fmt = "Can not allocate next packet id")]
-    PacketIdNotAvailable,
+    /// Provided packet id is in use
+    #[display(fmt = "Provided packet id is in use")]
+    PacketIdInUse(u16),
     /// Peer disconnected
     #[display(fmt = "Peer disconnected")]
     Disconnected,
@@ -67,9 +67,9 @@ pub enum PublishQos1Error {
 pub enum SubscribeError {
     /// Encoder error
     Encode(EncodeError),
-    /// Can not allocate next packet id
-    #[display(fmt = "Can not allocate next packet id")]
-    PacketIdNotAvailable,
+    /// Provided packet id is in use
+    #[display(fmt = "Provided packet id is in use")]
+    PacketIdInUse(u16),
     /// Peer disconnected
     #[display(fmt = "Peer disconnected")]
     Disconnected,
@@ -79,9 +79,9 @@ pub enum SubscribeError {
 pub enum UnsubscribeError {
     /// Encoder error
     Encode(EncodeError),
-    /// Can not allocate next packet id
-    #[display(fmt = "Can not allocate next packet id")]
-    PacketIdNotAvailable,
+    /// Provided packet id is in use
+    #[display(fmt = "Provided packet id is in use")]
+    PacketIdInUse(u16),
     /// Peer disconnected
     #[display(fmt = "Peer disconnected")]
     Disconnected,

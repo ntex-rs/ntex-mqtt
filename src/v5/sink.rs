@@ -4,6 +4,7 @@ use std::{cell::RefCell, collections::VecDeque, fmt, rc::Rc};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::{err, ok, Either, Future, TryFutureExt};
+use fxhash::FxHashMap;
 use ntex::channel::{mpsc, pool};
 use slab::Slab;
 
@@ -48,9 +49,10 @@ impl Default for MqttSinkPool {
 struct MqttSinkInner {
     cap: usize,
     sink: Option<mpsc::Sender<(codec::Packet, usize)>>,
-    info: Slab<(pool::Sender<Info>, usize)>,
-    queue: Slab<(pool::Sender<Ack>, AckType)>,
-    queue_order: VecDeque<usize>,
+    info: Slab<(pool::Sender<Info>, u16)>,
+    inflight: FxHashMap<u16, (pool::Sender<Ack>, AckType)>,
+    inflight_idx: u16,
+    inflight_order: VecDeque<u16>,
     waiters: VecDeque<pool::Sender<()>>,
     pool: Rc<MqttSinkPool>,
 }
@@ -71,17 +73,21 @@ impl MqttSink {
             pool,
             cap: max_send,
             sink: Some(sink),
-            queue: Slab::with_capacity(max_send),
-            queue_order: VecDeque::with_capacity(max_send),
-            waiters: VecDeque::with_capacity(8),
             info: Slab::with_capacity(max_send + 8),
+            inflight: FxHashMap::with_capacity_and_hasher(
+                max_send + 1,
+                fxhash::FxBuildHasher::default(),
+            ),
+            inflight_idx: 0,
+            inflight_order: VecDeque::with_capacity(max_send),
+            waiters: VecDeque::with_capacity(8),
         })))
     }
 
     /// Get client receive credit
     pub fn credit(&self) -> usize {
         let inner = self.0.borrow();
-        inner.cap - inner.queue.len()
+        inner.cap - inner.inflight.len()
     }
 
     /// Get notification when packet could be send to the peer.
@@ -91,7 +97,7 @@ impl MqttSink {
         let mut inner = self.0.borrow_mut();
         if inner.is_closed() {
             Either::Left(err(()))
-        } else if inner.queue.len() >= inner.cap {
+        } else if inner.inflight.len() >= inner.cap {
             let (tx, rx) = inner.pool.waiters.channel();
             inner.waiters.push_back(tx);
             Either::Right(rx.map_err(|_| ()))
@@ -139,7 +145,7 @@ impl MqttSink {
         let mut inner = self.0.borrow_mut();
         inner.waiters.clear();
         inner.info.clear();
-        inner.queue.clear();
+        inner.inflight.clear();
         let _ = inner.sink.take();
     }
 
@@ -167,13 +173,13 @@ impl MqttSink {
             // but publish packet is failed to encode,
             // so we have to cleanup queue
             if idx != 0 {
-                for item in &mut inner.queue_order {
+                for item in &mut inner.inflight_order {
                     if *item == idx {
                         // cleanup ack queue
                         *item = 0;
-                        inner.queue.remove(idx - 1);
-                        if let Some(&0) = inner.queue_order.front() {
-                            let _ = inner.queue_order.pop_front();
+                        inner.inflight.remove(&idx);
+                        if let Some(&0) = inner.inflight_order.front() {
+                            let _ = inner.inflight_order.pop_front();
                         }
 
                         // wake up queued request (receive max limit)
@@ -197,7 +203,7 @@ impl MqttSink {
 
         loop {
             // check ack order
-            if let Some(idx) = inner.queue_order.pop_front() {
+            if let Some(idx) = inner.inflight_order.pop_front() {
                 // errored publish
                 if idx == 0 {
                     continue;
@@ -212,10 +218,9 @@ impl MqttSink {
                 } else {
                     // get publish ack channel
                     log::trace!("Ack packet with id: {}", pkt.packet_id());
-                    let idx = (pkt.packet_id() - 1) as usize;
-                    if inner.queue.contains(idx) {
+                    let idx = pkt.packet_id();
+                    if let Some((tx, tp)) = inner.inflight.remove(&idx) {
                         // cleanup ack queue
-                        let (tx, tp) = inner.queue.remove(idx);
                         if !pkt.is_match(tp) {
                             log::trace!("MQTT protocol error, unexpeted packet");
                             return Err(ProtocolError::Unexpected(
@@ -233,7 +238,7 @@ impl MqttSink {
                         }
                         return Ok(());
                     } else {
-                        unreachable!("Internal: Can not get puublish ack channel")
+                        log::error!("Inflight state inconsistency")
                     }
                 }
             } else {
@@ -265,6 +270,7 @@ impl MqttSink {
     /// Create subscribe packet builder
     pub fn subscribe(&self, id: Option<NonZeroU32>) -> SubscribeBuilder {
         SubscribeBuilder {
+            id: 0,
             packet: codec::Subscribe {
                 id,
                 packet_id: NonZeroU16::new(1).unwrap(),
@@ -278,6 +284,7 @@ impl MqttSink {
     /// Create unsubscribe packet builder
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
         UnsubscribeBuilder {
+            id: 0,
             packet: codec::Unsubscribe {
                 packet_id: NonZeroU16::new(1).unwrap(),
                 user_properties: Vec::new(),
@@ -295,11 +302,25 @@ impl fmt::Debug for MqttSink {
 }
 
 impl MqttSinkInner {
+    fn has_credit(&self) -> bool {
+        self.cap - self.inflight.len() > 0
+    }
+
     fn is_closed(&self) -> bool {
         if let Some(ref tx) = self.sink {
             tx.is_closed()
         } else {
             true
+        }
+    }
+
+    fn next_id(&mut self) -> u16 {
+        self.inflight_idx += 1;
+        if self.inflight_idx == u16::max_value() {
+            self.inflight_idx = 0;
+            u16::max_value()
+        } else {
+            self.inflight_idx
         }
     }
 }
@@ -313,11 +334,11 @@ impl Ack {
         }
     }
 
-    fn packet_id(&self) -> usize {
+    fn packet_id(&self) -> u16 {
         match self {
-            Ack::Publish(ref pkt) => pkt.packet_id.get() as usize,
-            Ack::Subscribe(ref pkt) => pkt.packet_id.get() as usize,
-            Ack::Unsubscribe(ref pkt) => pkt.packet_id.get() as usize,
+            Ack::Publish(ref pkt) => pkt.packet_id.get(),
+            Ack::Subscribe(ref pkt) => pkt.packet_id.get(),
+            Ack::Unsubscribe(ref pkt) => pkt.packet_id.get(),
         }
     }
 
@@ -370,6 +391,19 @@ pub struct PublishBuilder {
 }
 
 impl PublishBuilder {
+    /// Set packet id.
+    ///
+    /// Note: if packet id is not set, it gets generated automatically.
+    /// Packet id management should not be mixed, it should be auto-generated
+    /// or set by user. Otherwise collisions could occure.
+    ///
+    /// panics if id is 0
+    pub fn packet_id(mut self, id: u16) -> Self {
+        let id = NonZeroU16::new(id).expect("id 0 is not allowed");
+        self.packet.packet_id = Some(id);
+        self
+    }
+
     /// this might be re-delivery of an earlier attempt to send the Packet.
     pub fn dup(mut self, val: bool) -> Self {
         self.packet.dup = val;
@@ -434,7 +468,7 @@ impl PublishBuilder {
         let mut inner = sink.borrow_mut();
         if inner.sink.is_some() {
             // handle client receive maximum
-            if inner.cap - inner.queue.len() == 0 {
+            if !inner.has_credit() {
                 let (tx, rx) = inner.pool.waiters.channel();
                 inner.waiters.push_back(tx);
 
@@ -451,14 +485,17 @@ impl PublishBuilder {
             // publish ack channel
             let (tx, rx) = inner.pool.queue.channel();
 
-            // allocate packet id
-            let idx = inner.queue.insert((tx, AckType::Publish)) + 1;
-            if idx > u16::max_value() as usize {
-                inner.queue.remove(idx - 1);
-                return Err(PublishQos1Error::PacketIdNotAvailable);
+            // packet id
+            let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
+            if idx == 0 {
+                idx = inner.next_id();
+                packet.packet_id = NonZeroU16::new(idx);
             }
-            inner.queue_order.push_back(idx);
-            packet.packet_id = NonZeroU16::new(idx as u16);
+            if inner.inflight.contains_key(&idx) {
+                return Err(PublishQos1Error::PacketIdInUse(idx));
+            }
+            inner.inflight.insert(idx, (tx, AckType::Publish));
+            inner.inflight_order.push_back(idx);
 
             // encoder channel (item written/encoder error)
             let (info_tx, info_rx) = inner.pool.info.channel();
@@ -500,11 +537,23 @@ impl PublishBuilder {
 
 /// Subscribe packet builder
 pub struct SubscribeBuilder {
+    id: u16,
     sink: Rc<RefCell<MqttSinkInner>>,
     packet: codec::Subscribe,
 }
 
 impl SubscribeBuilder {
+    /// Set packet id.
+    ///
+    /// panics if id is 0
+    pub fn packet_id(mut self, id: u16) -> Self {
+        if id == 0 {
+            panic!("id 0 is not allowed");
+        }
+        self.id = id;
+        self
+    }
+
     /// Add topic filter
     pub fn topic_filter(
         mut self,
@@ -529,7 +578,7 @@ impl SubscribeBuilder {
         let mut inner = sink.borrow_mut();
         if inner.sink.is_some() {
             // handle client receive maximum
-            if inner.cap - inner.queue.len() == 0 {
+            if !inner.has_credit() {
                 let (tx, rx) = inner.pool.waiters.channel();
                 inner.waiters.push_back(tx);
 
@@ -547,13 +596,13 @@ impl SubscribeBuilder {
             let (tx, rx) = inner.pool.queue.channel();
 
             // allocate packet id
-            let idx = inner.queue.insert((tx, AckType::Subscribe)) + 1;
-            if idx > u16::max_value() as usize {
-                inner.queue.remove(idx - 1);
-                return Err(SubscribeError::PacketIdNotAvailable);
+            let idx = if self.id == 0 { inner.next_id() } else { self.id };
+            if inner.inflight.contains_key(&idx) {
+                return Err(SubscribeError::PacketIdInUse(idx));
             }
-            inner.queue_order.push_back(idx);
-            packet.packet_id = NonZeroU16::new(idx as u16).unwrap();
+            inner.inflight.insert(idx, (tx, AckType::Subscribe));
+            inner.inflight_order.push_back(idx);
+            packet.packet_id = NonZeroU16::new(idx).unwrap();
 
             // encoder channel (item written/encoder error)
             let (info_tx, info_rx) = inner.pool.info.channel();
@@ -589,11 +638,23 @@ impl SubscribeBuilder {
 
 /// Unsubscribe packet builder
 pub struct UnsubscribeBuilder {
+    id: u16,
     sink: Rc<RefCell<MqttSinkInner>>,
     packet: codec::Unsubscribe,
 }
 
 impl UnsubscribeBuilder {
+    /// Set packet id.
+    ///
+    /// panics if id is 0
+    pub fn packet_id(mut self, id: u16) -> Self {
+        if id == 0 {
+            panic!("id 0 is not allowed");
+        }
+        self.id = id;
+        self
+    }
+
     /// Add topic filter
     pub fn topic_filter(mut self, filter: ByteString) -> Self {
         self.packet.topic_filters.push(filter);
@@ -614,7 +675,7 @@ impl UnsubscribeBuilder {
         let mut inner = sink.borrow_mut();
         if inner.sink.is_some() {
             // handle client receive maximum
-            if inner.cap - inner.queue.len() == 0 {
+            if !inner.has_credit() {
                 let (tx, rx) = inner.pool.waiters.channel();
                 inner.waiters.push_back(tx);
 
@@ -632,13 +693,13 @@ impl UnsubscribeBuilder {
             let (tx, rx) = inner.pool.queue.channel();
 
             // allocate packet id
-            let idx = inner.queue.insert((tx, AckType::Unsubscribe)) + 1;
-            if idx > u16::max_value() as usize {
-                inner.queue.remove(idx - 1);
-                return Err(UnsubscribeError::PacketIdNotAvailable);
+            let idx = if self.id == 0 { inner.next_id() } else { self.id };
+            if inner.inflight.contains_key(&idx) {
+                return Err(UnsubscribeError::PacketIdInUse(idx));
             }
-            inner.queue_order.push_back(idx);
-            packet.packet_id = NonZeroU16::new(idx as u16).unwrap();
+            inner.inflight.insert(idx, (tx, AckType::Unsubscribe));
+            inner.inflight_order.push_back(idx);
+            packet.packet_id = NonZeroU16::new(idx).unwrap();
 
             // encoder channel (item written/encoder error)
             let (info_tx, info_rx) = inner.pool.info.channel();

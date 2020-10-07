@@ -14,7 +14,6 @@ use ntex_mqtt::v3::{client, codec, Connect, ConnectAck, ControlMessage, MqttServ
 struct St;
 
 async fn connect<Io>(mut packet: Connect<Io>) -> Result<ConnectAck<Io, St>, ()> {
-    println!("CONNECT: {:?}", packet);
     packet.packet();
     packet.packet_mut();
     packet.io();

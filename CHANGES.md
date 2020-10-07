@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.13] - 2020-10-07
+
+* Allow to set packet id for sink operations
+
 ## [0.3.12] - 2020-10-05
 
 * v5: Add helper method Connect::fail_with()
