@@ -155,6 +155,8 @@ impl MqttSink {
                 if let Some((tx, tp)) = inner.inflight.remove(&idx) {
                     if !pkt.is_match(tp) {
                         log::trace!("MQTT protocol error, unexpeted packet");
+                        drop(inner);
+                        self.close();
                         return Err(ProtocolError::Unexpected(pkt.packet_type(), tp.name()));
                     }
                     let _ = tx.send(pkt);
@@ -171,8 +173,9 @@ impl MqttSink {
                 }
             }
         } else {
-            log::trace!("Unexpected PublishAck packet");
+            log::trace!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
         }
+        drop(inner);
         self.close();
         Err(ProtocolError::PacketIdMismatch)
     }

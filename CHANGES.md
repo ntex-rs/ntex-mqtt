@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.14] - 2020-10-07
+
+* v3: Fix borrow error in sink impl
+
 ## [0.3.13] - 2020-10-07
 
 * Allow to set packet id for sink operations
