@@ -1,9 +1,7 @@
 use bytes::{Buf, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
-use super::decode::decode_packet;
-use super::encode::EncodeLtd;
-use super::Packet;
+use super::{decode::decode_packet, encode::EncodeLtd, Packet};
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{FixedHeader, MAX_PACKET_SIZE};
 use crate::utils::decode_variable_length;
@@ -13,6 +11,13 @@ pub struct Codec {
     state: DecodeState,
     max_in_size: u32,
     max_out_size: u32,
+    flags: CodecFlags,
+}
+
+bitflags::bitflags! {
+    pub struct CodecFlags: u8 {
+        const NO_PROBLEM_INFO = 0b0000_0001;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -24,7 +29,12 @@ enum DecodeState {
 impl Codec {
     /// Create `Codec` instance
     pub fn new() -> Self {
-        Codec { state: DecodeState::FrameHeader, max_in_size: 0, max_out_size: 0 }
+        Codec {
+            state: DecodeState::FrameHeader,
+            max_in_size: 0,
+            max_out_size: 0,
+            flags: CodecFlags::empty(),
+        }
     }
 
     /// Set max inbound frame size.
@@ -122,6 +132,14 @@ impl Decoder for Codec {
                     let packet = decode_packet(packet_buf, fixed.first_byte)?;
                     self.state = DecodeState::FrameHeader;
                     src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
+
+                    match packet {
+                        Packet::Connect(ref pkt) => {
+                            self.flags
+                                .set(CodecFlags::NO_PROBLEM_INFO, !pkt.request_problem_info);
+                        }
+                        _ => (),
+                    }
                     return Ok(Some(packet));
                 }
             }
@@ -133,7 +151,40 @@ impl Encoder for Codec {
     type Item = Packet;
     type Error = EncodeError;
 
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&mut self, mut item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
+        // handle [MQTT 3.1.2.11.7]
+        if self.flags.contains(CodecFlags::NO_PROBLEM_INFO) {
+            match item {
+                Packet::PublishAck(ref mut pkt) | Packet::PublishReceived(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::PublishRelease(ref mut pkt) | Packet::PublishComplete(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::Subscribe(ref mut pkt) => {
+                    pkt.user_properties.clear();
+                }
+                Packet::SubscribeAck(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::Unsubscribe(ref mut pkt) => {
+                    pkt.user_properties.clear();
+                }
+                Packet::UnsubscribeAck(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::Auth(ref mut pkt) => {
+                    pkt.user_properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                _ => (),
+            }
+        }
+
         let max_size = if self.max_out_size != 0 { self.max_out_size } else { MAX_PACKET_SIZE };
         let content_size = item.encoded_size(max_size);
         if content_size > max_size as usize {
