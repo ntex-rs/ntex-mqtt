@@ -517,3 +517,44 @@ async fn test_encoder_error_pub_qos0() {
         sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
 }
+
+#[ntex::test]
+async fn test_request_problem_info() {
+    let srv = server::test_server(move || {
+        MqttServer::new(|con: Connect<_>| async move { Ok(con.ack(St)) })
+            .publish(|p: Publish| async move {
+                Ok::<_, TestError>(
+                    p.ack()
+                        .properties(|props| {
+                            props.push((
+                                "ssssssssssssssssssssssssssssssssssss".into(),
+                                "ssssssssssssssssssssssssssssssssssss".into(),
+                            ))
+                        })
+                        .reason("TEST".into()),
+                )
+            })
+            .finish()
+    });
+
+    // connect to server
+    let client = client::MqttConnector::new(srv.addr())
+        .client_id("user")
+        .max_packet_size(30)
+        .packet(|pkt| pkt.request_problem_info = false)
+        .connect()
+        .await
+        .unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    let res = sink
+        .publish(ByteString::from_static("#"), Bytes::new())
+        .send_at_least_once()
+        .await
+        .unwrap();
+    assert!(res.properties.is_empty());
+    assert!(res.reason_string.is_none());
+}

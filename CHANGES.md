@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.15] - 2020-10-20
+
+* v5: Handle "Request Problem Information" flag
+
 ## [0.3.14] - 2020-10-07
 
 * v3: Fix borrow error in sink impl
