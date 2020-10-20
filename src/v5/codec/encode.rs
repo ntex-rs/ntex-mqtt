@@ -171,18 +171,38 @@ pub(crate) fn encode_opt_props(
     Ok(())
 }
 
-#[inline]
 pub(super) fn encoded_property_size<T: Encode>(v: &Option<T>) -> usize {
     v.as_ref().map_or(0, |v| 1 + v.encoded_size()) // 1 - property type byte
 }
 
-#[inline]
 pub(super) fn encode_property<T: Encode>(
     v: &Option<T>,
     prop_type: u8,
     buf: &mut BytesMut,
 ) -> Result<(), EncodeError> {
     if let Some(v) = v {
+        buf.put_u8(prop_type);
+        v.encode(buf)
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn encoded_bool_property_size(v: bool, skip_if: bool) -> usize {
+    if v == skip_if {
+        0
+    } else {
+        2
+    }
+}
+
+pub(super) fn encode_bool_property(
+    v: bool,
+    prop_type: u8,
+    buf: &mut BytesMut,
+    skip_if: bool,
+) -> Result<(), EncodeError> {
+    if v != skip_if {
         buf.put_u8(prop_type);
         v.encode(buf)
     } else {
@@ -308,8 +328,8 @@ mod tests {
                 session_expiry_interval_secs: None,
                 auth_method: None,
                 auth_data: None,
-                request_problem_info: None,
-                request_response_info: None,
+                request_problem_info: true,
+                request_response_info: false,
                 receive_max: None,
                 topic_alias_max: 0,
                 user_properties: vec![],
@@ -342,8 +362,8 @@ mod tests {
                 session_expiry_interval_secs: None,
                 auth_method: None,
                 auth_data: None,
-                request_problem_info: None,
-                request_response_info: None,
+                request_problem_info: true,
+                request_response_info: false,
                 receive_max: None,
                 topic_alias_max: 0,
                 user_properties: vec![],

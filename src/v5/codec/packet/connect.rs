@@ -8,7 +8,7 @@ use crate::types::{ConnectFlags, QoS, MQTT, MQTT_LEVEL_5, WILL_QOS_SHIFT};
 use crate::utils::{self, Decode, Encode, Property};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 
-#[derive(Default, Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 /// Connect packet content
 pub struct Connect {
     /// the handling of the Session state.
@@ -19,8 +19,8 @@ pub struct Connect {
     pub session_expiry_interval_secs: Option<u32>,
     pub auth_method: Option<ByteString>,
     pub auth_data: Option<Bytes>,
-    pub request_problem_info: Option<bool>,
-    pub request_response_info: Option<bool>,
+    pub request_problem_info: bool,
+    pub request_response_info: bool,
     pub receive_max: Option<NonZeroU16>,
     pub topic_alias_max: u16,
     pub user_properties: UserProperties,
@@ -93,8 +93,8 @@ impl Connect {
         let mut prop_len = encoded_property_size(&self.session_expiry_interval_secs)
             + encoded_property_size(&self.auth_method)
             + encoded_property_size(&self.auth_data)
-            + encoded_property_size(&self.request_problem_info)
-            + encoded_property_size(&self.request_response_info)
+            + encoded_bool_property_size(self.request_problem_info, true) // 3.1.2.11.7 Request Problem Information
+            + encoded_bool_property_size(self.request_response_info, false) // 3.1.2.11.6 Request Response Information
             + encoded_property_size(&self.receive_max)
             + encoded_property_size(&self.max_packet_size)
             + self.user_properties.encoded_size();
@@ -176,10 +176,10 @@ impl Connect {
             session_expiry_interval_secs,
             auth_method,
             auth_data,
-            request_problem_info,
-            request_response_info,
             receive_max,
             topic_alias_max: topic_alias_max.unwrap_or(0u16),
+            request_problem_info: request_problem_info.unwrap_or(true),
+            request_response_info: request_response_info.unwrap_or(false),
             user_properties,
             max_packet_size,
 
@@ -188,6 +188,28 @@ impl Connect {
             username,
             password,
         })
+    }
+}
+
+impl Default for Connect {
+    fn default() -> Connect {
+        Connect {
+            clean_start: false,
+            keep_alive: 0,
+            session_expiry_interval_secs: None,
+            auth_method: None,
+            auth_data: None,
+            request_problem_info: true,
+            request_response_info: false,
+            receive_max: None,
+            topic_alias_max: 0,
+            user_properties: Vec::new(),
+            max_packet_size: None,
+            last_will: None,
+            client_id: ByteString::default(),
+            username: None,
+            password: None,
+        }
     }
 }
 
@@ -283,8 +305,8 @@ impl EncodeLtd for Connect {
         encode_property(&self.session_expiry_interval_secs, pt::SESS_EXPIRY_INT, buf)?;
         encode_property(&self.auth_method, pt::AUTH_METHOD, buf)?;
         encode_property(&self.auth_data, pt::AUTH_DATA, buf)?;
-        encode_property(&self.request_problem_info, pt::REQ_PROB_INFO, buf)?;
-        encode_property(&self.request_response_info, pt::REQ_RESP_INFO, buf)?;
+        encode_bool_property(self.request_problem_info, pt::REQ_PROB_INFO, buf, true)?; // 3.1.2.11.7 Request Problem Information
+        encode_bool_property(self.request_response_info, pt::REQ_RESP_INFO, buf, false)?; // 3.1.2.11.6 Request Response Information
         encode_property(&self.receive_max, pt::RECEIVE_MAX, buf)?;
         encode_property(&self.max_packet_size, pt::MAX_PACKET_SIZE, buf)?;
         if self.topic_alias_max > 0 {
