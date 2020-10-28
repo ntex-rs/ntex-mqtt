@@ -1,16 +1,13 @@
-use std::cell::RefCell;
-use std::future::Future;
-use std::num::NonZeroU16;
-use std::pin::Pin;
-use std::rc::Rc;
 use std::task::{Context, Poll};
+use std::{cell::Cell, cell::RefCell, num::NonZeroU16, rc::Rc};
 
 use bytestring::ByteString;
-use futures::future::{join_all, JoinAll, LocalBoxFuture};
+use futures::future::{FutureExt, LocalBoxFuture};
 use fxhash::FxHashMap;
 use ntex::router::{IntoPattern, Path, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::task::LocalWaker;
 
 use super::publish::{Publish, PublishAck};
 
@@ -72,16 +69,16 @@ where
 {
     fn into_factory(self) -> RouterFactory<S, Err> {
         RouterFactory {
-            router: Rc::new(self.router.finish()),
-            handlers: self.handlers,
+            router: self.router.finish(),
+            handlers: Rc::new(self.handlers),
             default: self.default,
         }
     }
 }
 
 pub struct RouterFactory<S, Err> {
-    router: Rc<ntex::router::Router<usize>>,
-    handlers: Vec<Handler<S, Err>>,
+    router: ntex::router::Router<usize>,
+    handlers: Rc<Vec<Handler<S, Err>>>,
     default: Handler<S, Err>,
 }
 
@@ -95,73 +92,78 @@ where
     type Response = PublishAck;
     type Error = Err;
     type InitError = Err;
-    type Service = RouterService<Err>;
-    type Future = RouterFactoryFut<Err>;
+    type Service = RouterService<S, Err>;
+    type Future = LocalBoxFuture<'static, Result<Self::Service, Err>>;
 
     fn new_service(&self, session: S) -> Self::Future {
-        let fut: Vec<_> =
-            self.handlers.iter().map(|h| h.new_service(session.clone())).collect();
+        let router = self.router.clone();
+        let factories = self.handlers.clone();
+        let default_fut = self.default.new_service(session.clone());
 
-        RouterFactoryFut {
-            router: self.router.clone(),
-            handlers: join_all(fut),
-            default: Some(either::Either::Left(self.default.new_service(session))),
+        async move {
+            let default = default_fut.await?;
+            let handlers = (0..factories.len()).map(|_| None).collect();
+
+            Ok(RouterService {
+                router,
+                default,
+                inner: Rc::new(Inner {
+                    session,
+                    factories,
+                    handlers: RefCell::new(handlers),
+                    creating: Cell::new(false),
+                    aliases: RefCell::new(FxHashMap::default()),
+                    waker: LocalWaker::new(),
+                }),
+            })
         }
+        .boxed_local()
     }
 }
 
-pub struct RouterFactoryFut<Err> {
-    router: Rc<ntex::router::Router<usize>>,
-    handlers: JoinAll<LocalBoxFuture<'static, Result<HandlerService<Err>, Err>>>,
-    default: Option<
-        either::Either<
-            LocalBoxFuture<'static, Result<HandlerService<Err>, Err>>,
-            HandlerService<Err>,
-        >,
-    >,
-}
-
-impl<Err> Future for RouterFactoryFut<Err> {
-    type Output = Result<RouterService<Err>, Err>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let res = match self.default.as_mut().unwrap() {
-            either::Either::Left(ref mut fut) => {
-                let default = match futures::ready!(Pin::new(fut).poll(cx)) {
-                    Ok(default) => default,
-                    Err(e) => return Poll::Ready(Err(e)),
-                };
-                self.default = Some(either::Either::Right(default));
-                return self.poll(cx);
-            }
-            either::Either::Right(_) => futures::ready!(Pin::new(&mut self.handlers).poll(cx)),
-        };
-
-        let mut handlers = Vec::new();
-        for handler in res {
-            match handler {
-                Ok(h) => handlers.push(h),
-                Err(e) => return Poll::Ready(Err(e)),
-            }
-        }
-
-        Poll::Ready(Ok(RouterService {
-            handlers,
-            router: self.router.clone(),
-            default: self.default.take().unwrap().right().unwrap(),
-            aliases: RefCell::new(FxHashMap::default()),
-        }))
-    }
-}
-
-pub struct RouterService<Err> {
-    router: Rc<ntex::router::Router<usize>>,
-    handlers: Vec<HandlerService<Err>>,
+pub struct RouterService<S, Err> {
+    inner: Rc<Inner<S, Err>>,
+    router: ntex::router::Router<usize>,
     default: HandlerService<Err>,
-    aliases: RefCell<FxHashMap<NonZeroU16, (usize, Path<ByteString>)>>,
 }
 
-impl<Err> Service for RouterService<Err> {
+struct Inner<S, Err> {
+    session: S,
+    handlers: RefCell<Vec<Option<HandlerService<Err>>>>,
+    factories: Rc<Vec<Handler<S, Err>>>,
+    aliases: RefCell<FxHashMap<NonZeroU16, (usize, Path<ByteString>)>>,
+    waker: LocalWaker,
+    creating: Cell<bool>,
+}
+
+impl<S: Clone + 'static, Err: 'static> RouterService<S, Err> {
+    fn create_handler(
+        &self,
+        idx: usize,
+        req: Publish,
+    ) -> LocalBoxFuture<'static, Result<PublishAck, Err>> {
+        let inner = self.inner.clone();
+        inner.creating.set(true);
+
+        async move {
+            let handler = inner.factories[idx].new_service(inner.session.clone()).await?;
+            if let Err(e) = crate::utils::ready(&handler).await {
+                inner.waker.wake();
+                inner.creating.set(false);
+                return Err(e);
+            }
+
+            let fut = handler.call(req);
+            inner.waker.wake();
+            inner.creating.set(false);
+            inner.handlers.borrow_mut()[idx] = Some(handler);
+            fut.await
+        }
+        .boxed_local()
+    }
+}
+
+impl<S: Clone + 'static, Err: 'static> Service for RouterService<S, Err> {
     type Request = Publish;
     type Response = PublishAck;
     type Error = Err;
@@ -169,14 +171,22 @@ impl<Err> Service for RouterService<Err> {
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;
-        for hnd in &self.handlers {
-            if let Poll::Pending = hnd.poll_ready(cx)? {
-                not_ready = true;
+        for hnd in &*self.inner.handlers.borrow() {
+            if let Some(hnd) = hnd {
+                if let Poll::Pending = hnd.poll_ready(cx)? {
+                    not_ready = true;
+                }
             }
         }
 
         if let Poll::Pending = self.default.poll_ready(cx)? {
             not_ready = true;
+        }
+
+        // new handler get created at the moment
+        if self.inner.creating.get() {
+            self.inner.waker.register(cx.waker());
+            return Poll::Pending;
         }
 
         if not_ready {
@@ -191,17 +201,25 @@ impl<Err> Service for RouterService<Err> {
             if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
                 // save info for topic alias
                 if let Some(alias) = req.packet().properties.topic_alias {
-                    self.aliases.borrow_mut().insert(alias, (*idx, req.topic().clone()));
+                    self.inner.aliases.borrow_mut().insert(alias, (*idx, req.topic().clone()));
                 }
-                return self.handlers[*idx].call(req);
+                if let Some(hnd) = &self.inner.handlers.borrow()[*idx] {
+                    return hnd.call(req);
+                } else {
+                    return self.create_handler(*idx, req);
+                }
             }
         }
         // handle publish with topic alias
         else if let Some(ref alias) = req.packet().properties.topic_alias {
-            let aliases = self.aliases.borrow();
+            let aliases = self.inner.aliases.borrow();
             if let Some(item) = aliases.get(alias) {
                 *req.topic_mut() = item.1.clone();
-                return self.handlers[item.0].call(req);
+                if let Some(hnd) = &self.inner.handlers.borrow()[item.0] {
+                    return hnd.call(req);
+                } else {
+                    return self.create_handler(item.0, req);
+                }
             } else {
                 log::error!("Unknown topic alias: {:?}", alias);
             }

@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "0.3.15"
+version = "0.3.16"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "MQTT Client/Server framework for v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -14,11 +14,12 @@ edition = "2018"
 [dependencies]
 ntex = "0.1.24"
 ntex-codec = "0.2.1"
+ntex-router = "0.3.8"
 bitflags = "1.2.1"
 bytes = "0.5.6"
 derive_more = "0.99.5"
 either = "1.5.3"
-futures = "0.3.5"
+futures = "0.3.7"
 fxhash = "0.2.1"
 pin-project = "1.0.1"
 pin-project-lite = "0.1.10"
@@ -31,7 +32,7 @@ slab = "0.4.2"
 uuid = { version = "0.8", features = ["v4"] }
 
 [dev-dependencies]
-env_logger = "0.7"
+env_logger = "0.8"
 
 rustls = "0.18"
 ntex = { version = "0.1.24", features = ["rustls"] }

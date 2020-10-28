@@ -5,6 +5,7 @@ use std::{convert::TryFrom, future::Future, io::Cursor, pin::Pin};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use either::Either;
+use ntex::service::Service;
 
 use crate::error::{DecodeError, EncodeError};
 
@@ -340,6 +341,23 @@ where
         }
 
         Poll::Pending
+    }
+}
+
+/// Check service readiness
+pub(crate) fn ready<S>(service: &S) -> Ready<'_, S> {
+    Ready(service)
+}
+
+pub(crate) struct Ready<'a, S>(&'a S);
+
+impl<'a, S> Unpin for Ready<'a, S> {}
+
+impl<'a, S: Service> Future for Ready<'a, S> {
+    type Output = Result<(), S::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.poll_ready(cx)
     }
 }
 
