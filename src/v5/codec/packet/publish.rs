@@ -1,7 +1,7 @@
+use std::{convert::TryFrom, fmt, num::NonZeroU16, num::NonZeroU32};
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
-use std::convert::TryFrom;
-use std::num::{NonZeroU16, NonZeroU32};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;
@@ -9,7 +9,7 @@ use crate::utils::{self, Decode, Encode, Property};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties};
 
 /// PUBLISH message
-#[derive(Debug, PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 pub struct Publish {
     /// this might be re-delivery of an earlier attempt to send the Packet.
     pub dup: bool,
@@ -21,6 +21,20 @@ pub struct Publish {
     pub topic: ByteString,
     pub payload: Bytes,
     pub properties: PublishProperties,
+}
+
+impl fmt::Debug for Publish {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Publish")
+            .field("packet_id", &self.packet_id)
+            .field("topic", &self.topic)
+            .field("dup", &self.dup)
+            .field("retain", &self.retain)
+            .field("qos", &self.qos)
+            .field("properties", &self.properties)
+            .field("payload", &"<REDACTED>")
+            .finish()
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]

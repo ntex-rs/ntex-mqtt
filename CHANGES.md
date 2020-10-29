@@ -2,6 +2,8 @@
 
 ## [0.3.16] - 2020-10-28
 
+* Do not print publish payload in debug fmt
+
 * v5: Create topic handlers on firse use
 
 ## [0.3.15] - 2020-10-20
