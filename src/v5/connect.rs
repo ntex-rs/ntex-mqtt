@@ -47,7 +47,6 @@ impl<Io> Connect<Io> {
     /// Ack connect message and set state
     pub fn ack<St>(self, st: St) -> ConnectAck<Io, St> {
         let mut packet = codec::ConnectAck {
-            max_qos: Some(codec::QoS::AtLeastOnce),
             reason_code: codec::ConnectAckReason::Success,
             topic_alias_max: self.max_topic_alias,
             ..codec::ConnectAck::default()

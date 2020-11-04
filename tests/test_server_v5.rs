@@ -370,6 +370,7 @@ async fn test_max_receive() {
     let srv = server::test_server(move || {
         MqttServer::new(connect)
             .receive_max(1)
+            .max_qos(codec::QoS::AtLeastOnce)
             .publish(|p: Publish| {
                 delay_for(Duration::from_millis(10000))
                     .map(move |_| Ok::<_, TestError>(p.ack()))

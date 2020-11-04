@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.17] - 2020-11-04
+
+* v5: Allow to configure ConnectAck::max_qos value
+
 ## [0.3.16] - 2020-10-28
 
 * Do not print publish payload in debug fmt

@@ -10,6 +10,7 @@ use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 use crate::error::{MqttError, ProtocolError};
 use crate::handshake::{Handshake, HandshakeResult};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
+use crate::types::QoS;
 
 use super::codec as mqtt;
 use super::connect::{Connect, ConnectAck};
@@ -27,6 +28,7 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     srv_publish: P,
     max_size: u32,
     max_receive: u16,
+    max_qos: Option<QoS>,
     handshake_timeout: usize,
     disconnect_timeout: usize,
     max_topic_alias: u16,
@@ -59,6 +61,7 @@ where
             srv_publish: DefaultPublishService::default(),
             max_size: 0,
             max_receive: 15,
+            max_qos: None,
             handshake_timeout: 0,
             disconnect_timeout: 3000,
             max_topic_alias: 32,
@@ -130,6 +133,14 @@ where
         self
     }
 
+    /// Set server max qos setting.
+    ///
+    /// By default max qos is not set`
+    pub fn max_qos(mut self, qos: QoS) -> Self {
+        self.max_qos = Some(qos);
+        self
+    }
+
     /// Service to handle control messages
     pub fn control<F, Srv>(self, service: F) -> MqttServer<Io, St, C, Srv, P>
     where
@@ -148,6 +159,7 @@ where
             max_size: self.max_size,
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
+            max_qos: self.max_qos,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
@@ -172,6 +184,7 @@ where
             max_size: self.max_size,
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
+            max_qos: self.max_qos,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
@@ -218,6 +231,7 @@ where
                 self.max_size,
                 self.max_receive,
                 self.max_topic_alias,
+                self.max_qos,
                 self.handshake_timeout,
                 self.pool,
             ))
@@ -249,6 +263,7 @@ where
                 self.max_size,
                 self.max_receive,
                 self.max_topic_alias,
+                self.max_qos,
                 self.handshake_timeout,
                 self.pool,
             ))
@@ -263,6 +278,7 @@ fn handshake_service_factory<Io, St, C>(
     max_size: u32,
     max_receive: u16,
     max_topic_alias: u16,
+    max_qos: Option<QoS>,
     handshake_timeout: usize,
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
@@ -291,6 +307,7 @@ where
                         max_size,
                         max_receive,
                         max_topic_alias,
+                        max_qos,
                         pool.clone(),
                     )
                 })
@@ -308,6 +325,7 @@ fn handshake_service_factory2<Io, St, C>(
     max_size: u32,
     max_receive: u16,
     max_topic_alias: u16,
+    max_qos: Option<QoS>,
     handshake_timeout: usize,
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
@@ -336,6 +354,7 @@ where
                         max_size,
                         max_receive,
                         max_topic_alias,
+                        max_qos,
                         pool.clone(),
                     )
                 })
@@ -354,6 +373,7 @@ async fn handshake<Io, S, St, E>(
     max_size: u32,
     mut max_receive: u16,
     mut max_topic_alias: u16,
+    max_qos: Option<QoS>,
     pool: Rc<MqttSinkPool>,
 ) -> Result<HandshakeResult<Io, Session<St>, mqtt::Codec>, S::Error>
 where
@@ -414,6 +434,10 @@ where
                     let sink = ack.sink;
 
                     max_topic_alias = ack.packet.topic_alias_max;
+
+                    if ack.packet.max_qos.is_none() {
+                        ack.packet.max_qos = max_qos;
+                    }
 
                     if let Some(num) = ack.packet.receive_max {
                         max_receive = num.get();
