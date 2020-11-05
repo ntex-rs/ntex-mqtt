@@ -1,5 +1,6 @@
 //! MQTT v3.1.1 Protocol codec
 
+#[allow(clippy::module_inception)]
 mod codec;
 mod decode;
 mod encode;

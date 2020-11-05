@@ -2,6 +2,7 @@
 
 use bytestring::ByteString;
 
+#[allow(clippy::module_inception)]
 mod codec;
 mod decode;
 mod encode;

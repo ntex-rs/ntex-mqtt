@@ -404,6 +404,7 @@ impl<C: Service, E> ControlResponse<C, E>
 where
     C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
+    #[allow(clippy::match_like_matches_macro)]
     fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
         let error = match pkt {
             ControlMessage::Error(_) | ControlMessage::ProtocolError(_) => true,

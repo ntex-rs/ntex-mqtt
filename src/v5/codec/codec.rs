@@ -133,12 +133,8 @@ impl Decoder for Codec {
                     self.state = DecodeState::FrameHeader;
                     src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
 
-                    match packet {
-                        Packet::Connect(ref pkt) => {
-                            self.flags
-                                .set(CodecFlags::NO_PROBLEM_INFO, !pkt.request_problem_info);
-                        }
-                        _ => (),
+                    if let Packet::Connect(ref pkt) = packet {
+                        self.flags.set(CodecFlags::NO_PROBLEM_INFO, !pkt.request_problem_info);
                     }
                     return Ok(Some(packet));
                 }
