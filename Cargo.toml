@@ -12,7 +12,7 @@ exclude = [".gitignore", ".travis.yml", ".cargo/config"]
 edition = "2018"
 
 [dependencies]
-ntex = "0.1.24"
+ntex = "0.1.25"
 ntex-codec = "0.2.1"
 ntex-router = "0.3.8"
 bitflags = "1.2.1"
@@ -22,8 +22,7 @@ either = "1.5.3"
 futures = "0.3.7"
 fxhash = "0.2.1"
 pin-project = "1.0.1"
-pin-project-lite = "0.1.10"
-pin-project-internal = "1.0.1"
+pin-project-lite = "0.2.0"
 log = "0.4"
 bytestring = "0.1.5"
 serde = "1.0"
@@ -34,5 +33,5 @@ uuid = { version = "0.8", features = ["v4"] }
 [dev-dependencies]
 env_logger = "0.8"
 
-rustls = "0.18"
+rustls = "0.19"
 ntex = { version = "0.1.24", features = ["rustls"] }

@@ -299,23 +299,23 @@ where
     }
 }
 
-#[pin_project::pin_project]
-pub struct MqttServerImplResponse<Io, V3, V5, Err>
-where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    V3: Service<
-        Request = (Framed<Io, v3::codec::Codec>, Option<Delay>),
-        Response = (),
-        Error = MqttError<Err>,
-    >,
-    V5: Service<
-        Request = (Framed<Io, v5::codec::Codec>, Option<Delay>),
-        Response = (),
-        Error = MqttError<Err>,
-    >,
-{
-    #[pin]
-    state: MqttServerImplState<Io, V3, V5>,
+pin_project_lite::pin_project! {
+    pub struct MqttServerImplResponse<Io, V3, V5, Err>
+    where
+        V3: Service<
+            Request = (Framed<Io, v3::codec::Codec>, Option<Delay>),
+            Response = (),
+            Error = MqttError<Err>,
+        >,
+        V5: Service<
+            Request = (Framed<Io, v5::codec::Codec>, Option<Delay>),
+            Response = (),
+            Error = MqttError<Err>,
+        >,
+    {
+        #[pin]
+        state: MqttServerImplState<Io, V3, V5>,
+    }
 }
 
 #[pin_project::pin_project(project = MqttServerImplStateProject)]
