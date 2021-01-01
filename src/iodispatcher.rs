@@ -313,7 +313,7 @@ mod tests {
 
     use ntex::rt::time::delay_for;
     use ntex::testing::Io;
-    use ntex_codec::{BytesCodec};
+    use ntex_codec::BytesCodec;
 
     use super::*;
 
@@ -327,8 +327,7 @@ mod tests {
         <U as Encoder>::Item: 'static,
     {
         /// Construct new `Dispatcher` instance
-        pub fn new<F: IntoService<S>>(io: T, codec: U, service: F) -> (Self,
-                                                                       IoBuffer<U>) {
+        pub fn new<F: IntoService<S>>(io: T, codec: U, service: F) -> (Self, IoBuffer<U>) {
             let time = LowResTimeService::with(Duration::from_secs(1));
             let keepalive_timeout = Duration::from_secs(30);
             let updated = time.now();
@@ -339,16 +338,19 @@ mod tests {
             ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
             ntex::rt::spawn(IoWrite::new(io.clone(), state.clone()));
 
-            (IoDispatcher {
-                service: service.into_service(),
-                state: state.clone(),
-                st: IoDispatcherState::Processing,
-                updated: time.now(),
-                keepalive: delay_until(expire),
-                io,
-                time,
-                keepalive_timeout,
-            }, state)
+            (
+                IoDispatcher {
+                    service: service.into_service(),
+                    state: state.clone(),
+                    st: IoDispatcherState::Processing,
+                    updated: time.now(),
+                    keepalive: delay_until(expire),
+                    io,
+                    time,
+                    keepalive_timeout,
+                },
+                state,
+            )
         }
     }
 
@@ -359,7 +361,8 @@ mod tests {
         client.write("GET /test HTTP/1\r\n\r\n");
 
         let (disp, _) = IoDispatcher::new(
-            server, BytesCodec,
+            server,
+            BytesCodec,
             ntex::fn_service(|msg: DispatcherItem<BytesCodec>| async move {
                 delay_for(Duration::from_millis(50)).await;
                 if let DispatcherItem::Item(msg) = msg {
@@ -385,14 +388,15 @@ mod tests {
         client.write("GET /test HTTP/1\r\n\r\n");
 
         let (disp, st) = IoDispatcher::new(
-            server, BytesCodec,
+            server,
+            BytesCodec,
             ntex::fn_service(|msg: DispatcherItem<BytesCodec>| async move {
                 if let DispatcherItem::Item(msg) = msg {
                     Ok::<_, ()>(Some(msg.freeze()))
                 } else {
                     panic!()
                 }
-            })
+            }),
         );
         ntex::rt::spawn(disp.disconnect_timeout(25).map(|_| ()));
 
@@ -415,7 +419,8 @@ mod tests {
         client.write("GET /test HTTP/1\r\n\r\n");
 
         let (disp, state) = IoDispatcher::new(
-            server, BytesCodec,
+            server,
+            BytesCodec,
             ntex::fn_service(|_: DispatcherItem<BytesCodec>| async move {
                 Err::<Option<Bytes>, _>(())
             }),
