@@ -100,11 +100,10 @@ impl MqttSink {
         let mut st = self.1.inner.borrow_mut();
         if st.is_opened() {
             let _ = st.close();
-
-            let mut inner = self.0.borrow_mut();
-            inner.inflight.clear();
-            inner.waiters.clear();
         }
+        let mut inner = self.0.borrow_mut();
+        inner.inflight.clear();
+        inner.waiters.clear();
     }
 
     /// Send ping

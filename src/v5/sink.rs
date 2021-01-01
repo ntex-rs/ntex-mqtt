@@ -101,13 +101,14 @@ impl MqttSink {
 
     /// Close mqtt connection with default Disconnect message
     pub fn close(&self) {
-        let mut inner = self.0.borrow_mut();
         let mut st = self.1.inner.borrow_mut();
         if st.is_opened() {
             let _ = st.send(codec::Packet::Disconnect(codec::Disconnect::default()));
             st.close();
-            inner.waiters.clear();
         }
+        let mut inner = self.0.borrow_mut();
+        inner.waiters.clear();
+        inner.inflight.clear();
     }
 
     /// Close mqtt connection
@@ -116,10 +117,11 @@ impl MqttSink {
         if st.is_opened() {
             let _ = st.send(codec::Packet::Disconnect(pkt));
             st.close();
-
-            let mut inner = self.0.borrow_mut();
-            inner.waiters.clear();
         }
+
+        let mut inner = self.0.borrow_mut();
+        inner.waiters.clear();
+        inner.inflight.clear();
     }
 
     pub(super) fn send(&self, pkt: codec::Packet) {
@@ -377,9 +379,7 @@ impl PublishBuilder {
 
         if state.is_opened() {
             log::trace!("Publish (QoS-0) to {:?}", packet.topic);
-            state
-                .send(codec::Packet::Publish(packet))
-                .map_err(|err| PublishQos0Error::Encode(err))
+            state.send(codec::Packet::Publish(packet)).map_err(PublishQos0Error::Encode)
         } else {
             log::error!("Mqtt sink is disconnected");
             Err(PublishQos0Error::Disconnected)

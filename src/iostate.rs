@@ -144,7 +144,7 @@ where
                     let n =
                         poll_fn(|cx| Pin::new(&mut *io).poll_read_buf(cx, &mut state.read_buf))
                             .await
-                            .map_err(|err| Either::Right(err))?;
+                            .map_err(Either::Right)?;
                     if n == 0 {
                         Ok(None)
                     } else {
@@ -171,7 +171,7 @@ where
                 Ok(Some(el)) => Poll::Ready(Ok(Some(el))),
                 Ok(None) => {
                     let n = ready!(Pin::new(&mut *io).poll_read_buf(cx, &mut state.read_buf))
-                        .map_err(|err| Either::Right(err))?;
+                        .map_err(Either::Right)?;
                     if n == 0 {
                         Poll::Ready(Ok(None))
                     } else {
@@ -193,8 +193,8 @@ where
     {
         let mut state = self.inner.borrow_mut();
 
-        state.encode_item(item).map_err(|err| Either::Left(err))?;
-        poll_fn(|cx| state.flush_io(io, cx)).await.map_err(|err| Either::Right(err))
+        state.encode_item(item).map_err(Either::Left)?;
+        poll_fn(|cx| state.flush_io(io, cx)).await.map_err(Either::Right)
     }
 }
 

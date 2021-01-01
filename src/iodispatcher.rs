@@ -162,35 +162,44 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.as_mut().get_mut();
 
+        // log::trace!("IO-DISP poll :{:?}:", this.st);
+
         match this.st {
             IoDispatcherState::Processing => {
-                let mut state = this.state.inner.borrow_mut();
-
-                // keepalive timer
-                if !state.flags.contains(Flags::DSP_STOP)
-                    && this.keepalive_timeout != Duration::from_secs(0)
                 {
-                    match Pin::new(&mut this.keepalive).poll(cx) {
-                        Poll::Ready(_) => {
-                            if this.keepalive.deadline() <= RtInstant::from_std(this.updated) {
-                                state
-                                    .dispatch_queue
-                                    .push_back(DispatcherItem::KeepAliveTimeout);
-                                state.flags.insert(Flags::DSP_STOP);
-                                state.read_task.wake()
-                            } else {
-                                let expire = RtInstant::from_std(
-                                    this.time.now() + this.keepalive_timeout,
-                                );
-                                this.keepalive.reset(expire);
-                                let _ = Pin::new(&mut this.keepalive).poll(cx);
+                    let mut state = this.state.inner.borrow_mut();
+                    // log::trace!(":{:?}:", state.flags);
+
+                    // keepalive timer
+                    if !state.flags.contains(Flags::DSP_STOP)
+                        && this.keepalive_timeout != Duration::from_secs(0)
+                    {
+                        match Pin::new(&mut this.keepalive).poll(cx) {
+                            Poll::Ready(_) => {
+                                if this.keepalive.deadline()
+                                    <= RtInstant::from_std(this.updated)
+                                {
+                                    state
+                                        .dispatch_queue
+                                        .push_back(DispatcherItem::KeepAliveTimeout);
+                                    state.flags.insert(Flags::DSP_STOP);
+                                    state.read_task.wake()
+                                } else {
+                                    let expire = RtInstant::from_std(
+                                        this.time.now() + this.keepalive_timeout,
+                                    );
+                                    this.keepalive.reset(expire);
+                                    let _ = Pin::new(&mut this.keepalive).poll(cx);
+                                }
                             }
+                            Poll::Pending => (),
                         }
-                        Poll::Pending => (),
                     }
                 }
 
                 loop {
+                    let mut state = this.state.inner.borrow_mut();
+
                     match this.service.poll_ready(cx) {
                         Poll::Ready(Ok(_)) => {
                             // handle write error
@@ -198,6 +207,7 @@ where
                                 // call service
                                 let st = this.state.clone();
                                 state.dispatch_inflight += 1;
+                                drop(state);
                                 ntex::rt::spawn(
                                     this.service.call(item).map(move |item| {
                                         st.inner.borrow_mut().write_item(item)
@@ -255,6 +265,7 @@ where
                                 // call service
                                 let st = this.state.clone();
                                 state.dispatch_inflight += 1;
+                                drop(state);
                                 ntex::rt::spawn(
                                     this.service.call(item).map(move |item| {
                                         st.inner.borrow_mut().write_item(item)
@@ -263,7 +274,6 @@ where
 
                                 // handle decoder error
                                 if error {
-                                    drop(state);
                                     return self.poll(cx);
                                 }
                             } else {
@@ -293,8 +303,14 @@ where
             }
             // drain service responses
             IoDispatcherState::Stop => {
-                let mut state = this.state.inner.borrow_mut();
+                // service may relay on poll ready for response results
+                match this.service.poll_ready(cx) {
+                    Poll::Ready(Ok(_)) => (),
+                    Poll::Pending => (),
+                    Poll::Ready(Err(_)) => (),
+                }
 
+                let mut state = this.state.inner.borrow_mut();
                 if state.dispatch_inflight == 0 {
                     state.read_task.wake();
                     state.write_task.wake();

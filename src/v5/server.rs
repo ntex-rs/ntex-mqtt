@@ -367,6 +367,7 @@ where
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handshake<Io, S, St, E>(
     mut io: Io,
     state: Option<IoBuffer<mqtt::Codec>>,
