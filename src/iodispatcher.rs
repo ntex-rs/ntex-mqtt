@@ -46,42 +46,6 @@ pub(crate) enum IoDispatcherState {
     Shutdown,
 }
 
-// #[cfg(test)]
-// impl<S, T, U> IoDispatcher<S, T, U>
-// where
-//     S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
-//     S::Error: 'static,
-//     S::Future: 'static,
-//     T: AsyncRead + AsyncWrite + Unpin,
-//     U: Decoder + Encoder,
-//     <U as Encoder>::Item: 'static,
-// {
-//     /// Construct new `Dispatcher` instance
-//     pub fn new<F: IntoService<S>>(framed: Framed<T, U>, service: F) -> Self {
-//         let time = LowResTimeService::with(Duration::from_secs(1));
-//         let keepalive_timeout = Duration::from_secs(30);
-//         let updated = time.now();
-//         let expire = RtInstant::from_std(updated + keepalive_timeout);
-
-//         let state = Rc::new(RefCell::new(IoState {
-//             framed,
-//             time,
-//             updated,
-//             keepalive_timeout,
-//             sink: None,
-//             rx: mpsc::channel().1,
-//             service: service.into_service(),
-//             flags: Flags::empty(),
-//             state: FramedState::Processing,
-//             disconnect_timeout: 1000,
-//             keepalive: delay_until(expire),
-//             dispatch_queue: VecDeque::with_capacity(16),
-//         }));
-
-//         Dispatcher { state, st: IoDispatcherState::Processing }
-//     }
-// }
-
 impl<S, T, U> IoDispatcher<S, T, U>
 where
     S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
@@ -100,7 +64,6 @@ where
     ) -> Self {
         let keepalive_timeout = Duration::from_secs(30);
         let expire = RtInstant::from_std(time.now() + keepalive_timeout);
-
         let io = Rc::new(RefCell::new(IoState { io, error: None }));
 
         ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
@@ -340,5 +303,141 @@ where
                 };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use futures::future::FutureExt;
+
+    use ntex::rt::time::delay_for;
+    use ntex::testing::Io;
+    use ntex_codec::{BytesCodec};
+
+    use super::*;
+
+    impl<S, T, U> IoDispatcher<S, T, U>
+    where
+        S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
+        S::Error: 'static,
+        S::Future: 'static,
+        T: AsyncRead + AsyncWrite + Unpin + 'static,
+        U: Decoder + Encoder + 'static,
+        <U as Encoder>::Item: 'static,
+    {
+        /// Construct new `Dispatcher` instance
+        pub fn new<F: IntoService<S>>(io: T, codec: U, service: F) -> (Self,
+                                                                       IoBuffer<U>) {
+            let time = LowResTimeService::with(Duration::from_secs(1));
+            let keepalive_timeout = Duration::from_secs(30);
+            let updated = time.now();
+            let expire = RtInstant::from_std(updated + keepalive_timeout);
+            let state = IoBuffer::new(codec);
+            let io = Rc::new(RefCell::new(IoState { io, error: None }));
+
+            ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
+            ntex::rt::spawn(IoWrite::new(io.clone(), state.clone()));
+
+            (IoDispatcher {
+                service: service.into_service(),
+                state: state.clone(),
+                st: IoDispatcherState::Processing,
+                updated: time.now(),
+                keepalive: delay_until(expire),
+                io,
+                time,
+                keepalive_timeout,
+            }, state)
+        }
+    }
+
+    #[ntex::test]
+    async fn test_basic() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+        client.write("GET /test HTTP/1\r\n\r\n");
+
+        let (disp, _) = IoDispatcher::new(
+            server, BytesCodec,
+            ntex::fn_service(|msg: DispatcherItem<BytesCodec>| async move {
+                delay_for(Duration::from_millis(50)).await;
+                if let DispatcherItem::Item(msg) = msg {
+                    Ok::<_, ()>(Some(msg.freeze()))
+                } else {
+                    panic!()
+                }
+            }),
+        );
+        ntex::rt::spawn(disp.map(|_| ()));
+
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
+
+        client.close().await;
+        assert!(client.is_server_dropped());
+    }
+
+    #[ntex::test]
+    async fn test_sink() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+        client.write("GET /test HTTP/1\r\n\r\n");
+
+        let (disp, st) = IoDispatcher::new(
+            server, BytesCodec,
+            ntex::fn_service(|msg: DispatcherItem<BytesCodec>| async move {
+                if let DispatcherItem::Item(msg) = msg {
+                    Ok::<_, ()>(Some(msg.freeze()))
+                } else {
+                    panic!()
+                }
+            })
+        );
+        ntex::rt::spawn(disp.disconnect_timeout(25).map(|_| ()));
+
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
+
+        assert!(st.inner.borrow_mut().send(Bytes::from_static(b"test")).is_ok());
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"test"));
+
+        st.inner.borrow_mut().close();
+        delay_for(Duration::from_millis(200)).await;
+        assert!(client.is_server_dropped());
+    }
+
+    #[ntex::test]
+    async fn test_err_in_service() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+        client.write("GET /test HTTP/1\r\n\r\n");
+
+        let (disp, state) = IoDispatcher::new(
+            server, BytesCodec,
+            ntex::fn_service(|_: DispatcherItem<BytesCodec>| async move {
+                Err::<Option<Bytes>, _>(())
+            }),
+        );
+        ntex::rt::spawn(disp.map(|_| ()));
+
+        state.inner.borrow_mut().send(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n")).unwrap();
+
+        let buf = client.read_any();
+        assert_eq!(buf, Bytes::from_static(b""));
+        delay_for(Duration::from_millis(25)).await;
+
+        // buffer should be flushed
+        client.remote_buffer_cap(1024);
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
+
+        // write side must be closed, dispatcher waiting for read side to close
+        assert!(client.is_closed());
+
+        // close read side
+        client.close().await;
+        assert!(client.is_server_dropped());
     }
 }

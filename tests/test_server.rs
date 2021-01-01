@@ -25,8 +25,8 @@ async fn connect<Io>(mut packet: Connect<Io>) -> Result<ConnectAck<Io, St>, ()> 
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
-    env_logger::init();
+    //std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
+    //env_logger::init();
 
     let srv = server::test_server(|| MqttServer::new(connect).publish(|_t| ok(())).finish());
 
@@ -207,12 +207,18 @@ async fn test_ack_order() -> std::io::Result<()> {
 
 #[ntex::test]
 async fn test_disconnect() -> std::io::Result<()> {
+    std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
+    env_logger::init();
+
     let srv = server::test_server(|| {
         MqttServer::new(connect)
             .publish(ntex::fn_factory_with_config(|session: Session<St>| {
                 ok(ntex::fn_service(move |_: Publish| {
-                    session.sink().close();
-                    ok(())
+                    session.sink().force_close();
+                    async {
+                        delay_for(Duration::from_millis(100)).await;
+                        Ok(())
+                    }
                 }))
             }))
             .finish()

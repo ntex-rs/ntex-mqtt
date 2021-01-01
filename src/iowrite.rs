@@ -71,7 +71,7 @@ where
                     match state.flush_io(this.io.borrow_mut().get_mut(), cx) {
                         Poll::Ready(Ok(_)) | Poll::Pending => (),
                         Poll::Ready(Err(err)) => {
-                            log::trace!("Error sending data: {:?}", err);
+                            log::trace!("error sending data: {:?}", err);
                             state.read_task.wake();
                             state.dispatch_queue.push_back(DispatcherItem::IoError(err));
                             state.dispatch_task.wake();
@@ -91,11 +91,15 @@ where
                 {
                     state.flags.insert(Flags::IO_ERR);
                     state.read_task.wake();
+                    log::trace!("write task is closed");
                     Poll::Ready(())
                 } else {
                     if let Some(ref mut delay) = delay {
                         futures::ready!(Pin::new(delay).poll(cx));
                     }
+                    state.flags.insert(Flags::IO_ERR);
+                    state.read_task.wake();
+                    log::trace!("write task is closed after delay");
                     Poll::Ready(())
                 };
             }

@@ -249,6 +249,12 @@ where
         self.dispatch_task.wake();
     }
 
+    pub(crate) fn force_close(&mut self) {
+        self.flags.insert(Flags::IO_SHUTDOWN | Flags::DSP_STOP);
+        self.write_task.wake();
+        self.dispatch_task.wake();
+    }
+
     pub(crate) fn send(
         &mut self,
         item: <U as Encoder>::Item,
@@ -432,9 +438,11 @@ where
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
+        log::trace!("closing framed transport: {} :{:?}:", self.write_buf.len(), self.flags);
+
         if !self.flags.contains(Flags::ST_IO_SHUTDOWN) {
             // flush write buffer
-            ready!(Pin::new(&mut *io).poll_flush(cx))?;
+            ready!(self.flush_io(io, cx))?;
 
             // shutdown WRITE side
             ready!(Pin::new(&mut *io).poll_shutdown(cx))?;

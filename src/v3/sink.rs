@@ -106,6 +106,18 @@ impl MqttSink {
         inner.waiters.clear();
     }
 
+    /// Force close mqtt connection. mqtt dispatcher does not wait for uncompleted
+    /// responses, but it flushes buffers.
+    pub fn force_close(&self) {
+        let mut st = self.1.inner.borrow_mut();
+        if st.is_opened() {
+            let _ = st.force_close();
+        }
+        let mut inner = self.0.borrow_mut();
+        inner.inflight.clear();
+        inner.waiters.clear();
+    }
+
     /// Send ping
     pub(super) fn ping(&self) -> bool {
         self.1.inner.borrow_mut().send(codec::Packet::PingRequest).is_ok()
