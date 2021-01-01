@@ -1,5 +1,5 @@
 #![deny(rust_2018_idioms)]
-#![allow(clippy::type_complexity, clippy::new_ret_no_self)]
+#![allow(clippy::type_complexity)]
 #![type_length_limit = "1638773"]
 //! MQTT Client/Server framework
 
@@ -8,12 +8,15 @@ mod topic;
 #[macro_use]
 mod utils;
 
+mod iodispatcher;
+mod ioread;
+mod iostate;
+mod iowrite;
+
 pub mod error;
 pub mod v3;
 pub mod v5;
 
-mod framed;
-mod handshake;
 mod server;
 mod service;
 mod session;

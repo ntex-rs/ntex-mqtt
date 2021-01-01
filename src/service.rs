@@ -8,10 +8,10 @@ use futures::ready;
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::time::LowResTimeService;
-use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
+use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use super::framed::{Dispatcher, DispatcherItem};
-use super::handshake::{Handshake, HandshakeResult};
+use super::iodispatcher::IoDispatcher;
+use super::iostate::{DispatcherItem, IoBuffer};
 
 type ResponseItem<U> = Option<<U as Encoder>::Item>;
 
@@ -26,11 +26,7 @@ pub(crate) struct FactoryBuilder<St, C, Io, Codec> {
 impl<St, C, Io, Codec> FactoryBuilder<St, C, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<
-        Config = (),
-        Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
-    >,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoBuffer<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     Codec: Decoder + Encoder,
 {
@@ -90,12 +86,8 @@ pub(crate) struct FramedService<St, C, T, Io, Codec, Cfg> {
 
 impl<St, C, T, Io, Codec, Cfg> ServiceFactory for FramedService<St, C, T, Io, Codec, Cfg>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<
-        Config = (),
-        Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
-    >,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoBuffer<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     <C::Service as Service>::Future: 'static,
     T: ServiceFactory<
@@ -107,7 +99,7 @@ where
         > + 'static,
     <T::Service as Service>::Error: 'static,
     <T::Service as Service>::Future: 'static,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
     <Codec as Encoder>::Item: 'static,
 {
     type Config = Cfg;
@@ -133,11 +125,7 @@ where
 pub(crate) struct FramedServiceResponse<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<
-        Config = (),
-        Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
-    >,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoBuffer<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
@@ -161,11 +149,7 @@ where
 impl<St, C, T, Io, Codec> Future for FramedServiceResponse<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<
-        Config = (),
-        Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
-    >,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoBuffer<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
@@ -205,8 +189,8 @@ pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec> {
 
 impl<St, C, T, Io, Codec> Service for FramedServiceImpl<St, C, T, Io, Codec>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
-    C: Service<Request = Handshake<Io, Codec>, Response = HandshakeResult<Io, St, Codec>>,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    C: Service<Request = Io, Response = (Io, IoBuffer<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
@@ -218,7 +202,7 @@ where
         > + 'static,
     <T::Service as Service>::Error: 'static,
     <T::Service as Service>::Future: 'static,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
     <Codec as Encoder>::Item: 'static,
 {
     type Request = Io;
@@ -242,21 +226,21 @@ where
 
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
-        let handshake = self.connect.call(Handshake::new(req));
+        let handshake = self.connect.call(req);
         let time = self.time.clone();
 
         Box::pin(async move {
-            let result = handshake.await.map_err(|e| {
+            let (io, st, session, keepalive) = handshake.await.map_err(|e| {
                 log::trace!("Connection handshake failed: {:?}", e);
                 e
             })?;
             log::trace!("Connection handshake succeeded");
 
-            let handler = handler.new_service(result.state).await?;
+            let handler = handler.new_service(session).await?;
             log::trace!("Connection handler is created, starting dispatcher");
 
-            Dispatcher::with(result.framed, result.out, handler, time)
-                .keepalive_timeout(result.keepalive)
+            IoDispatcher::with(io, st, handler, time)
+                .keepalive_timeout(keepalive)
                 .disconnect_timeout(timeout as u64)
                 .await
         })
@@ -276,8 +260,8 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
+        Request = (Io, IoBuffer<Codec>),
+        Response = (Io, IoBuffer<Codec>, St, usize),
     >,
     C::Error: fmt::Debug,
     Codec: Decoder + Encoder,
@@ -331,11 +315,11 @@ pub(crate) struct FramedService2<St, C, T, Io, Codec, Cfg> {
 
 impl<St, C, T, Io, Codec, Cfg> ServiceFactory for FramedService2<St, C, T, Io, Codec, Cfg>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
+        Request = (Io, IoBuffer<Codec>),
+        Response = (Io, IoBuffer<Codec>, St, usize),
     >,
     C::Error: fmt::Debug,
     <C::Service as Service>::Future: 'static,
@@ -348,11 +332,11 @@ where
         > + 'static,
     <T::Service as Service>::Error: 'static,
     <T::Service as Service>::Future: 'static,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
     <Codec as Encoder>::Item: 'static,
 {
     type Config = Cfg;
-    type Request = (Framed<Io, Codec>, Option<Delay>);
+    type Request = (Io, IoBuffer<Codec>, Option<Delay>);
     type Response = ();
     type Error = C::Error;
     type InitError = C::InitError;
@@ -376,8 +360,8 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
+        Request = (Io, IoBuffer<Codec>),
+        Response = (Io, IoBuffer<Codec>, St, usize),
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
@@ -404,8 +388,8 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
+        Request = (Io, IoBuffer<Codec>),
+        Response = (Io, IoBuffer<Codec>, St, usize),
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
@@ -446,11 +430,8 @@ pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec> {
 
 impl<St, C, T, Io, Codec> Service for FramedServiceImpl2<St, C, T, Io, Codec>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
-    C: Service<
-        Request = HandshakeResult<Io, (), Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
-    >,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    C: Service<Request = (Io, IoBuffer<Codec>), Response = (Io, IoBuffer<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
@@ -462,10 +443,10 @@ where
         > + 'static,
     <T::Service as Service>::Error: 'static,
     <T::Service as Service>::Future: 'static,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
     <Codec as Encoder>::Item: 'static,
 {
-    type Request = (Framed<Io, Codec>, Option<Delay>);
+    type Request = (Io, IoBuffer<Codec>, Option<Delay>);
     type Response = ();
     type Error = C::Error;
     type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
@@ -481,34 +462,29 @@ where
     }
 
     #[inline]
-    fn call(&self, (req, delay): (Framed<Io, Codec>, Option<Delay>)) -> Self::Future {
+    fn call(&self, (req, state, delay): (Io, IoBuffer<Codec>, Option<Delay>)) -> Self::Future {
         log::trace!("Start connection handshake");
 
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
-        let handshake = self.connect.call(Handshake::with_codec(req));
+        let handshake = self.connect.call((req, state));
         let time = self.time.clone();
 
         Box::pin(async move {
-            let (framed, out, ka, handler) = if let Some(delay) = delay {
+            let (io, state, ka, handler) = if let Some(delay) = delay {
                 let res = select(
                     delay,
                     async {
-                        let result = handshake.await.map_err(|e| {
+                        let (io, state, st, ka) = handshake.await.map_err(|e| {
                             log::trace!("Connection handshake failed: {:?}", e);
                             e
                         })?;
                         log::trace!("Connection handshake succeeded");
 
-                        let handler = handler.new_service(result.state).await?;
+                        let handler = handler.new_service(st).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 
-                        Ok::<_, C::Error>((
-                            result.framed,
-                            result.out,
-                            result.keepalive,
-                            handler,
-                        ))
+                        Ok::<_, C::Error>((io, state, ka, handler))
                     }
                     .boxed_local(),
                 )
@@ -522,18 +498,18 @@ where
                     Either::Right(item) => item.0?,
                 }
             } else {
-                let result = handshake.await.map_err(|e| {
+                let (io, state, st, ka) = handshake.await.map_err(|e| {
                     log::trace!("Connection handshake failed: {:?}", e);
                     e
                 })?;
                 log::trace!("Connection handshake succeeded");
 
-                let handler = handler.new_service(result.state).await?;
+                let handler = handler.new_service(st).await?;
                 log::trace!("Connection handler is created, starting dispatcher");
-                (result.framed, result.out, result.keepalive, handler)
+                (io, state, ka, handler)
             };
 
-            Dispatcher::with(framed, out, handler, time)
+            IoDispatcher::with(io, state, handler, time)
                 .keepalive_timeout(ka)
                 .disconnect_timeout(timeout as u64)
                 .await

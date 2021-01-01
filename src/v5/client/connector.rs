@@ -4,11 +4,11 @@ use std::time::Duration;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::Either;
-use futures::{Future, FutureExt, SinkExt, StreamExt};
+use futures::{Future, FutureExt};
+use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::connect::{self, Address, Connect, Connector};
 use ntex::rt::time::delay_for;
 use ntex::service::Service;
-use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
 #[cfg(feature = "openssl")]
 use ntex::connect::openssl::{OpensslConnector, SslConnector};
@@ -17,7 +17,7 @@ use ntex::connect::openssl::{OpensslConnector, SslConnector};
 use ntex::connect::rustls::{ClientConfig, RustlsConnector};
 
 use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
-use crate::utils::Select;
+use crate::{iostate::IoBuffer, utils::Select};
 
 /// Mqtt client connector
 pub struct MqttConnector<A, T> {
@@ -245,20 +245,21 @@ where
         let disconnect_timeout = self.disconnect_timeout;
 
         async move {
-            let io = fut.await?;
-            let mut framed =
-                Framed::new(io, codec::Codec::new().max_inbound_size(max_packet_size));
+            let mut io = fut.await?;
+            let state = IoBuffer::new(codec::Codec::new().max_inbound_size(max_packet_size));
 
-            framed.send(codec::Packet::Connect(pkt)).await?;
+            state.send(&mut io, codec::Packet::Connect(pkt)).await?;
 
-            let packet = framed
-                .next()
+            let packet = state
+                .next(&mut io)
                 .await
-                .ok_or_else(|| {
-                    log::trace!("Mqtt server is disconnected during handshake");
-                    ClientError::Disconnected
-                })
-                .and_then(|res| res.map_err(|e| ClientError::from(ProtocolError::from(e))))?;
+                .map_err(|e| ClientError::from(ProtocolError::from(e)))
+                .and_then(|res| {
+                    res.ok_or_else(|| {
+                        log::trace!("Mqtt server is disconnected during handshake");
+                        ClientError::Disconnected
+                    })
+                })?;
 
             match packet {
                 codec::Packet::ConnectAck(pkt) => {
@@ -266,13 +267,14 @@ where
                     if pkt.reason_code == codec::ConnectAckReason::Success {
                         // set max outbound (encoder) packet size
                         if let Some(size) = pkt.max_packet_size {
-                            framed.get_codec_mut().set_max_outbound_size(size);
+                            state.with_codec(|codec| codec.set_max_outbound_size(size));
                         }
                         // server keep-alive
                         let keep_alive = pkt.server_keepalive_sec.unwrap_or(keep_alive) as u64;
 
                         Ok(Client::new(
-                            framed,
+                            io,
+                            state,
                             pkt,
                             max_receive,
                             keep_alive,

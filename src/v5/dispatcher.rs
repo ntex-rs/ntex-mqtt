@@ -10,7 +10,7 @@ use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::framed::DispatcherItem;
+use crate::iostate::DispatcherItem;
 
 use super::control::{self, ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
@@ -305,20 +305,11 @@ where
                 ))
             }
             DispatcherItem::Item(_) => Either::Right(Either::Left(ok(None))),
-            DispatcherItem::EncoderError(idx, err) => {
-                if idx == 0 {
-                    Either::Right(Either::Right(ControlResponse::new(
-                        ControlMessage::proto_error(ProtocolError::Encode(err)),
-                        &self.inner,
-                    )))
-                } else {
-                    self.sink.pkt_encode_err(idx, err);
-                    Either::Right(Either::Left(ok(None)))
-                }
-            }
-            DispatcherItem::ItemEncoded(idx) => {
-                self.sink.pkt_written(idx);
-                Either::Right(Either::Left(ok(None)))
+            DispatcherItem::EncoderError(err) => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::Encode(err)),
+                    &self.inner,
+                )))
             }
             DispatcherItem::KeepAliveTimeout => {
                 Either::Right(Either::Right(ControlResponse::new(

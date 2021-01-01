@@ -2,12 +2,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::Either;
-use futures::{Future, FutureExt, SinkExt, StreamExt};
+use futures::future::{Either, Future, FutureExt};
 use ntex::connect::{self, Address, Connect, Connector};
 use ntex::rt::time::delay_for;
 use ntex::service::Service;
-use ntex_codec::{AsyncRead, AsyncWrite, Framed};
+use ntex_codec::{AsyncRead, AsyncWrite};
 
 #[cfg(feature = "openssl")]
 use ntex::connect::openssl::{OpensslConnector, SslConnector};
@@ -16,7 +15,7 @@ use ntex::connect::openssl::{OpensslConnector, SslConnector};
 use ntex::connect::rustls::{ClientConfig, RustlsConnector};
 
 use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
-use crate::utils::Select;
+use crate::{iostate::IoBuffer, utils::Select};
 
 /// Mqtt client connector
 pub struct MqttConnector<A, T> {
@@ -247,26 +246,29 @@ where
         let disconnect_timeout = self.disconnect_timeout;
 
         async move {
-            let io = fut.await?;
-            let mut framed = Framed::new(io, codec::Codec::new().max_size(max_packet_size));
+            let mut io = fut.await?;
+            let state = IoBuffer::new(codec::Codec::new().max_size(max_packet_size));
 
-            framed.send(codec::Packet::Connect(pkt)).await?;
+            state.send(&mut io, codec::Packet::Connect(pkt)).await?;
 
-            let packet = framed
-                .next()
+            let packet = state
+                .next(&mut io)
                 .await
-                .ok_or_else(|| {
-                    log::trace!("Mqtt server is disconnected during handshake");
-                    ClientError::Disconnected
-                })
-                .and_then(|res| res.map_err(|e| ClientError::from(ProtocolError::from(e))))?;
+                .map_err(|e| ClientError::from(ProtocolError::from(e)))
+                .and_then(|res| {
+                    res.ok_or_else(|| {
+                        log::trace!("Mqtt server is disconnected during handshake");
+                        ClientError::Disconnected
+                    })
+                })?;
 
             match packet {
                 codec::Packet::ConnectAck { session_present, return_code } => {
                     log::trace!("Connect ack response from server: session: present: {:?}, return code: {:?}", session_present, return_code);
                     if return_code == codec::ConnectAckReason::ConnectionAccepted {
                         Ok(Client::new(
-                            framed,
+                            io,
+                            state,
                             session_present,
                             keepalive_timeout,
                             disconnect_timeout,
