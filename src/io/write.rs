@@ -5,7 +5,7 @@ use ntex::rt::time::{delay_for, Delay};
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
 use super::state::Flags;
-use super::{Io, IoDispatcherError, IoState};
+use super::{IoDispatcherError, IoState};
 
 #[derive(Debug)]
 pub(crate) enum IoWriteState {
@@ -13,29 +13,29 @@ pub(crate) enum IoWriteState {
     Shutdown(Option<Delay>),
 }
 
-pub(crate) struct IoWrite<T, U, E>
+pub(crate) struct IoWrite<T, U>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
     st: IoWriteState,
-    io: Rc<RefCell<Io<T, E>>>,
+    io: Rc<RefCell<T>>,
     state: IoState<U>,
 }
 
-impl<T, U, E> IoWrite<T, U, E>
+impl<T, U> IoWrite<T, U>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
-    pub(crate) fn new(io: Rc<RefCell<Io<T, E>>>, state: IoState<U>) -> Self {
+    pub(crate) fn new(io: Rc<RefCell<T>>, state: IoState<U>) -> Self {
         Self { io, state, st: IoWriteState::Processing }
     }
 }
 
-impl<T, U, E> Future for IoWrite<T, U, E>
+impl<T, U> Future for IoWrite<T, U>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Encoder + Decoder,
@@ -69,7 +69,7 @@ where
 
                 // flush framed instance, do actual IO
                 if !state.write_buf.is_empty() {
-                    match state.flush_io(this.io.borrow_mut().get_mut(), cx) {
+                    match state.flush_io(&mut *this.io.borrow_mut(), cx) {
                         Poll::Ready(Ok(_)) | Poll::Pending => (),
                         Poll::Ready(Err(err)) => {
                             log::trace!("error sending data: {:?}", err);
@@ -87,9 +87,7 @@ where
                 // on read side. we need disconnect timeout, otherwise it
                 // could hang forever.
 
-                return if let Poll::Ready(_) =
-                    state.close_io(this.io.borrow_mut().get_mut(), cx)
-                {
+                return if let Poll::Ready(_) = state.close_io(&mut *this.io.borrow_mut(), cx) {
                     state.flags.insert(Flags::IO_ERR);
                     state.read_task.wake();
                     log::trace!("write task is closed");

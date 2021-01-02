@@ -10,30 +10,40 @@ use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
 use super::state::Flags;
-use crate::io::{DispatcherItem, Io, IoDispatcherError, IoRead, IoState, IoWrite};
+use crate::io::{DispatcherItem, IoDispatcherError, IoRead, IoState, IoWrite};
 
 type Response<U> = <U as Encoder>::Item;
 
 /// Framed dispatcher - is a future that reads frames from Framed object
 /// and pass then to the service.
 #[pin_project::pin_project]
-pub(crate) struct IoDispatcher<S, T, U>
+pub(crate) struct IoDispatcher<S, U>
 where
     S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
     S::Error: 'static,
     S::Future: 'static,
-    T: AsyncRead + AsyncWrite + Unpin,
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
     service: S,
-    io: Rc<RefCell<Io<T, S::Error>>>,
     state: IoState<U>,
+    inner: Rc<RefCell<IoDispatcherInner<S, U>>>,
     st: IoDispatcherState,
     updated: Instant,
     time: LowResTimeService,
     keepalive: Delay,
     keepalive_timeout: u16,
+}
+
+struct IoDispatcherInner<S, U>
+where
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
+    S::Error: 'static,
+    S::Future: 'static,
+    U: Encoder + Decoder,
+    <U as Encoder>::Item: 'static,
+{
+    error: Option<S::Error>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -43,37 +53,41 @@ pub(crate) enum IoDispatcherState {
     Shutdown,
 }
 
-impl<S, T, U> IoDispatcher<S, T, U>
+impl<S, U> IoDispatcher<S, U>
 where
     S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
     S::Error: 'static,
     S::Future: 'static,
-    T: AsyncRead + AsyncWrite + Unpin + 'static,
     U: Decoder + Encoder + 'static,
     <U as Encoder>::Item: 'static,
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
-    pub fn with<F: IntoService<S>>(
+    pub fn with<T, F: IntoService<S>>(
         io: T,
         state: IoState<U>,
         service: F,
         time: LowResTimeService,
-    ) -> Self {
+    ) -> Self
+    where
+        T: AsyncRead + AsyncWrite + Unpin + 'static,
+    {
         let keepalive_timeout = 30;
         let expire = RtInstant::from_std(time.now() + Duration::from_secs(30));
-        let io = Rc::new(RefCell::new(Io { io, error: None }));
+        let io = Rc::new(RefCell::new(io));
 
         ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
-        ntex::rt::spawn(IoWrite::new(io.clone(), state.clone()));
+        ntex::rt::spawn(IoWrite::new(io, state.clone()));
+
+        let inner = Rc::new(RefCell::new(IoDispatcherInner { error: None }));
 
         IoDispatcher {
-            service: service.into_service(),
             st: IoDispatcherState::Processing,
+            service: service.into_service(),
             updated: time.now(),
             keepalive: delay_until(expire),
-            time,
-            io,
             state,
+            inner,
+            time,
             keepalive_timeout,
         }
     }
@@ -109,12 +123,11 @@ where
     }
 }
 
-impl<S, T, U> Future for IoDispatcher<S, T, U>
+impl<S, U> Future for IoDispatcher<S, U>
 where
     S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
     S::Error: 'static,
     S::Future: 'static,
-    T: AsyncRead + AsyncWrite + Unpin + 'static,
     U: Decoder + Encoder + 'static,
     <U as Encoder>::Item: 'static,
 {
@@ -255,7 +268,7 @@ where
                             log::trace!("service readiness check failed, stopping");
                             // service readiness error
                             this.st = IoDispatcherState::Stop;
-                            this.io.borrow_mut().error = Some(err);
+                            this.inner.borrow_mut().error = Some(err);
                             state.flags.insert(Flags::DSP_STOP);
                             drop(state);
                             return self.poll(cx);
@@ -287,12 +300,12 @@ where
             }
             // shutdown service
             IoDispatcherState::Shutdown => {
-                let is_err = this.io.borrow().error.is_some();
+                let is_err = this.inner.borrow().error.is_some();
 
                 return if this.service.poll_shutdown(cx, is_err).is_ready() {
                     log::trace!("service shutdown is completed, stop");
 
-                    Poll::Ready(if let Some(err) = this.io.borrow_mut().error.take() {
+                    Poll::Ready(if let Some(err) = this.inner.borrow_mut().error.take() {
                         Err(err)
                     } else {
                         Ok(())
@@ -316,23 +329,26 @@ mod tests {
 
     use super::*;
 
-    impl<S, T, U> IoDispatcher<S, T, U>
+    impl<S, U> IoDispatcher<S, U>
     where
         S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
         S::Error: 'static,
         S::Future: 'static,
-        T: AsyncRead + AsyncWrite + Unpin + 'static,
         U: Decoder + Encoder + 'static,
         <U as Encoder>::Item: 'static,
     {
         /// Construct new `Dispatcher` instance
-        pub fn new<F: IntoService<S>>(io: T, codec: U, service: F) -> (Self, IoState<U>) {
+        pub fn new<T, F: IntoService<S>>(io: T, codec: U, service: F) -> (Self, IoState<U>)
+        where
+            T: AsyncRead + AsyncWrite + Unpin + 'static,
+        {
             let time = LowResTimeService::with(Duration::from_secs(1));
             let keepalive_timeout = 30;
             let updated = time.now();
             let expire = RtInstant::from_std(updated + Duration::from_secs(30));
             let state = IoState::new(codec);
-            let io = Rc::new(RefCell::new(super::Io { io, error: None }));
+            let io = Rc::new(RefCell::new(io));
+            let inner = Rc::new(RefCell::new(IoDispatcherInner { error: None }));
 
             ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
             ntex::rt::spawn(IoWrite::new(io.clone(), state.clone()));
@@ -344,9 +360,9 @@ mod tests {
                     st: IoDispatcherState::Processing,
                     updated: time.now(),
                     keepalive: delay_until(expire),
-                    io,
                     time,
                     keepalive_timeout,
+                    inner,
                 },
                 state,
             )

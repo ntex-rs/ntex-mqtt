@@ -2,30 +2,30 @@ use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, task::Context, task::
 
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use super::state::{Flags, Io, IoState};
+use super::state::{Flags, IoState};
 
-pub(crate) struct IoRead<T, U, E>
+pub(crate) struct IoRead<T, U>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
-    io: Rc<RefCell<Io<T, E>>>,
+    io: Rc<RefCell<T>>,
     state: IoState<U>,
 }
 
-impl<T, U, E> IoRead<T, U, E>
+impl<T, U> IoRead<T, U>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
-    pub(crate) fn new(io: Rc<RefCell<Io<T, E>>>, state: IoState<U>) -> Self {
+    pub(crate) fn new(io: Rc<RefCell<T>>, state: IoState<U>) -> Self {
         Self { io, state }
     }
 }
 
-impl<T, U, E> Future for IoRead<T, U, E>
+impl<T, U> Future for IoRead<T, U>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     U: Encoder + Decoder,
@@ -42,7 +42,7 @@ where
             state.read_task.register(cx.waker());
             Poll::Pending
         } else {
-            state.read_io(self.io.borrow_mut().get_mut(), cx)
+            state.read_io(&mut *self.io.borrow_mut(), cx)
         }
     }
 }

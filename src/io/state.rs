@@ -77,23 +77,6 @@ where
     }
 }
 
-pub(crate) struct Io<T, E>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
-    pub(crate) io: T,
-    pub(crate) error: Option<E>,
-}
-
-impl<T, E> Io<T, E>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
-    pub(crate) fn get_mut(&mut self) -> &mut T {
-        &mut self.io
-    }
-}
-
 pub struct IoState<U: Encoder + Decoder> {
     pub(crate) inner: Rc<RefCell<IoStateInner<U>>>,
 }
