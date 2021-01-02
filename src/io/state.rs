@@ -1,6 +1,6 @@
 //! Framed transport dispatcher
 use std::task::{Context, Poll};
-use std::{cell::RefCell, collections::VecDeque, fmt, io, pin::Pin, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, fmt, io, mem, pin::Pin, rc::Rc};
 
 use bytes::{Buf, BytesMut};
 use either::Either;
@@ -99,7 +99,7 @@ pub struct IoState<U: Encoder + Decoder> {
 }
 
 pub(crate) struct IoStateInner<U: Encoder + Decoder> {
-    pub(crate) codec: U,
+    codec: U,
     pub(crate) flags: Flags,
     pub(crate) disconnect_timeout: u16,
 
@@ -151,7 +151,7 @@ where
         F: Fn(&U) -> U2,
         U2: Encoder + Decoder,
     {
-        let st = self.inner.borrow();
+        let mut st = self.inner.borrow_mut();
         let codec = f(&st.codec);
 
         IoState {
@@ -164,23 +164,23 @@ where
                 dispatch_task: LocalWaker::new(),
                 dispatch_queue: VecDeque::with_capacity(8),
 
-                write_buf: BytesMut::from(&st.write_buf[..]),
+                write_buf: mem::take(&mut st.write_buf),
                 write_task: LocalWaker::new(),
 
-                read_buf: BytesMut::from(&st.read_buf[..]),
+                read_buf: mem::take(&mut st.read_buf),
                 read_task: LocalWaker::new(),
             })),
         }
     }
 
-    pub(crate) fn with_codec<F, R>(&self, f: F) -> R
+    pub fn with_codec<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut U) -> R,
     {
         f(&mut self.inner.borrow_mut().codec)
     }
 
-    pub(crate) async fn next<T>(
+    pub async fn next<T>(
         &self,
         io: &mut T,
     ) -> Result<Option<<U as Decoder>::Item>, Either<<U as Decoder>::Error, io::Error>>
@@ -208,7 +208,7 @@ where
         }
     }
 
-    pub(crate) fn next_item<T>(
+    pub fn poll_next<T>(
         &self,
         io: &mut T,
         cx: &mut Context<'_>,
@@ -235,7 +235,7 @@ where
         }
     }
 
-    pub(crate) async fn send<T>(
+    pub async fn send<T>(
         &self,
         io: &mut T,
         item: <U as Encoder>::Item,

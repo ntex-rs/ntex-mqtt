@@ -4,7 +4,8 @@ use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, time::Duration};
 use ntex::rt::time::{delay_for, Delay};
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use super::{Flags, Io, IoDispatcherError, IoState};
+use super::state::Flags;
+use super::{Io, IoDispatcherError, IoState};
 
 #[derive(Debug)]
 pub(crate) enum IoWriteState {

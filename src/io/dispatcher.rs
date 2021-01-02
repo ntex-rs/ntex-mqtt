@@ -9,7 +9,8 @@ use ntex::service::{IntoService, Service};
 use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use crate::io::{DispatcherItem, Flags, Io, IoDispatcherError, IoRead, IoState, IoWrite};
+use super::state::Flags;
+use crate::io::{DispatcherItem, Io, IoDispatcherError, IoRead, IoState, IoWrite};
 
 type Response<U> = <U as Encoder>::Item;
 

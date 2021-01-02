@@ -361,7 +361,7 @@ where
 
                     let st = item.as_mut().unwrap();
 
-                    match futures::ready!(st.1.next_item(&mut st.0, cx)) {
+                    match futures::ready!(st.1.poll_next(&mut st.0, cx)) {
                         Ok(Some(ver)) => {
                             let (io, state, handlers, delay) = item.take().unwrap();
                             this = self.as_mut().project();

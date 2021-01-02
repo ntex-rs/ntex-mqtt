@@ -2,7 +2,7 @@ use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, task::Context, task::
 
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use super::{Flags, Io, IoState};
+use super::state::{Flags, Io, IoState};
 
 pub(crate) struct IoRead<T, U, E>
 where
