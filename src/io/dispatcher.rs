@@ -327,9 +327,9 @@ mod tests {
         /// Construct new `Dispatcher` instance
         pub fn new<F: IntoService<S>>(io: T, codec: U, service: F) -> (Self, IoState<U>) {
             let time = LowResTimeService::with(Duration::from_secs(1));
-            let keepalive_timeout = Duration::from_secs(30);
+            let keepalive_timeout = 30;
             let updated = time.now();
-            let expire = RtInstant::from_std(updated + keepalive_timeout);
+            let expire = RtInstant::from_std(updated + Duration::from_secs(30));
             let state = IoState::new(codec);
             let io = Rc::new(RefCell::new(super::Io { io, error: None }));
 

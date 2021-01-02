@@ -486,7 +486,7 @@ async fn test_encoder_error_pub_qos0() {
             let res = builder.send_at_most_once();
             assert_eq!(
                 res,
-                Err(error::PublishQos0Error::Encode(error::EncodeError::InvalidLength))
+                Err(error::SendPacketError::Encode(error::EncodeError::InvalidLength))
             );
             Ok(con.ack(St))
         })

@@ -3,13 +3,11 @@ use std::{cell::RefCell, collections::VecDeque, fmt, rc::Rc};
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::{err, ok, Either, Future, TryFutureExt};
+use futures::future::{ready, Either, Future, FutureExt};
 use fxhash::FxHashMap;
 use ntex::channel::pool;
 
-use crate::v5::error::{
-    ProtocolError, PublishQos0Error, PublishQos1Error, SubscribeError, UnsubscribeError,
-};
+use crate::v5::error::{ProtocolError, PublishQos1Error, SendPacketError};
 use crate::{io::IoState, io::IoStateInner, types::packet_type, types::QoS, v5::codec};
 
 pub struct MqttSink(Rc<RefCell<MqttSinkInner>>, IoState<codec::Codec>);
@@ -83,17 +81,17 @@ impl MqttSink {
 
     /// Get notification when packet could be send to the peer.
     ///
-    /// Err(()) indicates disconnected connection
-    pub fn ready(&self) -> impl Future<Output = Result<(), ()>> {
+    /// Result indicates if connection is alive
+    pub fn ready(&self) -> impl Future<Output = bool> {
         let mut inner = self.0.borrow_mut();
         if !self.1.inner.borrow().is_opened() {
-            Either::Left(err(()))
+            Either::Left(ready(false))
         } else if inner.inflight.len() >= inner.cap {
             let (tx, rx) = inner.pool.waiters.channel();
             inner.waiters.push_back(tx);
-            Either::Right(rx.map_err(|_| ()))
+            Either::Right(rx.map(|v| if v.is_ok() { true } else { false }))
         } else {
-            Either::Left(ok(()))
+            Either::Left(ready(true))
         }
     }
 
@@ -371,16 +369,16 @@ impl PublishBuilder {
     }
 
     /// Send publish packet with QoS 0
-    pub fn send_at_most_once(self) -> Result<(), PublishQos0Error> {
+    pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
         let packet = self.packet;
         let mut state = self.state.borrow_mut();
 
         if state.is_opened() {
             log::trace!("Publish (QoS-0) to {:?}", packet.topic);
-            state.send(codec::Packet::Publish(packet)).map_err(PublishQos0Error::Encode)
+            state.send(codec::Packet::Publish(packet)).map_err(SendPacketError::Encode)
         } else {
             log::error!("Mqtt sink is disconnected");
-            Err(PublishQos0Error::Disconnected)
+            Err(SendPacketError::Disconnected)
         }
     }
 
@@ -489,7 +487,7 @@ impl SubscribeBuilder {
     }
 
     /// Send subscribe packet
-    pub async fn send(self) -> Result<codec::SubscribeAck, SubscribeError> {
+    pub async fn send(self) -> Result<codec::SubscribeAck, SendPacketError> {
         let st = self.state;
         let sink = self.sink;
         let mut packet = self.packet;
@@ -507,7 +505,7 @@ impl SubscribeBuilder {
                 drop(state);
 
                 if rx.await.is_err() {
-                    return Err(SubscribeError::Disconnected);
+                    return Err(SendPacketError::Disconnected);
                 }
 
                 state = st.borrow_mut();
@@ -520,7 +518,7 @@ impl SubscribeBuilder {
             // allocate packet id
             let idx = if self.id == 0 { inner.next_id() } else { self.id };
             if inner.inflight.contains_key(&idx) {
-                return Err(SubscribeError::PacketIdInUse(idx));
+                return Err(SendPacketError::PacketIdInUse(idx));
             }
             inner.inflight.insert(idx, (tx, AckType::Subscribe));
             inner.inflight_order.push_back(idx);
@@ -537,13 +535,13 @@ impl SubscribeBuilder {
 
                     // wait ack from peer
                     rx.await
-                        .map_err(|_| SubscribeError::Disconnected)
+                        .map_err(|_| SendPacketError::Disconnected)
                         .map(|pkt| pkt.subscribe())
                 }
-                Err(err) => Err(SubscribeError::Encode(err)),
+                Err(err) => Err(SendPacketError::Encode(err)),
             }
         } else {
-            Err(SubscribeError::Disconnected)
+            Err(SendPacketError::Disconnected)
         }
     }
 }
@@ -581,7 +579,7 @@ impl UnsubscribeBuilder {
     }
 
     /// Send unsubscribe packet
-    pub async fn send(self) -> Result<codec::UnsubscribeAck, UnsubscribeError> {
+    pub async fn send(self) -> Result<codec::UnsubscribeAck, SendPacketError> {
         let st = self.state;
         let sink = self.sink;
         let mut packet = self.packet;
@@ -599,7 +597,7 @@ impl UnsubscribeBuilder {
                 drop(inner);
 
                 if rx.await.is_err() {
-                    return Err(UnsubscribeError::Disconnected);
+                    return Err(SendPacketError::Disconnected);
                 }
 
                 state = st.borrow_mut();
@@ -612,7 +610,7 @@ impl UnsubscribeBuilder {
             // allocate packet id
             let idx = if self.id == 0 { inner.next_id() } else { self.id };
             if inner.inflight.contains_key(&idx) {
-                return Err(UnsubscribeError::PacketIdInUse(idx));
+                return Err(SendPacketError::PacketIdInUse(idx));
             }
             inner.inflight.insert(idx, (tx, AckType::Unsubscribe));
             inner.inflight_order.push_back(idx);
@@ -629,13 +627,13 @@ impl UnsubscribeBuilder {
 
                     // wait ack from peer
                     rx.await
-                        .map_err(|_| UnsubscribeError::Disconnected)
+                        .map_err(|_| SendPacketError::Disconnected)
                         .map(|pkt| pkt.unsubscribe())
                 }
-                Err(err) => Err(UnsubscribeError::Encode(err)),
+                Err(err) => Err(SendPacketError::Encode(err)),
             }
         } else {
-            Err(UnsubscribeError::Disconnected)
+            Err(SendPacketError::Disconnected)
         }
     }
 }
