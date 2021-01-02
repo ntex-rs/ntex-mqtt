@@ -26,8 +26,8 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     publish: P,
     max_size: u32,
     inflight: usize,
-    handshake_timeout: usize,
-    disconnect_timeout: usize,
+    handshake_timeout: u16,
+    disconnect_timeout: u16,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<(Io, St)>,
 }
@@ -84,7 +84,7 @@ where
     ///
     /// Handshake includes `connect` packet and response `connect-ack`.
     /// By default handshake timeuot is disabled.
-    pub fn handshake_timeout(mut self, timeout: usize) -> Self {
+    pub fn handshake_timeout(mut self, timeout: u16) -> Self {
         self.handshake_timeout = timeout;
         self
     }
@@ -97,7 +97,7 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(mut self, val: usize) -> Self {
+    pub fn disconnect_timeout(mut self, val: u16) -> Self {
         self.disconnect_timeout = val;
         self
     }
@@ -265,7 +265,7 @@ where
 fn handshake_service_factory<Io, St, C>(
     factory: C,
     max_size: u32,
-    handshake_timeout: usize,
+    handshake_timeout: u16,
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
     Config = (),
@@ -300,7 +300,7 @@ where
 fn handshake_service_factory2<Io, St, C>(
     factory: C,
     max_size: u32,
-    handshake_timeout: usize,
+    handshake_timeout: u16,
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
     Config = (),

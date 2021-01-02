@@ -101,7 +101,7 @@ pub struct IoState<U: Encoder + Decoder> {
 pub(crate) struct IoStateInner<U: Encoder + Decoder> {
     pub(crate) codec: U,
     pub(crate) flags: Flags,
-    pub(crate) disconnect_timeout: u64,
+    pub(crate) disconnect_timeout: u16,
 
     pub(crate) dispatch_inflight: usize,
     pub(crate) dispatch_task: LocalWaker,
@@ -133,7 +133,7 @@ where
 
                 dispatch_inflight: 0,
                 dispatch_task: LocalWaker::new(),
-                dispatch_queue: VecDeque::with_capacity(4),
+                dispatch_queue: VecDeque::with_capacity(8),
 
                 write_buf: BytesMut::new(),
                 write_task: LocalWaker::new(),
@@ -162,7 +162,7 @@ where
 
                 dispatch_inflight: 0,
                 dispatch_task: LocalWaker::new(),
-                dispatch_queue: VecDeque::with_capacity(16),
+                dispatch_queue: VecDeque::with_capacity(8),
 
                 write_buf: BytesMut::from(&st.write_buf[..]),
                 write_task: LocalWaker::new(),

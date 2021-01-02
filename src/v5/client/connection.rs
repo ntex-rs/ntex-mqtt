@@ -24,8 +24,8 @@ pub struct Client<Io> {
     io: Io,
     state: IoState<codec::Codec>,
     sink: MqttSink,
-    keepalive: u64,
-    disconnect_timeout: u64,
+    keepalive: u16,
+    disconnect_timeout: u16,
     max_receive: usize,
     pkt: codec::ConnectAck,
 }
@@ -40,8 +40,8 @@ where
         state: IoState<codec::Codec>,
         pkt: codec::ConnectAck,
         max_receive: u16,
-        keepalive: u64,
-        disconnect_timeout: u64,
+        keepalive: u16,
+        disconnect_timeout: u16,
     ) -> Self {
         let server_max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
         let sink =
@@ -182,8 +182,8 @@ pub struct ClientRouter<Io, Err, PErr> {
     io: Io,
     sink: MqttSink,
     state: IoState<codec::Codec>,
-    keepalive: u64,
-    disconnect_timeout: u64,
+    keepalive: u16,
+    disconnect_timeout: u16,
     max_receive: usize,
     _t: PhantomData<Err>,
 }
@@ -324,10 +324,10 @@ where
     }
 }
 
-async fn keepalive(sink: MqttSink, timeout: u64) {
+async fn keepalive(sink: MqttSink, timeout: u16) {
     log::debug!("start mqtt client keep-alive task");
 
-    let keepalive = Duration::from_secs(timeout);
+    let keepalive = Duration::from_secs(timeout as u64);
     loop {
         let expire = RtInstant::from_std(Instant::now() + keepalive);
         delay_until(expire).await;

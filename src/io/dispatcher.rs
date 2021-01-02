@@ -25,16 +25,14 @@ where
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
+    service: S,
     io: Rc<RefCell<Io<T, S::Error>>>,
     state: IoState<U>,
-
-    service: S,
     st: IoDispatcherState,
-
     updated: Instant,
     time: LowResTimeService,
     keepalive: Delay,
-    keepalive_timeout: Duration,
+    keepalive_timeout: u16,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -60,8 +58,8 @@ where
         service: F,
         time: LowResTimeService,
     ) -> Self {
-        let keepalive_timeout = Duration::from_secs(30);
-        let expire = RtInstant::from_std(time.now() + keepalive_timeout);
+        let keepalive_timeout = 30;
+        let expire = RtInstant::from_std(time.now() + Duration::from_secs(30));
         let io = Rc::new(RefCell::new(Io { io, error: None }));
 
         ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
@@ -84,11 +82,12 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default keep-alive timeout is set to 30 seconds.
-    pub fn keepalive_timeout(mut self, timeout: usize) -> Self {
-        self.keepalive_timeout = Duration::from_secs(timeout as u64);
+    pub fn keepalive_timeout(mut self, timeout: u16) -> Self {
+        self.keepalive_timeout = timeout;
 
         if timeout > 0 {
-            let expire = RtInstant::from_std(self.time.now() + self.keepalive_timeout);
+            let expire =
+                RtInstant::from_std(self.time.now() + Duration::from_secs(timeout as u64));
             self.keepalive.reset(expire);
         }
 
@@ -103,7 +102,7 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 1 seconds.
-    pub fn disconnect_timeout(self, val: u64) -> Self {
+    pub fn disconnect_timeout(self, val: u16) -> Self {
         self.state.inner.borrow_mut().disconnect_timeout = val;
         self
     }
@@ -132,9 +131,7 @@ where
                     let mut state = this.state.inner.borrow_mut();
                     // log::trace!(":{:?}:", state.flags);
 
-                    if !state.flags.contains(Flags::DSP_STOP)
-                        && this.keepalive_timeout != Duration::from_secs(0)
-                    {
+                    if !state.flags.contains(Flags::DSP_STOP) && this.keepalive_timeout != 0 {
                         match Pin::new(&mut this.keepalive).poll(cx) {
                             Poll::Ready(_) => {
                                 if this.keepalive.deadline()
@@ -147,7 +144,10 @@ where
                                     state.read_task.wake()
                                 } else {
                                     let expire = RtInstant::from_std(
-                                        this.time.now() + this.keepalive_timeout,
+                                        this.time.now()
+                                            + Duration::from_secs(
+                                                this.keepalive_timeout as u64,
+                                            ),
                                     );
                                     this.keepalive.reset(expire);
                                     let _ = Pin::new(&mut this.keepalive).poll(cx);

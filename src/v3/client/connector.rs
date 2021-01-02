@@ -25,8 +25,8 @@ pub struct MqttConnector<A, T> {
     max_send: usize,
     max_receive: usize,
     max_packet_size: u32,
-    handshake_timeout: u64,
-    disconnect_timeout: u64,
+    handshake_timeout: u16,
+    disconnect_timeout: u16,
 }
 
 impl<A> MqttConnector<A, ()>
@@ -150,8 +150,8 @@ where
     ///
     /// Handshake includes `connect` packet and response `connect-ack`.
     /// By default handshake timeuot is disabled.
-    pub fn handshake_timeout(mut self, timeout: usize) -> Self {
-        self.handshake_timeout = timeout as u64;
+    pub fn handshake_timeout(mut self, timeout: u16) -> Self {
+        self.handshake_timeout = timeout as u16;
         self
     }
 
@@ -163,8 +163,8 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(mut self, timeout: usize) -> Self {
-        self.disconnect_timeout = timeout as u64;
+    pub fn disconnect_timeout(mut self, timeout: u16) -> Self {
+        self.disconnect_timeout = timeout as u16;
         self
     }
 
@@ -223,7 +223,7 @@ where
         if self.handshake_timeout > 0 {
             Either::Left(
                 Select::new(
-                    delay_for(Duration::from_millis(self.handshake_timeout)),
+                    delay_for(Duration::from_millis(self.handshake_timeout as u64)),
                     self._connect(),
                 )
                 .map(|result| match result {
@@ -242,7 +242,7 @@ where
         let max_send = self.max_send;
         let max_receive = self.max_receive;
         let max_packet_size = self.max_packet_size;
-        let keepalive_timeout = pkt.keep_alive as u64;
+        let keepalive_timeout = pkt.keep_alive;
         let disconnect_timeout = self.disconnect_timeout;
 
         async move {

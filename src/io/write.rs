@@ -58,7 +58,7 @@ where
                     log::trace!("write task is instructed to shutdown");
 
                     this.st = IoWriteState::Shutdown(if state.disconnect_timeout != 0 {
-                        Some(delay_for(Duration::from_millis(state.disconnect_timeout)))
+                        Some(delay_for(Duration::from_millis(state.disconnect_timeout as u64)))
                     } else {
                         None
                     });

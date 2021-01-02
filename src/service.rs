@@ -18,7 +18,7 @@ type ResponseItem<U> = Option<<U as Encoder>::Item>;
 /// for building instances for framed services.
 pub(crate) struct FactoryBuilder<St, C, Io, Codec> {
     connect: C,
-    disconnect_timeout: usize,
+    disconnect_timeout: u16,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
@@ -49,7 +49,7 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub(crate) fn disconnect_timeout(mut self, val: usize) -> Self {
+    pub(crate) fn disconnect_timeout(mut self, val: u16) -> Self {
         self.disconnect_timeout = val;
         self
     }
@@ -78,7 +78,7 @@ where
 pub(crate) struct FramedService<St, C, T, Io, Codec, Cfg> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: usize,
+    disconnect_timeout: u16,
     time: LowResTimeService,
     _t: PhantomData<(St, Io, Codec, Cfg)>,
 }
@@ -141,7 +141,7 @@ where
     #[pin]
     fut: C::Future,
     handler: Rc<T>,
-    disconnect_timeout: usize,
+    disconnect_timeout: u16,
     time: LowResTimeService,
 }
 
@@ -181,7 +181,7 @@ where
 pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: usize,
+    disconnect_timeout: u16,
     time: LowResTimeService,
     _t: PhantomData<(St, Io, Codec)>,
 }
@@ -239,8 +239,8 @@ where
             log::trace!("Connection handler is created, starting dispatcher");
 
             IoDispatcher::with(io, st, handler, time)
-                .keepalive_timeout(keepalive)
-                .disconnect_timeout(timeout as u64)
+                .keepalive_timeout(keepalive as u16)
+                .disconnect_timeout(timeout)
                 .await
         })
     }
@@ -250,7 +250,7 @@ where
 /// for building instances for framed services.
 pub(crate) struct FactoryBuilder2<St, C, Io, Codec> {
     connect: C,
-    disconnect_timeout: usize,
+    disconnect_timeout: u16,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
@@ -278,7 +278,7 @@ where
     }
 
     /// Set connection disconnect timeout in milliseconds.
-    pub(crate) fn disconnect_timeout(mut self, val: usize) -> Self {
+    pub(crate) fn disconnect_timeout(mut self, val: u16) -> Self {
         self.disconnect_timeout = val;
         self
     }
@@ -307,7 +307,7 @@ where
 pub(crate) struct FramedService2<St, C, T, Io, Codec, Cfg> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: usize,
+    disconnect_timeout: u16,
     time: LowResTimeService,
     _t: PhantomData<(St, Io, Codec, Cfg)>,
 }
@@ -378,7 +378,7 @@ where
     #[pin]
     fut: C::Future,
     handler: Rc<T>,
-    disconnect_timeout: usize,
+    disconnect_timeout: u16,
     time: LowResTimeService,
 }
 
@@ -422,7 +422,7 @@ where
 pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: usize,
+    disconnect_timeout: u16,
     time: LowResTimeService,
     _t: PhantomData<(St, Io, Codec)>,
 }
@@ -509,8 +509,8 @@ where
             };
 
             IoDispatcher::with(io, state, handler, time)
-                .keepalive_timeout(ka)
-                .disconnect_timeout(timeout as u64)
+                .keepalive_timeout(ka as u16)
+                .disconnect_timeout(timeout)
                 .await
         })
     }
