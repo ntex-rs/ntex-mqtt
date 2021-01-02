@@ -10,7 +10,7 @@ use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::iostate::DispatcherItem;
+use crate::io::DispatcherItem;
 
 use super::control::{self, ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};

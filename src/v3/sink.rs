@@ -7,10 +7,10 @@ use fxhash::FxHashMap;
 use ntex::channel::pool;
 
 use super::{codec, error::ProtocolError, error::SendPacketError};
-use crate::iostate::{IoBuffer, IoBufferInner};
+use crate::io::{IoState, IoStateInner};
 use crate::types::packet_type;
 
-pub struct MqttSink(Rc<RefCell<MqttSinkInner>>, IoBuffer<codec::Codec>);
+pub struct MqttSink(Rc<RefCell<MqttSinkInner>>, IoState<codec::Codec>);
 
 pub(crate) enum Ack {
     Publish(NonZeroU16),
@@ -53,7 +53,7 @@ impl Clone for MqttSink {
 
 impl MqttSink {
     pub(crate) fn new(
-        state: IoBuffer<codec::Codec>,
+        state: IoState<codec::Codec>,
         max_send: usize,
         pool: Rc<MqttSinkPool>,
     ) -> Self {
@@ -275,7 +275,7 @@ impl AckType {
 pub struct PublishBuilder {
     packet: codec::Publish,
     sink: Rc<RefCell<MqttSinkInner>>,
-    state: Rc<RefCell<IoBufferInner<codec::Codec>>>,
+    state: Rc<RefCell<IoStateInner<codec::Codec>>>,
 }
 
 impl PublishBuilder {
@@ -380,7 +380,7 @@ impl PublishBuilder {
 pub struct SubscribeBuilder {
     id: u16,
     sink: Rc<RefCell<MqttSinkInner>>,
-    state: Rc<RefCell<IoBufferInner<codec::Codec>>>,
+    state: Rc<RefCell<IoStateInner<codec::Codec>>>,
     topic_filters: Vec<(ByteString, codec::QoS)>,
 }
 
@@ -468,7 +468,7 @@ impl SubscribeBuilder {
 pub struct UnsubscribeBuilder {
     id: u16,
     sink: Rc<RefCell<MqttSinkInner>>,
-    state: Rc<RefCell<IoBufferInner<codec::Codec>>>,
+    state: Rc<RefCell<IoStateInner<codec::Codec>>>,
     topic_filters: Vec<ByteString>,
 }
 

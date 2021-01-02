@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::iostate::IoBuffer;
+use crate::io::IoState;
 
 use super::codec as mqtt;
 use super::sink::MqttSink;
@@ -10,7 +10,7 @@ pub struct Connect<Io> {
     io: Io,
     pkt: mqtt::Connect,
     sink: MqttSink,
-    state: IoBuffer<mqtt::Codec>,
+    state: IoState<mqtt::Codec>,
 }
 
 impl<Io> Connect<Io> {
@@ -18,7 +18,7 @@ impl<Io> Connect<Io> {
         pkt: mqtt::Connect,
         io: Io,
         sink: MqttSink,
-        state: IoBuffer<mqtt::Codec>,
+        state: IoState<mqtt::Codec>,
     ) -> Self {
         Self { pkt, io, sink, state }
     }
@@ -120,7 +120,7 @@ pub struct ConnectAck<Io, St> {
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectAckReason,
     pub(crate) sink: MqttSink,
-    pub(crate) state: IoBuffer<mqtt::Codec>,
+    pub(crate) state: IoState<mqtt::Codec>,
     pub(crate) keepalive: u16,
 }
 

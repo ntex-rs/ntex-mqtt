@@ -7,11 +7,7 @@
 mod topic;
 #[macro_use]
 mod utils;
-
-mod iodispatcher;
-mod ioread;
-mod iostate;
-mod iowrite;
+mod io;
 
 pub mod error;
 pub mod v3;

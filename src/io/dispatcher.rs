@@ -9,9 +9,7 @@ use ntex::service::{IntoService, Service};
 use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use crate::ioread::IoRead;
-use crate::iostate::{DispatcherItem, Flags, IoBuffer, IoState};
-use crate::iowrite::IoWrite;
+use crate::io::{DispatcherItem, Flags, Io, IoDispatcherError, IoRead, IoState, IoWrite};
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -27,8 +25,8 @@ where
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
-    io: Rc<RefCell<IoState<T, S::Error>>>,
-    state: IoBuffer<U>,
+    io: Rc<RefCell<Io<T, S::Error>>>,
+    state: IoState<U>,
 
     service: S,
     st: IoDispatcherState,
@@ -58,13 +56,13 @@ where
     /// Construct new `Dispatcher` instance with outgoing messages stream.
     pub fn with<F: IntoService<S>>(
         io: T,
-        state: IoBuffer<U>,
+        state: IoState<U>,
         service: F,
         time: LowResTimeService,
     ) -> Self {
         let keepalive_timeout = Duration::from_secs(30);
         let expire = RtInstant::from_std(time.now() + keepalive_timeout);
-        let io = Rc::new(RefCell::new(IoState { io, error: None }));
+        let io = Rc::new(RefCell::new(Io { io, error: None }));
 
         ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
         ntex::rt::spawn(IoWrite::new(io.clone(), state.clone()));
@@ -129,11 +127,11 @@ where
 
         match this.st {
             IoDispatcherState::Processing => {
+                // keepalive timer
                 {
                     let mut state = this.state.inner.borrow_mut();
                     // log::trace!(":{:?}:", state.flags);
 
-                    // keepalive timer
                     if !state.flags.contains(Flags::DSP_STOP)
                         && this.keepalive_timeout != Duration::from_secs(0)
                     {
@@ -144,7 +142,7 @@ where
                                 {
                                     state
                                         .dispatch_queue
-                                        .push_back(DispatcherItem::KeepAliveTimeout);
+                                        .push_back(IoDispatcherError::KeepAlive);
                                     state.flags.insert(Flags::DSP_STOP);
                                     state.read_task.wake()
                                 } else {
@@ -172,7 +170,7 @@ where
                                 state.dispatch_inflight += 1;
                                 drop(state);
                                 ntex::rt::spawn(
-                                    this.service.call(item).map(move |item| {
+                                    this.service.call(item.into()).map(move |item| {
                                         st.inner.borrow_mut().write_item(item)
                                     }),
                                 );
@@ -327,13 +325,13 @@ mod tests {
         <U as Encoder>::Item: 'static,
     {
         /// Construct new `Dispatcher` instance
-        pub fn new<F: IntoService<S>>(io: T, codec: U, service: F) -> (Self, IoBuffer<U>) {
+        pub fn new<F: IntoService<S>>(io: T, codec: U, service: F) -> (Self, IoState<U>) {
             let time = LowResTimeService::with(Duration::from_secs(1));
             let keepalive_timeout = Duration::from_secs(30);
             let updated = time.now();
             let expire = RtInstant::from_std(updated + keepalive_timeout);
-            let state = IoBuffer::new(codec);
-            let io = Rc::new(RefCell::new(IoState { io, error: None }));
+            let state = IoState::new(codec);
+            let io = Rc::new(RefCell::new(super::Io { io, error: None }));
 
             ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
             ntex::rt::spawn(IoWrite::new(io.clone(), state.clone()));

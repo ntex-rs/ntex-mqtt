@@ -11,7 +11,7 @@ use ntex::service::{Service, ServiceFactory};
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::iostate::IoBuffer;
+use crate::io::IoState;
 use crate::version::{ProtocolVersion, VersionCodec};
 use crate::{v3, v5};
 
@@ -73,14 +73,14 @@ where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     V3: ServiceFactory<
         Config = (),
-        Request = (Io, IoBuffer<v3::codec::Codec>, Option<Delay>),
+        Request = (Io, IoState<v3::codec::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
         Config = (),
-        Request = (Io, IoBuffer<v5::codec::Codec>, Option<Delay>),
+        Request = (Io, IoState<v5::codec::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -94,7 +94,7 @@ where
         Io,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, IoBuffer<v3::codec::Codec>, Option<Delay>),
+            Request = (Io, IoState<v3::codec::Codec>, Option<Delay>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -142,7 +142,7 @@ where
         V3,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, IoBuffer<v5::codec::Codec>, Option<Delay>),
+            Request = (Io, IoState<v5::codec::Codec>, Option<Delay>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -191,14 +191,14 @@ where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     V3: ServiceFactory<
         Config = (),
-        Request = (Io, IoBuffer<v3::codec::Codec>, Option<Delay>),
+        Request = (Io, IoState<v3::codec::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
         Config = (),
-        Request = (Io, IoBuffer<v5::codec::Codec>, Option<Delay>),
+        Request = (Io, IoState<v5::codec::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -245,12 +245,12 @@ impl<Io, V3, V5, Err> Service for MqttServerImpl<Io, V3, V5, Err>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     V3: Service<
-        Request = (Io, IoBuffer<v3::codec::Codec>, Option<Delay>),
+        Request = (Io, IoState<v3::codec::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
     >,
     V5: Service<
-        Request = (Io, IoBuffer<v5::codec::Codec>, Option<Delay>),
+        Request = (Io, IoState<v5::codec::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
     >,
@@ -292,7 +292,7 @@ where
         MqttServerImplResponse {
             state: MqttServerImplState::Version(Some((
                 req,
-                IoBuffer::new(VersionCodec),
+                IoState::new(VersionCodec),
                 self.handlers.clone(),
                 delay,
             ))),
@@ -304,12 +304,12 @@ pin_project_lite::pin_project! {
     pub struct MqttServerImplResponse<Io, V3, V5, Err>
     where
         V3: Service<
-            Request = (Io, IoBuffer<v3::codec::Codec>, Option<Delay>),
+            Request = (Io, IoState<v3::codec::Codec>, Option<Delay>),
             Response = (),
             Error = MqttError<Err>,
         >,
         V5: Service<
-            Request = (Io, IoBuffer<v5::codec::Codec>, Option<Delay>),
+            Request = (Io, IoState<v5::codec::Codec>, Option<Delay>),
             Response = (),
             Error = MqttError<Err>,
         >,
@@ -323,19 +323,19 @@ pin_project_lite::pin_project! {
 pub(crate) enum MqttServerImplState<Io, V3: Service, V5: Service> {
     V3(#[pin] V3::Future),
     V5(#[pin] V5::Future),
-    Version(Option<(Io, IoBuffer<VersionCodec>, Rc<(V3, V5)>, Option<Delay>)>),
+    Version(Option<(Io, IoState<VersionCodec>, Rc<(V3, V5)>, Option<Delay>)>),
 }
 
 impl<Io, V3, V5, Err> Future for MqttServerImplResponse<Io, V3, V5, Err>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     V3: Service<
-        Request = (Io, IoBuffer<v3::codec::Codec>, Option<Delay>),
+        Request = (Io, IoState<v3::codec::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
     >,
     V5: Service<
-        Request = (Io, IoBuffer<v5::codec::Codec>, Option<Delay>),
+        Request = (Io, IoState<v5::codec::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
     >,
@@ -406,7 +406,7 @@ where
     Codec: Encoder + Decoder,
 {
     type Config = ();
-    type Request = (Io, IoBuffer<Codec>, Option<Delay>);
+    type Request = (Io, IoState<Codec>, Option<Delay>);
     type Response = ();
     type Error = MqttError<Err>;
     type Service = DefaultProtocolServer<Io, Err, InitErr, Codec>;
@@ -422,7 +422,7 @@ impl<Io, Err, InitErr, Codec> Service for DefaultProtocolServer<Io, Err, InitErr
 where
     Codec: Encoder + Decoder,
 {
-    type Request = (Io, IoBuffer<Codec>, Option<Delay>);
+    type Request = (Io, IoState<Codec>, Option<Delay>);
     type Response = ();
     type Error = MqttError<Err>;
     type Future = Ready<Result<Self::Response, Self::Error>>;

@@ -64,24 +64,76 @@ where
     }
 }
 
-pub struct IoBuffer<U: Encoder + Decoder> {
-    pub(crate) inner: Rc<RefCell<IoBufferInner<U>>>,
+impl<U> From<IoDispatcherError<U>> for DispatcherItem<U>
+where
+    U: Encoder + Decoder,
+{
+    fn from(err: IoDispatcherError<U>) -> Self {
+        match err {
+            IoDispatcherError::KeepAlive => DispatcherItem::KeepAliveTimeout,
+            IoDispatcherError::Encoder(err) => DispatcherItem::EncoderError(err),
+            IoDispatcherError::Io(err) => DispatcherItem::IoError(err),
+        }
+    }
 }
 
-impl<U> IoBuffer<U>
+pub(crate) struct Io<T, E>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    pub(crate) io: T,
+    pub(crate) error: Option<E>,
+}
+
+impl<T, E> Io<T, E>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    pub(crate) fn get_mut(&mut self) -> &mut T {
+        &mut self.io
+    }
+}
+
+pub struct IoState<U: Encoder + Decoder> {
+    pub(crate) inner: Rc<RefCell<IoStateInner<U>>>,
+}
+
+pub(crate) struct IoStateInner<U: Encoder + Decoder> {
+    pub(crate) codec: U,
+    pub(crate) flags: Flags,
+    pub(crate) disconnect_timeout: u64,
+
+    pub(crate) dispatch_inflight: usize,
+    pub(crate) dispatch_task: LocalWaker,
+    pub(crate) dispatch_queue: VecDeque<IoDispatcherError<U>>,
+
+    pub(crate) write_buf: BytesMut,
+    pub(crate) write_task: LocalWaker,
+
+    pub(crate) read_buf: BytesMut,
+    pub(crate) read_task: LocalWaker,
+}
+
+pub(crate) enum IoDispatcherError<U: Encoder> {
+    KeepAlive,
+    Encoder(U::Error),
+    Io(io::Error),
+}
+
+impl<U> IoState<U>
 where
     U: Encoder + Decoder,
 {
     pub(crate) fn new(codec: U) -> Self {
-        IoBuffer {
-            inner: Rc::new(RefCell::new(IoBufferInner {
+        IoState {
+            inner: Rc::new(RefCell::new(IoStateInner {
                 codec,
                 flags: Flags::empty(),
                 disconnect_timeout: 1000,
 
                 dispatch_inflight: 0,
                 dispatch_task: LocalWaker::new(),
-                dispatch_queue: VecDeque::with_capacity(16),
+                dispatch_queue: VecDeque::with_capacity(4),
 
                 write_buf: BytesMut::new(),
                 write_task: LocalWaker::new(),
@@ -93,8 +145,8 @@ where
     }
 
     #[inline]
-    /// Consume the `IoBuffer`, returning `IoBuffer` with different codec.
-    pub fn map_codec<F, U2>(self, f: F) -> IoBuffer<U2>
+    /// Consume the `IoState`, returning `IoState` with different codec.
+    pub fn map_codec<F, U2>(self, f: F) -> IoState<U2>
     where
         F: Fn(&U) -> U2,
         U2: Encoder + Decoder,
@@ -102,8 +154,8 @@ where
         let st = self.inner.borrow();
         let codec = f(&st.codec);
 
-        IoBuffer {
-            inner: Rc::new(RefCell::new(IoBufferInner {
+        IoState {
+            inner: Rc::new(RefCell::new(IoStateInner {
                 codec,
                 flags: st.flags,
                 disconnect_timeout: st.disconnect_timeout,
@@ -198,7 +250,7 @@ where
     }
 }
 
-impl<U> Clone for IoBuffer<U>
+impl<U> Clone for IoState<U>
 where
     U: Encoder + Decoder,
 {
@@ -207,23 +259,7 @@ where
     }
 }
 
-pub(crate) struct IoBufferInner<U: Encoder + Decoder> {
-    pub(crate) codec: U,
-    pub(crate) flags: Flags,
-    pub(crate) disconnect_timeout: u64,
-
-    pub(crate) dispatch_inflight: usize,
-    pub(crate) dispatch_task: LocalWaker,
-    pub(crate) dispatch_queue: VecDeque<DispatcherItem<U>>,
-
-    pub(crate) write_buf: BytesMut,
-    pub(crate) write_task: LocalWaker,
-
-    pub(crate) read_buf: BytesMut,
-    pub(crate) read_task: LocalWaker,
-}
-
-impl<U> IoBufferInner<U>
+impl<U> IoStateInner<U>
 where
     U: Encoder + Decoder,
 {
@@ -295,7 +331,7 @@ where
                     if let Err(err) = self.codec.encode(item, &mut self.write_buf) {
                         log::trace!("Codec encoder error: {:?}", err);
                         self.flags.insert(Flags::DSP_STOP | Flags::ST_DSP_ERR);
-                        self.dispatch_queue.push_back(DispatcherItem::EncoderError(err));
+                        self.dispatch_queue.push_back(IoDispatcherError::Encoder(err));
                         self.dispatch_task.wake();
                     } else if is_write_sleep {
                         self.write_task.wake();
@@ -345,7 +381,7 @@ where
                     self.flags.insert(Flags::IO_ERR | Flags::DSP_STOP);
                     self.write_task.wake();
                     self.dispatch_task.wake();
-                    self.dispatch_queue.push_back(DispatcherItem::IoError(err));
+                    self.dispatch_queue.push_back(IoDispatcherError::Io(err));
                     return Poll::Ready(());
                 }
             }
@@ -461,22 +497,5 @@ where
         }
         log::trace!("framed transport flushed and closed");
         Poll::Ready(Ok(()))
-    }
-}
-
-pub(crate) struct IoState<T, E>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
-    pub(crate) io: T,
-    pub(crate) error: Option<E>,
-}
-
-impl<T, E> IoState<T, E>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
-    pub(crate) fn get_mut(&mut self) -> &mut T {
-        &mut self.io
     }
 }

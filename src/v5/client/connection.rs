@@ -12,8 +12,7 @@ use ntex::service::{into_service, IntoService, Service};
 use ntex::util::time::LowResTimeService;
 
 use crate::error::MqttError;
-use crate::iodispatcher::IoDispatcher;
-use crate::iostate::IoBuffer;
+use crate::io::{IoDispatcher, IoState};
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{codec, sink::MqttSink, ControlResult};
 
@@ -23,7 +22,7 @@ use super::dispatcher::create_dispatcher;
 /// Mqtt client
 pub struct Client<Io> {
     io: Io,
-    state: IoBuffer<codec::Codec>,
+    state: IoState<codec::Codec>,
     sink: MqttSink,
     keepalive: u64,
     disconnect_timeout: u64,
@@ -38,7 +37,7 @@ where
     /// Construct new `Dispatcher` instance with outgoing messages stream.
     pub(super) fn new(
         io: T,
-        state: IoBuffer<codec::Codec>,
+        state: IoState<codec::Codec>,
         pkt: codec::ConnectAck,
         max_receive: u16,
         keepalive: u64,
@@ -182,7 +181,7 @@ pub struct ClientRouter<Io, Err, PErr> {
     handlers: Vec<Handler<PErr>>,
     io: Io,
     sink: MqttSink,
-    state: IoBuffer<codec::Codec>,
+    state: IoState<codec::Codec>,
     keepalive: u64,
     disconnect_timeout: u64,
     max_receive: usize,

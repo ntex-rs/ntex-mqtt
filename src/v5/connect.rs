@@ -1,13 +1,13 @@
 use std::{fmt, num::NonZeroU16};
 
 use super::{codec, sink::MqttSink};
-use crate::iostate::IoBuffer;
+use crate::io::IoState;
 
 /// Connect message
 pub struct Connect<Io> {
     io: Io,
     pkt: codec::Connect,
-    state: IoBuffer<codec::Codec>,
+    state: IoState<codec::Codec>,
     sink: MqttSink,
     max_size: u32,
     max_receive: u16,
@@ -19,7 +19,7 @@ impl<Io> Connect<Io> {
         pkt: codec::Connect,
         io: Io,
         sink: MqttSink,
-        state: IoBuffer<codec::Codec>,
+        state: IoState<codec::Codec>,
         max_size: u32,
         max_receive: u16,
         max_topic_alias: u16,
@@ -106,7 +106,7 @@ pub struct ConnectAck<Io, St> {
     pub(crate) session: Option<St>,
     pub(crate) sink: MqttSink,
     pub(crate) packet: codec::ConnectAck,
-    pub(crate) state: IoBuffer<codec::Codec>,
+    pub(crate) state: IoState<codec::Codec>,
     pub(crate) keepalive: usize,
 }
 

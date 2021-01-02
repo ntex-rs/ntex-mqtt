@@ -15,7 +15,7 @@ use ntex::connect::openssl::{OpensslConnector, SslConnector};
 use ntex::connect::rustls::{ClientConfig, RustlsConnector};
 
 use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
-use crate::{iostate::IoBuffer, utils::Select};
+use crate::{io::IoState, utils::Select};
 
 /// Mqtt client connector
 pub struct MqttConnector<A, T> {
@@ -247,7 +247,7 @@ where
 
         async move {
             let mut io = fut.await?;
-            let state = IoBuffer::new(codec::Codec::new().max_size(max_packet_size));
+            let state = IoState::new(codec::Codec::new().max_size(max_packet_size));
 
             state.send(&mut io, codec::Packet::Connect(pkt)).await?;
 

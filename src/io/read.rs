@@ -2,7 +2,7 @@ use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, task::Context, task::
 
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use super::iostate::{Flags, IoBuffer, IoState};
+use super::{Flags, Io, IoState};
 
 pub(crate) struct IoRead<T, U, E>
 where
@@ -10,8 +10,8 @@ where
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
-    state: Rc<RefCell<IoState<T, E>>>,
-    buffer: IoBuffer<U>,
+    io: Rc<RefCell<Io<T, E>>>,
+    state: IoState<U>,
 }
 
 impl<T, U, E> IoRead<T, U, E>
@@ -20,8 +20,8 @@ where
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
-    pub(crate) fn new(state: Rc<RefCell<IoState<T, E>>>, buffer: IoBuffer<U>) -> Self {
-        Self { state, buffer }
+    pub(crate) fn new(io: Rc<RefCell<Io<T, E>>>, state: IoState<U>) -> Self {
+        Self { io, state }
     }
 }
 
@@ -34,15 +34,15 @@ where
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut buffer = self.buffer.inner.borrow_mut();
+        let mut state = self.state.inner.borrow_mut();
 
-        if buffer.flags.contains(Flags::IO_ERR | Flags::IO_SHUTDOWN) {
+        if state.flags.contains(Flags::IO_ERR | Flags::IO_SHUTDOWN) {
             Poll::Ready(())
-        } else if buffer.flags.contains(Flags::RD_PAUSED) {
-            buffer.read_task.register(cx.waker());
+        } else if state.flags.contains(Flags::RD_PAUSED) {
+            state.read_task.register(cx.waker());
             Poll::Pending
         } else {
-            buffer.read_io(self.state.borrow_mut().get_mut(), cx)
+            state.read_io(self.io.borrow_mut().get_mut(), cx)
         }
     }
 }

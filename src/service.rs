@@ -10,8 +10,7 @@ use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use super::iodispatcher::IoDispatcher;
-use super::iostate::{DispatcherItem, IoBuffer};
+use super::io::{DispatcherItem, IoDispatcher, IoState};
 
 type ResponseItem<U> = Option<<U as Encoder>::Item>;
 
@@ -26,7 +25,7 @@ pub(crate) struct FactoryBuilder<St, C, Io, Codec> {
 impl<St, C, Io, Codec> FactoryBuilder<St, C, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoBuffer<Codec>, St, usize)>,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     Codec: Decoder + Encoder,
 {
@@ -87,7 +86,7 @@ pub(crate) struct FramedService<St, C, T, Io, Codec, Cfg> {
 impl<St, C, T, Io, Codec, Cfg> ServiceFactory for FramedService<St, C, T, Io, Codec, Cfg>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoBuffer<Codec>, St, usize)>,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     <C::Service as Service>::Future: 'static,
     T: ServiceFactory<
@@ -125,7 +124,7 @@ where
 pub(crate) struct FramedServiceResponse<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoBuffer<Codec>, St, usize)>,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
@@ -149,7 +148,7 @@ where
 impl<St, C, T, Io, Codec> Future for FramedServiceResponse<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoBuffer<Codec>, St, usize)>,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
@@ -190,7 +189,7 @@ pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec> {
 impl<St, C, T, Io, Codec> Service for FramedServiceImpl<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    C: Service<Request = Io, Response = (Io, IoBuffer<Codec>, St, usize)>,
+    C: Service<Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
@@ -260,8 +259,8 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = (Io, IoBuffer<Codec>),
-        Response = (Io, IoBuffer<Codec>, St, usize),
+        Request = (Io, IoState<Codec>),
+        Response = (Io, IoState<Codec>, St, usize),
     >,
     C::Error: fmt::Debug,
     Codec: Decoder + Encoder,
@@ -318,8 +317,8 @@ where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: ServiceFactory<
         Config = (),
-        Request = (Io, IoBuffer<Codec>),
-        Response = (Io, IoBuffer<Codec>, St, usize),
+        Request = (Io, IoState<Codec>),
+        Response = (Io, IoState<Codec>, St, usize),
     >,
     C::Error: fmt::Debug,
     <C::Service as Service>::Future: 'static,
@@ -336,7 +335,7 @@ where
     <Codec as Encoder>::Item: 'static,
 {
     type Config = Cfg;
-    type Request = (Io, IoBuffer<Codec>, Option<Delay>);
+    type Request = (Io, IoState<Codec>, Option<Delay>);
     type Response = ();
     type Error = C::Error;
     type InitError = C::InitError;
@@ -360,8 +359,8 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = (Io, IoBuffer<Codec>),
-        Response = (Io, IoBuffer<Codec>, St, usize),
+        Request = (Io, IoState<Codec>),
+        Response = (Io, IoState<Codec>, St, usize),
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
@@ -388,8 +387,8 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = (Io, IoBuffer<Codec>),
-        Response = (Io, IoBuffer<Codec>, St, usize),
+        Request = (Io, IoState<Codec>),
+        Response = (Io, IoState<Codec>, St, usize),
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
@@ -431,7 +430,7 @@ pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec> {
 impl<St, C, T, Io, Codec> Service for FramedServiceImpl2<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    C: Service<Request = (Io, IoBuffer<Codec>), Response = (Io, IoBuffer<Codec>, St, usize)>,
+    C: Service<Request = (Io, IoState<Codec>), Response = (Io, IoState<Codec>, St, usize)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
@@ -446,7 +445,7 @@ where
     Codec: Decoder + Encoder + 'static,
     <Codec as Encoder>::Item: 'static,
 {
-    type Request = (Io, IoBuffer<Codec>, Option<Delay>);
+    type Request = (Io, IoState<Codec>, Option<Delay>);
     type Response = ();
     type Error = C::Error;
     type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
@@ -462,7 +461,7 @@ where
     }
 
     #[inline]
-    fn call(&self, (req, state, delay): (Io, IoBuffer<Codec>, Option<Delay>)) -> Self::Future {
+    fn call(&self, (req, state, delay): (Io, IoState<Codec>, Option<Delay>)) -> Self::Future {
         log::trace!("Start connection handshake");
 
         let handler = self.handler.clone();

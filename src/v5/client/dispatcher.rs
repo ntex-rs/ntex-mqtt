@@ -9,7 +9,7 @@ use ntex::service::Service;
 use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::iostate::DispatcherItem;
+use crate::io::DispatcherItem;
 use crate::types::packet_type;
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{codec, sink::Ack, sink::MqttSink};

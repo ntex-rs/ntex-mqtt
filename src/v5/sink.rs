@@ -10,11 +10,9 @@ use ntex::channel::pool;
 use crate::v5::error::{
     ProtocolError, PublishQos0Error, PublishQos1Error, SubscribeError, UnsubscribeError,
 };
-use crate::{
-    iostate::IoBuffer, iostate::IoBufferInner, types::packet_type, types::QoS, v5::codec,
-};
+use crate::{io::IoState, io::IoStateInner, types::packet_type, types::QoS, v5::codec};
 
-pub struct MqttSink(Rc<RefCell<MqttSinkInner>>, IoBuffer<codec::Codec>);
+pub struct MqttSink(Rc<RefCell<MqttSinkInner>>, IoState<codec::Codec>);
 
 pub(crate) enum Ack {
     Publish(codec::PublishAck),
@@ -57,7 +55,7 @@ impl Clone for MqttSink {
 
 impl MqttSink {
     pub(crate) fn new(
-        state: IoBuffer<codec::Codec>,
+        state: IoState<codec::Codec>,
         max_send: usize,
         pool: Rc<MqttSinkPool>,
     ) -> Self {
@@ -325,7 +323,7 @@ impl AckType {
 
 pub struct PublishBuilder {
     sink: Rc<RefCell<MqttSinkInner>>,
-    state: Rc<RefCell<IoBufferInner<codec::Codec>>>,
+    state: Rc<RefCell<IoStateInner<codec::Codec>>>,
     packet: codec::Publish,
 }
 
@@ -459,7 +457,7 @@ pub struct SubscribeBuilder {
     id: u16,
     packet: codec::Subscribe,
     sink: Rc<RefCell<MqttSinkInner>>,
-    state: Rc<RefCell<IoBufferInner<codec::Codec>>>,
+    state: Rc<RefCell<IoStateInner<codec::Codec>>>,
 }
 
 impl SubscribeBuilder {
@@ -555,7 +553,7 @@ pub struct UnsubscribeBuilder {
     id: u16,
     packet: codec::Unsubscribe,
     sink: Rc<RefCell<MqttSinkInner>>,
-    state: Rc<RefCell<IoBufferInner<codec::Codec>>>,
+    state: Rc<RefCell<IoStateInner<codec::Codec>>>,
 }
 
 impl UnsubscribeBuilder {
