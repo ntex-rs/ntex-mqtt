@@ -25,9 +25,6 @@ async fn connect<Io>(mut packet: Connect<Io>) -> Result<ConnectAck<Io, St>, ()> 
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    //std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
-    //env_logger::init();
-
     let srv = server::test_server(|| MqttServer::new(connect).publish(|_t| ok(())).finish());
 
     // connect to server

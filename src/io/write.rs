@@ -48,7 +48,7 @@ where
 
         // if IO error occured
         if state.flags.intersects(Flags::IO_ERR) {
-            log::trace!("io is closed");
+            log::trace!("write io is closed");
             return Poll::Ready(());
         }
 
@@ -86,11 +86,10 @@ where
                 // on read side. we have to use disconnect timeout, otherwise it
                 // could hang forever.
 
-                return if let Poll::Ready(_) = state.close_io(&mut *this.io.borrow_mut(), cx) {
+                if let Poll::Ready(_) = state.close_io(&mut *this.io.borrow_mut(), cx) {
                     state.flags.insert(Flags::IO_ERR);
                     state.read_task.wake();
                     log::trace!("write task is closed");
-                    Poll::Ready(())
                 } else {
                     if let Some(ref mut delay) = delay {
                         futures::ready!(Pin::new(delay).poll(cx));
@@ -98,8 +97,8 @@ where
                     state.flags.insert(Flags::IO_ERR);
                     state.read_task.wake();
                     log::trace!("write task is closed after delay");
-                    Poll::Ready(())
-                };
+                }
+                return Poll::Ready(());
             }
         }
 

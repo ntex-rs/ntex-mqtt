@@ -7,7 +7,6 @@ use futures::ready;
 use fxhash::FxHashSet;
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::inflight::InFlightService;
-use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::MqttError;
 
@@ -53,18 +52,12 @@ where
         async move {
             let (publish, control) = fut.await;
 
-            // mqtt dispatcher.
             Ok(
                 // limit number of in-flight messages
                 InFlightService::new(
                     inflight,
-                    // mqtt spec requires ack ordering, so enforce response ordering
-                    InOrder::service(Dispatcher::<_, _, _, E>::new(cfg, publish?, control?)),
-                )
-                .map_err(|e| match e {
-                    InOrderError::Service(e) => e,
-                    InOrderError::Disconnected => MqttError::Disconnected,
-                }),
+                    Dispatcher::<_, _, _, E>::new(cfg, publish?, control?),
+                ),
             )
         }
     })

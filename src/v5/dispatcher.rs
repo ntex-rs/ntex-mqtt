@@ -1,13 +1,12 @@
 use std::cell::{Cell, RefCell};
 use std::convert::TryFrom;
 use std::task::{Context, Poll};
-use std::{future::Future, io, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
+use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use futures::future::{join, ok, Either, FutureExt, Ready};
 use futures::ready;
 use fxhash::FxHashSet;
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
-use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::DispatcherItem;
@@ -55,23 +54,13 @@ where
         async move {
             let (publish, control) = fut.await;
 
-            // mqtt dispatcher.
-            Ok(
-                // mqtt spec requires ack ordering, so enforce response ordering
-                InOrder::service(Dispatcher::<_, _, E, T::Error>::new(
-                    cfg.sink().clone(),
-                    max_receive as usize,
-                    max_topic_alias,
-                    publish?,
-                    control?,
-                ))
-                .map_err(|e| match e {
-                    InOrderError::Service(e) => e,
-                    InOrderError::Disconnected => MqttError::Protocol(ProtocolError::Io(
-                        io::Error::new(io::ErrorKind::Other, "Service dropped"),
-                    )),
-                }),
-            )
+            Ok(Dispatcher::<_, _, E, T::Error>::new(
+                cfg.sink().clone(),
+                max_receive as usize,
+                max_topic_alias,
+                publish?,
+                control?,
+            ))
         }
     })
 }

@@ -16,6 +16,7 @@ const HW: usize = 8 * 1024;
 bitflags::bitflags! {
     pub(crate) struct Flags: u8 {
         const DSP_STOP       = 0b0000_0001;
+        const DSP_READY      = 0b0000_0010;
 
         const IO_ERR         = 0b0000_0100;
         const IO_SHUTDOWN    = 0b0000_1000;
@@ -73,7 +74,6 @@ pub(crate) struct IoStateInner<U: Encoder + Decoder> {
     pub(crate) error: Option<io::Error>,
     pub(crate) disconnect_timeout: u16,
 
-    pub(crate) dispatch_inflight: usize,
     pub(crate) dispatch_task: LocalWaker,
 
     pub(crate) write_buf: BytesMut,
@@ -95,7 +95,6 @@ where
                 error: None,
                 disconnect_timeout: 1000,
 
-                dispatch_inflight: 0,
                 dispatch_task: LocalWaker::new(),
 
                 write_buf: BytesMut::new(),
@@ -124,7 +123,6 @@ where
                 error: st.error.take(),
                 disconnect_timeout: st.disconnect_timeout,
 
-                dispatch_inflight: 0,
                 dispatch_task: LocalWaker::new(),
 
                 write_buf: mem::take(&mut st.write_buf),
@@ -276,17 +274,7 @@ where
         &mut self,
         item: Result<Option<Response<U>>, E>,
     ) -> Option<Either<E, <U as Encoder>::Error>> {
-        // update inflight count
-        self.dispatch_inflight -= 1;
-        if self.dispatch_inflight == 0 && self.flags.contains(Flags::DSP_STOP) {
-            self.dispatch_task.wake();
-        }
-
-        log::trace!(
-            "encoding service response, is err: {:?}, remaining in-flight {}",
-            item.is_err(),
-            self.dispatch_inflight
-        );
+        log::trace!("encoding service response, is err: {:?}", item.is_err(),);
 
         if !self.flags.intersects(Flags::IO_ERR | Flags::ST_DSP_ERR) {
             match item {
@@ -333,7 +321,7 @@ where
                 Poll::Pending => break,
                 Poll::Ready(Ok(n)) => {
                     if n == 0 {
-                        log::trace!("io is disconnected");
+                        log::trace!("read io is disconnected");
                         self.flags.insert(Flags::IO_ERR | Flags::DSP_STOP);
                         self.write_task.wake();
                         self.dispatch_task.wake();

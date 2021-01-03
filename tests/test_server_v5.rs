@@ -80,7 +80,10 @@ async fn test_disconnect() -> std::io::Result<()> {
             .publish(ntex::fn_factory_with_config(|session: Session<St>| {
                 ok::<_, TestError>(ntex::fn_service(move |p: Publish| {
                     session.sink().close();
-                    ok::<_, TestError>(p.ack())
+                    async move {
+                        delay_for(Duration::from_millis(100)).await;
+                        Ok::<_, TestError>(p.ack())
+                    }
                 }))
             }))
             .finish()
@@ -112,7 +115,10 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
                         ..Default::default()
                     };
                     session.sink().close_with_reason(pkt);
-                    ok::<_, TestError>(p.ack())
+                    async move {
+                        delay_for(Duration::from_millis(100)).await;
+                        Ok::<_, TestError>(p.ack())
+                    }
                 }))
             }))
             .finish()

@@ -89,7 +89,7 @@ impl MqttSink {
         } else if inner.inflight.len() >= inner.cap {
             let (tx, rx) = inner.pool.waiters.channel();
             inner.waiters.push_back(tx);
-            Either::Right(rx.map(|v| if v.is_ok() { true } else { false }))
+            Either::Right(rx.map(|v| v.is_ok()))
         } else {
             Either::Left(ready(true))
         }

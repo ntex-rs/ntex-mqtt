@@ -34,6 +34,9 @@ where
     time: LowResTimeService,
     keepalive: Delay,
     keepalive_timeout: u16,
+    #[pin]
+    response: Option<S::Future>,
+    response_idx: usize,
 }
 
 struct IoDispatcherInner<S, U>
@@ -46,7 +49,7 @@ where
 {
     error: Option<IoDispatcherError<S, U>>,
     base: usize,
-    queue: VecDeque<S::Future>,
+    queue: VecDeque<Poll<Result<S::Response, S::Error>>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -125,6 +128,8 @@ where
             service: service.into_service(),
             updated: time.now(),
             keepalive: delay_until(expire),
+            response: None,
+            response_idx: 0,
             state,
             inner,
             time,
@@ -163,38 +168,6 @@ where
     }
 }
 
-impl<S, U> IoDispatcher<S, U>
-where
-    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>> + 'static,
-    U: Decoder + Encoder + 'static,
-    <U as Encoder>::Item: 'static,
-{
-    fn poll_keepalive(&mut self, cx: &mut Context<'_>) {
-        // keepalive timer
-        let mut state = self.state.inner.borrow_mut();
-
-        if !state.flags.contains(Flags::DSP_STOP) && self.keepalive_timeout != 0 {
-            match Pin::new(&mut self.keepalive).poll(cx) {
-                Poll::Ready(_) => {
-                    if self.keepalive.deadline() <= RtInstant::from_std(self.updated) {
-                        state.flags.insert(Flags::DSP_STOP);
-                        state.read_task.wake();
-                        self.inner.borrow_mut().error = Some(IoDispatcherError::KeepAlive);
-                    } else {
-                        let expire = RtInstant::from_std(
-                            self.time.now()
-                                + Duration::from_secs(self.keepalive_timeout as u64),
-                        );
-                        self.keepalive.reset(expire);
-                        let _ = Pin::new(&mut self.keepalive).poll(cx);
-                    }
-                }
-                Poll::Pending => (),
-            }
-        }
-    }
-}
-
 impl<S, U> Future for IoDispatcher<S, U>
 where
     S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>> + 'static,
@@ -204,21 +177,91 @@ where
     type Output = Result<(), S::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.as_mut().get_mut();
+        let mut this = self.as_mut().project();
 
         // log::trace!("IO-DISP poll :{:?}:", this.st);
 
+        // handle service response future
+        if let Some(fut) = this.response.as_mut().as_pin_mut() {
+            match fut.poll(cx) {
+                Poll::Pending => (),
+                Poll::Ready(res) => {
+                    let mut inner = this.inner.borrow_mut();
+                    let idx = *this.response_idx - inner.base;
+                    inner.queue[idx] = Poll::Ready(res);
+                    drop(inner);
+                    this = self.as_mut().project();
+                    this.response.set(None);
+                    this.state.inner.borrow_mut().flags.insert(Flags::DSP_READY);
+                }
+            }
+        }
+
+        // handle responses
+        {
+            let mut state = this.state.inner.borrow_mut();
+            if state.flags.contains(Flags::DSP_READY) {
+                let mut inner = this.inner.borrow_mut();
+                while let Some(res) = inner.queue.front() {
+                    if res.is_ready() {
+                        inner.base = inner.base.wrapping_add(1);
+                        if let Poll::Ready(item) = inner.queue.pop_front().unwrap() {
+                            if let Some(err) = state.write_item(item) {
+                                inner.error = Some(err.into());
+                                state.flags.insert(Flags::DSP_STOP);
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                state.flags.remove(Flags::DSP_READY);
+            }
+        }
+
         match this.st {
             IoDispatcherState::Processing => {
-                this.poll_keepalive(cx);
+                // keepalive timer
+                {
+                    let mut state = this.state.inner.borrow_mut();
+
+                    if !state.flags.contains(Flags::DSP_STOP) && *this.keepalive_timeout != 0 {
+                        match Pin::new(&mut this.keepalive).poll(cx) {
+                            Poll::Ready(_) => {
+                                if this.keepalive.deadline()
+                                    <= RtInstant::from_std(*this.updated)
+                                {
+                                    state.flags.insert(Flags::DSP_STOP);
+                                    state.read_task.wake();
+                                    this.inner.borrow_mut().error =
+                                        Some(IoDispatcherError::KeepAlive);
+                                } else {
+                                    let expire = RtInstant::from_std(
+                                        this.time.now()
+                                            + Duration::from_secs(
+                                                *this.keepalive_timeout as u64,
+                                            ),
+                                    );
+                                    this.keepalive.reset(expire);
+                                    let _ = Pin::new(&mut this.keepalive).poll(cx);
+                                }
+                            }
+                            Poll::Pending => (),
+                        }
+                    }
+                }
 
                 loop {
                     let mut state = this.state.inner.borrow_mut();
 
+                    // log::trace!("IO-DISP state :{:?}:", state.flags);
+
                     match this.service.poll_ready(cx) {
                         Poll::Ready(Ok(_)) => {
-                            if state.flags.contains(Flags::DSP_STOP) {
-                                // handle error
+                            let mut retry = false;
+
+                            let item = if state.flags.contains(Flags::DSP_STOP) {
+                                // check for errors
                                 let item = this
                                     .inner
                                     .borrow_mut()
@@ -226,94 +269,120 @@ where
                                     .as_mut()
                                     .and_then(|err| err.take())
                                     .or_else(|| {
-                                        state
-                                            .error
-                                            .take()
-                                            .map(|err| DispatcherItem::IoError(err))
+                                        state.error.take().map(DispatcherItem::IoError)
                                     });
+                                *this.st = IoDispatcherState::Stop;
+                                retry = true;
+                                item
+                            } else {
+                                // service is ready, wake io read task
+                                if state.flags.contains(Flags::RD_PAUSED) {
+                                    state.flags.remove(Flags::RD_PAUSED);
+                                    state.read_task.wake();
+                                }
 
-                                if let Some(item) = item {
-                                    // call service
+                                // decode incoming bytes stream
+                                if state.flags.contains(Flags::RD_READY) {
+                                    log::trace!(
+                                        "attempt to decode frame, buffer size is {}",
+                                        state.read_buf.len()
+                                    );
+
+                                    match state.decode_item() {
+                                        Ok(Some(el)) => {
+                                            log::trace!(
+                                                "frame is succesfully decoded, remaining buffer {}",
+                                                state.read_buf.len()
+                                            );
+                                            *this.updated = this.time.now();
+                                            Some(DispatcherItem::Item(el))
+                                        }
+                                        Ok(None) => {
+                                            log::trace!("not enough data to decode next frame, register dispatch task");
+                                            state.dispatch_task.register(cx.waker());
+                                            state.flags.remove(Flags::RD_READY);
+                                            return Poll::Pending;
+                                        }
+                                        Err(err) => {
+                                            log::warn!("frame decode error");
+                                            retry = true;
+                                            *this.st = IoDispatcherState::Stop;
+                                            state
+                                                .flags
+                                                .insert(Flags::DSP_STOP | Flags::IO_SHUTDOWN);
+                                            state.write_task.wake();
+                                            state.read_task.wake();
+                                            Some(DispatcherItem::DecoderError(err))
+                                        }
+                                    }
+                                } else {
+                                    log::trace!(
+                                        "read task is not ready, register dispatch task"
+                                    );
+                                    state.dispatch_task.register(cx.waker());
+                                    return Poll::Pending;
+                                }
+                            };
+
+                            // call service
+                            if let Some(item) = item {
+                                // optimize first call
+                                if this.response.is_none() {
+                                    drop(state);
+                                    this.response.set(Some(this.service.call(item)));
+
+                                    let mut inner = this.inner.borrow_mut();
+                                    let response_idx = inner.base + inner.queue.len();
+
+                                    if let Poll::Ready(res) =
+                                        this.response.as_mut().as_pin_mut().unwrap().poll(cx)
+                                    {
+                                        state = this.state.inner.borrow_mut();
+
+                                        if inner.queue.is_empty() {
+                                            if let Some(err) = state.write_item(res) {
+                                                inner.error = Some(err.into());
+                                                state.flags.insert(Flags::DSP_STOP);
+                                            }
+                                        } else {
+                                            *this.response_idx = response_idx;
+                                            state.flags.insert(Flags::DSP_READY);
+                                            inner.queue.push_back(Poll::Ready(res));
+                                        }
+                                        this.response.set(None);
+                                    } else {
+                                        state = this.state.inner.borrow_mut();
+                                        *this.response_idx = response_idx;
+                                        inner.queue.push_back(Poll::Pending);
+                                    }
+                                    drop(state);
+                                } else {
+                                    let mut inner = this.inner.borrow_mut();
+                                    let response_idx = inner.base + inner.queue.len();
+                                    inner.queue.push_back(Poll::Pending);
+                                    drop(inner);
+                                    drop(state);
+
                                     let st = this.state.clone();
                                     let inner = this.inner.clone();
-                                    state.dispatch_inflight += 1;
-                                    ntex::rt::spawn(this.service.call(item.into()).map(
-                                        move |item| {
-                                            if let Some(err) =
-                                                st.inner.borrow_mut().write_item(item)
-                                            {
-                                                inner.borrow_mut().error = Some(err.into());
-                                            }
-                                        },
-                                    ));
-                                }
-
-                                this.st = IoDispatcherState::Stop;
-                                drop(state);
-                                return self.poll(cx);
-                            }
-
-                            // service is ready, wake io read task
-                            if state.flags.contains(Flags::RD_PAUSED) {
-                                state.flags.remove(Flags::RD_PAUSED);
-                                state.read_task.wake();
-                            }
-
-                            // decode incoming bytes stream
-                            if state.flags.contains(Flags::RD_READY) {
-                                log::trace!(
-                                    "attempt to decode frame, buffer size is {}",
-                                    state.read_buf.len()
-                                );
-                                let mut error = false;
-
-                                let item = match state.decode_item() {
-                                    Ok(Some(el)) => {
-                                        log::trace!(
-                                            "frame is succesfully decoded, remaining buffer {}",
-                                            state.read_buf.len()
-                                        );
-                                        this.updated = this.time.now();
-                                        DispatcherItem::Item(el)
-                                    }
-                                    Ok(None) => {
-                                        log::trace!("not enough data to decode next frame, register dispatch task");
-                                        state.dispatch_task.register(cx.waker());
-                                        state.flags.remove(Flags::RD_READY);
-                                        return Poll::Pending;
-                                    }
-                                    Err(err) => {
-                                        log::warn!("frame decode error");
-                                        error = true;
-                                        this.st = IoDispatcherState::Stop;
-                                        state
-                                            .flags
-                                            .insert(Flags::DSP_STOP | Flags::IO_SHUTDOWN);
-                                        state.write_task.wake();
-                                        state.read_task.wake();
-                                        DispatcherItem::DecoderError(err)
-                                    }
-                                };
-
-                                // call service
-                                let st = this.state.clone();
-                                let inner = this.inner.clone();
-                                state.dispatch_inflight += 1;
-                                drop(state);
-                                ntex::rt::spawn(this.service.call(item).map(move |item| {
-                                    if let Some(err) = st.inner.borrow_mut().write_item(item) {
-                                        inner.borrow_mut().error = Some(err.into())
-                                    }
-                                }));
-
-                                // handle decoder error
-                                if error {
-                                    return self.poll(cx);
+                                    ntex::rt::spawn(this.service.call(item).map(move |item| {
+                                        let mut inner = inner.borrow_mut();
+                                        let idx = response_idx - inner.base;
+                                        inner.queue[idx] = Poll::Ready(item);
+                                        if idx == 0 {
+                                            let mut state = st.inner.borrow_mut();
+                                            state.flags.insert(Flags::DSP_READY);
+                                            state.dispatch_task.wake();
+                                        }
+                                    }));
                                 }
                             } else {
-                                log::trace!("not enough data to decode next frame, register dispatch task");
-                                state.dispatch_task.register(cx.waker());
-                                return Poll::Pending;
+                                drop(state);
+                            }
+
+                            // run again
+                            if retry {
+                                return self.poll(cx);
                             }
                         }
                         Poll::Pending => {
@@ -326,7 +395,7 @@ where
                         Poll::Ready(Err(err)) => {
                             log::trace!("service readiness check failed, stopping");
                             // service readiness error
-                            this.st = IoDispatcherState::Stop;
+                            *this.st = IoDispatcherState::Stop;
                             this.inner.borrow_mut().error =
                                 Some(IoDispatcherError::Service(err));
                             state.flags.insert(Flags::DSP_STOP);
@@ -345,12 +414,14 @@ where
                     Poll::Ready(Err(_)) => (),
                 }
 
+                let inner = this.inner.borrow_mut();
                 let mut state = this.state.inner.borrow_mut();
-                if state.dispatch_inflight == 0 {
+                if inner.queue.is_empty() {
                     state.read_task.wake();
                     state.write_task.wake();
                     state.flags.insert(Flags::IO_SHUTDOWN);
-                    this.st = IoDispatcherState::Shutdown;
+                    *this.st = IoDispatcherState::Shutdown;
+                    drop(inner);
                     drop(state);
                     self.poll(cx)
                 } else {
@@ -428,6 +499,8 @@ mod tests {
                     st: IoDispatcherState::Processing,
                     updated: time.now(),
                     keepalive: delay_until(expire),
+                    response: None,
+                    response_idx: 0,
                     time,
                     keepalive_timeout,
                     inner,
