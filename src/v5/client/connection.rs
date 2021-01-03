@@ -9,10 +9,9 @@ use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::boxed::BoxService;
 use ntex::service::{into_service, IntoService, Service};
-use ntex::util::time::LowResTimeService;
 
 use crate::error::MqttError;
-use crate::io::{IoDispatcher, IoState};
+use crate::io::{IoDispatcher, IoState, Timer};
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{codec, sink::MqttSink, ControlResult};
 
@@ -135,7 +134,7 @@ where
             self.io,
             self.state,
             dispatcher,
-            LowResTimeService::with(Duration::from_secs(1)),
+            Timer::with(Duration::from_secs(1)),
         )
         .keepalive_timeout(0)
         .disconnect_timeout(self.disconnect_timeout)
@@ -161,15 +160,10 @@ where
             service.into_service(),
         );
 
-        IoDispatcher::with(
-            self.io,
-            self.state,
-            dispatcher,
-            LowResTimeService::with(Duration::from_secs(1)),
-        )
-        .keepalive_timeout(0)
-        .disconnect_timeout(self.disconnect_timeout)
-        .await
+        IoDispatcher::with(self.io, self.state, dispatcher, Timer::with(Duration::from_secs(1)))
+            .keepalive_timeout(0)
+            .disconnect_timeout(self.disconnect_timeout)
+            .await
     }
 }
 
@@ -227,7 +221,7 @@ where
             self.io,
             self.state,
             dispatcher,
-            LowResTimeService::with(Duration::from_secs(1)),
+            Timer::with(Duration::from_secs(1)),
         )
         .keepalive_timeout(0)
         .disconnect_timeout(self.disconnect_timeout)
@@ -253,15 +247,10 @@ where
             service.into_service(),
         );
 
-        IoDispatcher::with(
-            self.io,
-            self.state,
-            dispatcher,
-            LowResTimeService::with(Duration::from_secs(1)),
-        )
-        .keepalive_timeout(0)
-        .disconnect_timeout(self.disconnect_timeout)
-        .await
+        IoDispatcher::with(self.io, self.state, dispatcher, Timer::with(Duration::from_secs(1)))
+            .keepalive_timeout(0)
+            .disconnect_timeout(self.disconnect_timeout)
+            .await
     }
 }
 

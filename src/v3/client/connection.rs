@@ -6,10 +6,9 @@ use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::router::{IntoPattern, Router, RouterBuilder};
 use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::{apply_fn, boxed::BoxService, into_service, IntoService, Service};
-use ntex::util::time::LowResTimeService;
 
 use crate::error::{MqttError, ProtocolError};
-use crate::io::{DispatcherItem, IoDispatcher, IoState};
+use crate::io::{DispatcherItem, IoDispatcher, IoState, Timer};
 use crate::v3::{codec, sink::MqttSink, ControlResult, Publish};
 
 use super::control::ControlMessage;
@@ -128,7 +127,7 @@ where
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
             }),
-            LowResTimeService::with(Duration::from_secs(1)),
+            Timer::with(Duration::from_secs(1)),
         )
         .keepalive_timeout(0)
         .disconnect_timeout(self.disconnect_timeout)
@@ -171,7 +170,7 @@ where
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
             }),
-            LowResTimeService::with(Duration::from_secs(1)),
+            Timer::with(Duration::from_secs(1)),
         )
         .keepalive_timeout(0)
         .disconnect_timeout(self.disconnect_timeout)
@@ -243,7 +242,7 @@ where
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
             }),
-            LowResTimeService::with(Duration::from_secs(1)),
+            Timer::with(Duration::from_secs(1)),
         )
         .keepalive_timeout(0)
         .disconnect_timeout(self.disconnect_timeout)
@@ -285,7 +284,7 @@ where
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
             }),
-            LowResTimeService::with(Duration::from_secs(1)),
+            Timer::with(Duration::from_secs(1)),
         )
         .keepalive_timeout(0)
         .disconnect_timeout(self.disconnect_timeout)

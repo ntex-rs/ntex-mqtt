@@ -1,5 +1,8 @@
 //! Framed transport dispatcher
-use std::{cell::RefCell, fmt, io, mem, pin::Pin, rc::Rc, task::Context, task::Poll};
+use std::{
+    cell::RefCell, fmt, hash::Hash, hash::Hasher, io, mem, pin::Pin, rc::Rc, task::Context,
+    task::Poll,
+};
 
 use bytes::{Buf, BytesMut};
 use either::Either;
@@ -14,20 +17,21 @@ const LW: usize = 1024;
 const HW: usize = 8 * 1024;
 
 bitflags::bitflags! {
-    pub(crate) struct Flags: u8 {
+    pub(crate) struct Flags: u16 {
         const DSP_STOP       = 0b0000_0001;
         const DSP_READY      = 0b0000_0010;
+        const DSP_KEEPALIVE  = 0b0000_0100;
 
-        const IO_ERR         = 0b0000_0100;
-        const IO_SHUTDOWN    = 0b0000_1000;
+        const IO_ERR         = 0b0000_1000;
+        const IO_SHUTDOWN    = 0b0001_0000;
 
         /// pause io read
-        const RD_PAUSED      = 0b0001_0000;
+        const RD_PAUSED      = 0b0010_0000;
         /// new data is available
-        const RD_READY       = 0b0010_0000;
+        const RD_READY       = 0b0100_0000;
 
-        const ST_DSP_ERR     = 0b0100_0000;
-        const ST_IO_SHUTDOWN = 0b1000_0000;
+        const ST_DSP_ERR     = 0b1000_0000;
+        const ST_IO_SHUTDOWN = 0b1_0000_0000;
     }
 }
 
@@ -64,11 +68,11 @@ where
     }
 }
 
-pub struct IoState<U: Encoder + Decoder> {
+pub struct IoState<U> {
     pub(crate) inner: Rc<RefCell<IoStateInner<U>>>,
 }
 
-pub(crate) struct IoStateInner<U: Encoder + Decoder> {
+pub(crate) struct IoStateInner<U> {
     codec: U,
     pub(crate) flags: Flags,
     pub(crate) error: Option<io::Error>,
@@ -81,6 +85,14 @@ pub(crate) struct IoStateInner<U: Encoder + Decoder> {
 
     pub(crate) read_buf: BytesMut,
     pub(crate) read_task: LocalWaker,
+}
+
+impl<U> IoState<U> {
+    pub(crate) fn keepalive_timeout(&self) {
+        let mut state = self.inner.borrow_mut();
+        state.flags.insert(Flags::DSP_STOP | Flags::DSP_KEEPALIVE);
+        state.dispatch_task.wake();
+    }
 }
 
 impl<U> IoState<U>
@@ -211,12 +223,23 @@ where
     }
 }
 
-impl<U> Clone for IoState<U>
-where
-    U: Encoder + Decoder,
-{
+impl<U> Clone for IoState<U> {
     fn clone(&self) -> Self {
         Self { inner: self.inner.clone() }
+    }
+}
+
+impl<U> Eq for IoState<U> {}
+
+impl<U> PartialEq for IoState<U> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::as_ptr(&self.inner) == Rc::as_ptr(&other.inner)
+    }
+}
+
+impl<U> Hash for IoState<U> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.inner).hash(state);
     }
 }
 

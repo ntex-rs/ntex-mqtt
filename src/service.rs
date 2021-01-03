@@ -7,10 +7,9 @@ use futures::ready;
 
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
-use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use super::io::{DispatcherItem, IoDispatcher, IoState};
+use super::io::{DispatcherItem, IoDispatcher, IoState, Timer};
 
 type ResponseItem<U> = Option<<U as Encoder>::Item>;
 
@@ -27,7 +26,7 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
     C::Error: fmt::Debug,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
 {
     /// Construct framed handler service factory with specified connect service
     pub(crate) fn new<F>(connect: F) -> FactoryBuilder<St, C, Io, Codec>
@@ -69,7 +68,7 @@ where
             connect: self.connect,
             handler: Rc::new(service.into_factory()),
             disconnect_timeout: self.disconnect_timeout,
-            time: LowResTimeService::with(Duration::from_secs(1)),
+            time: Timer::with(Duration::from_secs(1)),
             _t: PhantomData,
         }
     }
@@ -79,7 +78,7 @@ pub(crate) struct FramedService<St, C, T, Io, Codec, Cfg> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: u16,
-    time: LowResTimeService,
+    time: Timer<Codec>,
     _t: PhantomData<(St, Io, Codec, Cfg)>,
 }
 
@@ -142,7 +141,7 @@ where
     fut: C::Future,
     handler: Rc<T>,
     disconnect_timeout: u16,
-    time: LowResTimeService,
+    time: Timer<Codec>,
 }
 
 impl<St, C, T, Io, Codec> Future for FramedServiceResponse<St, C, T, Io, Codec>
@@ -182,7 +181,7 @@ pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: u16,
-    time: LowResTimeService,
+    time: Timer<Codec>,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
@@ -263,7 +262,7 @@ where
         Response = (Io, IoState<Codec>, St, usize),
     >,
     C::Error: fmt::Debug,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
 {
     /// Construct framed handler service factory with specified connect service
     pub(crate) fn new<F>(connect: F) -> FactoryBuilder2<St, C, Io, Codec>
@@ -298,7 +297,7 @@ where
             connect: self.connect,
             handler: Rc::new(service.into_factory()),
             disconnect_timeout: self.disconnect_timeout,
-            time: LowResTimeService::with(Duration::from_secs(1)),
+            time: Timer::with(Duration::from_secs(1)),
             _t: PhantomData,
         }
     }
@@ -308,7 +307,7 @@ pub(crate) struct FramedService2<St, C, T, Io, Codec, Cfg> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: u16,
-    time: LowResTimeService,
+    time: Timer<Codec>,
     _t: PhantomData<(St, Io, Codec, Cfg)>,
 }
 
@@ -379,7 +378,7 @@ where
     fut: C::Future,
     handler: Rc<T>,
     disconnect_timeout: u16,
-    time: LowResTimeService,
+    time: Timer<Codec>,
 }
 
 impl<St, C, T, Io, Codec> Future for FramedServiceResponse2<St, C, T, Io, Codec>
@@ -423,7 +422,7 @@ pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: u16,
-    time: LowResTimeService,
+    time: Timer<Codec>,
     _t: PhantomData<(St, Io, Codec)>,
 }
 

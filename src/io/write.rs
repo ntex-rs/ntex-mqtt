@@ -86,7 +86,7 @@ where
                 // on read side. we have to use disconnect timeout, otherwise it
                 // could hang forever.
 
-                if let Poll::Ready(_) = state.close_io(&mut *this.io.borrow_mut(), cx) {
+                if state.close_io(&mut *this.io.borrow_mut(), cx).is_ready() {
                     state.flags.insert(Flags::IO_ERR);
                     state.read_task.wake();
                     log::trace!("write task is closed");

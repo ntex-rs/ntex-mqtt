@@ -1,17 +1,17 @@
 //! Framed transport dispatcher
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
-use std::{cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc};
+use std::{
+    cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time::Duration,
+    time::Instant,
+};
 
 use either::Either;
 use futures::FutureExt;
-use ntex::rt::time::{delay_until, Delay, Instant as RtInstant};
 use ntex::service::{IntoService, Service};
-use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
 use super::state::Flags;
-use crate::io::{DispatcherItem, IoRead, IoState, IoWrite};
+use crate::io::{DispatcherItem, IoRead, IoState, IoWrite, Timer};
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -30,9 +30,8 @@ where
     state: IoState<U>,
     inner: Rc<RefCell<IoDispatcherInner<S, U>>>,
     st: IoDispatcherState,
+    timer: Timer<U>,
     updated: Instant,
-    time: LowResTimeService,
-    keepalive: Delay,
     keepalive_timeout: u16,
     #[pin]
     response: Option<S::Future>,
@@ -105,13 +104,13 @@ where
         io: T,
         state: IoState<U>,
         service: F,
-        time: LowResTimeService,
+        timer: Timer<U>,
     ) -> Self
     where
         T: AsyncRead + AsyncWrite + Unpin + 'static,
     {
+        let updated = timer.now();
         let keepalive_timeout = 30;
-        let expire = RtInstant::from_std(time.now() + Duration::from_secs(30));
         let io = Rc::new(RefCell::new(io));
 
         ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
@@ -126,13 +125,12 @@ where
         IoDispatcher {
             st: IoDispatcherState::Processing,
             service: service.into_service(),
-            updated: time.now(),
-            keepalive: delay_until(expire),
             response: None,
             response_idx: 0,
             state,
             inner,
-            time,
+            timer,
+            updated,
             keepalive_timeout,
         }
     }
@@ -144,13 +142,6 @@ where
     /// By default keep-alive timeout is set to 30 seconds.
     pub fn keepalive_timeout(mut self, timeout: u16) -> Self {
         self.keepalive_timeout = timeout;
-
-        if timeout > 0 {
-            let expire =
-                RtInstant::from_std(self.time.now() + Duration::from_secs(timeout as u64));
-            self.keepalive.reset(expire);
-        }
-
         self
     }
 
@@ -197,8 +188,8 @@ where
             }
         }
 
-        // handle responses
         {
+            // handle responses
             let mut state = this.state.inner.borrow_mut();
             if state.flags.contains(Flags::DSP_READY) {
                 let mut inner = this.inner.borrow_mut();
@@ -221,36 +212,6 @@ where
 
         match this.st {
             IoDispatcherState::Processing => {
-                // keepalive timer
-                {
-                    let mut state = this.state.inner.borrow_mut();
-
-                    if !state.flags.contains(Flags::DSP_STOP) && *this.keepalive_timeout != 0 {
-                        match Pin::new(&mut this.keepalive).poll(cx) {
-                            Poll::Ready(_) => {
-                                if this.keepalive.deadline()
-                                    <= RtInstant::from_std(*this.updated)
-                                {
-                                    state.flags.insert(Flags::DSP_STOP);
-                                    state.read_task.wake();
-                                    this.inner.borrow_mut().error =
-                                        Some(IoDispatcherError::KeepAlive);
-                                } else {
-                                    let expire = RtInstant::from_std(
-                                        this.time.now()
-                                            + Duration::from_secs(
-                                                *this.keepalive_timeout as u64,
-                                            ),
-                                    );
-                                    this.keepalive.reset(expire);
-                                    let _ = Pin::new(&mut this.keepalive).poll(cx);
-                                }
-                            }
-                            Poll::Pending => (),
-                        }
-                    }
-                }
-
                 loop {
                     let mut state = this.state.inner.borrow_mut();
 
@@ -261,18 +222,32 @@ where
                             let mut retry = false;
 
                             let item = if state.flags.contains(Flags::DSP_STOP) {
+                                let mut inner = this.inner.borrow_mut();
+
+                                // check keepalive timeout
+                                if state.flags.contains(Flags::DSP_KEEPALIVE) {
+                                    if inner.error.is_none() {
+                                        inner.error = Some(IoDispatcherError::KeepAlive);
+                                    }
+                                } else if *this.keepalive_timeout != 0 {
+                                    // unregister keep-alive timer
+                                    this.timer.unregister(
+                                        *this.updated
+                                            + Duration::from_secs(
+                                                *this.keepalive_timeout as u64,
+                                            ),
+                                        this.state,
+                                    );
+                                }
+
                                 // check for errors
-                                let item = this
-                                    .inner
-                                    .borrow_mut()
-                                    .error
-                                    .as_mut()
-                                    .and_then(|err| err.take())
-                                    .or_else(|| {
-                                        state.error.take().map(DispatcherItem::IoError)
-                                    });
+                                let item =
+                                    inner.error.as_mut().and_then(|err| err.take()).or_else(
+                                        || state.error.take().map(DispatcherItem::IoError),
+                                    );
                                 *this.st = IoDispatcherState::Stop;
                                 retry = true;
+
                                 item
                             } else {
                                 // service is ready, wake io read task
@@ -294,7 +269,22 @@ where
                                                 "frame is succesfully decoded, remaining buffer {}",
                                                 state.read_buf.len()
                                             );
-                                            *this.updated = this.time.now();
+                                            // update keep-alive timer
+                                            if *this.keepalive_timeout != 0 {
+                                                let updated = this.timer.now();
+                                                if updated != *this.updated {
+                                                    let ka = Duration::from_secs(
+                                                        *this.keepalive_timeout as u64,
+                                                    );
+                                                    this.timer.register(
+                                                        updated + ka,
+                                                        *this.updated + ka,
+                                                        this.state,
+                                                    );
+                                                    *this.updated = updated;
+                                                }
+                                            }
+
                                             Some(DispatcherItem::Item(el))
                                         }
                                         Ok(None) => {
@@ -312,6 +302,18 @@ where
                                                 .insert(Flags::DSP_STOP | Flags::IO_SHUTDOWN);
                                             state.write_task.wake();
                                             state.read_task.wake();
+
+                                            // unregister keep-alive timer
+                                            if *this.keepalive_timeout != 0 {
+                                                this.timer.unregister(
+                                                    *this.updated
+                                                        + Duration::from_secs(
+                                                            *this.keepalive_timeout as u64,
+                                                        ),
+                                                    this.state,
+                                                );
+                                            }
+
                                             Some(DispatcherItem::DecoderError(err))
                                         }
                                     }
@@ -399,6 +401,16 @@ where
                             this.inner.borrow_mut().error =
                                 Some(IoDispatcherError::Service(err));
                             state.flags.insert(Flags::DSP_STOP);
+
+                            // unregister keep-alive timer
+                            if *this.keepalive_timeout != 0 {
+                                this.timer.unregister(
+                                    *this.updated
+                                        + Duration::from_secs(*this.keepalive_timeout as u64),
+                                    this.state,
+                                );
+                            }
+
                             drop(state);
                             return self.poll(cx);
                         }
@@ -477,10 +489,9 @@ mod tests {
         where
             T: AsyncRead + AsyncWrite + Unpin + 'static,
         {
-            let time = LowResTimeService::with(Duration::from_secs(1));
+            let timer = Timer::with(Duration::from_secs(1));
             let keepalive_timeout = 30;
-            let updated = time.now();
-            let expire = RtInstant::from_std(updated + Duration::from_secs(30));
+            let updated = timer.now();
             let state = IoState::new(codec);
             let io = Rc::new(RefCell::new(io));
             let inner = Rc::new(RefCell::new(IoDispatcherInner {
@@ -497,11 +508,10 @@ mod tests {
                     service: service.into_service(),
                     state: state.clone(),
                     st: IoDispatcherState::Processing,
-                    updated: time.now(),
-                    keepalive: delay_until(expire),
                     response: None,
                     response_idx: 0,
-                    time,
+                    timer,
+                    updated,
                     keepalive_timeout,
                     inner,
                 },
