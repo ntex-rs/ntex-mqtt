@@ -73,6 +73,11 @@ impl MqttSink {
         )
     }
 
+    /// Check connection status
+    pub fn is_opened(&self) -> bool {
+        self.1.inner.borrow().is_opened()
+    }
+
     /// Get client receive credit
     pub fn credit(&self) -> usize {
         let inner = self.0.borrow();

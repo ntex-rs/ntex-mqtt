@@ -118,9 +118,14 @@ where
         T: AsyncRead + AsyncWrite + Unpin + 'static,
     {
         let updated = timer.now();
-        let keepalive_timeout = 30;
+        let keepalive_timeout: u16 = 30;
         let io = Rc::new(RefCell::new(io));
 
+        // register keepalive timer
+        let expire = updated + Duration::from_secs(keepalive_timeout as u64);
+        timer.register(expire, expire, &state);
+
+        // start support tasks
         ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
         ntex::rt::spawn(IoWrite::new(io, state.clone()));
 
@@ -149,7 +154,17 @@ where
     ///
     /// By default keep-alive timeout is set to 30 seconds.
     pub fn keepalive_timeout(mut self, timeout: u16) -> Self {
+        // register keepalive timer
+        let prev = self.updated + Duration::from_secs(self.keepalive_timeout as u64);
+        if timeout == 0 {
+            self.timer.unregister(prev, &self.state);
+        } else {
+            let expire = self.updated + Duration::from_secs(timeout as u64);
+            self.timer.register(expire, prev, &self.state);
+        }
+
         self.keepalive_timeout = timeout;
+
         self
     }
 

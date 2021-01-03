@@ -434,7 +434,87 @@ async fn test_max_receive() {
 }
 
 #[ntex::test]
-async fn test_encoder_error_pub_qos1() {
+async fn test_keepalive() {
+    let ka = Arc::new(AtomicBool::new(false));
+    let ka2 = ka.clone();
+
+    let srv = server::test_server(move || {
+        let ka = ka2.clone();
+
+        MqttServer::new(|con: Connect<_>| async move { Ok(con.ack(St).keep_alive(1)) })
+            .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
+            .control(move |msg| match msg {
+                ControlMessage::ProtocolError(msg) => {
+                    if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
+                        ka.store(true, Relaxed);
+                    }
+                    ok::<_, TestError>(msg.ack())
+                }
+                _ => ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    assert!(sink.is_opened());
+    delay_for(Duration::from_millis(2500)).await;
+    assert!(!sink.is_opened());
+    assert!(ka.load(Relaxed));
+}
+
+#[ntex::test]
+async fn test_keepalive2() {
+    let ka = Arc::new(AtomicBool::new(false));
+    let ka2 = ka.clone();
+
+    let srv = server::test_server(move || {
+        let ka = ka2.clone();
+
+        MqttServer::new(|con: Connect<_>| async move { Ok(con.ack(St).keep_alive(1)) })
+            .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
+            .control(move |msg| match msg {
+                ControlMessage::ProtocolError(msg) => {
+                    if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
+                        ka.store(true, Relaxed);
+                    }
+                    ok::<_, TestError>(msg.ack())
+                }
+                _ => ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    assert!(sink.is_opened());
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_ok());
+    delay_for(Duration::from_millis(1200)).await;
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_ok());
+    delay_for(Duration::from_millis(2500)).await;
+
+    assert!(!sink.is_opened());
+    assert!(ka.load(Relaxed));
+}
+
+#[ntex::test]
+async fn test_sink_encoder_error_pub_qos1() {
     let srv = server::test_server(move || {
         MqttServer::new(|con: Connect<_>| async move {
             let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
@@ -480,7 +560,7 @@ async fn test_encoder_error_pub_qos1() {
 }
 
 #[ntex::test]
-async fn test_encoder_error_pub_qos0() {
+async fn test_sink_encoder_error_pub_qos0() {
     let srv = server::test_server(move || {
         MqttServer::new(|con: Connect<_>| async move {
             let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
