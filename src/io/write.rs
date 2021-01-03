@@ -82,8 +82,8 @@ where
                 }
             }
             IoWriteState::Shutdown(ref mut delay) => {
-                // close frame, closes io WRITE side and wait for disconnect
-                // on read side. we need disconnect timeout, otherwise it
+                // close io, closes WRITE side and wait for disconnect
+                // on read side. we have to use disconnect timeout, otherwise it
                 // could hang forever.
 
                 return if let Poll::Ready(_) = state.close_io(&mut *this.io.borrow_mut(), cx) {

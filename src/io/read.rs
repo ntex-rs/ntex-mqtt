@@ -42,7 +42,8 @@ where
             state.read_task.register(cx.waker());
             Poll::Pending
         } else {
-            state.read_io(&mut *self.io.borrow_mut(), cx)
+            let mut io = self.io.borrow_mut();
+            state.read_io(&mut *io, cx)
         }
     }
 }
