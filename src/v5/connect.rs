@@ -107,7 +107,7 @@ pub struct ConnectAck<Io, St> {
     pub(crate) sink: MqttSink,
     pub(crate) packet: codec::ConnectAck,
     pub(crate) state: IoState<codec::Codec>,
-    pub(crate) keepalive: usize,
+    pub(crate) keepalive: u16,
 }
 
 impl<Io, St> ConnectAck<Io, St> {
@@ -120,7 +120,7 @@ impl<Io, St> ConnectAck<Io, St> {
         if timeout == 0 {
             panic!("Timeout must be greater than 0")
         }
-        self.keepalive = timeout as usize;
+        self.keepalive = timeout;
         self
     }
 

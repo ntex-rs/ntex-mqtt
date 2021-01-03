@@ -1,11 +1,10 @@
 use std::cell::{Cell, RefCell};
-use std::convert::TryFrom;
 use std::task::{Context, Poll};
-use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
+use std::{
+    convert::TryFrom, future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc,
+};
 
 use futures::future::{join, ok, Either, FutureExt, Ready};
-use futures::ready;
-use fxhash::FxHashSet;
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 
 use crate::error::{MqttError, ProtocolError};
@@ -83,8 +82,8 @@ struct Inner<C> {
 }
 
 struct PublishInfo {
-    inflight: FxHashSet<NonZeroU16>,
-    aliases: FxHashSet<NonZeroU16>,
+    inflight: fxhash::FxHashSet<NonZeroU16>,
+    aliases: fxhash::FxHashSet<NonZeroU16>,
 }
 
 impl<T, C, E, E2> Dispatcher<T, C, E, E2>
@@ -110,8 +109,8 @@ where
                 control,
                 sink,
                 info: RefCell::new(PublishInfo {
-                    aliases: FxHashSet::default(),
-                    inflight: FxHashSet::default(),
+                    aliases: fxhash::FxHashSet::default(),
+                    inflight: fxhash::FxHashSet::default(),
                 }),
             }),
             _t: PhantomData,
@@ -351,7 +350,7 @@ where
 
         match this.state.as_mut().project() {
             PublishResponseStateProject::Publish(fut) => {
-                let ack = match ready!(fut.poll(cx)) {
+                let ack = match futures::ready!(fut.poll(cx)) {
                     Ok(ack) => ack,
                     Err(e) => {
                         if *this.packet_id != 0 {
@@ -444,7 +443,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().project();
 
-        let result = match ready!(this.fut.poll(cx)) {
+        let result = match futures::ready!(this.fut.poll(cx)) {
             Ok(result) => {
                 if let Some(id) = NonZeroU16::new(self.packet_id) {
                     self.inner.info.borrow_mut().inflight.remove(&id);

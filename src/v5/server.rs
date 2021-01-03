@@ -282,7 +282,7 @@ fn handshake_service_factory<Io, St, C>(
 ) -> impl ServiceFactory<
     Config = (),
     Request = Io,
-    Response = (Io, IoState<mqtt::Codec>, Session<St>, usize),
+    Response = (Io, IoState<mqtt::Codec>, Session<St>, u16),
     Error = MqttError<C::Error>,
 >
 where
@@ -330,7 +330,7 @@ fn handshake_service_factory2<Io, St, C>(
 ) -> impl ServiceFactory<
     Config = (),
     Request = (Io, IoState<mqtt::Codec>),
-    Response = (Io, IoState<mqtt::Codec>, Session<St>, usize),
+    Response = (Io, IoState<mqtt::Codec>, Session<St>, u16),
     Error = MqttError<C::Error>,
     InitError = C::InitError,
 >
@@ -377,7 +377,7 @@ async fn handshake<Io, S, St, E>(
     mut max_topic_alias: u16,
     max_qos: Option<QoS>,
     pool: Rc<MqttSinkPool>,
-) -> Result<(Io, IoState<mqtt::Codec>, Session<St>, usize), S::Error>
+) -> Result<(Io, IoState<mqtt::Codec>, Session<St>, u16), S::Error>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     S: Service<Request = Connect<Io>, Response = ConnectAck<Io, St>, Error = MqttError<E>>,

@@ -1,6 +1,6 @@
 # Changes
 
-## [0.4.0] - 2021-01-xx
+## [0.4.0] - 2021-01-03
 
 * Refactor io dispatcher
 

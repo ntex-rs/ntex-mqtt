@@ -24,7 +24,7 @@ pub(crate) struct FactoryBuilder<St, C, Io, Codec> {
 impl<St, C, Io, Codec> FactoryBuilder<St, C, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     Codec: Decoder + Encoder + 'static,
 {
@@ -85,7 +85,7 @@ pub(crate) struct FramedService<St, C, T, Io, Codec, Cfg> {
 impl<St, C, T, Io, Codec, Cfg> ServiceFactory for FramedService<St, C, T, Io, Codec, Cfg>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     <C::Service as Service>::Future: 'static,
     T: ServiceFactory<
@@ -123,7 +123,7 @@ where
 pub(crate) struct FramedServiceResponse<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
@@ -147,7 +147,7 @@ where
 impl<St, C, T, Io, Codec> Future for FramedServiceResponse<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
@@ -188,7 +188,7 @@ pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec> {
 impl<St, C, T, Io, Codec> Service for FramedServiceImpl<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    C: Service<Request = Io, Response = (Io, IoState<Codec>, St, usize)>,
+    C: Service<Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
@@ -259,7 +259,7 @@ where
     C: ServiceFactory<
         Config = (),
         Request = (Io, IoState<Codec>),
-        Response = (Io, IoState<Codec>, St, usize),
+        Response = (Io, IoState<Codec>, St, u16),
     >,
     C::Error: fmt::Debug,
     Codec: Decoder + Encoder + 'static,
@@ -317,7 +317,7 @@ where
     C: ServiceFactory<
         Config = (),
         Request = (Io, IoState<Codec>),
-        Response = (Io, IoState<Codec>, St, usize),
+        Response = (Io, IoState<Codec>, St, u16),
     >,
     C::Error: fmt::Debug,
     <C::Service as Service>::Future: 'static,
@@ -359,7 +359,7 @@ where
     C: ServiceFactory<
         Config = (),
         Request = (Io, IoState<Codec>),
-        Response = (Io, IoState<Codec>, St, usize),
+        Response = (Io, IoState<Codec>, St, u16),
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
@@ -387,7 +387,7 @@ where
     C: ServiceFactory<
         Config = (),
         Request = (Io, IoState<Codec>),
-        Response = (Io, IoState<Codec>, St, usize),
+        Response = (Io, IoState<Codec>, St, u16),
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
@@ -429,7 +429,7 @@ pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec> {
 impl<St, C, T, Io, Codec> Service for FramedServiceImpl2<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    C: Service<Request = (Io, IoState<Codec>), Response = (Io, IoState<Codec>, St, usize)>,
+    C: Service<Request = (Io, IoState<Codec>), Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
