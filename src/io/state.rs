@@ -298,7 +298,7 @@ where
         &mut self,
         item: Result<Option<Response<U>>, E>,
     ) -> Option<IoDispatcherError<E, <U as Encoder>::Error>> {
-        log::trace!("encoding service response, is err: {:?}", item.is_err(),);
+        // log::trace!("encoding service response, is err: {:?}", item.is_err(),);
 
         if !self.flags.intersects(Flags::IO_ERR | Flags::ST_DSP_ERR) {
             match item {
@@ -373,10 +373,10 @@ where
             } else {
                 self.flags.insert(Flags::RD_READY);
             }
-            log::trace!(
-                "new data is available {}, waking up dispatch task",
-                self.read_buf.len()
-            );
+            // log::trace!(
+            //     "new data is available {}, waking up dispatch task",
+            //     self.read_buf.len()
+            // );
 
             self.dispatch_task.wake();
         }
@@ -396,7 +396,7 @@ where
     {
         let len = self.write_buf.len();
 
-        log::trace!("flushing framed transport: {}", len);
+        // log::trace!("flushing framed transport: {}", len);
 
         if len == 0 {
             return Poll::Ready(Ok(()));
@@ -423,7 +423,7 @@ where
                 }
             }
         }
-        log::trace!("flushed {} bytes", written);
+        // log::trace!("flushed {} bytes", written);
 
         // remove written data
         if written == len {
@@ -452,7 +452,7 @@ where
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
-        log::trace!("closing framed transport: {} :{:?}:", self.write_buf.len(), self.flags);
+        // log::trace!("closing framed transport: {} :{:?}:", self.write_buf.len(), self.flags);
 
         if !self.flags.contains(Flags::ST_IO_SHUTDOWN) {
             // flush write buffer
@@ -473,7 +473,7 @@ where
                 _ => (),
             }
         }
-        log::trace!("framed transport flushed and closed");
+        // log::trace!("framed transport flushed and closed");
         Poll::Ready(Ok(()))
     }
 }

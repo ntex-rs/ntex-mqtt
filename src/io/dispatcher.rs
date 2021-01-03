@@ -299,17 +299,18 @@ where
 
                                 // decode incoming bytes stream
                                 if state.flags.contains(Flags::RD_READY) {
-                                    log::trace!(
-                                        "attempt to decode frame, buffer size is {}",
-                                        state.read_buf.len()
-                                    );
+                                    // log::trace!(
+                                    //    "attempt to decode frame, buffer size is {}",
+                                    //    state.read_buf.len()
+                                    //);
 
                                     match state.decode_item() {
                                         Ok(Some(el)) => {
-                                            log::trace!(
-                                                "frame is succesfully decoded, remaining buffer {}",
-                                                state.read_buf.len()
-                                            );
+                                            // log::trace!(
+                                            //     "frame is succesfully decoded, remaining buffer {}",
+                                            //     state.read_buf.len()
+                                            // );
+
                                             // update keep-alive timer
                                             if *this.keepalive_timeout != 0 {
                                                 let updated = this.timer.now();
@@ -329,14 +330,14 @@ where
                                             Some(DispatcherItem::Item(el))
                                         }
                                         Ok(None) => {
-                                            log::trace!("not enough data to decode next frame, register dispatch task");
+                                            // log::trace!("not enough data to decode next frame, register dispatch task");
                                             state.dispatch_task.register(cx.waker());
                                             state.flags.remove(Flags::RD_READY);
                                             state.read_task.wake();
                                             return Poll::Pending;
                                         }
                                         Err(err) => {
-                                            log::warn!("frame decode error");
+                                            // log::warn!("frame decode error");
                                             retry = true;
                                             *this.st = IoDispatcherState::Stop;
                                             state
@@ -360,9 +361,9 @@ where
                                         }
                                     }
                                 } else {
-                                    log::trace!(
-                                        "read task is not ready, register dispatch task"
-                                    );
+                                    // log::trace!(
+                                    //     "read task is not ready, register dispatch task"
+                                    // );
                                     state.dispatch_task.register(cx.waker());
                                     return Poll::Pending;
                                 }
