@@ -4,8 +4,7 @@ use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, time::Duration};
 use ntex::rt::time::{delay_for, Delay};
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use super::state::Flags;
-use super::{IoDispatcherError, IoState};
+use super::{state::Flags, IoState};
 
 #[derive(Debug)]
 pub(crate) enum IoWriteState {
@@ -74,9 +73,9 @@ where
                         Poll::Ready(Err(err)) => {
                             log::trace!("error sending data: {:?}", err);
                             state.read_task.wake();
-                            state.dispatch_queue.push_back(IoDispatcherError::Io(err));
+                            state.error = Some(err);
                             state.dispatch_task.wake();
-                            state.flags.insert(Flags::IO_ERR);
+                            state.flags.insert(Flags::IO_ERR | Flags::DSP_STOP);
                             return Poll::Ready(());
                         }
                     }

@@ -1,8 +1,9 @@
 //! Framed transport dispatcher
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
-use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc};
 
+use either::Either;
 use futures::FutureExt;
 use ntex::rt::time::{delay_until, Delay, Instant as RtInstant};
 use ntex::service::{IntoService, Service};
@@ -10,7 +11,7 @@ use ntex::util::time::LowResTimeService;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
 use super::state::Flags;
-use crate::io::{DispatcherItem, IoDispatcherError, IoRead, IoState, IoWrite};
+use crate::io::{DispatcherItem, IoRead, IoState, IoWrite};
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -43,21 +44,56 @@ where
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
-    error: Option<S::Error>,
+    error: Option<IoDispatcherError<S, U>>,
+    base: usize,
+    queue: VecDeque<S::Future>,
 }
 
 #[derive(Copy, Clone, Debug)]
-pub(crate) enum IoDispatcherState {
+enum IoDispatcherState {
     Processing,
     Stop,
     Shutdown,
 }
 
+enum IoDispatcherError<S: Service, U: Encoder> {
+    None,
+    KeepAlive,
+    Encoder(U::Error),
+    Service(S::Error),
+}
+
+impl<S: Service, U: Encoder + Decoder> IoDispatcherError<S, U> {
+    fn take(&mut self) -> Option<DispatcherItem<U>> {
+        match self {
+            IoDispatcherError::KeepAlive => {
+                *self = IoDispatcherError::None;
+                Some(DispatcherItem::KeepAliveTimeout)
+            }
+            IoDispatcherError::Encoder(_) => {
+                let err = std::mem::replace(self, IoDispatcherError::None);
+                match err {
+                    IoDispatcherError::Encoder(err) => Some(DispatcherItem::EncoderError(err)),
+                    _ => None,
+                }
+            }
+            IoDispatcherError::None | IoDispatcherError::Service(_) => None,
+        }
+    }
+}
+
+impl<S: Service, U: Encoder> From<Either<S::Error, U::Error>> for IoDispatcherError<S, U> {
+    fn from(err: Either<S::Error, U::Error>) -> Self {
+        match err {
+            Either::Left(err) => IoDispatcherError::Service(err),
+            Either::Right(err) => IoDispatcherError::Encoder(err),
+        }
+    }
+}
+
 impl<S, U> IoDispatcher<S, U>
 where
-    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
-    S::Error: 'static,
-    S::Future: 'static,
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>> + 'static,
     U: Decoder + Encoder + 'static,
     <U as Encoder>::Item: 'static,
 {
@@ -78,7 +114,11 @@ where
         ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
         ntex::rt::spawn(IoWrite::new(io, state.clone()));
 
-        let inner = Rc::new(RefCell::new(IoDispatcherInner { error: None }));
+        let inner = Rc::new(RefCell::new(IoDispatcherInner {
+            error: None,
+            base: 0,
+            queue: VecDeque::new(),
+        }));
 
         IoDispatcher {
             st: IoDispatcherState::Processing,
@@ -123,11 +163,41 @@ where
     }
 }
 
+impl<S, U> IoDispatcher<S, U>
+where
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>> + 'static,
+    U: Decoder + Encoder + 'static,
+    <U as Encoder>::Item: 'static,
+{
+    fn poll_keepalive(&mut self, cx: &mut Context<'_>) {
+        // keepalive timer
+        let mut state = self.state.inner.borrow_mut();
+
+        if !state.flags.contains(Flags::DSP_STOP) && self.keepalive_timeout != 0 {
+            match Pin::new(&mut self.keepalive).poll(cx) {
+                Poll::Ready(_) => {
+                    if self.keepalive.deadline() <= RtInstant::from_std(self.updated) {
+                        state.flags.insert(Flags::DSP_STOP);
+                        state.read_task.wake();
+                        self.inner.borrow_mut().error = Some(IoDispatcherError::KeepAlive);
+                    } else {
+                        let expire = RtInstant::from_std(
+                            self.time.now()
+                                + Duration::from_secs(self.keepalive_timeout as u64),
+                        );
+                        self.keepalive.reset(expire);
+                        let _ = Pin::new(&mut self.keepalive).poll(cx);
+                    }
+                }
+                Poll::Pending => (),
+            }
+        }
+    }
+}
+
 impl<S, U> Future for IoDispatcher<S, U>
 where
-    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
-    S::Error: 'static,
-    S::Future: 'static,
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>> + 'static,
     U: Decoder + Encoder + 'static,
     <U as Encoder>::Item: 'static,
 {
@@ -140,56 +210,44 @@ where
 
         match this.st {
             IoDispatcherState::Processing => {
-                // keepalive timer
-                {
-                    let mut state = this.state.inner.borrow_mut();
-                    // log::trace!(":{:?}:", state.flags);
-
-                    if !state.flags.contains(Flags::DSP_STOP) && this.keepalive_timeout != 0 {
-                        match Pin::new(&mut this.keepalive).poll(cx) {
-                            Poll::Ready(_) => {
-                                if this.keepalive.deadline()
-                                    <= RtInstant::from_std(this.updated)
-                                {
-                                    state
-                                        .dispatch_queue
-                                        .push_back(IoDispatcherError::KeepAlive);
-                                    state.flags.insert(Flags::DSP_STOP);
-                                    state.read_task.wake()
-                                } else {
-                                    let expire = RtInstant::from_std(
-                                        this.time.now()
-                                            + Duration::from_secs(
-                                                this.keepalive_timeout as u64,
-                                            ),
-                                    );
-                                    this.keepalive.reset(expire);
-                                    let _ = Pin::new(&mut this.keepalive).poll(cx);
-                                }
-                            }
-                            Poll::Pending => (),
-                        }
-                    }
-                }
+                this.poll_keepalive(cx);
 
                 loop {
                     let mut state = this.state.inner.borrow_mut();
 
                     match this.service.poll_ready(cx) {
                         Poll::Ready(Ok(_)) => {
-                            // handle write error
-                            if let Some(item) = state.dispatch_queue.pop_front() {
-                                // call service
-                                let st = this.state.clone();
-                                state.dispatch_inflight += 1;
-                                drop(state);
-                                ntex::rt::spawn(
-                                    this.service.call(item.into()).map(move |item| {
-                                        st.inner.borrow_mut().write_item(item)
-                                    }),
-                                );
-                                continue;
-                            } else if state.flags.contains(Flags::DSP_STOP) {
+                            if state.flags.contains(Flags::DSP_STOP) {
+                                // handle error
+                                let item = this
+                                    .inner
+                                    .borrow_mut()
+                                    .error
+                                    .as_mut()
+                                    .and_then(|err| err.take())
+                                    .or_else(|| {
+                                        state
+                                            .error
+                                            .take()
+                                            .map(|err| DispatcherItem::IoError(err))
+                                    });
+
+                                if let Some(item) = item {
+                                    // call service
+                                    let st = this.state.clone();
+                                    let inner = this.inner.clone();
+                                    state.dispatch_inflight += 1;
+                                    ntex::rt::spawn(this.service.call(item.into()).map(
+                                        move |item| {
+                                            if let Some(err) =
+                                                st.inner.borrow_mut().write_item(item)
+                                            {
+                                                inner.borrow_mut().error = Some(err.into());
+                                            }
+                                        },
+                                    ));
+                                }
+
                                 this.st = IoDispatcherState::Stop;
                                 drop(state);
                                 return self.poll(cx);
@@ -239,13 +297,14 @@ where
 
                                 // call service
                                 let st = this.state.clone();
+                                let inner = this.inner.clone();
                                 state.dispatch_inflight += 1;
                                 drop(state);
-                                ntex::rt::spawn(
-                                    this.service.call(item).map(move |item| {
-                                        st.inner.borrow_mut().write_item(item)
-                                    }),
-                                );
+                                ntex::rt::spawn(this.service.call(item).map(move |item| {
+                                    if let Some(err) = st.inner.borrow_mut().write_item(item) {
+                                        inner.borrow_mut().error = Some(err.into())
+                                    }
+                                }));
 
                                 // handle decoder error
                                 if error {
@@ -268,7 +327,8 @@ where
                             log::trace!("service readiness check failed, stopping");
                             // service readiness error
                             this.st = IoDispatcherState::Stop;
-                            this.inner.borrow_mut().error = Some(err);
+                            this.inner.borrow_mut().error =
+                                Some(IoDispatcherError::Service(err));
                             state.flags.insert(Flags::DSP_STOP);
                             drop(state);
                             return self.poll(cx);
@@ -305,11 +365,15 @@ where
                 return if this.service.poll_shutdown(cx, is_err).is_ready() {
                     log::trace!("service shutdown is completed, stop");
 
-                    Poll::Ready(if let Some(err) = this.inner.borrow_mut().error.take() {
-                        Err(err)
-                    } else {
-                        Ok(())
-                    })
+                    Poll::Ready(
+                        if let Some(IoDispatcherError::Service(err)) =
+                            this.inner.borrow_mut().error.take()
+                        {
+                            Err(err)
+                        } else {
+                            Ok(())
+                        },
+                    )
                 } else {
                     Poll::Pending
                 };
@@ -348,7 +412,11 @@ mod tests {
             let expire = RtInstant::from_std(updated + Duration::from_secs(30));
             let state = IoState::new(codec);
             let io = Rc::new(RefCell::new(io));
-            let inner = Rc::new(RefCell::new(IoDispatcherInner { error: None }));
+            let inner = Rc::new(RefCell::new(IoDispatcherInner {
+                error: None,
+                base: 0,
+                queue: VecDeque::new(),
+            }));
 
             ntex::rt::spawn(IoRead::new(io.clone(), state.clone()));
             ntex::rt::spawn(IoWrite::new(io.clone(), state.clone()));

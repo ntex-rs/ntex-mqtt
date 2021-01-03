@@ -1,6 +1,5 @@
 //! Framed transport dispatcher
-use std::task::{Context, Poll};
-use std::{cell::RefCell, collections::VecDeque, fmt, io, mem, pin::Pin, rc::Rc};
+use std::{cell::RefCell, fmt, io, mem, pin::Pin, rc::Rc, task::Context, task::Poll};
 
 use bytes::{Buf, BytesMut};
 use either::Either;
@@ -18,16 +17,16 @@ bitflags::bitflags! {
     pub(crate) struct Flags: u8 {
         const DSP_STOP       = 0b0000_0001;
 
-        const IO_ERR         = 0b0000_0010;
-        const IO_SHUTDOWN    = 0b0000_0100;
+        const IO_ERR         = 0b0000_0100;
+        const IO_SHUTDOWN    = 0b0000_1000;
 
         /// pause io read
-        const RD_PAUSED      = 0b0000_1000;
+        const RD_PAUSED      = 0b0001_0000;
         /// new data is available
-        const RD_READY       = 0b0001_0000;
+        const RD_READY       = 0b0010_0000;
 
-        const ST_DSP_ERR     = 0b0010_0000;
-        const ST_IO_SHUTDOWN = 0b0100_0000;
+        const ST_DSP_ERR     = 0b0100_0000;
+        const ST_IO_SHUTDOWN = 0b1000_0000;
     }
 }
 
@@ -64,19 +63,6 @@ where
     }
 }
 
-impl<U> From<IoDispatcherError<U>> for DispatcherItem<U>
-where
-    U: Encoder + Decoder,
-{
-    fn from(err: IoDispatcherError<U>) -> Self {
-        match err {
-            IoDispatcherError::KeepAlive => DispatcherItem::KeepAliveTimeout,
-            IoDispatcherError::Encoder(err) => DispatcherItem::EncoderError(err),
-            IoDispatcherError::Io(err) => DispatcherItem::IoError(err),
-        }
-    }
-}
-
 pub struct IoState<U: Encoder + Decoder> {
     pub(crate) inner: Rc<RefCell<IoStateInner<U>>>,
 }
@@ -84,23 +70,17 @@ pub struct IoState<U: Encoder + Decoder> {
 pub(crate) struct IoStateInner<U: Encoder + Decoder> {
     codec: U,
     pub(crate) flags: Flags,
+    pub(crate) error: Option<io::Error>,
     pub(crate) disconnect_timeout: u16,
 
     pub(crate) dispatch_inflight: usize,
     pub(crate) dispatch_task: LocalWaker,
-    pub(crate) dispatch_queue: VecDeque<IoDispatcherError<U>>,
 
     pub(crate) write_buf: BytesMut,
     pub(crate) write_task: LocalWaker,
 
     pub(crate) read_buf: BytesMut,
     pub(crate) read_task: LocalWaker,
-}
-
-pub(crate) enum IoDispatcherError<U: Encoder> {
-    KeepAlive,
-    Encoder(U::Error),
-    Io(io::Error),
 }
 
 impl<U> IoState<U>
@@ -112,11 +92,11 @@ where
             inner: Rc::new(RefCell::new(IoStateInner {
                 codec,
                 flags: Flags::empty(),
+                error: None,
                 disconnect_timeout: 1000,
 
                 dispatch_inflight: 0,
                 dispatch_task: LocalWaker::new(),
-                dispatch_queue: VecDeque::with_capacity(8),
 
                 write_buf: BytesMut::new(),
                 write_task: LocalWaker::new(),
@@ -141,11 +121,11 @@ where
             inner: Rc::new(RefCell::new(IoStateInner {
                 codec,
                 flags: st.flags,
+                error: st.error.take(),
                 disconnect_timeout: st.disconnect_timeout,
 
                 dispatch_inflight: 0,
                 dispatch_task: LocalWaker::new(),
-                dispatch_queue: VecDeque::with_capacity(8),
 
                 write_buf: mem::take(&mut st.write_buf),
                 write_task: LocalWaker::new(),
@@ -292,7 +272,10 @@ where
         }
     }
 
-    pub(crate) fn write_item<E>(&mut self, item: Result<Option<Response<U>>, E>) -> Option<E> {
+    pub(crate) fn write_item<E>(
+        &mut self,
+        item: Result<Option<Response<U>>, E>,
+    ) -> Option<Either<E, <U as Encoder>::Error>> {
         // update inflight count
         self.dispatch_inflight -= 1;
         if self.dispatch_inflight == 0 && self.flags.contains(Flags::DSP_STOP) {
@@ -314,8 +297,8 @@ where
                     if let Err(err) = self.codec.encode(item, &mut self.write_buf) {
                         log::trace!("Codec encoder error: {:?}", err);
                         self.flags.insert(Flags::DSP_STOP | Flags::ST_DSP_ERR);
-                        self.dispatch_queue.push_back(IoDispatcherError::Encoder(err));
                         self.dispatch_task.wake();
+                        return Some(Either::Right(err));
                     } else if is_write_sleep {
                         self.write_task.wake();
                     }
@@ -324,7 +307,7 @@ where
                 Err(err) => {
                     self.flags.insert(Flags::DSP_STOP | Flags::ST_DSP_ERR);
                     self.dispatch_task.wake();
-                    Some(err)
+                    Some(Either::Left(err))
                 }
                 _ => None,
             }
@@ -362,9 +345,9 @@ where
                 Poll::Ready(Err(err)) => {
                     log::trace!("read task failed on io {:?}", err);
                     self.flags.insert(Flags::IO_ERR | Flags::DSP_STOP);
+                    self.error = Some(err);
                     self.write_task.wake();
                     self.dispatch_task.wake();
-                    self.dispatch_queue.push_back(IoDispatcherError::Io(err));
                     return Poll::Ready(());
                 }
             }
