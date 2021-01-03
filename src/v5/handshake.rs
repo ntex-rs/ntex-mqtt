@@ -1,10 +1,9 @@
 use std::{fmt, num::NonZeroU16};
 
-use super::{codec, sink::MqttSink};
-use crate::io::IoState;
+use crate::{io::IoState, v5::codec, v5::sink::MqttSink};
 
-/// Connect message
-pub struct Connect<Io> {
+/// Handshake message
+pub struct Handshake<Io> {
     io: Io,
     pkt: codec::Connect,
     state: IoState<codec::Codec>,
@@ -14,7 +13,7 @@ pub struct Connect<Io> {
     max_topic_alias: u16,
 }
 
-impl<Io> Connect<Io> {
+impl<Io> Handshake<Io> {
     pub(crate) fn new(
         pkt: codec::Connect,
         io: Io,
@@ -45,8 +44,8 @@ impl<Io> Connect<Io> {
         &self.sink
     }
 
-    /// Ack connect message and set state
-    pub fn ack<St>(self, st: St) -> ConnectAck<Io, St> {
+    /// Ack handshake message and set state
+    pub fn ack<St>(self, st: St) -> HandshakeAck<Io, St> {
         let mut packet = codec::ConnectAck {
             reason_code: codec::ConnectAckReason::Success,
             topic_alias_max: self.max_topic_alias,
@@ -59,7 +58,7 @@ impl<Io> Connect<Io> {
             packet.receive_max = Some(NonZeroU16::new(self.max_receive).unwrap());
         }
 
-        ConnectAck {
+        HandshakeAck {
             io: self.io,
             sink: self.sink,
             session: Some(st),
@@ -69,9 +68,9 @@ impl<Io> Connect<Io> {
         }
     }
 
-    /// Create connect ack object with error
-    pub fn failed<St>(self, reason_code: codec::ConnectAckReason) -> ConnectAck<Io, St> {
-        ConnectAck {
+    /// Create handshake ack object with error
+    pub fn failed<St>(self, reason_code: codec::ConnectAckReason) -> HandshakeAck<Io, St> {
+        HandshakeAck {
             io: self.io,
             sink: self.sink,
             session: None,
@@ -81,9 +80,9 @@ impl<Io> Connect<Io> {
         }
     }
 
-    /// Create connect ack object with provided ConnectAck packet
-    pub fn fail_with<St>(self, ack: codec::ConnectAck) -> ConnectAck<Io, St> {
-        ConnectAck {
+    /// Create handshake ack object with provided ConnectAck packet
+    pub fn fail_with<St>(self, ack: codec::ConnectAck) -> HandshakeAck<Io, St> {
+        HandshakeAck {
             io: self.io,
             sink: self.sink,
             state: self.state,
@@ -94,14 +93,14 @@ impl<Io> Connect<Io> {
     }
 }
 
-impl<T> fmt::Debug for Connect<T> {
+impl<T> fmt::Debug for Handshake<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.pkt.fmt(f)
     }
 }
 
-/// Ack connect message
-pub struct ConnectAck<Io, St> {
+/// Handshake ack message
+pub struct HandshakeAck<Io, St> {
     pub(crate) io: Io,
     pub(crate) session: Option<St>,
     pub(crate) sink: MqttSink,
@@ -110,7 +109,7 @@ pub struct ConnectAck<Io, St> {
     pub(crate) keepalive: u16,
 }
 
-impl<Io, St> ConnectAck<Io, St> {
+impl<Io, St> HandshakeAck<Io, St> {
     /// Set idle keep-alive for the connection in seconds.
     /// This method sets `server_keepalive_sec` property for `ConnectAck`
     /// response packet.

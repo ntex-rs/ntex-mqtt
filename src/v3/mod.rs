@@ -2,11 +2,11 @@
 
 pub mod client;
 pub mod codec;
-mod connect;
 pub mod control;
 mod default;
 mod dispatcher;
 pub mod error;
+mod handshake;
 mod publish;
 mod router;
 mod server;
@@ -15,8 +15,8 @@ mod sink;
 pub type Session<St> = crate::Session<MqttSink, St>;
 
 pub use self::client::Client;
-pub use self::connect::{Connect, ConnectAck};
 pub use self::control::{ControlMessage, ControlResult};
+pub use self::handshake::{Handshake, HandshakeAck};
 pub use self::publish::Publish;
 pub use self::router::Router;
 pub use self::server::MqttServer;

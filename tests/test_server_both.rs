@@ -34,11 +34,11 @@ async fn test_simple() -> std::io::Result<()> {
 
     let srv = server::test_server(|| {
         MqttServer::new()
-            .v3(v3::MqttServer::new(|con: v3::Connect<_>| {
+            .v3(v3::MqttServer::new(|con: v3::Handshake<_>| {
                 ok::<_, TestError>(con.ack(St, false))
             })
             .publish(|_| ok::<_, TestError>(())))
-            .v5(v5::MqttServer::new(|con: v5::Connect<_>| ok::<_, TestError>(con.ack(St)))
+            .v5(v5::MqttServer::new(|con: v5::Handshake<_>| ok::<_, TestError>(con.ack(St)))
                 .publish(|p: v5::Publish| ok::<_, TestError>(p.ack())))
     });
 

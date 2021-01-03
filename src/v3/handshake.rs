@@ -6,14 +6,14 @@ use super::codec as mqtt;
 use super::sink::MqttSink;
 
 /// Connect message
-pub struct Connect<Io> {
+pub struct Handshake<Io> {
     io: Io,
     pkt: mqtt::Connect,
     sink: MqttSink,
     state: IoState<mqtt::Codec>,
 }
 
-impl<Io> Connect<Io> {
+impl<Io> Handshake<Io> {
     pub(crate) fn new(
         pkt: mqtt::Connect,
         io: Io,
@@ -41,9 +41,9 @@ impl<Io> Connect<Io> {
         &self.sink
     }
 
-    /// Ack connect message and set state
-    pub fn ack<St>(self, st: St, session_present: bool) -> ConnectAck<Io, St> {
-        ConnectAck {
+    /// Ack handshake message and set state
+    pub fn ack<St>(self, st: St, session_present: bool) -> HandshakeAck<Io, St> {
+        HandshakeAck {
             session_present,
             io: self.io,
             sink: self.sink,
@@ -55,8 +55,8 @@ impl<Io> Connect<Io> {
     }
 
     /// Create connect ack object with `identifier rejected` return code
-    pub fn identifier_rejected<St>(self) -> ConnectAck<Io, St> {
-        ConnectAck {
+    pub fn identifier_rejected<St>(self) -> HandshakeAck<Io, St> {
+        HandshakeAck {
             io: self.io,
             sink: self.sink,
             state: self.state,
@@ -68,8 +68,8 @@ impl<Io> Connect<Io> {
     }
 
     /// Create connect ack object with `bad user name or password` return code
-    pub fn bad_username_or_pwd<St>(self) -> ConnectAck<Io, St> {
-        ConnectAck {
+    pub fn bad_username_or_pwd<St>(self) -> HandshakeAck<Io, St> {
+        HandshakeAck {
             io: self.io,
             sink: self.sink,
             state: self.state,
@@ -81,8 +81,8 @@ impl<Io> Connect<Io> {
     }
 
     /// Create connect ack object with `not authorized` return code
-    pub fn not_authorized<St>(self) -> ConnectAck<Io, St> {
-        ConnectAck {
+    pub fn not_authorized<St>(self) -> HandshakeAck<Io, St> {
+        HandshakeAck {
             io: self.io,
             sink: self.sink,
             state: self.state,
@@ -94,8 +94,8 @@ impl<Io> Connect<Io> {
     }
 
     /// Create connect ack object with `service unavailable` return code
-    pub fn service_unavailable<St>(self) -> ConnectAck<Io, St> {
-        ConnectAck {
+    pub fn service_unavailable<St>(self) -> HandshakeAck<Io, St> {
+        HandshakeAck {
             io: self.io,
             sink: self.sink,
             state: self.state,
@@ -107,14 +107,14 @@ impl<Io> Connect<Io> {
     }
 }
 
-impl<T> fmt::Debug for Connect<T> {
+impl<T> fmt::Debug for Handshake<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.pkt.fmt(f)
     }
 }
 
 /// Ack connect message
-pub struct ConnectAck<Io, St> {
+pub struct HandshakeAck<Io, St> {
     pub(crate) io: Io,
     pub(crate) session: Option<St>,
     pub(crate) session_present: bool,
@@ -124,7 +124,7 @@ pub struct ConnectAck<Io, St> {
     pub(crate) keepalive: u16,
 }
 
-impl<Io, St> ConnectAck<Io, St> {
+impl<Io, St> HandshakeAck<Io, St> {
     /// Set idle time-out for the connection in seconds
     ///
     /// By default idle time-out is set to 30 seconds.

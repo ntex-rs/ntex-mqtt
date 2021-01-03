@@ -11,17 +11,17 @@ use crate::io::{DispatcherItem, IoState};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
 use super::codec as mqtt;
-use super::connect::{Connect, ConnectAck};
 use super::control::{ControlMessage, ControlResult};
 use super::default::{DefaultControlService, DefaultPublishService};
 use super::dispatcher::factory;
+use super::handshake::{Handshake, HandshakeAck};
 use super::publish::Publish;
 use super::sink::{MqttSink, MqttSinkPool};
 use super::Session;
 
 /// Mqtt v3.1.1 Server
 pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceFactory> {
-    connect: C,
+    handshake: C,
     control: Cn,
     publish: P,
     max_size: u32,
@@ -42,17 +42,17 @@ impl<Io, St, C>
     >
 where
     St: 'static,
-    C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
+    C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>
         + 'static,
     C::Error: fmt::Debug,
 {
-    /// Create server factory and provide connect service
-    pub fn new<F>(connect: F) -> Self
+    /// Create server factory and provide handshake service
+    pub fn new<F>(handshake: F) -> Self
     where
         F: IntoServiceFactory<C>,
     {
         MqttServer {
-            connect: connect.into_factory(),
+            handshake: handshake.into_factory(),
             control: DefaultControlService::default(),
             publish: DefaultPublishService::default(),
             max_size: 0,
@@ -69,7 +69,7 @@ impl<Io, St, C, Cn, P> MqttServer<Io, St, C, Cn, P>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     St: 'static,
-    C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>
+    C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>
         + 'static,
     Cn: ServiceFactory<Config = Session<St>, Request = ControlMessage, Response = ControlResult>
         + 'static,
@@ -134,7 +134,7 @@ where
         C::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         MqttServer {
-            connect: self.connect,
+            handshake: self.handshake,
             publish: self.publish,
             control: service.into_factory(),
             max_size: self.max_size,
@@ -154,7 +154,7 @@ where
         C::Error: From<Srv::Error> + From<Srv::InitError> + fmt::Debug,
     {
         MqttServer {
-            connect: self.connect,
+            handshake: self.handshake,
             publish: publish.into_factory(),
             control: self.control,
             max_size: self.max_size,
@@ -171,7 +171,7 @@ where
         self,
     ) -> impl ServiceFactory<Config = (), Request = Io, Response = (), Error = MqttError<C::Error>>
     {
-        let connect = self.connect;
+        let handshake = self.handshake;
         let publish = self
             .publish
             .into_factory()
@@ -184,7 +184,7 @@ where
 
         ntex::unit_config(
             FactoryBuilder::new(handshake_service_factory(
-                connect,
+                handshake,
                 self.max_size,
                 self.handshake_timeout,
                 self.pool,
@@ -221,7 +221,7 @@ where
         Error = MqttError<C::Error>,
         InitError = C::InitError,
     > {
-        let connect = self.connect;
+        let handshake = self.handshake;
         let publish = self
             .publish
             .into_factory()
@@ -234,7 +234,7 @@ where
 
         ntex::unit_config(
             FactoryBuilder2::new(handshake_service_factory2(
-                connect,
+                handshake,
                 self.max_size,
                 self.handshake_timeout,
                 self.pool,
@@ -275,7 +275,7 @@ fn handshake_service_factory<Io, St, C>(
 >
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>,
+    C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>,
     C::Error: fmt::Debug,
 {
     ntex::apply(
@@ -311,7 +311,7 @@ fn handshake_service_factory2<Io, St, C>(
 >
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<Config = (), Request = Connect<Io>, Response = ConnectAck<Io, St>>,
+    C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>,
     C::Error: fmt::Debug,
 {
     ntex::apply(
@@ -342,7 +342,7 @@ async fn handshake<Io, S, St, E>(
 ) -> Result<(Io, IoState<mqtt::Codec>, Session<St>, u16), S::Error>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    S: Service<Request = Connect<Io>, Response = ConnectAck<Io, St>, Error = MqttError<E>>,
+    S: Service<Request = Handshake<Io>, Response = HandshakeAck<Io, St>, Error = MqttError<E>>,
 {
     log::trace!("Starting mqtt handshake");
 
@@ -370,7 +370,7 @@ where
             let sink = MqttSink::new(state.clone(), 16, pool);
 
             // authenticate mqtt connection
-            let mut ack = service.call(Connect::new(connect, io, sink, state)).await?;
+            let mut ack = service.call(Handshake::new(connect, io, sink, state)).await?;
 
             match ack.session {
                 Some(session) => {

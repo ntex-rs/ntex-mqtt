@@ -28,14 +28,14 @@ impl std::convert::TryFrom<MyServerError> for v5::PublishAck {
     }
 }
 
-async fn connect_v3<Io>(
-    connect: v3::Connect<Io>,
-) -> Result<v3::ConnectAck<Io, MySession>, MyServerError> {
-    log::info!("new connection: {:?}", connect);
+async fn handshake_v3<Io>(
+    handshake: v3::Handshake<Io>,
+) -> Result<v3::HandshakeAck<Io, MySession>, MyServerError> {
+    log::info!("new connection: {:?}", handshake);
 
-    let session = MySession { client_id: connect.packet().client_id.to_string() };
+    let session = MySession { client_id: handshake.packet().client_id.to_string() };
 
-    Ok(connect.ack(session, false))
+    Ok(handshake.ack(session, false))
 }
 
 async fn publish_v3(
@@ -58,14 +58,14 @@ async fn publish_v3(
     }
 }
 
-async fn connect_v5<Io>(
-    connect: v5::Connect<Io>,
-) -> Result<v5::ConnectAck<Io, MySession>, MyServerError> {
-    log::info!("new connection: {:?}", connect);
+async fn handshake_v5<Io>(
+    handshake: v5::Handshake<Io>,
+) -> Result<v5::HandshakeAck<Io, MySession>, MyServerError> {
+    log::info!("new connection: {:?}", handshake);
 
-    let session = MySession { client_id: connect.packet().client_id.to_string() };
+    let session = MySession { client_id: handshake.packet().client_id.to_string() };
 
-    Ok(connect.ack(session))
+    Ok(handshake.ack(session))
 }
 
 async fn publish_v5(
@@ -97,14 +97,14 @@ async fn main() -> std::io::Result<()> {
     ntex::server::Server::build()
         .bind("mqtt", "127.0.0.1:1883", || {
             MqttServer::new()
-                .v3(v3::MqttServer::new(connect_v3).publish(fn_factory_with_config(
+                .v3(v3::MqttServer::new(handshake_v3).publish(fn_factory_with_config(
                     |session: v3::Session<MySession>| {
                         ok::<_, MyServerError>(fn_service(move |req| {
                             publish_v3(session.clone(), req)
                         }))
                     },
                 )))
-                .v5(v5::MqttServer::new(connect_v5).publish(fn_factory_with_config(
+                .v5(v5::MqttServer::new(handshake_v5).publish(fn_factory_with_config(
                     |session: v5::Session<MySession>| {
                         ok::<_, MyServerError>(fn_service(move |req| {
                             publish_v5(session.clone(), req)

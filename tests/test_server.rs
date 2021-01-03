@@ -10,12 +10,12 @@ use ntex::server;
 use ntex_codec::Framed;
 
 use ntex_mqtt::v3::{
-    client, codec, Connect, ConnectAck, ControlMessage, MqttServer, Publish, Session,
+    client, codec, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish, Session,
 };
 
 struct St;
 
-async fn connect<Io>(mut packet: Connect<Io>) -> Result<ConnectAck<Io, St>, ()> {
+async fn handshake<Io>(mut packet: Handshake<Io>) -> Result<HandshakeAck<Io, St>, ()> {
     packet.packet();
     packet.packet_mut();
     packet.io();
@@ -25,7 +25,7 @@ async fn connect<Io>(mut packet: Connect<Io>) -> Result<ConnectAck<Io, St>, ()> 
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    let srv = server::test_server(|| MqttServer::new(connect).publish(|_t| ok(())).finish());
+    let srv = server::test_server(|| MqttServer::new(handshake).publish(|_t| ok(())).finish());
 
     // connect to server
     let client =
@@ -47,7 +47,7 @@ async fn test_simple() -> std::io::Result<()> {
 async fn test_connect_fail() -> std::io::Result<()> {
     // bad user name or password
     let srv = server::test_server(|| {
-        MqttServer::new(|conn: Connect<_>| ok::<_, ()>(conn.bad_username_or_pwd::<St>()))
+        MqttServer::new(|conn: Handshake<_>| ok::<_, ()>(conn.bad_username_or_pwd::<St>()))
             .publish(|_t| ok(()))
             .finish()
     });
@@ -60,7 +60,7 @@ async fn test_connect_fail() -> std::io::Result<()> {
 
     // identifier rejected
     let srv = server::test_server(|| {
-        MqttServer::new(|conn: Connect<_>| ok::<_, ()>(conn.identifier_rejected::<St>()))
+        MqttServer::new(|conn: Handshake<_>| ok::<_, ()>(conn.identifier_rejected::<St>()))
             .publish(|_t| ok(()))
             .finish()
     });
@@ -73,7 +73,7 @@ async fn test_connect_fail() -> std::io::Result<()> {
 
     // not authorized
     let srv = server::test_server(|| {
-        MqttServer::new(|conn: Connect<_>| ok::<_, ()>(conn.not_authorized::<St>()))
+        MqttServer::new(|conn: Handshake<_>| ok::<_, ()>(conn.not_authorized::<St>()))
             .publish(|_t| ok(()))
             .finish()
     });
@@ -86,7 +86,7 @@ async fn test_connect_fail() -> std::io::Result<()> {
 
     // service unavailable
     let srv = server::test_server(|| {
-        MqttServer::new(|conn: Connect<_>| ok::<_, ()>(conn.service_unavailable::<St>()))
+        MqttServer::new(|conn: Handshake<_>| ok::<_, ()>(conn.service_unavailable::<St>()))
             .publish(|_t| ok(()))
             .finish()
     });
@@ -107,7 +107,7 @@ async fn test_ping() -> std::io::Result<()> {
 
     let srv = server::test_server(move || {
         let ping = ping2.clone();
-        MqttServer::new(connect)
+        MqttServer::new(handshake)
             .publish(|_| ok(()))
             .control(move |msg| {
                 let ping = ping.clone();
@@ -141,7 +141,7 @@ async fn test_ping() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_ack_order() -> std::io::Result<()> {
     let srv = server::test_server(move || {
-        MqttServer::new(connect)
+        MqttServer::new(handshake)
             .publish(|_| delay_for(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
             .control(move |msg| match msg {
                 ControlMessage::Subscribe(mut msg) => {
@@ -208,7 +208,7 @@ async fn test_disconnect() -> std::io::Result<()> {
     env_logger::init();
 
     let srv = server::test_server(|| {
-        MqttServer::new(connect)
+        MqttServer::new(handshake)
             .publish(ntex::fn_factory_with_config(|session: Session<St>| {
                 ok(ntex::fn_service(move |_: Publish| {
                     session.sink().force_close();

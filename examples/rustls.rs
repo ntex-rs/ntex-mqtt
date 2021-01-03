@@ -26,11 +26,11 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
     }
 }
 
-async fn connect_v3<Io>(
-    connect: v3::Connect<Io>,
-) -> Result<v3::ConnectAck<Io, Session>, ServerError> {
-    log::info!("new connection: {:?}", connect);
-    Ok(connect.ack(Session, false))
+async fn handshake_v3<Io>(
+    handshake: v3::Handshake<Io>,
+) -> Result<v3::HandshakeAck<Io, Session>, ServerError> {
+    log::info!("new connection: {:?}", handshake);
+    Ok(handshake.ack(Session, false))
 }
 
 async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
@@ -38,11 +38,11 @@ async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
     Ok(())
 }
 
-async fn connect_v5<Io>(
-    connect: v5::Connect<Io>,
-) -> Result<v5::ConnectAck<Io, Session>, ServerError> {
-    log::info!("new connection: {:?}", connect);
-    Ok(connect.ack(Session))
+async fn handshake_v5<Io>(
+    handshake: v5::Handshake<Io>,
+) -> Result<v5::HandshakeAck<Io, Session>, ServerError> {
+    log::info!("new connection: {:?}", handshake);
+    Ok(handshake.ack(Session))
 }
 
 async fn publish_v5(publish: v5::Publish) -> Result<v5::PublishAck, ServerError> {
@@ -75,8 +75,8 @@ async fn main() -> std::io::Result<()> {
                 .map_err(|_err| MqttError::Service(ServerError {}))
                 .and_then(
                     MqttServer::new()
-                        .v3(v3::MqttServer::new(connect_v3).publish(publish_v3))
-                        .v5(v5::MqttServer::new(connect_v5).publish(publish_v5)),
+                        .v3(v3::MqttServer::new(handshake_v3).publish(publish_v3))
+                        .v5(v5::MqttServer::new(handshake_v5).publish(publish_v5)),
                 )
         })?
         .workers(1)

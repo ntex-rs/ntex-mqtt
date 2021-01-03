@@ -107,8 +107,8 @@ where
         St: 'static,
         C: ServiceFactory<
                 Config = (),
-                Request = v3::Connect<Io>,
-                Response = v3::ConnectAck<Io, St>,
+                Request = v3::Handshake<Io>,
+                Response = v3::HandshakeAck<Io, St>,
                 Error = Err,
                 InitError = InitErr,
             > + 'static,
@@ -154,8 +154,8 @@ where
         St: 'static,
         C: ServiceFactory<
                 Config = (),
-                Request = v5::Connect<Io>,
-                Response = v5::ConnectAck<Io, St>,
+                Request = v5::Handshake<Io>,
+                Response = v5::HandshakeAck<Io, St>,
                 Error = Err,
                 InitError = InitErr,
             > + 'static,

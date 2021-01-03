@@ -4,6 +4,8 @@
 
 * Refactor io dispatcher
 
+* Rename Connect/ConnectAck to Handshake/HandshakeAck
+
 ## [0.3.17] - 2020-11-04
 
 * v5: Allow to configure ConnectAck::max_qos value
