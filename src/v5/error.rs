@@ -37,46 +37,10 @@ impl From<Either<EncodeError, io::Error>> for ClientError {
 }
 
 #[derive(Debug, Display, PartialEq)]
-pub enum PublishQos0Error {
-    /// Encoder error
-    Encode(EncodeError),
-    /// Provided packet id is in use
-    #[display(fmt = "Provided packet id is in use")]
-    PacketIdInUse(u16),
-    /// Peer disconnected
-    #[display(fmt = "Peer disconnected")]
-    Disconnected,
-}
-
-#[derive(Debug, Display, PartialEq)]
 pub enum PublishQos1Error {
     /// Negative ack from peer
     #[display(fmt = "Negative ack: {:?}", _0)]
     Fail(codec::PublishAck),
-    /// Encoder error
-    Encode(EncodeError),
-    /// Provided packet id is in use
-    #[display(fmt = "Provided packet id is in use")]
-    PacketIdInUse(u16),
-    /// Peer disconnected
-    #[display(fmt = "Peer disconnected")]
-    Disconnected,
-}
-
-#[derive(Debug, Display, PartialEq)]
-pub enum SubscribeError {
-    /// Encoder error
-    Encode(EncodeError),
-    /// Provided packet id is in use
-    #[display(fmt = "Provided packet id is in use")]
-    PacketIdInUse(u16),
-    /// Peer disconnected
-    #[display(fmt = "Peer disconnected")]
-    Disconnected,
-}
-
-#[derive(Debug, Display, PartialEq)]
-pub enum UnsubscribeError {
     /// Encoder error
     Encode(EncodeError),
     /// Provided packet id is in use

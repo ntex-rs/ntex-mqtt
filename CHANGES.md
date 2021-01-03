@@ -1,5 +1,9 @@
 # Changes
 
+## [0.4.0] - 2021-01-03
+
+* Refactor io dispatcher
+
 ## [0.3.17] - 2020-11-04
 
 * v5: Allow to configure ConnectAck::max_qos value

@@ -1,16 +1,14 @@
 use std::cell::{Cell, RefCell};
-use std::convert::TryFrom;
 use std::task::{Context, Poll};
-use std::{future::Future, io, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
+use std::{
+    convert::TryFrom, future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc,
+};
 
 use futures::future::{join, ok, Either, FutureExt, Ready};
-use futures::ready;
-use fxhash::FxHashSet;
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
-use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::framed::DispatcherItem;
+use crate::io::DispatcherItem;
 
 use super::control::{self, ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
@@ -55,23 +53,13 @@ where
         async move {
             let (publish, control) = fut.await;
 
-            // mqtt dispatcher.
-            Ok(
-                // mqtt spec requires ack ordering, so enforce response ordering
-                InOrder::service(Dispatcher::<_, _, E, T::Error>::new(
-                    cfg.sink().clone(),
-                    max_receive as usize,
-                    max_topic_alias,
-                    publish?,
-                    control?,
-                ))
-                .map_err(|e| match e {
-                    InOrderError::Service(e) => e,
-                    InOrderError::Disconnected => MqttError::Protocol(ProtocolError::Io(
-                        io::Error::new(io::ErrorKind::Other, "Service dropped"),
-                    )),
-                }),
-            )
+            Ok(Dispatcher::<_, _, E, T::Error>::new(
+                cfg.sink().clone(),
+                max_receive as usize,
+                max_topic_alias,
+                publish?,
+                control?,
+            ))
         }
     })
 }
@@ -94,8 +82,8 @@ struct Inner<C> {
 }
 
 struct PublishInfo {
-    inflight: FxHashSet<NonZeroU16>,
-    aliases: FxHashSet<NonZeroU16>,
+    inflight: fxhash::FxHashSet<NonZeroU16>,
+    aliases: fxhash::FxHashSet<NonZeroU16>,
 }
 
 impl<T, C, E, E2> Dispatcher<T, C, E, E2>
@@ -121,8 +109,8 @@ where
                 control,
                 sink,
                 info: RefCell::new(PublishInfo {
-                    aliases: FxHashSet::default(),
-                    inflight: FxHashSet::default(),
+                    aliases: fxhash::FxHashSet::default(),
+                    inflight: fxhash::FxHashSet::default(),
                 }),
             }),
             _t: PhantomData,
@@ -305,20 +293,11 @@ where
                 ))
             }
             DispatcherItem::Item(_) => Either::Right(Either::Left(ok(None))),
-            DispatcherItem::EncoderError(idx, err) => {
-                if idx == 0 {
-                    Either::Right(Either::Right(ControlResponse::new(
-                        ControlMessage::proto_error(ProtocolError::Encode(err)),
-                        &self.inner,
-                    )))
-                } else {
-                    self.sink.pkt_encode_err(idx, err);
-                    Either::Right(Either::Left(ok(None)))
-                }
-            }
-            DispatcherItem::ItemEncoded(idx) => {
-                self.sink.pkt_written(idx);
-                Either::Right(Either::Left(ok(None)))
+            DispatcherItem::EncoderError(err) => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::Encode(err)),
+                    &self.inner,
+                )))
             }
             DispatcherItem::KeepAliveTimeout => {
                 Either::Right(Either::Right(ControlResponse::new(
@@ -371,7 +350,7 @@ where
 
         match this.state.as_mut().project() {
             PublishResponseStateProject::Publish(fut) => {
-                let ack = match ready!(fut.poll(cx)) {
+                let ack = match futures::ready!(fut.poll(cx)) {
                     Ok(ack) => ack,
                     Err(e) => {
                         if *this.packet_id != 0 {
@@ -464,7 +443,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().project();
 
-        let result = match ready!(this.fut.poll(cx)) {
+        let result = match futures::ready!(this.fut.poll(cx)) {
             Ok(result) => {
                 if let Some(id) = NonZeroU16::new(self.packet_id) {
                     self.inner.info.borrow_mut().inflight.remove(&id);

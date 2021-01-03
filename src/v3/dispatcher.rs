@@ -3,11 +3,8 @@ use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use futures::future::{err, join, ok, Either, FutureExt, Ready};
-use futures::ready;
-use fxhash::FxHashSet;
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::inflight::InFlightService;
-use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::MqttError;
 
@@ -53,18 +50,12 @@ where
         async move {
             let (publish, control) = fut.await;
 
-            // mqtt dispatcher.
             Ok(
                 // limit number of in-flight messages
                 InFlightService::new(
                     inflight,
-                    // mqtt spec requires ack ordering, so enforce response ordering
-                    InOrder::service(Dispatcher::<_, _, _, E>::new(cfg, publish?, control?)),
-                )
-                .map_err(|e| match e {
-                    InOrderError::Service(e) => e,
-                    InOrderError::Disconnected => MqttError::Disconnected,
-                }),
+                    Dispatcher::<_, _, _, E>::new(cfg, publish?, control?),
+                ),
             )
         }
     })
@@ -81,7 +72,7 @@ pub(crate) struct Dispatcher<St, T: Service<Error = MqttError<E>>, C, E> {
 
 struct Inner {
     sink: MqttSink,
-    inflight: RefCell<FxHashSet<NonZeroU16>>,
+    inflight: RefCell<fxhash::FxHashSet<NonZeroU16>>,
 }
 
 impl<St, T, C, E> Dispatcher<St, T, C, E>
@@ -97,7 +88,10 @@ where
             publish,
             control,
             shutdown: Cell::new(false),
-            inner: Rc::new(Inner { sink, inflight: RefCell::new(FxHashSet::default()) }),
+            inner: Rc::new(Inner {
+                sink,
+                inflight: RefCell::new(fxhash::FxHashSet::default()),
+            }),
         }
     }
 }
@@ -226,7 +220,7 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        ready!(this.fut.poll(cx))?;
+        futures::ready!(this.fut.poll(cx))?;
         log::trace!("Publish result for packet {:?} is ready", this.packet_id);
 
         if let Some(packet_id) = this.packet_id {
@@ -268,7 +262,7 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let packet = match ready!(this.fut.poll(cx))?.result {
+        let packet = match futures::ready!(this.fut.poll(cx))?.result {
             ControlResultKind::Ping => Some(codec::Packet::PingResponse),
             ControlResultKind::Subscribe(res) => {
                 this.inner.inflight.borrow_mut().remove(&res.packet_id);

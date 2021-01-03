@@ -2,16 +2,13 @@ use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
 use futures::future::{err, ok, Either, Future, TryFutureExt};
-use ntex::channel::mpsc;
+use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::router::{IntoPattern, Router, RouterBuilder};
 use ntex::rt::time::{delay_until, Instant as RtInstant};
-use ntex::service::boxed::BoxService;
-use ntex::service::{apply_fn, into_service, IntoService, Service};
-use ntex::util::time::LowResTimeService;
-use ntex_codec::{AsyncRead, AsyncWrite, Framed};
+use ntex::service::{apply_fn, boxed::BoxService, into_service, IntoService, Service};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::framed::{self, DispatcherItem};
+use crate::io::{DispatcherItem, IoDispatcher, IoState, Timer};
 use crate::v3::{codec, sink::MqttSink, ControlResult, Publish};
 
 use super::control::ControlMessage;
@@ -19,11 +16,11 @@ use super::dispatcher::create_dispatcher;
 
 /// Mqtt client
 pub struct Client<Io> {
-    io: Framed<Io, codec::Codec>,
-    rx: mpsc::Receiver<(codec::Packet, usize)>,
+    io: Io,
     sink: MqttSink,
-    keepalive: u64,
-    disconnect_timeout: u64,
+    state: IoState<codec::Codec>,
+    keepalive: u16,
+    disconnect_timeout: u16,
     session_present: bool,
     max_receive: usize,
 }
@@ -34,23 +31,24 @@ where
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
     pub(super) fn new(
-        io: Framed<T, codec::Codec>,
+        io: T,
+        state: IoState<codec::Codec>,
         session_present: bool,
-        keepalive_timeout: u64,
-        disconnect_timeout: u64,
+        keepalive_timeout: u16,
+        disconnect_timeout: u16,
         max_send: usize,
         max_receive: usize,
     ) -> Self {
-        let (tx, rx) = mpsc::channel();
+        let sink = MqttSink::new(state.clone(), max_send, Default::default());
 
         Client {
             io,
-            rx,
+            sink,
+            state,
             session_present,
             disconnect_timeout,
             max_receive,
             keepalive: keepalive_timeout,
-            sink: MqttSink::new(tx, max_send, Default::default()),
         }
     }
 }
@@ -87,8 +85,8 @@ where
             builder,
             handlers,
             io: self.io,
-            rx: self.rx,
             sink: self.sink,
+            state: self.state,
             keepalive: self.keepalive,
             disconnect_timeout: self.disconnect_timeout,
             max_receive: self.max_receive,
@@ -111,16 +109,15 @@ where
             into_service(|msg: ControlMessage| ok::<_, MqttError<()>>(msg.disconnect())),
         );
 
-        let _ = framed::Dispatcher::with(
+        let _ = IoDispatcher::with(
             self.io,
-            Some(self.rx),
+            self.state,
             apply_fn(dispatcher, |req: DispatcherItem<codec::Codec>, srv| match req {
                 DispatcherItem::Item(req) => Either::Left(srv.call(req)),
-                DispatcherItem::ItemEncoded(_) => Either::Right(ok(None)),
                 DispatcherItem::KeepAliveTimeout => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
                 }
-                DispatcherItem::EncoderError(_, e) => {
+                DispatcherItem::EncoderError(e) => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
                 }
                 DispatcherItem::DecoderError(e) => {
@@ -130,7 +127,7 @@ where
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
             }),
-            LowResTimeService::with(Duration::from_secs(1)),
+            Timer::with(Duration::from_secs(1)),
         )
         .keepalive_timeout(0)
         .disconnect_timeout(self.disconnect_timeout)
@@ -155,16 +152,15 @@ where
             service.into_service().map_err(MqttError::Service),
         );
 
-        framed::Dispatcher::with(
+        IoDispatcher::with(
             self.io,
-            Some(self.rx),
+            self.state,
             apply_fn(dispatcher, |req: DispatcherItem<codec::Codec>, srv| match req {
                 DispatcherItem::Item(req) => Either::Left(srv.call(req)),
-                DispatcherItem::ItemEncoded(_) => Either::Right(ok(None)),
                 DispatcherItem::KeepAliveTimeout => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
                 }
-                DispatcherItem::EncoderError(_, e) => {
+                DispatcherItem::EncoderError(e) => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
                 }
                 DispatcherItem::DecoderError(e) => {
@@ -174,7 +170,7 @@ where
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
             }),
-            LowResTimeService::with(Duration::from_secs(1)),
+            Timer::with(Duration::from_secs(1)),
         )
         .keepalive_timeout(0)
         .disconnect_timeout(self.disconnect_timeout)
@@ -188,11 +184,11 @@ type Handler<E> = BoxService<Publish, (), E>;
 pub struct ClientRouter<Io, Err, PErr> {
     builder: RouterBuilder<usize>,
     handlers: Vec<Handler<PErr>>,
-    io: Framed<Io, codec::Codec>,
-    rx: mpsc::Receiver<(codec::Packet, usize)>,
+    io: Io,
+    state: IoState<codec::Codec>,
     sink: MqttSink,
-    keepalive: u64,
-    disconnect_timeout: u64,
+    keepalive: u16,
+    disconnect_timeout: u16,
     max_receive: usize,
     _t: PhantomData<Err>,
 }
@@ -228,16 +224,15 @@ where
             into_service(|msg: ControlMessage| ok::<_, MqttError<Err>>(msg.disconnect())),
         );
 
-        let _ = framed::Dispatcher::with(
+        let _ = IoDispatcher::with(
             self.io,
-            Some(self.rx),
+            self.state,
             apply_fn(dispatcher, |req: DispatcherItem<codec::Codec>, srv| match req {
                 DispatcherItem::Item(req) => Either::Left(srv.call(req)),
-                DispatcherItem::ItemEncoded(_) => Either::Right(ok(None)),
                 DispatcherItem::KeepAliveTimeout => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
                 }
-                DispatcherItem::EncoderError(_, e) => {
+                DispatcherItem::EncoderError(e) => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
                 }
                 DispatcherItem::DecoderError(e) => {
@@ -247,7 +242,7 @@ where
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
             }),
-            LowResTimeService::with(Duration::from_secs(1)),
+            Timer::with(Duration::from_secs(1)),
         )
         .keepalive_timeout(0)
         .disconnect_timeout(self.disconnect_timeout)
@@ -271,16 +266,15 @@ where
             service.into_service().map_err(MqttError::Service),
         );
 
-        framed::Dispatcher::with(
+        IoDispatcher::with(
             self.io,
-            Some(self.rx),
+            self.state,
             apply_fn(dispatcher, |req: DispatcherItem<codec::Codec>, srv| match req {
                 DispatcherItem::Item(req) => Either::Left(srv.call(req)),
-                DispatcherItem::ItemEncoded(_) => Either::Right(ok(None)),
                 DispatcherItem::KeepAliveTimeout => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
                 }
-                DispatcherItem::EncoderError(_, e) => {
+                DispatcherItem::EncoderError(e) => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
                 }
                 DispatcherItem::DecoderError(e) => {
@@ -290,7 +284,7 @@ where
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
             }),
-            LowResTimeService::with(Duration::from_secs(1)),
+            Timer::with(Duration::from_secs(1)),
         )
         .keepalive_timeout(0)
         .disconnect_timeout(self.disconnect_timeout)
@@ -333,10 +327,10 @@ where
     }
 }
 
-async fn keepalive(sink: MqttSink, timeout: u64) {
+async fn keepalive(sink: MqttSink, timeout: u16) {
     log::debug!("start mqtt client keep-alive task");
 
-    let keepalive = Duration::from_secs(timeout);
+    let keepalive = Duration::from_secs(timeout as u64);
     loop {
         let expire = RtInstant::from_std(Instant::now() + keepalive);
         delay_until(expire).await;

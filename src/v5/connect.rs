@@ -1,14 +1,14 @@
-use ntex_codec::Framed;
 use std::{fmt, num::NonZeroU16};
 
 use super::{codec, sink::MqttSink};
-use crate::handshake::HandshakeResult;
+use crate::io::IoState;
 
 /// Connect message
 pub struct Connect<Io> {
-    connect: codec::Connect,
+    io: Io,
+    pkt: codec::Connect,
+    state: IoState<codec::Codec>,
     sink: MqttSink,
-    io: HandshakeResult<Io, (), codec::Codec>,
     max_size: u32,
     max_receive: u16,
     max_topic_alias: u16,
@@ -16,27 +16,28 @@ pub struct Connect<Io> {
 
 impl<Io> Connect<Io> {
     pub(crate) fn new(
-        connect: codec::Connect,
-        io: HandshakeResult<Io, (), codec::Codec>,
+        pkt: codec::Connect,
+        io: Io,
         sink: MqttSink,
+        state: IoState<codec::Codec>,
         max_size: u32,
         max_receive: u16,
         max_topic_alias: u16,
     ) -> Self {
-        Self { connect, io, sink, max_size, max_receive, max_topic_alias }
+        Self { pkt, io, sink, state, max_size, max_receive, max_topic_alias }
     }
 
     pub fn packet(&self) -> &codec::Connect {
-        &self.connect
+        &self.pkt
     }
 
     pub fn packet_mut(&mut self) -> &mut codec::Connect {
-        &mut self.connect
+        &mut self.pkt
     }
 
     #[inline]
-    pub fn io(&mut self) -> &mut Framed<Io, codec::Codec> {
-        self.io.io()
+    pub fn io(&mut self) -> &mut Io {
+        &mut self.io
     }
 
     /// Returns mqtt server sink
@@ -58,35 +59,55 @@ impl<Io> Connect<Io> {
             packet.receive_max = Some(NonZeroU16::new(self.max_receive).unwrap());
         }
 
-        ConnectAck { io: self.io, sink: self.sink, session: Some(st), packet }
+        ConnectAck {
+            io: self.io,
+            sink: self.sink,
+            session: Some(st),
+            state: self.state,
+            keepalive: 30,
+            packet,
+        }
     }
 
     /// Create connect ack object with error
-    pub fn failed<St>(self, reason: codec::ConnectAckReason) -> ConnectAck<Io, St> {
-        let mut packet = codec::ConnectAck::default();
-        packet.reason_code = reason;
-
-        ConnectAck { io: self.io, sink: self.sink, session: None, packet }
+    pub fn failed<St>(self, reason_code: codec::ConnectAckReason) -> ConnectAck<Io, St> {
+        ConnectAck {
+            io: self.io,
+            sink: self.sink,
+            session: None,
+            state: self.state,
+            keepalive: 30,
+            packet: codec::ConnectAck { reason_code, ..codec::ConnectAck::default() },
+        }
     }
 
     /// Create connect ack object with provided ConnectAck packet
     pub fn fail_with<St>(self, ack: codec::ConnectAck) -> ConnectAck<Io, St> {
-        ConnectAck { io: self.io, sink: self.sink, session: None, packet: ack }
+        ConnectAck {
+            io: self.io,
+            sink: self.sink,
+            state: self.state,
+            session: None,
+            packet: ack,
+            keepalive: 30,
+        }
     }
 }
 
 impl<T> fmt::Debug for Connect<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.connect.fmt(f)
+        self.pkt.fmt(f)
     }
 }
 
 /// Ack connect message
 pub struct ConnectAck<Io, St> {
-    pub(crate) io: HandshakeResult<Io, (), codec::Codec>,
+    pub(crate) io: Io,
     pub(crate) session: Option<St>,
     pub(crate) sink: MqttSink,
     pub(crate) packet: codec::ConnectAck,
+    pub(crate) state: IoState<codec::Codec>,
+    pub(crate) keepalive: u16,
 }
 
 impl<Io, St> ConnectAck<Io, St> {
@@ -99,7 +120,7 @@ impl<Io, St> ConnectAck<Io, St> {
         if timeout == 0 {
             panic!("Timeout must be greater than 0")
         }
-        self.io.set_keepalive_timeout(timeout as usize);
+        self.keepalive = timeout;
         self
     }
 

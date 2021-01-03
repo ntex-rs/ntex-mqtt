@@ -34,15 +34,3 @@ impl From<Either<EncodeError, io::Error>> for ClientError {
         }
     }
 }
-
-#[derive(Debug, Display, PartialEq)]
-pub enum SendPacketError {
-    /// Encoder error
-    Encode(EncodeError),
-    /// Provided packet id is in use
-    #[display(fmt = "Provided packet id is in use")]
-    PacketIdInUse(u16),
-    /// Peer disconnected
-    #[display(fmt = "Peer disconnected")]
-    Disconnected,
-}

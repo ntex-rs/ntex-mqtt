@@ -9,7 +9,9 @@ use ntex::rt::time::delay_for;
 use ntex::server;
 use ntex_codec::Framed;
 
-use ntex_mqtt::v3::{client, codec, Connect, ConnectAck, ControlMessage, MqttServer};
+use ntex_mqtt::v3::{
+    client, codec, Connect, ConnectAck, ControlMessage, MqttServer, Publish, Session,
+};
 
 struct St;
 
@@ -23,9 +25,6 @@ async fn connect<Io>(mut packet: Connect<Io>) -> Result<ConnectAck<Io, St>, ()> 
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
-    env_logger::init();
-
     let srv = server::test_server(|| MqttServer::new(connect).publish(|_t| ok(())).finish());
 
     // connect to server
@@ -199,6 +198,40 @@ async fn test_ack_order() -> std::io::Result<()> {
             status: vec![codec::SubscribeReturnCode::Success(codec::QoS::AtLeastOnce)],
         }
     );
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_disconnect() -> std::io::Result<()> {
+    std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
+    env_logger::init();
+
+    let srv = server::test_server(|| {
+        MqttServer::new(connect)
+            .publish(ntex::fn_factory_with_config(|session: Session<St>| {
+                ok(ntex::fn_service(move |_: Publish| {
+                    session.sink().force_close();
+                    async {
+                        delay_for(Duration::from_millis(100)).await;
+                        Ok(())
+                    }
+                }))
+            }))
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_err());
 
     Ok(())
 }

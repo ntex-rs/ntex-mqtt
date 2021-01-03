@@ -9,7 +9,7 @@ use ntex::service::Service;
 use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::framed::DispatcherItem;
+use crate::io::DispatcherItem;
 use crate::types::packet_type;
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{codec, sink::Ack, sink::MqttSink};
@@ -283,20 +283,11 @@ where
                 log::debug!("Unsupported packet: {:?}", pkt);
                 Either::Right(Either::Left(ok(None)))
             }
-            DispatcherItem::ItemEncoded(idx) => {
-                self.inner.sink.pkt_written(idx);
-                Either::Right(Either::Left(ok(None)))
-            }
-            DispatcherItem::EncoderError(idx, err) => {
-                if idx == 0 {
-                    Either::Right(Either::Right(ControlResponse::new(
-                        ControlMessage::proto_error(ProtocolError::Encode(err)),
-                        &self.inner,
-                    )))
-                } else {
-                    self.inner.sink.pkt_encode_err(idx, err);
-                    Either::Right(Either::Left(ok(None)))
-                }
+            DispatcherItem::EncoderError(err) => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::Encode(err)),
+                    &self.inner,
+                )))
             }
             DispatcherItem::DecoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(

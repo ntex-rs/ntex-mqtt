@@ -1,16 +1,13 @@
 use std::{fmt, marker::PhantomData, rc::Rc, time::Duration};
 
-use futures::future::{err, ok, Either};
-use futures::{SinkExt, StreamExt, TryFutureExt};
-use ntex::channel::mpsc;
+use futures::future::{err, Either, TryFutureExt};
+use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::rt::time::Delay;
 use ntex::service::{apply_fn_factory, IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
-use ntex_codec::{AsyncRead, AsyncWrite, Framed};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::framed::DispatcherItem;
-use crate::handshake::{Handshake, HandshakeResult};
+use crate::io::{DispatcherItem, IoState};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
 
 use super::codec as mqtt;
@@ -29,8 +26,8 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     publish: P,
     max_size: u32,
     inflight: usize,
-    handshake_timeout: usize,
-    disconnect_timeout: usize,
+    handshake_timeout: u16,
+    disconnect_timeout: u16,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<(Io, St)>,
 }
@@ -87,7 +84,7 @@ where
     ///
     /// Handshake includes `connect` packet and response `connect-ack`.
     /// By default handshake timeuot is disabled.
-    pub fn handshake_timeout(mut self, timeout: usize) -> Self {
+    pub fn handshake_timeout(mut self, timeout: u16) -> Self {
         self.handshake_timeout = timeout;
         self
     }
@@ -100,7 +97,7 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(mut self, val: usize) -> Self {
+    pub fn disconnect_timeout(mut self, val: u16) -> Self {
         self.disconnect_timeout = val;
         self
     }
@@ -197,11 +194,10 @@ where
                 factory(publish, control, self.inflight),
                 |req: DispatcherItem<mqtt::Codec>, srv| match req {
                     DispatcherItem::Item(req) => Either::Left(srv.call(req)),
-                    DispatcherItem::ItemEncoded(_) => Either::Right(ok(None)),
                     DispatcherItem::KeepAliveTimeout => {
                         Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
                     }
-                    DispatcherItem::EncoderError(_, e) => {
+                    DispatcherItem::EncoderError(e) => {
                         Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
                     }
                     DispatcherItem::DecoderError(e) => {
@@ -220,7 +216,7 @@ where
         self,
     ) -> impl ServiceFactory<
         Config = (),
-        Request = (Framed<Io, mqtt::Codec>, Option<Delay>),
+        Request = (Io, IoState<mqtt::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<C::Error>,
         InitError = C::InitError,
@@ -248,11 +244,10 @@ where
                 factory(publish, control, self.inflight),
                 |req: DispatcherItem<mqtt::Codec>, srv| match req {
                     DispatcherItem::Item(req) => Either::Left(srv.call(req)),
-                    DispatcherItem::ItemEncoded(_) => Either::Right(ok(None)),
                     DispatcherItem::KeepAliveTimeout => {
                         Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
                     }
-                    DispatcherItem::EncoderError(_, e) => {
+                    DispatcherItem::EncoderError(e) => {
                         Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
                     }
                     DispatcherItem::DecoderError(e) => {
@@ -270,12 +265,12 @@ where
 fn handshake_service_factory<Io, St, C>(
     factory: C,
     max_size: u32,
-    handshake_timeout: usize,
+    handshake_timeout: u16,
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
     Config = (),
-    Request = Handshake<Io, mqtt::Codec>,
-    Response = HandshakeResult<Io, Session<St>, mqtt::Codec>,
+    Request = Io,
+    Response = (Io, IoState<mqtt::Codec>, Session<St>, u16),
     Error = MqttError<C::Error>,
 >
 where
@@ -290,13 +285,8 @@ where
             factory.new_service(()).map_ok(move |service| {
                 let pool = pool.clone();
                 let service = Rc::new(service.map_err(MqttError::Service));
-                ntex::apply_fn(service, move |conn: Handshake<Io, mqtt::Codec>, service| {
-                    handshake(
-                        conn.codec(mqtt::Codec::new()),
-                        service.clone(),
-                        max_size,
-                        pool.clone(),
-                    )
+                ntex::apply_fn(service, move |conn: Io, service| {
+                    handshake(conn, None, service.clone(), max_size, pool.clone())
                 })
             })
         }),
@@ -310,12 +300,12 @@ where
 fn handshake_service_factory2<Io, St, C>(
     factory: C,
     max_size: u32,
-    handshake_timeout: usize,
+    handshake_timeout: u16,
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
     Config = (),
-    Request = HandshakeResult<Io, (), mqtt::Codec>,
-    Response = HandshakeResult<Io, Session<St>, mqtt::Codec>,
+    Request = (Io, IoState<mqtt::Codec>),
+    Response = (Io, IoState<mqtt::Codec>, Session<St>, u16),
     Error = MqttError<C::Error>,
     InitError = C::InitError,
 >
@@ -331,8 +321,8 @@ where
             factory.new_service(()).map_ok(move |service| {
                 let pool = pool.clone();
                 let service = Rc::new(service.map_err(MqttError::Service));
-                ntex::apply_fn(service, move |conn, service| {
-                    handshake(conn, service.clone(), max_size, pool.clone())
+                ntex::apply_fn(service, move |(io, state), service| {
+                    handshake(io, Some(state), service.clone(), max_size, pool.clone())
                 })
             })
         }),
@@ -344,41 +334,43 @@ where
 }
 
 async fn handshake<Io, S, St, E>(
-    mut framed: HandshakeResult<Io, (), mqtt::Codec>,
+    mut io: Io,
+    state: Option<IoState<mqtt::Codec>>,
     service: S,
     max_size: u32,
     pool: Rc<MqttSinkPool>,
-) -> Result<HandshakeResult<Io, Session<St>, mqtt::Codec>, S::Error>
+) -> Result<(Io, IoState<mqtt::Codec>, Session<St>, u16), S::Error>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     S: Service<Request = Connect<Io>, Response = ConnectAck<Io, St>, Error = MqttError<E>>,
 {
     log::trace!("Starting mqtt handshake");
 
-    framed.get_codec_mut().set_max_size(max_size);
+    // set max inbound (decoder) packet size
+    let state = state.unwrap_or_else(|| IoState::new(mqtt::Codec::default()));
+    state.with_codec(|codec| codec.set_max_size(max_size));
 
     // read first packet
-    let packet = framed
-        .next()
+    let packet = state
+        .next(&mut io)
         .await
-        .ok_or_else(|| {
-            log::trace!("Server mqtt is disconnected during handshake");
-            MqttError::Disconnected
+        .map_err(|err| {
+            log::trace!("Error is received during mqtt handshake: {:?}", err);
+            MqttError::from(err)
         })
         .and_then(|res| {
-            res.map_err(|e| {
-                log::trace!("Error is received during mqtt handshake: {:?}", e);
-                MqttError::from(e)
+            res.ok_or_else(|| {
+                log::trace!("Server mqtt is disconnected during handshake");
+                MqttError::Disconnected
             })
         })?;
 
     match packet {
         mqtt::Packet::Connect(connect) => {
-            let (tx, rx) = mpsc::channel();
-            let sink = MqttSink::new(tx, 16, pool);
+            let sink = MqttSink::new(state.clone(), 16, pool);
 
             // authenticate mqtt connection
-            let mut ack = service.call(Connect::new(connect, framed, sink)).await?;
+            let mut ack = service.call(Connect::new(connect, io, sink, state)).await?;
 
             match ack.session {
                 Some(session) => {
@@ -389,15 +381,17 @@ where
                             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
                         }
                     );
-                    let sink = ack.sink;
-                    ack.io
-                        .send(mqtt::Packet::ConnectAck {
-                            session_present: ack.session_present,
-                            return_code: mqtt::ConnectAckReason::ConnectionAccepted,
-                        })
+                    ack.state
+                        .send(
+                            &mut ack.io,
+                            mqtt::Packet::ConnectAck {
+                                session_present: ack.session_present,
+                                return_code: mqtt::ConnectAckReason::ConnectionAccepted,
+                            },
+                        )
                         .await?;
 
-                    Ok(ack.io.out(rx).state(Session::new(session, sink)))
+                    Ok((ack.io, ack.state, Session::new(session, ack.sink), ack.keepalive))
                 }
                 None => {
                     log::trace!(
@@ -408,11 +402,14 @@ where
                         }
                     );
 
-                    ack.io
-                        .send(mqtt::Packet::ConnectAck {
-                            session_present: false,
-                            return_code: ack.return_code,
-                        })
+                    ack.state
+                        .send(
+                            &mut ack.io,
+                            mqtt::Packet::ConnectAck {
+                                session_present: false,
+                                return_code: ack.return_code,
+                            },
+                        )
                         .await?;
                     Err(MqttError::Disconnected)
                 }

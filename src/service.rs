@@ -7,11 +7,9 @@ use futures::ready;
 
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
-use ntex::util::time::LowResTimeService;
-use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder, Framed};
+use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
-use super::framed::{Dispatcher, DispatcherItem};
-use super::handshake::{Handshake, HandshakeResult};
+use super::io::{DispatcherItem, IoDispatcher, IoState, Timer};
 
 type ResponseItem<U> = Option<<U as Encoder>::Item>;
 
@@ -19,20 +17,16 @@ type ResponseItem<U> = Option<<U as Encoder>::Item>;
 /// for building instances for framed services.
 pub(crate) struct FactoryBuilder<St, C, Io, Codec> {
     connect: C,
-    disconnect_timeout: usize,
+    disconnect_timeout: u16,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
 impl<St, C, Io, Codec> FactoryBuilder<St, C, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<
-        Config = (),
-        Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
-    >,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
 {
     /// Construct framed handler service factory with specified connect service
     pub(crate) fn new<F>(connect: F) -> FactoryBuilder<St, C, Io, Codec>
@@ -54,7 +48,7 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub(crate) fn disconnect_timeout(mut self, val: usize) -> Self {
+    pub(crate) fn disconnect_timeout(mut self, val: u16) -> Self {
         self.disconnect_timeout = val;
         self
     }
@@ -74,7 +68,7 @@ where
             connect: self.connect,
             handler: Rc::new(service.into_factory()),
             disconnect_timeout: self.disconnect_timeout,
-            time: LowResTimeService::with(Duration::from_secs(1)),
+            time: Timer::with(Duration::from_secs(1)),
             _t: PhantomData,
         }
     }
@@ -83,19 +77,15 @@ where
 pub(crate) struct FramedService<St, C, T, Io, Codec, Cfg> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: usize,
-    time: LowResTimeService,
+    disconnect_timeout: u16,
+    time: Timer<Codec>,
     _t: PhantomData<(St, Io, Codec, Cfg)>,
 }
 
 impl<St, C, T, Io, Codec, Cfg> ServiceFactory for FramedService<St, C, T, Io, Codec, Cfg>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<
-        Config = (),
-        Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
-    >,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     <C::Service as Service>::Future: 'static,
     T: ServiceFactory<
@@ -107,7 +97,7 @@ where
         > + 'static,
     <T::Service as Service>::Error: 'static,
     <T::Service as Service>::Future: 'static,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
     <Codec as Encoder>::Item: 'static,
 {
     type Config = Cfg;
@@ -133,11 +123,7 @@ where
 pub(crate) struct FramedServiceResponse<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<
-        Config = (),
-        Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
-    >,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
@@ -154,18 +140,14 @@ where
     #[pin]
     fut: C::Future,
     handler: Rc<T>,
-    disconnect_timeout: usize,
-    time: LowResTimeService,
+    disconnect_timeout: u16,
+    time: Timer<Codec>,
 }
 
 impl<St, C, T, Io, Codec> Future for FramedServiceResponse<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<
-        Config = (),
-        Request = Handshake<Io, Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
-    >,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     T: ServiceFactory<
         Config = St,
@@ -198,15 +180,15 @@ where
 pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: usize,
-    time: LowResTimeService,
+    disconnect_timeout: u16,
+    time: Timer<Codec>,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
 impl<St, C, T, Io, Codec> Service for FramedServiceImpl<St, C, T, Io, Codec>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
-    C: Service<Request = Handshake<Io, Codec>, Response = HandshakeResult<Io, St, Codec>>,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    C: Service<Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
@@ -218,7 +200,7 @@ where
         > + 'static,
     <T::Service as Service>::Error: 'static,
     <T::Service as Service>::Future: 'static,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
     <Codec as Encoder>::Item: 'static,
 {
     type Request = Io;
@@ -242,22 +224,22 @@ where
 
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
-        let handshake = self.connect.call(Handshake::new(req));
+        let handshake = self.connect.call(req);
         let time = self.time.clone();
 
         Box::pin(async move {
-            let result = handshake.await.map_err(|e| {
+            let (io, st, session, keepalive) = handshake.await.map_err(|e| {
                 log::trace!("Connection handshake failed: {:?}", e);
                 e
             })?;
             log::trace!("Connection handshake succeeded");
 
-            let handler = handler.new_service(result.state).await?;
+            let handler = handler.new_service(session).await?;
             log::trace!("Connection handler is created, starting dispatcher");
 
-            Dispatcher::with(result.framed, result.out, handler, time)
-                .keepalive_timeout(result.keepalive)
-                .disconnect_timeout(timeout as u64)
+            IoDispatcher::with(io, st, handler, time)
+                .keepalive_timeout(keepalive as u16)
+                .disconnect_timeout(timeout)
                 .await
         })
     }
@@ -267,7 +249,7 @@ where
 /// for building instances for framed services.
 pub(crate) struct FactoryBuilder2<St, C, Io, Codec> {
     connect: C,
-    disconnect_timeout: usize,
+    disconnect_timeout: u16,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
@@ -276,11 +258,11 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
+        Request = (Io, IoState<Codec>),
+        Response = (Io, IoState<Codec>, St, u16),
     >,
     C::Error: fmt::Debug,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
 {
     /// Construct framed handler service factory with specified connect service
     pub(crate) fn new<F>(connect: F) -> FactoryBuilder2<St, C, Io, Codec>
@@ -295,7 +277,7 @@ where
     }
 
     /// Set connection disconnect timeout in milliseconds.
-    pub(crate) fn disconnect_timeout(mut self, val: usize) -> Self {
+    pub(crate) fn disconnect_timeout(mut self, val: u16) -> Self {
         self.disconnect_timeout = val;
         self
     }
@@ -315,7 +297,7 @@ where
             connect: self.connect,
             handler: Rc::new(service.into_factory()),
             disconnect_timeout: self.disconnect_timeout,
-            time: LowResTimeService::with(Duration::from_secs(1)),
+            time: Timer::with(Duration::from_secs(1)),
             _t: PhantomData,
         }
     }
@@ -324,18 +306,18 @@ where
 pub(crate) struct FramedService2<St, C, T, Io, Codec, Cfg> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: usize,
-    time: LowResTimeService,
+    disconnect_timeout: u16,
+    time: Timer<Codec>,
     _t: PhantomData<(St, Io, Codec, Cfg)>,
 }
 
 impl<St, C, T, Io, Codec, Cfg> ServiceFactory for FramedService2<St, C, T, Io, Codec, Cfg>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
+        Request = (Io, IoState<Codec>),
+        Response = (Io, IoState<Codec>, St, u16),
     >,
     C::Error: fmt::Debug,
     <C::Service as Service>::Future: 'static,
@@ -348,11 +330,11 @@ where
         > + 'static,
     <T::Service as Service>::Error: 'static,
     <T::Service as Service>::Future: 'static,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
     <Codec as Encoder>::Item: 'static,
 {
     type Config = Cfg;
-    type Request = (Framed<Io, Codec>, Option<Delay>);
+    type Request = (Io, IoState<Codec>, Option<Delay>);
     type Response = ();
     type Error = C::Error;
     type InitError = C::InitError;
@@ -376,8 +358,8 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
+        Request = (Io, IoState<Codec>),
+        Response = (Io, IoState<Codec>, St, u16),
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
@@ -395,8 +377,8 @@ where
     #[pin]
     fut: C::Future,
     handler: Rc<T>,
-    disconnect_timeout: usize,
-    time: LowResTimeService,
+    disconnect_timeout: u16,
+    time: Timer<Codec>,
 }
 
 impl<St, C, T, Io, Codec> Future for FramedServiceResponse2<St, C, T, Io, Codec>
@@ -404,8 +386,8 @@ where
     Io: AsyncRead + AsyncWrite + Unpin,
     C: ServiceFactory<
         Config = (),
-        Request = HandshakeResult<Io, (), Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
+        Request = (Io, IoState<Codec>),
+        Response = (Io, IoState<Codec>, St, u16),
     >,
     C::Error: fmt::Debug,
     T: ServiceFactory<
@@ -439,18 +421,15 @@ where
 pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: usize,
-    time: LowResTimeService,
+    disconnect_timeout: u16,
+    time: Timer<Codec>,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
 impl<St, C, T, Io, Codec> Service for FramedServiceImpl2<St, C, T, Io, Codec>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
-    C: Service<
-        Request = HandshakeResult<Io, (), Codec>,
-        Response = HandshakeResult<Io, St, Codec>,
-    >,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    C: Service<Request = (Io, IoState<Codec>), Response = (Io, IoState<Codec>, St, u16)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
@@ -462,10 +441,10 @@ where
         > + 'static,
     <T::Service as Service>::Error: 'static,
     <T::Service as Service>::Future: 'static,
-    Codec: Decoder + Encoder,
+    Codec: Decoder + Encoder + 'static,
     <Codec as Encoder>::Item: 'static,
 {
-    type Request = (Framed<Io, Codec>, Option<Delay>);
+    type Request = (Io, IoState<Codec>, Option<Delay>);
     type Response = ();
     type Error = C::Error;
     type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
@@ -481,34 +460,29 @@ where
     }
 
     #[inline]
-    fn call(&self, (req, delay): (Framed<Io, Codec>, Option<Delay>)) -> Self::Future {
+    fn call(&self, (req, state, delay): (Io, IoState<Codec>, Option<Delay>)) -> Self::Future {
         log::trace!("Start connection handshake");
 
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
-        let handshake = self.connect.call(Handshake::with_codec(req));
+        let handshake = self.connect.call((req, state));
         let time = self.time.clone();
 
         Box::pin(async move {
-            let (framed, out, ka, handler) = if let Some(delay) = delay {
+            let (io, state, ka, handler) = if let Some(delay) = delay {
                 let res = select(
                     delay,
                     async {
-                        let result = handshake.await.map_err(|e| {
+                        let (io, state, st, ka) = handshake.await.map_err(|e| {
                             log::trace!("Connection handshake failed: {:?}", e);
                             e
                         })?;
                         log::trace!("Connection handshake succeeded");
 
-                        let handler = handler.new_service(result.state).await?;
+                        let handler = handler.new_service(st).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 
-                        Ok::<_, C::Error>((
-                            result.framed,
-                            result.out,
-                            result.keepalive,
-                            handler,
-                        ))
+                        Ok::<_, C::Error>((io, state, ka, handler))
                     }
                     .boxed_local(),
                 )
@@ -522,20 +496,20 @@ where
                     Either::Right(item) => item.0?,
                 }
             } else {
-                let result = handshake.await.map_err(|e| {
+                let (io, state, st, ka) = handshake.await.map_err(|e| {
                     log::trace!("Connection handshake failed: {:?}", e);
                     e
                 })?;
                 log::trace!("Connection handshake succeeded");
 
-                let handler = handler.new_service(result.state).await?;
+                let handler = handler.new_service(st).await?;
                 log::trace!("Connection handler is created, starting dispatcher");
-                (result.framed, result.out, result.keepalive, handler)
+                (io, state, ka, handler)
             };
 
-            Dispatcher::with(framed, out, handler, time)
-                .keepalive_timeout(ka)
-                .disconnect_timeout(timeout as u64)
+            IoDispatcher::with(io, state, handler, time)
+                .keepalive_timeout(ka as u16)
+                .disconnect_timeout(timeout)
                 .await
         })
     }

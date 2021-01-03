@@ -1,38 +1,39 @@
 use std::fmt;
 
-use ntex_codec::Framed;
+use crate::io::IoState;
 
 use super::codec as mqtt;
 use super::sink::MqttSink;
-use crate::handshake::HandshakeResult;
 
 /// Connect message
 pub struct Connect<Io> {
-    connect: mqtt::Connect,
+    io: Io,
+    pkt: mqtt::Connect,
     sink: MqttSink,
-    io: HandshakeResult<Io, (), mqtt::Codec>,
+    state: IoState<mqtt::Codec>,
 }
 
 impl<Io> Connect<Io> {
     pub(crate) fn new(
-        connect: mqtt::Connect,
-        io: HandshakeResult<Io, (), mqtt::Codec>,
+        pkt: mqtt::Connect,
+        io: Io,
         sink: MqttSink,
+        state: IoState<mqtt::Codec>,
     ) -> Self {
-        Self { connect, io, sink }
+        Self { pkt, io, sink, state }
     }
 
     pub fn packet(&self) -> &mqtt::Connect {
-        &self.connect
+        &self.pkt
     }
 
     pub fn packet_mut(&mut self) -> &mut mqtt::Connect {
-        &mut self.connect
+        &mut self.pkt
     }
 
     #[inline]
-    pub fn io(&mut self) -> &mut Framed<Io, mqtt::Codec> {
-        self.io.io()
+    pub fn io(&mut self) -> &mut Io {
+        &mut self.io
     }
 
     /// Returns mqtt server sink
@@ -46,7 +47,9 @@ impl<Io> Connect<Io> {
             session_present,
             io: self.io,
             sink: self.sink,
+            state: self.state,
             session: Some(st),
+            keepalive: 30,
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
         }
     }
@@ -56,8 +59,10 @@ impl<Io> Connect<Io> {
         ConnectAck {
             io: self.io,
             sink: self.sink,
+            state: self.state,
             session: None,
             session_present: false,
+            keepalive: 30,
             return_code: mqtt::ConnectAckReason::IdentifierRejected,
         }
     }
@@ -67,8 +72,10 @@ impl<Io> Connect<Io> {
         ConnectAck {
             io: self.io,
             sink: self.sink,
+            state: self.state,
             session: None,
             session_present: false,
+            keepalive: 30,
             return_code: mqtt::ConnectAckReason::BadUserNameOrPassword,
         }
     }
@@ -78,8 +85,10 @@ impl<Io> Connect<Io> {
         ConnectAck {
             io: self.io,
             sink: self.sink,
+            state: self.state,
             session: None,
             session_present: false,
+            keepalive: 30,
             return_code: mqtt::ConnectAckReason::NotAuthorized,
         }
     }
@@ -89,8 +98,10 @@ impl<Io> Connect<Io> {
         ConnectAck {
             io: self.io,
             sink: self.sink,
+            state: self.state,
             session: None,
             session_present: false,
+            keepalive: 30,
             return_code: mqtt::ConnectAckReason::ServiceUnavailable,
         }
     }
@@ -98,17 +109,19 @@ impl<Io> Connect<Io> {
 
 impl<T> fmt::Debug for Connect<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.connect.fmt(f)
+        self.pkt.fmt(f)
     }
 }
 
 /// Ack connect message
 pub struct ConnectAck<Io, St> {
-    pub(crate) io: HandshakeResult<Io, (), mqtt::Codec>,
+    pub(crate) io: Io,
     pub(crate) session: Option<St>,
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectAckReason,
     pub(crate) sink: MqttSink,
+    pub(crate) state: IoState<mqtt::Codec>,
+    pub(crate) keepalive: u16,
 }
 
 impl<Io, St> ConnectAck<Io, St> {
@@ -116,7 +129,7 @@ impl<Io, St> ConnectAck<Io, St> {
     ///
     /// By default idle time-out is set to 30 seconds.
     pub fn idle_timeout(mut self, timeout: u16) -> Self {
-        self.io.set_keepalive_timeout(timeout as usize);
+        self.keepalive = timeout;
         self
     }
 }
