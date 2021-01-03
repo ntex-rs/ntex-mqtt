@@ -304,17 +304,16 @@ impl PublishBuilder {
     }
 
     /// Send publish packet with QoS 0
-    pub fn send_at_most_once(self) {
+    pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
         let packet = self.packet;
         let mut state = self.state.borrow_mut();
 
         if state.is_opened() {
             log::trace!("Publish (QoS-0) to {:?}", packet.topic);
-            let _ = state.send(codec::Packet::Publish(packet)).map_err(|_| {
-                log::error!("Mqtt sink is disconnected");
-            });
+            state.send(codec::Packet::Publish(packet)).map_err(SendPacketError::Encode)
         } else {
             log::error!("Mqtt sink is disconnected");
+            Err(SendPacketError::Disconnected)
         }
     }
 
