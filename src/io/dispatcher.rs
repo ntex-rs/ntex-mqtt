@@ -5,7 +5,6 @@ use std::{
     time::Instant,
 };
 
-use either::Either;
 use futures::FutureExt;
 use ntex::service::{IntoService, Service};
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
@@ -35,7 +34,7 @@ where
     keepalive_timeout: u16,
     #[pin]
     response: Option<S::Future>,
-    response_idx: usize,
+    response_idx: isize,
 }
 
 struct IoDispatcherInner<S, U>
@@ -46,9 +45,24 @@ where
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
-    error: Option<IoDispatcherError<S, U>>,
-    base: usize,
-    queue: VecDeque<Poll<Result<S::Response, S::Error>>>,
+    error: Option<IoDispatcherError<S::Error, <U as Encoder>::Error>>,
+    base: isize,
+    queue: VecDeque<ServiceResult<Result<S::Response, S::Error>>>,
+}
+
+enum ServiceResult<T> {
+    Pending,
+    Ready(T),
+}
+
+impl<T> ServiceResult<T> {
+    fn take(&mut self) -> Option<T> {
+        let slf = std::mem::replace(self, ServiceResult::Pending);
+        match slf {
+            ServiceResult::Pending => None,
+            ServiceResult::Ready(result) => Some(result),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -58,15 +72,18 @@ enum IoDispatcherState {
     Shutdown,
 }
 
-enum IoDispatcherError<S: Service, U: Encoder> {
+pub(crate) enum IoDispatcherError<S, U> {
     None,
     KeepAlive,
-    Encoder(U::Error),
-    Service(S::Error),
+    Encoder(U),
+    Service(S),
 }
 
-impl<S: Service, U: Encoder + Decoder> IoDispatcherError<S, U> {
-    fn take(&mut self) -> Option<DispatcherItem<U>> {
+impl<E1, E2: std::fmt::Debug> IoDispatcherError<E1, E2> {
+    fn take<U>(&mut self) -> Option<DispatcherItem<U>>
+    where
+        U: Encoder<Error = E2> + Decoder,
+    {
         match self {
             IoDispatcherError::KeepAlive => {
                 *self = IoDispatcherError::None;
@@ -80,15 +97,6 @@ impl<S: Service, U: Encoder + Decoder> IoDispatcherError<S, U> {
                 }
             }
             IoDispatcherError::None | IoDispatcherError::Service(_) => None,
-        }
-    }
-}
-
-impl<S: Service, U: Encoder> From<Either<S::Error, U::Error>> for IoDispatcherError<S, U> {
-    fn from(err: Either<S::Error, U::Error>) -> Self {
-        match err {
-            Either::Left(err) => IoDispatcherError::Service(err),
-            Either::Right(err) => IoDispatcherError::Encoder(err),
         }
     }
 }
@@ -159,6 +167,46 @@ where
     }
 }
 
+impl<S, U> IoDispatcherInner<S, U>
+where
+    S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>>,
+    S::Error: 'static,
+    S::Future: 'static,
+    U: Encoder + Decoder,
+    <U as Encoder>::Item: 'static,
+{
+    fn handle_result(
+        &mut self,
+        item: Result<S::Response, S::Error>,
+        response_idx: isize,
+        state: &IoState<U>,
+        wake: bool,
+    ) {
+        let idx = response_idx.wrapping_sub(self.base);
+
+        // handle first response
+        if idx == 0 {
+            let mut state = state.inner.borrow_mut();
+
+            let _ = self.queue.pop_front();
+            self.error = state.write_item(item);
+
+            // check remaining response
+            while let Some(item) = self.queue.front_mut().and_then(|v| v.take()) {
+                let _ = self.queue.pop_front();
+                self.base = self.base.wrapping_add(1);
+                self.error = state.write_item(item);
+            }
+
+            if wake && self.queue.is_empty() {
+                state.dispatch_task.wake();
+            }
+        } else {
+            self.queue[idx as usize] = ServiceResult::Ready(item);
+        }
+    }
+}
+
 impl<S, U> Future for IoDispatcher<S, U>
 where
     S: Service<Request = DispatcherItem<U>, Response = Option<Response<U>>> + 'static,
@@ -176,37 +224,15 @@ where
         if let Some(fut) = this.response.as_mut().as_pin_mut() {
             match fut.poll(cx) {
                 Poll::Pending => (),
-                Poll::Ready(res) => {
-                    let mut inner = this.inner.borrow_mut();
-                    let idx = *this.response_idx - inner.base;
-                    inner.queue[idx] = Poll::Ready(res);
-                    drop(inner);
-                    this = self.as_mut().project();
+                Poll::Ready(item) => {
+                    this.inner.borrow_mut().handle_result(
+                        item,
+                        *this.response_idx,
+                        this.state,
+                        false,
+                    );
                     this.response.set(None);
-                    this.state.inner.borrow_mut().flags.insert(Flags::DSP_READY);
                 }
-            }
-        }
-
-        {
-            // handle responses
-            let mut state = this.state.inner.borrow_mut();
-            if state.flags.contains(Flags::DSP_READY) {
-                let mut inner = this.inner.borrow_mut();
-                while let Some(res) = inner.queue.front() {
-                    if res.is_ready() {
-                        inner.base = inner.base.wrapping_add(1);
-                        if let Poll::Ready(item) = inner.queue.pop_front().unwrap() {
-                            if let Some(err) = state.write_item(item) {
-                                inner.error = Some(err.into());
-                                state.flags.insert(Flags::DSP_STOP);
-                            }
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                state.flags.remove(Flags::DSP_READY);
             }
         }
 
@@ -291,6 +317,7 @@ where
                                             log::trace!("not enough data to decode next frame, register dispatch task");
                                             state.dispatch_task.register(cx.waker());
                                             state.flags.remove(Flags::RD_READY);
+                                            state.read_task.wake();
                                             return Poll::Pending;
                                         }
                                         Err(err) => {
@@ -332,50 +359,43 @@ where
                                 if this.response.is_none() {
                                     drop(state);
                                     this.response.set(Some(this.service.call(item)));
+                                    let res =
+                                        this.response.as_mut().as_pin_mut().unwrap().poll(cx);
 
                                     let mut inner = this.inner.borrow_mut();
-                                    let response_idx = inner.base + inner.queue.len();
+                                    let response_idx =
+                                        inner.base.wrapping_add(inner.queue.len() as isize);
 
-                                    if let Poll::Ready(res) =
-                                        this.response.as_mut().as_pin_mut().unwrap().poll(cx)
-                                    {
-                                        state = this.state.inner.borrow_mut();
-
+                                    if let Poll::Ready(res) = res {
+                                        // check if current result is only response atm
                                         if inner.queue.is_empty() {
-                                            if let Some(err) = state.write_item(res) {
-                                                inner.error = Some(err.into());
-                                                state.flags.insert(Flags::DSP_STOP);
-                                            }
+                                            inner.error =
+                                                this.state.inner.borrow_mut().write_item(res);
                                         } else {
                                             *this.response_idx = response_idx;
-                                            state.flags.insert(Flags::DSP_READY);
-                                            inner.queue.push_back(Poll::Ready(res));
+                                            inner.queue.push_back(ServiceResult::Ready(res));
                                         }
                                         this.response.set(None);
                                     } else {
-                                        state = this.state.inner.borrow_mut();
                                         *this.response_idx = response_idx;
-                                        inner.queue.push_back(Poll::Pending);
+                                        inner.queue.push_back(ServiceResult::Pending);
                                     }
-                                    drop(state);
                                 } else {
-                                    let mut inner = this.inner.borrow_mut();
-                                    let response_idx = inner.base + inner.queue.len();
-                                    inner.queue.push_back(Poll::Pending);
-                                    drop(inner);
                                     drop(state);
+                                    let mut inner = this.inner.borrow_mut();
+                                    let response_idx =
+                                        inner.base.wrapping_add(inner.queue.len() as isize);
+                                    inner.queue.push_back(ServiceResult::Pending);
 
                                     let st = this.state.clone();
                                     let inner = this.inner.clone();
                                     ntex::rt::spawn(this.service.call(item).map(move |item| {
-                                        let mut inner = inner.borrow_mut();
-                                        let idx = response_idx - inner.base;
-                                        inner.queue[idx] = Poll::Ready(item);
-                                        if idx == 0 {
-                                            let mut state = st.inner.borrow_mut();
-                                            state.flags.insert(Flags::DSP_READY);
-                                            state.dispatch_task.wake();
-                                        }
+                                        inner.borrow_mut().handle_result(
+                                            item,
+                                            response_idx,
+                                            &st,
+                                            true,
+                                        );
                                     }));
                                 }
                             } else {
@@ -419,21 +439,15 @@ where
             }
             // drain service responses
             IoDispatcherState::Stop => {
-                // service may relay on poll ready for response results
-                match this.service.poll_ready(cx) {
-                    Poll::Ready(Ok(_)) => (),
-                    Poll::Pending => (),
-                    Poll::Ready(Err(_)) => (),
-                }
+                // service may relay on poll_ready for response results
+                let _ = this.service.poll_ready(cx);
 
-                let inner = this.inner.borrow_mut();
                 let mut state = this.state.inner.borrow_mut();
-                if inner.queue.is_empty() {
+                if this.inner.borrow().queue.is_empty() {
                     state.read_task.wake();
                     state.write_task.wake();
                     state.flags.insert(Flags::IO_SHUTDOWN);
                     *this.st = IoDispatcherState::Shutdown;
-                    drop(inner);
                     drop(state);
                     self.poll(cx)
                 } else {

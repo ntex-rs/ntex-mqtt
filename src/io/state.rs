@@ -10,6 +10,8 @@ use futures::{future::poll_fn, ready};
 use ntex::task::LocalWaker;
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 
+use super::dispatcher::IoDispatcherError;
+
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = <U as Encoder>::Item;
 
@@ -17,9 +19,8 @@ const LW: usize = 1024;
 const HW: usize = 8 * 1024;
 
 bitflags::bitflags! {
-    pub(crate) struct Flags: u16 {
+    pub(crate) struct Flags: u8 {
         const DSP_STOP       = 0b0000_0001;
-        const DSP_READY      = 0b0000_0010;
         const DSP_KEEPALIVE  = 0b0000_0100;
 
         const IO_ERR         = 0b0000_1000;
@@ -31,7 +32,7 @@ bitflags::bitflags! {
         const RD_READY       = 0b0100_0000;
 
         const ST_DSP_ERR     = 0b1000_0000;
-        const ST_IO_SHUTDOWN = 0b1_0000_0000;
+        const ST_IO_SHUTDOWN = 0b0000_0010;
     }
 }
 
@@ -296,7 +297,7 @@ where
     pub(crate) fn write_item<E>(
         &mut self,
         item: Result<Option<Response<U>>, E>,
-    ) -> Option<Either<E, <U as Encoder>::Error>> {
+    ) -> Option<IoDispatcherError<E, <U as Encoder>::Error>> {
         log::trace!("encoding service response, is err: {:?}", item.is_err(),);
 
         if !self.flags.intersects(Flags::IO_ERR | Flags::ST_DSP_ERR) {
@@ -309,7 +310,7 @@ where
                         log::trace!("Codec encoder error: {:?}", err);
                         self.flags.insert(Flags::DSP_STOP | Flags::ST_DSP_ERR);
                         self.dispatch_task.wake();
-                        return Some(Either::Right(err));
+                        return Some(IoDispatcherError::Encoder(err));
                     } else if is_write_sleep {
                         self.write_task.wake();
                     }
@@ -318,7 +319,7 @@ where
                 Err(err) => {
                     self.flags.insert(Flags::DSP_STOP | Flags::ST_DSP_ERR);
                     self.dispatch_task.wake();
-                    Some(Either::Left(err))
+                    Some(IoDispatcherError::Service(err))
                 }
                 _ => None,
             }

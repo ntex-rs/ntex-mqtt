@@ -41,14 +41,16 @@ impl<U: 'static> Timer<U> {
     }
 
     pub fn register(&self, expire: Instant, previous: Instant, state: &IoState<U>) {
-        let mut inner = self.0.borrow_mut();
+        {
+            let mut inner = self.0.borrow_mut();
 
-        inner.unregister(previous, state);
-        inner
-            .notifications
-            .entry(expire)
-            .or_insert_with(FxHashSet::default)
-            .insert(state.clone());
+            inner.unregister(previous, state);
+            inner
+                .notifications
+                .entry(expire)
+                .or_insert_with(FxHashSet::default)
+                .insert(state.clone());
+        }
 
         let _ = self.now();
     }
