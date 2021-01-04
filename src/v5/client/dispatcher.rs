@@ -1,12 +1,10 @@
 use std::cell::{Cell, RefCell};
 use std::task::{Context, Poll};
-use std::{future::Future, io, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
+use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
+use ahash::AHashSet;
 use futures::future::{ok, Either, FutureExt, Ready};
-use futures::ready;
-use fxhash::FxHashSet;
 use ntex::service::Service;
-use ntex::util::order::{InOrder, InOrderError};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::DispatcherItem;
@@ -34,21 +32,7 @@ where
         + 'static,
     C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
 {
-    // mqtt spec requires ack ordering, so enforce response ordering
-    InOrder::service(Dispatcher::<_, _, E>::new(
-        sink,
-        max_receive as usize,
-        max_topic_alias,
-        publish,
-        control,
-    ))
-    .map_err(|e| match e {
-        InOrderError::Service(e) => e,
-        InOrderError::Disconnected => MqttError::Protocol(ProtocolError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            "Service dropped",
-        ))),
-    })
+    Dispatcher::<_, _, E>::new(sink, max_receive as usize, max_topic_alias, publish, control)
 }
 
 /// Mqtt protocol dispatcher
@@ -68,8 +52,8 @@ struct Inner<C> {
 }
 
 struct PublishInfo {
-    inflight: FxHashSet<NonZeroU16>,
-    aliases: FxHashSet<NonZeroU16>,
+    inflight: AHashSet<NonZeroU16>,
+    aliases: AHashSet<NonZeroU16>,
 }
 
 impl<T, C, E> Dispatcher<T, C, E>
@@ -93,8 +77,8 @@ where
                 control,
                 sink,
                 info: RefCell::new(PublishInfo {
-                    aliases: FxHashSet::default(),
-                    inflight: FxHashSet::default(),
+                    aliases: AHashSet::default(),
+                    inflight: AHashSet::default(),
                 }),
             }),
             _t: PhantomData,
@@ -338,7 +322,7 @@ where
 
         match this.state.as_mut().project() {
             PublishResponseStateProject::Publish(fut) => {
-                let ack = match ready!(fut.poll(cx)) {
+                let ack = match futures::ready!(fut.poll(cx)) {
                     Ok(res) => match res {
                         either::Either::Right(ack) => ack,
                         either::Either::Left(pkt) => {
@@ -426,7 +410,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().project();
 
-        let result = match ready!(this.fut.poll(cx)) {
+        let result = match futures::ready!(this.fut.poll(cx)) {
             Ok(result) => {
                 if let Some(id) = NonZeroU16::new(self.packet_id) {
                     self.inner.info.borrow_mut().inflight.remove(&id);

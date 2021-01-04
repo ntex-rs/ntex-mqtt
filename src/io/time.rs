@@ -1,7 +1,7 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, time::Duration, time::Instant};
 
+use ahash::AHashSet;
 use futures::future::{ready, FutureExt};
-use fxhash::FxHashSet;
 use ntex::rt::time::delay_for;
 
 use super::IoState;
@@ -11,7 +11,7 @@ pub struct Timer<U>(Rc<RefCell<Inner<U>>>);
 struct Inner<U> {
     resolution: Duration,
     current: Option<Instant>,
-    notifications: BTreeMap<Instant, FxHashSet<IoState<U>>>,
+    notifications: BTreeMap<Instant, AHashSet<IoState<U>>>,
 }
 
 impl<U> Inner<U> {
@@ -48,7 +48,7 @@ impl<U: 'static> Timer<U> {
             inner
                 .notifications
                 .entry(expire)
-                .or_insert_with(FxHashSet::default)
+                .or_insert_with(AHashSet::default)
                 .insert(state.clone());
         }
 

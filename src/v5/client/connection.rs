@@ -1,9 +1,9 @@
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, convert::TryFrom, marker::PhantomData, num::NonZeroU16};
 
+use ahash::AHashMap;
 use bytestring::ByteString;
 use futures::future::{ok, Either, Future};
-use fxhash::FxHashMap;
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex::rt::time::{delay_until, Instant as RtInstant};
@@ -262,8 +262,8 @@ where
     PErr: 'static,
     PublishAck: TryFrom<PErr, Error = Err>,
 {
-    let aliases: RefCell<FxHashMap<NonZeroU16, (usize, Path<ByteString>)>> =
-        RefCell::new(FxHashMap::default());
+    let aliases: RefCell<AHashMap<NonZeroU16, (usize, Path<ByteString>)>> =
+        RefCell::new(AHashMap::default());
 
     into_service(move |mut req: Publish| {
         if !req.publish_topic().is_empty() {

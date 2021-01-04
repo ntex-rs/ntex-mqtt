@@ -1,9 +1,9 @@
 use std::{cell::RefCell, collections::VecDeque, fmt, num::NonZeroU16, rc::Rc};
 
+use ahash::AHashMap;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::{ready, Either, Future, FutureExt};
-use fxhash::FxHashMap;
 use ntex::channel::pool;
 
 use super::{codec, error::ProtocolError, error::SendPacketError};
@@ -38,7 +38,7 @@ impl Default for MqttSinkPool {
 
 pub(crate) struct MqttSinkInner {
     cap: usize,
-    inflight: FxHashMap<u16, (pool::Sender<Ack>, AckType)>,
+    inflight: AHashMap<u16, (pool::Sender<Ack>, AckType)>,
     inflight_idx: u16,
     inflight_order: VecDeque<u16>,
     waiters: VecDeque<pool::Sender<()>>,
@@ -61,9 +61,9 @@ impl MqttSink {
             Rc::new(RefCell::new(MqttSinkInner {
                 pool,
                 cap: max_send,
-                inflight: FxHashMap::with_capacity_and_hasher(
+                inflight: AHashMap::with_capacity_and_hasher(
                     max_send + 1,
-                    fxhash::FxBuildHasher::default(),
+                    ahash::RandomState::default(),
                 ),
                 inflight_idx: 0,
                 inflight_order: VecDeque::with_capacity(max_send),

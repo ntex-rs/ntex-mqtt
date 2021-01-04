@@ -1,9 +1,9 @@
 use std::task::{Context, Poll};
 use std::{cell::Cell, cell::RefCell, num::NonZeroU16, rc::Rc};
 
+use ahash::AHashMap;
 use bytestring::ByteString;
 use futures::future::{FutureExt, LocalBoxFuture};
-use fxhash::FxHashMap;
 use ntex::router::{IntoPattern, Path, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
@@ -112,7 +112,7 @@ where
                     factories,
                     handlers: RefCell::new(handlers),
                     creating: Cell::new(false),
-                    aliases: RefCell::new(FxHashMap::default()),
+                    aliases: RefCell::new(AHashMap::default()),
                     waker: LocalWaker::new(),
                 }),
             })
@@ -131,7 +131,7 @@ struct Inner<S, Err> {
     session: S,
     handlers: RefCell<Vec<Option<HandlerService<Err>>>>,
     factories: Rc<Vec<Handler<S, Err>>>,
-    aliases: RefCell<FxHashMap<NonZeroU16, (usize, Path<ByteString>)>>,
+    aliases: RefCell<AHashMap<NonZeroU16, (usize, Path<ByteString>)>>,
     waker: LocalWaker,
     creating: Cell<bool>,
 }

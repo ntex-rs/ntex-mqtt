@@ -1,5 +1,11 @@
 # Changes
 
+## [0.4.1] - 2021-01-04
+
+* Use ashash instead on fxhash
+
+* Drop unneeded InOrder service usage
+
 ## [0.4.0] - 2021-01-03
 
 * Refactor io dispatcher
