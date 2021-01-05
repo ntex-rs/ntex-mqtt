@@ -1,7 +1,6 @@
 use std::task::{Context, Poll};
 use std::{cell::Cell, cell::RefCell, num::NonZeroU16, rc::Rc};
 
-use ahash::AHashMap;
 use bytestring::ByteString;
 use futures::future::{FutureExt, LocalBoxFuture};
 use ntex::router::{IntoPattern, Path, RouterBuilder};
@@ -10,6 +9,7 @@ use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::task::LocalWaker;
 
 use super::publish::{Publish, PublishAck};
+use crate::AHashMap;
 
 type Handler<S, E> = BoxServiceFactory<S, Publish, PublishAck, E, E>;
 type HandlerService<E> = BoxService<Publish, PublishAck, E>;

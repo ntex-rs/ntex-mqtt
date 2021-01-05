@@ -82,8 +82,8 @@ struct Inner<C> {
 }
 
 struct PublishInfo {
-    inflight: ahash::AHashSet<NonZeroU16>,
-    aliases: ahash::AHashSet<NonZeroU16>,
+    inflight: crate::AHashSet<NonZeroU16>,
+    aliases: crate::AHashSet<NonZeroU16>,
 }
 
 impl<T, C, E, E2> Dispatcher<T, C, E, E2>
@@ -109,8 +109,8 @@ where
                 control,
                 sink,
                 info: RefCell::new(PublishInfo {
-                    aliases: ahash::AHashSet::default(),
-                    inflight: ahash::AHashSet::default(),
+                    aliases: crate::AHashSet::default(),
+                    inflight: crate::AHashSet::default(),
                 }),
             }),
             _t: PhantomData,

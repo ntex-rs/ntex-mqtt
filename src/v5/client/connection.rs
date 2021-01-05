@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, convert::TryFrom, marker::PhantomData, num::NonZeroU16};
 
-use ahash::AHashMap;
 use bytestring::ByteString;
 use futures::future::{ok, Either, Future};
 use ntex::codec::{AsyncRead, AsyncWrite};
@@ -10,10 +9,10 @@ use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::boxed::BoxService;
 use ntex::service::{into_service, IntoService, Service};
 
-use crate::error::MqttError;
 use crate::io::{IoDispatcher, IoState, Timer};
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{codec, sink::MqttSink, ControlResult};
+use crate::{error::MqttError, AHashMap};
 
 use super::control::ControlMessage;
 use super::dispatcher::create_dispatcher;

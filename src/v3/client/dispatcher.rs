@@ -2,16 +2,14 @@ use std::cell::{Cell, RefCell};
 use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
-use ahash::AHashSet;
 use futures::future::{err, ok, Either, FutureExt, Ready};
 use ntex::service::Service;
 use ntex::util::inflight::InFlightService;
 
-use crate::error::{MqttError, ProtocolError};
-use crate::types::packet_type;
 use crate::v3::{
     codec, control::ControlResultKind, publish::Publish, sink::Ack, sink::MqttSink,
 };
+use crate::{error::MqttError, error::ProtocolError, types::packet_type, AHashSet};
 
 use super::control::{ControlMessage, ControlResult};
 

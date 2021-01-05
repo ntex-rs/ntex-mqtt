@@ -72,7 +72,7 @@ pub(crate) struct Dispatcher<St, T: Service<Error = MqttError<E>>, C, E> {
 
 struct Inner {
     sink: MqttSink,
-    inflight: RefCell<ahash::AHashSet<NonZeroU16>>,
+    inflight: RefCell<crate::AHashSet<NonZeroU16>>,
 }
 
 impl<St, T, C, E> Dispatcher<St, T, C, E>
@@ -88,7 +88,7 @@ where
             publish,
             control,
             shutdown: Cell::new(false),
-            inner: Rc::new(Inner { sink, inflight: RefCell::new(ahash::AHashSet::default()) }),
+            inner: Rc::new(Inner { sink, inflight: RefCell::new(crate::AHashSet::default()) }),
         }
     }
 }

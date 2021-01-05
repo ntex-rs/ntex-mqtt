@@ -1,14 +1,12 @@
 use std::{cell::RefCell, collections::VecDeque, fmt, num::NonZeroU16, rc::Rc};
 
-use ahash::AHashMap;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::{ready, Either, Future, FutureExt};
 use ntex::channel::pool;
 
 use super::{codec, error::ProtocolError, error::SendPacketError};
-use crate::io::{IoState, IoStateInner};
-use crate::types::packet_type;
+use crate::{io::IoState, io::IoStateInner, types::packet_type, AHashMap};
 
 pub struct MqttSink(Rc<RefCell<MqttSinkInner>>, IoState<codec::Codec>);
 

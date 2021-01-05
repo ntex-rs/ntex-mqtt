@@ -1,10 +1,10 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, time::Duration, time::Instant};
 
-use ahash::AHashSet;
 use futures::future::{ready, FutureExt};
 use ntex::rt::time::delay_for;
 
 use super::IoState;
+use crate::AHashSet;
 
 pub struct Timer<U>(Rc<RefCell<Inner<U>>>);
 
