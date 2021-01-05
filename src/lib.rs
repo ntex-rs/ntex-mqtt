@@ -27,3 +27,9 @@ pub use self::topic::{Level as TopicLevel, Topic};
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
 pub const TCP_PORT: u16 = 1883;
 pub const SSL_PORT: u16 = 8883;
+
+/// A `HashMap` using a ahash::RandomState hasher.
+pub(crate) type AHashMap<K, V> = std::collections::HashMap<K, V, ahash::RandomState>;
+
+/// A `HashSet` using a ahash::RandomState hasher.
+pub(crate) type AHashSet<V> = std::collections::HashSet<V, ahash::RandomState>;

@@ -262,6 +262,12 @@ where
                         Poll::Ready(Ok(_)) => {
                             let mut retry = false;
 
+                            // service is ready, wake io read task
+                            if state.flags.contains(Flags::RD_PAUSED) {
+                                state.flags.remove(Flags::RD_PAUSED);
+                                state.read_task.wake();
+                            }
+
                             let item = if state.flags.contains(Flags::DSP_STOP) {
                                 let mut inner = this.inner.borrow_mut();
 
@@ -291,12 +297,6 @@ where
 
                                 item
                             } else {
-                                // service is ready, wake io read task
-                                if state.flags.contains(Flags::RD_PAUSED) {
-                                    state.flags.remove(Flags::RD_PAUSED);
-                                    state.read_task.wake();
-                                }
-
                                 // decode incoming bytes stream
                                 if state.flags.contains(Flags::RD_READY) {
                                     // log::trace!(

@@ -352,6 +352,11 @@ where
                         return Poll::Ready(());
                     } else {
                         updated = true;
+
+                        if self.read_buf.len() > HW {
+                            log::trace!("buffer is too large {}, pause", self.read_buf.len());
+                            break;
+                        }
                     }
                 }
                 Poll::Ready(Err(err)) => {
@@ -366,18 +371,7 @@ where
         }
 
         if updated {
-            // stop reading bytes stream
-            if self.read_buf.len() > HW {
-                log::trace!("buffer is too large {}, pause", self.read_buf.len());
-                self.flags.insert(Flags::RD_READY | Flags::RD_PAUSED);
-            } else {
-                self.flags.insert(Flags::RD_READY);
-            }
-            // log::trace!(
-            //     "new data is available {}, waking up dispatch task",
-            //     self.read_buf.len()
-            // );
-
+            self.flags.insert(Flags::RD_READY);
             self.dispatch_task.wake();
         }
 

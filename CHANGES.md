@@ -1,5 +1,9 @@
 # Changes
 
+## [0.4.2] - 2021-01-05
+
+* Better read back-pressure support
+
 ## [0.4.1] - 2021-01-04
 
 * Use ashash instead on fxhash
