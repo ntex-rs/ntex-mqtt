@@ -1,5 +1,9 @@
 # Changes
 
+## [0.4.4] - 2021-01-09
+
+* Fix public re-exports
+
 ## [0.4.3] - 2021-01-09
 
 * Fix out of bounds panic

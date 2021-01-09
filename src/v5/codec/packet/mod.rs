@@ -1,7 +1,7 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use derive_more::From;
 
-pub(crate) use crate::types::QoS;
+pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};
 
 use super::{encode::*, property_type as pt, UserProperties};
 use crate::error::{DecodeError, EncodeError};
@@ -16,13 +16,13 @@ mod pubacks;
 mod publish;
 mod subscribe;
 
-pub(crate) use auth::*;
-pub(crate) use connack::*;
-pub(crate) use connect::*;
-pub(crate) use disconnect::*;
-pub(crate) use pubacks::*;
-pub(crate) use publish::*;
-pub(crate) use subscribe::*;
+pub use auth::*;
+pub use connack::*;
+pub use connect::*;
+pub use disconnect::*;
+pub use pubacks::*;
+pub use publish::*;
+pub use subscribe::*;
 
 #[derive(Debug, PartialEq, Clone, From)]
 /// MQTT Control Packets
