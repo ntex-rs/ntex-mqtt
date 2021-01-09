@@ -34,7 +34,7 @@ where
     keepalive_timeout: u16,
     #[pin]
     response: Option<S::Future>,
-    response_idx: isize,
+    response_idx: usize,
 }
 
 struct IoDispatcherInner<S, U>
@@ -46,7 +46,7 @@ where
     <U as Encoder>::Item: 'static,
 {
     error: Option<IoDispatcherError<S::Error, <U as Encoder>::Error>>,
-    base: isize,
+    base: usize,
     queue: VecDeque<ServiceResult<Result<S::Response, S::Error>>>,
 }
 
@@ -108,7 +108,7 @@ where
     <U as Encoder>::Item: 'static,
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
-    pub fn with<T, F: IntoService<S>>(
+    pub(crate) fn with<T, F: IntoService<S>>(
         io: T,
         state: IoState<U>,
         service: F,
@@ -153,7 +153,7 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default keep-alive timeout is set to 30 seconds.
-    pub fn keepalive_timeout(mut self, timeout: u16) -> Self {
+    pub(crate) fn keepalive_timeout(mut self, timeout: u16) -> Self {
         // register keepalive timer
         let prev = self.updated + Duration::from_secs(self.keepalive_timeout as u64);
         if timeout == 0 {
@@ -176,7 +176,7 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 1 seconds.
-    pub fn disconnect_timeout(self, val: u16) -> Self {
+    pub(crate) fn disconnect_timeout(self, val: u16) -> Self {
         self.state.inner.borrow_mut().disconnect_timeout = val;
         self
     }
@@ -193,7 +193,7 @@ where
     fn handle_result(
         &mut self,
         item: Result<S::Response, S::Error>,
-        response_idx: isize,
+        response_idx: usize,
         state: &IoState<U>,
         wake: bool,
     ) {
@@ -204,6 +204,7 @@ where
             let mut state = state.inner.borrow_mut();
 
             let _ = self.queue.pop_front();
+            self.base = self.base.wrapping_add(1);
             self.error = state.write_item(item);
 
             // check remaining response
@@ -217,7 +218,7 @@ where
                 state.dispatch_task.wake();
             }
         } else {
-            self.queue[idx as usize] = ServiceResult::Ready(item);
+            self.queue[idx] = ServiceResult::Ready(item);
         }
     }
 }
@@ -380,7 +381,7 @@ where
 
                                     let mut inner = this.inner.borrow_mut();
                                     let response_idx =
-                                        inner.base.wrapping_add(inner.queue.len() as isize);
+                                        inner.base.wrapping_add(inner.queue.len() as usize);
 
                                     if let Poll::Ready(res) = res {
                                         // check if current result is only response atm
@@ -400,7 +401,7 @@ where
                                     drop(state);
                                     let mut inner = this.inner.borrow_mut();
                                     let response_idx =
-                                        inner.base.wrapping_add(inner.queue.len() as isize);
+                                        inner.base.wrapping_add(inner.queue.len() as usize);
                                     inner.queue.push_back(ServiceResult::Pending);
 
                                     let st = this.state.clone();
