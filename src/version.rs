@@ -7,13 +7,13 @@ use crate::types::{packet_type, MQTT, MQTT_LEVEL_3, MQTT_LEVEL_5};
 use crate::utils;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ProtocolVersion {
+pub(super) enum ProtocolVersion {
     MQTT3,
     MQTT5,
 }
 
 #[derive(Debug)]
-pub struct VersionCodec;
+pub(super) struct VersionCodec;
 
 impl Decoder for VersionCodec {
     type Item = ProtocolVersion;

@@ -1,7 +1,7 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use derive_more::From;
 
-pub use crate::types::{ConnectFlags, QoS};
+pub(crate) use crate::types::QoS;
 
 use super::{encode::*, property_type as pt, UserProperties};
 use crate::error::{DecodeError, EncodeError};
@@ -16,13 +16,13 @@ mod pubacks;
 mod publish;
 mod subscribe;
 
-pub use auth::*;
-pub use connack::*;
-pub use connect::*;
-pub use disconnect::*;
-pub use pubacks::*;
-pub use publish::*;
-pub use subscribe::*;
+pub(crate) use auth::*;
+pub(crate) use connack::*;
+pub(crate) use connect::*;
+pub(crate) use disconnect::*;
+pub(crate) use pubacks::*;
+pub(crate) use publish::*;
+pub(crate) use subscribe::*;
 
 #[derive(Debug, PartialEq, Clone, From)]
 /// MQTT Control Packets
@@ -84,33 +84,33 @@ impl Packet {
 }
 
 pub(super) mod property_type {
-    pub const UTF8_PAYLOAD: u8 = 0x01;
-    pub const MSG_EXPIRY_INT: u8 = 0x02;
-    pub const CONTENT_TYPE: u8 = 0x03;
-    pub const RESP_TOPIC: u8 = 0x08;
-    pub const CORR_DATA: u8 = 0x09;
-    pub const SUB_ID: u8 = 0x0B;
-    pub const SESS_EXPIRY_INT: u8 = 0x11;
-    pub const ASSND_CLIENT_ID: u8 = 0x12;
-    pub const SERVER_KA: u8 = 0x13;
-    pub const AUTH_METHOD: u8 = 0x15;
-    pub const AUTH_DATA: u8 = 0x16;
-    pub const REQ_PROB_INFO: u8 = 0x17;
-    pub const WILL_DELAY_INT: u8 = 0x18;
-    pub const REQ_RESP_INFO: u8 = 0x19;
-    pub const RESP_INFO: u8 = 0x1A;
-    pub const SERVER_REF: u8 = 0x1C;
-    pub const REASON_STRING: u8 = 0x1F;
-    pub const RECEIVE_MAX: u8 = 0x21;
-    pub const TOPIC_ALIAS_MAX: u8 = 0x22;
-    pub const TOPIC_ALIAS: u8 = 0x23;
-    pub const MAX_QOS: u8 = 0x24;
-    pub const RETAIN_AVAIL: u8 = 0x25;
-    pub const USER: u8 = 0x26;
-    pub const MAX_PACKET_SIZE: u8 = 0x27;
-    pub const WILDCARD_SUB_AVAIL: u8 = 0x28;
-    pub const SUB_IDS_AVAIL: u8 = 0x29;
-    pub const SHARED_SUB_AVAIL: u8 = 0x2A;
+    pub(crate) const UTF8_PAYLOAD: u8 = 0x01;
+    pub(crate) const MSG_EXPIRY_INT: u8 = 0x02;
+    pub(crate) const CONTENT_TYPE: u8 = 0x03;
+    pub(crate) const RESP_TOPIC: u8 = 0x08;
+    pub(crate) const CORR_DATA: u8 = 0x09;
+    pub(crate) const SUB_ID: u8 = 0x0B;
+    pub(crate) const SESS_EXPIRY_INT: u8 = 0x11;
+    pub(crate) const ASSND_CLIENT_ID: u8 = 0x12;
+    pub(crate) const SERVER_KA: u8 = 0x13;
+    pub(crate) const AUTH_METHOD: u8 = 0x15;
+    pub(crate) const AUTH_DATA: u8 = 0x16;
+    pub(crate) const REQ_PROB_INFO: u8 = 0x17;
+    pub(crate) const WILL_DELAY_INT: u8 = 0x18;
+    pub(crate) const REQ_RESP_INFO: u8 = 0x19;
+    pub(crate) const RESP_INFO: u8 = 0x1A;
+    pub(crate) const SERVER_REF: u8 = 0x1C;
+    pub(crate) const REASON_STRING: u8 = 0x1F;
+    pub(crate) const RECEIVE_MAX: u8 = 0x21;
+    pub(crate) const TOPIC_ALIAS_MAX: u8 = 0x22;
+    pub(crate) const TOPIC_ALIAS: u8 = 0x23;
+    pub(crate) const MAX_QOS: u8 = 0x24;
+    pub(crate) const RETAIN_AVAIL: u8 = 0x25;
+    pub(crate) const USER: u8 = 0x26;
+    pub(crate) const MAX_PACKET_SIZE: u8 = 0x27;
+    pub(crate) const WILDCARD_SUB_AVAIL: u8 = 0x28;
+    pub(crate) const SUB_IDS_AVAIL: u8 = 0x29;
+    pub(crate) const SHARED_SUB_AVAIL: u8 = 0x2A;
 }
 
 mod ack_props {

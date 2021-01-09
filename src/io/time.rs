@@ -6,7 +6,7 @@ use ntex::rt::time::delay_for;
 use super::IoState;
 use crate::AHashSet;
 
-pub struct Timer<U>(Rc<RefCell<Inner<U>>>);
+pub(crate) struct Timer<U>(Rc<RefCell<Inner<U>>>);
 
 struct Inner<U> {
     resolution: Duration,
@@ -36,11 +36,11 @@ impl<U> Clone for Timer<U> {
 }
 
 impl<U: 'static> Timer<U> {
-    pub fn with(resolution: Duration) -> Timer<U> {
+    pub(crate) fn with(resolution: Duration) -> Timer<U> {
         Timer(Rc::new(RefCell::new(Inner::new(resolution))))
     }
 
-    pub fn register(&self, expire: Instant, previous: Instant, state: &IoState<U>) {
+    pub(crate) fn register(&self, expire: Instant, previous: Instant, state: &IoState<U>) {
         {
             let mut inner = self.0.borrow_mut();
 
@@ -55,13 +55,13 @@ impl<U: 'static> Timer<U> {
         let _ = self.now();
     }
 
-    pub fn unregister(&self, expire: Instant, state: &IoState<U>) {
+    pub(crate) fn unregister(&self, expire: Instant, state: &IoState<U>) {
         self.0.borrow_mut().unregister(expire, state);
     }
 
     /// Get current time. This function has to be called from
     /// future's poll method, otherwise it panics.
-    pub fn now(&self) -> Instant {
+    pub(crate) fn now(&self) -> Instant {
         let cur = self.0.borrow().current;
         if let Some(cur) = cur {
             cur

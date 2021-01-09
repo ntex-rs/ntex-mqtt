@@ -6,7 +6,7 @@ use crate::utils::{write_variable_length, Encode};
 
 use super::packet::*;
 
-pub fn get_encoded_size(packet: &Packet) -> usize {
+pub(crate) fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {
         Packet::Connect ( ref connect ) => {
             let Connect {ref last_will, ref client_id, ref username, ref password, ..} = *connect;
@@ -62,7 +62,7 @@ pub fn get_encoded_size(packet: &Packet) -> usize {
     }
 }
 
-pub fn encode(
+pub(crate) fn encode(
     packet: &Packet,
     dst: &mut BytesMut,
     content_size: u32,

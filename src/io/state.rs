@@ -161,16 +161,17 @@ where
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
-        let mut state = self.inner.borrow_mut();
-
         loop {
-            return match state.decode_item() {
+            let item = self.inner.borrow_mut().decode_item();
+            return match item {
                 Ok(Some(el)) => Ok(Some(el)),
                 Ok(None) => {
-                    let n =
-                        poll_fn(|cx| Pin::new(&mut *io).poll_read_buf(cx, &mut state.read_buf))
-                            .await
-                            .map_err(Either::Right)?;
+                    let state = self.inner.clone();
+                    let n = poll_fn(|cx| {
+                        Pin::new(&mut *io).poll_read_buf(cx, &mut state.borrow_mut().read_buf)
+                    })
+                    .await
+                    .map_err(Either::Right)?;
                     if n == 0 {
                         Ok(None)
                     } else {
@@ -217,10 +218,10 @@ where
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
-        let mut state = self.inner.borrow_mut();
+        self.inner.borrow_mut().encode_item(item).map_err(Either::Left)?;
 
-        state.encode_item(item).map_err(Either::Left)?;
-        poll_fn(|cx| state.flush_io(io, cx)).await.map_err(Either::Right)
+        let state = self.inner.clone();
+        poll_fn(|cx| state.borrow_mut().flush_io(io, cx)).await.map_err(Either::Right)
     }
 }
 

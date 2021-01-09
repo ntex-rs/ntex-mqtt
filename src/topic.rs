@@ -184,7 +184,7 @@ macro_rules! topic {
     };
 }
 
-pub trait MatchLevel {
+pub(crate) trait MatchLevel {
     fn match_level(&self, level: &Level) -> bool;
 }
 
@@ -294,7 +294,7 @@ impl fmt::Display for Topic {
     }
 }
 
-pub trait WriteTopicExt: io::Write {
+pub(crate) trait WriteTopicExt: io::Write {
     fn write_level(&mut self, level: &Level) -> io::Result<usize> {
         match *level {
             Level::Normal(ref s) | Level::Metadata(ref s) => self.write(s.as_str().as_bytes()),

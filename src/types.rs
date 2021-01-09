@@ -48,29 +48,29 @@ bitflags::bitflags! {
 }
 
 pub(super) mod packet_type {
-    pub const CONNECT: u8 = 0b0001_0000;
-    pub const CONNACK: u8 = 0b0010_0000;
-    pub const PUBLISH_START: u8 = 0b0011_0000;
-    pub const PUBLISH_END: u8 = 0b0011_1111;
-    pub const PUBACK: u8 = 0b0100_0000;
-    pub const PUBREC: u8 = 0b0101_0000;
-    pub const PUBREL: u8 = 0b0110_0010;
-    pub const PUBCOMP: u8 = 0b0111_0000;
-    pub const SUBSCRIBE: u8 = 0b1000_0010;
-    pub const SUBACK: u8 = 0b1001_0000;
-    pub const UNSUBSCRIBE: u8 = 0b1010_0010;
-    pub const UNSUBACK: u8 = 0b1011_0000;
-    pub const PINGREQ: u8 = 0b1100_0000;
-    pub const PINGRESP: u8 = 0b1101_0000;
-    pub const DISCONNECT: u8 = 0b1110_0000;
-    pub const AUTH: u8 = 0b1111_0000;
+    pub(crate) const CONNECT: u8 = 0b0001_0000;
+    pub(crate) const CONNACK: u8 = 0b0010_0000;
+    pub(crate) const PUBLISH_START: u8 = 0b0011_0000;
+    pub(crate) const PUBLISH_END: u8 = 0b0011_1111;
+    pub(crate) const PUBACK: u8 = 0b0100_0000;
+    pub(crate) const PUBREC: u8 = 0b0101_0000;
+    pub(crate) const PUBREL: u8 = 0b0110_0010;
+    pub(crate) const PUBCOMP: u8 = 0b0111_0000;
+    pub(crate) const SUBSCRIBE: u8 = 0b1000_0010;
+    pub(crate) const SUBACK: u8 = 0b1001_0000;
+    pub(crate) const UNSUBSCRIBE: u8 = 0b1010_0010;
+    pub(crate) const UNSUBACK: u8 = 0b1011_0000;
+    pub(crate) const PINGREQ: u8 = 0b1100_0000;
+    pub(crate) const PINGRESP: u8 = 0b1101_0000;
+    pub(crate) const DISCONNECT: u8 = 0b1110_0000;
+    pub(crate) const AUTH: u8 = 0b1111_0000;
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) struct FixedHeader {
     /// Fixed Header byte
-    pub first_byte: u8,
+    pub(crate) first_byte: u8,
     /// the number of bytes remaining within the current packet,
     /// including data in the variable header and the payload.
-    pub remaining_length: u32,
+    pub(crate) remaining_length: u32,
 }

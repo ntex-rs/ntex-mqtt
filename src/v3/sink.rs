@@ -315,6 +315,7 @@ impl PublishBuilder {
         }
     }
 
+    #[allow(clippy::await_holding_refcell_ref)]
     /// Send publish packet with QoS 1
     pub async fn send_at_least_once(self) -> Result<(), SendPacketError> {
         let mut packet = self.packet;
@@ -399,6 +400,7 @@ impl SubscribeBuilder {
         self
     }
 
+    #[allow(clippy::await_holding_refcell_ref)]
     /// Send subscribe packet
     pub async fn send(self) -> Result<Vec<codec::SubscribeReturnCode>, SendPacketError> {
         let st = self.state;
@@ -487,6 +489,7 @@ impl UnsubscribeBuilder {
         self
     }
 
+    #[allow(clippy::await_holding_refcell_ref)]
     /// Send unsubscribe packet
     pub async fn send(self) -> Result<(), SendPacketError> {
         let st = self.state;
