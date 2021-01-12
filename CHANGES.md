@@ -1,8 +1,8 @@
 # Changes
 
-## [0.4.6] - 2021-01-xx
+## [0.4.6] - 2021-01-12
 
-* Use pin-project-lite
+* Use pin-project-lite instead of pin-project
 
 ## [0.4.5] - 2021-01-12
 
