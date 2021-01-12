@@ -1,5 +1,9 @@
 # Changes
 
+## [0.4.6] - 2021-01-xx
+
+* Use pin-project-lite
+
 ## [0.4.5] - 2021-01-12
 
 * v5: Check publish service readiness error

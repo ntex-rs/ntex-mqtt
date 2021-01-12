@@ -188,9 +188,9 @@ where
                 Either::Left(PublishResponse {
                     packet_id: packet_id.map(|v| v.get()).unwrap_or(0),
                     inner: info,
-                    state: PublishResponseState::Publish(
-                        self.publish.call(Publish::new(publish)),
-                    ),
+                    state: PublishResponseState::Publish {
+                        fut: self.publish.call(Publish::new(publish)),
+                    },
                     _t: PhantomData,
                 })
             }
@@ -301,10 +301,12 @@ pin_project_lite::pin_project! {
     }
 }
 
-#[pin_project::pin_project(project = PublishResponseStateProject)]
-enum PublishResponseState<T: Service, C: Service, E> {
-    Publish(#[pin] T::Future),
-    Control(#[pin] ControlResponse<C, E>),
+pin_project_lite::pin_project! {
+    #[project = PublishResponseStateProject]
+    enum PublishResponseState<T: Service, C: Service, E> {
+        Publish { #[pin] fut: T::Future },
+        Control { #[pin] fut: ControlResponse<C, E> },
+    }
 }
 
 impl<T, C, E> Future for PublishResponse<T, C, E>
@@ -318,26 +320,25 @@ where
         let mut this = self.as_mut().project();
 
         match this.state.as_mut().project() {
-            PublishResponseStateProject::Publish(fut) => {
+            PublishResponseStateProject::Publish { fut } => {
                 let ack = match futures::ready!(fut.poll(cx)) {
                     Ok(res) => match res {
                         either::Either::Right(ack) => ack,
                         either::Either::Left(pkt) => {
-                            this.state.set(PublishResponseState::Control(
-                                ControlResponse::new(
+                            this.state.set(PublishResponseState::Control {
+                                fut: ControlResponse::new(
                                     ControlMessage::publish(pkt.into_inner()),
                                     this.inner,
                                 )
                                 .packet_id(*this.packet_id),
-                            ));
+                            });
                             return self.poll(cx);
                         }
                     },
                     Err(e) => {
-                        this.state.set(PublishResponseState::Control(ControlResponse::new(
-                            ControlMessage::error(e),
-                            this.inner,
-                        )));
+                        this.state.set(PublishResponseState::Control {
+                            fut: ControlResponse::new(ControlMessage::error(e), this.inner),
+                        });
                         return self.poll(cx);
                     }
                 };
@@ -354,7 +355,7 @@ where
                     Poll::Ready(Ok(None))
                 }
             }
-            PublishResponseStateProject::Control(fut) => fut.poll(cx),
+            PublishResponseStateProject::Control { fut } => fut.poll(cx),
         }
     }
 }

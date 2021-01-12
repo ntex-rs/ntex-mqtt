@@ -1,9 +1,5 @@
-use std::convert::TryFrom;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::rc::Rc;
 use std::task::{Context, Poll};
-use std::{fmt, io, time};
+use std::{convert::TryFrom, fmt, io, marker::PhantomData, pin::Pin, rc::Rc, time};
 
 use futures::future::{err, join, ok, Future, FutureExt, LocalBoxFuture, Ready};
 use ntex::rt::time::{delay_for, Delay};
@@ -290,12 +286,9 @@ where
         };
 
         MqttServerImplResponse {
-            state: MqttServerImplState::Version(Some((
-                req,
-                IoState::new(VersionCodec),
-                self.handlers.clone(),
-                delay,
-            ))),
+            state: MqttServerImplState::Version {
+                item: Some((req, IoState::new(VersionCodec), self.handlers.clone(), delay)),
+            },
         }
     }
 }
@@ -319,11 +312,13 @@ pin_project_lite::pin_project! {
     }
 }
 
-#[pin_project::pin_project(project = MqttServerImplStateProject)]
-pub(crate) enum MqttServerImplState<Io, V3: Service, V5: Service> {
-    V3(#[pin] V3::Future),
-    V5(#[pin] V5::Future),
-    Version(Option<(Io, IoState<VersionCodec>, Rc<(V3, V5)>, Option<Delay>)>),
+pin_project_lite::pin_project! {
+    #[project = MqttServerImplStateProject]
+    pub(crate) enum MqttServerImplState<Io, V3: Service, V5: Service> {
+        V3 { #[pin] fut: V3::Future },
+        V5 { #[pin] fut: V5::Future },
+        Version { item: Option<(Io, IoState<VersionCodec>, Rc<(V3, V5)>, Option<Delay>)> },
+    }
 }
 
 impl<Io, V3, V5, Err> Future for MqttServerImplResponse<Io, V3, V5, Err>
@@ -347,9 +342,9 @@ where
 
         loop {
             match this.state.project() {
-                MqttServerImplStateProject::V3(fut) => return fut.poll(cx),
-                MqttServerImplStateProject::V5(fut) => return fut.poll(cx),
-                MqttServerImplStateProject::Version(ref mut item) => {
+                MqttServerImplStateProject::V3 { fut } => return fut.poll(cx),
+                MqttServerImplStateProject::V5 { fut } => return fut.poll(cx),
+                MqttServerImplStateProject::Version { ref mut item } => {
                     if let Some(ref mut delay) = item.as_mut().unwrap().3 {
                         match Pin::new(delay).poll(cx) {
                             Poll::Pending => (),
@@ -368,15 +363,15 @@ where
                             match ver {
                                 ProtocolVersion::MQTT3 => {
                                     let state = state.map_codec(|_| v3::codec::Codec::new());
-                                    this.state.set(MqttServerImplState::V3(
-                                        handlers.0.call((io, state, delay)),
-                                    ))
+                                    this.state.set(MqttServerImplState::V3 {
+                                        fut: handlers.0.call((io, state, delay)),
+                                    })
                                 }
                                 ProtocolVersion::MQTT5 => {
                                     let state = state.map_codec(|_| v5::codec::Codec::new());
-                                    this.state.set(MqttServerImplState::V5(
-                                        handlers.1.call((io, state, delay)),
-                                    ))
+                                    this.state.set(MqttServerImplState::V5 {
+                                        fut: handlers.1.call((io, state, delay)),
+                                    })
                                 }
                             }
                             continue;

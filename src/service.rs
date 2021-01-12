@@ -1,10 +1,7 @@
 use std::task::{Context, Poll};
-use std::time::Duration;
-use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
+use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc, time::Duration};
 
 use futures::future::{select, Either, FutureExt};
-use futures::ready;
-
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex_codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
@@ -119,29 +116,33 @@ where
     }
 }
 
-#[pin_project::pin_project]
-pub(crate) struct FramedServiceResponse<St, C, T, Io, Codec>
-where
-    Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
-    C::Error: fmt::Debug,
-    T: ServiceFactory<
-        Config = St,
-        Request = DispatcherItem<Codec>,
-        Response = ResponseItem<Codec>,
-        Error = C::Error,
-        InitError = C::Error,
-    >,
-    <T::Service as Service>::Error: 'static,
-    <T::Service as Service>::Future: 'static,
-    Codec: Decoder + Encoder,
-    <Codec as Encoder>::Item: 'static,
-{
-    #[pin]
-    fut: C::Future,
-    handler: Rc<T>,
-    disconnect_timeout: u16,
-    time: Timer<Codec>,
+pin_project_lite::pin_project! {
+    pub(crate) struct FramedServiceResponse<St, C, T, Io, Codec>
+    where
+        Io: AsyncRead,
+        Io: AsyncWrite,
+        Io: Unpin,
+        C: ServiceFactory<Config = (), Request = Io, Response = (Io, IoState<Codec>, St, u16)>,
+        C::Error: fmt::Debug,
+        T: ServiceFactory<
+           Config = St,
+           Request = DispatcherItem<Codec>,
+           Response = ResponseItem<Codec>,
+           Error = C::Error,
+           InitError = C::Error,
+        >,
+       <T::Service as Service>::Error: 'static,
+       <T::Service as Service>::Future: 'static,
+        Codec: Decoder,
+        Codec: Encoder,
+       <Codec as Encoder>::Item: 'static,
+    {
+        #[pin]
+        fut: C::Future,
+        handler: Rc<T>,
+        disconnect_timeout: u16,
+        time: Timer<Codec>,
+    }
 }
 
 impl<St, C, T, Io, Codec> Future for FramedServiceResponse<St, C, T, Io, Codec>
@@ -165,7 +166,7 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let connect = ready!(this.fut.poll(cx))?;
+        let connect = futures::ready!(this.fut.poll(cx))?;
 
         Poll::Ready(Ok(FramedServiceImpl {
             connect,
@@ -352,33 +353,37 @@ where
     }
 }
 
-#[pin_project::pin_project]
-pub(crate) struct FramedServiceResponse2<St, C, T, Io, Codec>
-where
-    Io: AsyncRead + AsyncWrite + Unpin,
-    C: ServiceFactory<
-        Config = (),
-        Request = (Io, IoState<Codec>),
-        Response = (Io, IoState<Codec>, St, u16),
-    >,
-    C::Error: fmt::Debug,
-    T: ServiceFactory<
-        Config = St,
-        Request = DispatcherItem<Codec>,
-        Response = ResponseItem<Codec>,
-        Error = C::Error,
-        InitError = C::Error,
-    >,
-    <T::Service as Service>::Error: 'static,
-    <T::Service as Service>::Future: 'static,
-    Codec: Decoder + Encoder,
-    <Codec as Encoder>::Item: 'static,
-{
-    #[pin]
-    fut: C::Future,
-    handler: Rc<T>,
-    disconnect_timeout: u16,
-    time: Timer<Codec>,
+pin_project_lite::pin_project! {
+    pub(crate) struct FramedServiceResponse2<St, C, T, Io, Codec>
+    where
+        Io: AsyncRead,
+        Io: AsyncWrite,
+        Io: Unpin,
+        C: ServiceFactory<
+           Config = (),
+           Request = (Io, IoState<Codec>),
+           Response = (Io, IoState<Codec>, St, u16),
+        >,
+        C::Error: fmt::Debug,
+        T: ServiceFactory<
+           Config = St,
+           Request = DispatcherItem<Codec>,
+           Response = ResponseItem<Codec>,
+           Error = C::Error,
+           InitError = C::Error,
+        >,
+       <T::Service as Service>::Error: 'static,
+       <T::Service as Service>::Future: 'static,
+        Codec: Decoder,
+        Codec: Encoder,
+       <Codec as Encoder>::Item: 'static,
+    {
+        #[pin]
+        fut: C::Future,
+        handler: Rc<T>,
+        disconnect_timeout: u16,
+        time: Timer<Codec>,
+    }
 }
 
 impl<St, C, T, Io, Codec> Future for FramedServiceResponse2<St, C, T, Io, Codec>
@@ -406,7 +411,7 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let connect = ready!(this.fut.poll(cx))?;
+        let connect = futures::ready!(this.fut.poll(cx))?;
 
         Poll::Ready(Ok(FramedServiceImpl2 {
             connect,
