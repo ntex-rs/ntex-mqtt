@@ -135,7 +135,7 @@ where
     >;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service);
+        let res1 = self.publish.poll_ready(cx).map_err(|e| MqttError::Service(e.into()))?;
         let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::Service)?;
 
         if res1.is_pending() || res2.is_pending() {
