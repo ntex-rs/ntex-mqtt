@@ -1,5 +1,11 @@
 # Changes
 
+## [0.4.5] - 2021-01-12
+
+* v5: Check publish service readiness error
+
+* io: Fix potential BorrowMut error in io dispatcher
+
 ## [0.4.4] - 2021-01-09
 
 * Fix public re-exports
