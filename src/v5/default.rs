@@ -1,5 +1,4 @@
-use std::marker::PhantomData;
-use std::task::{Context, Poll};
+use std::{fmt, marker::PhantomData, task::Context, task::Poll};
 
 use futures::future::{ok, Ready};
 use ntex::service::{Service, ServiceFactory};
@@ -52,13 +51,13 @@ impl<St, Err> Service for DefaultPublishService<St, Err> {
 /// Default control service
 pub struct DefaultControlService<S, E>(PhantomData<(S, E)>);
 
-impl<S, E> Default for DefaultControlService<S, E> {
+impl<S, E: fmt::Debug> Default for DefaultControlService<S, E> {
     fn default() -> Self {
         DefaultControlService(PhantomData)
     }
 }
 
-impl<S, E> ServiceFactory for DefaultControlService<S, E> {
+impl<S, E: fmt::Debug> ServiceFactory for DefaultControlService<S, E> {
     type Config = Session<S>;
     type Request = ControlMessage<E>;
     type Response = ControlResult;
@@ -72,7 +71,7 @@ impl<S, E> ServiceFactory for DefaultControlService<S, E> {
     }
 }
 
-impl<S, E> Service for DefaultControlService<S, E> {
+impl<S, E: fmt::Debug> Service for DefaultControlService<S, E> {
     type Request = ControlMessage<E>;
     type Response = ControlResult;
     type Error = E;
@@ -85,10 +84,15 @@ impl<S, E> Service for DefaultControlService<S, E> {
 
     #[inline]
     fn call(&self, pkt: Self::Request) -> Self::Future {
-        log::warn!("MQTT Control service is not configured");
-
-        ok(pkt.disconnect_with(super::codec::Disconnect::new(
-            super::codec::DisconnectReasonCode::UnspecifiedError,
-        )))
+        match pkt {
+            ControlMessage::Ping(pkt) => ok(pkt.ack()),
+            ControlMessage::Disconnect(pkt) => ok(pkt.ack()),
+            _ => {
+                log::warn!("MQTT Control service is not configured, pkt: {:?}", pkt);
+                ok(pkt.disconnect_with(super::codec::Disconnect::new(
+                    super::codec::DisconnectReasonCode::UnspecifiedError,
+                )))
+            }
+        }
     }
 }

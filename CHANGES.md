@@ -1,5 +1,9 @@
 # Changes
 
+## [0.4.7] - 2021-01-13
+
+* v5: Add ping and disconnect support to default control service
+
 ## [0.4.6] - 2021-01-12
 
 * Use pin-project-lite instead of pin-project
