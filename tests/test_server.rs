@@ -186,6 +186,20 @@ async fn test_ack_order() -> std::io::Result<()> {
         })
         .await
         .unwrap();
+    framed
+        .send(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(3).unwrap()),
+                payload: Bytes::new(),
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
 
     let pkt = framed.next().await.unwrap().unwrap();
     assert_eq!(pkt, codec::Packet::PublishAck { packet_id: NonZeroU16::new(1).unwrap() });
@@ -198,6 +212,37 @@ async fn test_ack_order() -> std::io::Result<()> {
             status: vec![codec::SubscribeReturnCode::Success(codec::QoS::AtLeastOnce)],
         }
     );
+
+    let pkt = framed.next().await.unwrap().unwrap();
+    assert_eq!(pkt, codec::Packet::PublishAck { packet_id: NonZeroU16::new(3).unwrap() });
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_ack_order_sink() -> std::io::Result<()> {
+    let srv = server::test_server(move || {
+        MqttServer::new(handshake)
+            .publish(|_| delay_for(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    let topic = ByteString::from_static("test");
+    let fut1 = sink.publish(topic.clone(), Bytes::from_static(b"pkt1")).send_at_least_once();
+    let fut2 = sink.publish(topic.clone(), Bytes::from_static(b"pkt2")).send_at_least_once();
+    let fut3 = sink.publish(topic.clone(), Bytes::from_static(b"pkt3")).send_at_least_once();
+
+    let (res1, res2, res3) = futures::future::join3(fut1, fut2, fut3).await;
+    assert!(res1.is_ok());
+    assert!(res2.is_ok());
+    assert!(res3.is_ok());
 
     Ok(())
 }

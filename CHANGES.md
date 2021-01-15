@@ -1,5 +1,9 @@
 # Changes
 
+## [0.4.8] - 2021-01-xx
+
+* v5: Remove duplicated `set_properties` sink method
+
 ## [0.4.7] - 2021-01-13
 
 * v5: Add ping and disconnect support to default control service

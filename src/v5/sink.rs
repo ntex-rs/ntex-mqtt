@@ -79,7 +79,7 @@ impl MqttSink {
         self.1.inner.borrow().is_opened()
     }
 
-    /// Get client receive credit
+    /// Get client's receive credit
     pub fn credit(&self) -> usize {
         let inner = self.0.borrow();
         inner.cap - inner.inflight.len()
@@ -120,7 +120,6 @@ impl MqttSink {
             let _ = st.send(codec::Packet::Disconnect(pkt));
             st.close();
         }
-
         let mut inner = self.0.borrow_mut();
         inner.waiters.clear();
         inner.inflight.clear();
@@ -305,6 +304,7 @@ impl Ack {
             panic!()
         }
     }
+
     fn is_match(&self, tp: AckType) -> bool {
         match (self, tp) {
             (Ack::Publish(_), AckType::Publish) => true,
@@ -345,7 +345,7 @@ impl PublishBuilder {
         self
     }
 
-    /// this might be re-delivery of an earlier attempt to send the Packet.
+    /// This might be re-delivery of an earlier attempt to send the Packet.
     pub fn dup(mut self, val: bool) -> Self {
         self.packet.dup = val;
         self
@@ -364,14 +364,6 @@ impl PublishBuilder {
     {
         f(&mut self.packet.properties);
         self
-    }
-
-    /// Set publish packet properties
-    pub fn set_properties<F>(&mut self, f: F)
-    where
-        F: FnOnce(&mut codec::PublishProperties),
-    {
-        f(&mut self.packet.properties);
     }
 
     /// Send publish packet with QoS 0
