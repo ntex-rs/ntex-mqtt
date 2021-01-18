@@ -7,11 +7,9 @@ use futures::future::{ready, Either, Future, FutureExt};
 use ntex::channel::pool;
 
 use crate::v5::error::{ProtocolError, PublishQos1Error, SendPacketError};
-use crate::{
-    io::IoState, io::IoStateInner, types::packet_type, types::QoS, v5::codec, AHashMap,
-};
+use crate::{io::State, types::packet_type, types::QoS, v5::codec, AHashMap};
 
-pub struct MqttSink(Rc<RefCell<MqttSinkInner>>, IoState<codec::Codec>);
+pub struct MqttSink(Rc<RefCell<MqttSinkInner>>, State<codec::Codec>);
 
 pub(crate) enum Ack {
     Publish(codec::PublishAck),
@@ -54,7 +52,7 @@ impl Clone for MqttSink {
 
 impl MqttSink {
     pub(crate) fn new(
-        state: IoState<codec::Codec>,
+        state: State<codec::Codec>,
         max_send: usize,
         pool: Rc<MqttSinkPool>,
     ) -> Self {
@@ -76,7 +74,7 @@ impl MqttSink {
 
     /// Check connection status
     pub fn is_opened(&self) -> bool {
-        self.1.inner.borrow().is_opened()
+        self.1.is_opened()
     }
 
     /// Get client's receive credit
@@ -90,7 +88,7 @@ impl MqttSink {
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
         let mut inner = self.0.borrow_mut();
-        if !self.1.inner.borrow().is_opened() {
+        if !self.1.is_opened() {
             Either::Left(ready(false))
         } else if inner.inflight.len() >= inner.cap {
             let (tx, rx) = inner.pool.waiters.channel();
@@ -103,10 +101,9 @@ impl MqttSink {
 
     /// Close mqtt connection with default Disconnect message
     pub fn close(&self) {
-        let mut st = self.1.inner.borrow_mut();
-        if st.is_opened() {
-            let _ = st.send(codec::Packet::Disconnect(codec::Disconnect::default()));
-            st.close();
+        if self.1.is_opened() {
+            let _ = self.1.write_item(codec::Packet::Disconnect(codec::Disconnect::default()));
+            self.1.close();
         }
         let mut inner = self.0.borrow_mut();
         inner.waiters.clear();
@@ -115,10 +112,9 @@ impl MqttSink {
 
     /// Close mqtt connection
     pub fn close_with_reason(&self, pkt: codec::Disconnect) {
-        let mut st = self.1.inner.borrow_mut();
-        if st.is_opened() {
-            let _ = st.send(codec::Packet::Disconnect(pkt));
-            st.close();
+        if self.1.is_opened() {
+            let _ = self.1.write_item(codec::Packet::Disconnect(pkt));
+            self.1.close();
         }
         let mut inner = self.0.borrow_mut();
         inner.waiters.clear();
@@ -126,12 +122,12 @@ impl MqttSink {
     }
 
     pub(super) fn send(&self, pkt: codec::Packet) {
-        let _ = self.1.inner.borrow_mut().send(pkt);
+        let _ = self.1.write_item(pkt);
     }
 
     /// Send ping
     pub(super) fn ping(&self) -> bool {
-        self.1.inner.borrow_mut().send(codec::Packet::PingRequest).is_ok()
+        self.1.write_item(codec::Packet::PingRequest).is_ok()
     }
 
     /// Close mqtt connection, dont send disconnect message
@@ -139,7 +135,7 @@ impl MqttSink {
         let mut inner = self.0.borrow_mut();
         inner.waiters.clear();
         inner.inflight.clear();
-        self.1.inner.borrow_mut().close();
+        self.1.close();
     }
 
     pub(super) fn pkt_ack(&self, pkt: Ack) -> Result<(), ProtocolError> {
@@ -208,7 +204,7 @@ impl MqttSink {
                 properties: codec::PublishProperties::default(),
             },
             sink: self.0.clone(),
-            state: self.1.inner.clone(),
+            state: self.1.clone(),
         }
     }
 
@@ -223,7 +219,7 @@ impl MqttSink {
                 topic_filters: Vec::new(),
             },
             sink: self.0.clone(),
-            state: self.1.inner.clone(),
+            state: self.1.clone(),
         }
     }
 
@@ -237,7 +233,7 @@ impl MqttSink {
                 topic_filters: Vec::new(),
             },
             sink: self.0.clone(),
-            state: self.1.inner.clone(),
+            state: self.1.clone(),
         }
     }
 }
@@ -327,7 +323,7 @@ impl AckType {
 
 pub struct PublishBuilder {
     sink: Rc<RefCell<MqttSinkInner>>,
-    state: Rc<RefCell<IoStateInner<codec::Codec>>>,
+    state: State<codec::Codec>,
     packet: codec::Publish,
 }
 
@@ -369,11 +365,12 @@ impl PublishBuilder {
     /// Send publish packet with QoS 0
     pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
         let packet = self.packet;
-        let mut state = self.state.borrow_mut();
 
-        if state.is_opened() {
+        if self.state.is_opened() {
             log::trace!("Publish (QoS-0) to {:?}", packet.topic);
-            state.send(codec::Packet::Publish(packet)).map_err(SendPacketError::Encode)
+            self.state
+                .write_item(codec::Packet::Publish(packet))
+                .map_err(SendPacketError::Encode)
         } else {
             log::error!("Mqtt sink is disconnected");
             Err(SendPacketError::Disconnected)
@@ -383,12 +380,11 @@ impl PublishBuilder {
     #[allow(clippy::await_holding_refcell_ref)]
     /// Send publish packet with QoS 1
     pub async fn send_at_least_once(self) -> Result<codec::PublishAck, PublishQos1Error> {
-        let st = self.state;
         let sink = self.sink;
+        let state = self.state;
         let mut packet = self.packet;
         packet.qos = QoS::AtLeastOnce;
 
-        let mut state = st.borrow_mut();
         let mut inner = sink.borrow_mut();
         if state.is_opened() {
             // handle client receive maximum
@@ -398,13 +394,11 @@ impl PublishBuilder {
 
                 // do not borrow cross yield points
                 drop(inner);
-                drop(state);
 
                 if rx.await.is_err() {
                     return Err(PublishQos1Error::Disconnected);
                 }
 
-                state = st.borrow_mut();
                 inner = sink.borrow_mut();
             }
 
@@ -426,7 +420,7 @@ impl PublishBuilder {
             // send publish to client
             log::trace!("Publish (QoS1) to {:#?}", packet);
 
-            match state.send(codec::Packet::Publish(packet)) {
+            match state.write_item(codec::Packet::Publish(packet)) {
                 Ok(_) => {
                     // do not borrow cross yield points
                     drop(inner);
@@ -454,7 +448,7 @@ pub struct SubscribeBuilder {
     id: u16,
     packet: codec::Subscribe,
     sink: Rc<RefCell<MqttSinkInner>>,
-    state: Rc<RefCell<IoStateInner<codec::Codec>>>,
+    state: State<codec::Codec>,
 }
 
 impl SubscribeBuilder {
@@ -488,12 +482,11 @@ impl SubscribeBuilder {
     #[allow(clippy::await_holding_refcell_ref)]
     /// Send subscribe packet
     pub async fn send(self) -> Result<codec::SubscribeAck, SendPacketError> {
-        let st = self.state;
         let sink = self.sink;
+        let state = self.state;
         let mut packet = self.packet;
 
         let mut inner = sink.borrow_mut();
-        let mut state = st.borrow_mut();
         if state.is_opened() {
             // handle client receive maximum
             if !inner.has_credit() {
@@ -502,13 +495,11 @@ impl SubscribeBuilder {
 
                 // do not borrow cross yield points
                 drop(inner);
-                drop(state);
 
                 if rx.await.is_err() {
                     return Err(SendPacketError::Disconnected);
                 }
 
-                state = st.borrow_mut();
                 inner = sink.borrow_mut();
             }
 
@@ -527,7 +518,7 @@ impl SubscribeBuilder {
             // send subscribe to client
             log::trace!("Sending subscribe packet {:#?}", packet);
 
-            match state.send(codec::Packet::Subscribe(packet)) {
+            match state.write_item(codec::Packet::Subscribe(packet)) {
                 Ok(_) => {
                     // do not borrow cross yield points
                     drop(state);
@@ -551,7 +542,7 @@ pub struct UnsubscribeBuilder {
     id: u16,
     packet: codec::Unsubscribe,
     sink: Rc<RefCell<MqttSinkInner>>,
-    state: Rc<RefCell<IoStateInner<codec::Codec>>>,
+    state: State<codec::Codec>,
 }
 
 impl UnsubscribeBuilder {
@@ -581,11 +572,10 @@ impl UnsubscribeBuilder {
     #[allow(clippy::await_holding_refcell_ref)]
     /// Send unsubscribe packet
     pub async fn send(self) -> Result<codec::UnsubscribeAck, SendPacketError> {
-        let st = self.state;
         let sink = self.sink;
+        let state = self.state;
         let mut packet = self.packet;
 
-        let mut state = st.borrow_mut();
         let mut inner = sink.borrow_mut();
         if state.is_opened() {
             // handle client receive maximum
@@ -594,14 +584,12 @@ impl UnsubscribeBuilder {
                 inner.waiters.push_back(tx);
 
                 // do not borrow cross yield points
-                drop(state);
                 drop(inner);
 
                 if rx.await.is_err() {
                     return Err(SendPacketError::Disconnected);
                 }
 
-                state = st.borrow_mut();
                 inner = sink.borrow_mut();
             }
 
@@ -620,10 +608,9 @@ impl UnsubscribeBuilder {
             // send unsubscribe to client
             log::trace!("Sending unsubscribe packet {:#?}", packet);
 
-            match state.send(codec::Packet::Unsubscribe(packet)) {
+            match state.write_item(codec::Packet::Unsubscribe(packet)) {
                 Ok(_) => {
                     // do not borrow cross yield points
-                    drop(state);
                     drop(inner);
 
                     // wait ack from peer

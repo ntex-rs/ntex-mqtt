@@ -57,8 +57,12 @@ mod tests {
         let (_len, consumed) = decode_variable_length(&bytes[1..]).unwrap().unwrap();
         let cur = Bytes::copy_from_slice(&bytes[consumed + 1..]);
         let mut tmp = bytes::BytesMut::with_capacity(4096);
-        ntex_codec::Encoder::encode(&mut crate::v5::codec::Codec::new(), res.clone(), &mut tmp)
-            .unwrap();
+        ntex::codec::Encoder::encode(
+            &mut crate::v5::codec::Codec::new(),
+            res.clone(),
+            &mut tmp,
+        )
+        .unwrap();
         let decoded = decode_packet(cur, fixed);
         let res = Ok(res);
         if decoded != res {

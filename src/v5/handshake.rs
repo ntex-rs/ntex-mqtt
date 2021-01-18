@@ -1,12 +1,12 @@
 use std::{fmt, num::NonZeroU16};
 
-use crate::{io::IoState, v5::codec, v5::sink::MqttSink};
+use crate::{io::State, v5::codec, v5::sink::MqttSink};
 
 /// Handshake message
 pub struct Handshake<Io> {
     io: Io,
     pkt: codec::Connect,
-    state: IoState<codec::Codec>,
+    state: State<codec::Codec>,
     sink: MqttSink,
     max_size: u32,
     max_receive: u16,
@@ -18,7 +18,7 @@ impl<Io> Handshake<Io> {
         pkt: codec::Connect,
         io: Io,
         sink: MqttSink,
-        state: IoState<codec::Codec>,
+        state: State<codec::Codec>,
         max_size: u32,
         max_receive: u16,
         max_topic_alias: u16,
@@ -105,7 +105,7 @@ pub struct HandshakeAck<Io, St> {
     pub(crate) session: Option<St>,
     pub(crate) sink: MqttSink,
     pub(crate) packet: codec::ConnectAck,
-    pub(crate) state: IoState<codec::Codec>,
+    pub(crate) state: State<codec::Codec>,
     pub(crate) keepalive: u16,
 }
 

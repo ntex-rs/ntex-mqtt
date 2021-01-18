@@ -6,7 +6,7 @@ use bytestring::ByteString;
 use futures::{future::ok, FutureExt, SinkExt, StreamExt};
 use ntex::rt::time::delay_for;
 use ntex::server;
-use ntex_codec::Framed;
+use ntex::codec::Framed;
 
 use ntex_mqtt::v5::{
     client, codec, error, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish,

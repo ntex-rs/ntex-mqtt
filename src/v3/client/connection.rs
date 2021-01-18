@@ -8,7 +8,7 @@ use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::{apply_fn, boxed::BoxService, into_service, IntoService, Service};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::io::{DispatcherItem, IoDispatcher, IoState, Timer};
+use crate::io::{Dispatcher, DispatcherItem, State, Timer};
 use crate::v3::{codec, sink::MqttSink, ControlResult, Publish};
 
 use super::control::ControlMessage;
@@ -18,7 +18,7 @@ use super::dispatcher::create_dispatcher;
 pub struct Client<Io> {
     io: Io,
     sink: MqttSink,
-    state: IoState<codec::Codec>,
+    state: State<codec::Codec>,
     keepalive: u16,
     disconnect_timeout: u16,
     session_present: bool,
@@ -32,7 +32,7 @@ where
     /// Construct new `Dispatcher` instance with outgoing messages stream.
     pub(super) fn new(
         io: T,
-        state: IoState<codec::Codec>,
+        state: State<codec::Codec>,
         session_present: bool,
         keepalive_timeout: u16,
         disconnect_timeout: u16,
@@ -109,7 +109,7 @@ where
             into_service(|msg: ControlMessage| ok::<_, MqttError<()>>(msg.disconnect())),
         );
 
-        let _ = IoDispatcher::with(
+        let _ = Dispatcher::with(
             self.io,
             self.state,
             apply_fn(dispatcher, |req: DispatcherItem<codec::Codec>, srv| match req {
@@ -152,7 +152,7 @@ where
             service.into_service().map_err(MqttError::Service),
         );
 
-        IoDispatcher::with(
+        Dispatcher::with(
             self.io,
             self.state,
             apply_fn(dispatcher, |req: DispatcherItem<codec::Codec>, srv| match req {
@@ -185,7 +185,7 @@ pub struct ClientRouter<Io, Err, PErr> {
     builder: RouterBuilder<usize>,
     handlers: Vec<Handler<PErr>>,
     io: Io,
-    state: IoState<codec::Codec>,
+    state: State<codec::Codec>,
     sink: MqttSink,
     keepalive: u16,
     disconnect_timeout: u16,
@@ -224,7 +224,7 @@ where
             into_service(|msg: ControlMessage| ok::<_, MqttError<Err>>(msg.disconnect())),
         );
 
-        let _ = IoDispatcher::with(
+        let _ = Dispatcher::with(
             self.io,
             self.state,
             apply_fn(dispatcher, |req: DispatcherItem<codec::Codec>, srv| match req {
@@ -266,7 +266,7 @@ where
             service.into_service().map_err(MqttError::Service),
         );
 
-        IoDispatcher::with(
+        Dispatcher::with(
             self.io,
             self.state,
             apply_fn(dispatcher, |req: DispatcherItem<codec::Codec>, srv| match req {

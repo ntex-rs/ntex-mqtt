@@ -8,7 +8,7 @@ use ntex::util::timeout::{Timeout, TimeoutError};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
-use crate::{io::IoState, types::QoS};
+use crate::{io::State, types::QoS};
 
 use super::codec as mqtt;
 use super::control::{ControlMessage, ControlResult};
@@ -243,7 +243,7 @@ where
         self,
     ) -> impl ServiceFactory<
         Config = (),
-        Request = (Io, IoState<mqtt::Codec>, Option<Delay>),
+        Request = (Io, State<mqtt::Codec>, Option<Delay>),
         Response = (),
         Error = MqttError<C::Error>,
         InitError = C::InitError,
@@ -282,7 +282,7 @@ fn handshake_service_factory<Io, St, C>(
 ) -> impl ServiceFactory<
     Config = (),
     Request = Io,
-    Response = (Io, IoState<mqtt::Codec>, Session<St>, u16),
+    Response = (Io, State<mqtt::Codec>, Session<St>, u16),
     Error = MqttError<C::Error>,
 >
 where
@@ -329,8 +329,8 @@ fn handshake_service_factory2<Io, St, C>(
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
     Config = (),
-    Request = (Io, IoState<mqtt::Codec>),
-    Response = (Io, IoState<mqtt::Codec>, Session<St>, u16),
+    Request = (Io, State<mqtt::Codec>),
+    Response = (Io, State<mqtt::Codec>, Session<St>, u16),
     Error = MqttError<C::Error>,
     InitError = C::InitError,
 >
@@ -370,14 +370,14 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn handshake<Io, S, St, E>(
     mut io: Io,
-    state: Option<IoState<mqtt::Codec>>,
+    state: Option<State<mqtt::Codec>>,
     service: S,
     max_size: u32,
     mut max_receive: u16,
     mut max_topic_alias: u16,
     max_qos: Option<QoS>,
     pool: Rc<MqttSinkPool>,
-) -> Result<(Io, IoState<mqtt::Codec>, Session<St>, u16), S::Error>
+) -> Result<(Io, State<mqtt::Codec>, Session<St>, u16), S::Error>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
     S: Service<Request = Handshake<Io>, Response = HandshakeAck<Io, St>, Error = MqttError<E>>,
@@ -385,7 +385,7 @@ where
     log::trace!("Starting mqtt v5 handshake");
 
     // set max inbound (decoder) packet size
-    let state = state.unwrap_or_else(|| IoState::new(mqtt::Codec::default()));
+    let state = state.unwrap_or_else(|| State::new(mqtt::Codec::default()));
     state.with_codec(|codec| codec.set_max_inbound_size(max_size));
 
     // read first packet
