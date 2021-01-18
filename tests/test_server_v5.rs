@@ -4,9 +4,9 @@ use std::{convert::TryFrom, num::NonZeroU16, time::Duration};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{future::ok, FutureExt, SinkExt, StreamExt};
+use ntex::codec::Framed;
 use ntex::rt::time::delay_for;
 use ntex::server;
-use ntex::codec::Framed;
 
 use ntex_mqtt::v5::{
     client, codec, error, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish,

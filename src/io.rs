@@ -655,9 +655,7 @@ mod tests {
         );
         ntex::rt::spawn(disp.map(|_| ()));
 
-        state
-            .write_item(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"))
-            .unwrap();
+        state.write_item(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n")).unwrap();
 
         let buf = client.read_any();
         assert_eq!(buf, Bytes::from_static(b""));
