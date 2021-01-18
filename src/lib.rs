@@ -7,12 +7,12 @@
 mod topic;
 #[macro_use]
 mod utils;
-mod io;
 
 pub mod error;
 pub mod v3;
 pub mod v5;
 
+mod io;
 mod server;
 mod service;
 mod session;

@@ -1,6 +1,8 @@
 # Changes
 
-## [0.4.8] - 2021-01-xx
+## [0.5.0] - 2021-01-xx
+
+* Use ntex 0.2
 
 * v5: Remove duplicated `set_properties` sink method
 

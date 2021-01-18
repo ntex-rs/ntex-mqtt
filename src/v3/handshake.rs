@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::io::IoState;
+use crate::io::State;
 
 use super::codec as mqtt;
 use super::sink::MqttSink;
@@ -10,7 +10,7 @@ pub struct Handshake<Io> {
     io: Io,
     pkt: mqtt::Connect,
     sink: MqttSink,
-    state: IoState<mqtt::Codec>,
+    state: State<mqtt::Codec>,
 }
 
 impl<Io> Handshake<Io> {
@@ -18,7 +18,7 @@ impl<Io> Handshake<Io> {
         pkt: mqtt::Connect,
         io: Io,
         sink: MqttSink,
-        state: IoState<mqtt::Codec>,
+        state: State<mqtt::Codec>,
     ) -> Self {
         Self { pkt, io, sink, state }
     }
@@ -120,7 +120,7 @@ pub struct HandshakeAck<Io, St> {
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectAckReason,
     pub(crate) sink: MqttSink,
-    pub(crate) state: IoState<mqtt::Codec>,
+    pub(crate) state: State<mqtt::Codec>,
     pub(crate) keepalive: u16,
 }
 

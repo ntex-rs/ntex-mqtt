@@ -9,7 +9,7 @@ use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::boxed::BoxService;
 use ntex::service::{into_service, IntoService, Service};
 
-use crate::io::{IoDispatcher, IoState, Timer};
+use crate::io::{Dispatcher, State, Timer};
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{codec, sink::MqttSink, ControlResult};
 use crate::{error::MqttError, AHashMap};
@@ -20,7 +20,7 @@ use super::dispatcher::create_dispatcher;
 /// Mqtt client
 pub struct Client<Io> {
     io: Io,
-    state: IoState<codec::Codec>,
+    state: State<codec::Codec>,
     sink: MqttSink,
     keepalive: u16,
     disconnect_timeout: u16,
@@ -35,7 +35,7 @@ where
     /// Construct new `Dispatcher` instance with outgoing messages stream.
     pub(super) fn new(
         io: T,
-        state: IoState<codec::Codec>,
+        state: State<codec::Codec>,
         pkt: codec::ConnectAck,
         max_receive: u16,
         keepalive: u16,
@@ -129,7 +129,7 @@ where
             }),
         );
 
-        let _ = IoDispatcher::with(
+        let _ = Dispatcher::with(
             self.io,
             self.state,
             dispatcher,
@@ -159,7 +159,7 @@ where
             service.into_service(),
         );
 
-        IoDispatcher::with(self.io, self.state, dispatcher, Timer::with(Duration::from_secs(1)))
+        Dispatcher::with(self.io, self.state, dispatcher, Timer::with(Duration::from_secs(1)))
             .keepalive_timeout(0)
             .disconnect_timeout(self.disconnect_timeout)
             .await
@@ -174,7 +174,7 @@ pub struct ClientRouter<Io, Err, PErr> {
     handlers: Vec<Handler<PErr>>,
     io: Io,
     sink: MqttSink,
-    state: IoState<codec::Codec>,
+    state: State<codec::Codec>,
     keepalive: u16,
     disconnect_timeout: u16,
     max_receive: usize,
@@ -216,7 +216,7 @@ where
             }),
         );
 
-        let _ = IoDispatcher::with(
+        let _ = Dispatcher::with(
             self.io,
             self.state,
             dispatcher,
@@ -246,7 +246,7 @@ where
             service.into_service(),
         );
 
-        IoDispatcher::with(self.io, self.state, dispatcher, Timer::with(Duration::from_secs(1)))
+        Dispatcher::with(self.io, self.state, dispatcher, Timer::with(Duration::from_secs(1)))
             .keepalive_timeout(0)
             .disconnect_timeout(self.disconnect_timeout)
             .await

@@ -1,5 +1,5 @@
 use bytes::{buf::Buf, BytesMut};
-use ntex_codec::{Decoder, Encoder};
+use ntex::codec::{Decoder, Encoder};
 
 use super::{decode, encode, Packet, Publish};
 use crate::error::{DecodeError, EncodeError};
