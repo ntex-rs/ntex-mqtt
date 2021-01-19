@@ -362,6 +362,14 @@ impl PublishBuilder {
         self
     }
 
+    /// Set publish packet properties
+    pub fn set_properties<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut codec::PublishProperties),
+    {
+        f(&mut self.packet.properties);
+    }
+
     /// Send publish packet with QoS 0
     pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
         let packet = self.packet;
