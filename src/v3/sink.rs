@@ -82,7 +82,7 @@ impl MqttSink {
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
         let mut inner = self.0.borrow_mut();
-        if !self.1.is_opened() {
+        if !self.1.is_open() {
             Either::Left(ready(false))
         } else if inner.inflight.len() >= inner.cap {
             let (tx, rx) = inner.pool.waiters.channel();
@@ -95,7 +95,7 @@ impl MqttSink {
 
     /// Close mqtt connection
     pub fn close(&self) {
-        if self.1.is_opened() {
+        if self.1.is_open() {
             let _ = self.1.close();
         }
         let mut inner = self.0.borrow_mut();
@@ -106,7 +106,7 @@ impl MqttSink {
     /// Force close mqtt connection. mqtt dispatcher does not wait for uncompleted
     /// responses, but it flushes buffers.
     pub fn force_close(&self) {
-        if self.1.is_opened() {
+        if self.1.is_open() {
             let _ = self.1.shutdown();
         }
         let mut inner = self.0.borrow_mut();
@@ -303,11 +303,12 @@ impl PublishBuilder {
     pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
         let packet = self.packet;
 
-        if self.state.is_opened() {
+        if self.state.is_open() {
             log::trace!("Publish (QoS-0) to {:?}", packet.topic);
             self.state
                 .write_item(codec::Packet::Publish(packet))
                 .map_err(SendPacketError::Encode)
+                .map(|_| ())
         } else {
             log::error!("Mqtt sink is disconnected");
             Err(SendPacketError::Disconnected)
@@ -321,7 +322,7 @@ impl PublishBuilder {
         let mut packet = self.packet;
         let mut inner = self.sink.borrow_mut();
 
-        if state.is_opened() {
+        if state.is_open() {
             // handle client receive maximum
             if !inner.has_credit() {
                 let (tx, rx) = inner.pool.waiters.channel();
@@ -404,7 +405,7 @@ impl SubscribeBuilder {
         let filters = self.topic_filters;
 
         let mut inner = sink.borrow_mut();
-        if state.is_opened() {
+        if state.is_open() {
             // handle client receive maximum
             if !inner.has_credit() {
                 let (tx, rx) = inner.pool.waiters.channel();
@@ -489,7 +490,7 @@ impl UnsubscribeBuilder {
         let filters = self.topic_filters;
 
         let mut inner = sink.borrow_mut();
-        if state.is_opened() {
+        if state.is_open() {
             // handle client receive maximum
             if !inner.has_credit() {
                 let (tx, rx) = inner.pool.waiters.channel();
