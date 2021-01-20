@@ -30,3 +30,4 @@ pin-project-lite = "0.2.4"
 env_logger = "0.8"
 
 rustls = "0.19"
+ntex = { version = "0.2.0-b.3", features = ["rustls"] }
