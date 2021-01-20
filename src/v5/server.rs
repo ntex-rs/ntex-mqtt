@@ -1,14 +1,15 @@
-use std::{convert::TryFrom, fmt, marker::PhantomData, rc::Rc, time::Duration};
+use std::{cell::RefCell, convert::TryFrom, fmt, marker::PhantomData, rc::Rc, time::Duration};
 
 use futures::future::TryFutureExt;
 use ntex::codec::{AsyncRead, AsyncWrite};
+use ntex::framed::{FramedWriteTask, State};
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::service::{FactoryBuilder, FactoryBuilder2};
-use crate::{io::State, types::QoS};
+use crate::types::QoS;
 
 use super::codec as mqtt;
 use super::control::{ControlMessage, ControlResult};
@@ -286,7 +287,7 @@ fn handshake_service_factory<Io, St, C>(
     Error = MqttError<C::Error>,
 >
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>,
     C::Error: fmt::Debug,
 {
@@ -335,7 +336,7 @@ fn handshake_service_factory2<Io, St, C>(
     InitError = C::InitError,
 >
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>,
     C::Error: fmt::Debug,
 {
@@ -379,7 +380,7 @@ async fn handshake<Io, S, St, E>(
     pool: Rc<MqttSinkPool>,
 ) -> Result<(Io, State<mqtt::Codec>, Session<St>, u16), S::Error>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     S: Service<Request = Handshake<Io>, Response = HandshakeAck<Io, St>, Error = MqttError<E>>,
 {
     log::trace!("Starting mqtt v5 handshake");
@@ -467,7 +468,14 @@ where
                 None => {
                     log::trace!("Failed to complete handshake: {:#?}", ack.packet);
 
-                    ack.state.send(&mut ack.io, mqtt::Packet::ConnectAck(ack.packet)).await?;
+                    if ack.state.is_open()
+                        && ack.state.write_item(mqtt::Packet::ConnectAck(ack.packet)).is_ok()
+                    {
+                        ntex::rt::spawn(FramedWriteTask::shutdown(
+                            Rc::new(RefCell::new(ack.io)),
+                            ack.state.clone(),
+                        ));
+                    }
                     Err(MqttError::Disconnected)
                 }
             }

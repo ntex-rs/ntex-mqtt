@@ -1,5 +1,9 @@
 # Changes
 
+## [0.5.0-b.3] - 2021-01-21
+
+* v5: Flush io stream before disconnect
+
 ## [0.5.0-b.2] - 2021-01-20
 
 * v5: Restore `set_properties` sink method
