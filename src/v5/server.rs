@@ -471,10 +471,11 @@ where
                     if ack.state.is_open()
                         && ack.state.write_item(mqtt::Packet::ConnectAck(ack.packet)).is_ok()
                     {
-                        ntex::rt::spawn(FramedWriteTask::shutdown(
+                        FramedWriteTask::shutdown(
                             Rc::new(RefCell::new(ack.io)),
                             ack.state.clone(),
-                        ));
+                        )
+                        .await;
                     }
                     Err(MqttError::Disconnected)
                 }

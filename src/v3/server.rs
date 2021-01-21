@@ -374,43 +374,25 @@ where
 
             match ack.session {
                 Some(session) => {
-                    log::trace!(
-                        "Sending: {:#?}",
-                        mqtt::Packet::ConnectAck {
-                            session_present: ack.session_present,
-                            return_code: mqtt::ConnectAckReason::ConnectionAccepted,
-                        }
-                    );
-                    ack.state
-                        .send(
-                            &mut ack.io,
-                            mqtt::Packet::ConnectAck {
-                                session_present: ack.session_present,
-                                return_code: mqtt::ConnectAckReason::ConnectionAccepted,
-                            },
-                        )
-                        .await?;
+                    let pkt = mqtt::Packet::ConnectAck {
+                        session_present: ack.session_present,
+                        return_code: mqtt::ConnectAckReason::ConnectionAccepted,
+                    };
+
+                    log::trace!("Sending success handshake ack: {:#?}", pkt);
+                    ack.state.send(&mut ack.io, pkt).await?;
 
                     Ok((ack.io, ack.state, Session::new(session, ack.sink), ack.keepalive))
                 }
                 None => {
-                    log::trace!(
-                        "Sending: {:#?}",
-                        mqtt::Packet::ConnectAck {
-                            session_present: false,
-                            return_code: ack.return_code,
-                        }
-                    );
+                    let pkt = mqtt::Packet::ConnectAck {
+                        session_present: false,
+                        return_code: ack.return_code,
+                    };
 
-                    ack.state
-                        .send(
-                            &mut ack.io,
-                            mqtt::Packet::ConnectAck {
-                                session_present: false,
-                                return_code: ack.return_code,
-                            },
-                        )
-                        .await?;
+                    log::trace!("Sending failed handshake ack: {:#?}", pkt);
+                    ack.state.send(&mut ack.io, pkt).await?;
+
                     Err(MqttError::Disconnected)
                 }
             }
