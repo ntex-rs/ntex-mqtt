@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use bytes::{buf::Buf, BytesMut};
 use ntex::codec::{Decoder, Encoder};
 
@@ -9,8 +11,8 @@ use crate::utils::decode_variable_length;
 #[derive(Debug)]
 /// Mqtt v3.1.1 protocol codec
 pub struct Codec {
-    state: DecodeState,
-    max_size: u32,
+    state: Cell<DecodeState>,
+    max_size: Cell<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -22,15 +24,15 @@ enum DecodeState {
 impl Codec {
     /// Create `Codec` instance
     pub fn new() -> Self {
-        Codec { state: DecodeState::FrameHeader, max_size: 0 }
+        Codec { state: Cell::new(DecodeState::FrameHeader), max_size: Cell::new(0) }
     }
 
     /// Set max inbound frame size.
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_size(mut self, size: u32) -> Self {
-        self.max_size = size;
+    pub fn max_size(self, size: u32) -> Self {
+        self.max_size.set(size);
         self
     }
 
@@ -38,8 +40,8 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn set_max_size(&mut self, size: u32) {
-        self.max_size = size;
+    pub fn set_max_size(&self, size: u32) {
+        self.max_size.set(size);
     }
 }
 
@@ -53,9 +55,9 @@ impl Decoder for Codec {
     type Item = Packet;
     type Error = DecodeError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
+    fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
         loop {
-            match self.state {
+            match self.state.get() {
                 DecodeState::FrameHeader => {
                     if src.len() < 2 {
                         return Ok(None);
@@ -65,14 +67,15 @@ impl Decoder for Codec {
                     match decode_variable_length(&src_slice[1..])? {
                         Some((remaining_length, consumed)) => {
                             // check max message size
-                            if self.max_size != 0 && self.max_size < remaining_length {
+                            let max_size = self.max_size.get();
+                            if max_size != 0 && max_size < remaining_length {
                                 return Err(DecodeError::MaxSizeExceeded);
                             }
                             src.advance(consumed + 1);
-                            self.state = DecodeState::Frame(FixedHeader {
+                            self.state.set(DecodeState::Frame(FixedHeader {
                                 first_byte,
                                 remaining_length,
-                            });
+                            }));
                             // todo: validate remaining_length against max frame size config
                             let remaining_length = remaining_length as usize;
                             if src.len() < remaining_length {
@@ -92,7 +95,7 @@ impl Decoder for Codec {
                     }
                     let packet_buf = src.split_to(fixed.remaining_length as usize);
                     let packet = decode::decode_packet(packet_buf.freeze(), fixed.first_byte)?;
-                    self.state = DecodeState::FrameHeader;
+                    self.state.set(DecodeState::FrameHeader);
                     src.reserve(2);
                     return Ok(Some(packet));
                 }
@@ -105,7 +108,7 @@ impl Encoder for Codec {
     type Item = Packet;
     type Error = EncodeError;
 
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
         if let Packet::Publish(Publish { qos, packet_id, .. }) = item {
             if (qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce) && packet_id.is_none() {
                 return Err(EncodeError::PacketIdRequired);
@@ -126,7 +129,7 @@ mod tests {
 
     #[test]
     fn test_max_size() {
-        let mut codec = Codec::new().max_size(5);
+        let codec = Codec::new().max_size(5);
 
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
@@ -135,8 +138,7 @@ mod tests {
 
     #[test]
     fn test_packet() {
-        let mut codec = Codec::new();
-
+        let codec = Codec::new();
         let mut buf = BytesMut::new();
 
         let pkt = Publish {

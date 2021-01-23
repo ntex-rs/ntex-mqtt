@@ -1,5 +1,5 @@
 use std::time::{Duration, Instant};
-use std::{cell::RefCell, convert::TryFrom, marker::PhantomData, num::NonZeroU16};
+use std::{cell::RefCell, convert::TryFrom, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
 use bytestring::ByteString;
 use futures::future::{ok, Either, Future};
@@ -9,9 +9,9 @@ use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::boxed::BoxService;
 use ntex::service::{into_service, IntoService, Service};
 
-use crate::io::{Dispatcher, State, Timer};
+use crate::io::{Dispatcher, Timer};
 use crate::v5::publish::{Publish, PublishAck};
-use crate::v5::{codec, sink::MqttSink, ControlResult};
+use crate::v5::{codec, shared::MqttShared, sink::MqttSink, ControlResult};
 use crate::{error::MqttError, AHashMap};
 
 use super::control::ControlMessage;
@@ -20,8 +20,7 @@ use super::dispatcher::create_dispatcher;
 /// Mqtt client
 pub struct Client<Io> {
     io: Io,
-    state: State<codec::Codec>,
-    sink: MqttSink,
+    shared: Rc<MqttShared>,
     keepalive: u16,
     disconnect_timeout: u16,
     max_receive: usize,
@@ -35,21 +34,16 @@ where
     /// Construct new `Dispatcher` instance with outgoing messages stream.
     pub(super) fn new(
         io: T,
-        state: State<codec::Codec>,
+        shared: Rc<MqttShared>,
         pkt: codec::ConnectAck,
         max_receive: u16,
         keepalive: u16,
         disconnect_timeout: u16,
     ) -> Self {
-        let server_max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
-        let sink =
-            MqttSink::new(state.clone(), server_max_receive as usize, Default::default());
-
         Client {
             io,
             pkt,
-            state,
-            sink,
+            shared,
             keepalive,
             disconnect_timeout,
             max_receive: max_receive as usize,
@@ -64,7 +58,7 @@ where
     #[inline]
     /// Get client sink
     pub fn sink(&self) -> MqttSink {
-        self.sink.clone()
+        MqttSink::new(self.shared.clone())
     }
 
     #[inline]
@@ -102,8 +96,7 @@ where
             builder,
             handlers,
             io: self.io,
-            sink: self.sink,
-            state: self.state,
+            shared: self.shared,
             keepalive: self.keepalive,
             disconnect_timeout: self.disconnect_timeout,
             max_receive: self.max_receive,
@@ -116,11 +109,11 @@ where
     /// Default handler closes connection on any control message.
     pub async fn start_default(self) {
         if self.keepalive > 0 {
-            ntex::rt::spawn(keepalive(self.sink.clone(), self.keepalive));
+            ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
-            self.sink,
+            MqttSink::new(self.shared.clone()),
             self.max_receive,
             16,
             into_service(|pkt| ok(either::Left(pkt))),
@@ -131,7 +124,8 @@ where
 
         let _ = Dispatcher::with(
             self.io,
-            self.state,
+            self.shared.state.clone(),
+            self.shared,
             dispatcher,
             Timer::with(Duration::from_secs(1)),
         )
@@ -148,21 +142,27 @@ where
         S: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
     {
         if self.keepalive > 0 {
-            ntex::rt::spawn(keepalive(self.sink.clone(), self.keepalive));
+            ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
-            self.sink,
+            MqttSink::new(self.shared.clone()),
             self.max_receive,
             16,
             into_service(|pkt| ok(either::Left(pkt))),
             service.into_service(),
         );
 
-        Dispatcher::with(self.io, self.state, dispatcher, Timer::with(Duration::from_secs(1)))
-            .keepalive_timeout(0)
-            .disconnect_timeout(self.disconnect_timeout)
-            .await
+        Dispatcher::with(
+            self.io,
+            self.shared.state.clone(),
+            self.shared,
+            dispatcher,
+            Timer::with(Duration::from_secs(1)),
+        )
+        .keepalive_timeout(0)
+        .disconnect_timeout(self.disconnect_timeout)
+        .await
     }
 }
 
@@ -173,8 +173,7 @@ pub struct ClientRouter<Io, Err, PErr> {
     builder: RouterBuilder<usize>,
     handlers: Vec<Handler<PErr>>,
     io: Io,
-    sink: MqttSink,
-    state: State<codec::Codec>,
+    shared: Rc<MqttShared>,
     keepalive: u16,
     disconnect_timeout: u16,
     max_receive: usize,
@@ -203,11 +202,11 @@ where
     /// Run client with default control messages handler
     pub async fn start_default(self) {
         if self.keepalive > 0 {
-            ntex::rt::spawn(keepalive(self.sink.clone(), self.keepalive));
+            ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
-            self.sink,
+            MqttSink::new(self.shared.clone()),
             self.max_receive,
             16,
             dispatch(self.builder.finish(), self.handlers),
@@ -218,7 +217,8 @@ where
 
         let _ = Dispatcher::with(
             self.io,
-            self.state,
+            self.shared.state.clone(),
+            self.shared,
             dispatcher,
             Timer::with(Duration::from_secs(1)),
         )
@@ -235,21 +235,27 @@ where
             + 'static,
     {
         if self.keepalive > 0 {
-            ntex::rt::spawn(keepalive(self.sink.clone(), self.keepalive));
+            ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
-            self.sink,
+            MqttSink::new(self.shared.clone()),
             self.max_receive,
             16,
             dispatch(self.builder.finish(), self.handlers),
             service.into_service(),
         );
 
-        Dispatcher::with(self.io, self.state, dispatcher, Timer::with(Duration::from_secs(1)))
-            .keepalive_timeout(0)
-            .disconnect_timeout(self.disconnect_timeout)
-            .await
+        Dispatcher::with(
+            self.io,
+            self.shared.state.clone(),
+            self.shared,
+            dispatcher,
+            Timer::with(Duration::from_secs(1)),
+        )
+        .keepalive_timeout(0)
+        .disconnect_timeout(self.disconnect_timeout)
+        .await
     }
 }
 

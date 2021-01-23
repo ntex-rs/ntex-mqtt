@@ -2,7 +2,7 @@ use std::task::{Context, Poll};
 use std::{convert::TryFrom, fmt, io, marker::PhantomData, pin::Pin, rc::Rc, time};
 
 use futures::future::{err, join, ok, Future, FutureExt, LocalBoxFuture, Ready};
-use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
+use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::rt::time::{delay_for, Delay};
 use ntex::service::{Service, ServiceFactory};
 
@@ -22,8 +22,8 @@ pub struct MqttServer<Io, V3, V5, Err, InitErr> {
 impl<Io, Err, InitErr>
     MqttServer<
         Io,
-        DefaultProtocolServer<Io, Err, InitErr, v3::codec::Codec>,
-        DefaultProtocolServer<Io, Err, InitErr, v5::codec::Codec>,
+        DefaultProtocolServer<Io, Err, InitErr>,
+        DefaultProtocolServer<Io, Err, InitErr>,
         Err,
         InitErr,
     >
@@ -42,8 +42,8 @@ impl<Io, Err, InitErr>
 impl<Io, Err, InitErr> Default
     for MqttServer<
         Io,
-        DefaultProtocolServer<Io, Err, InitErr, v3::codec::Codec>,
-        DefaultProtocolServer<Io, Err, InitErr, v5::codec::Codec>,
+        DefaultProtocolServer<Io, Err, InitErr>,
+        DefaultProtocolServer<Io, Err, InitErr>,
         Err,
         InitErr,
     >
@@ -69,14 +69,14 @@ where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     V3: ServiceFactory<
         Config = (),
-        Request = (Io, State<v3::codec::Codec>, Option<Delay>),
+        Request = (Io, State, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
         Config = (),
-        Request = (Io, State<v5::codec::Codec>, Option<Delay>),
+        Request = (Io, State, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -90,7 +90,7 @@ where
         Io,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, State<v3::codec::Codec>, Option<Delay>),
+            Request = (Io, State, Option<Delay>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -138,7 +138,7 @@ where
         V3,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, State<v5::codec::Codec>, Option<Delay>),
+            Request = (Io, State, Option<Delay>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -187,14 +187,14 @@ where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     V3: ServiceFactory<
         Config = (),
-        Request = (Io, State<v3::codec::Codec>, Option<Delay>),
+        Request = (Io, State, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
         Config = (),
-        Request = (Io, State<v5::codec::Codec>, Option<Delay>),
+        Request = (Io, State, Option<Delay>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -240,16 +240,8 @@ pub struct MqttServerImpl<Io, V3, V5, Err> {
 impl<Io, V3, V5, Err> Service for MqttServerImpl<Io, V3, V5, Err>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    V3: Service<
-        Request = (Io, State<v3::codec::Codec>, Option<Delay>),
-        Response = (),
-        Error = MqttError<Err>,
-    >,
-    V5: Service<
-        Request = (Io, State<v5::codec::Codec>, Option<Delay>),
-        Response = (),
-        Error = MqttError<Err>,
-    >,
+    V3: Service<Request = (Io, State, Option<Delay>), Response = (), Error = MqttError<Err>>,
+    V5: Service<Request = (Io, State, Option<Delay>), Response = (), Error = MqttError<Err>>,
 {
     type Request = Io;
     type Response = ();
@@ -287,7 +279,7 @@ where
 
         MqttServerImplResponse {
             state: MqttServerImplState::Version {
-                item: Some((req, State::new(VersionCodec), self.handlers.clone(), delay)),
+                item: Some((req, State::new(), VersionCodec, self.handlers.clone(), delay)),
             },
         }
     }
@@ -297,12 +289,12 @@ pin_project_lite::pin_project! {
     pub struct MqttServerImplResponse<Io, V3, V5, Err>
     where
         V3: Service<
-            Request = (Io, State<v3::codec::Codec>, Option<Delay>),
+            Request = (Io, State, Option<Delay>),
             Response = (),
             Error = MqttError<Err>,
         >,
         V5: Service<
-            Request = (Io, State<v5::codec::Codec>, Option<Delay>),
+            Request = (Io, State, Option<Delay>),
             Response = (),
             Error = MqttError<Err>,
         >,
@@ -317,23 +309,15 @@ pin_project_lite::pin_project! {
     pub(crate) enum MqttServerImplState<Io, V3: Service, V5: Service> {
         V3 { #[pin] fut: V3::Future },
         V5 { #[pin] fut: V5::Future },
-        Version { item: Option<(Io, State<VersionCodec>, Rc<(V3, V5)>, Option<Delay>)> },
+        Version { item: Option<(Io, State, VersionCodec, Rc<(V3, V5)>, Option<Delay>)> },
     }
 }
 
 impl<Io, V3, V5, Err> Future for MqttServerImplResponse<Io, V3, V5, Err>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    V3: Service<
-        Request = (Io, State<v3::codec::Codec>, Option<Delay>),
-        Response = (),
-        Error = MqttError<Err>,
-    >,
-    V5: Service<
-        Request = (Io, State<v5::codec::Codec>, Option<Delay>),
-        Response = (),
-        Error = MqttError<Err>,
-    >,
+    V3: Service<Request = (Io, State, Option<Delay>), Response = (), Error = MqttError<Err>>,
+    V5: Service<Request = (Io, State, Option<Delay>), Response = (), Error = MqttError<Err>>,
 {
     type Output = Result<(), MqttError<Err>>;
 
@@ -345,7 +329,7 @@ where
                 MqttServerImplStateProject::V3 { fut } => return fut.poll(cx),
                 MqttServerImplStateProject::V5 { fut } => return fut.poll(cx),
                 MqttServerImplStateProject::Version { ref mut item } => {
-                    if let Some(ref mut delay) = item.as_mut().unwrap().3 {
+                    if let Some(ref mut delay) = item.as_mut().unwrap().4 {
                         match Pin::new(delay).poll(cx) {
                             Poll::Pending => (),
                             Poll::Ready(_) => {
@@ -356,19 +340,17 @@ where
 
                     let st = item.as_mut().unwrap();
 
-                    match futures::ready!(st.1.poll_next(&mut st.0, cx)) {
+                    match futures::ready!(st.1.poll_next(&mut st.0, &st.2, cx)) {
                         Ok(Some(ver)) => {
-                            let (io, state, handlers, delay) = item.take().unwrap();
+                            let (io, state, _, handlers, delay) = item.take().unwrap();
                             this = self.as_mut().project();
                             match ver {
                                 ProtocolVersion::MQTT3 => {
-                                    let state = state.map_codec(|_| v3::codec::Codec::new());
                                     this.state.set(MqttServerImplState::V3 {
                                         fut: handlers.0.call((io, state, delay)),
                                     })
                                 }
                                 ProtocolVersion::MQTT5 => {
-                                    let state = state.map_codec(|_| v5::codec::Codec::new());
                                     this.state.set(MqttServerImplState::V5 {
                                         fut: handlers.1.call((io, state, delay)),
                                     })
@@ -385,26 +367,23 @@ where
     }
 }
 
-pub struct DefaultProtocolServer<Io, Err, InitErr, Codec> {
+pub struct DefaultProtocolServer<Io, Err, InitErr> {
     ver: ProtocolVersion,
-    _t: PhantomData<(Io, Err, InitErr, Codec)>,
+    _t: PhantomData<(Io, Err, InitErr)>,
 }
 
-impl<Io, Err, InitErr, Codec> DefaultProtocolServer<Io, Err, InitErr, Codec> {
+impl<Io, Err, InitErr> DefaultProtocolServer<Io, Err, InitErr> {
     fn new(ver: ProtocolVersion) -> Self {
         Self { ver, _t: PhantomData }
     }
 }
 
-impl<Io, Err, InitErr, Codec> ServiceFactory for DefaultProtocolServer<Io, Err, InitErr, Codec>
-where
-    Codec: Encoder + Decoder,
-{
+impl<Io, Err, InitErr> ServiceFactory for DefaultProtocolServer<Io, Err, InitErr> {
     type Config = ();
-    type Request = (Io, State<Codec>, Option<Delay>);
+    type Request = (Io, State, Option<Delay>);
     type Response = ();
     type Error = MqttError<Err>;
-    type Service = DefaultProtocolServer<Io, Err, InitErr, Codec>;
+    type Service = DefaultProtocolServer<Io, Err, InitErr>;
     type InitError = InitErr;
     type Future = Ready<Result<Self::Service, Self::InitError>>;
 
@@ -413,11 +392,8 @@ where
     }
 }
 
-impl<Io, Err, InitErr, Codec> Service for DefaultProtocolServer<Io, Err, InitErr, Codec>
-where
-    Codec: Encoder + Decoder,
-{
-    type Request = (Io, State<Codec>, Option<Delay>);
+impl<Io, Err, InitErr> Service for DefaultProtocolServer<Io, Err, InitErr> {
+    type Request = (Io, State, Option<Delay>);
     type Response = ();
     type Error = MqttError<Err>;
     type Future = Ready<Result<Self::Response, Self::Error>>;

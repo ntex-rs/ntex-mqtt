@@ -1,26 +1,19 @@
-use std::fmt;
-
-use crate::io::State;
+use std::{fmt, rc::Rc};
 
 use super::codec as mqtt;
+use super::shared::MqttShared;
 use super::sink::MqttSink;
 
 /// Connect message
 pub struct Handshake<Io> {
     io: Io,
     pkt: mqtt::Connect,
-    sink: MqttSink,
-    state: State<mqtt::Codec>,
+    shared: Rc<MqttShared>,
 }
 
 impl<Io> Handshake<Io> {
-    pub(crate) fn new(
-        pkt: mqtt::Connect,
-        io: Io,
-        sink: MqttSink,
-        state: State<mqtt::Codec>,
-    ) -> Self {
-        Self { pkt, io, sink, state }
+    pub(crate) fn new(pkt: mqtt::Connect, io: Io, shared: Rc<MqttShared>) -> Self {
+        Self { pkt, io, shared }
     }
 
     pub fn packet(&self) -> &mqtt::Connect {
@@ -37,8 +30,8 @@ impl<Io> Handshake<Io> {
     }
 
     /// Returns mqtt server sink
-    pub fn sink(&self) -> &MqttSink {
-        &self.sink
+    pub fn sink(&self) -> MqttSink {
+        MqttSink::new(self.shared.clone())
     }
 
     /// Ack handshake message and set state
@@ -46,8 +39,7 @@ impl<Io> Handshake<Io> {
         HandshakeAck {
             session_present,
             io: self.io,
-            sink: self.sink,
-            state: self.state,
+            shared: self.shared,
             session: Some(st),
             keepalive: 30,
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
@@ -58,8 +50,7 @@ impl<Io> Handshake<Io> {
     pub fn identifier_rejected<St>(self) -> HandshakeAck<Io, St> {
         HandshakeAck {
             io: self.io,
-            sink: self.sink,
-            state: self.state,
+            shared: self.shared,
             session: None,
             session_present: false,
             keepalive: 30,
@@ -71,8 +62,7 @@ impl<Io> Handshake<Io> {
     pub fn bad_username_or_pwd<St>(self) -> HandshakeAck<Io, St> {
         HandshakeAck {
             io: self.io,
-            sink: self.sink,
-            state: self.state,
+            shared: self.shared,
             session: None,
             session_present: false,
             keepalive: 30,
@@ -84,8 +74,7 @@ impl<Io> Handshake<Io> {
     pub fn not_authorized<St>(self) -> HandshakeAck<Io, St> {
         HandshakeAck {
             io: self.io,
-            sink: self.sink,
-            state: self.state,
+            shared: self.shared,
             session: None,
             session_present: false,
             keepalive: 30,
@@ -97,8 +86,7 @@ impl<Io> Handshake<Io> {
     pub fn service_unavailable<St>(self) -> HandshakeAck<Io, St> {
         HandshakeAck {
             io: self.io,
-            sink: self.sink,
-            state: self.state,
+            shared: self.shared,
             session: None,
             session_present: false,
             keepalive: 30,
@@ -119,8 +107,7 @@ pub struct HandshakeAck<Io, St> {
     pub(crate) session: Option<St>,
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectAckReason,
-    pub(crate) sink: MqttSink,
-    pub(crate) state: State<mqtt::Codec>,
+    pub(crate) shared: Rc<MqttShared>,
     pub(crate) keepalive: u16,
 }
 

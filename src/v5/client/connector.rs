@@ -1,10 +1,8 @@
-use std::num::{NonZeroU16, NonZeroU32};
-use std::time::Duration;
+use std::{num::NonZeroU16, num::NonZeroU32, rc::Rc, time::Duration};
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::Either;
-use futures::{Future, FutureExt};
+use futures::{future::Either, Future, FutureExt};
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::connect::{self, Address, Connect, Connector};
 use ntex::rt::time::delay_for;
@@ -17,6 +15,7 @@ use ntex::connect::openssl::{OpensslConnector, SslConnector};
 use ntex::connect::rustls::{ClientConfig, RustlsConnector};
 
 use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
+use crate::v5::shared::{MqttShared, MqttSinkPool};
 use crate::{io::State, utils::Select};
 
 /// Mqtt client connector
@@ -26,6 +25,7 @@ pub struct MqttConnector<A, T> {
     pkt: codec::Connect,
     handshake_timeout: u16,
     disconnect_timeout: u16,
+    pool: Rc<MqttSinkPool>,
 }
 
 impl<A> MqttConnector<A, ()>
@@ -41,6 +41,7 @@ where
             connector: Connector::default(),
             handshake_timeout: 0,
             disconnect_timeout: 3000,
+            pool: Rc::new(MqttSinkPool::default()),
         }
     }
 }
@@ -189,6 +190,7 @@ where
             address: self.address,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
+            pool: self.pool,
         }
     }
 
@@ -201,6 +203,7 @@ where
             connector: OpensslConnector::new(connector),
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
+            pool: self.pool,
         }
     }
 
@@ -215,6 +218,7 @@ where
             connector: RustlsConnector::new(Arc::new(config)),
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
+            pool: self.pool,
         }
     }
 
@@ -243,15 +247,17 @@ where
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
         let disconnect_timeout = self.disconnect_timeout;
+        let pool = self.pool.clone();
 
         async move {
             let mut io = fut.await?;
-            let state = State::new(codec::Codec::new().max_inbound_size(max_packet_size));
+            let state = State::new();
+            let codec = codec::Codec::new().max_inbound_size(max_packet_size);
 
-            state.send(&mut io, codec::Packet::Connect(pkt)).await?;
+            state.send(&mut io, &codec, codec::Packet::Connect(pkt)).await?;
 
             let packet = state
-                .next(&mut io)
+                .next(&mut io, &codec)
                 .await
                 .map_err(|e| ClientError::from(ProtocolError::from(e)))
                 .and_then(|res| {
@@ -260,6 +266,7 @@ where
                         ClientError::Disconnected
                     })
                 })?;
+            let shared = Rc::new(MqttShared::new(state.clone(), codec, 0, pool));
 
             match packet {
                 codec::Packet::ConnectAck(pkt) => {
@@ -267,14 +274,16 @@ where
                     if pkt.reason_code == codec::ConnectAckReason::Success {
                         // set max outbound (encoder) packet size
                         if let Some(size) = pkt.max_packet_size {
-                            state.with_codec(|codec| codec.set_max_outbound_size(size));
+                            shared.codec.set_max_outbound_size(size);
                         }
                         // server keep-alive
                         let keep_alive = pkt.server_keepalive_sec.unwrap_or(keep_alive);
 
+                        shared.cap.set(pkt.receive_max.map(|v| v.get()).unwrap_or(0) as usize);
+
                         Ok(Client::new(
                             io,
-                            state,
+                            shared,
                             pkt,
                             max_receive,
                             keep_alive,

@@ -8,11 +8,12 @@ use futures::future::{join, ok, Either, FutureExt, Ready};
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::io::DispatcherItem;
+use crate::io::DispatchItem;
 
 use super::control::{self, ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
-use super::sink::{Ack, MqttSink};
+use super::shared::{Ack, MqttShared};
+use super::sink::MqttSink;
 use super::{codec, Session};
 
 /// mqtt3 protocol dispatcher
@@ -21,7 +22,7 @@ pub(super) fn factory<St, T, C, E>(
     control: C,
 ) -> impl ServiceFactory<
     Config = Session<St>,
-    Request = DispatcherItem<codec::Codec>,
+    Request = DispatchItem<Rc<MqttShared>>,
     Response = Option<codec::Packet>,
     Error = MqttError<E>,
     InitError = MqttError<E>,
@@ -126,7 +127,7 @@ where
     C::Future: 'static,
     E: From<E2> + 'static,
 {
-    type Request = DispatcherItem<codec::Codec>;
+    type Request = DispatchItem<Rc<MqttShared>>;
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
     type Future = Either<
@@ -160,7 +161,7 @@ where
         log::trace!("Dispatch packet: {:#?}", request);
 
         match request {
-            DispatcherItem::Item(codec::Packet::Publish(publish)) => {
+            DispatchItem::Item(codec::Packet::Publish(publish)) => {
                 let info = self.inner.clone();
                 let packet_id = publish.packet_id;
 
@@ -229,7 +230,7 @@ where
                     _t: PhantomData,
                 })
             }
-            DispatcherItem::Item(codec::Packet::PublishAck(packet)) => {
+            DispatchItem::Item(codec::Packet::PublishAck(packet)) => {
                 if let Err(err) = self.sink.pkt_ack(Ack::Publish(packet)) {
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(err),
@@ -239,16 +240,16 @@ where
                     Either::Right(Either::Left(ok(None)))
                 }
             }
-            DispatcherItem::Item(codec::Packet::Auth(pkt)) => Either::Right(Either::Right(
+            DispatchItem::Item(codec::Packet::Auth(pkt)) => Either::Right(Either::Right(
                 ControlResponse::new(ControlMessage::auth(pkt), &self.inner),
             )),
-            DispatcherItem::Item(codec::Packet::PingRequest) => Either::Right(Either::Right(
+            DispatchItem::Item(codec::Packet::PingRequest) => Either::Right(Either::Right(
                 ControlResponse::new(ControlMessage::ping(), &self.inner),
             )),
-            DispatcherItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(
-                Either::Right(ControlResponse::new(ControlMessage::dis(pkt), &self.inner)),
-            ),
-            DispatcherItem::Item(codec::Packet::Subscribe(pkt)) => {
+            DispatchItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(Either::Right(
+                ControlResponse::new(ControlMessage::dis(pkt), &self.inner),
+            )),
+            DispatchItem::Item(codec::Packet::Subscribe(pkt)) => {
                 // register inflight packet id
                 if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id
@@ -270,7 +271,7 @@ where
                         .packet_id(id),
                 ))
             }
-            DispatcherItem::Item(codec::Packet::Unsubscribe(pkt)) => {
+            DispatchItem::Item(codec::Packet::Unsubscribe(pkt)) => {
                 // register inflight packet id
                 if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id
@@ -292,26 +293,26 @@ where
                         .packet_id(id),
                 ))
             }
-            DispatcherItem::Item(_) => Either::Right(Either::Left(ok(None))),
-            DispatcherItem::EncoderError(err) => {
+            DispatchItem::Item(_) => Either::Right(Either::Left(ok(None))),
+            DispatchItem::EncoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Encode(err)),
                     &self.inner,
                 )))
             }
-            DispatcherItem::KeepAliveTimeout => {
+            DispatchItem::KeepAliveTimeout => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
                 )))
             }
-            DispatcherItem::DecoderError(err) => {
+            DispatchItem::DecoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Decode(err)),
                     &self.inner,
                 )))
             }
-            DispatcherItem::IoError(err) => Either::Right(Either::Right(ControlResponse::new(
+            DispatchItem::IoError(err) => Either::Right(Either::Right(ControlResponse::new(
                 ControlMessage::proto_error(ProtocolError::Io(err)),
                 &self.inner,
             ))),

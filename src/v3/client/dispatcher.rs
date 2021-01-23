@@ -6,9 +6,8 @@ use futures::future::{err, ok, Either, FutureExt, Ready};
 use ntex::service::Service;
 use ntex::util::inflight::InFlightService;
 
-use crate::v3::{
-    codec, control::ControlResultKind, publish::Publish, sink::Ack, sink::MqttSink,
-};
+use crate::v3::shared::Ack;
+use crate::v3::{codec, control::ControlResultKind, publish::Publish, sink::MqttSink};
 use crate::{error::MqttError, error::ProtocolError, types::packet_type, AHashSet};
 
 use super::control::{ControlMessage, ControlResult};

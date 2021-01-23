@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{rc::Rc, time::Duration};
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -15,6 +15,7 @@ use ntex::connect::openssl::{OpensslConnector, SslConnector};
 use ntex::connect::rustls::{ClientConfig, RustlsConnector};
 
 use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
+use crate::v3::shared::{MqttShared, MqttSinkPool};
 use crate::{io::State, utils::Select};
 
 /// Mqtt client connector
@@ -27,6 +28,7 @@ pub struct MqttConnector<A, T> {
     max_packet_size: u32,
     handshake_timeout: u16,
     disconnect_timeout: u16,
+    pool: Rc<MqttSinkPool>,
 }
 
 impl<A> MqttConnector<A, ()>
@@ -45,6 +47,7 @@ where
             max_packet_size: 64 * 1024,
             handshake_timeout: 0,
             disconnect_timeout: 3000,
+            pool: Rc::new(MqttSinkPool::default()),
         }
     }
 }
@@ -183,6 +186,7 @@ where
             max_packet_size: self.max_packet_size,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
+            pool: self.pool,
         }
     }
 
@@ -198,6 +202,7 @@ where
             connector: OpensslConnector::new(connector),
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
+            pool: self.pool,
         }
     }
 
@@ -215,6 +220,7 @@ where
             connector: RustlsConnector::new(Arc::new(config)),
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
+            pool: self.pool,
         }
     }
 
@@ -244,15 +250,17 @@ where
         let max_packet_size = self.max_packet_size;
         let keepalive_timeout = pkt.keep_alive;
         let disconnect_timeout = self.disconnect_timeout;
+        let pool = self.pool.clone();
 
         async move {
             let mut io = fut.await?;
-            let state = State::new(codec::Codec::new().max_size(max_packet_size));
+            let state = State::new();
+            let codec = codec::Codec::new().max_size(max_packet_size);
 
-            state.send(&mut io, codec::Packet::Connect(pkt)).await?;
+            state.send(&mut io, &codec, codec::Packet::Connect(pkt)).await?;
 
             let packet = state
-                .next(&mut io)
+                .next(&mut io, &codec)
                 .await
                 .map_err(|e| ClientError::from(ProtocolError::from(e)))
                 .and_then(|res| {
@@ -261,6 +269,7 @@ where
                         ClientError::Disconnected
                     })
                 })?;
+            let shared = Rc::new(MqttShared::new(state.clone(), codec, max_send, pool));
 
             match packet {
                 codec::Packet::ConnectAck { session_present, return_code } => {
@@ -268,11 +277,10 @@ where
                     if return_code == codec::ConnectAckReason::ConnectionAccepted {
                         Ok(Client::new(
                             io,
-                            state,
+                            shared,
                             session_present,
                             keepalive_timeout,
                             disconnect_timeout,
-                            max_send,
                             max_receive,
                         ))
                     } else {

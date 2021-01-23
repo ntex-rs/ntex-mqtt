@@ -2,7 +2,7 @@ use std::{cell::RefCell, convert::TryFrom, fmt, marker::PhantomData, rc::Rc, tim
 
 use futures::future::TryFutureExt;
 use ntex::codec::{AsyncRead, AsyncWrite};
-use ntex::framed::{FramedWriteTask, State};
+use ntex::framed::{State, WriteTask};
 use ntex::rt::time::Delay;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
@@ -17,7 +17,8 @@ use super::default::{DefaultControlService, DefaultPublishService};
 use super::dispatcher::factory;
 use super::handshake::{Handshake, HandshakeAck};
 use super::publish::{Publish, PublishAck};
-use super::sink::{MqttSink, MqttSinkPool};
+use super::shared::{MqttShared, MqttSinkPool};
+use super::sink::MqttSink;
 use super::Session;
 
 /// Mqtt Server
@@ -244,7 +245,7 @@ where
         self,
     ) -> impl ServiceFactory<
         Config = (),
-        Request = (Io, State<mqtt::Codec>, Option<Delay>),
+        Request = (Io, State, Option<Delay>),
         Response = (),
         Error = MqttError<C::Error>,
         InitError = C::InitError,
@@ -283,7 +284,7 @@ fn handshake_service_factory<Io, St, C>(
 ) -> impl ServiceFactory<
     Config = (),
     Request = Io,
-    Response = (Io, State<mqtt::Codec>, Session<St>, u16),
+    Response = (Io, State, Rc<MqttShared>, Session<St>, u16),
     Error = MqttError<C::Error>,
 >
 where
@@ -330,8 +331,8 @@ fn handshake_service_factory2<Io, St, C>(
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
     Config = (),
-    Request = (Io, State<mqtt::Codec>),
-    Response = (Io, State<mqtt::Codec>, Session<St>, u16),
+    Request = (Io, State),
+    Response = (Io, State, Rc<MqttShared>, Session<St>, u16),
     Error = MqttError<C::Error>,
     InitError = C::InitError,
 >
@@ -371,27 +372,29 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn handshake<Io, S, St, E>(
     mut io: Io,
-    state: Option<State<mqtt::Codec>>,
+    state: Option<State>,
     service: S,
     max_size: u32,
     mut max_receive: u16,
     mut max_topic_alias: u16,
     max_qos: Option<QoS>,
     pool: Rc<MqttSinkPool>,
-) -> Result<(Io, State<mqtt::Codec>, Session<St>, u16), S::Error>
+) -> Result<(Io, State, Rc<MqttShared>, Session<St>, u16), S::Error>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     S: Service<Request = Handshake<Io>, Response = HandshakeAck<Io, St>, Error = MqttError<E>>,
 {
     log::trace!("Starting mqtt v5 handshake");
 
+    let state = state.unwrap_or_else(State::new);
+    let shared = Rc::new(MqttShared::new(state.clone(), mqtt::Codec::default(), 0, pool));
+
     // set max inbound (decoder) packet size
-    let state = state.unwrap_or_else(|| State::new(mqtt::Codec::default()));
-    state.with_codec(|codec| codec.set_max_inbound_size(max_size));
+    shared.codec.set_max_inbound_size(max_size);
 
     // read first packet
     let packet = state
-        .next(&mut io)
+        .next(&mut io, &shared.codec)
         .await
         .map_err(|err| {
             log::trace!("Error is received during mqtt handshake: {:?}", err);
@@ -406,16 +409,11 @@ where
 
     match packet {
         mqtt::Packet::Connect(connect) => {
-            let sink = MqttSink::new(
-                state.clone(),
-                connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize,
-                pool,
-            );
-
             // set max outbound (encoder) packet size
             if let Some(size) = connect.max_packet_size {
-                state.with_codec(|codec| codec.set_max_outbound_size(size.get()));
+                shared.codec.set_max_outbound_size(size.get());
             }
+            shared.cap.set(connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize);
 
             let keep_alive = connect.keep_alive;
 
@@ -424,8 +422,7 @@ where
                 .call(Handshake::new(
                     connect,
                     io,
-                    sink,
-                    state,
+                    shared,
                     max_size,
                     max_receive,
                     max_topic_alias,
@@ -435,7 +432,7 @@ where
             match ack.session {
                 Some(session) => {
                     log::trace!("Sending: {:#?}", ack.packet);
-                    let sink = ack.sink;
+                    let shared = ack.shared;
 
                     max_topic_alias = ack.packet.topic_alias_max;
 
@@ -449,31 +446,44 @@ where
                         max_receive = 0;
                     }
                     if let Some(size) = ack.packet.max_packet_size {
-                        ack.state.with_codec(|codec| codec.set_max_inbound_size(size));
+                        shared.codec.set_max_inbound_size(size);
                     }
                     if ack.packet.server_keepalive_sec.is_none()
                         && (keep_alive > ack.keepalive as u16)
                     {
                         ack.packet.server_keepalive_sec = Some(ack.keepalive as u16);
                     }
-                    ack.state.send(&mut ack.io, mqtt::Packet::ConnectAck(ack.packet)).await?;
+                    shared
+                        .state
+                        .send(&mut ack.io, &shared.codec, mqtt::Packet::ConnectAck(ack.packet))
+                        .await?;
 
                     Ok((
                         ack.io,
-                        ack.state,
-                        Session::new_v5(session, sink, max_receive, max_topic_alias),
+                        shared.state.clone(),
+                        shared.clone(),
+                        Session::new_v5(
+                            session,
+                            MqttSink::new(shared),
+                            max_receive,
+                            max_topic_alias,
+                        ),
                         ack.keepalive,
                     ))
                 }
                 None => {
                     log::trace!("Failed to complete handshake: {:#?}", ack.packet);
 
-                    if ack.state.is_open()
-                        && ack.state.write_item(mqtt::Packet::ConnectAck(ack.packet)).is_ok()
+                    if ack.shared.state.is_open()
+                        && ack
+                            .shared
+                            .state
+                            .write_item(mqtt::Packet::ConnectAck(ack.packet), &ack.shared.codec)
+                            .is_ok()
                     {
-                        FramedWriteTask::shutdown(
+                        WriteTask::shutdown(
                             Rc::new(RefCell::new(ack.io)),
-                            ack.state.clone(),
+                            ack.shared.state.clone(),
                         )
                         .await;
                     }

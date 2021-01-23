@@ -1,13 +1,12 @@
-use std::{fmt, num::NonZeroU16};
+use std::{fmt, num::NonZeroU16, rc::Rc};
 
-use crate::{io::State, v5::codec, v5::sink::MqttSink};
+use super::{codec, shared::MqttShared, sink::MqttSink};
 
 /// Handshake message
 pub struct Handshake<Io> {
     io: Io,
     pkt: codec::Connect,
-    state: State<codec::Codec>,
-    sink: MqttSink,
+    shared: Rc<MqttShared>,
     max_size: u32,
     max_receive: u16,
     max_topic_alias: u16,
@@ -17,13 +16,12 @@ impl<Io> Handshake<Io> {
     pub(crate) fn new(
         pkt: codec::Connect,
         io: Io,
-        sink: MqttSink,
-        state: State<codec::Codec>,
+        shared: Rc<MqttShared>,
         max_size: u32,
         max_receive: u16,
         max_topic_alias: u16,
     ) -> Self {
-        Self { pkt, io, sink, state, max_size, max_receive, max_topic_alias }
+        Self { pkt, io, shared, max_size, max_receive, max_topic_alias }
     }
 
     pub fn packet(&self) -> &codec::Connect {
@@ -40,8 +38,8 @@ impl<Io> Handshake<Io> {
     }
 
     /// Returns mqtt server sink
-    pub fn sink(&self) -> &MqttSink {
-        &self.sink
+    pub fn sink(&self) -> MqttSink {
+        MqttSink::new(self.shared.clone())
     }
 
     /// Ack handshake message and set state
@@ -60,9 +58,8 @@ impl<Io> Handshake<Io> {
 
         HandshakeAck {
             io: self.io,
-            sink: self.sink,
+            shared: self.shared,
             session: Some(st),
-            state: self.state,
             keepalive: 30,
             packet,
         }
@@ -72,9 +69,8 @@ impl<Io> Handshake<Io> {
     pub fn failed<St>(self, reason_code: codec::ConnectAckReason) -> HandshakeAck<Io, St> {
         HandshakeAck {
             io: self.io,
-            sink: self.sink,
+            shared: self.shared,
             session: None,
-            state: self.state,
             keepalive: 30,
             packet: codec::ConnectAck { reason_code, ..codec::ConnectAck::default() },
         }
@@ -84,8 +80,7 @@ impl<Io> Handshake<Io> {
     pub fn fail_with<St>(self, ack: codec::ConnectAck) -> HandshakeAck<Io, St> {
         HandshakeAck {
             io: self.io,
-            sink: self.sink,
-            state: self.state,
+            shared: self.shared,
             session: None,
             packet: ack,
             keepalive: 30,
@@ -103,9 +98,8 @@ impl<T> fmt::Debug for Handshake<T> {
 pub struct HandshakeAck<Io, St> {
     pub(crate) io: Io,
     pub(crate) session: Option<St>,
-    pub(crate) sink: MqttSink,
+    pub(crate) shared: Rc<MqttShared>,
     pub(crate) packet: codec::ConnectAck,
-    pub(crate) state: State<codec::Codec>,
     pub(crate) keepalive: u16,
 }
 

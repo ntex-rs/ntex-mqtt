@@ -1,5 +1,9 @@
 # Changes
 
+## [0.5.0-b.4] - 2021-01-23
+
+* Use ntex v0.2-b.5 framed types
+
 ## [0.5.0-b.3] - 2021-01-21
 
 * v5: Flush io stream before disconnect

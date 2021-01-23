@@ -10,6 +10,7 @@ mod handshake;
 mod publish;
 mod router;
 mod server;
+mod shared;
 mod sink;
 
 pub type Session<St> = crate::Session<MqttSink, St>;
@@ -23,6 +24,3 @@ pub use self::sink::{MqttSink, PublishBuilder};
 
 pub use crate::topic::Topic;
 pub use crate::types::QoS;
-
-#[doc(hidden)]
-pub type ControlPacket<E> = ControlMessage<E>;

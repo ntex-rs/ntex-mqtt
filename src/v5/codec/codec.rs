@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use bytes::{Buf, BytesMut};
 use ntex::codec::{Decoder, Encoder};
 
@@ -8,10 +10,10 @@ use crate::utils::decode_variable_length;
 
 #[derive(Debug)]
 pub struct Codec {
-    state: DecodeState,
-    max_in_size: u32,
-    max_out_size: u32,
-    flags: CodecFlags,
+    state: Cell<DecodeState>,
+    max_in_size: Cell<u32>,
+    max_out_size: Cell<u32>,
+    flags: Cell<CodecFlags>,
 }
 
 bitflags::bitflags! {
@@ -30,10 +32,10 @@ impl Codec {
     /// Create `Codec` instance
     pub fn new() -> Self {
         Codec {
-            state: DecodeState::FrameHeader,
-            max_in_size: 0,
-            max_out_size: 0,
-            flags: CodecFlags::empty(),
+            state: Cell::new(DecodeState::FrameHeader),
+            max_in_size: Cell::new(0),
+            max_out_size: Cell::new(0),
+            flags: Cell::new(CodecFlags::empty()),
         }
     }
 
@@ -41,8 +43,8 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_inbound_size(mut self, size: u32) -> Self {
-        self.max_in_size = size;
+    pub fn max_inbound_size(self, size: u32) -> Self {
+        self.max_in_size.set(size);
         self
     }
 
@@ -50,12 +52,12 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_outbound_size(mut self, mut size: u32) -> Self {
+    pub fn max_outbound_size(self, mut size: u32) -> Self {
         if size > 5 {
             // fixed header = 1, var_len(remaining.max_value()) = 4
             size -= 5;
         }
-        self.max_out_size = size;
+        self.max_out_size.set(size);
         self
     }
 
@@ -63,16 +65,16 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn set_max_inbound_size(&mut self, size: u32) {
-        self.max_in_size = size;
+    pub fn set_max_inbound_size(&self, size: u32) {
+        self.max_in_size.set(size);
     }
 
     /// Set max outbound frame size.
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn set_max_outbound_size(&mut self, size: u32) {
-        self.max_out_size = size;
+    pub fn set_max_outbound_size(&self, size: u32) {
+        self.max_out_size.set(size);
     }
 }
 
@@ -86,9 +88,9 @@ impl Decoder for Codec {
     type Item = Packet;
     type Error = DecodeError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
+    fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
         loop {
-            match self.state {
+            match self.state.get() {
                 DecodeState::FrameHeader => {
                     if src.len() < 2 {
                         return Ok(None);
@@ -98,19 +100,20 @@ impl Decoder for Codec {
                     match decode_variable_length(&src_slice[1..])? {
                         Some((remaining_length, consumed)) => {
                             // check max message size
-                            if self.max_in_size != 0 && self.max_in_size < remaining_length {
+                            let max_in_size = self.max_in_size.get();
+                            if max_in_size != 0 && max_in_size < remaining_length {
                                 log::debug!(
                                     "MaxSizeExceeded max-size: {}, remaining: {}",
-                                    self.max_in_size,
+                                    max_in_size,
                                     remaining_length
                                 );
                                 return Err(DecodeError::MaxSizeExceeded);
                             }
                             src.advance(consumed + 1);
-                            self.state = DecodeState::Frame(FixedHeader {
+                            self.state.set(DecodeState::Frame(FixedHeader {
                                 first_byte,
                                 remaining_length,
-                            });
+                            }));
                             // todo: validate remaining_length against max frame size config
                             let remaining_length = remaining_length as usize;
                             if src.len() < remaining_length {
@@ -130,11 +133,13 @@ impl Decoder for Codec {
                     }
                     let packet_buf = src.split_to(fixed.remaining_length as usize).freeze();
                     let packet = decode_packet(packet_buf, fixed.first_byte)?;
-                    self.state = DecodeState::FrameHeader;
+                    self.state.set(DecodeState::FrameHeader);
                     src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
 
                     if let Packet::Connect(ref pkt) = packet {
-                        self.flags.set(CodecFlags::NO_PROBLEM_INFO, !pkt.request_problem_info);
+                        let mut flags = self.flags.get();
+                        flags.set(CodecFlags::NO_PROBLEM_INFO, !pkt.request_problem_info);
+                        self.flags.set(flags);
                     }
                     return Ok(Some(packet));
                 }
@@ -147,9 +152,9 @@ impl Encoder for Codec {
     type Item = Packet;
     type Error = EncodeError;
 
-    fn encode(&mut self, mut item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, mut item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
         // handle [MQTT 3.1.2.11.7]
-        if self.flags.contains(CodecFlags::NO_PROBLEM_INFO) {
+        if self.flags.get().contains(CodecFlags::NO_PROBLEM_INFO) {
             match item {
                 Packet::PublishAck(ref mut pkt) | Packet::PublishReceived(ref mut pkt) => {
                     pkt.properties.clear();
@@ -181,7 +186,8 @@ impl Encoder for Codec {
             }
         }
 
-        let max_size = if self.max_out_size != 0 { self.max_out_size } else { MAX_PACKET_SIZE };
+        let max_out_size = self.max_out_size.get();
+        let max_size = if max_out_size != 0 { max_out_size } else { MAX_PACKET_SIZE };
         let content_size = item.encoded_size(max_size);
         if content_size > max_size as usize {
             return Err(EncodeError::InvalidLength); // todo: separate error code
@@ -198,8 +204,7 @@ mod tests {
 
     #[test]
     fn test_max_size() {
-        let mut codec = Codec::new().max_inbound_size(5);
-
+        let codec = Codec::new().max_inbound_size(5);
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
         assert_eq!(codec.decode(&mut buf), Err(DecodeError::MaxSizeExceeded));

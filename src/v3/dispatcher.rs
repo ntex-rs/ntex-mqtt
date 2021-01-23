@@ -11,7 +11,7 @@ use crate::error::MqttError;
 use super::control::{
     ControlMessage, ControlResult, ControlResultKind, Subscribe, Unsubscribe,
 };
-use super::{codec, publish::Publish, sink::Ack, sink::MqttSink, Session};
+use super::{codec, publish::Publish, shared::Ack, sink::MqttSink, Session};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(

@@ -20,7 +20,7 @@ impl Decoder for VersionCodec {
     type Item = ProtocolVersion;
     type Error = DecodeError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
+    fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
         let len = src.len();
         if len < 2 {
             return Ok(None);
@@ -62,7 +62,7 @@ impl Encoder for VersionCodec {
     type Item = ProtocolVersion;
     type Error = EncodeError;
 
-    fn encode(&mut self, _: Self::Item, _: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, _: Self::Item, _: &mut BytesMut) -> Result<(), EncodeError> {
         Err(EncodeError::UnsupportedVersion)
     }
 }
