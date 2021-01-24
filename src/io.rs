@@ -314,15 +314,7 @@ where
                                 item
                             } else {
                                 // decode incoming bytes stream
-
                                 if this.state.is_read_ready() {
-                                    // this.state.with_read_buf(|buf| {
-                                    //     log::trace!(
-                                    //         "attempt to decode frame, buffer size is {:?}",
-                                    //         buf
-                                    //     );
-                                    // });
-
                                     match this.state.decode_item(this.codec) {
                                         Ok(Some(el)) => {
                                             // update keep-alive timer
