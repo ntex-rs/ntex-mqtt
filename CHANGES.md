@@ -1,5 +1,9 @@
 # Changes
 
+## [0.5.0-b.5] - 2021-01-25
+
+* Upgrade to ntex v0.2-b.7
+
 ## [0.5.0-b.4] - 2021-01-23
 
 * Use ntex v0.2-b.5 framed types

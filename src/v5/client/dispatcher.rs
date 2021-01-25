@@ -287,6 +287,9 @@ where
                     &self.inner,
                 )))
             }
+            DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
+                Either::Right(Either::Left(ok(None)))
+            }
         }
     }
 }

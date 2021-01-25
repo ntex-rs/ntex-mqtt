@@ -316,6 +316,9 @@ where
                 ControlMessage::proto_error(ProtocolError::Io(err)),
                 &self.inner,
             ))),
+            DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
+                Either::Right(Either::Left(ok(None)))
+            }
         }
     }
 }

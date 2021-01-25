@@ -1,6 +1,6 @@
 use std::{fmt, marker::PhantomData, rc::Rc, time::Duration};
 
-use futures::future::{err, Either, TryFutureExt};
+use futures::future::{err, ok, Either, TryFutureExt};
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::rt::time::Delay;
 use ntex::service::{apply_fn_factory, IntoServiceFactory, Service, ServiceFactory};
@@ -207,6 +207,8 @@ where
                     DispatchItem::IoError(e) => {
                         Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                     }
+                    DispatchItem::WBackPressureEnabled
+                    | DispatchItem::WBackPressureDisabled => Either::Right(ok(None)),
                 },
             )),
         )
@@ -257,6 +259,8 @@ where
                     DispatchItem::IoError(e) => {
                         Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                     }
+                    DispatchItem::WBackPressureEnabled
+                    | DispatchItem::WBackPressureDisabled => Either::Right(ok(None)),
                 },
             )),
         )

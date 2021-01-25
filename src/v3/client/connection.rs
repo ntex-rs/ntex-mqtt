@@ -121,6 +121,9 @@ where
                 DispatchItem::IoError(e) => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
+                DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
+                    Either::Right(ok(None))
+                }
             }),
             Timer::with(Duration::from_secs(1)),
         )
@@ -164,6 +167,9 @@ where
                 }
                 DispatchItem::IoError(e) => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                }
+                DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
+                    Either::Right(ok(None))
                 }
             }),
             Timer::with(Duration::from_secs(1)),
@@ -237,6 +243,9 @@ where
                 DispatchItem::IoError(e) => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
+                DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
+                    Either::Right(ok(None))
+                }
             }),
             Timer::with(Duration::from_secs(1)),
         )
@@ -279,6 +288,9 @@ where
                 }
                 DispatchItem::IoError(e) => {
                     Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                }
+                DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
+                    Either::Right(ok(None))
                 }
             }),
             Timer::with(Duration::from_secs(1)),
