@@ -1,12 +1,9 @@
-use std::{fs::File, io::BufReader};
-
 use ntex::pipeline_factory;
 use ntex::rt::net::TcpStream;
-use ntex::server::rustls::Acceptor;
+use ntex::server::openssl::Acceptor;
 use ntex_mqtt::{v3, v5, MqttError, MqttServer};
-use rustls::internal::pemfile::{certs, rsa_private_keys};
-use rustls::{NoClientAuth, ServerConfig};
-use tokio_rustls::server::TlsStream;
+use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+use tokio_openssl::SslStream;
 
 #[derive(Clone)]
 struct Session;
@@ -29,8 +26,8 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 }
 
 async fn handshake_v3(
-    handshake: v3::Handshake<TlsStream<TcpStream>>,
-) -> Result<v3::HandshakeAck<TlsStream<TcpStream>, Session>, ServerError> {
+    handshake: v3::Handshake<SslStream<TcpStream>>,
+) -> Result<v3::HandshakeAck<SslStream<TcpStream>, Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session, false))
 }
@@ -41,8 +38,8 @@ async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
 }
 
 async fn handshake_v5(
-    handshake: v5::Handshake<TlsStream<TcpStream>>,
-) -> Result<v5::HandshakeAck<TlsStream<TcpStream>, Session>, ServerError> {
+    handshake: v5::Handshake<SslStream<TcpStream>>,
+) -> Result<v5::HandshakeAck<SslStream<TcpStream>, Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session))
 }
@@ -57,23 +54,17 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,basic=trace");
     env_logger::init();
 
-    let mut tls_config = ServerConfig::new(NoClientAuth::new());
-
     // create self-signed certificates using:
     //   openssl req -x509 -nodes -subj '/CN=localhost' -newkey rsa:4096 -keyout examples/key8.pem -out examples/cert.pem -days 365 -keyform PEM
     //   openssl rsa -in examples/key8.pem -out examples/key.pem
-    let cert_file = &mut BufReader::new(File::open("./examples/cert.pem").unwrap());
-    let key_file = &mut BufReader::new(File::open("./examples/key.pem").unwrap());
-
-    let cert_chain = certs(cert_file).unwrap();
-    let mut keys = rsa_private_keys(key_file).unwrap();
-    tls_config.set_single_cert(cert_chain, keys.remove(0)).unwrap();
-
-    let tls_acceptor = Acceptor::new(tls_config);
+    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+    builder.set_private_key_file("./examples/key.pem", SslFiletype::PEM).unwrap();
+    builder.set_certificate_chain_file("./examples/cert.pem").unwrap();
+    let acceptor = builder.build();
 
     ntex::server::Server::build()
         .bind("mqtt", "127.0.0.1:8883", move || {
-            pipeline_factory(tls_acceptor.clone())
+            pipeline_factory(Acceptor::new(acceptor.clone()))
                 .map_err(|_err| MqttError::Service(ServerError {}))
                 .and_then(
                     MqttServer::new()
