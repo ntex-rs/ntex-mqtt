@@ -15,13 +15,18 @@ impl std::convert::TryFrom<Error> for v5::PublishAck {
 }
 
 async fn publish(pkt: v5::Publish) -> Result<v5::PublishAck, Error> {
-    log::info!("incoming publish: {:?} -> {:?}", pkt.id(), pkt.topic());
+    log::info!(
+        "incoming publish: {:?} -> {:?} payload {:?}",
+        pkt.id(),
+        pkt.topic(),
+        pkt.payload()
+    );
     Ok(pkt.ack())
 }
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace");
+    std::env::set_var("RUST_LOG", "client=trace,ntex=info,ntex_mqtt=trace");
     env_logger::init();
 
     // connect to server
@@ -36,6 +41,20 @@ async fn main() -> std::io::Result<()> {
 
     let router = client.resource("response", publish);
     ntex::rt::spawn(router.start_default());
+
+    sink.subscribe(None)
+        .topic_filter(
+            "response".into(),
+            v5::codec::SubscriptionOptions {
+                qos: v5::codec::QoS::AtLeastOnce,
+                no_local: false,
+                retain_as_published: false,
+                retain_handling: v5::codec::RetainHandling::AtSubscribe,
+            },
+        )
+        .send()
+        .await
+        .unwrap();
 
     delay_for(Duration::from_secs(10)).await;
 
