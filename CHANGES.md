@@ -1,8 +1,12 @@
 # Changes
 
+## [0.6.0] - 2021-02-24
+
+* Upgrade to ntex v0.3
+
 ## [0.5.0] - 2021-02-21
 
-* Upgrade to ntex v0.2.0
+* Upgrade to ntex v0.2
 
 ## [0.5.0-b.5] - 2021-01-25
 

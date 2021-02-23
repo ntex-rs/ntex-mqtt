@@ -1,9 +1,11 @@
-use std::{cell::RefCell, convert::TryFrom, fmt, marker::PhantomData, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell, convert::TryFrom, fmt, marker::PhantomData, pin::Pin, rc::Rc, time::Duration,
+};
 
 use futures::future::TryFutureExt;
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::framed::{State, WriteTask};
-use ntex::rt::time::Delay;
+use ntex::rt::time::Sleep;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
 
@@ -245,7 +247,7 @@ where
         self,
     ) -> impl ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Delay>),
+        Request = (Io, State, Option<Pin<Box<Sleep>>>),
         Response = (),
         Error = MqttError<C::Error>,
         InitError = C::InitError,

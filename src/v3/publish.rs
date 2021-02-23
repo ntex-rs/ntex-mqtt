@@ -20,10 +20,10 @@ impl Publish {
     pub(crate) fn new(publish: codec::Publish) -> Self {
         let (topic, query) = if let Some(pos) = publish.topic.find('?') {
             (
-                ByteString::try_from(publish.topic.get_ref().slice(0..pos)).unwrap(),
+                ByteString::try_from(publish.topic.as_bytes().slice(0..pos)).unwrap(),
                 Some(
                     ByteString::try_from(
-                        publish.topic.get_ref().slice(pos + 1..publish.topic.len()),
+                        publish.topic.as_bytes().slice(pos + 1..publish.topic.len()),
                     )
                     .unwrap(),
                 ),

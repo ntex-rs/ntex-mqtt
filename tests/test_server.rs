@@ -1,4 +1,3 @@
-#![type_length_limit = "1638773"]
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{num::NonZeroU16, time::Duration};
 
@@ -6,7 +5,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{future::ok, FutureExt, SinkExt, StreamExt};
 use ntex::codec::Framed;
-use ntex::rt::time::delay_for;
+use ntex::rt::time::sleep;
 use ntex::server;
 
 use ntex_mqtt::v3::{
@@ -122,13 +121,13 @@ async fn test_ping() -> std::io::Result<()> {
             .finish()
     });
 
-    let io = srv.connect().unwrap();
+    let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
     framed
         .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
         .await
         .unwrap();
-    let _ = framed.next().await.unwrap().unwrap();
+    framed.next().await.unwrap().unwrap();
 
     framed.send(codec::Packet::PingRequest).await.unwrap();
     let pkt = framed.next().await.unwrap().unwrap();
@@ -142,7 +141,7 @@ async fn test_ping() -> std::io::Result<()> {
 async fn test_ack_order() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         MqttServer::new(handshake)
-            .publish(|_| delay_for(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
+            .publish(|_| sleep(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
             .control(move |msg| match msg {
                 ControlMessage::Subscribe(mut msg) => {
                     for mut sub in &mut msg {
@@ -157,7 +156,7 @@ async fn test_ack_order() -> std::io::Result<()> {
             .finish()
     });
 
-    let io = srv.connect().unwrap();
+    let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
     framed
         .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
@@ -223,7 +222,7 @@ async fn test_ack_order() -> std::io::Result<()> {
 async fn test_ack_order_sink() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         MqttServer::new(handshake)
-            .publish(|_| delay_for(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
+            .publish(|_| sleep(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
             .finish()
     });
 
@@ -258,7 +257,7 @@ async fn test_disconnect() -> std::io::Result<()> {
                 ok(ntex::fn_service(move |_: Publish| {
                     session.sink().force_close();
                     async {
-                        delay_for(Duration::from_millis(100)).await;
+                        sleep(Duration::from_millis(100)).await;
                         Ok(())
                     }
                 }))

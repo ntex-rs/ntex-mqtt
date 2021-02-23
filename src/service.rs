@@ -3,7 +3,7 @@ use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc, time::Dura
 
 use futures::future::{select, Either, FutureExt};
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
-use ntex::rt::time::Delay;
+use ntex::rt::time::Sleep;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 
 use super::io::{DispatchItem, Dispatcher, State, Timer};
@@ -336,7 +336,7 @@ where
     <Codec as Encoder>::Item: 'static,
 {
     type Config = Cfg;
-    type Request = (Io, State, Option<Delay>);
+    type Request = (Io, State, Option<Pin<Box<Sleep>>>);
     type Response = ();
     type Error = C::Error;
     type InitError = C::InitError;
@@ -451,7 +451,7 @@ where
     Codec: Decoder + Encoder + Clone + 'static,
     <Codec as Encoder>::Item: 'static,
 {
-    type Request = (Io, State, Option<Delay>);
+    type Request = (Io, State, Option<Pin<Box<Sleep>>>);
     type Response = ();
     type Error = C::Error;
     type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
@@ -467,7 +467,7 @@ where
     }
 
     #[inline]
-    fn call(&self, (req, state, delay): (Io, State, Option<Delay>)) -> Self::Future {
+    fn call(&self, (req, state, delay): (Io, State, Option<Pin<Box<Sleep>>>)) -> Self::Future {
         log::trace!("Start connection handshake");
 
         let handler = self.handler.clone();

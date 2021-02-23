@@ -1,8 +1,8 @@
-use std::{fmt, marker::PhantomData, rc::Rc, time::Duration};
+use std::{fmt, marker::PhantomData, pin::Pin, rc::Rc, time::Duration};
 
 use futures::future::{err, ok, Either, TryFutureExt};
 use ntex::codec::{AsyncRead, AsyncWrite};
-use ntex::rt::time::Delay;
+use ntex::rt::time::Sleep;
 use ntex::service::{apply_fn_factory, IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
 
@@ -219,7 +219,7 @@ where
         self,
     ) -> impl ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Delay>),
+        Request = (Io, State, Option<Pin<Box<Sleep>>>),
         Response = (),
         Error = MqttError<C::Error>,
         InitError = C::InitError,

@@ -1,5 +1,4 @@
-use std::convert::{TryFrom, TryInto};
-use std::num::NonZeroU16;
+use std::{convert::TryFrom, convert::TryInto, num::NonZeroU16};
 
 use bytes::{Buf, Bytes};
 use bytestring::ByteString;
@@ -52,7 +51,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
     let len = src.get_u16();
 
-    ensure!(len == 4 && &src.bytes()[0..4] == MQTT, DecodeError::InvalidProtocol);
+    ensure!(len == 4 && &src.as_ref()[0..4] == MQTT, DecodeError::InvalidProtocol);
     src.advance(4);
 
     let level = src.get_u8();

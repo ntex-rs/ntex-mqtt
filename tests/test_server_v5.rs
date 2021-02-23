@@ -161,7 +161,7 @@ async fn test_ping() -> std::io::Result<()> {
             .finish()
     });
 
-    let io = srv.connect().unwrap();
+    let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::new());
     framed
         .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
@@ -198,7 +198,7 @@ async fn test_ack_order() -> std::io::Result<()> {
             .finish()
     });
 
-    let io = srv.connect().unwrap();
+    let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
     framed
         .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
@@ -270,7 +270,7 @@ async fn test_dups() {
             .finish()
     });
 
-    let io = srv.connect().unwrap();
+    let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
     framed
         .send(codec::Packet::Connect(
@@ -387,7 +387,7 @@ async fn test_max_receive() {
             })
             .finish()
     });
-    let io = srv.connect().unwrap();
+    let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
 
     framed

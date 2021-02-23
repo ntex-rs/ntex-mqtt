@@ -253,10 +253,10 @@ impl Encode for Bytes {
 
 impl Encode for ByteString {
     fn encoded_size(&self) -> usize {
-        self.get_ref().encoded_size()
+        self.as_bytes().encoded_size()
     }
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        self.get_ref().encode(buf)
+        self.as_bytes().encode(buf)
     }
 }
 
