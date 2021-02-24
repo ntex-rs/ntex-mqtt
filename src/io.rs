@@ -5,13 +5,13 @@ use std::{
     time::Instant,
 };
 
-use either::Either;
 use futures::FutureExt;
 
 pub(crate) use ntex::framed::{DispatchItem, ReadTask, State, Timer, WriteTask};
 
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 use ntex::service::{IntoService, Service};
+use ntex::util::Either;
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -487,13 +487,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
     use futures::future::FutureExt;
 
     use ntex::channel::condition::Condition;
     use ntex::codec::BytesCodec;
     use ntex::rt::time::delay_for;
     use ntex::testing::Io;
+    use ntex::util::Bytes;
 
     use super::*;
 

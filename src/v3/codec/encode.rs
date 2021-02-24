@@ -1,4 +1,4 @@
-use bytes::{BufMut, BytesMut};
+use ntex::util::{BufMut, BytesMut};
 
 use crate::error::EncodeError;
 use crate::types::{packet_type, ConnectFlags, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
@@ -220,8 +220,7 @@ fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeErr
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
-    use bytestring::ByteString;
+    use ntex::util::{ByteString, Bytes};
     use std::num::NonZeroU16;
 
     use super::*;

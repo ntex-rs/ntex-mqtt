@@ -1,7 +1,7 @@
 use std::convert::TryInto;
 
-use bytes::BytesMut;
 use ntex::codec::{Decoder, Encoder};
+use ntex::util::BytesMut;
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{packet_type, MQTT, MQTT_LEVEL_3, MQTT_LEVEL_5};
@@ -70,7 +70,6 @@ impl Encoder for VersionCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
 
     #[test]
     fn test_decode_connect_packets() {

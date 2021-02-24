@@ -1,15 +1,14 @@
 use std::task::{Context, Poll};
 use std::{cell::Cell, cell::RefCell, num::NonZeroU16, rc::Rc};
 
-use bytestring::ByteString;
 use futures::future::{FutureExt, LocalBoxFuture};
 use ntex::router::{IntoPattern, Path, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::task::LocalWaker;
+use ntex::util::{ByteString, HashMap};
 
 use super::publish::{Publish, PublishAck};
-use crate::AHashMap;
 
 type Handler<S, E> = BoxServiceFactory<S, Publish, PublishAck, E, E>;
 type HandlerService<E> = BoxService<Publish, PublishAck, E>;
@@ -112,7 +111,7 @@ where
                     factories,
                     handlers: RefCell::new(handlers),
                     creating: Cell::new(false),
-                    aliases: RefCell::new(AHashMap::default()),
+                    aliases: RefCell::new(HashMap::default()),
                     waker: LocalWaker::new(),
                 }),
             })
@@ -131,7 +130,7 @@ struct Inner<S, Err> {
     session: S,
     handlers: RefCell<Vec<Option<HandlerService<Err>>>>,
     factories: Rc<Vec<Handler<S, Err>>>,
-    aliases: RefCell<AHashMap<NonZeroU16, (usize, Path<ByteString>)>>,
+    aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>>,
     waker: LocalWaker,
     creating: Cell<bool>,
 }

@@ -1,8 +1,7 @@
 use std::{fmt, num::NonZeroU16, rc::Rc};
 
-use bytes::Bytes;
-use bytestring::ByteString;
 use futures::future::{ready, Either, Future, FutureExt};
+use ntex::util::{ByteString, Bytes};
 
 use super::shared::{Ack, AckType, MqttShared};
 use super::{codec, error::ProtocolError, error::SendPacketError};

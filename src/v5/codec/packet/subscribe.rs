@@ -1,5 +1,4 @@
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use bytestring::ByteString;
+use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
 use std::convert::TryInto;
 use std::num::{NonZeroU16, NonZeroU32};
 

@@ -1,5 +1,9 @@
 # Changes
 
+## [0.6.1] - 2021-02-25
+
+* Cleanup dependencies
+
 ## [0.6.0] - 2021-02-24
 
 * Upgrade to ntex v0.3

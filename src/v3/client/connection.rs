@@ -99,7 +99,7 @@ where
         let dispatcher = create_dispatcher(
             MqttSink::new(self.shared.clone()),
             self.max_receive,
-            into_service(|pkt| ok(either::Right(pkt))),
+            into_service(|pkt| ok(ntex::util::Either::Right(pkt))),
             into_service(|msg: ControlMessage| ok::<_, MqttError<()>>(msg.disconnect())),
         );
 
@@ -146,7 +146,7 @@ where
         let dispatcher = create_dispatcher(
             MqttSink::new(self.shared.clone()),
             self.max_receive,
-            into_service(|pkt| ok(either::Right(pkt))),
+            into_service(|pkt| ok(ntex::util::Either::Right(pkt))),
             service.into_service().map_err(MqttError::Service),
         );
 
@@ -304,7 +304,11 @@ where
 fn dispatch<Err, PErr>(
     router: Router<usize>,
     handlers: Vec<Handler<PErr>>,
-) -> impl Service<Request = Publish, Response = either::Either<(), Publish>, Error = MqttError<Err>>
+) -> impl Service<
+    Request = Publish,
+    Response = ntex::util::Either<(), Publish>,
+    Error = MqttError<Err>,
+>
 where
     PErr: 'static,
     Err: From<PErr>,
@@ -314,14 +318,14 @@ where
             // exec handler
             return Either::Left(call(req, &handlers[*idx]).map_err(MqttError::Service));
         }
-        Either::Right(ok::<_, MqttError<Err>>(either::Right(req)))
+        Either::Right(ok::<_, MqttError<Err>>(ntex::util::Either::Right(req)))
     })
 }
 
 fn call<S, Err, PErr>(
     req: Publish,
     srv: &S,
-) -> impl Future<Output = Result<either::Either<(), Publish>, Err>>
+) -> impl Future<Output = Result<ntex::util::Either<(), Publish>, Err>>
 where
     S: Service<Request = Publish, Response = (), Error = PErr>,
     Err: From<PErr>,
@@ -330,7 +334,7 @@ where
 
     async move {
         match fut.await {
-            Ok(_) => Ok(either::Left(())),
+            Ok(_) => Ok(ntex::util::Either::Left(())),
             Err(err) => Err(err.into()),
         }
     }

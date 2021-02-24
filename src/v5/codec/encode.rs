@@ -1,5 +1,4 @@
-use bytes::{BufMut, BytesMut};
-use bytestring::ByteString;
+use ntex::util::{BufMut, ByteString, BytesMut};
 
 use super::packet::{property_type as pt, *};
 use super::{UserProperties, UserProperty};
@@ -272,11 +271,11 @@ pub(super) fn reduce_limit(limit: u32, reduction: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use ntex::util::Bytes;
+    use std::num::NonZeroU16;
+
     use super::*;
     use crate::types::{QoS, MAX_PACKET_SIZE};
-    use bytes::Bytes;
-    use bytestring::ByteString;
-    use std::num::NonZeroU16;
 
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()

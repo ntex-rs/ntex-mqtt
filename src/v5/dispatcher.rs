@@ -6,6 +6,7 @@ use std::{
 
 use futures::future::{join, ok, Either, FutureExt, Ready};
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
+use ntex::util::HashSet;
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::DispatchItem;
@@ -83,8 +84,8 @@ struct Inner<C> {
 }
 
 struct PublishInfo {
-    inflight: crate::AHashSet<NonZeroU16>,
-    aliases: crate::AHashSet<NonZeroU16>,
+    inflight: HashSet<NonZeroU16>,
+    aliases: HashSet<NonZeroU16>,
 }
 
 impl<T, C, E, E2> Dispatcher<T, C, E, E2>
@@ -110,8 +111,8 @@ where
                 control,
                 sink,
                 info: RefCell::new(PublishInfo {
-                    aliases: crate::AHashSet::default(),
-                    inflight: crate::AHashSet::default(),
+                    aliases: HashSet::default(),
+                    inflight: HashSet::default(),
                 }),
             }),
             _t: PhantomData,

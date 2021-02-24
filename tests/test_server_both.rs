@@ -1,10 +1,8 @@
-#![type_length_limit = "1638773"]
 use std::convert::TryFrom;
 
-use bytes::Bytes;
-use bytestring::ByteString;
 use futures::future::ok;
 use ntex::server;
+use ntex::util::{ByteString, Bytes};
 
 use ntex_mqtt::{v3, v5, MqttServer};
 

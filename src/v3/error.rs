@@ -1,6 +1,5 @@
 use derive_more::{Display, From};
-use either::Either;
-use std::io;
+use ntex::util::Either;
 
 pub use crate::{error::*, v3::codec};
 
@@ -26,8 +25,8 @@ pub enum ClientError {
 
 impl std::error::Error for ClientError {}
 
-impl From<Either<EncodeError, io::Error>> for ClientError {
-    fn from(err: Either<EncodeError, io::Error>) -> Self {
+impl From<Either<EncodeError, std::io::Error>> for ClientError {
+    fn from(err: Either<EncodeError, std::io::Error>) -> Self {
         match err {
             Either::Left(err) => ClientError::Protocol(ProtocolError::Encode(err)),
             Either::Right(err) => ClientError::Protocol(ProtocolError::Io(err)),

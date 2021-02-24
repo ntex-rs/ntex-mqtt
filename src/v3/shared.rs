@@ -1,11 +1,11 @@
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, num::NonZeroU16, rc::Rc};
 
-use bytes::BytesMut;
 use ntex::channel::pool;
 use ntex::codec::{Decoder, Encoder};
+use ntex::util::{BytesMut, HashMap};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::{io::State, types::packet_type, v3::codec, AHashMap};
+use crate::{io::State, types::packet_type, v3::codec};
 
 pub(super) enum Ack {
     Publish(NonZeroU16),
@@ -41,7 +41,7 @@ pub(crate) struct MqttShared {
 }
 
 pub(super) struct MqttSharedQueues {
-    pub(super) inflight: AHashMap<u16, (pool::Sender<Ack>, AckType)>,
+    pub(super) inflight: HashMap<u16, (pool::Sender<Ack>, AckType)>,
     pub(super) inflight_order: VecDeque<u16>,
     pub(super) waiters: VecDeque<pool::Sender<()>>,
 }
@@ -59,7 +59,7 @@ impl MqttShared {
             codec,
             cap: Cell::new(cap),
             queues: RefCell::new(MqttSharedQueues {
-                inflight: AHashMap::default(),
+                inflight: HashMap::default(),
                 inflight_order: VecDeque::with_capacity(8),
                 waiters: VecDeque::new(),
             }),

@@ -4,11 +4,11 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 
 use futures::future::{err, ok, Either, FutureExt, Ready};
 use ntex::service::Service;
-use ntex::util::inflight::InFlightService;
+use ntex::util::{inflight::InFlightService, HashSet};
 
 use crate::v3::shared::Ack;
 use crate::v3::{codec, control::ControlResultKind, publish::Publish, sink::MqttSink};
-use crate::{error::MqttError, error::ProtocolError, types::packet_type, AHashSet};
+use crate::{error::MqttError, error::ProtocolError, types::packet_type};
 
 use super::control::{ControlMessage, ControlResult};
 
@@ -21,8 +21,11 @@ pub(super) fn create_dispatcher<T, C, E>(
 ) -> impl Service<Request = codec::Packet, Response = Option<codec::Packet>, Error = MqttError<E>>
 where
     E: 'static,
-    T: Service<Request = Publish, Response = either::Either<(), Publish>, Error = MqttError<E>>
-        + 'static,
+    T: Service<
+            Request = Publish,
+            Response = ntex::util::Either<(), Publish>,
+            Error = MqttError<E>,
+        > + 'static,
     C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>
         + 'static,
 {
@@ -41,12 +44,16 @@ pub(crate) struct Dispatcher<T: Service<Error = MqttError<E>>, C, E> {
 struct Inner<C> {
     control: C,
     sink: MqttSink,
-    inflight: RefCell<AHashSet<NonZeroU16>>,
+    inflight: RefCell<HashSet<NonZeroU16>>,
 }
 
 impl<T, C, E> Dispatcher<T, C, E>
 where
-    T: Service<Request = Publish, Response = either::Either<(), Publish>, Error = MqttError<E>>,
+    T: Service<
+        Request = Publish,
+        Response = ntex::util::Either<(), Publish>,
+        Error = MqttError<E>,
+    >,
     C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
 {
     pub(crate) fn new(sink: MqttSink, publish: T, control: C) -> Self {
@@ -54,18 +61,18 @@ where
             publish,
             sink: sink.clone(),
             shutdown: Cell::new(false),
-            inner: Rc::new(Inner {
-                sink,
-                control,
-                inflight: RefCell::new(AHashSet::default()),
-            }),
+            inner: Rc::new(Inner { sink, control, inflight: RefCell::new(HashSet::default()) }),
         }
     }
 }
 
 impl<T, C, E> Service for Dispatcher<T, C, E>
 where
-    T: Service<Request = Publish, Response = either::Either<(), Publish>, Error = MqttError<E>>,
+    T: Service<
+        Request = Publish,
+        Response = ntex::util::Either<(), Publish>,
+        Error = MqttError<E>,
+    >,
     C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
     C::Future: 'static,
     E: 'static,
@@ -184,7 +191,11 @@ pin_project_lite::pin_project! {
 
 impl<T, C, E> Future for PublishResponse<T, C, E>
 where
-    T: Service<Request = Publish, Response = either::Either<(), Publish>, Error = MqttError<E>>,
+    T: Service<
+        Request = Publish,
+        Response = ntex::util::Either<(), Publish>,
+        Error = MqttError<E>,
+    >,
     C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
@@ -197,7 +208,7 @@ where
         let mut this = self.as_mut().project();
         let res = futures::ready!(this.fut.poll(cx))?;
         match res {
-            either::Either::Left(_) => {
+            ntex::util::Either::Left(_) => {
                 log::trace!("Publish result for packet {:?} is ready", this.packet_id);
 
                 if let Some(packet_id) = this.packet_id {
@@ -207,7 +218,7 @@ where
                     Poll::Ready(Ok(None))
                 }
             }
-            either::Either::Right(pkt) => {
+            ntex::util::Either::Right(pkt) => {
                 this.fut_c.set(Some(ControlResponse::new(
                     this.inner.control.call(ControlMessage::publish(pkt.into_inner())),
                     &*this.inner,

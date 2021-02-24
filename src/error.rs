@@ -1,5 +1,5 @@
 use derive_more::{Display, From};
-use either::Either;
+use ntex::util::Either;
 use std::io;
 
 /// Errors which can occur when attempting to handle mqtt connection.

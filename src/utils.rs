@@ -2,10 +2,8 @@ use std::num::{NonZeroU16, NonZeroU32};
 use std::task::{Context, Poll};
 use std::{convert::TryFrom, future::Future, io::Cursor, pin::Pin};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use bytestring::ByteString;
-use either::Either;
 use ntex::service::Service;
+use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut, Either};
 
 use crate::error::{DecodeError, EncodeError};
 

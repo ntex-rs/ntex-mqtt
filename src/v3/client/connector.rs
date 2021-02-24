@@ -1,12 +1,11 @@
 use std::{rc::Rc, time::Duration};
 
-use bytes::Bytes;
-use bytestring::ByteString;
 use futures::future::{Either, Future, FutureExt};
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::connect::{self, Address, Connect, Connector};
 use ntex::rt::time::delay_for;
 use ntex::service::Service;
+use ntex::util::{ByteString, Bytes};
 
 #[cfg(feature = "openssl")]
 use ntex::connect::openssl::{OpensslConnector, SslConnector};
@@ -233,8 +232,8 @@ where
                     self._connect(),
                 )
                 .map(|result| match result {
-                    either::Either::Left(_) => Err(ClientError::HandshakeTimeout),
-                    either::Either::Right(res) => res.map_err(From::from),
+                    ntex::util::Either::Left(_) => Err(ClientError::HandshakeTimeout),
+                    ntex::util::Either::Right(res) => res.map_err(From::from),
                 }),
             )
         } else {

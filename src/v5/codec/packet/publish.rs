@@ -1,7 +1,5 @@
+use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
 use std::{convert::TryFrom, fmt, num::NonZeroU16, num::NonZeroU32};
-
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use bytestring::ByteString;
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;

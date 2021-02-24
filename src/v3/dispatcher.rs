@@ -4,7 +4,7 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 
 use futures::future::{err, join, ok, Either, FutureExt, Ready};
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
-use ntex::util::inflight::InFlightService;
+use ntex::util::{inflight::InFlightService, HashSet};
 
 use crate::error::MqttError;
 
@@ -72,7 +72,7 @@ pub(crate) struct Dispatcher<St, T: Service<Error = MqttError<E>>, C, E> {
 
 struct Inner {
     sink: MqttSink,
-    inflight: RefCell<crate::AHashSet<NonZeroU16>>,
+    inflight: RefCell<HashSet<NonZeroU16>>,
 }
 
 impl<St, T, C, E> Dispatcher<St, T, C, E>
@@ -88,7 +88,7 @@ where
             publish,
             control,
             shutdown: Cell::new(false),
-            inner: Rc::new(Inner { sink, inflight: RefCell::new(crate::AHashSet::default()) }),
+            inner: Rc::new(Inner { sink, inflight: RefCell::new(HashSet::default()) }),
         }
     }
 }

@@ -1,8 +1,7 @@
 use std::num::NonZeroU16;
 
-use bytes::Bytes;
-use bytestring::ByteString;
 use ntex::router::Path;
+use ntex::util::{ByteString, Bytes};
 use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
 

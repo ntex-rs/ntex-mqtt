@@ -1,7 +1,5 @@
-use std::marker::PhantomData;
-use std::num::NonZeroU16;
-
-use bytestring::ByteString;
+use ntex::util::ByteString;
+use std::{marker::PhantomData, num::NonZeroU16};
 
 use super::codec;
 use crate::types::QoS;

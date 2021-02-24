@@ -1,18 +1,18 @@
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, convert::TryFrom, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
-use bytestring::ByteString;
 use futures::future::{ok, Either, Future};
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::boxed::BoxService;
 use ntex::service::{into_service, IntoService, Service};
+use ntex::util::{ByteString, HashMap};
 
+use crate::error::MqttError;
 use crate::io::{Dispatcher, Timer};
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{codec, shared::MqttShared, sink::MqttSink, ControlResult};
-use crate::{error::MqttError, AHashMap};
 
 use super::control::ControlMessage;
 use super::dispatcher::create_dispatcher;
@@ -116,7 +116,7 @@ where
             MqttSink::new(self.shared.clone()),
             self.max_receive,
             16,
-            into_service(|pkt| ok(either::Left(pkt))),
+            into_service(|pkt| ok(ntex::util::Either::Left(pkt))),
             into_service(|msg: ControlMessage<()>| {
                 ok(msg.disconnect(codec::Disconnect::default()))
             }),
@@ -149,7 +149,7 @@ where
             MqttSink::new(self.shared.clone()),
             self.max_receive,
             16,
-            into_service(|pkt| ok(either::Left(pkt))),
+            into_service(|pkt| ok(ntex::util::Either::Left(pkt))),
             service.into_service(),
         );
 
@@ -262,13 +262,13 @@ where
 fn dispatch<Err, PErr>(
     router: Router<usize>,
     handlers: Vec<Handler<PErr>>,
-) -> impl Service<Request = Publish, Response = either::Either<Publish, PublishAck>, Error = Err>
+) -> impl Service<Request = Publish, Response = ntex::util::Either<Publish, PublishAck>, Error = Err>
 where
     PErr: 'static,
     PublishAck: TryFrom<PErr, Error = Err>,
 {
-    let aliases: RefCell<AHashMap<NonZeroU16, (usize, Path<ByteString>)>> =
-        RefCell::new(AHashMap::default());
+    let aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>> =
+        RefCell::new(HashMap::default());
 
     into_service(move |mut req: Publish| {
         if !req.publish_topic().is_empty() {
@@ -293,14 +293,14 @@ where
             }
         }
 
-        Either::Right(ok::<_, Err>(either::Left(req)))
+        Either::Right(ok::<_, Err>(ntex::util::Either::Left(req)))
     })
 }
 
 fn call<S, Err>(
     req: Publish,
     srv: &S,
-) -> impl Future<Output = Result<either::Either<Publish, PublishAck>, Err>>
+) -> impl Future<Output = Result<ntex::util::Either<Publish, PublishAck>, Err>>
 where
     S: Service<Request = Publish, Response = PublishAck>,
     PublishAck: TryFrom<S::Error, Error = Err>,
@@ -309,9 +309,9 @@ where
 
     async move {
         match fut.await {
-            Ok(ack) => Ok(either::Right(ack)),
+            Ok(ack) => Ok(ntex::util::Either::Right(ack)),
             Err(err) => match PublishAck::try_from(err) {
-                Ok(ack) => Ok(either::Right(ack)),
+                Ok(ack) => Ok(ntex::util::Either::Right(ack)),
                 Err(err) => Err(err),
             },
         }

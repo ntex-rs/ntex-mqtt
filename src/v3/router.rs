@@ -101,7 +101,7 @@ where
         RouterFactoryFut {
             router: self.router.clone(),
             handlers: join_all(fut),
-            default: Some(either::Either::Left(self.default.new_service(session))),
+            default: Some(ntex::util::Either::Left(self.default.new_service(session))),
         }
     }
 }
@@ -110,7 +110,7 @@ pub struct RouterFactoryFut<Err> {
     router: Rc<ntex::router::Router<usize>>,
     handlers: JoinAll<LocalBoxFuture<'static, Result<HandlerService<Err>, Err>>>,
     default: Option<
-        either::Either<
+        ntex::util::Either<
             LocalBoxFuture<'static, Result<HandlerService<Err>, Err>>,
             HandlerService<Err>,
         >,
@@ -122,15 +122,17 @@ impl<Err> Future for RouterFactoryFut<Err> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let res = match self.default.as_mut().unwrap() {
-            either::Either::Left(ref mut fut) => {
+            ntex::util::Either::Left(ref mut fut) => {
                 let default = match futures::ready!(Pin::new(fut).poll(cx)) {
                     Ok(default) => default,
                     Err(e) => return Poll::Ready(Err(e)),
                 };
-                self.default = Some(either::Either::Right(default));
+                self.default = Some(ntex::util::Either::Right(default));
                 return self.poll(cx);
             }
-            either::Either::Right(_) => futures::ready!(Pin::new(&mut self.handlers).poll(cx)),
+            ntex::util::Either::Right(_) => {
+                futures::ready!(Pin::new(&mut self.handlers).poll(cx))
+            }
         };
 
         let mut handlers = Vec::new();

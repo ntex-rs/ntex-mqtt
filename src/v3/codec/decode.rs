@@ -1,7 +1,6 @@
 use std::{convert::TryFrom, convert::TryInto, num::NonZeroU16};
 
-use bytes::{Buf, Bytes};
-use bytestring::ByteString;
+use ntex::util::{Buf, ByteString, Bytes};
 
 use crate::error::DecodeError;
 use crate::types::{packet_type, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};

@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use bytestring::ByteString;
+use ntex::util::ByteString;
 
 use super::codec::{self, DisconnectReasonCode, QoS, UserProperties};
 use crate::error;

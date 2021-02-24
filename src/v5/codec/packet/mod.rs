@@ -1,5 +1,5 @@
-use bytes::{Buf, BufMut, Bytes, BytesMut};
 use derive_more::From;
+use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};
 
@@ -114,8 +114,6 @@ pub(super) mod property_type {
 }
 
 mod ack_props {
-    use bytestring::ByteString;
-
     use super::*;
     use crate::v5::codec::UserProperty;
 

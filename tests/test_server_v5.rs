@@ -1,12 +1,11 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{convert::TryFrom, num::NonZeroU16, time::Duration};
 
-use bytes::Bytes;
-use bytestring::ByteString;
 use futures::{future::ok, FutureExt, SinkExt, StreamExt};
 use ntex::codec::Framed;
 use ntex::rt::time::delay_for;
 use ntex::server;
+use ntex::util::{ByteString, Bytes};
 
 use ntex_mqtt::v5::{
     client, codec, error, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish,
