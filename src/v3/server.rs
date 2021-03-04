@@ -387,7 +387,13 @@ where
                     };
 
                     log::trace!("Sending success handshake ack: {:#?}", pkt);
-                    ack.shared.state.send(&mut ack.io, &ack.shared.codec, pkt).await?;
+
+                    state
+                        .low_watermark(ack.lw)
+                        .read_high_watermark(ack.read_hw)
+                        .write_high_watermark(ack.write_hw)
+                        .send(&mut ack.io, &ack.shared.codec, pkt)
+                        .await?;
 
                     Ok((
                         ack.io,

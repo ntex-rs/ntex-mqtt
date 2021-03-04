@@ -664,10 +664,6 @@ mod tests {
 
         state.write_item(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec).unwrap();
 
-        let buf = client.read_any();
-        assert_eq!(buf, Bytes::from_static(b""));
-        delay_for(Duration::from_millis(25)).await;
-
         // buffer should be flushed
         client.remote_buffer_cap(1024);
         let buf = client.read().await.unwrap();

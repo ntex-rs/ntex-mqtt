@@ -60,6 +60,9 @@ impl<Io> Handshake<Io> {
             io: self.io,
             shared: self.shared,
             session: Some(st),
+            lw: 256,
+            read_hw: 4 * 1024,
+            write_hw: 4 * 1024,
             keepalive: 30,
             packet,
         }
@@ -72,6 +75,9 @@ impl<Io> Handshake<Io> {
             shared: self.shared,
             session: None,
             keepalive: 30,
+            lw: 256,
+            read_hw: 4 * 1024,
+            write_hw: 4 * 1024,
             packet: codec::ConnectAck { reason_code, ..codec::ConnectAck::default() },
         }
     }
@@ -83,6 +89,9 @@ impl<Io> Handshake<Io> {
             shared: self.shared,
             session: None,
             packet: ack,
+            lw: 256,
+            read_hw: 4 * 1024,
+            write_hw: 4 * 1024,
             keepalive: 30,
         }
     }
@@ -101,6 +110,9 @@ pub struct HandshakeAck<Io, St> {
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) packet: codec::ConnectAck,
     pub(crate) keepalive: u16,
+    pub(crate) lw: u16,
+    pub(crate) read_hw: u16,
+    pub(crate) write_hw: u16,
 }
 
 impl<Io, St> HandshakeAck<Io, St> {
@@ -114,6 +126,34 @@ impl<Io, St> HandshakeAck<Io, St> {
             panic!("Timeout must be greater than 0")
         }
         self.keepalive = timeout;
+        self
+    }
+
+    #[inline]
+    /// Set buffer low watermark size
+    ///
+    /// Low watermark is the same for read and write buffers.
+    /// By default lw value is 256 bytes.
+    pub fn low_watermark(mut self, lw: u16) -> Self {
+        self.lw = lw;
+        self
+    }
+
+    #[inline]
+    /// Set read buffer high water mark size
+    ///
+    /// By default read hw is 4kb
+    pub fn read_high_watermark(mut self, hw: u16) -> Self {
+        self.read_hw = hw;
+        self
+    }
+
+    #[inline]
+    /// Set write buffer high watermark size
+    ///
+    /// By default write hw is 4kb
+    pub fn write_high_watermark(mut self, hw: u16) -> Self {
+        self.write_hw = hw;
         self
     }
 

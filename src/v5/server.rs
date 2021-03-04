@@ -455,8 +455,11 @@ where
                     {
                         ack.packet.server_keepalive_sec = Some(ack.keepalive as u16);
                     }
-                    shared
-                        .state
+
+                    state
+                        .low_watermark(ack.lw)
+                        .read_high_watermark(ack.read_hw)
+                        .write_high_watermark(ack.write_hw)
                         .send(&mut ack.io, &shared.codec, mqtt::Packet::ConnectAck(ack.packet))
                         .await?;
 
