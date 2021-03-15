@@ -139,6 +139,24 @@ impl<Io, St> HandshakeAck<Io, St> {
     }
 
     #[inline]
+    /// Set read/write buffer sizes
+    ///
+    /// By default max buffer size is 4kb for both read and write buffer,
+    /// Min size is 256 bytes.
+    pub fn buffer_sizes(
+        mut self,
+        max_read_buf: u16,
+        max_write_buf: u16,
+        min_buf_size: u16,
+    ) -> Self {
+        self.read_hw = max_read_buf;
+        self.write_hw = max_write_buf;
+        self.lw = min_buf_size;
+        self
+    }
+
+    #[doc(hidden)]
+    #[deprecated(since = "0.6.3")]
     /// Set buffer low watermark size
     ///
     /// Low watermark is the same for read and write buffers.
@@ -148,7 +166,8 @@ impl<Io, St> HandshakeAck<Io, St> {
         self
     }
 
-    #[inline]
+    #[doc(hidden)]
+    #[deprecated(since = "0.6.3")]
     /// Set read buffer high water mark size
     ///
     /// By default read hw is 4kb
@@ -157,7 +176,8 @@ impl<Io, St> HandshakeAck<Io, St> {
         self
     }
 
-    #[inline]
+    #[doc(hidden)]
+    #[deprecated(since = "0.6.3")]
     /// Set write buffer high watermark size
     ///
     /// By default write hw is 4kb

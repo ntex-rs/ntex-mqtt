@@ -7,7 +7,7 @@ use std::{
 
 use futures::FutureExt;
 
-pub(crate) use ntex::framed::{DispatchItem, ReadTask, State, Timer, WriteTask};
+pub(crate) use ntex::framed::{DispatchItem, ReadTask, State, Timer, Write, WriteTask};
 
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 use ntex::service::{IntoService, Service};
@@ -201,7 +201,7 @@ where
         &mut self,
         item: Result<S::Response, S::Error>,
         response_idx: usize,
-        state: &State,
+        write: Write<'_>,
         codec: &U,
         wake: bool,
     ) {
@@ -211,7 +211,7 @@ where
         if idx == 0 {
             let _ = self.queue.pop_front();
             self.base = self.base.wrapping_add(1);
-            if let Err(err) = state.write_result(item, codec) {
+            if let Err(err) = write.encode_result(item, codec) {
                 self.error = Some(err.into());
             }
 
@@ -219,13 +219,13 @@ where
             while let Some(item) = self.queue.front_mut().and_then(|v| v.take()) {
                 let _ = self.queue.pop_front();
                 self.base = self.base.wrapping_add(1);
-                if let Err(err) = state.write_result(item, codec) {
+                if let Err(err) = write.encode_result(item, codec) {
                     self.error = Some(err.into());
                 }
             }
 
             if wake && self.queue.is_empty() {
-                state.dsp_wake_task()
+                write.wake_dispatcher()
             }
         } else {
             self.queue[idx] = ServiceResult::Ready(item);
@@ -243,6 +243,8 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.as_mut().project();
+        let read = this.state.read();
+        let write = this.state.write();
 
         // log::trace!("IO-DISP poll :{:?}:", this.st);
 
@@ -254,7 +256,7 @@ where
                     this.inner.borrow_mut().handle_result(
                         item,
                         *this.response_idx,
-                        this.state,
+                        write,
                         this.codec,
                         false,
                     );
@@ -273,7 +275,7 @@ where
                             let mut retry = false;
 
                             // service is ready, wake io read task
-                            this.state.dsp_restart_read_task();
+                            read.resume();
 
                             // check keepalive timeout
                             if this.state.is_keepalive() {
@@ -282,10 +284,10 @@ where
                                 if inner.error.is_none() {
                                     inner.error = Some(IoDispatcherError::KeepAlive);
                                 }
-                                this.state.dsp_mark_stopped();
+                                this.state.dispatcher_stopped();
                             }
 
-                            let item = if this.state.is_dsp_stopped() {
+                            let item = if this.state.is_dispatcher_stopped() {
                                 log::trace!("dispatcher is instructed to stop");
                                 let mut inner = this.inner.borrow_mut();
 
@@ -314,8 +316,8 @@ where
                                 item
                             } else {
                                 // decode incoming bytes stream
-                                if this.state.is_read_ready() {
-                                    match this.state.decode_item(this.codec) {
+                                if read.is_ready() {
+                                    match read.decode(this.codec) {
                                         Ok(Some(el)) => {
                                             // update keep-alive timer
                                             if *this.keepalive_timeout != 0 {
@@ -337,7 +339,7 @@ where
                                         }
                                         Ok(None) => {
                                             // log::trace!("not enough data to decode next frame, register dispatch task");
-                                            this.state.dsp_read_more_data(cx.waker());
+                                            read.wake(cx.waker());
                                             return Poll::Pending;
                                         }
                                         Err(err) => {
@@ -359,7 +361,7 @@ where
                                         }
                                     }
                                 } else {
-                                    this.state.dsp_register_task(cx.waker());
+                                    this.state.register_dispatcher(cx.waker());
                                     return Poll::Pending;
                                 }
                             };
@@ -380,7 +382,7 @@ where
                                         // check if current result is only response atm
                                         if inner.queue.is_empty() {
                                             if let Err(err) =
-                                                this.state.write_result(res, this.codec)
+                                                write.encode_result(res, this.codec)
                                             {
                                                 inner.error = Some(err.into());
                                             }
@@ -406,7 +408,7 @@ where
                                         inner.borrow_mut().handle_result(
                                             item,
                                             response_idx,
-                                            &st,
+                                            st.write(),
                                             &codec,
                                             true,
                                         );
@@ -422,7 +424,7 @@ where
                         Poll::Pending => {
                             // pause io read task
                             log::trace!("service is not ready, register dispatch task");
-                            this.state.dsp_service_not_ready(cx.waker());
+                            read.pause(cx.waker());
                             return Poll::Pending;
                         }
                         Poll::Ready(Err(err)) => {
@@ -431,7 +433,7 @@ where
                             *this.st = IoDispatcherState::Stop;
                             this.inner.borrow_mut().error =
                                 Some(IoDispatcherError::Service(err));
-                            this.state.dsp_mark_stopped();
+                            this.state.dispatcher_stopped();
 
                             // unregister keep-alive timer
                             if *this.keepalive_timeout != 0 {
@@ -457,7 +459,7 @@ where
                     *this.st = IoDispatcherState::Shutdown;
                     self.poll(cx)
                 } else {
-                    this.state.dsp_register_task(cx.waker());
+                    this.state.register_dispatcher(cx.waker());
                     Poll::Pending
                 }
             }
@@ -636,7 +638,7 @@ mod tests {
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
 
-        assert!(st.write_item(Bytes::from_static(b"test"), &BytesCodec).is_ok());
+        assert!(st.write().encode(Bytes::from_static(b"test"), &BytesCodec).is_ok());
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"test"));
 
@@ -662,7 +664,10 @@ mod tests {
         );
         ntex::rt::spawn(disp.map(|_| ()));
 
-        state.write_item(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec).unwrap();
+        state
+            .write()
+            .encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec)
+            .unwrap();
 
         // buffer should be flushed
         client.remote_buffer_cap(1024);

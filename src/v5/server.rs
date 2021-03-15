@@ -456,10 +456,8 @@ where
                         ack.packet.server_keepalive_sec = Some(ack.keepalive as u16);
                     }
 
+                    state.set_buffer_sizes(ack.read_hw, ack.write_hw, ack.lw);
                     state
-                        .low_watermark(ack.lw)
-                        .read_high_watermark(ack.read_hw)
-                        .write_high_watermark(ack.write_hw)
                         .send(&mut ack.io, &shared.codec, mqtt::Packet::ConnectAck(ack.packet))
                         .await?;
 
@@ -483,7 +481,8 @@ where
                         && ack
                             .shared
                             .state
-                            .write_item(mqtt::Packet::ConnectAck(ack.packet), &ack.shared.codec)
+                            .write()
+                            .encode(mqtt::Packet::ConnectAck(ack.packet), &ack.shared.codec)
                             .is_ok()
                     {
                         WriteTask::shutdown(

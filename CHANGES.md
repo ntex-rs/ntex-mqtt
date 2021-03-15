@@ -1,5 +1,9 @@
 # Changes
 
+## [0.6.3] - 2021-03-15
+
+* `HandshakeAck::buffer_sizes()` replaces individual methods for buffer sizes
+
 ## [0.6.2] - 2021-03-04
 
 * Allow to override io buffer params
