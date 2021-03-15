@@ -388,7 +388,7 @@ where
 
                     log::trace!("Sending success handshake ack: {:#?}", pkt);
 
-                    state.set_buffer_sizes(ack.read_hw, ack.write_hw, ack.lw);
+                    state.set_buffer_params(ack.read_hw, ack.write_hw, ack.lw);
                     state.send(&mut ack.io, &ack.shared.codec, pkt).await?;
 
                     Ok((

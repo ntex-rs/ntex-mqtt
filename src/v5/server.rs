@@ -456,7 +456,7 @@ where
                         ack.packet.server_keepalive_sec = Some(ack.keepalive as u16);
                     }
 
-                    state.set_buffer_sizes(ack.read_hw, ack.write_hw, ack.lw);
+                    state.set_buffer_params(ack.read_hw, ack.write_hw, ack.lw);
                     state
                         .send(&mut ack.io, &shared.codec, mqtt::Packet::ConnectAck(ack.packet))
                         .await?;

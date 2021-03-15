@@ -143,7 +143,7 @@ impl<Io, St> HandshakeAck<Io, St> {
     ///
     /// By default max buffer size is 4kb for both read and write buffer,
     /// Min size is 256 bytes.
-    pub fn buffer_sizes(
+    pub fn buffer_params(
         mut self,
         max_read_buf: u16,
         max_write_buf: u16,
