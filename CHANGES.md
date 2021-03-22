@@ -3,6 +3,7 @@
 ## [0.6.4] - 2021-03-15
 
 * `HandshakeAck::buffer_params()` replaces individual methods for buffer sizes
+* v5: Add a `packet()` function to `Subscribe` and `Unsubscribe`
 
 ## [0.6.2] - 2021-03-04
 
