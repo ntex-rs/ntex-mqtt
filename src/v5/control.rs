@@ -141,6 +141,11 @@ impl Subscribe {
             disconnect: false,
         }
     }
+
+    /// Returns reference to subscribe packet
+    pub fn packet(&self) -> &codec::Subscribe {
+        &self.packet
+    }
 }
 
 impl<'a> IntoIterator for &'a mut Subscribe {
@@ -294,6 +299,11 @@ impl Unsubscribe {
             packet: Some(codec::Packet::UnsubscribeAck(self.result)),
             disconnect: false,
         }
+    }
+
+    /// Returns reference to unsubscribe packet
+    pub fn packet(&self) -> &codec::Unsubscribe {
+        &self.packet
     }
 }
 
