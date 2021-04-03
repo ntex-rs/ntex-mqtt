@@ -1,13 +1,11 @@
-use std::{fmt, num::NonZeroU16, num::NonZeroU32, rc::Rc};
+use std::{fmt, future::Future, num::NonZeroU16, num::NonZeroU32, rc::Rc};
 
-use futures::future::{ready, Either, Future, FutureExt};
-use ntex::util::{ByteString, Bytes};
-
-use crate::types::QoS;
+use ntex::util::{ByteString, Bytes, Either};
 
 use super::codec;
 use super::error::{ProtocolError, PublishQos1Error, SendPacketError};
 use super::shared::{Ack, AckType, MqttShared};
+use crate::types::QoS;
 
 pub struct MqttSink(Rc<MqttShared>);
 
@@ -38,15 +36,16 @@ impl MqttSink {
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
         let mut queues = self.0.queues.borrow_mut();
-        if !self.is_open() {
-            Either::Left(ready(false))
+        let result = if !self.is_open() {
+            false
         } else if queues.inflight.len() >= self.0.cap.get() {
             let (tx, rx) = self.0.pool.waiters.channel();
             queues.waiters.push_back(tx);
-            Either::Right(rx.map(|v| v.is_ok()))
+            return Either::Right(async move { rx.await.is_ok() });
         } else {
-            Either::Left(ready(true))
-        }
+            true
+        };
+        Either::Left(async move { result })
     }
 
     /// Close mqtt connection with default Disconnect message

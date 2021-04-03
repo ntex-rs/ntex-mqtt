@@ -1,9 +1,6 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::rc::Rc;
 use std::task::{Context, Poll};
+use std::{future::Future, pin::Pin, rc::Rc};
 
-use futures::future::{join_all, JoinAll, LocalBoxFuture};
 use ntex::router::{IntoPattern, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
@@ -92,62 +89,22 @@ where
     type Error = Err;
     type InitError = Err;
     type Service = RouterService<Err>;
-    type Future = RouterFactoryFut<Err>;
+    type Future = Pin<Box<dyn Future<Output = Result<RouterService<Err>, Err>>>>;
 
     fn new_service(&self, session: S) -> Self::Future {
         let fut: Vec<_> =
             self.handlers.iter().map(|h| h.new_service(session.clone())).collect();
+        let default_fut = self.default.new_service(session);
+        let router = self.router.clone();
 
-        RouterFactoryFut {
-            router: self.router.clone(),
-            handlers: join_all(fut),
-            default: Some(ntex::util::Either::Left(self.default.new_service(session))),
-        }
-    }
-}
-
-pub struct RouterFactoryFut<Err> {
-    router: Rc<ntex::router::Router<usize>>,
-    handlers: JoinAll<LocalBoxFuture<'static, Result<HandlerService<Err>, Err>>>,
-    default: Option<
-        ntex::util::Either<
-            LocalBoxFuture<'static, Result<HandlerService<Err>, Err>>,
-            HandlerService<Err>,
-        >,
-    >,
-}
-
-impl<Err> Future for RouterFactoryFut<Err> {
-    type Output = Result<RouterService<Err>, Err>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let res = match self.default.as_mut().unwrap() {
-            ntex::util::Either::Left(ref mut fut) => {
-                let default = match futures::ready!(Pin::new(fut).poll(cx)) {
-                    Ok(default) => default,
-                    Err(e) => return Poll::Ready(Err(e)),
-                };
-                self.default = Some(ntex::util::Either::Right(default));
-                return self.poll(cx);
+        Box::pin(async move {
+            let mut handlers = Vec::new();
+            for handler in fut {
+                handlers.push(handler.await?);
             }
-            ntex::util::Either::Right(_) => {
-                futures::ready!(Pin::new(&mut self.handlers).poll(cx))
-            }
-        };
 
-        let mut handlers = Vec::new();
-        for handler in res {
-            match handler {
-                Ok(h) => handlers.push(h),
-                Err(e) => return Poll::Ready(Err(e)),
-            }
-        }
-
-        Poll::Ready(Ok(RouterService {
-            handlers,
-            router: self.router.clone(),
-            default: self.default.take().unwrap().right().unwrap(),
-        }))
+            Ok(RouterService { router, handlers, default: default_fut.await? })
+        })
     }
 }
 
@@ -161,7 +118,7 @@ impl<Err> Service for RouterService<Err> {
     type Request = Publish;
     type Response = ();
     type Error = Err;
-    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;

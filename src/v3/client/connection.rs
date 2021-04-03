@@ -1,10 +1,10 @@
-use std::{marker::PhantomData, rc::Rc, time::Duration, time::Instant};
+use std::{future::Future, marker::PhantomData, rc::Rc, time::Duration, time::Instant};
 
-use futures::future::{err, ok, Either, Future, TryFutureExt};
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::router::{IntoPattern, Router, RouterBuilder};
 use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::{apply_fn, boxed::BoxService, into_service, IntoService, Service};
+use ntex::util::{Either, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::{DispatchItem, Dispatcher, Timer};
@@ -99,8 +99,8 @@ where
         let dispatcher = create_dispatcher(
             MqttSink::new(self.shared.clone()),
             self.max_receive,
-            into_service(|pkt| ok(ntex::util::Either::Right(pkt))),
-            into_service(|msg: ControlMessage| ok::<_, MqttError<()>>(msg.disconnect())),
+            into_service(|pkt| Ready::Ok(Either::Right(pkt))),
+            into_service(|msg: ControlMessage| Ready::<_, MqttError<()>>::Ok(msg.disconnect())),
         );
 
         let _ = Dispatcher::with(
@@ -109,20 +109,20 @@ where
             self.shared.clone(),
             apply_fn(dispatcher, |req: DispatchItem<Rc<MqttShared>>, srv| match req {
                 DispatchItem::Item(req) => Either::Left(srv.call(req)),
-                DispatchItem::KeepAliveTimeout => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
-                }
+                DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(
+                    MqttError::Protocol(ProtocolError::KeepAliveTimeout),
+                )),
                 DispatchItem::EncoderError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Encode(e))))
                 }
                 DispatchItem::DecoderError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Decode(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Decode(e))))
                 }
                 DispatchItem::IoError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
                 DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
-                    Either::Right(ok(None))
+                    Either::Right(Ready::Ok(None))
                 }
             }),
             Timer::with(Duration::from_secs(1)),
@@ -146,7 +146,7 @@ where
         let dispatcher = create_dispatcher(
             MqttSink::new(self.shared.clone()),
             self.max_receive,
-            into_service(|pkt| ok(ntex::util::Either::Right(pkt))),
+            into_service(|pkt| Ready::Ok(Either::Right(pkt))),
             service.into_service().map_err(MqttError::Service),
         );
 
@@ -156,20 +156,20 @@ where
             self.shared.clone(),
             apply_fn(dispatcher, |req: DispatchItem<Rc<MqttShared>>, srv| match req {
                 DispatchItem::Item(req) => Either::Left(srv.call(req)),
-                DispatchItem::KeepAliveTimeout => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
-                }
+                DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(
+                    MqttError::Protocol(ProtocolError::KeepAliveTimeout),
+                )),
                 DispatchItem::EncoderError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Encode(e))))
                 }
                 DispatchItem::DecoderError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Decode(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Decode(e))))
                 }
                 DispatchItem::IoError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
                 DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
-                    Either::Right(ok(None))
+                    Either::Right(Ready::Ok(None))
                 }
             }),
             Timer::with(Duration::from_secs(1)),
@@ -222,7 +222,9 @@ where
             MqttSink::new(self.shared.clone()),
             self.max_receive,
             dispatch(self.builder.finish(), self.handlers),
-            into_service(|msg: ControlMessage| ok::<_, MqttError<Err>>(msg.disconnect())),
+            into_service(|msg: ControlMessage| {
+                Ready::<_, MqttError<Err>>::Ok(msg.disconnect())
+            }),
         );
 
         let _ = Dispatcher::with(
@@ -231,20 +233,20 @@ where
             self.shared.clone(),
             apply_fn(dispatcher, |req: DispatchItem<Rc<MqttShared>>, srv| match req {
                 DispatchItem::Item(req) => Either::Left(srv.call(req)),
-                DispatchItem::KeepAliveTimeout => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
-                }
+                DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(
+                    MqttError::Protocol(ProtocolError::KeepAliveTimeout),
+                )),
                 DispatchItem::EncoderError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Encode(e))))
                 }
                 DispatchItem::DecoderError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Decode(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Decode(e))))
                 }
                 DispatchItem::IoError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
                 DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
-                    Either::Right(ok(None))
+                    Either::Right(Ready::Ok(None))
                 }
             }),
             Timer::with(Duration::from_secs(1)),
@@ -277,20 +279,20 @@ where
             self.shared.clone(),
             apply_fn(dispatcher, |req: DispatchItem<Rc<MqttShared>>, srv| match req {
                 DispatchItem::Item(req) => Either::Left(srv.call(req)),
-                DispatchItem::KeepAliveTimeout => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
-                }
+                DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(
+                    MqttError::Protocol(ProtocolError::KeepAliveTimeout),
+                )),
                 DispatchItem::EncoderError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Encode(e))))
                 }
                 DispatchItem::DecoderError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Decode(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Decode(e))))
                 }
                 DispatchItem::IoError(e) => {
-                    Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Io(e))))
                 }
                 DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
-                    Either::Right(ok(None))
+                    Either::Right(Ready::Ok(None))
                 }
             }),
             Timer::with(Duration::from_secs(1)),
@@ -304,11 +306,7 @@ where
 fn dispatch<Err, PErr>(
     router: Router<usize>,
     handlers: Vec<Handler<PErr>>,
-) -> impl Service<
-    Request = Publish,
-    Response = ntex::util::Either<(), Publish>,
-    Error = MqttError<Err>,
->
+) -> impl Service<Request = Publish, Response = Either<(), Publish>, Error = MqttError<Err>>
 where
     PErr: 'static,
     Err: From<PErr>,
@@ -316,16 +314,18 @@ where
     into_service(move |mut req: Publish| {
         if let Some((idx, _info)) = router.recognize(req.topic_mut()) {
             // exec handler
-            return Either::Left(call(req, &handlers[*idx]).map_err(MqttError::Service));
+            let fut = call(req, &handlers[*idx]);
+            Either::Left(async move { fut.await.map_err(MqttError::Service) })
+        } else {
+            Either::Right(Ready::<_, MqttError<Err>>::Ok(Either::Right(req)))
         }
-        Either::Right(ok::<_, MqttError<Err>>(ntex::util::Either::Right(req)))
     })
 }
 
 fn call<S, Err, PErr>(
     req: Publish,
     srv: &S,
-) -> impl Future<Output = Result<ntex::util::Either<(), Publish>, Err>>
+) -> impl Future<Output = Result<Either<(), Publish>, Err>>
 where
     S: Service<Request = Publish, Response = (), Error = PErr>,
     Err: From<PErr>,
@@ -334,7 +334,7 @@ where
 
     async move {
         match fut.await {
-            Ok(_) => Ok(ntex::util::Either::Left(())),
+            Ok(_) => Ok(Either::Left(())),
             Err(err) => Err(err.into()),
         }
     }

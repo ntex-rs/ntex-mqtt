@@ -1,8 +1,5 @@
-use std::{
-    cell::RefCell, convert::TryFrom, fmt, marker::PhantomData, pin::Pin, rc::Rc, time::Duration,
-};
+use std::{cell::RefCell, convert::TryFrom, fmt, marker, pin::Pin, rc::Rc, time::Duration};
 
-use futures::future::TryFutureExt;
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::framed::{State, WriteTask};
 use ntex::rt::time::Sleep;
@@ -35,7 +32,7 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     disconnect_timeout: u16,
     max_topic_alias: u16,
     pool: Rc<MqttSinkPool>,
-    _t: PhantomData<(Io, St)>,
+    _t: marker::PhantomData<(Io, St)>,
 }
 
 impl<Io, St, C>
@@ -68,7 +65,7 @@ where
             disconnect_timeout: 3000,
             max_topic_alias: 32,
             pool: Rc::new(MqttSinkPool::default()),
-            _t: PhantomData,
+            _t: marker::PhantomData,
         }
     }
 }
@@ -165,7 +162,7 @@ where
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
-            _t: PhantomData,
+            _t: marker::PhantomData,
         }
     }
 
@@ -190,7 +187,7 @@ where
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
-            _t: PhantomData,
+            _t: marker::PhantomData,
         }
     }
 }
@@ -299,10 +296,12 @@ where
         ntex::fn_factory(move || {
             let pool = pool.clone();
 
-            factory.new_service(()).map_ok(move |service| {
+            let fut = factory.new_service(());
+            async move {
+                let service = fut.await?;
                 let pool = pool.clone();
                 let service = Rc::new(service.map_err(MqttError::Service));
-                ntex::apply_fn(service, move |io: Io, service| {
+                Ok::<_, C::InitError>(ntex::apply_fn(service, move |io: Io, service| {
                     handshake(
                         io,
                         None,
@@ -313,8 +312,8 @@ where
                         max_qos,
                         pool.clone(),
                     )
-                })
-            })
+                }))
+            }
         }),
     )
     .map_err(|e| match e {
@@ -347,10 +346,12 @@ where
         Timeout::new(Duration::from_millis(handshake_timeout as u64)),
         ntex::fn_factory(move || {
             let pool = pool.clone();
-            factory.new_service(()).map_ok(move |service| {
+            let fut = factory.new_service(());
+            async move {
+                let service = fut.await?;
                 let pool = pool.clone();
                 let service = Rc::new(service.map_err(MqttError::Service));
-                ntex::apply_fn(service, move |(io, state), service| {
+                Ok::<_, C::InitError>(ntex::apply_fn(service, move |(io, state), service| {
                     handshake(
                         io,
                         Some(state),
@@ -361,8 +362,8 @@ where
                         max_qos,
                         pool.clone(),
                     )
-                })
-            })
+                }))
+            }
         }),
     )
     .map_err(|e| match e {

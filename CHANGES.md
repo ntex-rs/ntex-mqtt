@@ -1,8 +1,10 @@
 # Changes
 
-## [0.6.5] - 2021-xx-xx
+## [0.6.5] - 2021-04-03
 
 * v5: Add a `packet()` function to `Subscribe` and `Unsubscribe`
+
+* upgrade ntex, drop direct futures dependency
 
 ## [0.6.4] - 2021-03-15
 

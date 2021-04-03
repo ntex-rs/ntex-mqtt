@@ -1,13 +1,12 @@
 use std::time::{Duration, Instant};
-use std::{cell::RefCell, convert::TryFrom, marker::PhantomData, num::NonZeroU16, rc::Rc};
+use std::{cell::RefCell, convert::TryFrom, future::Future, marker, num::NonZeroU16, rc::Rc};
 
-use futures::future::{ok, Either, Future};
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::boxed::BoxService;
 use ntex::service::{into_service, IntoService, Service};
-use ntex::util::{ByteString, HashMap};
+use ntex::util::{ByteString, Either, HashMap, Ready};
 
 use crate::error::MqttError;
 use crate::io::{Dispatcher, Timer};
@@ -100,7 +99,7 @@ where
             keepalive: self.keepalive,
             disconnect_timeout: self.disconnect_timeout,
             max_receive: self.max_receive,
-            _t: PhantomData,
+            _t: marker::PhantomData,
         }
     }
 
@@ -116,9 +115,9 @@ where
             MqttSink::new(self.shared.clone()),
             self.max_receive,
             16,
-            into_service(|pkt| ok(ntex::util::Either::Left(pkt))),
+            into_service(|pkt| Ready::Ok(Either::Left(pkt))),
             into_service(|msg: ControlMessage<()>| {
-                ok(msg.disconnect(codec::Disconnect::default()))
+                Ready::Ok(msg.disconnect(codec::Disconnect::default()))
             }),
         );
 
@@ -149,7 +148,7 @@ where
             MqttSink::new(self.shared.clone()),
             self.max_receive,
             16,
-            into_service(|pkt| ok(ntex::util::Either::Left(pkt))),
+            into_service(|pkt| Ready::Ok(Either::Left(pkt))),
             service.into_service(),
         );
 
@@ -177,7 +176,7 @@ pub struct ClientRouter<Io, Err, PErr> {
     keepalive: u16,
     disconnect_timeout: u16,
     max_receive: usize,
-    _t: PhantomData<Err>,
+    _t: marker::PhantomData<Err>,
 }
 
 impl<Io, Err, PErr> ClientRouter<Io, Err, PErr>
@@ -211,7 +210,7 @@ where
             16,
             dispatch(self.builder.finish(), self.handlers),
             into_service(|msg: ControlMessage<Err>| {
-                ok(msg.disconnect(codec::Disconnect::default()))
+                Ready::Ok(msg.disconnect(codec::Disconnect::default()))
             }),
         );
 
@@ -262,7 +261,7 @@ where
 fn dispatch<Err, PErr>(
     router: Router<usize>,
     handlers: Vec<Handler<PErr>>,
-) -> impl Service<Request = Publish, Response = ntex::util::Either<Publish, PublishAck>, Error = Err>
+) -> impl Service<Request = Publish, Response = Either<Publish, PublishAck>, Error = Err>
 where
     PErr: 'static,
     PublishAck: TryFrom<PErr, Error = Err>,
@@ -293,14 +292,14 @@ where
             }
         }
 
-        Either::Right(ok::<_, Err>(ntex::util::Either::Left(req)))
+        Either::Right(Ready::<_, Err>::Ok(Either::Left(req)))
     })
 }
 
 fn call<S, Err>(
     req: Publish,
     srv: &S,
-) -> impl Future<Output = Result<ntex::util::Either<Publish, PublishAck>, Err>>
+) -> impl Future<Output = Result<Either<Publish, PublishAck>, Err>>
 where
     S: Service<Request = Publish, Response = PublishAck>,
     PublishAck: TryFrom<S::Error, Error = Err>,
@@ -309,9 +308,9 @@ where
 
     async move {
         match fut.await {
-            Ok(ack) => Ok(ntex::util::Either::Right(ack)),
+            Ok(ack) => Ok(Either::Right(ack)),
             Err(err) => match PublishAck::try_from(err) {
-                Ok(ack) => Ok(ntex::util::Either::Right(ack)),
+                Ok(ack) => Ok(Either::Right(ack)),
                 Err(err) => Err(err),
             },
         }

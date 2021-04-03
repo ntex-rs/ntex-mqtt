@@ -3,7 +3,7 @@ use std::task::{Context, Poll};
 use std::{convert::TryFrom, future::Future, io::Cursor, pin::Pin};
 
 use ntex::service::Service;
-use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut, Either};
+use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 use crate::error::{DecodeError, EncodeError};
 
@@ -302,43 +302,6 @@ pub(crate) fn write_variable_length(len: u32, dst: &mut BytesMut) {
             ]);
         }
         _ => panic!("length is too big"), // todo: verify at higher level
-    }
-}
-
-pin_project_lite::pin_project! {
-    pub(crate) struct Select<A, B> {
-        #[pin]
-        fut_a: A,
-        #[pin]
-        fut_b: B,
-    }
-}
-
-impl<A, B> Select<A, B> {
-    pub(crate) fn new(fut_a: A, fut_b: B) -> Self {
-        Self { fut_a, fut_b }
-    }
-}
-
-impl<A, B> Future for Select<A, B>
-where
-    A: Future,
-    B: Future,
-{
-    type Output = Either<A::Output, B::Output>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-
-        if let Poll::Ready(item) = this.fut_a.poll(cx) {
-            return Poll::Ready(Either::Left(item));
-        }
-
-        if let Poll::Ready(item) = this.fut_b.poll(cx) {
-            return Poll::Ready(Either::Right(item));
-        }
-
-        Poll::Pending
     }
 }
 

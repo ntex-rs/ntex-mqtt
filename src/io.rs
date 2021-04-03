@@ -1,11 +1,6 @@
 //! Framed transport dispatcher
 use std::task::{Context, Poll};
-use std::{
-    cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time::Duration,
-    time::Instant,
-};
-
-use futures::FutureExt;
+use std::{cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time};
 
 pub(crate) use ntex::framed::{DispatchItem, ReadTask, State, Timer, Write, WriteTask};
 
@@ -32,7 +27,7 @@ pin_project_lite::pin_project! {
         inner: Rc<RefCell<DispatcherState<S, U>>>,
         st: IoDispatcherState,
         timer: Timer,
-        updated: Instant,
+        updated: time::Instant,
         keepalive_timeout: u16,
         #[pin]
         response: Option<S::Future>,
@@ -128,7 +123,7 @@ where
         let io = Rc::new(RefCell::new(io));
 
         // register keepalive timer
-        let expire = updated + Duration::from_secs(keepalive_timeout as u64);
+        let expire = updated + time::Duration::from_secs(keepalive_timeout as u64);
         timer.register(expire, expire, &state);
 
         let inner = Rc::new(RefCell::new(DispatcherState {
@@ -162,11 +157,11 @@ where
     /// By default keep-alive timeout is set to 30 seconds.
     pub(crate) fn keepalive_timeout(mut self, timeout: u16) -> Self {
         // register keepalive timer
-        let prev = self.updated + Duration::from_secs(self.keepalive_timeout as u64);
+        let prev = self.updated + time::Duration::from_secs(self.keepalive_timeout as u64);
         if timeout == 0 {
             self.timer.unregister(prev, &self.state);
         } else {
-            let expire = self.updated + Duration::from_secs(timeout as u64);
+            let expire = self.updated + time::Duration::from_secs(timeout as u64);
             self.timer.register(expire, prev, &self.state);
         }
 
@@ -295,7 +290,7 @@ where
                                     // unregister keep-alive timer
                                     this.timer.unregister(
                                         *this.updated
-                                            + Duration::from_secs(
+                                            + time::Duration::from_secs(
                                                 *this.keepalive_timeout as u64,
                                             ),
                                         this.state,
@@ -323,7 +318,7 @@ where
                                             if *this.keepalive_timeout != 0 {
                                                 let updated = this.timer.now();
                                                 if updated != *this.updated {
-                                                    let ka = Duration::from_secs(
+                                                    let ka = time::Duration::from_secs(
                                                         *this.keepalive_timeout as u64,
                                                     );
                                                     this.timer.register(
@@ -350,7 +345,7 @@ where
                                             if *this.keepalive_timeout != 0 {
                                                 this.timer.unregister(
                                                     *this.updated
-                                                        + Duration::from_secs(
+                                                        + time::Duration::from_secs(
                                                             *this.keepalive_timeout as u64,
                                                         ),
                                                     this.state,
@@ -404,7 +399,9 @@ where
                                     let st = this.state.clone();
                                     let codec = this.codec.clone();
                                     let inner = this.inner.clone();
-                                    ntex::rt::spawn(this.service.call(item).map(move |item| {
+                                    let fut = this.service.call(item);
+                                    ntex::rt::spawn(async move {
+                                        let item = fut.await;
                                         inner.borrow_mut().handle_result(
                                             item,
                                             response_idx,
@@ -412,7 +409,7 @@ where
                                             &codec,
                                             true,
                                         );
-                                    }));
+                                    });
                                 }
                             }
 
@@ -439,7 +436,9 @@ where
                             if *this.keepalive_timeout != 0 {
                                 this.timer.unregister(
                                     *this.updated
-                                        + Duration::from_secs(*this.keepalive_timeout as u64),
+                                        + time::Duration::from_secs(
+                                            *this.keepalive_timeout as u64,
+                                        ),
                                     this.state,
                                 );
                             }
@@ -489,11 +488,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use futures::future::FutureExt;
-
     use ntex::channel::condition::Condition;
     use ntex::codec::BytesCodec;
-    use ntex::rt::time::delay_for;
+    use ntex::rt::time::sleep;
     use ntex::testing::Io;
     use ntex::util::Bytes;
 
@@ -517,7 +514,7 @@ mod tests {
         where
             T: AsyncRead + AsyncWrite + Unpin + 'static,
         {
-            let timer = Timer::with(Duration::from_secs(1));
+            let timer = Timer::with(time::Duration::from_secs(1));
             let keepalive_timeout = 30;
             let updated = timer.now();
             let io = Rc::new(RefCell::new(io));
@@ -556,7 +553,7 @@ mod tests {
             BytesCodec,
             State::new(),
             ntex::fn_service(|msg: DispatchItem<BytesCodec>| async move {
-                delay_for(Duration::from_millis(50)).await;
+                sleep(time::Duration::from_millis(50)).await;
                 if let DispatchItem::Item(msg) = msg {
                     Ok::<_, ()>(Some(msg.freeze()))
                 } else {
@@ -564,7 +561,9 @@ mod tests {
                 }
             }),
         );
-        ntex::rt::spawn(disp.map(|_| ()));
+        ntex::rt::spawn(async move {
+            let _ = disp.await;
+        });
 
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
@@ -598,13 +597,15 @@ mod tests {
                 }
             }),
         );
-        ntex::rt::spawn(disp.map(|_| ()));
-        delay_for(Duration::from_millis(50)).await;
+        ntex::rt::spawn(async move {
+            let _ = disp.await;
+        });
+        sleep(time::Duration::from_millis(50)).await;
 
         client.write("test");
-        delay_for(Duration::from_millis(50)).await;
+        sleep(time::Duration::from_millis(50)).await;
         client.write("test");
-        delay_for(Duration::from_millis(50)).await;
+        sleep(time::Duration::from_millis(50)).await;
         condition.notify();
 
         let buf = client.read().await.unwrap();
@@ -633,7 +634,9 @@ mod tests {
                 }
             }),
         );
-        ntex::rt::spawn(disp.disconnect_timeout(25).map(|_| ()));
+        ntex::rt::spawn(async move {
+            let _ = disp.disconnect_timeout(25).await;
+        });
 
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
@@ -643,7 +646,7 @@ mod tests {
         assert_eq!(buf, Bytes::from_static(b"test"));
 
         st.close();
-        delay_for(Duration::from_millis(200)).await;
+        sleep(time::Duration::from_millis(200)).await;
         assert!(client.is_server_dropped());
     }
 
@@ -662,7 +665,9 @@ mod tests {
                 Err::<Option<Bytes>, _>(())
             }),
         );
-        ntex::rt::spawn(disp.map(|_| ()));
+        ntex::rt::spawn(async move {
+            let _ = disp.await;
+        });
 
         state
             .write()

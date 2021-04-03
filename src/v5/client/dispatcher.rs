@@ -2,9 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
-use futures::future::{ok, Either, FutureExt, Ready};
 use ntex::service::Service;
-use ntex::util::HashSet;
+use ntex::util::{Either, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::v5::shared::{Ack, MqttShared};
@@ -107,7 +106,7 @@ where
     type Error = MqttError<E>;
     type Future = Either<
         PublishResponse<T, C, E>,
-        Either<Ready<Result<Self::Response, MqttError<E>>>, ControlResponse<C, E>>,
+        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<C, E>>,
     >;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -125,9 +124,10 @@ where
         if !self.shutdown.get() {
             self.inner.sink.drop_sink();
             self.shutdown.set(true);
-            ntex::rt::spawn(
-                self.inner.control.call(ControlMessage::closed(is_error)).map(|_| ()),
-            );
+            let fut = self.inner.control.call(ControlMessage::closed(is_error));
+            ntex::rt::spawn(async move {
+                let _ = fut.await;
+            });
         }
         Poll::Ready(())
     }
@@ -168,7 +168,7 @@ where
                                     ..Default::default()
                                 },
                             ));
-                            return Either::Right(Either::Left(ok(None)));
+                            return Either::Right(Either::Left(Ready::Ok(None)));
                         }
                     }
 
@@ -214,7 +214,7 @@ where
                         &self.inner,
                     )))
                 } else {
-                    Either::Right(Either::Left(ok(None)))
+                    Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             DispatchItem::Item(codec::Packet::SubscribeAck(packet)) => {
@@ -224,7 +224,7 @@ where
                         &self.inner,
                     )))
                 } else {
-                    Either::Right(Either::Left(ok(None)))
+                    Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             DispatchItem::Item(codec::Packet::UnsubscribeAck(packet)) => {
@@ -234,11 +234,11 @@ where
                         &self.inner,
                     )))
                 } else {
-                    Either::Right(Either::Left(ok(None)))
+                    Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             DispatchItem::Item(codec::Packet::PingRequest) => {
-                Either::Right(Either::Left(ok(Some(codec::Packet::PingResponse))))
+                Either::Right(Either::Left(Ready::Ok(Some(codec::Packet::PingResponse))))
             }
             DispatchItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(Either::Right(
                 ControlResponse::new(ControlMessage::dis(pkt), &self.inner),
@@ -271,11 +271,11 @@ where
                 )))
             }
             DispatchItem::Item(codec::Packet::PingResponse) => {
-                Either::Right(Either::Left(ok(None)))
+                Either::Right(Either::Left(Ready::Ok(None)))
             }
             DispatchItem::Item(pkt) => {
                 log::debug!("Unsupported packet: {:?}", pkt);
-                Either::Right(Either::Left(ok(None)))
+                Either::Right(Either::Left(Ready::Ok(None)))
             }
             DispatchItem::EncoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
@@ -300,7 +300,7 @@ where
                 )))
             }
             DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
-                Either::Right(Either::Left(ok(None)))
+                Either::Right(Either::Left(Ready::Ok(None)))
             }
         }
     }
@@ -341,8 +341,8 @@ where
 
         match this.state.as_mut().project() {
             PublishResponseStateProject::Publish { fut } => {
-                let ack = match futures::ready!(fut.poll(cx)) {
-                    Ok(res) => match res {
+                let ack = match fut.poll(cx) {
+                    Poll::Ready(Ok(res)) => match res {
                         ntex::util::Either::Right(ack) => ack,
                         ntex::util::Either::Left(pkt) => {
                             this.state.set(PublishResponseState::Control {
@@ -355,12 +355,13 @@ where
                             return self.poll(cx);
                         }
                     },
-                    Err(e) => {
+                    Poll::Ready(Err(e)) => {
                         this.state.set(PublishResponseState::Control {
                             fut: ControlResponse::new(ControlMessage::error(e), this.inner),
                         });
                         return self.poll(cx);
                     }
+                    Poll::Pending => return Poll::Pending,
                 };
                 if let Some(id) = NonZeroU16::new(*this.packet_id) {
                     this.inner.info.borrow_mut().inflight.remove(&id);
@@ -428,14 +429,14 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().project();
 
-        let result = match futures::ready!(this.fut.poll(cx)) {
-            Ok(result) => {
+        let result = match this.fut.poll(cx) {
+            Poll::Ready(Ok(result)) => {
                 if let Some(id) = NonZeroU16::new(self.packet_id) {
                     self.inner.info.borrow_mut().inflight.remove(&id);
                 }
                 result
             }
-            Err(err) => {
+            Poll::Ready(Err(err)) => {
                 // do not handle nested error
                 if *this.error {
                     return Poll::Ready(Err(MqttError::Service(err)));
@@ -447,6 +448,7 @@ where
                     return self.poll(cx);
                 }
             }
+            Poll::Pending => return Poll::Pending,
         };
 
         if self.error {

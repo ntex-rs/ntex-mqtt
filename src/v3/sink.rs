@@ -1,7 +1,5 @@
-use std::{fmt, num::NonZeroU16, rc::Rc};
-
-use futures::future::{ready, Either, Future, FutureExt};
-use ntex::util::{ByteString, Bytes};
+use ntex::util::{ByteString, Bytes, Either};
+use std::{fmt, future::Future, num::NonZeroU16, rc::Rc};
 
 use super::shared::{Ack, AckType, MqttShared};
 use super::{codec, error::ProtocolError, error::SendPacketError};
@@ -29,15 +27,16 @@ impl MqttSink {
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
         let mut queues = self.0.queues.borrow_mut();
-        if !self.0.state.is_open() {
-            Either::Left(ready(false))
+        let res = if !self.0.state.is_open() {
+            false
         } else if queues.inflight.len() >= self.0.cap.get() {
             let (tx, rx) = self.0.pool.waiters.channel();
             queues.waiters.push_back(tx);
-            Either::Right(rx.map(|v| v.is_ok()))
+            return Either::Right(async move { rx.await.is_ok() });
         } else {
-            Either::Left(ready(true))
-        }
+            true
+        };
+        Either::Left(async move { res })
     }
 
     /// Close mqtt connection
