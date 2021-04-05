@@ -1,10 +1,9 @@
 use std::{fmt, marker::PhantomData, pin::Pin, rc::Rc, time::Duration};
 
-use futures::future::{err, ok, Either, TryFutureExt};
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::rt::time::Sleep;
 use ntex::service::{apply_fn_factory, IntoServiceFactory, Service, ServiceFactory};
-use ntex::util::timeout::{Timeout, TimeoutError};
+use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::{DispatchItem, State};
@@ -195,20 +194,20 @@ where
                 factory(publish, control, self.inflight),
                 |req: DispatchItem<Rc<MqttShared>>, srv| match req {
                     DispatchItem::Item(req) => Either::Left(srv.call(req)),
-                    DispatchItem::KeepAliveTimeout => {
-                        Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
-                    }
+                    DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(
+                        MqttError::Protocol(ProtocolError::KeepAliveTimeout),
+                    )),
                     DispatchItem::EncoderError(e) => {
-                        Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
+                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Encode(e))))
                     }
                     DispatchItem::DecoderError(e) => {
-                        Either::Right(err(MqttError::Protocol(ProtocolError::Decode(e))))
+                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Decode(e))))
                     }
                     DispatchItem::IoError(e) => {
-                        Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Io(e))))
                     }
                     DispatchItem::WBackPressureEnabled
-                    | DispatchItem::WBackPressureDisabled => Either::Right(ok(None)),
+                    | DispatchItem::WBackPressureDisabled => Either::Right(Ready::Ok(None)),
                 },
             )),
         )
@@ -247,20 +246,20 @@ where
                 factory(publish, control, self.inflight),
                 |req: DispatchItem<Rc<MqttShared>>, srv| match req {
                     DispatchItem::Item(req) => Either::Left(srv.call(req)),
-                    DispatchItem::KeepAliveTimeout => {
-                        Either::Right(err(MqttError::Protocol(ProtocolError::KeepAliveTimeout)))
-                    }
+                    DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(
+                        MqttError::Protocol(ProtocolError::KeepAliveTimeout),
+                    )),
                     DispatchItem::EncoderError(e) => {
-                        Either::Right(err(MqttError::Protocol(ProtocolError::Encode(e))))
+                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Encode(e))))
                     }
                     DispatchItem::DecoderError(e) => {
-                        Either::Right(err(MqttError::Protocol(ProtocolError::Decode(e))))
+                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Decode(e))))
                     }
                     DispatchItem::IoError(e) => {
-                        Either::Right(err(MqttError::Protocol(ProtocolError::Io(e))))
+                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Io(e))))
                     }
                     DispatchItem::WBackPressureEnabled
-                    | DispatchItem::WBackPressureDisabled => Either::Right(ok(None)),
+                    | DispatchItem::WBackPressureDisabled => Either::Right(Ready::Ok(None)),
                 },
             )),
         )
@@ -287,13 +286,15 @@ where
         Timeout::new(Duration::from_millis(handshake_timeout as u64)),
         ntex::fn_factory(move || {
             let pool = pool.clone();
-            factory.new_service(()).map_ok(move |service| {
+            let fut = factory.new_service(());
+            async move {
+                let service = fut.await?;
                 let pool = pool.clone();
                 let service = Rc::new(service.map_err(MqttError::Service));
-                ntex::apply_fn(service, move |conn: Io, service| {
+                Ok::<_, C::InitError>(ntex::apply_fn(service, move |conn: Io, service| {
                     handshake(conn, None, service.clone(), max_size, pool.clone())
-                })
-            })
+                }))
+            }
         }),
     )
     .map_err(|e| match e {
@@ -323,13 +324,15 @@ where
         Timeout::new(Duration::from_millis(handshake_timeout as u64)),
         ntex::fn_factory(move || {
             let pool = pool.clone();
-            factory.new_service(()).map_ok(move |service| {
+            let fut = factory.new_service(());
+            async move {
+                let service = fut.await?;
                 let pool = pool.clone();
                 let service = Rc::new(service.map_err(MqttError::Service));
-                ntex::apply_fn(service, move |(io, state), service| {
+                Ok(ntex::apply_fn(service, move |(io, state), service| {
                     handshake(io, Some(state), service.clone(), max_size, pool.clone())
-                })
-            })
+                }))
+            }
         }),
     )
     .map_err(|e| match e {
@@ -388,12 +391,8 @@ where
 
                     log::trace!("Sending success handshake ack: {:#?}", pkt);
 
-                    state
-                        .low_watermark(ack.lw)
-                        .read_high_watermark(ack.read_hw)
-                        .write_high_watermark(ack.write_hw)
-                        .send(&mut ack.io, &ack.shared.codec, pkt)
-                        .await?;
+                    state.set_buffer_params(ack.read_hw, ack.write_hw, ack.lw);
+                    state.send(&mut ack.io, &ack.shared.codec, pkt).await?;
 
                     Ok((
                         ack.io,

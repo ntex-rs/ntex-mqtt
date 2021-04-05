@@ -1,12 +1,9 @@
 use std::cell::{Cell, RefCell};
 use std::task::{Context, Poll};
-use std::{
-    convert::TryFrom, future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc,
-};
+use std::{convert::TryFrom, future::Future, marker, num, pin::Pin, rc::Rc};
 
-use futures::future::{join, ok, Either, FutureExt, Ready};
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
-use ntex::util::HashSet;
+use ntex::util::{join, Either, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::DispatchItem;
@@ -74,7 +71,7 @@ pub(crate) struct Dispatcher<T, C, E, E2> {
     max_receive: usize,
     max_topic_alias: u16,
     inner: Rc<Inner<C>>,
-    _t: PhantomData<(E, E2)>,
+    _t: marker::PhantomData<(E, E2)>,
 }
 
 struct Inner<C> {
@@ -84,8 +81,8 @@ struct Inner<C> {
 }
 
 struct PublishInfo {
-    inflight: HashSet<NonZeroU16>,
-    aliases: HashSet<NonZeroU16>,
+    inflight: HashSet<num::NonZeroU16>,
+    aliases: HashSet<num::NonZeroU16>,
 }
 
 impl<T, C, E, E2> Dispatcher<T, C, E, E2>
@@ -115,7 +112,7 @@ where
                     inflight: HashSet::default(),
                 }),
             }),
-            _t: PhantomData,
+            _t: marker::PhantomData,
         }
     }
 }
@@ -133,7 +130,7 @@ where
     type Error = MqttError<E>;
     type Future = Either<
         PublishResponse<T, C, E, E2>,
-        Either<Ready<Result<Self::Response, MqttError<E>>>, ControlResponse<C, E>>,
+        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<C, E>>,
     >;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -151,9 +148,10 @@ where
         if !self.shutdown.get() {
             self.inner.sink.drop_sink();
             self.shutdown.set(true);
-            ntex::rt::spawn(
-                self.inner.control.call(ControlMessage::closed(is_error)).map(|_| ()),
-            );
+            let fut = self.inner.control.call(ControlMessage::closed(is_error));
+            ntex::rt::spawn(async move {
+                let _ = fut.await;
+            });
         }
         Poll::Ready(())
     }
@@ -192,7 +190,7 @@ where
                                 reason_code: codec::PublishAckReason::PacketIdentifierInUse,
                                 ..Default::default()
                             }));
-                            return Either::Right(Either::Left(ok(None)));
+                            return Either::Right(Either::Left(Ready::Ok(None)));
                         }
                     }
 
@@ -228,7 +226,7 @@ where
                     state: PublishResponseState::Publish {
                         fut: self.publish.call(Publish::new(publish)),
                     },
-                    _t: PhantomData,
+                    _t: marker::PhantomData,
                 })
             }
             DispatchItem::Item(codec::Packet::PublishAck(packet)) => {
@@ -238,7 +236,7 @@ where
                         &self.inner,
                     )))
                 } else {
-                    Either::Right(Either::Left(ok(None)))
+                    Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             DispatchItem::Item(codec::Packet::Auth(pkt)) => Either::Right(Either::Right(
@@ -264,7 +262,7 @@ where
                         properties: codec::UserProperties::new(),
                         reason_string: None,
                     }));
-                    return Either::Right(Either::Left(ok(None)));
+                    return Either::Right(Either::Left(Ready::Ok(None)));
                 }
                 let id = pkt.packet_id;
                 Either::Right(Either::Right(
@@ -286,7 +284,7 @@ where
                         properties: codec::UserProperties::new(),
                         reason_string: None,
                     }));
-                    return Either::Right(Either::Left(ok(None)));
+                    return Either::Right(Either::Left(Ready::Ok(None)));
                 }
                 let id = pkt.packet_id;
                 Either::Right(Either::Right(
@@ -294,7 +292,7 @@ where
                         .packet_id(id),
                 ))
             }
-            DispatchItem::Item(_) => Either::Right(Either::Left(ok(None))),
+            DispatchItem::Item(_) => Either::Right(Either::Left(Ready::Ok(None))),
             DispatchItem::EncoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Encode(err)),
@@ -318,7 +316,7 @@ where
                 &self.inner,
             ))),
             DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
-                Either::Right(Either::Left(ok(None)))
+                Either::Right(Either::Left(Ready::Ok(None)))
             }
         }
     }
@@ -331,7 +329,7 @@ pin_project_lite::pin_project! {
         state: PublishResponseState<T, C, E>,
         packet_id: u16,
         inner: Rc<Inner<C>>,
-        _t: PhantomData<(E, E2)>,
+        _t: marker::PhantomData<(E, E2)>,
     }
 }
 
@@ -357,9 +355,9 @@ where
 
         match this.state.as_mut().project() {
             PublishResponseStateProject::Publish { fut } => {
-                let ack = match futures::ready!(fut.poll(cx)) {
-                    Ok(ack) => ack,
-                    Err(e) => {
+                let ack = match fut.poll(cx) {
+                    Poll::Ready(Ok(ack)) => ack,
+                    Poll::Ready(Err(e)) => {
                         if *this.packet_id != 0 {
                             match PublishAck::try_from(e) {
                                 Ok(ack) => ack,
@@ -383,8 +381,9 @@ where
                             return self.poll(cx);
                         }
                     }
+                    Poll::Pending => return Poll::Pending,
                 };
-                if let Some(id) = NonZeroU16::new(*this.packet_id) {
+                if let Some(id) = num::NonZeroU16::new(*this.packet_id) {
                     this.inner.info.borrow_mut().inflight.remove(&id);
                     let ack = codec::PublishAck {
                         packet_id: id,
@@ -411,7 +410,7 @@ pin_project_lite::pin_project! {
         inner: Rc<Inner<C>>,
         error: bool,
         packet_id: u16,
-        _t: PhantomData<E>,
+        _t: marker::PhantomData<E>,
     }
 }
 
@@ -431,11 +430,11 @@ where
             fut: inner.control.call(pkt),
             inner: inner.clone(),
             packet_id: 0,
-            _t: PhantomData,
+            _t: marker::PhantomData,
         }
     }
 
-    fn packet_id(mut self, id: NonZeroU16) -> Self {
+    fn packet_id(mut self, id: num::NonZeroU16) -> Self {
         self.packet_id = id.get();
         self
     }
@@ -450,14 +449,14 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().project();
 
-        let result = match futures::ready!(this.fut.poll(cx)) {
-            Ok(result) => {
-                if let Some(id) = NonZeroU16::new(self.packet_id) {
+        let result = match this.fut.poll(cx) {
+            Poll::Ready(Ok(result)) => {
+                if let Some(id) = num::NonZeroU16::new(self.packet_id) {
                     self.inner.info.borrow_mut().inflight.remove(&id);
                 }
                 result
             }
-            Err(err) => {
+            Poll::Ready(Err(err)) => {
                 // do not handle nested error
                 if *this.error {
                     return Poll::Ready(Err(MqttError::Service(err)));
@@ -469,6 +468,7 @@ where
                     return self.poll(cx);
                 }
             }
+            Poll::Pending => return Poll::Pending,
         };
 
         if self.error {

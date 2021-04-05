@@ -1,10 +1,10 @@
 use std::task::{Context, Poll};
-use std::{convert::TryFrom, fmt, io, marker::PhantomData, pin::Pin, rc::Rc, time};
+use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin, rc::Rc, time};
 
-use futures::future::{err, join, ok, Future, FutureExt, LocalBoxFuture, Ready};
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::rt::time::{sleep, Sleep};
 use ntex::service::{Service, ServiceFactory};
+use ntex::util::{join, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::State;
@@ -16,7 +16,7 @@ pub struct MqttServer<Io, V3, V5, Err, InitErr> {
     v3: V3,
     v5: V5,
     handshake_timeout: usize,
-    _t: PhantomData<(Io, Err, InitErr)>,
+    _t: marker::PhantomData<(Io, Err, InitErr)>,
 }
 
 impl<Io, Err, InitErr>
@@ -34,7 +34,7 @@ impl<Io, Err, InitErr>
             v3: DefaultProtocolServer::new(ProtocolVersion::MQTT3),
             v5: DefaultProtocolServer::new(ProtocolVersion::MQTT5),
             handshake_timeout: 0,
-            _t: PhantomData,
+            _t: marker::PhantomData,
         }
     }
 }
@@ -125,7 +125,7 @@ where
             v3: service.inner_finish(),
             v5: self.v5,
             handshake_timeout: self.handshake_timeout,
-            _t: PhantomData,
+            _t: marker::PhantomData,
         }
     }
 
@@ -177,7 +177,7 @@ where
             v3: self.v3,
             v5: service.inner_finish(),
             handshake_timeout: self.handshake_timeout,
-            _t: PhantomData,
+            _t: marker::PhantomData,
         }
     }
 }
@@ -208,25 +208,27 @@ where
     type Error = MqttError<Err>;
     type Service = MqttServerImpl<Io, V3::Service, V5::Service, Err>;
     type InitError = InitErr;
-    type Future = LocalBoxFuture<
-        'static,
-        Result<MqttServerImpl<Io, V3::Service, V5::Service, Err>, InitErr>,
+    type Future = Pin<
+        Box<
+            dyn Future<
+                Output = Result<MqttServerImpl<Io, V3::Service, V5::Service, Err>, InitErr>,
+            >,
+        >,
     >;
 
     fn new_service(&self, _: ()) -> Self::Future {
         let handshake_timeout = self.handshake_timeout;
-
-        join(self.v3.new_service(()), self.v5.new_service(()))
-            .map(move |(v3, v5)| {
-                let v3 = v3?;
-                let v5 = v5?;
-                Ok(MqttServerImpl {
-                    handlers: Rc::new((v3, v5)),
-                    handshake_timeout,
-                    _t: PhantomData,
-                })
+        let fut = join(self.v3.new_service(()), self.v5.new_service(()));
+        Box::pin(async move {
+            let (v3, v5) = fut.await;
+            let v3 = v3?;
+            let v5 = v5?;
+            Ok(MqttServerImpl {
+                handlers: Rc::new((v3, v5)),
+                handshake_timeout,
+                _t: marker::PhantomData,
             })
-            .boxed_local()
+        })
     }
 }
 
@@ -234,7 +236,7 @@ where
 pub struct MqttServerImpl<Io, V3, V5, Err> {
     handlers: Rc<(V3, V5)>,
     handshake_timeout: usize,
-    _t: PhantomData<(Io, Err)>,
+    _t: marker::PhantomData<(Io, Err)>,
 }
 
 impl<Io, V3, V5, Err> Service for MqttServerImpl<Io, V3, V5, Err>
@@ -356,8 +358,8 @@ where
 
                     let st = item.as_mut().unwrap();
 
-                    match futures::ready!(st.1.poll_next(&mut st.0, &st.2, cx)) {
-                        Ok(Some(ver)) => {
+                    match st.1.poll_next(&mut st.0, &st.2, cx) {
+                        Poll::Ready(Ok(Some(ver))) => {
                             let (io, state, _, handlers, delay) = item.take().unwrap();
                             this = self.as_mut().project();
                             match ver {
@@ -374,8 +376,11 @@ where
                             }
                             continue;
                         }
-                        Ok(None) => return Poll::Ready(Err(MqttError::Disconnected)),
-                        Err(err) => return Poll::Ready(Err(MqttError::from(err))),
+                        Poll::Ready(Ok(None)) => {
+                            return Poll::Ready(Err(MqttError::Disconnected))
+                        }
+                        Poll::Ready(Err(err)) => return Poll::Ready(Err(MqttError::from(err))),
+                        Poll::Pending => return Poll::Pending,
                     }
                 }
             }
@@ -385,12 +390,12 @@ where
 
 pub struct DefaultProtocolServer<Io, Err, InitErr> {
     ver: ProtocolVersion,
-    _t: PhantomData<(Io, Err, InitErr)>,
+    _t: marker::PhantomData<(Io, Err, InitErr)>,
 }
 
 impl<Io, Err, InitErr> DefaultProtocolServer<Io, Err, InitErr> {
     fn new(ver: ProtocolVersion) -> Self {
-        Self { ver, _t: PhantomData }
+        Self { ver, _t: marker::PhantomData }
     }
 }
 
@@ -401,10 +406,10 @@ impl<Io, Err, InitErr> ServiceFactory for DefaultProtocolServer<Io, Err, InitErr
     type Error = MqttError<Err>;
     type Service = DefaultProtocolServer<Io, Err, InitErr>;
     type InitError = InitErr;
-    type Future = Ready<Result<Self::Service, Self::InitError>>;
+    type Future = Ready<Self::Service, Self::InitError>;
 
     fn new_service(&self, _: ()) -> Self::Future {
-        ok(DefaultProtocolServer { ver: self.ver, _t: PhantomData })
+        Ready::Ok(DefaultProtocolServer { ver: self.ver, _t: marker::PhantomData })
     }
 }
 
@@ -412,14 +417,14 @@ impl<Io, Err, InitErr> Service for DefaultProtocolServer<Io, Err, InitErr> {
     type Request = (Io, State, Option<Pin<Box<Sleep>>>);
     type Response = ();
     type Error = MqttError<Err>;
-    type Future = Ready<Result<Self::Response, Self::Error>>;
+    type Future = Ready<Self::Response, Self::Error>;
 
     fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
     fn call(&self, _: Self::Request) -> Self::Future {
-        err(MqttError::Protocol(ProtocolError::Io(io::Error::new(
+        Ready::Err(MqttError::Protocol(ProtocolError::Io(io::Error::new(
             io::ErrorKind::Other,
             format!("Protocol is not supported: {:?}", self.ver),
         ))))

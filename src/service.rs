@@ -1,10 +1,10 @@
 use std::task::{Context, Poll};
 use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc, time::Duration};
 
-use futures::future::{select, Either, FutureExt};
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 use ntex::rt::time::Sleep;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::util::{select, Either};
 
 use super::io::{DispatchItem, Dispatcher, State, Timer};
 
@@ -167,7 +167,10 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let connect = futures::ready!(this.fut.poll(cx))?;
+        let connect = match this.fut.poll(cx) {
+            Poll::Ready(result) => result?,
+            Poll::Pending => return Poll::Pending,
+        };
 
         Poll::Ready(Ok(FramedServiceImpl {
             connect,
@@ -413,7 +416,10 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let connect = futures::ready!(this.fut.poll(cx))?;
+        let connect = match this.fut.poll(cx) {
+            Poll::Ready(result) => result?,
+            Poll::Pending => return Poll::Pending,
+        };
 
         Poll::Ready(Ok(FramedServiceImpl2 {
             connect,
@@ -479,7 +485,7 @@ where
             let (io, state, codec, ka, handler) = if let Some(delay) = delay {
                 let res = select(
                     delay,
-                    async {
+                    Box::pin(async {
                         let (io, state, codec, st, ka) = handshake.await.map_err(|e| {
                             log::trace!("Connection handshake failed: {:?}", e);
                             e
@@ -490,8 +496,7 @@ where
                         log::trace!("Connection handler is created, starting dispatcher");
 
                         Ok::<_, C::Error>((io, state, codec, ka, handler))
-                    }
-                    .boxed_local(),
+                    }),
                 )
                 .await;
 
@@ -500,7 +505,7 @@ where
                         log::warn!("Handshake timed out");
                         return Ok(());
                     }
-                    Either::Right(item) => item.0?,
+                    Either::Right(item) => item?,
                 }
             } else {
                 let (io, state, codec, st, ka) = handshake.await.map_err(|e| {

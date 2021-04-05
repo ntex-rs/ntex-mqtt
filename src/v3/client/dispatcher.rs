@@ -2,9 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
-use futures::future::{err, ok, Either, FutureExt, Ready};
 use ntex::service::Service;
-use ntex::util::{inflight::InFlightService, HashSet};
+use ntex::util::{inflight::InFlightService, Either, HashSet, Ready};
 
 use crate::v3::shared::Ack;
 use crate::v3::{codec, control::ControlResultKind, publish::Publish, sink::MqttSink};
@@ -82,7 +81,7 @@ where
     type Error = MqttError<E>;
     type Future = Either<
         PublishResponse<T, C, E>,
-        Either<Ready<Result<Self::Response, MqttError<E>>>, ControlResponse<C, E>>,
+        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<C, E>>,
     >;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -100,9 +99,10 @@ where
         if !self.shutdown.get() {
             self.inner.sink.close();
             self.shutdown.set(true);
-            ntex::rt::spawn(
-                self.inner.control.call(ControlMessage::closed(is_error)).map(|_| ()),
-            );
+            let fut = self.inner.control.call(ControlMessage::closed(is_error));
+            ntex::rt::spawn(async move {
+                let _ = fut.await;
+            });
         }
         Poll::Ready(())
     }
@@ -118,7 +118,9 @@ where
                 if let Some(pid) = packet_id {
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
-                        return Either::Right(Either::Left(err(MqttError::V3ProtocolError)));
+                        return Either::Right(Either::Left(Ready::Err(
+                            MqttError::V3ProtocolError,
+                        )));
                     }
                 }
                 Either::Left(PublishResponse {
@@ -131,13 +133,13 @@ where
             }
             codec::Packet::PublishAck { packet_id } => {
                 if let Err(e) = self.sink.pkt_ack(Ack::Publish(packet_id)) {
-                    Either::Right(Either::Left(err(MqttError::Protocol(e))))
+                    Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
-                    Either::Right(Either::Left(ok(None)))
+                    Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             codec::Packet::PingRequest => {
-                Either::Right(Either::Left(ok(Some(codec::Packet::PingResponse))))
+                Either::Right(Either::Left(Ready::Ok(Some(codec::Packet::PingResponse))))
             }
             codec::Packet::Disconnect => Either::Right(Either::Right(ControlResponse::new(
                 self.inner.control.call(ControlMessage::dis()),
@@ -145,33 +147,33 @@ where
             ))),
             codec::Packet::SubscribeAck { packet_id, status } => {
                 if let Err(e) = self.sink.pkt_ack(Ack::Subscribe { packet_id, status }) {
-                    Either::Right(Either::Left(err(MqttError::Protocol(e))))
+                    Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
-                    Either::Right(Either::Left(ok(None)))
+                    Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             codec::Packet::UnsubscribeAck { packet_id } => {
                 if let Err(e) = self.sink.pkt_ack(Ack::Unsubscribe(packet_id)) {
-                    Either::Right(Either::Left(err(MqttError::Protocol(e))))
+                    Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
-                    Either::Right(Either::Left(ok(None)))
+                    Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            codec::Packet::Subscribe { .. } => {
-                Either::Right(Either::Left(err(ProtocolError::Unexpected(
+            codec::Packet::Subscribe { .. } => Either::Right(Either::Left(Ready::Err(
+                ProtocolError::Unexpected(
                     packet_type::SUBSCRIBE,
                     "Subscribe packet is not supported",
                 )
-                .into())))
-            }
-            codec::Packet::Unsubscribe { .. } => {
-                Either::Right(Either::Left(err(ProtocolError::Unexpected(
+                .into(),
+            ))),
+            codec::Packet::Unsubscribe { .. } => Either::Right(Either::Left(Ready::Err(
+                ProtocolError::Unexpected(
                     packet_type::UNSUBSCRIBE,
                     "Unsubscribe packet is not supported",
                 )
-                .into())))
-            }
-            _ => Either::Right(Either::Left(ok(None))),
+                .into(),
+            ))),
+            _ => Either::Right(Either::Left(Ready::Ok(None))),
         }
     }
 }
@@ -206,9 +208,12 @@ where
         }
 
         let mut this = self.as_mut().project();
-        let res = futures::ready!(this.fut.poll(cx))?;
+        let res = match this.fut.poll(cx)? {
+            Poll::Ready(item) => item,
+            Poll::Pending => return Poll::Pending,
+        };
         match res {
-            ntex::util::Either::Left(_) => {
+            Either::Left(_) => {
                 log::trace!("Publish result for packet {:?} is ready", this.packet_id);
 
                 if let Some(packet_id) = this.packet_id {
@@ -218,7 +223,7 @@ where
                     Poll::Ready(Ok(None))
                 }
             }
-            ntex::util::Either::Right(pkt) => {
+            Either::Right(pkt) => {
                 this.fut_c.set(Some(ControlResponse::new(
                     this.inner.control.call(ControlMessage::publish(pkt.into_inner())),
                     &*this.inner,
@@ -257,19 +262,22 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let packet = match futures::ready!(this.fut.poll(cx))?.result {
-            ControlResultKind::Ping => Some(codec::Packet::PingResponse),
-            ControlResultKind::PublishAck(id) => {
-                this.inner.inflight.borrow_mut().remove(&id);
-                Some(codec::Packet::PublishAck { packet_id: id })
-            }
-            ControlResultKind::Subscribe(_) => unreachable!(),
-            ControlResultKind::Unsubscribe(_) => unreachable!(),
-            ControlResultKind::Disconnect => {
-                this.inner.sink.close();
-                Some(codec::Packet::Disconnect)
-            }
-            ControlResultKind::Closed | ControlResultKind::Nothing => None,
+        let packet = match this.fut.poll(cx)? {
+            Poll::Ready(item) => match item.result {
+                ControlResultKind::Ping => Some(codec::Packet::PingResponse),
+                ControlResultKind::PublishAck(id) => {
+                    this.inner.inflight.borrow_mut().remove(&id);
+                    Some(codec::Packet::PublishAck { packet_id: id })
+                }
+                ControlResultKind::Subscribe(_) => unreachable!(),
+                ControlResultKind::Unsubscribe(_) => unreachable!(),
+                ControlResultKind::Disconnect => {
+                    this.inner.sink.close();
+                    Some(codec::Packet::Disconnect)
+                }
+                ControlResultKind::Closed | ControlResultKind::Nothing => None,
+            },
+            Poll::Pending => return Poll::Pending,
         };
 
         Poll::Ready(Ok(packet))

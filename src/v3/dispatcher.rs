@@ -2,9 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
-use futures::future::{err, join, ok, Either, FutureExt, Ready};
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
-use ntex::util::{inflight::InFlightService, HashSet};
+use ntex::util::{inflight::InFlightService, join, Either, HashSet, Ready};
 
 use crate::error::MqttError;
 
@@ -105,7 +104,7 @@ where
     type Error = MqttError<E>;
     type Future = Either<
         PublishResponse<T::Future, MqttError<E>>,
-        Either<Ready<Result<Self::Response, MqttError<E>>>, ControlResponse<C::Future, E>>,
+        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<C::Future, E>>,
     >;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -123,7 +122,10 @@ where
         if !self.shutdown.get() {
             self.inner.sink.close();
             self.shutdown.set(true);
-            ntex::rt::spawn(self.control.call(ControlMessage::closed(is_error)).map(|_| ()));
+            let fut = self.control.call(ControlMessage::closed(is_error));
+            ntex::rt::spawn(async move {
+                let _ = fut.await;
+            });
         }
         Poll::Ready(())
     }
@@ -139,7 +141,9 @@ where
                 if let Some(pid) = packet_id {
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
-                        return Either::Right(Either::Left(err(MqttError::V3ProtocolError)));
+                        return Either::Right(Either::Left(Ready::Err(
+                            MqttError::V3ProtocolError,
+                        )));
                     }
                 }
                 Either::Left(PublishResponse {
@@ -151,9 +155,9 @@ where
             }
             codec::Packet::PublishAck { packet_id } => {
                 if let Err(e) = self.session.sink().pkt_ack(Ack::Publish(packet_id)) {
-                    Either::Right(Either::Left(err(MqttError::Protocol(e))))
+                    Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
-                    Either::Right(Either::Left(ok(None)))
+                    Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             codec::Packet::PingRequest => Either::Right(Either::Right(ControlResponse::new(
@@ -167,7 +171,7 @@ where
             codec::Packet::Subscribe { packet_id, topic_filters } => {
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
-                    return Either::Right(Either::Left(err(MqttError::V3ProtocolError)));
+                    return Either::Right(Either::Left(Ready::Err(MqttError::V3ProtocolError)));
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
@@ -181,7 +185,7 @@ where
             codec::Packet::Unsubscribe { packet_id, topic_filters } => {
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
-                    return Either::Right(Either::Left(err(MqttError::V3ProtocolError)));
+                    return Either::Right(Either::Left(Ready::Err(MqttError::V3ProtocolError)));
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
@@ -192,7 +196,7 @@ where
                     &self.inner,
                 )))
             }
-            _ => Either::Right(Either::Left(ok(None))),
+            _ => Either::Right(Either::Left(Ready::Ok(None))),
         }
     }
 }
@@ -217,7 +221,11 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        futures::ready!(this.fut.poll(cx))?;
+        match this.fut.poll(cx) {
+            Poll::Ready(result) => result?,
+            Poll::Pending => return Poll::Pending,
+        };
+
         log::trace!("Publish result for packet {:?} is ready", this.packet_id);
 
         if let Some(packet_id) = this.packet_id {
@@ -259,26 +267,29 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let packet = match futures::ready!(this.fut.poll(cx))?.result {
-            ControlResultKind::Ping => Some(codec::Packet::PingResponse),
-            ControlResultKind::Subscribe(res) => {
-                this.inner.inflight.borrow_mut().remove(&res.packet_id);
-                Some(codec::Packet::SubscribeAck {
-                    status: res.codes,
-                    packet_id: res.packet_id,
-                })
-            }
-            ControlResultKind::Unsubscribe(res) => {
-                this.inner.inflight.borrow_mut().remove(&res.packet_id);
-                Some(codec::Packet::UnsubscribeAck { packet_id: res.packet_id })
-            }
-            ControlResultKind::Disconnect
-            | ControlResultKind::Closed
-            | ControlResultKind::Nothing => {
-                this.inner.sink.close();
-                None
-            }
-            ControlResultKind::PublishAck(_) => unreachable!(),
+        let packet = match this.fut.poll(cx)? {
+            Poll::Ready(item) => match item.result {
+                ControlResultKind::Ping => Some(codec::Packet::PingResponse),
+                ControlResultKind::Subscribe(res) => {
+                    this.inner.inflight.borrow_mut().remove(&res.packet_id);
+                    Some(codec::Packet::SubscribeAck {
+                        status: res.codes,
+                        packet_id: res.packet_id,
+                    })
+                }
+                ControlResultKind::Unsubscribe(res) => {
+                    this.inner.inflight.borrow_mut().remove(&res.packet_id);
+                    Some(codec::Packet::UnsubscribeAck { packet_id: res.packet_id })
+                }
+                ControlResultKind::Disconnect
+                | ControlResultKind::Closed
+                | ControlResultKind::Nothing => {
+                    this.inner.sink.close();
+                    None
+                }
+                ControlResultKind::PublishAck(_) => unreachable!(),
+            },
+            Poll::Pending => return Poll::Pending,
         };
 
         Poll::Ready(Ok(packet))
