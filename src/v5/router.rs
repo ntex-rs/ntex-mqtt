@@ -1,7 +1,6 @@
 use std::task::{Context, Poll};
-use std::{cell::Cell, cell::RefCell, num::NonZeroU16, rc::Rc};
+use std::{cell::Cell, cell::RefCell, future::Future, num::NonZeroU16, pin::Pin, rc::Rc};
 
-use futures::future::{FutureExt, LocalBoxFuture};
 use ntex::router::{IntoPattern, Path, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
@@ -92,14 +91,14 @@ where
     type Error = Err;
     type InitError = Err;
     type Service = RouterService<S, Err>;
-    type Future = LocalBoxFuture<'static, Result<Self::Service, Err>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Err>>>>;
 
     fn new_service(&self, session: S) -> Self::Future {
         let router = self.router.clone();
         let factories = self.handlers.clone();
         let default_fut = self.default.new_service(session.clone());
 
-        async move {
+        Box::pin(async move {
             let default = default_fut.await?;
             let handlers = (0..factories.len()).map(|_| None).collect();
 
@@ -115,8 +114,7 @@ where
                     waker: LocalWaker::new(),
                 }),
             })
-        }
-        .boxed_local()
+        })
     }
 }
 
@@ -140,11 +138,11 @@ impl<S: Clone + 'static, Err: 'static> RouterService<S, Err> {
         &self,
         idx: usize,
         req: Publish,
-    ) -> LocalBoxFuture<'static, Result<PublishAck, Err>> {
+    ) -> Pin<Box<dyn Future<Output = Result<PublishAck, Err>>>> {
         let inner = self.inner.clone();
         inner.creating.set(true);
 
-        async move {
+        Box::pin(async move {
             let handler = inner.factories[idx].new_service(inner.session.clone()).await?;
             if let Err(e) = crate::utils::ready(&handler).await {
                 inner.waker.wake();
@@ -157,8 +155,7 @@ impl<S: Clone + 'static, Err: 'static> RouterService<S, Err> {
             inner.creating.set(false);
             inner.handlers.borrow_mut()[idx] = Some(handler);
             fut.await
-        }
-        .boxed_local()
+        })
     }
 }
 
@@ -166,7 +163,7 @@ impl<S: Clone + 'static, Err: 'static> Service for RouterService<S, Err> {
     type Request = Publish;
     type Response = PublishAck;
     type Error = Err;
-    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;

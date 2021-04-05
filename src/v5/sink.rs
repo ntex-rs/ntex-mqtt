@@ -1,13 +1,11 @@
-use std::{fmt, num::NonZeroU16, num::NonZeroU32, rc::Rc};
+use std::{fmt, future::Future, num::NonZeroU16, num::NonZeroU32, rc::Rc};
 
-use futures::future::{ready, Either, Future, FutureExt};
-use ntex::util::{ByteString, Bytes};
-
-use crate::types::QoS;
+use ntex::util::{ByteString, Bytes, Either};
 
 use super::codec;
 use super::error::{ProtocolError, PublishQos1Error, SendPacketError};
 use super::shared::{Ack, AckType, MqttShared};
+use crate::types::QoS;
 
 pub struct MqttSink(Rc<MqttShared>);
 
@@ -38,24 +36,26 @@ impl MqttSink {
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
         let mut queues = self.0.queues.borrow_mut();
-        if !self.is_open() {
-            Either::Left(ready(false))
+        let result = if !self.is_open() {
+            false
         } else if queues.inflight.len() >= self.0.cap.get() {
             let (tx, rx) = self.0.pool.waiters.channel();
             queues.waiters.push_back(tx);
-            Either::Right(rx.map(|v| v.is_ok()))
+            return Either::Right(async move { rx.await.is_ok() });
         } else {
-            Either::Left(ready(true))
-        }
+            true
+        };
+        Either::Left(async move { result })
     }
 
     /// Close mqtt connection with default Disconnect message
     pub fn close(&self) {
         if self.is_open() {
-            let _ = self.0.state.write_item(
-                codec::Packet::Disconnect(codec::Disconnect::default()),
-                &self.0.codec,
-            );
+            let _ = self
+                .0
+                .state
+                .write()
+                .encode(codec::Packet::Disconnect(codec::Disconnect::default()), &self.0.codec);
             self.0.state.close();
         }
         let mut queues = self.0.queues.borrow_mut();
@@ -66,7 +66,7 @@ impl MqttSink {
     /// Close mqtt connection
     pub fn close_with_reason(&self, pkt: codec::Disconnect) {
         if self.is_open() {
-            let _ = self.0.state.write_item(codec::Packet::Disconnect(pkt), &self.0.codec);
+            let _ = self.0.state.write().encode(codec::Packet::Disconnect(pkt), &self.0.codec);
             self.0.state.close();
         }
         let mut queues = self.0.queues.borrow_mut();
@@ -75,12 +75,12 @@ impl MqttSink {
     }
 
     pub(super) fn send(&self, pkt: codec::Packet) {
-        let _ = self.0.state.write_item(pkt, &self.0.codec);
+        let _ = self.0.state.write().encode(pkt, &self.0.codec);
     }
 
     /// Send ping
     pub(super) fn ping(&self) -> bool {
-        self.0.state.write_item(codec::Packet::PingRequest, &self.0.codec).is_ok()
+        self.0.state.write().encode(codec::Packet::PingRequest, &self.0.codec).is_ok()
     }
 
     /// Close mqtt connection, dont send disconnect message
@@ -250,7 +250,8 @@ impl PublishBuilder {
             log::trace!("Publish (QoS-0) to {:?}", packet.topic);
             self.shared
                 .state
-                .write_item(codec::Packet::Publish(packet), &self.shared.codec)
+                .write()
+                .encode(codec::Packet::Publish(packet), &self.shared.codec)
                 .map_err(SendPacketError::Encode)
                 .map(|_| ())
         } else {
@@ -296,7 +297,7 @@ impl PublishBuilder {
             // send publish to client
             log::trace!("Publish (QoS1) to {:#?}", packet);
 
-            match shared.state.write_item(codec::Packet::Publish(packet), &shared.codec) {
+            match shared.state.write().encode(codec::Packet::Publish(packet), &shared.codec) {
                 Ok(_) => {
                     // do not borrow cross yield points
                     drop(queues);
@@ -386,7 +387,7 @@ impl SubscribeBuilder {
             // send subscribe to client
             log::trace!("Sending subscribe packet {:#?}", packet);
 
-            match shared.state.write_item(codec::Packet::Subscribe(packet), &shared.codec) {
+            match shared.state.write().encode(codec::Packet::Subscribe(packet), &shared.codec) {
                 Ok(_) => {
                     // do not borrow cross yield points
                     drop(queues);
@@ -468,7 +469,8 @@ impl UnsubscribeBuilder {
             // send unsubscribe to client
             log::trace!("Sending unsubscribe packet {:#?}", packet);
 
-            match shared.state.write_item(codec::Packet::Unsubscribe(packet), &shared.codec) {
+            match shared.state.write().encode(codec::Packet::Unsubscribe(packet), &shared.codec)
+            {
                 Ok(_) => {
                     // do not borrow cross yield points
                     drop(queues);

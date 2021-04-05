@@ -1,7 +1,5 @@
-use std::{fmt, num::NonZeroU16, rc::Rc};
-
-use futures::future::{ready, Either, Future, FutureExt};
-use ntex::util::{ByteString, Bytes};
+use ntex::util::{ByteString, Bytes, Either};
+use std::{fmt, future::Future, num::NonZeroU16, rc::Rc};
 
 use super::shared::{Ack, AckType, MqttShared};
 use super::{codec, error::ProtocolError, error::SendPacketError};
@@ -29,15 +27,16 @@ impl MqttSink {
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
         let mut queues = self.0.queues.borrow_mut();
-        if !self.0.state.is_open() {
-            Either::Left(ready(false))
+        let res = if !self.0.state.is_open() {
+            false
         } else if queues.inflight.len() >= self.0.cap.get() {
             let (tx, rx) = self.0.pool.waiters.channel();
             queues.waiters.push_back(tx);
-            Either::Right(rx.map(|v| v.is_ok()))
+            return Either::Right(async move { rx.await.is_ok() });
         } else {
-            Either::Left(ready(true))
-        }
+            true
+        };
+        Either::Left(async move { res })
     }
 
     /// Close mqtt connection
@@ -54,7 +53,7 @@ impl MqttSink {
     /// responses, but it flushes buffers.
     pub fn force_close(&self) {
         if self.0.state.is_open() {
-            let _ = self.0.state.shutdown();
+            let _ = self.0.state.force_close();
         }
         let mut queues = self.0.queues.borrow_mut();
         queues.inflight.clear();
@@ -63,7 +62,7 @@ impl MqttSink {
 
     /// Send ping
     pub(super) fn ping(&self) -> bool {
-        self.0.state.write_item(codec::Packet::PingRequest, &self.0.codec).is_ok()
+        self.0.state.write().encode(codec::Packet::PingRequest, &self.0.codec).is_ok()
     }
 
     /// Create publish message builder
@@ -179,7 +178,8 @@ impl PublishBuilder {
             log::trace!("Publish (QoS-0) to {:?}", packet.topic);
             self.shared
                 .state
-                .write_item(codec::Packet::Publish(packet), &self.shared.codec)
+                .write()
+                .encode(codec::Packet::Publish(packet), &self.shared.codec)
                 .map_err(SendPacketError::Encode)
                 .map(|_| ())
         } else {
@@ -224,7 +224,7 @@ impl PublishBuilder {
 
             log::trace!("Publish (QoS1) to {:#?}", packet);
 
-            match shared.state.write_item(codec::Packet::Publish(packet), &shared.codec) {
+            match shared.state.write().encode(codec::Packet::Publish(packet), &shared.codec) {
                 Ok(_) => {
                     // do not borrow cross yield points
                     drop(queues);
@@ -296,7 +296,7 @@ impl SubscribeBuilder {
             // send subscribe to client
             log::trace!("Sending subscribe packet id: {} filters:{:?}", idx, filters);
 
-            match shared.state.write_item(
+            match shared.state.write().encode(
                 codec::Packet::Subscribe {
                     packet_id: NonZeroU16::new(idx).unwrap(),
                     topic_filters: filters,
@@ -377,7 +377,7 @@ impl UnsubscribeBuilder {
             // send subscribe to client
             log::trace!("Sending unsubscribe packet id: {} filters:{:?}", idx, filters);
 
-            match shared.state.write_item(
+            match shared.state.write().encode(
                 codec::Packet::Unsubscribe {
                     packet_id: NonZeroU16::new(idx).unwrap(),
                     topic_filters: filters,

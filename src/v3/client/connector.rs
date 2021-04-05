@@ -1,11 +1,10 @@
-use std::{rc::Rc, time::Duration};
+use std::{future::Future, rc::Rc, time::Duration};
 
-use futures::future::{Either, Future, FutureExt};
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::connect::{self, Address, Connect, Connector};
 use ntex::rt::time::delay_for;
 use ntex::service::Service;
-use ntex::util::{ByteString, Bytes};
+use ntex::util::{select, ByteString, Bytes, Either};
 
 #[cfg(feature = "openssl")]
 use ntex::connect::openssl::{OpensslConnector, SslConnector};
@@ -14,8 +13,8 @@ use ntex::connect::openssl::{OpensslConnector, SslConnector};
 use ntex::connect::rustls::{ClientConfig, RustlsConnector};
 
 use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
+use crate::io::State;
 use crate::v3::shared::{MqttShared, MqttSinkPool};
-use crate::{io::State, utils::Select};
 
 /// Mqtt client connector
 pub struct MqttConnector<A, T> {
@@ -226,16 +225,17 @@ where
     /// Connect to mqtt server
     pub fn connect(&self) -> impl Future<Output = Result<Client<T::Response>, ClientError>> {
         if self.handshake_timeout > 0 {
-            Either::Left(
-                Select::new(
-                    delay_for(Duration::from_millis(self.handshake_timeout as u64)),
-                    self._connect(),
-                )
-                .map(|result| match result {
-                    ntex::util::Either::Left(_) => Err(ClientError::HandshakeTimeout),
-                    ntex::util::Either::Right(res) => res.map_err(From::from),
-                }),
-            )
+            let fut = select(
+                delay_for(Duration::from_millis(self.handshake_timeout as u64)),
+                self._connect(),
+            );
+            Either::Left(async move {
+                let result = fut.await;
+                match result {
+                    Either::Left(_) => Err(ClientError::HandshakeTimeout),
+                    Either::Right(res) => res.map_err(From::from),
+                }
+            })
         } else {
             Either::Right(self._connect())
         }

@@ -1,5 +1,15 @@
 # Changes
 
+## [0.6.5] - 2021-04-03
+
+* v5: Add a `packet()` function to `Subscribe` and `Unsubscribe`
+
+* upgrade ntex, drop direct futures dependency
+
+## [0.6.4] - 2021-03-15
+
+* `HandshakeAck::buffer_params()` replaces individual methods for buffer sizes
+
 ## [0.6.2] - 2021-03-04
 
 * Allow to override io buffer params
