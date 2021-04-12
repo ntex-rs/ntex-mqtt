@@ -3,6 +3,7 @@ use std::{fmt, future::Future, num::NonZeroU16, rc::Rc};
 
 use super::shared::{Ack, AckType, MqttShared};
 use super::{codec, error::ProtocolError, error::SendPacketError};
+use std::time::Duration;
 
 pub struct MqttSink(Rc<MqttShared>);
 
@@ -230,6 +231,78 @@ impl PublishBuilder {
                     drop(queues);
 
                     rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
+                }
+                Err(err) => Err(SendPacketError::Encode(err)),
+            }
+        } else {
+            Err(SendPacketError::Disconnected)
+        }
+    }
+
+    /// Send publish packet with QoS and Timeout
+    pub async fn send_with_timeout(
+        self,
+        timeout: Option<Duration>,
+        qos: codec::QoS,
+    ) -> Result<(), SendPacketError> {
+        match qos {
+            codec::QoS::AtMostOnce => self.send_at_most_once(),
+            codec::QoS::AtLeastOnce => self._send_at_least_once_timeout(timeout).await,
+            codec::QoS::ExactlyOnce => self._send_at_least_once_timeout(timeout).await,
+        }
+    }
+
+    async fn _send_at_least_once_timeout(
+        self,
+        timeout: Option<Duration>,
+    ) -> Result<(), SendPacketError> {
+        let shared = self.shared;
+        let mut packet = self.packet;
+        packet.qos = codec::QoS::AtLeastOnce;
+
+        if shared.state.is_open() {
+            // handle client receive maximum
+            if !shared.has_credit() {
+                let (tx, rx) = shared.pool.waiters.channel();
+                shared.queues.borrow_mut().waiters.push_back(tx);
+
+                if rx.await.is_err() {
+                    return Err(SendPacketError::Disconnected);
+                }
+            }
+            let mut queues = shared.queues.borrow_mut();
+
+            // publish ack channel
+            let (tx, rx) = shared.pool.queue.channel();
+
+            // packet id
+            let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
+            if idx == 0 {
+                idx = shared.next_id();
+                packet.packet_id = NonZeroU16::new(idx);
+            }
+            if queues.inflight.contains_key(&idx) {
+                return Err(SendPacketError::PacketIdInUse(idx));
+            }
+            queues.inflight.insert(idx, (tx, AckType::Publish));
+            queues.inflight_order.push_back(idx);
+
+            log::trace!("Publish (QoS1) to {:#?}", packet);
+
+            match shared.state.write().encode(codec::Packet::Publish(packet), &shared.codec) {
+                Ok(_) => {
+                    // do not borrow cross yield points
+                    drop(queues);
+
+                    if let Some(timeout) = timeout {
+                        ntex::rt::time::timeout(timeout, rx)
+                            .await
+                            .map_err(|_| SendPacketError::Timeout)?
+                            .map(|_| ())
+                            .map_err(|_| SendPacketError::Disconnected)
+                    } else {
+                        rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
+                    }
                 }
                 Err(err) => Err(SendPacketError::Encode(err)),
             }
