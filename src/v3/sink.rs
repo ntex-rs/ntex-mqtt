@@ -94,45 +94,71 @@ impl MqttSink {
     }
 
     pub(super) fn pkt_ack(&self, pkt: Ack) -> Result<(), ProtocolError> {
-        let mut queues = self.0.queues.borrow_mut();
-
-        // check ack order
-        if let Some(idx) = queues.inflight_order.pop_front() {
-            if idx != pkt.packet_id() {
-                log::trace!(
-                    "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
-                    idx,
-                    pkt.packet_id()
-                );
-            } else {
-                // get publish ack channel
-                log::trace!("Ack packet with id: {}", pkt.packet_id());
-                let idx = pkt.packet_id();
-                if let Some((tx, tp)) = queues.inflight.remove(&idx) {
-                    if !pkt.is_match(tp) {
-                        log::trace!("MQTT protocol error, unexpeted packet");
-                        self.close();
-                        return Err(ProtocolError::Unexpected(pkt.packet_type(), tp.name()));
-                    }
-                    let _ = tx.send(pkt);
-
-                    // wake up queued request (receive max limit)
-                    while let Some(tx) = queues.waiters.pop_front() {
-                        if tx.send(()).is_ok() {
-                            break;
-                        }
-                    }
-                    return Ok(());
+        {
+            let mut queues = self.0.queues.borrow_mut();
+            // check ack order
+            if let Some(idx) = queues.inflight_order.pop_front() {
+                if idx != pkt.packet_id() {
+                    log::warn!(
+                        "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
+                        idx,
+                        pkt.packet_id()
+                    );
                 } else {
-                    log::error!("Inflight state inconsistency")
+                    // get publish ack channel
+                    log::trace!("Ack packet with id: {}", pkt.packet_id());
+                    let idx = pkt.packet_id();
+                    if let Some((tx, tp)) = queues.inflight.remove(&idx) {
+                        if !pkt.is_match(tp) {
+                            log::warn!("MQTT protocol error, unexpeted packet");
+                            drop(queues);
+                            self.close();
+                            return Err(ProtocolError::Unexpected(
+                                pkt.packet_type(),
+                                tp.name(),
+                            ));
+                        }
+                        let _ = tx.send(pkt);
+
+                        // wake up queued request (receive max limit)
+                        while let Some(tx) = queues.waiters.pop_front() {
+                            if tx.send(()).is_ok() {
+                                break;
+                            }
+                        }
+                        return Ok(());
+                    } else {
+                        log::trace!("Inflight state inconsistency");
+                        //May be removed by timeout
+                        return Ok(());
+                    }
                 }
+            } else {
+                log::info!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
+                return Ok(());
             }
-        } else {
-            log::trace!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
         }
         self.close();
         Err(ProtocolError::PacketIdMismatch)
     }
+
+
+    ///Send Mqtt packet
+    pub fn send(&self, packet: codec::Packet) -> Result<(), SendPacketError> {
+        let shared = self.0.as_ref();
+        if shared.state.is_open() {
+            log::trace!("Packet to {:#?}", packet);
+            shared
+                .state
+                .write()
+                .encode(packet, &shared.codec)
+                .map_err(SendPacketError::Encode)
+                .map(|_| ())
+        } else {
+            Err(SendPacketError::Disconnected)
+        }
+    }
+
 }
 
 impl fmt::Debug for MqttSink {
@@ -239,22 +265,10 @@ impl PublishBuilder {
         }
     }
 
-    /// Send publish packet with QoS and Timeout
-    pub async fn send_with_timeout(
+    /// Send publish packet with QoS 1 and Timeout
+    pub async fn send_at_least_once_timeout(
         self,
-        timeout: Option<Duration>,
-        qos: codec::QoS,
-    ) -> Result<(), SendPacketError> {
-        match qos {
-            codec::QoS::AtMostOnce => self.send_at_most_once(),
-            codec::QoS::AtLeastOnce => self._send_at_least_once_timeout(timeout).await,
-            codec::QoS::ExactlyOnce => self._send_at_least_once_timeout(timeout).await,
-        }
-    }
-
-    async fn _send_at_least_once_timeout(
-        self,
-        timeout: Option<Duration>,
+        timeout: Duration,
     ) -> Result<(), SendPacketError> {
         let shared = self.shared;
         let mut packet = self.packet;
@@ -294,15 +308,14 @@ impl PublishBuilder {
                     // do not borrow cross yield points
                     drop(queues);
 
-                    if let Some(timeout) = timeout {
-                        ntex::rt::time::timeout(timeout, rx)
-                            .await
-                            .map_err(|_| SendPacketError::Timeout)?
-                            .map(|_| ())
-                            .map_err(|_| SendPacketError::Disconnected)
-                    } else {
-                        rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
-                    }
+                    ntex::rt::time::timeout(timeout, rx)
+                        .await
+                        .map_err(|_| {
+                            shared.queues.borrow_mut().inflight.remove(&idx);
+                            SendPacketError::Timeout
+                        })?
+                        .map(|_| ())
+                        .map_err(|_| SendPacketError::Disconnected)
                 }
                 Err(err) => Err(SendPacketError::Encode(err)),
             }
@@ -310,6 +323,7 @@ impl PublishBuilder {
             Err(SendPacketError::Disconnected)
         }
     }
+
 }
 
 /// Subscribe packet builder
