@@ -1,7 +1,7 @@
 use ntex::util::{BufMut, BytesMut};
 
 use crate::error::EncodeError;
-use crate::types::{packet_type, ConnectFlags, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
+use crate::types::{packet_type, ConnectFlags, QoS, MQTT, MQTT_LEVEL_311, WILL_QOS_SHIFT};
 use crate::utils::{write_variable_length, Encode};
 
 use super::packet::*;
@@ -199,7 +199,7 @@ fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeErr
         flags |= ConnectFlags::CLEAN_START;
     }
 
-    dst.put_slice(&[MQTT_LEVEL_3, flags.bits()]);
+    dst.put_slice(&[MQTT_LEVEL_311, flags.bits()]);
     dst.put_u16(keep_alive);
     client_id.encode(dst)?;
 

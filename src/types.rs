@@ -1,5 +1,7 @@
 pub const MQTT: &[u8] = b"MQTT";
-pub const MQTT_LEVEL_3: u8 = 4;
+pub const MQISDP: &[u8] = b"MQIsdp";
+pub const MQTT_LEVEL_31: u8 = 3;
+pub const MQTT_LEVEL_311: u8 = 4;
 pub const MQTT_LEVEL_5: u8 = 5;
 pub const WILL_QOS_SHIFT: u8 = 3;
 

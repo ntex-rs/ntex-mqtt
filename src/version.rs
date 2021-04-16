@@ -4,7 +4,7 @@ use ntex::codec::{Decoder, Encoder};
 use ntex::util::BytesMut;
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{packet_type, MQTT, MQTT_LEVEL_3, MQTT_LEVEL_5};
+use crate::types::{packet_type, MQISDP, MQTT_LEVEL_31, MQTT, MQTT_LEVEL_311, MQTT_LEVEL_5};
 use crate::utils;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -40,12 +40,13 @@ impl Decoder for VersionCodec {
                     let len =
                         u16::from_be_bytes(src[consumed..consumed + 2].try_into().unwrap());
                     ensure!(
-                        len == 4 && &src[consumed + 2..consumed + 6] == MQTT,
+                        (len == 4 && &src[consumed + 2..consumed + 6] == MQTT) || (len == 6 && &src[consumed + 2..consumed + 8] == MQISDP),
                         DecodeError::InvalidProtocol
                     );
 
                     match src[consumed + 6] {
-                        MQTT_LEVEL_3 => Ok(Some(ProtocolVersion::MQTT3)),
+                        MQTT_LEVEL_31 => Ok(Some(ProtocolVersion::MQTT3)),
+                        MQTT_LEVEL_311 => Ok(Some(ProtocolVersion::MQTT3)),
                         MQTT_LEVEL_5 => Ok(Some(ProtocolVersion::MQTT5)),
                         _ => Err(DecodeError::InvalidProtocol),
                     }
@@ -81,7 +82,7 @@ mod tests {
 
         let mut buf =
             BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x04\xc0\0\x0f\0\x02d1\0|testhub.".as_ref());
-        assert_eq!(ProtocolVersion::MQTT3, VersionCodec.decode(&mut buf).unwrap().unwrap());
+        assert_eq!(ProtocolVersion::MQTT311, VersionCodec.decode(&mut buf).unwrap().unwrap());
 
         let mut buf =
             BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x05\xc0\0\x0f\0\x02d1\0|testhub.".as_ref());

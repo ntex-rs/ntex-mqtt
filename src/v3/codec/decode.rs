@@ -3,7 +3,7 @@ use std::{convert::TryFrom, convert::TryInto, num::NonZeroU16};
 use ntex::util::{Buf, ByteString, Bytes};
 
 use crate::error::DecodeError;
-use crate::types::{packet_type, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
+use crate::types::{packet_type, QoS, MQISDP, MQTT_LEVEL_31, MQTT, MQTT_LEVEL_311, WILL_QOS_SHIFT};
 use crate::utils::Decode;
 
 use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
@@ -50,11 +50,17 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
     let len = src.get_u16();
 
-    ensure!(len == 4 && &src.as_ref()[0..4] == MQTT, DecodeError::InvalidProtocol);
-    src.advance(4);
+    //ensure!(len == 4 && &src.as_ref()[0..4] == MQTT, DecodeError::InvalidProtocol);
+    if len == 4 && &src.as_ref()[0..4] == MQTT {
+        src.advance(4);
+    }else if len == 6 && &src.as_ref()[0..4] == MQISDP {
+        src.advance(6);
+    }else{
+        return Err(DecodeError::InvalidProtocol)
+    }
 
     let level = src.get_u8();
-    ensure!(level == MQTT_LEVEL_3, DecodeError::UnsupportedProtocolLevel);
+    ensure!(level == MQTT_LEVEL_311 || level == MQTT_LEVEL_31, DecodeError::UnsupportedProtocolLevel);
 
     let flags =
         ConnectFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnectReservedFlagSet)?;
