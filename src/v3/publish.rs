@@ -16,8 +16,6 @@ pub enum PublishMessage {
     PublishAck(NonZeroU16),
     ///Publish received packet
     PublishReceived(NonZeroU16),
-    ///Publish release packet
-    PublishRelease(NonZeroU16),
     ///Publish complete packet
     PublishComplete(NonZeroU16),
 }
@@ -26,8 +24,7 @@ pub enum PublishMessage {
 pub enum PublishResult {
     PublishAck(Option<NonZeroU16>, codec::QoS),
     PublishRelease(NonZeroU16),
-    PublishComplete(NonZeroU16),
-    Nothing
+    Nothing,
 }
 
 /// Publish message
