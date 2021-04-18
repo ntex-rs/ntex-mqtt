@@ -28,7 +28,6 @@ impl Protocol {
             Protocol::MQTT(level) => level,
         }
     }
-
 }
 
 impl Default for Protocol {

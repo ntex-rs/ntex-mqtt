@@ -142,7 +142,6 @@ impl MqttSink {
         Err(ProtocolError::PacketIdMismatch)
     }
 
-
     ///Send Mqtt packet
     pub fn send(&self, packet: codec::Packet) -> Result<(), SendPacketError> {
         let shared = self.0.as_ref();
@@ -158,7 +157,6 @@ impl MqttSink {
             Err(SendPacketError::Disconnected)
         }
     }
-
 }
 
 impl fmt::Debug for MqttSink {
@@ -323,7 +321,6 @@ impl PublishBuilder {
             Err(SendPacketError::Disconnected)
         }
     }
-
 }
 
 /// Subscribe packet builder

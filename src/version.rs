@@ -4,7 +4,7 @@ use ntex::codec::{Decoder, Encoder};
 use ntex::util::BytesMut;
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{packet_type, MQISDP, MQTT_LEVEL_31, MQTT, MQTT_LEVEL_311, MQTT_LEVEL_5};
+use crate::types::{packet_type, MQISDP, MQTT, MQTT_LEVEL_31, MQTT_LEVEL_311, MQTT_LEVEL_5};
 use crate::utils;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -41,7 +41,8 @@ impl Decoder for VersionCodec {
                         u16::from_be_bytes(src[consumed..consumed + 2].try_into().unwrap());
 
                     ensure!(
-                        (len == 4 && &src[consumed + 2..consumed + 6] == MQTT) || (len == 6 && &src[consumed + 2..consumed + 8] == MQISDP),
+                        (len == 4 && &src[consumed + 2..consumed + 6] == MQTT)
+                            || (len == 6 && &src[consumed + 2..consumed + 8] == MQISDP),
                         DecodeError::InvalidProtocol
                     );
 

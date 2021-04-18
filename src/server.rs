@@ -113,8 +113,11 @@ where
                 Request = v3::ControlMessage,
                 Response = v3::ControlResult,
             > + 'static,
-        P: ServiceFactory<Config = v3::Session<St>, Request = v3::PublishMessage, Response = ()>
-            + 'static,
+        P: ServiceFactory<
+                Config = v3::Session<St>,
+                Request = v3::PublishMessage,
+                Response = (),
+            > + 'static,
         C::Error: From<Cn::Error>
             + From<Cn::InitError>
             + From<P::Error>
