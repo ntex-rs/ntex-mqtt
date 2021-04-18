@@ -134,7 +134,7 @@ impl MqttSink {
                     }
                 }
             } else {
-                log::info!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
+                log::trace!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
                 return Ok(());
             }
         }
