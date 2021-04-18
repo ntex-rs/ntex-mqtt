@@ -1,5 +1,14 @@
 # Changes
 
+
+## [0.6.7] - 2021-04-03
+
+*v3: Support QoS 2 sending and receiving messages
+
+## [0.6.6] - 2021-04-03
+
+*v3: Mqtt 3.1 protocol support
+
 ## [0.6.5] - 2021-04-03
 
 * v5: Add a `packet()` function to `Subscribe` and `Unsubscribe`
