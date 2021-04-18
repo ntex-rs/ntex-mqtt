@@ -40,8 +40,6 @@ impl Decoder for VersionCodec {
                     let len =
                         u16::from_be_bytes(src[consumed..consumed + 2].try_into().unwrap());
 
-                    log::info!("len: {}", len);
-
                     ensure!(
                         (len == 4 && &src[consumed + 2..consumed + 6] == MQTT) || (len == 6 && &src[consumed + 2..consumed + 8] == MQISDP),
                         DecodeError::InvalidProtocol
