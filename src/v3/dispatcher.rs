@@ -10,7 +10,7 @@ use crate::error::MqttError;
 use super::control::{
     ControlMessage, ControlResult, ControlResultKind, Subscribe, Unsubscribe,
 };
-use super::{codec, publish::Publish, shared::Ack, sink::MqttSink, Session};
+use super::{codec, publish::{PublishMessage, PublishResult, Publish}, shared::Ack, sink::MqttSink, Session};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
@@ -29,7 +29,7 @@ where
     St: 'static,
     T: ServiceFactory<
             Config = Session<St>,
-            Request = Publish,
+            Request = PublishMessage,
             Response = (),
             Error = MqttError<E>,
             InitError = MqttError<E>,
@@ -76,7 +76,7 @@ struct Inner {
 
 impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
-    T: Service<Request = Publish, Response = (), Error = MqttError<E>>,
+    T: Service<Request = PublishMessage, Response = (), Error = MqttError<E>>,
     C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
 {
     pub(crate) fn new(session: Session<St>, publish: T, control: C) -> Self {
@@ -94,7 +94,7 @@ where
 
 impl<St, T, C, E> Service for Dispatcher<St, T, C, E>
 where
-    T: Service<Request = Publish, Response = (), Error = MqttError<E>>,
+    T: Service<Request = PublishMessage, Response = (), Error = MqttError<E>>,
     C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
     C::Future: 'static,
     E: 'static,
@@ -146,10 +146,12 @@ where
                         )));
                     }
                 }
+
+                let qos = publish.qos;
                 Either::Left(PublishResponse {
-                    packet_id,
+                    fut: self.publish.call(PublishMessage::Publish(Publish::new(publish))),
+                    result: PublishResult::PublishAck(packet_id, qos),
                     inner,
-                    fut: self.publish.call(Publish::new(publish)),
                     _t: PhantomData,
                 })
             }
@@ -157,9 +159,42 @@ where
                 if let Err(e) = self.session.sink().pkt_ack(Ack::Publish(packet_id)) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    Either::Left(PublishResponse {
+                        fut: self.publish.call(PublishMessage::PublishAck(packet_id)),
+                        result: PublishResult::Nothing,
+                        inner: self.inner.clone(),
+                        _t: PhantomData,
+                    })
                 }
             }
+
+            codec::Packet::PublishRelease { packet_id } => {
+                Either::Left(PublishResponse {
+                    fut: self.publish.call(PublishMessage::PublishRelease(packet_id)),
+                    result: PublishResult::PublishComplete(packet_id),
+                    inner: self.inner.clone(),
+                    _t: PhantomData,
+                })
+            }
+
+            codec::Packet::PublishReceived { packet_id } => {
+                Either::Left(PublishResponse {
+                    fut: self.publish.call(PublishMessage::PublishReceived(packet_id)),
+                    result: PublishResult::PublishRelease(packet_id),
+                    inner: self.inner.clone(),
+                    _t: PhantomData,
+                })
+            }
+
+            codec::Packet::PublishComplete { packet_id } => {
+                Either::Left(PublishResponse {
+                    fut: self.publish.call(PublishMessage::PublishComplete(packet_id)),
+                    result: PublishResult::Nothing,
+                    inner: self.inner.clone(),
+                    _t: PhantomData,
+                })
+            }
+
             codec::Packet::PingRequest => Either::Right(Either::Right(ControlResponse::new(
                 self.control.call(ControlMessage::ping()),
                 &self.inner,
@@ -206,7 +241,7 @@ pin_project_lite::pin_project! {
     pub(crate) struct PublishResponse<T, E> {
         #[pin]
         fut: T,
-        packet_id: Option<NonZeroU16>,
+        result: PublishResult,
         inner: Rc<Inner>,
         _t: PhantomData<E>,
     }
@@ -226,13 +261,33 @@ where
             Poll::Pending => return Poll::Pending,
         };
 
-        log::trace!("Publish result for packet {:?} is ready", this.packet_id);
+        log::trace!("Publish result for packet {:?} is ready", this.result);
 
-        if let Some(packet_id) = this.packet_id {
-            this.inner.inflight.borrow_mut().remove(&packet_id);
-            Poll::Ready(Ok(Some(codec::Packet::PublishAck { packet_id: *packet_id })))
-        } else {
-            Poll::Ready(Ok(None))
+        match this.result{
+            PublishResult::PublishAck(Some(packet_id), qos) => {
+                match qos{
+                    codec::QoS::AtLeastOnce => {
+                        this.inner.inflight.borrow_mut().remove(packet_id);
+                        Poll::Ready(Ok(Some(codec::Packet::PublishAck { packet_id: *packet_id })))
+                    },
+                    codec::QoS::ExactlyOnce => {
+                        Poll::Ready(Ok(Some(codec::Packet::PublishReceived { packet_id: *packet_id })))
+                    },
+                    _ => {
+                        Poll::Ready(Ok(None))
+                    }
+                }
+            }
+            PublishResult::PublishRelease(packet_id) => {
+                Poll::Ready(Ok(Some(codec::Packet::PublishRelease { packet_id: *packet_id })))
+            }
+            PublishResult::PublishComplete(packet_id) => {
+                this.inner.inflight.borrow_mut().remove(packet_id);
+                Poll::Ready(Ok(Some(codec::Packet::PublishComplete { packet_id: *packet_id })))
+            }
+            PublishResult::Nothing | PublishResult::PublishAck(None, _) => {
+                Poll::Ready(Ok(None))
+            }
         }
     }
 }

@@ -14,7 +14,7 @@ use super::control::{ControlMessage, ControlResult};
 use super::default::{DefaultControlService, DefaultPublishService};
 use super::dispatcher::factory;
 use super::handshake::{Handshake, HandshakeAck};
-use super::publish::Publish;
+use super::publish::{PublishMessage};
 use super::shared::{MqttShared, MqttSinkPool};
 use super::sink::MqttSink;
 use super::Session;
@@ -73,7 +73,7 @@ where
         + 'static,
     Cn: ServiceFactory<Config = Session<St>, Request = ControlMessage, Response = ControlResult>
         + 'static,
-    P: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,
+    P: ServiceFactory<Config = Session<St>, Request = PublishMessage, Response = ()> + 'static,
     C::Error: From<Cn::Error>
         + From<Cn::InitError>
         + From<P::Error>
@@ -150,7 +150,7 @@ where
     pub fn publish<F, Srv>(self, publish: F) -> MqttServer<Io, St, C, Cn, Srv>
     where
         F: IntoServiceFactory<Srv> + 'static,
-        Srv: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,
+        Srv: ServiceFactory<Config = Session<St>, Request = PublishMessage, Response = ()> + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError> + fmt::Debug,
     {
         MqttServer {
