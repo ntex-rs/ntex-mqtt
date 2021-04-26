@@ -1,5 +1,9 @@
 # Changes
 
+## [0.6.8] - 2021-04-26
+
+Topic add #[derive(Eq, PartialEq, Hash)]
+
 ## [0.6.7] - 2021-04-18
 
 *v3: Support QoS 2 sending and receiving messages
