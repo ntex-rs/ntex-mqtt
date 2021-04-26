@@ -3,6 +3,9 @@
 //! MQTT Client/Server framework
 
 #[macro_use]
+extern crate serde;
+
+#[macro_use]
 mod topic;
 #[macro_use]
 mod utils;
