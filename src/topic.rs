@@ -108,7 +108,7 @@ macro_rules! matches {
     }};
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub struct Topic(Vec<Level>);
 
 impl Topic {
