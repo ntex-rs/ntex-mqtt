@@ -642,3 +642,58 @@ async fn test_request_problem_info() {
     assert!(res.properties.is_empty());
     assert!(res.reason_string.is_none());
 }
+
+#[ntex::test]
+async fn test_suback_with_reason() -> std::io::Result<()> {
+    let srv = server::test_server(move || {
+        MqttServer::new(handshake)
+            .control(move |msg| match msg {
+                ControlMessage::Subscribe(mut msg) => {
+                    msg.iter_mut().for_each(|mut s| {
+                        s.fail(codec::SubscribeAckReason::ImplementationSpecificError)
+                    });
+                    ok::<_, TestError>(msg.ack_reason("some reason".into()).ack())
+                }
+                _ => ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    let io = srv.connect().await.unwrap();
+    let mut framed = Framed::new(io, codec::Codec::new());
+    framed
+        .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
+        .await
+        .unwrap();
+    let _ = framed.next().await.unwrap().unwrap();
+
+    framed
+        .send(codec::Packet::Subscribe(codec::Subscribe {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            topic_filters: vec![(
+                "topic1".into(),
+                codec::SubscriptionOptions {
+                    qos: codec::QoS::AtLeastOnce,
+                    no_local: false,
+                    retain_as_published: false,
+                    retain_handling: codec::RetainHandling::AtSubscribe,
+                },
+            )],
+            id: None,
+            user_properties: codec::UserProperties::default(),
+        }))
+        .await
+        .unwrap();
+    let pkt = framed.next().await.unwrap().unwrap();
+    assert_eq!(
+        pkt,
+        codec::Packet::SubscribeAck(codec::SubscribeAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            status: vec![codec::SubscribeAckReason::ImplementationSpecificError],
+            properties: codec::UserProperties::default(),
+            reason_string: Some("some reason".into()),
+        })
+    );
+
+    Ok(())
+}
