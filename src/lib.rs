@@ -24,7 +24,7 @@ mod version;
 pub use self::error::MqttError;
 pub use self::server::MqttServer;
 pub use self::session::Session;
-pub use self::topic::{Level as TopicLevel, Topic};
+pub use self::topic::{Level as TopicLevel, Topic, TopicError};
 
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
 pub const TCP_PORT: u16 = 1883;
