@@ -1,5 +1,9 @@
 # Changes
 
+## [0.6.6] - 2021-04-29
+
+* v5: Fix reason string encoding
+
 ## [0.6.5] - 2021-04-03
 
 * v5: Add a `packet()` function to `Subscribe` and `Unsubscribe`

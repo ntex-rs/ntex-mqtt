@@ -298,3 +298,56 @@ impl EncodeLtd for UnsubscribeAck {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sub_ack() {
+        let ack = SubscribeAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            properties: Vec::new(),
+            reason_string: Some("some reason".into()),
+            status: Vec::new(),
+        };
+
+        let mut buf = BytesMut::new();
+        let size = ack.encoded_size(99999);
+        ack.encode(&mut buf, size as u32).unwrap();
+        assert_eq!(ack, SubscribeAck::decode(&mut buf.freeze()).unwrap());
+
+        let ack = SubscribeAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            properties: vec![("prop1".into(), "val1".into()), ("prop2".into(), "val2".into())],
+            reason_string: None,
+            status: vec![SubscribeAckReason::GrantedQos0],
+        };
+        let mut buf = BytesMut::new();
+        let size = ack.encoded_size(99999);
+        ack.encode(&mut buf, size as u32).unwrap();
+        assert_eq!(ack, SubscribeAck::decode(&mut buf.freeze()).unwrap());
+
+        let ack = UnsubscribeAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            properties: Vec::new(),
+            reason_string: Some("some reason".into()),
+            status: Vec::new(),
+        };
+        let mut buf = BytesMut::new();
+        let size = ack.encoded_size(99999);
+        ack.encode(&mut buf, size as u32).unwrap();
+        assert_eq!(ack, UnsubscribeAck::decode(&mut buf.freeze()).unwrap());
+
+        let ack = UnsubscribeAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            properties: vec![("prop1".into(), "val1".into()), ("prop2".into(), "val2".into())],
+            reason_string: None,
+            status: vec![UnsubscribeAckReason::Success],
+        };
+        let mut buf = BytesMut::new();
+        let size = ack.encoded_size(99999);
+        ack.encode(&mut buf, size as u32).unwrap();
+        assert_eq!(ack, UnsubscribeAck::decode(&mut buf.freeze()).unwrap());
+    }
+}
