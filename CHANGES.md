@@ -4,6 +4,8 @@
 
 * v5: Fix reason string encoding
 
+* v5: Allow to set reason and properties to SUBACK
+
 ## [0.6.5] - 2021-04-03
 
 * v5: Add a `packet()` function to `Subscribe` and `Unsubscribe`
