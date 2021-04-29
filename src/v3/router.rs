@@ -123,12 +123,12 @@ impl<Err> Service for RouterService<Err> {
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;
         for hnd in &self.handlers {
-            if let Poll::Pending = hnd.poll_ready(cx)? {
+            if hnd.poll_ready(cx)?.is_pending() {
                 not_ready = true;
             }
         }
 
-        if let Poll::Pending = self.default.poll_ready(cx)? {
+        if self.default.poll_ready(cx)?.is_pending() {
             not_ready = true;
         }
 

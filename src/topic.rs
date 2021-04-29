@@ -157,9 +157,9 @@ impl From<Vec<Level>> for Topic {
     }
 }
 
-impl Into<Vec<Level>> for Topic {
-    fn into(self) -> Vec<Level> {
-        self.0
+impl From<Topic> for Vec<Level> {
+    fn from(t: Topic) -> Self {
+        t.0
     }
 }
 
