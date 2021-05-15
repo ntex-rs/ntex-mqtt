@@ -1,5 +1,9 @@
 # Changes
 
+## [0.6.7] - 2021-05-xx
+
+* Fix for panic while parsing MQTT version #52
+
 ## [0.6.6] - 2021-04-29
 
 * v5: Fix reason string encoding
