@@ -111,7 +111,7 @@ impl Decode for NonZeroU32 {
 
 impl Decode for NonZeroU16 {
     fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        Ok(NonZeroU16::new(u16::decode(src)?).ok_or(DecodeError::MalformedPacket)?)
+        NonZeroU16::new(u16::decode(src)?).ok_or(DecodeError::MalformedPacket)
     }
 }
 
