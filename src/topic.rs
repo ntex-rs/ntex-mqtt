@@ -157,9 +157,9 @@ impl From<Vec<Level>> for Topic {
     }
 }
 
-impl Into<Vec<Level>> for Topic {
-    fn into(self) -> Vec<Level> {
-        self.0
+impl From<Topic> for Vec<Level> {
+    fn from(t: Topic) -> Self {
+        t.0
     }
 }
 
@@ -489,3 +489,4 @@ mod tests {
         assert!(Topic::from_str("$SYS/monitor/+").unwrap().matches_str("$SYS/monitor/Clients"));
     }
 }
+

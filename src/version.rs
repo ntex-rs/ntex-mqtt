@@ -33,7 +33,7 @@ impl Decoder for VersionCodec {
                 consumed += 1;
 
                 if first_byte == packet_type::CONNECT {
-                    if len <= consumed + 5 {
+                    if len <= consumed + 6 {
                         return Ok(None);
                     }
 
@@ -89,5 +89,14 @@ mod tests {
         let mut buf =
             BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x05\xc0\0\x0f\0\x02d1\0|testhub.".as_ref());
         assert_eq!(ProtocolVersion::MQTT5, VersionCodec.decode(&mut buf).unwrap().unwrap());
+
+        let mut buf = BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x05".as_ref());
+        assert_eq!(ProtocolVersion::MQTT5, VersionCodec.decode(&mut buf).unwrap().unwrap());
+
+        let mut buf = BytesMut::from(b"\x10\x98\x02\0\x04".as_ref());
+        assert_eq!(None, VersionCodec.decode(&mut buf).unwrap());
+
+        let mut buf = BytesMut::from(b"\x10\x98\x02\0\x04MQTT".as_ref());
+        assert_eq!(None, VersionCodec.decode(&mut buf).unwrap());
     }
 }
