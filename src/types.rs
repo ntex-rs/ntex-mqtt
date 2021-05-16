@@ -1,10 +1,40 @@
 pub const MQTT: &[u8] = b"MQTT";
-pub const MQTT_LEVEL_3: u8 = 4;
+pub const MQISDP: &[u8] = b"MQIsdp";
+pub const MQTT_LEVEL_31: u8 = 3;
+pub const MQTT_LEVEL_311: u8 = 4;
 pub const MQTT_LEVEL_5: u8 = 5;
 pub const WILL_QOS_SHIFT: u8 = 3;
 
 /// Max possible packet size
 pub const MAX_PACKET_SIZE: u32 = 0xF_FF_FF_FF;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Protocol {
+    MQTT(u8),
+}
+
+impl Protocol {
+    pub fn name(self) -> &'static str {
+        match self {
+            Protocol::MQTT(MQTT_LEVEL_311) => "MQTT",
+            Protocol::MQTT(MQTT_LEVEL_31) => "MQIsdp",
+            Protocol::MQTT(MQTT_LEVEL_5) => "MQTT",
+            Protocol::MQTT(_) => "MQTT",
+        }
+    }
+
+    pub fn level(self) -> u8 {
+        match self {
+            Protocol::MQTT(level) => level,
+        }
+    }
+}
+
+impl Default for Protocol {
+    fn default() -> Self {
+        Protocol::MQTT(MQTT_LEVEL_311)
+    }
+}
 
 prim_enum! {
     /// Quality of Service

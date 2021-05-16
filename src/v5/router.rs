@@ -169,13 +169,13 @@ impl<S: Clone + 'static, Err: 'static> Service for RouterService<S, Err> {
         let mut not_ready = false;
         for hnd in &*self.inner.handlers.borrow() {
             if let Some(hnd) = hnd {
-                if hnd.poll_ready(cx)?.is_pending() {
+                if let Poll::Pending = hnd.poll_ready(cx)? {
                     not_ready = true;
                 }
             }
         }
 
-        if self.default.poll_ready(cx)?.is_pending() {
+        if let Poll::Pending = self.default.poll_ready(cx)? {
             not_ready = true;
         }
 

@@ -133,7 +133,7 @@ pub(crate) fn encoded_size_opt_props(
     }
 
     if let Some(reason) = reason_str {
-        let reason_len = 1 + reason.encoded_size(); // safety: TODO: CHECK string length for being out of bounds (> u16::max_value())?
+        let reason_len = reason.len() + 1; // safety: TODO: CHECK string length for being out of bounds (> u16::max_value())?
         if reason_len <= limit as usize {
             len += reason_len;
         }

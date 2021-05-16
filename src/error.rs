@@ -137,4 +137,7 @@ pub enum SendPacketError {
     /// Peer disconnected
     #[display(fmt = "Peer disconnected")]
     Disconnected,
+    /// Timeout
+    #[display(fmt = "Timeout")]
+    Timeout,
 }

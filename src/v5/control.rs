@@ -134,23 +134,6 @@ impl Subscribe {
     }
 
     #[inline]
-    /// Reason string for ack packet
-    pub fn ack_reason(mut self, reason: ByteString) -> Self {
-        self.result.reason_string = Some(reason);
-        self
-    }
-
-    #[inline]
-    /// Properties for ack packet
-    pub fn ack_properties<F>(mut self, f: F) -> Self
-    where
-        F: FnOnce(&mut codec::UserProperties),
-    {
-        f(&mut self.result.properties);
-        self
-    }
-
-    #[inline]
     /// Ack Subscribe packet
     pub fn ack(self) -> ControlResult {
         ControlResult {
@@ -293,7 +276,7 @@ impl Unsubscribe {
     }
 
     #[inline]
-    /// Reason string for ack packet
+    /// Reason stream for ack packet
     pub fn ack_reason(mut self, reason: ByteString) -> Self {
         self.result.reason_string = Some(reason);
         self

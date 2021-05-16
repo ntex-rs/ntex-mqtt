@@ -2,7 +2,7 @@ use std::{fmt, num::NonZeroU16};
 
 use ntex::util::{ByteString, Bytes};
 
-use crate::types::{packet_type, QoS};
+use crate::types::{packet_type, Protocol, QoS};
 
 prim_enum! {
     /// Connect Return Code
@@ -58,6 +58,8 @@ pub struct LastWill {
 #[derive(Default, Debug, PartialEq, Clone)]
 /// Connect packet content
 pub struct Connect {
+    /// mqtt protocol version
+    pub protocol: Protocol,
     /// the handling of the Session state.
     pub clean_session: bool,
     /// a time interval measured in seconds.
