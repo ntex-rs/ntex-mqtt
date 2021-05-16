@@ -14,7 +14,7 @@ use super::control::{ControlMessage, ControlResult};
 use super::default::{DefaultControlService, DefaultPublishService};
 use super::dispatcher::factory;
 use super::handshake::{Handshake, HandshakeAck};
-use super::publish::PublishMessage;
+use super::publish::Publish;
 use super::shared::{MqttShared, MqttSinkPool};
 use super::sink::MqttSink;
 use super::Session;
@@ -28,8 +28,6 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     inflight: usize,
     handshake_timeout: u16,
     disconnect_timeout: u16,
-    max_awaiting_rel: usize,
-    await_rel_timeout: Duration,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<(Io, St)>,
 }
@@ -61,8 +59,6 @@ where
             inflight: 16,
             handshake_timeout: 0,
             disconnect_timeout: 3000,
-            max_awaiting_rel: 0,
-            await_rel_timeout: Duration::default(),
             pool: Default::default(),
             _t: PhantomData,
         }
@@ -77,7 +73,7 @@ where
         + 'static,
     Cn: ServiceFactory<Config = Session<St>, Request = ControlMessage, Response = ControlResult>
         + 'static,
-    P: ServiceFactory<Config = Session<St>, Request = PublishMessage, Response = ()> + 'static,
+    P: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,
     C::Error: From<Cn::Error>
         + From<Cn::InitError>
         + From<P::Error>
@@ -123,18 +119,6 @@ where
         self
     }
 
-    ///
-    pub fn max_awaiting_rel(mut self, val: usize) -> Self {
-        self.max_awaiting_rel = val;
-        self
-    }
-
-    ///
-    pub fn await_rel_timeout(mut self, val: Duration) -> Self {
-        self.await_rel_timeout = val;
-        self
-    }
-
     /// Service to handle control packets
     ///
     /// All control packets are processed sequentially, max buffered
@@ -157,8 +141,6 @@ where
             inflight: self.inflight,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
-            max_awaiting_rel: self.max_awaiting_rel,
-            await_rel_timeout: self.await_rel_timeout,
             pool: self.pool,
             _t: PhantomData,
         }
@@ -168,8 +150,7 @@ where
     pub fn publish<F, Srv>(self, publish: F) -> MqttServer<Io, St, C, Cn, Srv>
     where
         F: IntoServiceFactory<Srv> + 'static,
-        Srv: ServiceFactory<Config = Session<St>, Request = PublishMessage, Response = ()>
-            + 'static,
+        Srv: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError> + fmt::Debug,
     {
         MqttServer {
@@ -180,8 +161,6 @@ where
             inflight: self.inflight,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
-            max_awaiting_rel: self.max_awaiting_rel,
-            await_rel_timeout: self.await_rel_timeout,
             pool: self.pool,
             _t: PhantomData,
         }
@@ -212,13 +191,7 @@ where
             ))
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
-                factory(
-                    publish,
-                    control,
-                    self.inflight,
-                    self.max_awaiting_rel,
-                    self.await_rel_timeout,
-                ),
+                factory(publish, control, self.inflight),
                 |req: DispatchItem<Rc<MqttShared>>, srv| match req {
                     DispatchItem::Item(req) => Either::Left(srv.call(req)),
                     DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(
@@ -270,13 +243,7 @@ where
             ))
             .disconnect_timeout(self.disconnect_timeout)
             .build(apply_fn_factory(
-                factory(
-                    publish,
-                    control,
-                    self.inflight,
-                    self.max_awaiting_rel,
-                    self.await_rel_timeout,
-                ),
+                factory(publish, control, self.inflight),
                 |req: DispatchItem<Rc<MqttShared>>, srv| match req {
                     DispatchItem::Item(req) => Either::Left(srv.call(req)),
                     DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(

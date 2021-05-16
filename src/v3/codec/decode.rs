@@ -3,9 +3,7 @@ use std::{convert::TryFrom, convert::TryInto, num::NonZeroU16};
 use ntex::util::{Buf, ByteString, Bytes};
 
 use crate::error::DecodeError;
-use crate::types::{
-    packet_type, Protocol, QoS, MQISDP, MQTT, MQTT_LEVEL_31, MQTT_LEVEL_311, WILL_QOS_SHIFT,
-};
+use crate::types::{packet_type, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
 use crate::utils::Decode;
 
 use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
@@ -52,20 +50,11 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
     let len = src.get_u16();
 
-    //ensure!(len == 4 && &src.as_ref()[0..4] == MQTT, DecodeError::InvalidProtocol);
-    if len == 4 && &src.as_ref()[0..4] == MQTT {
-        src.advance(4);
-    } else if len == 6 && &src.as_ref()[0..6] == MQISDP {
-        src.advance(6);
-    } else {
-        return Err(DecodeError::InvalidProtocol);
-    }
+    ensure!(len == 4 && &src.as_ref()[0..4] == MQTT, DecodeError::InvalidProtocol);
+    src.advance(4);
 
     let level = src.get_u8();
-    ensure!(
-        level == MQTT_LEVEL_311 || level == MQTT_LEVEL_31,
-        DecodeError::UnsupportedProtocolLevel
-    );
+    ensure!(level == MQTT_LEVEL_3, DecodeError::UnsupportedProtocolLevel);
 
     let flags =
         ConnectFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnectReservedFlagSet)?;
@@ -98,7 +87,6 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let password =
         if flags.contains(ConnectFlags::PASSWORD) { Some(Bytes::decode(src)?) } else { None };
     Ok(Packet::Connect(Connect {
-        protocol: Protocol::MQTT(level),
         clean_session: flags.contains(ConnectFlags::CLEAN_START),
         keep_alive,
         client_id,
@@ -200,7 +188,6 @@ mod tests {
                 b"\x00\x04MQTT\x04\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"
             )),
             Ok(Packet::Connect(Connect {
-                protocol: Protocol::MQTT(MQTT_LEVEL_311),
                 clean_session: false,
                 keep_alive: 60,
                 client_id: ByteString::try_from(Bytes::from_static(b"12345")).unwrap(),
@@ -215,7 +202,6 @@ mod tests {
                 b"\x00\x04MQTT\x04\x14\x00\x3C\x00\x0512345\x00\x05topic\x00\x07message"
             )),
             Ok(Packet::Connect(Connect {
-                protocol: Protocol::MQTT(MQTT_LEVEL_311),
                 clean_session: false,
                 keep_alive: 60,
                 client_id: ByteString::try_from(Bytes::from_static(b"12345")).unwrap(),
@@ -244,7 +230,7 @@ mod tests {
         );
         assert_eq!(
             decode_connect_packet(&mut Bytes::from_static(
-                b"\x00\x04MQTT\x0200000000000000000000"
+                b"\x00\x04MQTT\x0300000000000000000000"
             )),
             Err(DecodeError::UnsupportedProtocolLevel),
         );

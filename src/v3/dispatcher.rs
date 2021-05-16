@@ -1,4 +1,3 @@
-use linked_hash_map::LinkedHashMap;
 use std::cell::{Cell, RefCell};
 use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
@@ -11,22 +10,13 @@ use crate::error::MqttError;
 use super::control::{
     ControlMessage, ControlResult, ControlResultKind, Subscribe, Unsubscribe,
 };
-use super::{
-    codec,
-    publish::{Publish, PublishMessage, PublishResult},
-    shared::Ack,
-    sink::MqttSink,
-    Session,
-};
-use std::time::Duration;
+use super::{codec, publish::Publish, shared::Ack, sink::MqttSink, Session};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
     inflight: usize,
-    max_awaiting_rel: usize,
-    await_rel_timeout: Duration,
 ) -> impl ServiceFactory<
     Config = Session<St>,
     Request = codec::Packet,
@@ -39,7 +29,7 @@ where
     St: 'static,
     T: ServiceFactory<
             Config = Session<St>,
-            Request = PublishMessage,
+            Request = Publish,
             Response = (),
             Error = MqttError<E>,
             InitError = MqttError<E>,
@@ -63,80 +53,11 @@ where
                 // limit number of in-flight messages
                 InFlightService::new(
                     inflight,
-                    Dispatcher::<_, _, _, E>::new(
-                        cfg,
-                        publish?,
-                        control?,
-                        max_awaiting_rel,
-                        await_rel_timeout,
-                    ),
+                    Dispatcher::<_, _, _, E>::new(cfg, publish?, control?),
                 ),
             )
         }
     })
-}
-
-type TimestampMillis = i64;
-
-#[derive(Default)]
-struct AwaitingRelSet {
-    rels: LinkedHashMap<NonZeroU16, TimestampMillis, ahash::RandomState>,
-    max_awaiting: usize,
-    await_timeout: TimestampMillis,
-}
-
-impl AwaitingRelSet {
-    #[inline]
-    fn new(max_awaiting: usize, await_timeout: Duration) -> Self {
-        Self {
-            rels: LinkedHashMap::default(),
-            max_awaiting,
-            await_timeout: await_timeout.as_millis() as TimestampMillis,
-        }
-    }
-
-    #[inline]
-    fn contains(&self, packet_id: &NonZeroU16) -> bool {
-        self.rels.contains_key(packet_id)
-    }
-
-    #[inline]
-    fn is_full(&self) -> bool {
-        self.max_awaiting > 0 && self.rels.len() >= self.max_awaiting
-    }
-
-    #[inline]
-    fn remove(&mut self, packet_id: &NonZeroU16) {
-        self.rels.remove(packet_id);
-    }
-
-    #[inline]
-    fn pop(&mut self) -> Option<NonZeroU16> {
-        self.rels.pop_front().map(|(packet_id, _)| packet_id)
-    }
-
-    #[inline]
-    fn push(&mut self, packet_id: NonZeroU16) {
-        self.rels.insert(packet_id, chrono::Local::now().timestamp_millis());
-    }
-
-    #[inline]
-    fn remove_timeouts(&mut self) {
-        if self.await_timeout == 0 {
-            return;
-        }
-        let now = chrono::Local::now().timestamp_millis();
-        while let Some((packet_id, t)) = self.rels.front() {
-            if (now - *t) < self.await_timeout {
-                break;
-            }
-            log::warn!(
-                "Timeout awating release QoS2 messages found, will be removed, packet id is {}",
-                *packet_id
-            );
-            self.rels.pop_front();
-        }
-    }
 }
 
 /// Mqtt protocol dispatcher
@@ -151,42 +72,29 @@ pub(crate) struct Dispatcher<St, T: Service<Error = MqttError<E>>, C, E> {
 struct Inner {
     sink: MqttSink,
     inflight: RefCell<HashSet<NonZeroU16>>,
-    awaiting_rels: RefCell<AwaitingRelSet>,
 }
 
 impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
-    T: Service<Request = PublishMessage, Response = (), Error = MqttError<E>>,
+    T: Service<Request = Publish, Response = (), Error = MqttError<E>>,
     C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
 {
-    pub(crate) fn new(
-        session: Session<St>,
-        publish: T,
-        control: C,
-        max_awaiting_rel: usize,
-        await_rel_timeout: Duration,
-    ) -> Self {
+    pub(crate) fn new(session: Session<St>, publish: T, control: C) -> Self {
         let sink = session.sink().clone();
+
         Self {
             session,
             publish,
             control,
             shutdown: Cell::new(false),
-            inner: Rc::new(Inner {
-                sink,
-                inflight: RefCell::new(HashSet::default()),
-                awaiting_rels: RefCell::new(AwaitingRelSet::new(
-                    max_awaiting_rel,
-                    await_rel_timeout,
-                )),
-            }),
+            inner: Rc::new(Inner { sink, inflight: RefCell::new(HashSet::default()) }),
         }
     }
 }
 
 impl<St, T, C, E> Service for Dispatcher<St, T, C, E>
 where
-    T: Service<Request = PublishMessage, Response = (), Error = MqttError<E>>,
+    T: Service<Request = Publish, Response = (), Error = MqttError<E>>,
     C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
     C::Future: 'static,
     E: 'static,
@@ -228,7 +136,6 @@ where
             codec::Packet::Publish(publish) => {
                 let inner = self.inner.clone();
                 let packet_id = publish.packet_id;
-                let qos = publish.qos;
 
                 // check for duplicated packet id
                 if let Some(pid) = packet_id {
@@ -238,33 +145,11 @@ where
                             MqttError::V3ProtocolError,
                         )));
                     }
-
-                    if codec::QoS::ExactlyOnce == qos {
-                        let mut awaiting_rels = inner.awaiting_rels.borrow_mut();
-                        if awaiting_rels.contains(&pid) {
-                            log::warn!(
-                                "Duplicated sending of QoS2 message, packet id is {:?}",
-                                pid
-                            );
-                            return Either::Right(Either::Left(Ready::Ok(None)));
-                        }
-                        //Remove the timeout awating release QoS2 messages, if it exists
-                        awaiting_rels.remove_timeouts();
-                        if awaiting_rels.is_full() {
-                            // Too many awating release QoS2 messages, the earliest ones will be removed
-                            if let Some(packet_id) = awaiting_rels.pop() {
-                                log::warn!("Too many awating release QoS2 messages, remove the earliest, packet id is {}", packet_id);
-                            }
-                        }
-                        //Stored message identifier
-                        awaiting_rels.push(pid)
-                    }
                 }
-
                 Either::Left(PublishResponse {
-                    fut: self.publish.call(PublishMessage::Publish(Publish::new(publish))),
-                    result: PublishResult::PublishAck(packet_id, qos),
+                    packet_id,
                     inner,
+                    fut: self.publish.call(Publish::new(publish)),
                     _t: PhantomData,
                 })
             }
@@ -272,36 +157,9 @@ where
                 if let Err(e) = self.session.sink().pkt_ack(Ack::Publish(packet_id)) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
-                    Either::Left(PublishResponse {
-                        fut: self.publish.call(PublishMessage::PublishAck(packet_id)),
-                        result: PublishResult::Nothing,
-                        inner: self.inner.clone(),
-                        _t: PhantomData,
-                    })
+                    Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-
-            codec::Packet::PublishRelease { packet_id } => {
-                self.inner.awaiting_rels.borrow_mut().remove(&packet_id);
-                Either::Right(Either::Left(Ready::Ok(Some(codec::Packet::PublishComplete { packet_id }))))
-            }
-
-            codec::Packet::PublishReceived { packet_id } => Either::Left(PublishResponse {
-                fut: self.publish.call(PublishMessage::PublishReceived(packet_id)),
-                result: PublishResult::PublishRelease(packet_id),
-                inner: self.inner.clone(),
-                _t: PhantomData,
-            }),
-
-            codec::Packet::PublishComplete { packet_id } => {
-                Either::Left(PublishResponse {
-                    fut: self.publish.call(PublishMessage::PublishComplete(packet_id)),
-                    result: PublishResult::Nothing,
-                    inner: self.inner.clone(),
-                    _t: PhantomData,
-                })
-            },
-
             codec::Packet::PingRequest => Either::Right(Either::Right(ControlResponse::new(
                 self.control.call(ControlMessage::ping()),
                 &self.inner,
@@ -348,7 +206,7 @@ pin_project_lite::pin_project! {
     pub(crate) struct PublishResponse<T, E> {
         #[pin]
         fut: T,
-        result: PublishResult,
+        packet_id: Option<NonZeroU16>,
         inner: Rc<Inner>,
         _t: PhantomData<E>,
     }
@@ -368,31 +226,13 @@ where
             Poll::Pending => return Poll::Pending,
         };
 
-        log::trace!("Publish result for packet {:?} is ready", this.result);
+        log::trace!("Publish result for packet {:?} is ready", this.packet_id);
 
-        match this.result {
-            PublishResult::PublishAck(Some(packet_id), qos) => {
-                this.inner.inflight.borrow_mut().remove(packet_id);
-                match qos {
-                    codec::QoS::AtLeastOnce => {
-                        Poll::Ready(Ok(Some(codec::Packet::PublishAck {
-                            packet_id: *packet_id,
-                        })))
-                    }
-                    codec::QoS::ExactlyOnce => {
-                        Poll::Ready(Ok(Some(codec::Packet::PublishReceived {
-                            packet_id: *packet_id,
-                        })))
-                    }
-                    _ => Poll::Ready(Ok(None)),
-                }
-            }
-            PublishResult::PublishRelease(packet_id) => {
-                Poll::Ready(Ok(Some(codec::Packet::PublishRelease { packet_id: *packet_id })))
-            }
-            PublishResult::Nothing | PublishResult::PublishAck(None, _) => {
-                Poll::Ready(Ok(None))
-            }
+        if let Some(packet_id) = this.packet_id {
+            this.inner.inflight.borrow_mut().remove(&packet_id);
+            Poll::Ready(Ok(Some(codec::Packet::PublishAck { packet_id: *packet_id })))
+        } else {
+            Poll::Ready(Ok(None))
         }
     }
 }

@@ -1,17 +1,14 @@
 # Changes
 
-## [0.6.8] - 2021-04-26
+## [0.6.7] - 2021-05-xx
 
-Topic add #[derive(Eq, PartialEq, Hash)]
+* Fix for panic while parsing MQTT version #52
 
-## [0.6.7] - 2021-04-18
+## [0.6.6] - 2021-04-29
 
-*v3: Support QoS 2 sending and receiving messages
-*v3: Support QoS 2 Client -> Server, Processing in-flight messages waiting to be released
+* v5: Fix reason string encoding
 
-## [0.6.6] - 2021-04-17
-
-*v3: Mqtt 3.1 protocol support
+* v5: Allow to set reason and properties to SUBACK
 
 ## [0.6.5] - 2021-04-03
 

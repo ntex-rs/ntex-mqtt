@@ -11,7 +11,7 @@ pub enum TopicError {
     InvalidLevel,
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Hash, Serialize, Deserialize)]
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub enum Level {
     Normal(String),
     Metadata(String), // $SYS
@@ -108,7 +108,7 @@ macro_rules! matches {
     }};
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Topic(Vec<Level>);
 
 impl Topic {
@@ -157,9 +157,9 @@ impl From<Vec<Level>> for Topic {
     }
 }
 
-impl Into<Vec<Level>> for Topic {
-    fn into(self) -> Vec<Level> {
-        self.0
+impl From<Topic> for Vec<Level> {
+    fn from(t: Topic) -> Self {
+        t.0
     }
 }
 

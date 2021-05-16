@@ -5,7 +5,7 @@ use ntex::service::{Service, ServiceFactory};
 use ntex::util::Ready;
 
 use super::control::{ControlMessage, ControlResult};
-use super::publish::PublishMessage;
+use super::publish::Publish;
 use super::Session;
 
 /// Default publish service
@@ -21,7 +21,7 @@ impl<St, Err> Default for DefaultPublishService<St, Err> {
 
 impl<St, Err> ServiceFactory for DefaultPublishService<St, Err> {
     type Config = Session<St>;
-    type Request = PublishMessage;
+    type Request = Publish;
     type Response = ();
     type Error = Err;
     type Service = DefaultPublishService<St, Err>;
@@ -34,7 +34,7 @@ impl<St, Err> ServiceFactory for DefaultPublishService<St, Err> {
 }
 
 impl<St, Err> Service for DefaultPublishService<St, Err> {
-    type Request = PublishMessage;
+    type Request = Publish;
     type Response = ();
     type Error = Err;
     type Future = Ready<Self::Response, Self::Error>;
@@ -43,7 +43,7 @@ impl<St, Err> Service for DefaultPublishService<St, Err> {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&self, _: PublishMessage) -> Self::Future {
+    fn call(&self, _: Publish) -> Self::Future {
         log::warn!("Publish service is disabled");
         Ready::Ok(())
     }

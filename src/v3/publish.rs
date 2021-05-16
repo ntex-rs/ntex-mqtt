@@ -8,25 +8,6 @@ use serde_json::Error as JsonError;
 
 use crate::v3::codec;
 
-#[derive(Debug)]
-pub enum PublishMessage {
-    /// Publish packet
-    Publish(Publish),
-    /// Publish acknowledgment packet
-    PublishAck(NonZeroU16),
-    ///Publish received packet
-    PublishReceived(NonZeroU16),
-    ///Publish complete packet
-    PublishComplete(NonZeroU16),
-}
-
-#[derive(Debug)]
-pub enum PublishResult {
-    PublishAck(Option<NonZeroU16>, codec::QoS),
-    PublishRelease(NonZeroU16),
-    Nothing,
-}
-
 /// Publish message
 pub struct Publish {
     publish: codec::Publish,

@@ -3,7 +3,6 @@ use std::{fmt, future::Future, num::NonZeroU16, rc::Rc};
 
 use super::shared::{Ack, AckType, MqttShared};
 use super::{codec, error::ProtocolError, error::SendPacketError};
-use std::time::Duration;
 
 pub struct MqttSink(Rc<MqttShared>);
 
@@ -94,68 +93,44 @@ impl MqttSink {
     }
 
     pub(super) fn pkt_ack(&self, pkt: Ack) -> Result<(), ProtocolError> {
-        {
-            let mut queues = self.0.queues.borrow_mut();
-            // check ack order
-            if let Some(idx) = queues.inflight_order.pop_front() {
-                if idx != pkt.packet_id() {
-                    log::warn!(
-                        "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
-                        idx,
-                        pkt.packet_id()
-                    );
-                } else {
-                    // get publish ack channel
-                    log::trace!("Ack packet with id: {}", pkt.packet_id());
-                    let idx = pkt.packet_id();
-                    if let Some((tx, tp)) = queues.inflight.remove(&idx) {
-                        if !pkt.is_match(tp) {
-                            log::warn!("MQTT protocol error, unexpeted packet");
-                            drop(queues);
-                            self.close();
-                            return Err(ProtocolError::Unexpected(
-                                pkt.packet_type(),
-                                tp.name(),
-                            ));
-                        }
-                        let _ = tx.send(pkt);
+        let mut queues = self.0.queues.borrow_mut();
 
-                        // wake up queued request (receive max limit)
-                        while let Some(tx) = queues.waiters.pop_front() {
-                            if tx.send(()).is_ok() {
-                                break;
-                            }
-                        }
-                        return Ok(());
-                    } else {
-                        log::trace!("Inflight state inconsistency");
-                        //May be removed by timeout
-                        return Ok(());
-                    }
-                }
+        // check ack order
+        if let Some(idx) = queues.inflight_order.pop_front() {
+            if idx != pkt.packet_id() {
+                log::trace!(
+                    "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
+                    idx,
+                    pkt.packet_id()
+                );
             } else {
-                log::trace!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
-                return Ok(());
+                // get publish ack channel
+                log::trace!("Ack packet with id: {}", pkt.packet_id());
+                let idx = pkt.packet_id();
+                if let Some((tx, tp)) = queues.inflight.remove(&idx) {
+                    if !pkt.is_match(tp) {
+                        log::trace!("MQTT protocol error, unexpeted packet");
+                        self.close();
+                        return Err(ProtocolError::Unexpected(pkt.packet_type(), tp.name()));
+                    }
+                    let _ = tx.send(pkt);
+
+                    // wake up queued request (receive max limit)
+                    while let Some(tx) = queues.waiters.pop_front() {
+                        if tx.send(()).is_ok() {
+                            break;
+                        }
+                    }
+                    return Ok(());
+                } else {
+                    log::error!("Inflight state inconsistency")
+                }
             }
+        } else {
+            log::trace!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
         }
         self.close();
         Err(ProtocolError::PacketIdMismatch)
-    }
-
-    ///Send Mqtt packet
-    pub fn send(&self, packet: codec::Packet) -> Result<(), SendPacketError> {
-        let shared = self.0.as_ref();
-        if shared.state.is_open() {
-            log::trace!("Packet to {:#?}", packet);
-            shared
-                .state
-                .write()
-                .encode(packet, &shared.codec)
-                .map_err(SendPacketError::Encode)
-                .map(|_| ())
-        } else {
-            Err(SendPacketError::Disconnected)
-        }
     }
 }
 
@@ -255,65 +230,6 @@ impl PublishBuilder {
                     drop(queues);
 
                     rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
-                }
-                Err(err) => Err(SendPacketError::Encode(err)),
-            }
-        } else {
-            Err(SendPacketError::Disconnected)
-        }
-    }
-
-    /// Send publish packet with QoS 1 and Timeout
-    pub async fn send_at_least_once_timeout(
-        self,
-        timeout: Duration,
-    ) -> Result<(), SendPacketError> {
-        let shared = self.shared;
-        let mut packet = self.packet;
-        packet.qos = codec::QoS::AtLeastOnce;
-
-        if shared.state.is_open() {
-            // handle client receive maximum
-            if !shared.has_credit() {
-                let (tx, rx) = shared.pool.waiters.channel();
-                shared.queues.borrow_mut().waiters.push_back(tx);
-
-                if rx.await.is_err() {
-                    return Err(SendPacketError::Disconnected);
-                }
-            }
-            let mut queues = shared.queues.borrow_mut();
-
-            // publish ack channel
-            let (tx, rx) = shared.pool.queue.channel();
-
-            // packet id
-            let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
-            if idx == 0 {
-                idx = shared.next_id();
-                packet.packet_id = NonZeroU16::new(idx);
-            }
-            if queues.inflight.contains_key(&idx) {
-                return Err(SendPacketError::PacketIdInUse(idx));
-            }
-            queues.inflight.insert(idx, (tx, AckType::Publish));
-            queues.inflight_order.push_back(idx);
-
-            log::trace!("Publish (QoS1) to {:#?}", packet);
-
-            match shared.state.write().encode(codec::Packet::Publish(packet), &shared.codec) {
-                Ok(_) => {
-                    // do not borrow cross yield points
-                    drop(queues);
-
-                    ntex::rt::time::timeout(timeout, rx)
-                        .await
-                        .map_err(|_| {
-                            shared.queues.borrow_mut().inflight.remove(&idx);
-                            SendPacketError::Timeout
-                        })?
-                        .map(|_| ())
-                        .map_err(|_| SendPacketError::Disconnected)
                 }
                 Err(err) => Err(SendPacketError::Encode(err)),
             }
