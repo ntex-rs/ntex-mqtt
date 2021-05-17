@@ -21,7 +21,7 @@ impl<Io> Handshake<Io> {
         max_receive: u16,
         max_topic_alias: u16,
     ) -> Self {
-        Self { pkt, io, shared, max_size, max_receive, max_topic_alias }
+        Self { io, pkt, shared, max_size, max_receive, max_topic_alias }
     }
 
     pub fn packet(&self) -> &codec::Connect {

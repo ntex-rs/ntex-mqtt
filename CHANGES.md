@@ -1,6 +1,8 @@
 # Changes
 
-## [0.6.7] - 2021-05-xx
+## [0.6.7] - 2021-05-17
+
+* Process unhandled data on disconnect #51
 
 * Fix for panic while parsing MQTT version #52
 

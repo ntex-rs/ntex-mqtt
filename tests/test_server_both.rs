@@ -27,9 +27,6 @@ impl TryFrom<TestError> for v5::PublishAck {
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
-    env_logger::init();
-
     let srv = server::test_server(|| {
         MqttServer::new()
             .v3(v3::MqttServer::new(|con: v3::Handshake<_>| {

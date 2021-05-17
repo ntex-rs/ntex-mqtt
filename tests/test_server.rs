@@ -5,7 +5,7 @@ use futures::{future::ok, FutureExt, SinkExt, StreamExt};
 use ntex::codec::Framed;
 use ntex::rt::time::sleep;
 use ntex::server;
-use ntex::util::{ByteString, Bytes};
+use ntex::util::{poll_fn, ByteString, Bytes};
 
 use ntex_mqtt::v3::{
     client, codec, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish, Session,
@@ -247,9 +247,6 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
 
 #[ntex::test]
 async fn test_disconnect() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex_mqtt=trace,ntex_codec=info,ntex=trace");
-    env_logger::init();
-
     let srv = server::test_server(|| {
         MqttServer::new(handshake)
             .publish(ntex::fn_factory_with_config(|session: Session<St>| {
@@ -275,6 +272,61 @@ async fn test_disconnect() -> std::io::Result<()> {
     let res =
         sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_err());
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_handle_incoming() -> std::io::Result<()> {
+    let publish = Arc::new(AtomicBool::new(false));
+    let publish2 = publish.clone();
+    let disconnect = Arc::new(AtomicBool::new(false));
+    let disconnect2 = disconnect.clone();
+
+    let srv = server::test_server(move || {
+        let publish = publish2.clone();
+        let disconnect = disconnect2.clone();
+        MqttServer::new(handshake)
+            .publish(move |_| {
+                publish.store(true, Relaxed);
+                async {
+                    sleep(Duration::from_millis(100)).await;
+                    Ok(())
+                }
+            })
+            .control(move |msg| match msg {
+                ControlMessage::Disconnect(msg) => {
+                    disconnect.store(true, Relaxed);
+                    ok(msg.ack())
+                }
+                _ => ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    let io = srv.connect().await.unwrap();
+    let mut framed = Framed::new(io, codec::Codec::default());
+    framed.write(codec::Packet::Connect(codec::Connect::default().client_id("user"))).unwrap();
+    framed
+        .write(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(3).unwrap()),
+                payload: Bytes::new(),
+            }
+            .into(),
+        )
+        .unwrap();
+    framed.write(codec::Packet::Disconnect).unwrap();
+    poll_fn(|cx| framed.flush(cx)).await.unwrap();
+    drop(framed);
+    sleep(Duration::from_millis(500)).await;
+
+    assert!(publish.load(Relaxed));
+    assert!(disconnect.load(Relaxed));
 
     Ok(())
 }

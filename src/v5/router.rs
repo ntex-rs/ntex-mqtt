@@ -167,11 +167,9 @@ impl<S: Clone + 'static, Err: 'static> Service for RouterService<S, Err> {
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;
-        for hnd in &*self.inner.handlers.borrow() {
-            if let Some(hnd) = hnd {
-                if hnd.poll_ready(cx)?.is_pending() {
-                    not_ready = true;
-                }
+        for hnd in (*self.inner.handlers.borrow()).iter().flatten() {
+            if hnd.poll_ready(cx)?.is_pending() {
+                not_ready = true;
             }
         }
 

@@ -13,7 +13,7 @@ pub struct Handshake<Io> {
 
 impl<Io> Handshake<Io> {
     pub(crate) fn new(pkt: mqtt::Connect, io: Io, shared: Rc<MqttShared>) -> Self {
-        Self { pkt, io, shared }
+        Self { io, pkt, shared }
     }
 
     pub fn packet(&self) -> &mqtt::Connect {

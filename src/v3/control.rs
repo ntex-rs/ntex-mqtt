@@ -90,7 +90,7 @@ impl Subscribe {
         let mut codes = Vec::with_capacity(topics.len());
         (0..topics.len()).for_each(|_| codes.push(codec::SubscribeReturnCode::Failure));
 
-        Self { topics, codes, packet_id }
+        Self { packet_id, topics, codes }
     }
 
     #[inline]
@@ -210,7 +210,7 @@ pub(crate) struct UnsubscribeResult {
 
 impl Unsubscribe {
     pub(crate) fn new(packet_id: NonZeroU16, topics: Vec<ByteString>) -> Self {
-        Self { topics, packet_id }
+        Self { packet_id, topics }
     }
 
     /// returns iterator over unsubscribe topics

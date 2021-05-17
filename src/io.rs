@@ -263,7 +263,7 @@ where
         match this.st {
             IoDispatcherState::Processing => {
                 loop {
-                    // log::trace!("IO-DISP state :{:?}:", this.state.get_flags());
+                    // log::trace!("IO-DISP state :{:?}:", this.state.flags());
 
                     match this.service.poll_ready(cx) {
                         Poll::Ready(Ok(_)) => {
@@ -283,11 +283,11 @@ where
                             }
 
                             let item = if this.state.is_dispatcher_stopped() {
-                                log::trace!("dispatcher is instructed to stop");
+                                retry = true;
                                 let mut inner = this.inner.borrow_mut();
 
+                                // unregister keep-alive timer
                                 if *this.keepalive_timeout != 0 {
-                                    // unregister keep-alive timer
                                     this.timer.unregister(
                                         *this.updated
                                             + time::Duration::from_secs(
@@ -297,18 +297,25 @@ where
                                     );
                                 }
 
-                                // check for errors
-                                let item = inner
-                                    .error
-                                    .as_mut()
-                                    .and_then(|err| err.take())
-                                    .or_else(|| {
-                                        this.state.take_io_error().map(DispatchItem::IoError)
-                                    });
-                                *this.st = IoDispatcherState::Stop;
-                                retry = true;
+                                // process unhandled data
+                                if let Ok(Some(el)) = read.decode(this.codec) {
+                                    Some(DispatchItem::Item(el))
+                                } else {
+                                    log::trace!("dispatcher is instructed to stop");
 
-                                item
+                                    // check for errors
+                                    let item = inner
+                                        .error
+                                        .as_mut()
+                                        .and_then(|err| err.take())
+                                        .or_else(|| {
+                                            this.state
+                                                .take_io_error()
+                                                .map(DispatchItem::IoError)
+                                        });
+                                    *this.st = IoDispatcherState::Stop;
+                                    item
+                                }
                             } else {
                                 // decode incoming bytes stream
                                 if read.is_ready() {
