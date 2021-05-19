@@ -38,6 +38,7 @@ impl Default for Protocol {
 
 prim_enum! {
     /// Quality of Service
+    #[derive(Serialize, Deserialize)]
     pub enum QoS {
         /// At most once delivery
         ///
