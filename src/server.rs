@@ -130,7 +130,7 @@ where
     }
 
     /// Service to handle v3 protocol
-    pub fn v3_selector(
+    pub fn v3_variants(
         self,
         service: v3::Selector<Io, Err, InitErr>,
     ) -> MqttServer<
@@ -205,6 +205,35 @@ where
         MqttServer {
             v3: self.v3,
             v5: service.inner_finish(),
+            handshake_timeout: self.handshake_timeout,
+            _t: marker::PhantomData,
+        }
+    }
+
+    /// Service to handle v5 protocol
+    pub fn v5_variants<St, C, Cn, P>(
+        self,
+        service: v5::Selector<Io, Err, InitErr>,
+    ) -> MqttServer<
+        Io,
+        V3,
+        impl ServiceFactory<
+            Config = (),
+            Request = (Io, State, Option<Pin<Box<Sleep>>>),
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        >,
+        Err,
+        InitErr,
+    >
+    where
+        Err: 'static,
+        InitErr: 'static,
+    {
+        MqttServer {
+            v3: self.v3,
+            v5: service.finish_server(),
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
         }

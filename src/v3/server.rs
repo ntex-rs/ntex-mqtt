@@ -8,7 +8,6 @@ use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::{DispatchItem, Dispatcher, State, Timer};
-// use super::io::{DispatchItem, Dispatcher, State, Timer};
 use crate::service::{FramedService, FramedService2};
 
 use super::control::{ControlMessage, ControlResult};
@@ -70,17 +69,9 @@ where
     St: 'static,
     C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>
         + 'static,
-    <C::Service as Service>::Future: 'static,
     Cn: ServiceFactory<Config = Session<St>, Request = ControlMessage, Response = ControlResult>
         + 'static,
-    <Cn::Service as Service>::Future: 'static,
     P: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,
-    P::Service: 'static,
-    P::Future: 'static,
-    P::Error: 'static,
-    P::InitError: 'static,
-    <P::Service as Service>::Future: 'static,
-    <P::Service as Service>::Error: 'static,
 
     C::Error: From<Cn::Error>
         + From<Cn::InitError>
