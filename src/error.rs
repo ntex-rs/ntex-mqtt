@@ -13,8 +13,8 @@ pub enum MqttError<E> {
     HandshakeTimeout,
     /// Peer disconnect
     Disconnected,
-    /// Protocol specific unhandled error (for v3.1.1 only)
-    V3ProtocolError,
+    /// Server error
+    ServerError(&'static str),
 }
 
 /// Protocol level errors

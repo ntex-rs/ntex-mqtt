@@ -3,7 +3,7 @@ use std::task::{Context, Poll};
 use std::{convert::TryFrom, future::Future, io::Cursor, pin::Pin};
 
 use ntex::service::Service;
-use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut, Either};
 
 use crate::error::{DecodeError, EncodeError};
 
@@ -319,6 +319,43 @@ impl<'a, S: Service> Future for Ready<'a, S> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.0.poll_ready(cx)
+    }
+}
+
+pub(crate) async fn select<F1, F2>(fut1: F1, fut2: F2) -> Either<F1::Output, F2::Output>
+where
+    F1: Future,
+    F2: Future,
+{
+    Select { fut1, fut2 }.await
+}
+
+pin_project_lite::pin_project! {
+    struct Select<F1, F2>{
+        #[pin]
+        fut1: F1,
+        #[pin]
+        fut2: F2
+    }
+}
+
+impl<F1, F2> Future for Select<F1, F2>
+where
+    F1: Future,
+    F2: Future,
+{
+    type Output = Either<F1::Output, F2::Output>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+
+        if let Poll::Ready(res) = this.fut1.poll(cx) {
+            Poll::Ready(Either::Left(res))
+        } else if let Poll::Ready(res) = this.fut2.poll(cx) {
+            Poll::Ready(Either::Right(res))
+        } else {
+            Poll::Pending
+        }
     }
 }
 

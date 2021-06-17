@@ -7,18 +7,15 @@ use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::util::timeout::{Timeout, TimeoutError};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::service::{FactoryBuilder, FactoryBuilder2};
+use crate::service::{FramedService, FramedService2};
 use crate::types::QoS;
 
-use super::codec as mqtt;
 use super::control::{ControlMessage, ControlResult};
 use super::default::{DefaultControlService, DefaultPublishService};
-use super::dispatcher::factory;
 use super::handshake::{Handshake, HandshakeAck};
 use super::publish::{Publish, PublishAck};
 use super::shared::{MqttShared, MqttSinkPool};
-use super::sink::MqttSink;
-use super::Session;
+use super::{codec as mqtt, dispatcher::factory, MqttSink, Session};
 
 /// Mqtt Server
 pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceFactory> {
@@ -224,8 +221,8 @@ where
             .map_err(<C::Error>::from)
             .map_init_err(|e| MqttError::Service(e.into()));
 
-        ntex::unit_config(
-            FactoryBuilder::new(handshake_service_factory(
+        ntex::unit_config(FramedService::new(
+            handshake_service_factory(
                 handshake,
                 self.max_size,
                 self.max_receive,
@@ -233,10 +230,10 @@ where
                 self.max_qos,
                 self.handshake_timeout,
                 self.pool,
-            ))
-            .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control)),
-        )
+            ),
+            factory(publish, control),
+            self.disconnect_timeout,
+        ))
     }
 
     /// Set service to handle publish packets and create mqtt server factory
@@ -256,8 +253,8 @@ where
             .map_err(<C::Error>::from)
             .map_init_err(|e| MqttError::Service(e.into()));
 
-        ntex::unit_config(
-            FactoryBuilder2::new(handshake_service_factory2(
+        ntex::unit_config(FramedService2::new(
+            handshake_service_factory2(
                 handshake,
                 self.max_size,
                 self.max_receive,
@@ -265,10 +262,10 @@ where
                 self.max_qos,
                 self.handshake_timeout,
                 self.pool,
-            ))
-            .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control)),
-        )
+            ),
+            factory(publish, control),
+            self.disconnect_timeout,
+        ))
     }
 }
 

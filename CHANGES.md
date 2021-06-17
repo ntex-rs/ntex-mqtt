@@ -1,5 +1,9 @@
 # Changes
 
+## [0.6.8] - 2021-06-17
+
+* Add coonditional mqtt server selector
+
 ## [0.6.7] - 2021-05-17
 
 * Process unhandled data on disconnect #51

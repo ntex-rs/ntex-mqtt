@@ -9,6 +9,7 @@ pub mod error;
 mod handshake;
 mod publish;
 mod router;
+mod selector;
 mod server;
 mod shared;
 mod sink;
@@ -20,6 +21,7 @@ pub use self::control::{ControlMessage, ControlResult};
 pub use self::handshake::{Handshake, HandshakeAck};
 pub use self::publish::Publish;
 pub use self::router::Router;
+pub use self::selector::Selector;
 pub use self::server::MqttServer;
 pub use self::sink::{MqttSink, PublishBuilder};
 

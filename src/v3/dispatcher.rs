@@ -142,7 +142,7 @@ where
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
                         return Either::Right(Either::Left(Ready::Err(
-                            MqttError::V3ProtocolError,
+                            MqttError::ServerError("Duplicated packet id for publish packet"),
                         )));
                     }
                 }
@@ -171,7 +171,9 @@ where
             codec::Packet::Subscribe { packet_id, topic_filters } => {
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
-                    return Either::Right(Either::Left(Ready::Err(MqttError::V3ProtocolError)));
+                    return Either::Right(Either::Left(Ready::Err(MqttError::ServerError(
+                        "Duplicated packet id for unsubscribe packet",
+                    ))));
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
@@ -185,7 +187,9 @@ where
             codec::Packet::Unsubscribe { packet_id, topic_filters } => {
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
-                    return Either::Right(Either::Left(Ready::Err(MqttError::V3ProtocolError)));
+                    return Either::Right(Either::Left(Ready::Err(MqttError::ServerError(
+                        "Duplicated packet id for unsubscribe packet",
+                    ))));
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(

@@ -119,7 +119,7 @@ where
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
                         return Either::Right(Either::Left(Ready::Err(
-                            MqttError::V3ProtocolError,
+                            MqttError::ServerError("Duplicated packet id for publish packet"),
                         )));
                     }
                 }
