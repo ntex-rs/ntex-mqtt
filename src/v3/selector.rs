@@ -84,7 +84,7 @@ where
     pub fn variant<F, R, St, C, Cn, P>(
         mut self,
         check: F,
-        server: MqttServer<Io, St, C, Cn, P>,
+        mut server: MqttServer<Io, St, C, Cn, P>,
     ) -> Self
     where
         F: Fn(&mqtt::Connect) -> R + 'static,
@@ -109,8 +109,27 @@ where
             + From<P::InitError>
             + fmt::Debug,
     {
+        server.pool = self.pool.clone();
         self.servers.push(boxed::factory(server.finish_selector(check)));
         self
+    }
+
+    /// Set service to handle publish packets and create mqtt server factory
+    pub(crate) fn finish_server(
+        self,
+    ) -> impl ServiceFactory<
+        Config = (),
+        Request = (Io, State, Option<Pin<Box<Sleep>>>),
+        Response = (),
+        Error = MqttError<Err>,
+        InitError = InitErr,
+    > {
+        Selector2 {
+            servers: self.servers,
+            max_size: self.max_size,
+            pool: self.pool,
+            _t: marker::PhantomData,
+        }
     }
 }
 
@@ -202,6 +221,137 @@ where
         } else {
             None
         };
+
+        Box::pin(async move {
+            // read first packet
+            let packet = state
+                .next(&mut io, &shared.codec)
+                .await
+                .map_err(|err| {
+                    log::trace!("Error is received during mqtt handshake: {:?}", err);
+                    MqttError::from(err)
+                })
+                .and_then(|res| {
+                    res.ok_or_else(|| {
+                        log::trace!("Server mqtt is disconnected during handshake");
+                        MqttError::Disconnected
+                    })
+                })?;
+
+            let connect = match packet {
+                mqtt::Packet::Connect(connect) => connect,
+                packet => {
+                    log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
+                    return Err(MqttError::Protocol(ProtocolError::Unexpected(
+                        packet.packet_type(),
+                        "MQTT-3.1.0-1: Expected CONNECT packet",
+                    )));
+                }
+            };
+
+            // call servers
+            let mut item = (connect, io, state, shared, delay);
+            for srv in servers.iter() {
+                match srv.call(item).await? {
+                    Either::Left(result) => {
+                        item = result;
+                    }
+                    Either::Right(_) => return Ok(()),
+                }
+            }
+            log::error!("Cannot handle CONNECT packet {:?}", item.0);
+            Err(MqttError::ServerError("Cannot handle CONNECT packet"))
+        })
+    }
+}
+
+pub(crate) struct Selector2<Io, Err, InitErr> {
+    servers: Vec<ServerFactory<Io, Err, InitErr>>,
+    max_size: u32,
+    pool: Rc<MqttSinkPool>,
+    _t: marker::PhantomData<(Io, Err, InitErr)>,
+}
+
+impl<Io, Err, InitErr> ServiceFactory for Selector2<Io, Err, InitErr>
+where
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    Err: 'static,
+    InitErr: 'static,
+{
+    type Config = ();
+    type Request = (Io, State, Option<Pin<Box<Sleep>>>);
+    type Response = ();
+    type Error = MqttError<Err>;
+    type InitError = InitErr;
+    type Service = SelectorService2<Io, Err>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+
+    fn new_service(&self, _: ()) -> Self::Future {
+        let futs: Vec<_> = self.servers.iter().map(|srv| srv.new_service(())).collect();
+        let max_size = self.max_size;
+        let pool = self.pool.clone();
+
+        Box::pin(async move {
+            let mut servers = Vec::new();
+            for fut in futs {
+                servers.push(fut.await?);
+            }
+            Ok(SelectorService2 { max_size, pool, servers: Rc::new(servers) })
+        })
+    }
+}
+
+pub(crate) struct SelectorService2<Io, Err> {
+    servers: Rc<Vec<Server<Io, Err>>>,
+    max_size: u32,
+    pool: Rc<MqttSinkPool>,
+}
+
+impl<Io, Err> Service for SelectorService2<Io, Err>
+where
+    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    Err: 'static,
+{
+    type Request = (Io, State, Option<Pin<Box<Sleep>>>);
+    type Response = ();
+    type Error = MqttError<Err>;
+    type Future = Pin<Box<dyn Future<Output = Result<(), MqttError<Err>>>>>;
+
+    #[inline]
+    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let mut ready = true;
+        for srv in self.servers.iter() {
+            ready &= srv.poll_ready(cx)?.is_ready();
+        }
+        if ready {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+
+    #[inline]
+    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+        let mut ready = true;
+        for srv in self.servers.iter() {
+            ready &= srv.poll_shutdown(cx, is_error).is_ready()
+        }
+        if ready {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+
+    #[inline]
+    fn call(&self, (mut io, state, delay): Self::Request) -> Self::Future {
+        let servers = self.servers.clone();
+        let shared = Rc::new(MqttShared::new(
+            state.clone(),
+            mqtt::Codec::default().max_size(self.max_size),
+            16,
+            self.pool.clone(),
+        ));
 
         Box::pin(async move {
             // read first packet
