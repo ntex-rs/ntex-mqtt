@@ -190,7 +190,7 @@ where
             .map_err(|e| MqttError::Service(e.into()))
             .map_init_err(|e| MqttError::Service(e.into()));
 
-        ntex::unit_config(FramedService::new(
+        FramedService::new(
             handshake_service_factory(
                 handshake,
                 self.max_size,
@@ -218,7 +218,7 @@ where
                 },
             ),
             self.disconnect_timeout,
-        ))
+        )
     }
 
     /// Set service to handle publish packets and create mqtt server factory
@@ -242,7 +242,7 @@ where
             .map_err(|e| MqttError::Service(e.into()))
             .map_init_err(|e| MqttError::Service(e.into()));
 
-        ntex::unit_config(FramedService2::new(
+        FramedService2::new(
             handshake_service_factory2(
                 handshake,
                 self.max_size,
@@ -270,7 +270,7 @@ where
                 },
             ),
             self.disconnect_timeout,
-        ))
+        )
     }
 
     /// Set service to handle publish packets and create mqtt server factory

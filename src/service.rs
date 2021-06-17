@@ -10,15 +10,15 @@ use super::io::{DispatchItem, Dispatcher, State, Timer};
 
 type ResponseItem<U> = Option<<U as Encoder>::Item>;
 
-pub(crate) struct FramedService<St, C, T, Io, Codec, Cfg> {
+pub(crate) struct FramedService<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: u16,
     time: Timer,
-    _t: PhantomData<(St, Io, Codec, Cfg)>,
+    _t: PhantomData<(St, Io, Codec)>,
 }
 
-impl<St, C, T, Io, Codec, Cfg> FramedService<St, C, T, Io, Codec, Cfg>
+impl<St, C, T, Io, Codec> FramedService<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: ServiceFactory<Config = (), Request = Io, Response = (Io, State, Codec, St, u16)>,
@@ -47,7 +47,7 @@ where
     }
 }
 
-impl<St, C, T, Io, Codec, Cfg> ServiceFactory for FramedService<St, C, T, Io, Codec, Cfg>
+impl<St, C, T, Io, Codec> ServiceFactory for FramedService<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: ServiceFactory<Config = (), Request = Io, Response = (Io, State, Codec, St, u16)>,
@@ -66,7 +66,7 @@ where
     Codec: Decoder + Encoder + Clone + 'static,
     <Codec as Encoder>::Item: 'static,
 {
-    type Config = Cfg;
+    type Config = ();
     type Request = Io;
     type Response = ();
     type Error = C::Error;
@@ -74,7 +74,7 @@ where
     type Service = FramedServiceImpl<St, C::Service, T, Io, Codec>;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
 
-    fn new_service(&self, _: Cfg) -> Self::Future {
+    fn new_service(&self, _: ()) -> Self::Future {
         let fut = self.connect.new_service(());
         let handler = self.handler.clone();
         let disconnect_timeout = self.disconnect_timeout;
@@ -161,15 +161,15 @@ where
     }
 }
 
-pub(crate) struct FramedService2<St, C, T, Io, Codec, Cfg> {
+pub(crate) struct FramedService2<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: u16,
     time: Timer,
-    _t: PhantomData<(St, Io, Codec, Cfg)>,
+    _t: PhantomData<(St, Io, Codec)>,
 }
 
-impl<St, C, T, Io, Codec, Cfg> FramedService2<St, C, T, Io, Codec, Cfg>
+impl<St, C, T, Io, Codec> FramedService2<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: ServiceFactory<
@@ -202,7 +202,7 @@ where
     }
 }
 
-impl<St, C, T, Io, Codec, Cfg> ServiceFactory for FramedService2<St, C, T, Io, Codec, Cfg>
+impl<St, C, T, Io, Codec> ServiceFactory for FramedService2<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     C: ServiceFactory<
@@ -225,7 +225,7 @@ where
     Codec: Decoder + Encoder + Clone + 'static,
     <Codec as Encoder>::Item: 'static,
 {
-    type Config = Cfg;
+    type Config = ();
     type Request = (Io, State, Option<Pin<Box<Sleep>>>);
     type Response = ();
     type Error = C::Error;
@@ -233,7 +233,7 @@ where
     type Service = FramedServiceImpl2<St, C::Service, T, Io, Codec>;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
 
-    fn new_service(&self, _: Cfg) -> Self::Future {
+    fn new_service(&self, _: ()) -> Self::Future {
         let fut = self.connect.new_service(());
         let handler = self.handler.clone();
         let disconnect_timeout = self.disconnect_timeout;
