@@ -286,7 +286,7 @@ where
         InitError = C::InitError,
     >
     where
-        F: Fn(&mqtt::Connect) -> R + 'static,
+        F: Fn(&Handshake<Io>) -> R + 'static,
         R: Future<Output = Result<bool, C::Error>> + 'static,
     {
         let publish = self.srv_publish.map_init_err(|e| MqttError::Service(e.into()));
@@ -560,7 +560,7 @@ pub(crate) struct ServerSelector<St, C, T, Io, F, R> {
 impl<St, C, T, Io, F, R> ServiceFactory for ServerSelector<St, C, T, Io, F, R>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    F: Fn(&mqtt::Connect) -> R + 'static,
+    F: Fn(&Handshake<Io>) -> R + 'static,
     R: Future<Output = Result<bool, C::Error>>,
     C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>
         + 'static,
@@ -626,7 +626,7 @@ pub(crate) struct ServerSelectorImpl<St, C, T, Io, F, R> {
 impl<St, C, T, Io, F, R> Service for ServerSelectorImpl<St, C, T, Io, F, R>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    F: Fn(&mqtt::Connect) -> R + 'static,
+    F: Fn(&Handshake<Io>) -> R + 'static,
     R: Future<Output = Result<bool, C::Error>>,
     C: Service<Request = Handshake<Io>, Response = HandshakeAck<Io, St>> + 'static,
     C::Error: fmt::Debug,
@@ -668,39 +668,37 @@ where
         let mut max_topic_alias = self.max_topic_alias;
 
         Box::pin(async move {
-            let (pkt, io, state, shared, mut delay) = req;
+            let (mut hnd, state, mut delay) = req;
 
             let result = if let Some(ref mut delay) = delay {
-                let fut = (&*check)(&pkt);
+                let fut = (&*check)(&hnd);
                 match crate::utils::select(fut, delay).await {
                     Either::Left(res) => res,
                     Either::Right(_) => return Err(MqttError::HandshakeTimeout),
                 }
             } else {
-                (&*check)(&pkt).await
+                (&*check)(&hnd).await
             };
 
             if !result.map_err(MqttError::Service)? {
-                Ok(Either::Left((pkt, io, state, shared, delay)))
+                Ok(Either::Left((hnd, state, delay)))
             } else {
                 // set max outbound (encoder) packet size
-                if let Some(size) = pkt.max_packet_size {
-                    shared.codec.set_max_outbound_size(size.get());
+                if let Some(size) = hnd.packet().max_packet_size {
+                    hnd.shared.codec.set_max_outbound_size(size.get());
                 }
-                shared.cap.set(pkt.receive_max.map(|v| v.get()).unwrap_or(16) as usize);
+                hnd.shared
+                    .cap
+                    .set(hnd.packet().receive_max.map(|v| v.get()).unwrap_or(16) as usize);
 
-                let keep_alive = pkt.keep_alive;
+                let keep_alive = hnd.packet().keep_alive;
+                hnd.max_size = max_size;
+                hnd.max_receive = max_receive;
+                hnd.max_topic_alias = max_topic_alias;
 
                 // authenticate mqtt connection
                 let mut ack = if let Some(ref mut delay) = delay {
-                    let fut = connect.call(Handshake::new(
-                        pkt,
-                        io,
-                        shared,
-                        max_size,
-                        max_receive,
-                        max_topic_alias,
-                    ));
+                    let fut = connect.call(hnd);
                     match crate::utils::select(fut, delay).await {
                         Either::Left(res) => res.map_err(|e| {
                             log::trace!("Connection handshake failed: {:?}", e);
@@ -709,20 +707,10 @@ where
                         Either::Right(_) => return Err(MqttError::HandshakeTimeout),
                     }
                 } else {
-                    connect
-                        .call(Handshake::new(
-                            pkt,
-                            io,
-                            shared,
-                            max_size,
-                            max_receive,
-                            max_topic_alias,
-                        ))
-                        .await
-                        .map_err(|e| {
-                            log::trace!("Connection handshake failed: {:?}", e);
-                            MqttError::Service(e)
-                        })?
+                    connect.call(hnd).await.map_err(|e| {
+                        log::trace!("Connection handshake failed: {:?}", e);
+                        MqttError::Service(e)
+                    })?
                 };
 
                 match ack.session {

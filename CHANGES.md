@@ -1,5 +1,9 @@
 # Changes
 
+## [0.6.9] - 2021-06-17
+
+* Use `Handshake<Io>` instead of `codec::Connect` for selector
+
 ## [0.6.8] - 2021-06-17
 
 * Add coonditional mqtt server selector

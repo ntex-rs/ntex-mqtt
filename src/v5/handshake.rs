@@ -6,10 +6,10 @@ use super::{codec, shared::MqttShared, sink::MqttSink};
 pub struct Handshake<Io> {
     io: Io,
     pkt: codec::Connect,
-    shared: Rc<MqttShared>,
-    max_size: u32,
-    max_receive: u16,
-    max_topic_alias: u16,
+    pub(super) shared: Rc<MqttShared>,
+    pub(super) max_size: u32,
+    pub(super) max_receive: u16,
+    pub(super) max_topic_alias: u16,
 }
 
 impl<Io> Handshake<Io> {
@@ -24,10 +24,12 @@ impl<Io> Handshake<Io> {
         Self { io, pkt, shared, max_size, max_receive, max_topic_alias }
     }
 
+    #[inline]
     pub fn packet(&self) -> &codec::Connect {
         &self.pkt
     }
 
+    #[inline]
     pub fn packet_mut(&mut self) -> &mut codec::Connect {
         &mut self.pkt
     }
@@ -37,11 +39,13 @@ impl<Io> Handshake<Io> {
         &mut self.io
     }
 
+    #[inline]
     /// Returns mqtt server sink
     pub fn sink(&self) -> MqttSink {
         MqttSink::new(self.shared.clone())
     }
 
+    #[inline]
     /// Ack handshake message and set state
     pub fn ack<St>(self, st: St) -> HandshakeAck<Io, St> {
         let mut packet = codec::ConnectAck {
@@ -68,6 +72,7 @@ impl<Io> Handshake<Io> {
         }
     }
 
+    #[inline]
     /// Create handshake ack object with error
     pub fn failed<St>(self, reason_code: codec::ConnectAckReason) -> HandshakeAck<Io, St> {
         HandshakeAck {
@@ -82,6 +87,7 @@ impl<Io> Handshake<Io> {
         }
     }
 
+    #[inline]
     /// Create handshake ack object with provided ConnectAck packet
     pub fn fail_with<St>(self, ack: codec::ConnectAck) -> HandshakeAck<Io, St> {
         HandshakeAck {
@@ -116,6 +122,7 @@ pub struct HandshakeAck<Io, St> {
 }
 
 impl<Io, St> HandshakeAck<Io, St> {
+    #[inline]
     /// Set idle keep-alive for the connection in seconds.
     /// This method sets `server_keepalive_sec` property for `ConnectAck`
     /// response packet.

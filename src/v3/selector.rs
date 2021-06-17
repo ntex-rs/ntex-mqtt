@@ -14,22 +14,18 @@ use super::handshake::{Handshake, HandshakeAck};
 use super::shared::{MqttShared, MqttSinkPool};
 use super::{codec as mqtt, dispatcher::factory, MqttServer, MqttSink, Publish, Session};
 
-pub(crate) type SelectItem<Io> =
-    (mqtt::Connect, Io, State, Rc<MqttShared>, Option<Pin<Box<Sleep>>>);
+pub(crate) type SelectItem<Io> = (Handshake<Io>, State, Option<Pin<Box<Sleep>>>);
 
 type ServerFactory<Io, Err, InitErr> = boxed::BoxServiceFactory<
     (),
-    (mqtt::Connect, Io, State, Rc<MqttShared>, Option<Pin<Box<Sleep>>>),
+    SelectItem<Io>,
     Either<SelectItem<Io>, ()>,
     MqttError<Err>,
     InitErr,
 >;
 
-type Server<Io, Err> = boxed::BoxService<
-    (mqtt::Connect, Io, State, Rc<MqttShared>, Option<Pin<Box<Sleep>>>),
-    Either<SelectItem<Io>, ()>,
-    MqttError<Err>,
->;
+type Server<Io, Err> =
+    boxed::BoxService<SelectItem<Io>, Either<SelectItem<Io>, ()>, MqttError<Err>>;
 
 /// Mqtt server selector
 ///
@@ -87,7 +83,7 @@ where
         mut server: MqttServer<Io, St, C, Cn, P>,
     ) -> Self
     where
-        F: Fn(&mqtt::Connect) -> R + 'static,
+        F: Fn(&Handshake<Io>) -> R + 'static,
         R: Future<Output = Result<bool, Err>> + 'static,
         St: 'static,
         C: ServiceFactory<
@@ -250,7 +246,7 @@ where
             };
 
             // call servers
-            let mut item = (connect, io, state, shared, delay);
+            let mut item = (Handshake::new(connect, io, shared), state, delay);
             for srv in servers.iter() {
                 match srv.call(item).await? {
                     Either::Left(result) => {
@@ -381,7 +377,7 @@ where
             };
 
             // call servers
-            let mut item = (connect, io, state, shared, delay);
+            let mut item = (Handshake::new(connect, io, shared), state, delay);
             for srv in servers.iter() {
                 match srv.call(item).await? {
                     Either::Left(result) => {
@@ -390,7 +386,7 @@ where
                     Either::Right(_) => return Ok(()),
                 }
             }
-            log::error!("Cannot handle CONNECT packet {:?}", item.0);
+            log::error!("Cannot handle CONNECT packet {:?}", item.0.packet());
             Err(MqttError::ServerError("Cannot handle CONNECT packet"))
         })
     }
