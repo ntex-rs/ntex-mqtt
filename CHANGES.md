@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.0-b.1] - 2021-06-27
+
+* Upgrade to ntex-0.4
+
 ## [0.6.9] - 2021-06-17
 
 * Use `Handshake<Io>` instead of `codec::Connect` for selector

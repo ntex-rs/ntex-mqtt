@@ -312,8 +312,8 @@ mod tests {
             status: Vec::new(),
         };
 
-        let mut buf = BytesMut::new();
         let size = ack.encoded_size(99999);
+        let mut buf = BytesMut::with_capacity(size);
         ack.encode(&mut buf, size as u32).unwrap();
         assert_eq!(ack, SubscribeAck::decode(&mut buf.freeze()).unwrap());
 
@@ -323,8 +323,8 @@ mod tests {
             reason_string: None,
             status: vec![SubscribeAckReason::GrantedQos0],
         };
-        let mut buf = BytesMut::new();
         let size = ack.encoded_size(99999);
+        let mut buf = BytesMut::with_capacity(size);
         ack.encode(&mut buf, size as u32).unwrap();
         assert_eq!(ack, SubscribeAck::decode(&mut buf.freeze()).unwrap());
 
@@ -345,8 +345,8 @@ mod tests {
             reason_string: None,
             status: vec![UnsubscribeAckReason::Success],
         };
-        let mut buf = BytesMut::new();
         let size = ack.encoded_size(99999);
+        let mut buf = BytesMut::with_capacity(size);
         ack.encode(&mut buf, size as u32).unwrap();
         assert_eq!(ack, UnsubscribeAck::decode(&mut buf.freeze()).unwrap());
     }

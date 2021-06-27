@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_encode_fixed_header() {
-        let mut v = BytesMut::new();
+        let mut v = BytesMut::with_capacity(270);
         let p = Packet::PingRequest;
 
         assert_eq!(p.encoded_size(MAX_PACKET_SIZE), 0);
