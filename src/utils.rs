@@ -131,9 +131,8 @@ impl Decode for ByteString {
 }
 
 pub(crate) fn take_properties(src: &mut Bytes) -> Result<Bytes, DecodeError> {
-    let prop_len = decode_variable_length_cursor(src)?;
+    let prop_len = if src.has_remaining() { decode_variable_length_cursor(src)? } else { 0 };
     ensure!(src.remaining() >= prop_len as usize, DecodeError::InvalidLength);
-
     Ok(src.split_to(prop_len as usize))
 }
 
@@ -151,7 +150,8 @@ pub(crate) fn decode_variable_length_cursor<B: Buf>(src: &mut B) -> Result<u32, 
     let mut shift: u32 = 0;
     let mut len: u32 = 0;
     loop {
-        ensure!(src.has_remaining(), DecodeError::MalformedPacket);
+        let has_remaining = src.has_remaining();
+        ensure!(has_remaining, DecodeError::MalformedPacket);
         let val = src.get_u8();
         len += ((val & 0b0111_1111u8) as u32) << shift;
         if val & 0b1000_0000 == 0 {
