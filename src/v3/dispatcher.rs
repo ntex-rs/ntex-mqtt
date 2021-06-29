@@ -1,12 +1,10 @@
-use linked_hash_map::LinkedHashMap;
 use std::cell::{Cell, RefCell};
 use std::task::{Context, Poll};
+use std::time::Duration;
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::{inflight::InFlightService, join, Either, HashSet, Ready};
-
-use crate::error::MqttError;
 
 use super::control::{
     ControlMessage, ControlResult, ControlResultKind, Subscribe, Unsubscribe,
@@ -18,7 +16,8 @@ use super::{
     sink::MqttSink,
     Session,
 };
-use std::time::Duration;
+use crate::error::MqttError;
+use crate::types::AwaitingRelSet;
 
 /// mqtt3 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
@@ -74,69 +73,6 @@ where
             )
         }
     })
-}
-
-type TimestampMillis = i64;
-
-#[derive(Default)]
-struct AwaitingRelSet {
-    rels: LinkedHashMap<NonZeroU16, TimestampMillis, ahash::RandomState>,
-    max_awaiting: usize,
-    await_timeout: TimestampMillis,
-}
-
-impl AwaitingRelSet {
-    #[inline]
-    fn new(max_awaiting: usize, await_timeout: Duration) -> Self {
-        Self {
-            rels: LinkedHashMap::default(),
-            max_awaiting,
-            await_timeout: await_timeout.as_millis() as TimestampMillis,
-        }
-    }
-
-    #[inline]
-    fn contains(&self, packet_id: &NonZeroU16) -> bool {
-        self.rels.contains_key(packet_id)
-    }
-
-    #[inline]
-    fn is_full(&self) -> bool {
-        self.max_awaiting > 0 && self.rels.len() >= self.max_awaiting
-    }
-
-    #[inline]
-    fn remove(&mut self, packet_id: &NonZeroU16) {
-        self.rels.remove(packet_id);
-    }
-
-    #[inline]
-    fn pop(&mut self) -> Option<NonZeroU16> {
-        self.rels.pop_front().map(|(packet_id, _)| packet_id)
-    }
-
-    #[inline]
-    fn push(&mut self, packet_id: NonZeroU16) {
-        self.rels.insert(packet_id, chrono::Local::now().timestamp_millis());
-    }
-
-    #[inline]
-    fn remove_timeouts(&mut self) {
-        if self.await_timeout == 0 {
-            return;
-        }
-        let now = chrono::Local::now().timestamp_millis();
-        while let Some((packet_id, t)) = self.rels.front() {
-            if (now - *t) < self.await_timeout {
-                break;
-            }
-            log::warn!(
-                "Timeout awating release QoS2 messages found, will be removed, packet id is {}",
-                *packet_id
-            );
-            self.rels.pop_front();
-        }
-    }
 }
 
 /// Mqtt protocol dispatcher
@@ -230,8 +166,8 @@ where
                 let packet_id = publish.packet_id;
                 let qos = publish.qos;
 
-                // check for duplicated packet id
                 if let Some(pid) = packet_id {
+                    // check for duplicated packet id
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
                         return Either::Right(Either::Left(Ready::Err(
@@ -239,6 +175,7 @@ where
                         )));
                     }
 
+                    //qos == 2
                     if codec::QoS::ExactlyOnce == qos {
                         let mut awaiting_rels = inner.awaiting_rels.borrow_mut();
                         if awaiting_rels.contains(&pid) {
@@ -283,7 +220,9 @@ where
 
             codec::Packet::PublishRelease { packet_id } => {
                 self.inner.awaiting_rels.borrow_mut().remove(&packet_id);
-                Either::Right(Either::Left(Ready::Ok(Some(codec::Packet::PublishComplete { packet_id }))))
+                Either::Right(Either::Left(Ready::Ok(Some(codec::Packet::PublishComplete {
+                    packet_id,
+                }))))
             }
 
             codec::Packet::PublishReceived { packet_id } => Either::Left(PublishResponse {
@@ -293,14 +232,12 @@ where
                 _t: PhantomData,
             }),
 
-            codec::Packet::PublishComplete { packet_id } => {
-                Either::Left(PublishResponse {
-                    fut: self.publish.call(PublishMessage::PublishComplete(packet_id)),
-                    result: PublishResult::Nothing,
-                    inner: self.inner.clone(),
-                    _t: PhantomData,
-                })
-            },
+            codec::Packet::PublishComplete { packet_id } => Either::Left(PublishResponse {
+                fut: self.publish.call(PublishMessage::PublishComplete(packet_id)),
+                result: PublishResult::Nothing,
+                inner: self.inner.clone(),
+                _t: PhantomData,
+            }),
 
             codec::Packet::PingRequest => Either::Right(Either::Right(ControlResponse::new(
                 self.control.call(ControlMessage::ping()),
