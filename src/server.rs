@@ -165,8 +165,8 @@ where
             > + 'static,
         P: ServiceFactory<
                 Config = v5::Session<St>,
-                Request = v5::Publish,
-                Response = v5::PublishAck,
+                Request = v5::PublishMessage,
+                Response = v5::PublishResult,
             > + 'static,
         P::Error: fmt::Debug,
         C::Error: From<Cn::Error>
@@ -174,7 +174,7 @@ where
             + From<P::Error>
             + From<P::InitError>
             + fmt::Debug,
-        v5::PublishAck: TryFrom<P::Error, Error = C::Error>,
+        v5::PublishResult: TryFrom<P::Error, Error = C::Error>,
     {
         MqttServer {
             v3: self.v3,

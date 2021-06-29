@@ -489,4 +489,3 @@ mod tests {
         assert!(Topic::from_str("$SYS/monitor/+").unwrap().matches_str("$SYS/monitor/Clients"));
     }
 }
-

@@ -7,6 +7,41 @@ use serde_json::Error as JsonError;
 
 use super::codec;
 
+#[derive(Debug)]
+pub enum PublishMessage {
+    /// Publish packet
+    Publish(Publish),
+    /// Publish acknowledgment packet
+    PublishAck(codec::PublishAck),
+    ///Publish received packet
+    PublishReceived(codec::PublishAck),
+    ///Publish complete packet
+    PublishComplete(codec::PublishAck2),
+}
+
+impl PublishMessage {
+    /// Create acknowledgement for this packet
+    pub fn ack(self) -> PublishResult {
+        match self {
+            PublishMessage::Publish(_p) => {
+                PublishResult::PublishAck(PublishAck::new(codec::PublishAckReason::Success))
+            }
+            PublishMessage::PublishAck(_ack) => PublishResult::Nothing,
+            PublishMessage::PublishReceived(ack) => {
+                PublishResult::PublishRelease(ack.packet_id)
+            }
+            PublishMessage::PublishComplete(_ack2) => PublishResult::Nothing,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum PublishResult {
+    PublishAck(PublishAck),
+    PublishRelease(NonZeroU16),
+    Nothing,
+}
+
 /// Publish message
 pub struct Publish {
     publish: codec::Publish,
@@ -104,6 +139,7 @@ impl std::fmt::Debug for Publish {
 }
 
 /// Publish ack
+#[derive(Debug)]
 pub struct PublishAck {
     pub(crate) reason_code: codec::PublishAckReason,
     pub(crate) properties: codec::UserProperties,

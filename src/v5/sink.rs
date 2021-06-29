@@ -74,8 +74,14 @@ impl MqttSink {
         queues.inflight.clear();
     }
 
-    pub(super) fn send(&self, pkt: codec::Packet) {
-        let _ = self.0.state.write().encode(pkt, &self.0.codec);
+    ///Send Mqtt packet
+    pub fn send(&self, pkt: codec::Packet) -> Result<(), SendPacketError> {
+        self.0
+            .state
+            .write()
+            .encode(pkt, &self.0.codec)
+            .map_err(SendPacketError::Encode)
+            .map(|_| ())
     }
 
     /// Send ping
@@ -103,7 +109,7 @@ impl MqttSink {
                 }
 
                 if idx != pkt.packet_id() {
-                    log::trace!(
+                    log::warn!(
                         "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
                         idx,
                         pkt.packet_id()
@@ -115,7 +121,9 @@ impl MqttSink {
                     if let Some((tx, tp)) = queues.inflight.remove(&idx) {
                         // cleanup ack queue
                         if !pkt.is_match(tp) {
-                            log::trace!("MQTT protocol error, unexpeted packet");
+                            log::warn!("MQTT protocol error, unexpeted packet");
+                            drop(queues);
+                            self.close();
                             return Err(ProtocolError::Unexpected(
                                 pkt.packet_type(),
                                 tp.name(),
@@ -131,12 +139,16 @@ impl MqttSink {
                         }
                         return Ok(());
                     } else {
-                        log::error!("Inflight state inconsistency")
+                        log::error!("Inflight state inconsistency");
+                        //May be removed by timeout
+                        return Ok(());
                     }
                 }
             } else {
-                log::trace!("Unexpected PublishAck packet");
+                log::trace!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
+                return Ok(());
             }
+            self.close();
             return Err(ProtocolError::PacketIdMismatch);
         }
     }

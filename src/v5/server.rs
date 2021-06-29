@@ -15,7 +15,7 @@ use super::control::{ControlMessage, ControlResult};
 use super::default::{DefaultControlService, DefaultPublishService};
 use super::dispatcher::factory;
 use super::handshake::{Handshake, HandshakeAck};
-use super::publish::{Publish, PublishAck};
+use super::publish::{PublishMessage, PublishResult};
 use super::shared::{MqttShared, MqttSinkPool};
 use super::sink::MqttSink;
 use super::Session;
@@ -31,6 +31,8 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     handshake_timeout: u16,
     disconnect_timeout: u16,
     max_topic_alias: u16,
+    max_awaiting_rel: usize,
+    await_rel_timeout: Duration,
     pool: Rc<MqttSinkPool>,
     _t: marker::PhantomData<(Io, St)>,
 }
@@ -64,6 +66,8 @@ where
             handshake_timeout: 0,
             disconnect_timeout: 3000,
             max_topic_alias: 32,
+            max_awaiting_rel: 0,
+            await_rel_timeout: Duration::default(),
             pool: Rc::new(MqttSinkPool::default()),
             _t: marker::PhantomData,
         }
@@ -82,7 +86,8 @@ where
             Request = ControlMessage<C::Error>,
             Response = ControlResult,
         > + 'static,
-    P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
+    P: ServiceFactory<Config = Session<St>, Request = PublishMessage, Response = PublishResult>
+        + 'static,
 {
     /// Set handshake timeout in millis.
     ///
@@ -140,6 +145,18 @@ where
         self
     }
 
+    ///
+    pub fn max_awaiting_rel(mut self, val: usize) -> Self {
+        self.max_awaiting_rel = val;
+        self
+    }
+
+    ///
+    pub fn await_rel_timeout(mut self, val: Duration) -> Self {
+        self.await_rel_timeout = val;
+        self
+    }
+
     /// Service to handle control messages
     pub fn control<F, Srv>(self, service: F) -> MqttServer<Io, St, C, Srv, P>
     where
@@ -161,6 +178,8 @@ where
             max_qos: self.max_qos,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
+            max_awaiting_rel: self.max_awaiting_rel,
+            await_rel_timeout: self.await_rel_timeout,
             pool: self.pool,
             _t: marker::PhantomData,
         }
@@ -171,10 +190,13 @@ where
     where
         F: IntoServiceFactory<Srv> + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError>,
-        Srv: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck>
-            + 'static,
+        Srv: ServiceFactory<
+                Config = Session<St>,
+                Request = PublishMessage,
+                Response = PublishResult,
+            > + 'static,
         Srv::Error: fmt::Debug,
-        PublishAck: TryFrom<Srv::Error, Error = C::Error>,
+        PublishResult: TryFrom<Srv::Error, Error = C::Error>,
     {
         MqttServer {
             handshake: self.handshake,
@@ -186,6 +208,8 @@ where
             max_qos: self.max_qos,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
+            max_awaiting_rel: self.max_awaiting_rel,
+            await_rel_timeout: self.await_rel_timeout,
             pool: self.pool,
             _t: marker::PhantomData,
         }
@@ -208,9 +232,10 @@ where
             Request = ControlMessage<C::Error>,
             Response = ControlResult,
         > + 'static,
-    P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
+    P: ServiceFactory<Config = Session<St>, Request = PublishMessage, Response = PublishResult>
+        + 'static,
     P::Error: fmt::Debug,
-    PublishAck: TryFrom<P::Error, Error = C::Error>,
+    PublishResult: TryFrom<P::Error, Error = C::Error>,
 {
     /// Set service to handle publish packets and create mqtt server factory
     pub fn finish(
@@ -235,7 +260,12 @@ where
                 self.pool,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control)),
+            .build(factory(
+                publish,
+                control,
+                self.max_awaiting_rel,
+                self.await_rel_timeout,
+            )),
         )
     }
 
@@ -267,7 +297,12 @@ where
                 self.pool,
             ))
             .disconnect_timeout(self.disconnect_timeout)
-            .build(factory(publish, control)),
+            .build(factory(
+                publish,
+                control,
+                self.max_awaiting_rel,
+                self.await_rel_timeout,
+            )),
         )
     }
 }

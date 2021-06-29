@@ -161,7 +161,7 @@ where
 
                         // check for duplicated packet id
                         if !inner.inflight.insert(pid) {
-                            self.inner.sink.send(codec::Packet::PublishAck(
+                            let _ = self.inner.sink.send(codec::Packet::PublishAck(
                                 codec::PublishAck {
                                     packet_id: pid,
                                     reason_code: codec::PublishAckReason::PacketIdentifierInUse,
@@ -453,7 +453,7 @@ where
 
         if self.error {
             if let Some(pkt) = result.packet {
-                self.inner.sink.send(pkt)
+                let _ = self.inner.sink.send(pkt);
             }
             if result.disconnect {
                 self.inner.sink.drop_sink();
