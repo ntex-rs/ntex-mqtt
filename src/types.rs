@@ -14,6 +14,7 @@ pub enum Protocol {
 }
 
 impl Protocol {
+    #[inline]
     pub fn name(self) -> &'static str {
         match self {
             Protocol::MQTT(MQTT_LEVEL_311) => "MQTT",
@@ -23,6 +24,7 @@ impl Protocol {
         }
     }
 
+    #[inline]
     pub fn level(self) -> u8 {
         match self {
             Protocol::MQTT(level) => level,
@@ -104,4 +106,70 @@ pub(crate) struct FixedHeader {
     /// the number of bytes remaining within the current packet,
     /// including data in the variable header and the payload.
     pub(crate) remaining_length: u32,
+}
+
+use linked_hash_map::LinkedHashMap;
+use std::num::NonZeroU16;
+use std::time::Duration;
+type TimestampMillis = i64;
+
+#[derive(Default)]
+pub(crate) struct AwaitingRelSet {
+    pub rels: LinkedHashMap<NonZeroU16, TimestampMillis, ahash::RandomState>,
+    pub max_awaiting: usize,
+    pub await_timeout: TimestampMillis,
+}
+
+impl AwaitingRelSet {
+    #[inline]
+    pub(crate) fn new(max_awaiting: usize, await_timeout: Duration) -> Self {
+        Self {
+            rels: LinkedHashMap::default(),
+            max_awaiting,
+            await_timeout: await_timeout.as_millis() as TimestampMillis,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn contains(&self, packet_id: &NonZeroU16) -> bool {
+        self.rels.contains_key(packet_id)
+    }
+
+    #[inline]
+    pub(crate) fn is_full(&self) -> bool {
+        self.max_awaiting > 0 && self.rels.len() >= self.max_awaiting
+    }
+
+    #[inline]
+    pub(crate) fn remove(&mut self, packet_id: &NonZeroU16) {
+        self.rels.remove(packet_id);
+    }
+
+    #[inline]
+    pub(crate) fn pop(&mut self) -> Option<NonZeroU16> {
+        self.rels.pop_front().map(|(packet_id, _)| packet_id)
+    }
+
+    #[inline]
+    pub(crate) fn push(&mut self, packet_id: NonZeroU16) {
+        self.rels.insert(packet_id, chrono::Local::now().timestamp_millis());
+    }
+
+    #[inline]
+    pub(crate) fn remove_timeouts(&mut self) {
+        if self.await_timeout == 0 {
+            return;
+        }
+        let now = chrono::Local::now().timestamp_millis();
+        while let Some((packet_id, t)) = self.rels.front() {
+            if (now - *t) < self.await_timeout {
+                break;
+            }
+            log::warn!(
+                "Timeout awating release QoS2 messages found, will be removed, packet id is {}",
+                *packet_id
+            );
+            self.rels.pop_front();
+        }
+    }
 }
