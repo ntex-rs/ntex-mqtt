@@ -12,26 +12,11 @@ use crate::v3::codec;
 pub struct Publish {
     publish: codec::Publish,
     topic: Path<ByteString>,
-    query: Option<ByteString>,
 }
 
 impl Publish {
     pub(crate) fn new(publish: codec::Publish) -> Self {
-        let (topic, query) = if let Some(pos) = publish.topic.find('?') {
-            (
-                ByteString::try_from(publish.topic.as_bytes().slice(0..pos)).unwrap(),
-                Some(
-                    ByteString::try_from(
-                        publish.topic.as_bytes().slice(pos + 1..publish.topic.len()),
-                    )
-                    .unwrap(),
-                ),
-            )
-        } else {
-            (publish.topic.clone(), None)
-        };
-        let topic = Path::new(topic);
-        Self { publish, topic, query }
+        Self { topic: Path::new(publish.topic.clone()), publish }
     }
 
     #[inline]
@@ -71,11 +56,6 @@ impl Publish {
     #[inline]
     pub fn topic_mut(&mut self) -> &mut Path<ByteString> {
         &mut self.topic
-    }
-
-    #[inline]
-    pub fn query(&self) -> &str {
-        self.query.as_ref().map(|s| s.as_ref()).unwrap_or("")
     }
 
     #[inline]
