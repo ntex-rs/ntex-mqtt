@@ -22,7 +22,7 @@ pub use self::publish::{Publish, PublishAck};
 pub use self::router::Router;
 pub use self::selector::Selector;
 pub use self::server::MqttServer;
-pub use self::sink::{MqttSink, PublishBuilder};
+pub use self::sink::{MqttSink, PublishBuilder, SubscribeBuilder, UnsubscribeBuilder};
 
 pub use crate::topic::Topic;
 pub use crate::types::QoS;

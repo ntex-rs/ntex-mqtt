@@ -1,9 +1,11 @@
+//! MQTT5 client
+
 mod connection;
 mod connector;
 pub mod control;
 mod dispatcher;
 
-pub use self::connection::Client;
+pub use self::connection::{Client, ClientRouter};
 pub use self::connector::MqttConnector;
 pub use self::control::{ControlMessage, ControlResult};
 

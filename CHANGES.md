@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.0-b.3] - 2021-07-04
+
+* Re-export ClientRouter, SubscribeBuilder, UnsubscribeBuilder
+
 ## [0.7.0-b.2] - 2021-06-30
 
 * v3: Remove special treatment for "?" in publish's topic
