@@ -217,7 +217,7 @@ where
                 log::trace!("Publish result for packet {:?} is ready", this.packet_id);
 
                 if let Some(packet_id) = this.packet_id {
-                    this.inner.inflight.borrow_mut().remove(&packet_id);
+                    this.inner.inflight.borrow_mut().remove(packet_id);
                     Poll::Ready(Ok(Some(codec::Packet::PublishAck { packet_id: *packet_id })))
                 } else {
                     Poll::Ready(Ok(None))

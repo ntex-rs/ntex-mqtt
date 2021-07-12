@@ -71,7 +71,7 @@ impl MqttShared {
         let mut queues = self.queues.borrow_mut();
         f(&mut queues)
     }
-    
+
     pub(super) fn has_credit(&self) -> bool {
         self.cap.get() - self.queues.borrow().inflight.len() > 0
     }

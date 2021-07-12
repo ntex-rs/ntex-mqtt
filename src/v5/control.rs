@@ -220,7 +220,7 @@ impl<'a> Subscription<'a> {
     #[inline]
     /// subscription topic
     pub fn topic(&self) -> &'a ByteString {
-        &self.topic
+        self.topic
     }
 
     #[inline]
@@ -377,7 +377,7 @@ impl<'a> UnsubscribeItem<'a> {
     #[inline]
     /// subscription topic
     pub fn topic(&self) -> &'a ByteString {
-        &self.topic
+        self.topic
     }
 
     #[inline]
