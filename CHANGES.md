@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.0-b.4] - 2021-07-12
+
+* v3: avoid nested borrow_mut() calls in sink on puback mismatch
+
 ## [0.7.0-b.3] - 2021-07-04
 
 * Re-export ClientRouter, SubscribeBuilder, UnsubscribeBuilder

@@ -33,7 +33,7 @@ impl Default for MqttSinkPool {
 
 pub(crate) struct MqttShared {
     pub(super) cap: Cell<usize>,
-    pub(super) queues: RefCell<MqttSharedQueues>,
+    queues: RefCell<MqttSharedQueues>,
     pub(super) inflight_idx: Cell<u16>,
     pub(super) pool: Rc<MqttSinkPool>,
     pub(super) state: State,
@@ -67,6 +67,11 @@ impl MqttShared {
         }
     }
 
+    pub(super) fn with_queues<R>(&self, f: impl FnOnce(&mut MqttSharedQueues) -> R) -> R {
+        let mut queues = self.queues.borrow_mut();
+        f(&mut queues)
+    }
+    
     pub(super) fn has_credit(&self) -> bool {
         self.cap.get() - self.queues.borrow().inflight.len() > 0
     }
