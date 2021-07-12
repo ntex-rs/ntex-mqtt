@@ -1,4 +1,5 @@
-use std::{fmt, future::Future, num::NonZeroU16, num::NonZeroU32, rc::Rc};
+use std::future::{ready, Future};
+use std::{fmt, num::NonZeroU16, num::NonZeroU32, rc::Rc};
 
 use ntex::util::{ByteString, Bytes, Either};
 
@@ -28,24 +29,28 @@ impl MqttSink {
     /// Get client's receive credit
     pub fn credit(&self) -> usize {
         let cap = self.0.cap.get();
-        cap - self.0.queues.borrow().inflight.len()
+        cap - self.0.with_queues(|q| q.inflight.len())
     }
 
     /// Get notification when packet could be send to the peer.
     ///
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
-        let mut queues = self.0.queues.borrow_mut();
-        let result = if !self.is_open() {
-            false
-        } else if queues.inflight.len() >= self.0.cap.get() {
-            let (tx, rx) = self.0.pool.waiters.channel();
-            queues.waiters.push_back(tx);
-            return Either::Right(async move { rx.await.is_ok() });
+        if self.0.state.is_open() {
+            self.0
+                .with_queues(|q| {
+                    if q.inflight.len() >= self.0.cap.get() {
+                        let (tx, rx) = self.0.pool.waiters.channel();
+                        self.0.with_queues(move |q| q.waiters.push_back(tx));
+                        return Some(rx);
+                    }
+                    None
+                })
+                .map(|rx| Either::Right(async move { rx.await.is_ok() }))
+                .unwrap_or_else(|| Either::Left(ready(true)))
         } else {
-            true
-        };
-        Either::Left(async move { result })
+            Either::Left(ready(false))
+        }
     }
 
     /// Close mqtt connection with default Disconnect message
@@ -58,9 +63,10 @@ impl MqttSink {
                 .encode(codec::Packet::Disconnect(codec::Disconnect::default()), &self.0.codec);
             self.0.state.close();
         }
-        let mut queues = self.0.queues.borrow_mut();
-        queues.waiters.clear();
-        queues.inflight.clear();
+        self.0.with_queues(|q| {
+            q.inflight.clear();
+            q.waiters.clear();
+        });
     }
 
     /// Close mqtt connection
@@ -69,9 +75,10 @@ impl MqttSink {
             let _ = self.0.state.write().encode(codec::Packet::Disconnect(pkt), &self.0.codec);
             self.0.state.close();
         }
-        let mut queues = self.0.queues.borrow_mut();
-        queues.waiters.clear();
-        queues.inflight.clear();
+        self.0.with_queues(|q| {
+            q.inflight.clear();
+            q.waiters.clear();
+        });
     }
 
     pub(super) fn send(&self, pkt: codec::Packet) {
@@ -85,16 +92,15 @@ impl MqttSink {
 
     /// Close mqtt connection, dont send disconnect message
     pub(super) fn drop_sink(&self) {
-        let mut queues = self.0.queues.borrow_mut();
-        queues.waiters.clear();
-        queues.inflight.clear();
+        self.0.with_queues(|q| {
+            q.waiters.clear();
+            q.inflight.clear();
+        });
         self.0.state.close();
     }
 
     pub(super) fn pkt_ack(&self, pkt: Ack) -> Result<(), ProtocolError> {
-        let mut queues = self.0.queues.borrow_mut();
-
-        loop {
+        self.0.with_queues(|queues| loop {
             // check ack order
             if let Some(idx) = queues.inflight_order.pop_front() {
                 // errored publish
@@ -131,14 +137,14 @@ impl MqttSink {
                         }
                         return Ok(());
                     } else {
-                        log::error!("Inflight state inconsistency")
+                        log::error!("In-flight state inconsistency")
                     }
                 }
             } else {
                 log::trace!("Unexpected PublishAck packet");
             }
             return Err(ProtocolError::PacketIdMismatch);
-        }
+        })
     }
 
     /// Create publish packet builder
@@ -271,37 +277,36 @@ impl PublishBuilder {
             // handle client receive maximum
             if !shared.has_credit() {
                 let (tx, rx) = shared.pool.waiters.channel();
-                shared.queues.borrow_mut().waiters.push_back(tx);
+                shared.with_queues(|q| q.waiters.push_back(tx));
 
                 if rx.await.is_err() {
                     return Err(PublishQos1Error::Disconnected);
                 }
             }
-            let mut queues = shared.queues.borrow_mut();
-
-            // publish ack channel
-            let (tx, rx) = shared.pool.queue.channel();
-
             // packet id
             let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
             if idx == 0 {
                 idx = shared.next_id();
                 packet.packet_id = NonZeroU16::new(idx);
             }
-            if queues.inflight.contains_key(&idx) {
-                return Err(PublishQos1Error::PacketIdInUse(idx));
-            }
-            queues.inflight.insert(idx, (tx, AckType::Publish));
-            queues.inflight_order.push_back(idx);
+
+            let rx = shared.with_queues(|queues| {
+                // publish ack channel
+                let (tx, rx) = shared.pool.queue.channel();
+
+                if queues.inflight.contains_key(&idx) {
+                    return Err(PublishQos1Error::PacketIdInUse(idx));
+                }
+                queues.inflight.insert(idx, (tx, AckType::Publish));
+                queues.inflight_order.push_back(idx);
+                Ok(rx)
+            })?;
 
             // send publish to client
             log::trace!("Publish (QoS1) to {:#?}", packet);
 
             match shared.state.write().encode(codec::Packet::Publish(packet), &shared.codec) {
                 Ok(_) => {
-                    // do not borrow cross yield points
-                    drop(queues);
-
                     // wait ack from peer
                     rx.await.map_err(|_| PublishQos1Error::Disconnected).and_then(|pkt| {
                         let pkt = pkt.publish();
@@ -364,34 +369,32 @@ impl SubscribeBuilder {
             // handle client receive maximum
             if !shared.has_credit() {
                 let (tx, rx) = shared.pool.waiters.channel();
-                shared.queues.borrow_mut().waiters.push_back(tx);
+                shared.with_queues(|q| q.waiters.push_back(tx));
 
                 if rx.await.is_err() {
                     return Err(SendPacketError::Disconnected);
                 }
             }
-            let mut queues = shared.queues.borrow_mut();
-
-            // ack channel
-            let (tx, rx) = shared.pool.queue.channel();
-
             // allocate packet id
             let idx = if self.id == 0 { shared.next_id() } else { self.id };
-            if queues.inflight.contains_key(&idx) {
-                return Err(SendPacketError::PacketIdInUse(idx));
-            }
-            queues.inflight.insert(idx, (tx, AckType::Subscribe));
-            queues.inflight_order.push_back(idx);
             packet.packet_id = NonZeroU16::new(idx).unwrap();
+            let rx = shared.with_queues(|queues| {
+                // ack channel
+                let (tx, rx) = shared.pool.queue.channel();
+
+                if queues.inflight.contains_key(&idx) {
+                    return Err(SendPacketError::PacketIdInUse(idx));
+                }
+                queues.inflight.insert(idx, (tx, AckType::Subscribe));
+                queues.inflight_order.push_back(idx);
+                Ok(rx)
+            })?;
 
             // send subscribe to client
             log::trace!("Sending subscribe packet {:#?}", packet);
 
             match shared.state.write().encode(codec::Packet::Subscribe(packet), &shared.codec) {
                 Ok(_) => {
-                    // do not borrow cross yield points
-                    drop(queues);
-
                     // wait ack from peer
                     rx.await
                         .map_err(|_| SendPacketError::Disconnected)
@@ -446,24 +449,25 @@ impl UnsubscribeBuilder {
             // handle client receive maximum
             if !shared.has_credit() {
                 let (tx, rx) = shared.pool.waiters.channel();
-                shared.queues.borrow_mut().waiters.push_back(tx);
+                shared.with_queues(|q| q.waiters.push_back(tx));
 
                 if rx.await.is_err() {
                     return Err(SendPacketError::Disconnected);
                 }
             }
-            let mut queues = shared.queues.borrow_mut();
-
-            // ack channel
-            let (tx, rx) = shared.pool.queue.channel();
-
             // allocate packet id
             let idx = if self.id == 0 { shared.next_id() } else { self.id };
-            if queues.inflight.contains_key(&idx) {
-                return Err(SendPacketError::PacketIdInUse(idx));
-            }
-            queues.inflight.insert(idx, (tx, AckType::Unsubscribe));
-            queues.inflight_order.push_back(idx);
+            let rx = shared.with_queues(|queues| {
+                // ack channel
+                let (tx, rx) = shared.pool.queue.channel();
+
+                if queues.inflight.contains_key(&idx) {
+                    return Err(SendPacketError::PacketIdInUse(idx));
+                }
+                queues.inflight.insert(idx, (tx, AckType::Unsubscribe));
+                queues.inflight_order.push_back(idx);
+                Ok(rx)
+            })?;
             packet.packet_id = NonZeroU16::new(idx).unwrap();
 
             // send unsubscribe to client
@@ -472,9 +476,6 @@ impl UnsubscribeBuilder {
             match shared.state.write().encode(codec::Packet::Unsubscribe(packet), &shared.codec)
             {
                 Ok(_) => {
-                    // do not borrow cross yield points
-                    drop(queues);
-
                     // wait ack from peer
                     rx.await
                         .map_err(|_| SendPacketError::Disconnected)

@@ -9,7 +9,7 @@ use crate::{error, io::State, types::packet_type};
 
 pub(crate) struct MqttShared {
     pub(super) cap: Cell<usize>,
-    pub(super) queues: RefCell<MqttSharedQueues>,
+    queues: RefCell<MqttSharedQueues>,
     pub(super) inflight_idx: Cell<u16>,
     pub(super) pool: Rc<MqttSinkPool>,
     pub(super) state: State,
@@ -52,6 +52,11 @@ impl MqttShared {
             }),
             inflight_idx: Cell::new(0),
         }
+    }
+
+    pub(super) fn with_queues<R>(&self, f: impl FnOnce(&mut MqttSharedQueues) -> R) -> R {
+        let mut queues = self.queues.borrow_mut();
+        f(&mut queues)
     }
 
     pub(super) fn has_credit(&self) -> bool {
