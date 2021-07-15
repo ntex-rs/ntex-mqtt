@@ -1,7 +1,7 @@
 use std::future::{ready, Future};
 use std::{fmt, num::NonZeroU16, num::NonZeroU32, rc::Rc};
 
-use ntex::util::{ByteString, Bytes, Either};
+use ntex::util::{ByteString, Bytes, Either, Ready};
 
 use super::codec;
 use super::error::{ProtocolError, PublishQos1Error, SendPacketError};
@@ -266,9 +266,10 @@ impl PublishBuilder {
         }
     }
 
-    #[allow(clippy::await_holding_refcell_ref)]
     /// Send publish packet with QoS 1
-    pub async fn send_at_least_once(self) -> Result<codec::PublishAck, PublishQos1Error> {
+    pub fn send_at_least_once(
+        self,
+    ) -> impl Future<Output = Result<codec::PublishAck, PublishQos1Error>> {
         let shared = self.shared;
         let mut packet = self.packet;
         packet.qos = QoS::AtLeastOnce;
@@ -279,35 +280,54 @@ impl PublishBuilder {
                 let (tx, rx) = shared.pool.waiters.channel();
                 shared.with_queues(|q| q.waiters.push_back(tx));
 
-                if rx.await.is_err() {
-                    return Err(PublishQos1Error::Disconnected);
-                }
+                return Either::Left(Either::Right(async move {
+                    if rx.await.is_err() {
+                        return Err(PublishQos1Error::Disconnected);
+                    }
+                    Self::send_at_least_once_inner(packet, shared).await
+                }));
             }
-            // packet id
-            let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
-            if idx == 0 {
-                idx = shared.next_id();
-                packet.packet_id = NonZeroU16::new(idx);
+            Either::Right(Self::send_at_least_once_inner(packet, shared))
+        } else {
+            Either::Left(Either::Left(Ready::Err(PublishQos1Error::Disconnected)))
+        }
+    }
+
+    fn send_at_least_once_inner(
+        mut packet: codec::Publish,
+        shared: Rc<MqttShared>,
+    ) -> impl Future<Output = Result<codec::PublishAck, PublishQos1Error>> {
+        // packet id
+        let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
+        if idx == 0 {
+            idx = shared.next_id();
+            packet.packet_id = NonZeroU16::new(idx);
+        }
+
+        let rx = shared.with_queues(|queues| {
+            // publish ack channel
+            let (tx, rx) = shared.pool.queue.channel();
+
+            if queues.inflight.contains_key(&idx) {
+                return Err(PublishQos1Error::PacketIdInUse(idx));
             }
+            queues.inflight.insert(idx, (tx, AckType::Publish));
+            queues.inflight_order.push_back(idx);
+            Ok(rx)
+        });
 
-            let rx = shared.with_queues(|queues| {
-                // publish ack channel
-                let (tx, rx) = shared.pool.queue.channel();
+        let rx = match rx {
+            Ok(rx) => rx,
+            Err(e) => return Either::Left(Ready::Err(e)),
+        };
 
-                if queues.inflight.contains_key(&idx) {
-                    return Err(PublishQos1Error::PacketIdInUse(idx));
-                }
-                queues.inflight.insert(idx, (tx, AckType::Publish));
-                queues.inflight_order.push_back(idx);
-                Ok(rx)
-            })?;
+        // send publish to client
+        log::trace!("Publish (QoS1) to {:#?}", packet);
 
-            // send publish to client
-            log::trace!("Publish (QoS1) to {:#?}", packet);
-
-            match shared.state.write().encode(codec::Packet::Publish(packet), &shared.codec) {
-                Ok(_) => {
-                    // wait ack from peer
+        match shared.state.write().encode(codec::Packet::Publish(packet), &shared.codec) {
+            Ok(_) => {
+                // wait ack from peer
+                Either::Right(async move {
                     rx.await.map_err(|_| PublishQos1Error::Disconnected).and_then(|pkt| {
                         let pkt = pkt.publish();
                         match pkt.reason_code {
@@ -315,11 +335,9 @@ impl PublishBuilder {
                             _ => Err(PublishQos1Error::Fail(pkt)),
                         }
                     })
-                }
-                Err(err) => Err(PublishQos1Error::Encode(err)),
+                })
             }
-        } else {
-            Err(PublishQos1Error::Disconnected)
+            Err(err) => Either::Left(Ready::Err(PublishQos1Error::Encode(err))),
         }
     }
 }

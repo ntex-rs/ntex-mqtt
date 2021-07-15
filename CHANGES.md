@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.0-b.5] - 2021-07-15
+
+* v3/v5: PublishBuilder::send_at_least_once initiates publish synchronously
+
 ## [0.7.0-b.4] - 2021-07-12
 
 * v3: avoid nested borrow_mut() calls in sink on puback mismatch
