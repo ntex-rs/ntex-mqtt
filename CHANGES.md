@@ -4,6 +4,8 @@
 
 * v3/v5: PublishBuilder::send_at_least_once initiates publish synchronously
 
+* v3/v5: Publish::take_payload() replaces payload with empty bytes, returns existing
+
 ## [0.7.0-b.4] - 2021-07-12
 
 * v3: avoid nested borrow_mut() calls in sink on puback mismatch

@@ -1,5 +1,4 @@
-use std::convert::TryFrom;
-use std::num::NonZeroU16;
+use std::{convert::TryFrom, mem, num::NonZeroU16};
 
 use ntex::router::Path;
 use ntex::util::{ByteString, Bytes};
@@ -74,9 +73,9 @@ impl Publish {
         &self.publish.payload
     }
 
-    /// Extract Bytes from packet payload
-    pub fn take_payload(&self) -> Bytes {
-        self.publish.payload.clone()
+    /// Replace packet'a payload with empty bytes, returns existing payload.
+    pub fn take_payload(&mut self) -> Bytes {
+        mem::take(&mut self.publish.payload)
     }
 
     /// Loads and parse `application/json` encoded body.
