@@ -33,7 +33,7 @@ impl MqttSink {
                 .with_queues(|q| {
                     if q.inflight.len() >= self.0.cap.get() {
                         let (tx, rx) = self.0.pool.waiters.channel();
-                        self.0.with_queues(move |q| q.waiters.push_back(tx));
+                        q.waiters.push_back(tx);
                         return Some(rx);
                     }
                     None
