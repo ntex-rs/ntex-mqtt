@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.0-b.6] - 2021-07-28
+
+* v3/v5: Fixed nested with_queues calls in sink impl
+
 ## [0.7.0-b.5] - 2021-07-15
 
 * v3/v5: PublishBuilder::send_at_least_once initiates publish synchronously
