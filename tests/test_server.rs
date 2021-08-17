@@ -157,10 +157,7 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
-    framed
-        .send(codec::Connect::default().client_id("user").into())
-        .await
-        .unwrap();
+    framed.send(codec::Connect::default().client_id("user").into()).await.unwrap();
     let _ = framed.next().await.unwrap().unwrap();
 
     framed
