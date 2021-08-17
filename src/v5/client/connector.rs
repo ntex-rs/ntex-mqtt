@@ -253,7 +253,7 @@ where
             let state = State::new();
             let codec = codec::Codec::new().max_inbound_size(max_packet_size);
 
-            state.send(&mut io, &codec, codec::Packet::Connect(pkt)).await?;
+            state.send(&mut io, &codec, codec::Packet::Connect(Box::new(pkt))).await?;
 
             let packet = state
                 .next(&mut io, &codec)

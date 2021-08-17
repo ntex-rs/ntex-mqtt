@@ -9,7 +9,7 @@ pub use crate::v5::codec;
 pub enum ClientError {
     /// Connect negotiation failed
     #[display(fmt = "Connect ack failed: {:?}", _0)]
-    Ack(codec::ConnectAck),
+    Ack(Box<codec::ConnectAck>),
     /// Protocol error
     #[display(fmt = "Protocol error: {:?}", _0)]
     Protocol(ProtocolError),

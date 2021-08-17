@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_encode_connect_packets() {
         assert_encode_packet(
-            &Packet::Connect(Connect {
+            &Packet::Connect(Box::new(Connect {
                 clean_start: false,
                 keep_alive: 60,
                 client_id: ByteString::from_static("12345"),
@@ -333,13 +333,13 @@ mod tests {
                 topic_alias_max: 0,
                 user_properties: vec![],
                 max_packet_size: None,
-            }),
+            })),
             &b"\x10\x1E\x00\x04MQTT\x05\xC0\x00\x3C\x00\x00\
 \x0512345\x00\x04user\x00\x04pass"[..],
         );
 
         assert_encode_packet(
-            &Packet::Connect(Connect {
+            &Packet::Connect(Box::new(Connect {
                 clean_start: false,
                 keep_alive: 60,
                 client_id: ByteString::from_static("12345"),
@@ -367,7 +367,7 @@ mod tests {
                 topic_alias_max: 0,
                 user_properties: vec![],
                 max_packet_size: None,
-            }),
+            })),
             &b"\x10\x23\x00\x04MQTT\x05\x14\x00\x3C\x00\x00\
 \x0512345\x00\x00\x05topic\x00\x07message"[..],
         );

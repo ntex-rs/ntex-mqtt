@@ -5,7 +5,7 @@ use super::{codec, shared::MqttShared, sink::MqttSink};
 /// Handshake message
 pub struct Handshake<Io> {
     io: Io,
-    pkt: codec::Connect,
+    pkt: Box<codec::Connect>,
     pub(super) shared: Rc<MqttShared>,
     pub(super) max_size: u32,
     pub(super) max_receive: u16,
@@ -14,7 +14,7 @@ pub struct Handshake<Io> {
 
 impl<Io> Handshake<Io> {
     pub(crate) fn new(
-        pkt: codec::Connect,
+        pkt: Box<codec::Connect>,
         io: Io,
         shared: Rc<MqttShared>,
         max_size: u32,

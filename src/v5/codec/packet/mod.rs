@@ -28,9 +28,9 @@ pub use subscribe::*;
 /// MQTT Control Packets
 pub enum Packet {
     /// Client request to connect to Server
-    Connect(Connect),
+    Connect(Box<Connect>),
     /// Connect acknowledgment
-    ConnectAck(ConnectAck),
+    ConnectAck(Box<ConnectAck>),
     /// Publish message
     Publish(Publish),
     /// Publish acknowledgment

@@ -46,6 +46,11 @@ async fn publish_v5(publish: v5::Publish) -> Result<v5::PublishAck, ServerError>
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
+    println!("{}", std::mem::size_of::<v5::codec::Publish>());
+    println!("{}", std::mem::size_of::<v5::codec::PublishProperties>());
+    println!("{}", std::mem::size_of::<v5::codec::Packet>());
+    println!("{}", std::mem::size_of::<v5::Handshake<ntex::rt::net::TcpStream>>());
+    println!("{}", std::mem::size_of::<v5::error::MqttError<()>>());
     std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,basic=trace");
     env_logger::init();
 

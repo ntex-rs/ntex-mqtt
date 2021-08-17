@@ -7,12 +7,12 @@ use super::sink::MqttSink;
 /// Connect message
 pub struct Handshake<Io> {
     io: Io,
-    pkt: mqtt::Connect,
+    pkt: Box<mqtt::Connect>,
     shared: Rc<MqttShared>,
 }
 
 impl<Io> Handshake<Io> {
-    pub(crate) fn new(pkt: mqtt::Connect, io: Io, shared: Rc<MqttShared>) -> Self {
+    pub(crate) fn new(pkt: Box<mqtt::Connect>, io: Io, shared: Rc<MqttShared>) -> Self {
         Self { io, pkt, shared }
     }
 

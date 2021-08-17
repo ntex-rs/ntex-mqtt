@@ -17,8 +17,8 @@ pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, De
         packet_type::SUBACK => Ok(Packet::SubscribeAck(SubscribeAck::decode(&mut src)?)),
         packet_type::UNSUBSCRIBE => Ok(Packet::Unsubscribe(Unsubscribe::decode(&mut src)?)),
         packet_type::UNSUBACK => Ok(Packet::UnsubscribeAck(UnsubscribeAck::decode(&mut src)?)),
-        packet_type::CONNECT => Ok(Packet::Connect(Connect::decode(&mut src)?)),
-        packet_type::CONNACK => Ok(Packet::ConnectAck(ConnectAck::decode(&mut src)?)),
+        packet_type::CONNECT => Ok(Packet::Connect(Box::new(Connect::decode(&mut src)?))),
+        packet_type::CONNACK => Ok(Packet::ConnectAck(Box::new(ConnectAck::decode(&mut src)?))),
         packet_type::DISCONNECT => Ok(Packet::Disconnect(Disconnect::decode(&mut src)?)),
         packet_type::AUTH => Ok(Packet::Auth(Auth::decode(&mut src)?)),
         packet_type::PUBREC => Ok(Packet::PublishReceived(PublishAck::decode(&mut src)?)),
@@ -165,11 +165,11 @@ mod tests {
 
         assert_decode_packet(
             b"\x20\x03\x01\x86\x00",
-            Packet::ConnectAck(ConnectAck {
+            Packet::ConnectAck(Box::new(ConnectAck {
                 session_present: true,
                 reason_code: ConnectAckReason::BadUserNameOrPassword,
                 ..ConnectAck::default()
-            }),
+            })),
         );
 
         assert_decode_packet([0b1110_0000, 0], Packet::Disconnect(Disconnect::default()));

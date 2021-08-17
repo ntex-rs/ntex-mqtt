@@ -497,7 +497,7 @@ where
 
                     state.set_buffer_params(ack.read_hw, ack.write_hw, ack.lw);
                     state
-                        .send(&mut ack.io, &shared.codec, mqtt::Packet::ConnectAck(ack.packet))
+                        .send(&mut ack.io, &shared.codec, mqtt::Packet::ConnectAck(Box::new(ack.packet)))
                         .await?;
 
                     Ok((
@@ -521,7 +521,7 @@ where
                             .shared
                             .state
                             .write()
-                            .encode(mqtt::Packet::ConnectAck(ack.packet), &ack.shared.codec)
+                            .encode(mqtt::Packet::ConnectAck(Box::new(ack.packet)), &ack.shared.codec)
                             .is_ok()
                     {
                         WriteTask::shutdown(
@@ -743,7 +743,7 @@ where
                             .send(
                                 &mut ack.io,
                                 &shared.codec,
-                                mqtt::Packet::ConnectAck(ack.packet),
+                                mqtt::Packet::ConnectAck(Box::new(ack.packet)),
                             )
                             .await?;
 
@@ -770,7 +770,7 @@ where
                                 .shared
                                 .state
                                 .write()
-                                .encode(mqtt::Packet::ConnectAck(ack.packet), &ack.shared.codec)
+                                .encode(mqtt::Packet::ConnectAck(Box::new(ack.packet)), &ack.shared.codec)
                                 .is_ok()
                         {
                             WriteTask::shutdown(
