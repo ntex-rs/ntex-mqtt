@@ -1,5 +1,10 @@
 # Changes
 
+## [0.7.0-b.7] - 2021-08-16
+
+* v3: Boxed Packet::Connect to trim down Packet size
+* v5: Boxed Packet::Connect and Packet::ConnAck variants to trim down Packet size
+
 ## [0.7.0-b.6] - 2021-07-28
 
 * v3/v5: Fixed nested with_queues calls in sink impl

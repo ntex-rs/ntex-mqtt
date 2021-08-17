@@ -86,14 +86,15 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     };
     let password =
         if flags.contains(ConnectFlags::PASSWORD) { Some(Bytes::decode(src)?) } else { None };
-    Ok(Packet::Connect(Connect {
+    Ok(Connect {
         clean_session: flags.contains(ConnectFlags::CLEAN_START),
         keep_alive,
         client_id,
         last_will,
         username,
         password,
-    }))
+    }
+    .into())
 }
 
 fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
@@ -187,21 +188,21 @@ mod tests {
             decode_connect_packet(&mut Bytes::from_static(
                 b"\x00\x04MQTT\x04\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"
             )),
-            Ok(Packet::Connect(Connect {
+            Ok(Packet::Connect(Box::new(Connect {
                 clean_session: false,
                 keep_alive: 60,
                 client_id: ByteString::try_from(Bytes::from_static(b"12345")).unwrap(),
                 last_will: None,
                 username: Some(ByteString::try_from(Bytes::from_static(b"user")).unwrap()),
                 password: Some(Bytes::from(&b"pass"[..])),
-            }))
+            })))
         );
 
         assert_eq!(
             decode_connect_packet(&mut Bytes::from_static(
                 b"\x00\x04MQTT\x04\x14\x00\x3C\x00\x0512345\x00\x05topic\x00\x07message"
             )),
-            Ok(Packet::Connect(Connect {
+            Ok(Packet::Connect(Box::new(Connect {
                 clean_session: false,
                 keep_alive: 60,
                 client_id: ByteString::try_from(Bytes::from_static(b"12345")).unwrap(),
@@ -213,7 +214,7 @@ mod tests {
                 }),
                 username: None,
                 password: None,
-            }))
+            })))
         );
 
         assert_eq!(

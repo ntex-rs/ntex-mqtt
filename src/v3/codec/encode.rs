@@ -9,7 +9,7 @@ use super::packet::*;
 pub(crate) fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {
         Packet::Connect ( ref connect ) => {
-            let Connect {ref last_will, ref client_id, ref username, ref password, ..} = *connect;
+            let Connect {ref last_will, ref client_id, ref username, ref password, ..} = **connect;
 
             // Protocol Name + Protocol Level + Connect Flags + Keep Alive
             let mut n = 2 + 4 + 1 + 1 + 2;
@@ -264,20 +264,20 @@ mod tests {
     #[test]
     fn test_encode_connect_packets() {
         assert_encode_packet(
-            &Packet::Connect(Connect {
+            &Packet::Connect(Box::new(Connect {
                 clean_session: false,
                 keep_alive: 60,
                 client_id: ByteString::from_static("12345"),
                 last_will: None,
                 username: Some(ByteString::from_static("user")),
                 password: Some(Bytes::from_static(b"pass")),
-            }),
+            })),
             &b"\x10\x1D\x00\x04MQTT\x04\xC0\x00\x3C\x00\
 \x0512345\x00\x04user\x00\x04pass"[..],
         );
 
         assert_encode_packet(
-            &Packet::Connect(Connect {
+            &Packet::Connect(Box::new(Connect {
                 clean_session: false,
                 keep_alive: 60,
                 client_id: ByteString::from_static("12345"),
@@ -289,7 +289,7 @@ mod tests {
                 }),
                 username: None,
                 password: None,
-            }),
+            })),
             &b"\x10\x21\x00\x04MQTT\x04\x14\x00\x3C\x00\
 \x0512345\x00\x05topic\x00\x07message"[..],
         );

@@ -123,7 +123,7 @@ pub enum SubscribeReturnCode {
 /// MQTT Control Packets
 pub enum Packet {
     /// Client request to connect to Server
-    Connect(Connect),
+    Connect(Box<Connect>),
 
     /// Connect acknowledgment
     ConnectAck {
@@ -194,7 +194,7 @@ pub enum Packet {
 
 impl From<Connect> for Packet {
     fn from(val: Connect) -> Packet {
-        Packet::Connect(val)
+        Packet::Connect(Box::new(val))
     }
 }
 

@@ -123,7 +123,7 @@ async fn test_ping() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
     framed
-        .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
+        .send(codec::Packet::Connect(codec::Connect::default().client_id("user").into()))
         .await
         .unwrap();
     framed.next().await.unwrap().unwrap();
@@ -157,10 +157,7 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
-    framed
-        .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
-        .await
-        .unwrap();
+    framed.send(codec::Connect::default().client_id("user").into()).await.unwrap();
     let _ = framed.next().await.unwrap().unwrap();
 
     framed
@@ -306,7 +303,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
-    framed.write(codec::Packet::Connect(codec::Connect::default().client_id("user"))).unwrap();
+    framed.write(codec::Connect::default().client_id("user").into()).unwrap();
     framed
         .write(
             codec::Publish {

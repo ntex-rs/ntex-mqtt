@@ -23,7 +23,7 @@ pub struct Client<Io> {
     keepalive: u16,
     disconnect_timeout: u16,
     max_receive: usize,
-    pkt: codec::ConnectAck,
+    pkt: Box<codec::ConnectAck>,
 }
 
 impl<T> Client<T>
@@ -34,7 +34,7 @@ where
     pub(super) fn new(
         io: T,
         shared: Rc<MqttShared>,
-        pkt: codec::ConnectAck,
+        pkt: Box<codec::ConnectAck>,
         max_receive: u16,
         keepalive: u16,
         disconnect_timeout: u16,

@@ -160,7 +160,7 @@ async fn test_ping() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::new());
     framed
-        .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
+        .send(codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))))
         .await
         .unwrap();
     let _ = framed.next().await.unwrap().unwrap();
@@ -197,7 +197,7 @@ async fn test_ack_order() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
     framed
-        .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
+        .send(codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))))
         .await
         .unwrap();
     let _ = framed.next().await.unwrap().unwrap();
@@ -268,9 +268,9 @@ async fn test_dups() {
     let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
     framed
-        .send(codec::Packet::Connect(
+        .send(codec::Packet::Connect(Box::new(
             codec::Connect::default().client_id("user").receive_max(2),
-        ))
+        )))
         .await
         .unwrap();
     let _ = framed.next().await.unwrap().unwrap();
@@ -385,19 +385,19 @@ async fn test_max_receive() {
     let mut framed = Framed::new(io, codec::Codec::default());
 
     framed
-        .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
+        .send(codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))))
         .await
         .unwrap();
     let ack = framed.next().await.unwrap().unwrap();
     assert_eq!(
         ack,
-        codec::Packet::ConnectAck(codec::ConnectAck {
+        codec::Packet::ConnectAck(Box::new(codec::ConnectAck {
             receive_max: Some(NonZeroU16::new(1).unwrap()),
             max_qos: Some(codec::QoS::AtLeastOnce),
             reason_code: codec::ConnectAckReason::Success,
             topic_alias_max: 32,
             ..Default::default()
-        })
+        }))
     );
 
     framed
@@ -657,7 +657,7 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::new());
     framed
-        .send(codec::Packet::Connect(codec::Connect::default().client_id("user")))
+        .send(codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))))
         .await
         .unwrap();
     let _ = framed.next().await.unwrap().unwrap();
@@ -720,7 +720,9 @@ async fn test_handle_incoming() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let mut framed = Framed::new(io, codec::Codec::default());
-    framed.write(codec::Packet::Connect(codec::Connect::default().client_id("user"))).unwrap();
+    framed
+        .write(codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))))
+        .unwrap();
     framed.write(pkt_publish().into()).unwrap();
     framed
         .write(codec::Packet::Disconnect(codec::Disconnect {
