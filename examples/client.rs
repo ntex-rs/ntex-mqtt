@@ -1,6 +1,4 @@
-use std::time::Duration;
-
-use ntex::rt::time::delay_for;
+use ntex::time::{sleep, Seconds};
 use ntex_mqtt::v5;
 
 #[derive(Debug)]
@@ -32,7 +30,7 @@ async fn main() -> std::io::Result<()> {
     // connect to server
     let client = v5::client::MqttConnector::new("127.0.0.1:1883")
         .client_id("user")
-        .keep_alive(1)
+        .keep_alive(Seconds::ONE)
         .connect()
         .await
         .unwrap();
@@ -56,11 +54,11 @@ async fn main() -> std::io::Result<()> {
         .await
         .unwrap();
 
-    delay_for(Duration::from_secs(10)).await;
+    sleep(10_000).await;
 
     log::info!("closing connection");
     sink.close();
-    delay_for(Duration::from_secs(1)).await;
+    sleep(1_000).await;
 
     Ok(())
 }

@@ -1,9 +1,9 @@
-use std::{future::Future, rc::Rc, time::Duration};
+use std::{future::Future, rc::Rc};
 
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::connect::{self, Address, Connect, Connector};
-use ntex::rt::time::delay_for;
 use ntex::service::Service;
+use ntex::time::{timeout, Millis, Seconds};
 use ntex::util::{select, ByteString, Bytes, Either};
 
 #[cfg(feature = "openssl")]
@@ -24,8 +24,8 @@ pub struct MqttConnector<A, T> {
     max_send: usize,
     max_receive: usize,
     max_packet_size: u32,
-    handshake_timeout: u16,
-    disconnect_timeout: u16,
+    handshake_timeout: Seconds,
+    disconnect_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
 }
 
@@ -43,8 +43,8 @@ where
             max_send: 16,
             max_receive: 16,
             max_packet_size: 64 * 1024,
-            handshake_timeout: 0,
-            disconnect_timeout: 3000,
+            handshake_timeout: Seconds::ZERO,
+            disconnect_timeout: Seconds(3),
             pool: Rc::new(MqttSinkPool::default()),
         }
     }
@@ -77,8 +77,8 @@ where
     /// A time interval measured in seconds.
     ///
     /// keep-alive is set to 30 seconds by default.
-    pub fn keep_alive(mut self, val: u16) -> Self {
-        self.pkt.keep_alive = val;
+    pub fn keep_alive(mut self, val: Seconds) -> Self {
+        self.pkt.keep_alive = val.seconds() as u16;
         self
     }
 
@@ -147,16 +147,16 @@ where
         self
     }
 
-    /// Set handshake timeout in milliseconds.
+    /// Set handshake timeout.
     ///
     /// Handshake includes `connect` packet and response `connect-ack`.
     /// By default handshake timeuot is disabled.
-    pub fn handshake_timeout(mut self, timeout: u16) -> Self {
-        self.handshake_timeout = timeout as u16;
+    pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
+        self.handshake_timeout = timeout;
         self
     }
 
-    /// Set client connection disconnect timeout in milliseconds.
+    /// Set client connection disconnect timeout.
     ///
     /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
     /// within this time, the connection get dropped.
@@ -164,8 +164,8 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(mut self, timeout: u16) -> Self {
-        self.disconnect_timeout = timeout as u16;
+    pub fn disconnect_timeout(mut self, timeout: Seconds) -> Self {
+        self.disconnect_timeout = timeout;
         self
     }
 
@@ -224,16 +224,12 @@ where
 
     /// Connect to mqtt server
     pub fn connect(&self) -> impl Future<Output = Result<Client<T::Response>, ClientError>> {
-        if self.handshake_timeout > 0 {
-            let fut = select(
-                delay_for(Duration::from_millis(self.handshake_timeout as u64)),
-                self._connect(),
-            );
+        if self.handshake_timeout.non_zero() {
+            let fut = timeout(self.handshake_timeout, self._connect());
             Either::Left(async move {
-                let result = fut.await;
-                match result {
-                    Either::Left(_) => Err(ClientError::HandshakeTimeout),
-                    Either::Right(res) => res.map_err(From::from),
+                match fut.await {
+                    Ok(res) => res.map_err(From::from),
+                    Err(_) => Err(ClientError::HandshakeTimeout),
                 }
             })
         } else {
@@ -278,7 +274,7 @@ where
                             io,
                             shared,
                             session_present,
-                            keepalive_timeout,
+                            Seconds(keepalive_timeout),
                             disconnect_timeout,
                             max_receive,
                         ))

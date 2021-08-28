@@ -1,5 +1,7 @@
 use std::{fmt, rc::Rc};
 
+use ntex::time::Seconds;
+
 use super::codec as mqtt;
 use super::shared::MqttShared;
 use super::sink::MqttSink;
@@ -44,7 +46,7 @@ impl<Io> Handshake<Io> {
             lw: 256,
             read_hw: 4 * 1024,
             write_hw: 4 * 1024,
-            keepalive: 30,
+            keepalive: Seconds(30),
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
         }
     }
@@ -59,7 +61,7 @@ impl<Io> Handshake<Io> {
             lw: 256,
             read_hw: 4 * 1024,
             write_hw: 4 * 1024,
-            keepalive: 30,
+            keepalive: Seconds(30),
             return_code: mqtt::ConnectAckReason::IdentifierRejected,
         }
     }
@@ -74,7 +76,7 @@ impl<Io> Handshake<Io> {
             lw: 256,
             read_hw: 4 * 1024,
             write_hw: 4 * 1024,
-            keepalive: 30,
+            keepalive: Seconds(30),
             return_code: mqtt::ConnectAckReason::BadUserNameOrPassword,
         }
     }
@@ -89,7 +91,7 @@ impl<Io> Handshake<Io> {
             lw: 256,
             read_hw: 4 * 1024,
             write_hw: 4 * 1024,
-            keepalive: 30,
+            keepalive: Seconds(30),
             return_code: mqtt::ConnectAckReason::NotAuthorized,
         }
     }
@@ -104,7 +106,7 @@ impl<Io> Handshake<Io> {
             lw: 256,
             read_hw: 4 * 1024,
             write_hw: 4 * 1024,
-            keepalive: 30,
+            keepalive: Seconds(30),
             return_code: mqtt::ConnectAckReason::ServiceUnavailable,
         }
     }
@@ -123,7 +125,7 @@ pub struct HandshakeAck<Io, St> {
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectAckReason,
     pub(crate) shared: Rc<MqttShared>,
-    pub(crate) keepalive: u16,
+    pub(crate) keepalive: Seconds,
     pub(crate) lw: u16,
     pub(crate) read_hw: u16,
     pub(crate) write_hw: u16,
@@ -133,7 +135,7 @@ impl<Io, St> HandshakeAck<Io, St> {
     /// Set idle time-out for the connection in seconds
     ///
     /// By default idle time-out is set to 30 seconds.
-    pub fn idle_timeout(mut self, timeout: u16) -> Self {
+    pub fn idle_timeout(mut self, timeout: Seconds) -> Self {
         self.keepalive = timeout;
         self
     }

@@ -4,8 +4,8 @@ use std::{
 };
 
 use ntex::codec::{AsyncRead, AsyncWrite};
-use ntex::rt::time::{sleep, Sleep};
 use ntex::service::{apply_fn_factory, boxed, IntoServiceFactory, Service, ServiceFactory};
+use ntex::time::{sleep, Seconds, Sleep};
 use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either, Ready};
 
 use crate::error::{MqttError, ProtocolError};
@@ -18,7 +18,7 @@ use super::publish::{Publish, PublishAck};
 use super::shared::{MqttShared, MqttSinkPool};
 use super::{codec as mqtt, dispatcher::factory, MqttServer, MqttSink, Session};
 
-pub(crate) type SelectItem<Io> = (Handshake<Io>, State, Option<Pin<Box<Sleep>>>);
+pub(crate) type SelectItem<Io> = (Handshake<Io>, State, Option<Sleep>);
 
 type ServerFactory<Io, Err, InitErr> = boxed::BoxServiceFactory<
     (),
@@ -38,7 +38,7 @@ type Server<Io, Err> =
 pub struct Selector<Io, Err, InitErr> {
     servers: Vec<ServerFactory<Io, Err, InitErr>>,
     max_size: u32,
-    handshake_timeout: u16,
+    handshake_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
     _t: marker::PhantomData<(Io, Err, InitErr)>,
 }
@@ -49,7 +49,7 @@ impl<Io, Err, InitErr> Selector<Io, Err, InitErr> {
         Selector {
             servers: Vec::new(),
             max_size: 0,
-            handshake_timeout: 0,
+            handshake_timeout: Seconds::ZERO,
             pool: Default::default(),
             _t: marker::PhantomData,
         }
@@ -62,11 +62,11 @@ where
     Err: 'static,
     InitErr: 'static,
 {
-    /// Set handshake timeout in millis.
+    /// Set handshake timeout.
     ///
     /// Handshake includes `connect` packet and response `connect-ack`.
     /// By default handshake timeuot is disabled.
-    pub fn handshake_timeout(mut self, timeout: u16) -> Self {
+    pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
         self.handshake_timeout = timeout;
         self
     }
@@ -123,7 +123,7 @@ where
         self,
     ) -> impl ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Pin<Box<Sleep>>>),
+        Request = (Io, State, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -170,7 +170,7 @@ where
 pub struct SelectorService<Io, Err> {
     servers: Rc<Vec<Server<Io, Err>>>,
     max_size: u32,
-    handshake_timeout: u16,
+    handshake_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
 }
 
@@ -220,12 +220,8 @@ where
             0,
             self.pool.clone(),
         ));
-        let delay = if self.handshake_timeout > 0 {
-            Some(Box::pin(sleep(time::Duration::from_secs(self.handshake_timeout as u64))))
-        } else {
-            None
-        };
 
+        let delay = self.handshake_timeout.map(sleep);
         Box::pin(async move {
             // read first packet
             let packet = state
@@ -283,7 +279,7 @@ where
     InitErr: 'static,
 {
     type Config = ();
-    type Request = (Io, State, Option<Pin<Box<Sleep>>>);
+    type Request = (Io, State, Option<Sleep>);
     type Response = ();
     type Error = MqttError<Err>;
     type InitError = InitErr;
@@ -316,7 +312,7 @@ where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     Err: 'static,
 {
-    type Request = (Io, State, Option<Pin<Box<Sleep>>>);
+    type Request = (Io, State, Option<Sleep>);
     type Response = ();
     type Error = MqttError<Err>;
     type Future = Pin<Box<dyn Future<Output = Result<(), MqttError<Err>>>>>;

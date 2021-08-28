@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.0-b.8] - 2021-08-28
+
+* use new ntex's timer api
+
 ## [0.7.0-b.7] - 2021-08-16
 
 * v3: Boxed Packet::Connect to trim down Packet size

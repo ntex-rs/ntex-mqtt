@@ -2,8 +2,8 @@ use std::task::{Context, Poll};
 use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin, rc::Rc, time};
 
 use ntex::codec::{AsyncRead, AsyncWrite};
-use ntex::rt::time::{sleep, Sleep};
 use ntex::service::{Service, ServiceFactory};
+use ntex::time::{sleep, Seconds, Sleep};
 use ntex::util::{join, Ready};
 
 use crate::error::{MqttError, ProtocolError};
@@ -15,7 +15,7 @@ use crate::{v3, v5};
 pub struct MqttServer<Io, V3, V5, Err, InitErr> {
     v3: V3,
     v5: V5,
-    handshake_timeout: usize,
+    handshake_timeout: Seconds,
     _t: marker::PhantomData<(Io, Err, InitErr)>,
 }
 
@@ -33,7 +33,7 @@ impl<Io, Err, InitErr>
         MqttServer {
             v3: DefaultProtocolServer::new(ProtocolVersion::MQTT3),
             v5: DefaultProtocolServer::new(ProtocolVersion::MQTT5),
-            handshake_timeout: 0,
+            handshake_timeout: Seconds::ZERO,
             _t: marker::PhantomData,
         }
     }
@@ -54,11 +54,11 @@ impl<Io, Err, InitErr> Default
 }
 
 impl<Io, V3, V5, Err, InitErr> MqttServer<Io, V3, V5, Err, InitErr> {
-    /// Set handshake timeout in millis.
+    /// Set handshake timeout.
     ///
     /// Handshake includes `connect` packet.
     /// By default handshake timeuot is disabled.
-    pub fn handshake_timeout(mut self, timeout: usize) -> Self {
+    pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
         self.handshake_timeout = timeout;
         self
     }
@@ -69,14 +69,14 @@ where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     V3: ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Pin<Box<Sleep>>>),
+        Request = (Io, State, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Pin<Box<Sleep>>>),
+        Request = (Io, State, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -90,7 +90,7 @@ where
         Io,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, State, Option<Pin<Box<Sleep>>>),
+            Request = (Io, State, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -137,7 +137,7 @@ where
         Io,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, State, Option<Pin<Box<Sleep>>>),
+            Request = (Io, State, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -167,7 +167,7 @@ where
         V3,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, State, Option<Pin<Box<Sleep>>>),
+            Request = (Io, State, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -219,7 +219,7 @@ where
         V3,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, State, Option<Pin<Box<Sleep>>>),
+            Request = (Io, State, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -245,14 +245,14 @@ where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     V3: ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Pin<Box<Sleep>>>),
+        Request = (Io, State, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Pin<Box<Sleep>>>),
+        Request = (Io, State, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -293,23 +293,15 @@ where
 /// Mqtt Server
 pub struct MqttServerImpl<Io, V3, V5, Err> {
     handlers: Rc<(V3, V5)>,
-    handshake_timeout: usize,
+    handshake_timeout: Seconds,
     _t: marker::PhantomData<(Io, Err)>,
 }
 
 impl<Io, V3, V5, Err> Service for MqttServerImpl<Io, V3, V5, Err>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    V3: Service<
-        Request = (Io, State, Option<Pin<Box<Sleep>>>),
-        Response = (),
-        Error = MqttError<Err>,
-    >,
-    V5: Service<
-        Request = (Io, State, Option<Pin<Box<Sleep>>>),
-        Response = (),
-        Error = MqttError<Err>,
-    >,
+    V3: Service<Request = (Io, State, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    V5: Service<Request = (Io, State, Option<Sleep>), Response = (), Error = MqttError<Err>>,
 {
     type Request = Io;
     type Response = ();
@@ -339,11 +331,7 @@ where
     }
 
     fn call(&self, req: Io) -> Self::Future {
-        let delay = if self.handshake_timeout > 0 {
-            Some(Box::pin(sleep(time::Duration::from_secs(self.handshake_timeout as u64))))
-        } else {
-            None
-        };
+        let delay = self.handshake_timeout.map(sleep);
 
         MqttServerImplResponse {
             state: MqttServerImplState::Version {
@@ -357,12 +345,12 @@ pin_project_lite::pin_project! {
     pub struct MqttServerImplResponse<Io, V3, V5, Err>
     where
         V3: Service<
-            Request = (Io, State, Option<Pin<Box<Sleep>>>),
+            Request = (Io, State, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
         >,
         V5: Service<
-            Request = (Io, State, Option<Pin<Box<Sleep>>>),
+            Request = (Io, State, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
         >,
@@ -377,23 +365,15 @@ pin_project_lite::pin_project! {
     pub(crate) enum MqttServerImplState<Io, V3: Service, V5: Service> {
         V3 { #[pin] fut: V3::Future },
         V5 { #[pin] fut: V5::Future },
-        Version { item: Option<(Io, State, VersionCodec, Rc<(V3, V5)>, Option<Pin<Box<Sleep>>>)> },
+        Version { item: Option<(Io, State, VersionCodec, Rc<(V3, V5)>, Option<Sleep>)> },
     }
 }
 
 impl<Io, V3, V5, Err> Future for MqttServerImplResponse<Io, V3, V5, Err>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    V3: Service<
-        Request = (Io, State, Option<Pin<Box<Sleep>>>),
-        Response = (),
-        Error = MqttError<Err>,
-    >,
-    V5: Service<
-        Request = (Io, State, Option<Pin<Box<Sleep>>>),
-        Response = (),
-        Error = MqttError<Err>,
-    >,
+    V3: Service<Request = (Io, State, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    V5: Service<Request = (Io, State, Option<Sleep>), Response = (), Error = MqttError<Err>>,
 {
     type Output = Result<(), MqttError<Err>>;
 
@@ -459,7 +439,7 @@ impl<Io, Err, InitErr> DefaultProtocolServer<Io, Err, InitErr> {
 
 impl<Io, Err, InitErr> ServiceFactory for DefaultProtocolServer<Io, Err, InitErr> {
     type Config = ();
-    type Request = (Io, State, Option<Pin<Box<Sleep>>>);
+    type Request = (Io, State, Option<Sleep>);
     type Response = ();
     type Error = MqttError<Err>;
     type Service = DefaultProtocolServer<Io, Err, InitErr>;
@@ -472,7 +452,7 @@ impl<Io, Err, InitErr> ServiceFactory for DefaultProtocolServer<Io, Err, InitErr
 }
 
 impl<Io, Err, InitErr> Service for DefaultProtocolServer<Io, Err, InitErr> {
-    type Request = (Io, State, Option<Pin<Box<Sleep>>>);
+    type Request = (Io, State, Option<Sleep>);
     type Response = ();
     type Error = MqttError<Err>;
     type Future = Ready<Self::Response, Self::Error>;

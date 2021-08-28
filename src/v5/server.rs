@@ -1,14 +1,12 @@
 use std::task::{Context, Poll};
-use std::{
-    cell::RefCell, convert::TryFrom, fmt, future::Future, marker, pin::Pin, rc::Rc,
-    time::Duration,
-};
+use std::{cell::RefCell, convert::TryFrom, fmt, future::Future, marker, pin::Pin, rc::Rc};
 
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::framed::WriteTask;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::time::{Millis, Seconds, Sleep};
 use ntex::util::timeout::{Timeout, TimeoutError};
-use ntex::{rt::time::Sleep, util::Either};
+use ntex::util::Either;
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::{DispatchItem, Dispatcher, State, Timer};
@@ -31,8 +29,8 @@ pub struct MqttServer<Io, St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceF
     max_size: u32,
     max_receive: u16,
     max_qos: Option<QoS>,
-    handshake_timeout: u16,
-    disconnect_timeout: u16,
+    handshake_timeout: Seconds,
+    disconnect_timeout: Seconds,
     max_topic_alias: u16,
     pub(super) pool: Rc<MqttSinkPool>,
     _t: marker::PhantomData<(Io, St)>,
@@ -64,8 +62,8 @@ where
             max_size: 0,
             max_receive: 15,
             max_qos: None,
-            handshake_timeout: 0,
-            disconnect_timeout: 3000,
+            handshake_timeout: Seconds::ZERO,
+            disconnect_timeout: Seconds(3),
             max_topic_alias: 32,
             pool: Rc::new(MqttSinkPool::default()),
             _t: marker::PhantomData,
@@ -87,16 +85,16 @@ where
         > + 'static,
     P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
 {
-    /// Set handshake timeout in millis.
+    /// Set handshake timeout.
     ///
     /// Handshake includes `connect` packet and response `connect-ack`.
     /// By default handshake timeuot is disabled.
-    pub fn handshake_timeout(mut self, timeout: u16) -> Self {
+    pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
         self.handshake_timeout = timeout;
         self
     }
 
-    /// Set server connection disconnect timeout in milliseconds.
+    /// Set server connection disconnect timeout.
     ///
     /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
     /// within this time, the connection get dropped.
@@ -104,7 +102,7 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(mut self, val: u16) -> Self {
+    pub fn disconnect_timeout(mut self, val: Seconds) -> Self {
         self.disconnect_timeout = val;
         self
     }
@@ -247,7 +245,7 @@ where
         self,
     ) -> impl ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Pin<Box<Sleep>>>),
+        Request = (Io, State, Option<Sleep>),
         Response = (),
         Error = MqttError<C::Error>,
         InitError = C::InitError,
@@ -304,7 +302,7 @@ where
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
             disconnect_timeout: self.disconnect_timeout,
-            time: Timer::with(Duration::from_secs(1)),
+            time: Timer::new(Millis::ONE_SEC),
             _t: marker::PhantomData,
         }
     }
@@ -316,12 +314,12 @@ fn handshake_service_factory<Io, St, C>(
     max_receive: u16,
     max_topic_alias: u16,
     max_qos: Option<QoS>,
-    handshake_timeout: u16,
+    handshake_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
     Config = (),
     Request = Io,
-    Response = (Io, State, Rc<MqttShared>, Session<St>, u16),
+    Response = (Io, State, Rc<MqttShared>, Session<St>, Seconds),
     Error = MqttError<C::Error>,
 >
 where
@@ -330,7 +328,7 @@ where
     C::Error: fmt::Debug,
 {
     ntex::apply(
-        Timeout::new(Duration::from_millis(handshake_timeout as u64)),
+        Timeout::new(Millis::from(handshake_timeout)),
         ntex::fn_factory(move || {
             let pool = pool.clone();
 
@@ -366,12 +364,12 @@ fn handshake_service_factory2<Io, St, C>(
     max_receive: u16,
     max_topic_alias: u16,
     max_qos: Option<QoS>,
-    handshake_timeout: u16,
+    handshake_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
     Config = (),
     Request = (Io, State),
-    Response = (Io, State, Rc<MqttShared>, Session<St>, u16),
+    Response = (Io, State, Rc<MqttShared>, Session<St>, Seconds),
     Error = MqttError<C::Error>,
     InitError = C::InitError,
 >
@@ -381,7 +379,7 @@ where
     C::Error: fmt::Debug,
 {
     ntex::apply(
-        Timeout::new(Duration::from_millis(handshake_timeout as u64)),
+        Timeout::new(Millis::from(handshake_timeout)),
         ntex::fn_factory(move || {
             let pool = pool.clone();
             let fut = factory.new_service(());
@@ -420,7 +418,7 @@ async fn handshake<Io, S, St, E>(
     mut max_topic_alias: u16,
     max_qos: Option<QoS>,
     pool: Rc<MqttSinkPool>,
-) -> Result<(Io, State, Rc<MqttShared>, Session<St>, u16), S::Error>
+) -> Result<(Io, State, Rc<MqttShared>, Session<St>, Seconds), S::Error>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
     S: Service<Request = Handshake<Io>, Response = HandshakeAck<Io, St>, Error = MqttError<E>>,
@@ -514,7 +512,7 @@ where
                             max_receive,
                             max_topic_alias,
                         ),
-                        ack.keepalive,
+                        Seconds(ack.keepalive),
                     ))
                 }
                 None => {
@@ -559,7 +557,7 @@ pub(crate) struct ServerSelector<St, C, T, Io, F, R> {
     max_size: u32,
     max_receive: u16,
     max_qos: Option<QoS>,
-    disconnect_timeout: u16,
+    disconnect_timeout: Seconds,
     max_topic_alias: u16,
     _t: marker::PhantomData<(St, Io, R)>,
 }
@@ -624,7 +622,7 @@ pub(crate) struct ServerSelectorImpl<St, C, T, Io, F, R> {
     max_size: u32,
     max_receive: u16,
     max_qos: Option<QoS>,
-    disconnect_timeout: u16,
+    disconnect_timeout: Seconds,
     max_topic_alias: u16,
     time: Timer,
     _t: marker::PhantomData<(St, Io, R)>,
@@ -764,7 +762,7 @@ where
                         log::trace!("Connection handler is created, starting dispatcher");
 
                         Dispatcher::with(ack.io, shared.state.clone(), shared, handler, time)
-                            .keepalive_timeout(ack.keepalive as u16)
+                            .keepalive_timeout(Seconds(ack.keepalive))
                             .disconnect_timeout(timeout)
                             .await?;
                         Ok(Either::Right(()))

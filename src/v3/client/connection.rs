@@ -1,9 +1,9 @@
-use std::{future::Future, marker::PhantomData, rc::Rc, time::Duration, time::Instant};
+use std::{future::Future, marker::PhantomData, rc::Rc, time::Instant};
 
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::router::{IntoPattern, Router, RouterBuilder};
-use ntex::rt::time::{delay_until, Instant as RtInstant};
 use ntex::service::{apply_fn, boxed::BoxService, into_service, IntoService, Service};
+use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{Either, Ready};
 
 use crate::error::{MqttError, ProtocolError};
@@ -18,8 +18,8 @@ use super::dispatcher::create_dispatcher;
 pub struct Client<Io> {
     io: Io,
     shared: Rc<MqttShared>,
-    keepalive: u16,
-    disconnect_timeout: u16,
+    keepalive: Seconds,
+    disconnect_timeout: Seconds,
     session_present: bool,
     max_receive: usize,
 }
@@ -33,8 +33,8 @@ where
         io: T,
         shared: Rc<MqttShared>,
         session_present: bool,
-        keepalive_timeout: u16,
-        disconnect_timeout: u16,
+        keepalive_timeout: Seconds,
+        disconnect_timeout: Seconds,
         max_receive: usize,
     ) -> Self {
         Client {
@@ -92,7 +92,7 @@ where
     ///
     /// Default handler closes connection on any control message.
     pub async fn start_default(self) {
-        if self.keepalive > 0 {
+        if self.keepalive.non_zero() {
             ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
@@ -125,9 +125,9 @@ where
                     Either::Right(Ready::Ok(None))
                 }
             }),
-            Timer::with(Duration::from_secs(1)),
+            Timer::new(Millis::ONE_SEC),
         )
-        .keepalive_timeout(0)
+        .keepalive_timeout(Seconds::ZERO)
         .disconnect_timeout(self.disconnect_timeout)
         .await;
     }
@@ -139,7 +139,7 @@ where
         F: IntoService<S> + 'static,
         S: Service<Request = ControlMessage, Response = ControlResult, Error = E> + 'static,
     {
-        if self.keepalive > 0 {
+        if self.keepalive.non_zero() {
             ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
@@ -172,9 +172,9 @@ where
                     Either::Right(Ready::Ok(None))
                 }
             }),
-            Timer::with(Duration::from_secs(1)),
+            Timer::new(Millis::ONE_SEC),
         )
-        .keepalive_timeout(0)
+        .keepalive_timeout(Seconds::ZERO)
         .disconnect_timeout(self.disconnect_timeout)
         .await
     }
@@ -188,8 +188,8 @@ pub struct ClientRouter<Io, Err, PErr> {
     handlers: Vec<Handler<PErr>>,
     io: Io,
     shared: Rc<MqttShared>,
-    keepalive: u16,
-    disconnect_timeout: u16,
+    keepalive: Seconds,
+    disconnect_timeout: Seconds,
     max_receive: usize,
     _t: PhantomData<Err>,
 }
@@ -214,7 +214,7 @@ where
 
     /// Run client with default control messages handler
     pub async fn start_default(self) {
-        if self.keepalive > 0 {
+        if self.keepalive.non_zero() {
             ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
@@ -249,9 +249,9 @@ where
                     Either::Right(Ready::Ok(None))
                 }
             }),
-            Timer::with(Duration::from_secs(1)),
+            Timer::new(Millis::ONE_SEC),
         )
-        .keepalive_timeout(0)
+        .keepalive_timeout(Seconds::ZERO)
         .disconnect_timeout(self.disconnect_timeout)
         .await;
     }
@@ -262,7 +262,7 @@ where
         F: IntoService<S> + 'static,
         S: Service<Request = ControlMessage, Response = ControlResult, Error = Err> + 'static,
     {
-        if self.keepalive > 0 {
+        if self.keepalive.non_zero() {
             ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
@@ -295,9 +295,9 @@ where
                     Either::Right(Ready::Ok(None))
                 }
             }),
-            Timer::with(Duration::from_secs(1)),
+            Timer::new(Millis::ONE_SEC),
         )
-        .keepalive_timeout(0)
+        .keepalive_timeout(Seconds::ZERO)
         .disconnect_timeout(self.disconnect_timeout)
         .await
     }
@@ -340,13 +340,12 @@ where
     }
 }
 
-async fn keepalive(sink: MqttSink, timeout: u16) {
+async fn keepalive(sink: MqttSink, timeout: Seconds) {
     log::debug!("start mqtt client keep-alive task");
 
-    let keepalive = Duration::from_secs(timeout as u64);
+    let keepalive = Millis::from(timeout);
     loop {
-        let expire = RtInstant::from_std(Instant::now() + keepalive);
-        delay_until(expire).await;
+        sleep(keepalive).await;
 
         if !sink.ping() {
             // connection is closed

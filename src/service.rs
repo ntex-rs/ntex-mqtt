@@ -1,9 +1,9 @@
 use std::task::{Context, Poll};
-use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc, time::Duration};
+use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
 
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
-use ntex::rt::time::Sleep;
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::time::{Millis, Seconds, Sleep};
 use ntex::util::{select, Either};
 
 use super::io::{DispatchItem, Dispatcher, State, Timer};
@@ -13,18 +13,18 @@ type ResponseItem<U> = Option<<U as Encoder>::Item>;
 pub(crate) struct FramedService<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: u16,
+    disconnect_timeout: Seconds,
     time: Timer,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
 impl<St, C, T, Io, Codec> FramedService<St, C, T, Io, Codec> {
-    pub(crate) fn new(connect: C, service: T, disconnect_timeout: u16) -> Self {
+    pub(crate) fn new(connect: C, service: T, disconnect_timeout: Seconds) -> Self {
         FramedService {
             connect,
             disconnect_timeout,
             handler: Rc::new(service),
-            time: Timer::with(Duration::from_secs(1)),
+            time: Timer::new(Millis::ONE_SEC),
             _t: PhantomData,
         }
     }
@@ -33,7 +33,7 @@ impl<St, C, T, Io, Codec> FramedService<St, C, T, Io, Codec> {
 impl<St, C, T, Io, Codec> ServiceFactory for FramedService<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    C: ServiceFactory<Config = (), Request = Io, Response = (Io, State, Codec, St, u16)>,
+    C: ServiceFactory<Config = (), Request = Io, Response = (Io, State, Codec, St, Seconds)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     <C::Service as Service>::Future: 'static,
@@ -79,7 +79,7 @@ where
 pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: u16,
+    disconnect_timeout: Seconds,
     time: Timer,
     _t: PhantomData<(St, Io, Codec)>,
 }
@@ -87,7 +87,7 @@ pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec> {
 impl<St, C, T, Io, Codec> Service for FramedServiceImpl<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    C: Service<Request = Io, Response = (Io, State, Codec, St, u16)>,
+    C: Service<Request = Io, Response = (Io, State, Codec, St, Seconds)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
@@ -137,7 +137,7 @@ where
             log::trace!("Connection handler is created, starting dispatcher");
 
             Dispatcher::with(io, st, codec, handler, time)
-                .keepalive_timeout(keepalive as u16)
+                .keepalive_timeout(keepalive)
                 .disconnect_timeout(timeout)
                 .await
         })
@@ -147,18 +147,18 @@ where
 pub(crate) struct FramedService2<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: u16,
+    disconnect_timeout: Seconds,
     time: Timer,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
 impl<St, C, T, Io, Codec> FramedService2<St, C, T, Io, Codec> {
-    pub(crate) fn new(connect: C, service: T, disconnect_timeout: u16) -> Self {
+    pub(crate) fn new(connect: C, service: T, disconnect_timeout: Seconds) -> Self {
         FramedService2 {
             connect,
             disconnect_timeout,
             handler: Rc::new(service),
-            time: Timer::with(Duration::from_secs(1)),
+            time: Timer::new(Millis::ONE_SEC),
             _t: PhantomData,
         }
     }
@@ -170,7 +170,7 @@ where
     C: ServiceFactory<
         Config = (),
         Request = (Io, State),
-        Response = (Io, State, Codec, St, u16),
+        Response = (Io, State, Codec, St, Seconds),
     >,
     C::Error: fmt::Debug,
     C::Future: 'static,
@@ -188,7 +188,7 @@ where
     <Codec as Encoder>::Item: 'static,
 {
     type Config = ();
-    type Request = (Io, State, Option<Pin<Box<Sleep>>>);
+    type Request = (Io, State, Option<Sleep>);
     type Response = ();
     type Error = C::Error;
     type InitError = C::InitError;
@@ -217,7 +217,7 @@ where
 pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: u16,
+    disconnect_timeout: Seconds,
     time: Timer,
     _t: PhantomData<(St, Io, Codec)>,
 }
@@ -225,7 +225,7 @@ pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec> {
 impl<St, C, T, Io, Codec> Service for FramedServiceImpl2<St, C, T, Io, Codec>
 where
     Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    C: Service<Request = (Io, State), Response = (Io, State, Codec, St, u16)>,
+    C: Service<Request = (Io, State), Response = (Io, State, Codec, St, Seconds)>,
     C::Error: fmt::Debug,
     C::Future: 'static,
     T: ServiceFactory<
@@ -240,7 +240,7 @@ where
     Codec: Decoder + Encoder + Clone + 'static,
     <Codec as Encoder>::Item: 'static,
 {
-    type Request = (Io, State, Option<Pin<Box<Sleep>>>);
+    type Request = (Io, State, Option<Sleep>);
     type Response = ();
     type Error = C::Error;
     type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
@@ -256,7 +256,7 @@ where
     }
 
     #[inline]
-    fn call(&self, (req, state, delay): (Io, State, Option<Pin<Box<Sleep>>>)) -> Self::Future {
+    fn call(&self, (req, state, delay): (Io, State, Option<Sleep>)) -> Self::Future {
         log::trace!("Start connection handshake");
 
         let handler = self.handler.clone();
@@ -303,7 +303,7 @@ where
             };
 
             Dispatcher::with(io, state, codec, handler, time)
-                .keepalive_timeout(ka as u16)
+                .keepalive_timeout(ka)
                 .disconnect_timeout(timeout)
                 .await
         })

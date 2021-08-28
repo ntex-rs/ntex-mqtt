@@ -3,8 +3,8 @@ use std::{convert::TryFrom, num::NonZeroU16, time::Duration};
 
 use futures::{future::ok, FutureExt, SinkExt, StreamExt};
 use ntex::codec::Framed;
-use ntex::rt::time::sleep;
 use ntex::server;
+use ntex::time::sleep;
 use ntex::util::{poll_fn, ByteString, Bytes};
 
 use ntex_mqtt::v5::{

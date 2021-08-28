@@ -3,8 +3,8 @@ use std::{num::NonZeroU16, time::Duration};
 
 use futures::{future::ok, FutureExt, SinkExt, StreamExt};
 use ntex::codec::Framed;
-use ntex::rt::time::sleep;
 use ntex::server;
+use ntex::time::{sleep, Seconds};
 use ntex::util::{poll_fn, ByteString, Bytes};
 
 use ntex_mqtt::v3::{
@@ -18,7 +18,7 @@ async fn handshake<Io>(mut packet: Handshake<Io>) -> Result<HandshakeAck<Io, St>
     packet.packet_mut();
     packet.io();
     packet.sink();
-    Ok(packet.ack(St, false).idle_timeout(16))
+    Ok(packet.ack(St, false).idle_timeout(Seconds(16)))
 }
 
 #[ntex::test]
