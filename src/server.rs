@@ -110,7 +110,7 @@ where
             > + 'static,
         Cn: ServiceFactory<
                 Config = v3::Session<St>,
-                Request = v3::ControlMessage,
+                Request = v3::ControlMessage<C::Error>,
                 Response = v3::ControlResult,
             > + 'static,
         P: ServiceFactory<Config = v3::Session<St>, Request = v3::Publish, Response = ()>

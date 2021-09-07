@@ -87,13 +87,13 @@ macro_rules! matches {
 
         for rhs in $levels {
             match lhs.next() {
-                Some(&Level::SingleWildcard) => {
-                    if !rhs.match_level(&Level::SingleWildcard) {
+                Some(&$crate::topic::Level::SingleWildcard) => {
+                    if !rhs.match_level(&$crate::topic::Level::SingleWildcard) {
                         break;
                     }
                 }
-                Some(&Level::MultiWildcard) => {
-                    return rhs.match_level(&Level::MultiWildcard);
+                Some(&$crate::topic::Level::MultiWildcard) => {
+                    return rhs.match_level(&$crate::topic::Level::MultiWildcard);
                 }
                 Some(level) if rhs.match_level(level) => continue,
                 _ => return false,
@@ -101,7 +101,7 @@ macro_rules! matches {
         }
 
         match lhs.next() {
-            Some(&Level::MultiWildcard) => true,
+            Some(&$crate::topic::Level::MultiWildcard) => true,
             Some(_) => false,
             None => true,
         }

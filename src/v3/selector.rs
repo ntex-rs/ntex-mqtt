@@ -95,7 +95,7 @@ where
             > + 'static,
         Cn: ServiceFactory<
                 Config = Session<St>,
-                Request = ControlMessage,
+                Request = ControlMessage<C::Error>,
                 Response = ControlResult,
             > + 'static,
         P: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,

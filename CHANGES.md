@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.0-b.10] - 2021-09-07
+
+* v3: add ControlMessage::Error and ControlMessage::ProtocolError
+
 ## [0.7.0-b.9] - 2021-09-07
 
 * v5: add helper methods to client control publish message

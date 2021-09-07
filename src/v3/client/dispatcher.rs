@@ -5,9 +5,9 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 use ntex::service::Service;
 use ntex::util::{inflight::InFlightService, Either, HashSet, Ready};
 
-use crate::v3::shared::Ack;
+use crate::v3::shared::{Ack, MqttShared};
 use crate::v3::{codec, control::ControlResultKind, publish::Publish, sink::MqttSink};
-use crate::{error::MqttError, error::ProtocolError, types::packet_type};
+use crate::{error::MqttError, error::ProtocolError, io::DispatchItem, types::packet_type};
 
 use super::control::{ControlMessage, ControlResult};
 
@@ -17,27 +17,28 @@ pub(super) fn create_dispatcher<T, C, E>(
     inflight: usize,
     publish: T,
     control: C,
-) -> impl Service<Request = codec::Packet, Response = Option<codec::Packet>, Error = MqttError<E>>
+) -> impl Service<
+    Request = DispatchItem<Rc<MqttShared>>,
+    Response = Option<codec::Packet>,
+    Error = MqttError<E>,
+>
 where
     E: 'static,
-    T: Service<
-            Request = Publish,
-            Response = ntex::util::Either<(), Publish>,
-            Error = MqttError<E>,
-        > + 'static,
-    C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>
+    T: Service<Request = Publish, Response = ntex::util::Either<(), Publish>, Error = E>
         + 'static,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
 {
     // limit number of in-flight messages
-    InFlightService::new(inflight, Dispatcher::<_, _, E>::new(sink, publish, control))
+    InFlightService::new(inflight, Dispatcher::<T, C, E>::new(sink, publish, control))
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T: Service<Error = MqttError<E>>, C, E> {
+pub(crate) struct Dispatcher<T, C, E> {
     sink: MqttSink,
     publish: T,
     shutdown: Cell<bool>,
     inner: Rc<Inner<C>>,
+    _t: PhantomData<E>,
 }
 
 struct Inner<C> {
@@ -48,12 +49,8 @@ struct Inner<C> {
 
 impl<T, C, E> Dispatcher<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = ntex::util::Either<(), Publish>,
-        Error = MqttError<E>,
-    >,
-    C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
+    T: Service<Request = Publish, Response = ntex::util::Either<(), Publish>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     pub(crate) fn new(sink: MqttSink, publish: T, control: C) -> Self {
         Self {
@@ -61,22 +58,19 @@ where
             sink: sink.clone(),
             shutdown: Cell::new(false),
             inner: Rc::new(Inner { sink, control, inflight: RefCell::new(HashSet::default()) }),
+            _t: PhantomData,
         }
     }
 }
 
 impl<T, C, E> Service for Dispatcher<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = ntex::util::Either<(), Publish>,
-        Error = MqttError<E>,
-    >,
-    C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
+    T: Service<Request = Publish, Response = ntex::util::Either<(), Publish>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
     C::Future: 'static,
     E: 'static,
 {
-    type Request = codec::Packet;
+    type Request = DispatchItem<Rc<MqttShared>>;
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
     type Future = Either<
@@ -85,8 +79,8 @@ where
     >;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let res1 = self.publish.poll_ready(cx)?;
-        let res2 = self.inner.control.poll_ready(cx)?;
+        let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service)?;
+        let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::Service)?;
 
         if res1.is_pending() || res2.is_pending() {
             Poll::Pending
@@ -107,10 +101,10 @@ where
         Poll::Ready(())
     }
 
-    fn call(&self, packet: codec::Packet) -> Self::Future {
+    fn call(&self, packet: Self::Request) -> Self::Future {
         log::trace!("Dispatch packet: {:#?}", packet);
         match packet {
-            codec::Packet::Publish(publish) => {
+            DispatchItem::Item(codec::Packet::Publish(publish)) => {
                 let inner = self.inner.clone();
                 let packet_id = publish.packet_id;
 
@@ -131,49 +125,80 @@ where
                     _t: PhantomData,
                 })
             }
-            codec::Packet::PublishAck { packet_id } => {
+            DispatchItem::Item(codec::Packet::PublishAck { packet_id }) => {
                 if let Err(e) = self.sink.pkt_ack(Ack::Publish(packet_id)) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            codec::Packet::PingRequest => {
+            DispatchItem::Item(codec::Packet::PingRequest) => {
                 Either::Right(Either::Left(Ready::Ok(Some(codec::Packet::PingResponse))))
             }
-            codec::Packet::Disconnect => Either::Right(Either::Right(ControlResponse::new(
-                self.inner.control.call(ControlMessage::dis()),
-                &self.inner,
-            ))),
-            codec::Packet::SubscribeAck { packet_id, status } => {
+            DispatchItem::Item(codec::Packet::Disconnect) => Either::Right(Either::Right(
+                ControlResponse::new(ControlMessage::dis(), &self.inner),
+            )),
+            DispatchItem::Item(codec::Packet::SubscribeAck { packet_id, status }) => {
                 if let Err(e) = self.sink.pkt_ack(Ack::Subscribe { packet_id, status }) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            codec::Packet::UnsubscribeAck { packet_id } => {
+            DispatchItem::Item(codec::Packet::UnsubscribeAck { packet_id }) => {
                 if let Err(e) = self.sink.pkt_ack(Ack::Unsubscribe(packet_id)) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            codec::Packet::Subscribe { .. } => Either::Right(Either::Left(Ready::Err(
-                ProtocolError::Unexpected(
-                    packet_type::SUBSCRIBE,
-                    "Subscribe packet is not supported",
-                )
-                .into(),
+            DispatchItem::Item(codec::Packet::Subscribe { .. }) => {
+                Either::Right(Either::Left(Ready::Err(
+                    ProtocolError::Unexpected(
+                        packet_type::SUBSCRIBE,
+                        "Subscribe packet is not supported",
+                    )
+                    .into(),
+                )))
+            }
+            DispatchItem::Item(codec::Packet::Unsubscribe { .. }) => {
+                Either::Right(Either::Left(Ready::Err(
+                    ProtocolError::Unexpected(
+                        packet_type::UNSUBSCRIBE,
+                        "Unsubscribe packet is not supported",
+                    )
+                    .into(),
+                )))
+            }
+            DispatchItem::Item(pkt) => {
+                log::debug!("Unsupported packet: {:?}", pkt);
+                Either::Right(Either::Left(Ready::Ok(None)))
+            }
+            DispatchItem::EncoderError(err) => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::Encode(err)),
+                    &self.inner,
+                )))
+            }
+            DispatchItem::DecoderError(err) => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::Decode(err)),
+                    &self.inner,
+                )))
+            }
+            DispatchItem::IoError(err) => Either::Right(Either::Right(ControlResponse::new(
+                ControlMessage::proto_error(ProtocolError::Io(err)),
+                &self.inner,
             ))),
-            codec::Packet::Unsubscribe { .. } => Either::Right(Either::Left(Ready::Err(
-                ProtocolError::Unexpected(
-                    packet_type::UNSUBSCRIBE,
-                    "Unsubscribe packet is not supported",
-                )
-                .into(),
-            ))),
-            _ => Either::Right(Either::Left(Ready::Ok(None))),
+            DispatchItem::KeepAliveTimeout => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
+                    &self.inner,
+                )))
+            }
+            DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
+                Either::Right(Either::Left(Ready::Ok(None)))
+            }
         }
     }
 }
@@ -193,12 +218,8 @@ pin_project_lite::pin_project! {
 
 impl<T, C, E> Future for PublishResponse<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = ntex::util::Either<(), Publish>,
-        Error = MqttError<E>,
-    >,
-    C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
+    T: Service<Request = Publish, Response = ntex::util::Either<(), Publish>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
@@ -208,10 +229,16 @@ where
         }
 
         let mut this = self.as_mut().project();
-        let res = match this.fut.poll(cx)? {
-            Poll::Ready(item) => item,
+        let res = match this.fut.poll(cx) {
+            Poll::Ready(Ok(item)) => item,
+            Poll::Ready(Err(e)) => {
+                this.fut_c
+                    .set(Some(ControlResponse::new(ControlMessage::error(e), &*this.inner)));
+                return self.poll(cx);
+            }
             Poll::Pending => return Poll::Pending,
         };
+
         match res {
             Either::Left(_) => {
                 log::trace!("Publish result for packet {:?} is ready", this.packet_id);
@@ -225,7 +252,7 @@ where
             }
             Either::Right(pkt) => {
                 this.fut_c.set(Some(ControlResponse::new(
-                    this.inner.control.call(ControlMessage::publish(pkt.into_inner())),
+                    ControlMessage::publish(pkt.into_inner()),
                     &*this.inner,
                 )));
                 self.poll(cx)
@@ -246,23 +273,23 @@ pin_project_lite::pin_project! {
 
 impl<C, E> ControlResponse<C, E>
 where
-    C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
-    fn new(fut: C::Future, inner: &Rc<Inner<C>>) -> Self {
-        Self { fut, inner: inner.clone(), _t: PhantomData }
+    fn new(msg: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
+        Self { fut: inner.control.call(msg), inner: inner.clone(), _t: PhantomData }
     }
 }
 
 impl<C, E> Future for ControlResponse<C, E>
 where
-    C: Service<Request = ControlMessage, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let packet = match this.fut.poll(cx)? {
+        let packet = match this.fut.poll(cx).map_err(MqttError::Service)? {
             Poll::Ready(item) => match item.result {
                 ControlResultKind::Ping => Some(codec::Packet::PingResponse),
                 ControlResultKind::PublishAck(id) => {

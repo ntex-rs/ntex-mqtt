@@ -69,8 +69,11 @@ where
     St: 'static,
     C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>
         + 'static,
-    Cn: ServiceFactory<Config = Session<St>, Request = ControlMessage, Response = ControlResult>
-        + 'static,
+    Cn: ServiceFactory<
+            Config = Session<St>,
+            Request = ControlMessage<C::Error>,
+            Response = ControlResult,
+        > + 'static,
     P: ServiceFactory<Config = Session<St>, Request = Publish, Response = ()> + 'static,
 
     C::Error: From<Cn::Error>
@@ -127,7 +130,7 @@ where
         F: IntoServiceFactory<Srv>,
         Srv: ServiceFactory<
                 Config = Session<St>,
-                Request = ControlMessage,
+                Request = ControlMessage<C::Error>,
                 Response = ControlResult,
             > + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError>,
@@ -174,12 +177,10 @@ where
         let publish = self
             .publish
             .into_factory()
-            .map_err(|e| MqttError::Service(e.into()))
+            .map_err(|e| e.into())
             .map_init_err(|e| MqttError::Service(e.into()));
-        let control = self
-            .control
-            .map_err(|e| MqttError::Service(e.into()))
-            .map_init_err(|e| MqttError::Service(e.into()));
+        let control =
+            self.control.map_err(|e| e.into()).map_init_err(|e| MqttError::Service(e.into()));
 
         FramedService::new(
             handshake_service_factory(
@@ -188,26 +189,7 @@ where
                 self.handshake_timeout,
                 self.pool,
             ),
-            apply_fn_factory(
-                factory(publish, control, self.inflight),
-                |req: DispatchItem<Rc<MqttShared>>, srv| match req {
-                    DispatchItem::Item(req) => Either::Left(srv.call(req)),
-                    DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(
-                        MqttError::Protocol(ProtocolError::KeepAliveTimeout),
-                    )),
-                    DispatchItem::EncoderError(e) => {
-                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Encode(e))))
-                    }
-                    DispatchItem::DecoderError(e) => {
-                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Decode(e))))
-                    }
-                    DispatchItem::IoError(e) => {
-                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Io(e))))
-                    }
-                    DispatchItem::WBackPressureEnabled
-                    | DispatchItem::WBackPressureDisabled => Either::Right(Ready::Ok(None)),
-                },
-            ),
+            factory(publish, control, self.inflight),
             self.disconnect_timeout,
         )
     }
@@ -226,12 +208,10 @@ where
         let publish = self
             .publish
             .into_factory()
-            .map_err(|e| MqttError::Service(e.into()))
+            .map_err(|e| e.into())
             .map_init_err(|e| MqttError::Service(e.into()));
-        let control = self
-            .control
-            .map_err(|e| MqttError::Service(e.into()))
-            .map_init_err(|e| MqttError::Service(e.into()));
+        let control =
+            self.control.map_err(|e| e.into()).map_init_err(|e| MqttError::Service(e.into()));
 
         FramedService2::new(
             handshake_service_factory2(
@@ -240,26 +220,7 @@ where
                 self.handshake_timeout,
                 self.pool,
             ),
-            apply_fn_factory(
-                factory(publish, control, self.inflight),
-                |req: DispatchItem<Rc<MqttShared>>, srv| match req {
-                    DispatchItem::Item(req) => Either::Left(srv.call(req)),
-                    DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(
-                        MqttError::Protocol(ProtocolError::KeepAliveTimeout),
-                    )),
-                    DispatchItem::EncoderError(e) => {
-                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Encode(e))))
-                    }
-                    DispatchItem::DecoderError(e) => {
-                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Decode(e))))
-                    }
-                    DispatchItem::IoError(e) => {
-                        Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Io(e))))
-                    }
-                    DispatchItem::WBackPressureEnabled
-                    | DispatchItem::WBackPressureDisabled => Either::Right(Ready::Ok(None)),
-                },
-            ),
+            factory(publish, control, self.inflight),
             self.disconnect_timeout,
         )
     }
@@ -279,41 +240,15 @@ where
         F: Fn(&Handshake<Io>) -> R + 'static,
         R: Future<Output = Result<bool, C::Error>> + 'static,
     {
-        let publish = self
-            .publish
-            .map_err(|e| MqttError::Service(e.into()))
-            .map_init_err(|e| MqttError::Service(e.into()));
-        let control = self
-            .control
-            .map_err(|e| MqttError::Service(e.into()))
-            .map_init_err(|e| MqttError::Service(e.into()));
-
-        let handler = apply_fn_factory(
-            factory(publish, control, self.inflight),
-            |req: DispatchItem<Rc<MqttShared>>, srv| match req {
-                DispatchItem::Item(req) => Either::Left(srv.call(req)),
-                DispatchItem::KeepAliveTimeout => Either::Right(Ready::Err(
-                    MqttError::Protocol(ProtocolError::KeepAliveTimeout),
-                )),
-                DispatchItem::EncoderError(e) => {
-                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Encode(e))))
-                }
-                DispatchItem::DecoderError(e) => {
-                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Decode(e))))
-                }
-                DispatchItem::IoError(e) => {
-                    Either::Right(Ready::Err(MqttError::Protocol(ProtocolError::Io(e))))
-                }
-                DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
-                    Either::Right(Ready::Ok(None))
-                }
-            },
-        );
+        let publish =
+            self.publish.map_err(|e| e.into()).map_init_err(|e| MqttError::Service(e.into()));
+        let control =
+            self.control.map_err(|e| e.into()).map_init_err(|e| MqttError::Service(e.into()));
 
         ServerSelector {
             check: Rc::new(check),
             connect: self.handshake,
-            handler: Rc::new(handler),
+            handler: Rc::new(factory(publish, control, self.inflight)),
             max_size: self.max_size,
             disconnect_timeout: self.disconnect_timeout,
             time: Timer::new(Millis::ONE_SEC),

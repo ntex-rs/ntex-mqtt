@@ -13,6 +13,10 @@ pub struct Publish {
     topic: Path<ByteString>,
 }
 
+#[derive(Debug)]
+/// Publish ack
+pub struct PublishAck;
+
 impl Publish {
     pub(crate) fn new(publish: codec::Publish) -> Self {
         Self { topic: Path::new(publish.topic.clone()), publish }

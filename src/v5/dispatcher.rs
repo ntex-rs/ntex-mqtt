@@ -157,7 +157,7 @@ where
     }
 
     fn call(&self, request: Self::Request) -> Self::Future {
-        log::trace!("Dispatch packet: {:#?}", request);
+        log::trace!("Dispatch v5 packet: {:#?}", request);
 
         match request {
             DispatchItem::Item(codec::Packet::Publish(publish)) => {

@@ -1,16 +1,20 @@
-pub use crate::v3::control::{Closed, ControlResult, Disconnect};
-use crate::v3::{codec, control::ControlResultKind};
+pub use crate::v3::control::{Closed, ControlResult, Disconnect, Error, ProtocolError};
+use crate::v3::{codec, control::ControlResultKind, error};
 
-pub enum ControlMessage {
+pub enum ControlMessage<E> {
     /// Unhandled publish packet
     Publish(Publish),
     /// Disconnect packet
     Disconnect(Disconnect),
     /// Connection closed
     Closed(Closed),
+    /// Application level error from resources and control services
+    Error(Error<E>),
+    /// Protocol level error
+    ProtocolError(ProtocolError),
 }
 
-impl ControlMessage {
+impl<E> ControlMessage<E> {
     pub(super) fn publish(pkt: codec::Publish) -> Self {
         ControlMessage::Publish(Publish(pkt))
     }
@@ -21,6 +25,14 @@ impl ControlMessage {
 
     pub(super) fn closed(is_error: bool) -> Self {
         ControlMessage::Closed(Closed::new(is_error))
+    }
+
+    pub(super) fn error(err: E) -> Self {
+        ControlMessage::Error(Error::new(err))
+    }
+
+    pub(super) fn proto_error(err: error::ProtocolError) -> Self {
+        ControlMessage::ProtocolError(ProtocolError::new(err))
     }
 
     pub fn disconnect(&self) -> ControlResult {

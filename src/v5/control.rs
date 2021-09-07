@@ -439,7 +439,7 @@ impl<E> Error<E> {
 
     #[inline]
     /// Returns reference to mqtt error
-    pub fn get_err(&self) -> &E {
+    pub fn get_ref(&self) -> &E {
         &self.err
     }
 
@@ -485,7 +485,7 @@ impl<E> Error<E> {
     }
 }
 
-/// Connection failed message
+/// Protocol level error
 #[derive(Debug)]
 pub struct ProtocolError {
     err: error::ProtocolError,
