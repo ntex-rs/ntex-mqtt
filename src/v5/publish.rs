@@ -103,6 +103,7 @@ impl std::fmt::Debug for Publish {
     }
 }
 
+#[derive(Debug)]
 /// Publish ack
 pub struct PublishAck {
     pub(crate) reason_code: codec::PublishAckReason,

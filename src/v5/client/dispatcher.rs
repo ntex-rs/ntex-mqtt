@@ -364,6 +364,7 @@ where
                     Poll::Pending => return Poll::Pending,
                 };
                 if let Some(id) = NonZeroU16::new(*this.packet_id) {
+                    log::trace!("Sending publish ack for {} id", this.packet_id);
                     this.inner.info.borrow_mut().inflight.remove(&id);
                     let ack = codec::PublishAck {
                         packet_id: id,

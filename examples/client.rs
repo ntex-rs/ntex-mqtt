@@ -1,4 +1,4 @@
-use ntex::time::{sleep, Seconds};
+use ntex::time::{sleep, Millis, Seconds};
 use ntex_mqtt::v5;
 
 #[derive(Debug)]
@@ -54,11 +54,11 @@ async fn main() -> std::io::Result<()> {
         .await
         .unwrap();
 
-    sleep(10_000).await;
+    sleep(Millis(10_000)).await;
 
     log::info!("closing connection");
     sink.close();
-    sleep(1_000).await;
+    sleep(Millis(1_000)).await;
 
     Ok(())
 }

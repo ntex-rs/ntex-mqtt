@@ -1,3 +1,5 @@
+use ntex::util::ByteString;
+
 use crate::{error, v5::codec};
 
 pub use crate::v5::control::{Closed, ControlResult, Disconnect, Error, ProtocolError};
@@ -54,7 +56,40 @@ impl Publish {
         &mut self.0
     }
 
-    pub fn ack(self, response: Option<codec::PublishAck>) -> ControlResult {
-        ControlResult { packet: response.map(codec::Packet::PublishAck), disconnect: false }
+    pub fn ack_qos0(self) -> ControlResult {
+        ControlResult { packet: None, disconnect: false }
+    }
+
+    pub fn ack(self, reason_code: codec::PublishAckReason) -> ControlResult {
+        ControlResult {
+            packet: self.0.packet_id.map(|packet_id| {
+                codec::Packet::PublishAck(codec::PublishAck {
+                    packet_id,
+                    reason_code,
+                    properties: codec::UserProperties::new(),
+                    reason_string: None,
+                })
+            }),
+            disconnect: false,
+        }
+    }
+
+    pub fn ack_with(
+        self,
+        reason_code: codec::PublishAckReason,
+        properties: codec::UserProperties,
+        reason_string: Option<ByteString>,
+    ) -> ControlResult {
+        ControlResult {
+            packet: self.0.packet_id.map(|packet_id| {
+                codec::Packet::PublishAck(codec::PublishAck {
+                    packet_id,
+                    reason_code,
+                    properties,
+                    reason_string,
+                })
+            }),
+            disconnect: false,
+        }
     }
 }

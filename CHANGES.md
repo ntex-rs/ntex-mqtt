@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.0-b.9] - 2021-09-07
+
+* v5: add helper methods to client control publish message
+
 ## [0.7.0-b.8] - 2021-08-28
 
 * use new ntex's timer api
