@@ -602,12 +602,12 @@ mod tests {
         ntex::rt::spawn(async move {
             let _ = disp.await;
         });
-        sleep(50).await;
+        sleep(Millis(50)).await;
 
         client.write("test");
-        sleep(50).await;
+        sleep(Millis(50)).await;
         client.write("test");
-        sleep(50).await;
+        sleep(Millis(50)).await;
         condition.notify();
 
         let buf = client.read().await.unwrap();
@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(buf, Bytes::from_static(b"test"));
 
         st.close();
-        sleep(1200).await;
+        sleep(Millis(1200)).await;
         assert!(client.is_server_dropped());
     }
 
