@@ -273,18 +273,21 @@ where
     C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>,
     C::Error: fmt::Debug,
 {
-    ntex::apply(
+    ntex::service::apply(
         Timeout::new(Millis::from(handshake_timeout)),
-        ntex::fn_factory(move || {
+        ntex::service::fn_factory(move || {
             let pool = pool.clone();
             let fut = factory.new_service(());
             async move {
                 let service = fut.await?;
                 let pool = pool.clone();
                 let service = Rc::new(service.map_err(MqttError::Service));
-                Ok::<_, C::InitError>(ntex::apply_fn(service, move |conn: Io, service| {
-                    handshake(conn, None, service.clone(), max_size, pool.clone())
-                }))
+                Ok::<_, C::InitError>(ntex::service::apply_fn(
+                    service,
+                    move |conn: Io, service| {
+                        handshake(conn, None, service.clone(), max_size, pool.clone())
+                    },
+                ))
             }
         }),
     )
@@ -311,16 +314,16 @@ where
     C: ServiceFactory<Config = (), Request = Handshake<Io>, Response = HandshakeAck<Io, St>>,
     C::Error: fmt::Debug,
 {
-    ntex::apply(
+    ntex::service::apply(
         Timeout::new(Millis::from(handshake_timeout)),
-        ntex::fn_factory(move || {
+        ntex::service::fn_factory(move || {
             let pool = pool.clone();
             let fut = factory.new_service(());
             async move {
                 let service = fut.await?;
                 let pool = pool.clone();
                 let service = Rc::new(service.map_err(MqttError::Service));
-                Ok(ntex::apply_fn(service, move |(io, state), service| {
+                Ok(ntex::service::apply_fn(service, move |(io, state), service| {
                     handshake(io, Some(state), service.clone(), max_size, pool.clone())
                 }))
             }

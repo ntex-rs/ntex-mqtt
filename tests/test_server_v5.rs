@@ -73,8 +73,8 @@ async fn test_simple() -> std::io::Result<()> {
 async fn test_disconnect() -> std::io::Result<()> {
     let srv = server::test_server(|| {
         MqttServer::new(handshake)
-            .publish(ntex::fn_factory_with_config(|session: Session<St>| {
-                ok::<_, TestError>(ntex::fn_service(move |p: Publish| {
+            .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
+                ok::<_, TestError>(ntex::service::fn_service(move |p: Publish| {
                     session.sink().close();
                     async move {
                         sleep(Duration::from_millis(100)).await;
@@ -104,8 +104,8 @@ async fn test_disconnect() -> std::io::Result<()> {
 async fn test_disconnect_with_reason() -> std::io::Result<()> {
     let srv = server::test_server(|| {
         MqttServer::new(handshake)
-            .publish(ntex::fn_factory_with_config(|session: Session<St>| {
-                ok::<_, TestError>(ntex::fn_service(move |p: Publish| {
+            .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
+                ok::<_, TestError>(ntex::service::fn_service(move |p: Publish| {
                     let pkt = codec::Disconnect {
                         reason_code: codec::DisconnectReasonCode::ServerMoved,
                         ..Default::default()

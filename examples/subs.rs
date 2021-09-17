@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
+use ntex::service::{fn_factory_with_config, fn_service, ServiceFactory};
 use ntex::util::{ByteString, Ready};
-use ntex::{fn_factory_with_config, fn_service, ServiceFactory};
 use ntex_mqtt::v5::{
     self, ControlMessage, ControlResult, MqttServer, Publish, PublishAck, Session,
 };

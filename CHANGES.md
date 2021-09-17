@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.0] - 2021-09-17
+
+* Update ntex to 0.4
+
 ## [0.7.0-b.10] - 2021-09-07
 
 * v3: add ControlMessage::Error and ControlMessage::ProtocolError

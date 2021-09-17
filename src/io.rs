@@ -554,7 +554,7 @@ mod tests {
             server,
             BytesCodec,
             State::new(),
-            ntex::fn_service(|msg: DispatchItem<BytesCodec>| async move {
+            ntex::service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 sleep(time::Duration::from_millis(50)).await;
                 if let DispatchItem::Item(msg) = msg {
                     Ok::<_, ()>(Some(msg.freeze()))
@@ -587,7 +587,7 @@ mod tests {
             server,
             BytesCodec,
             State::new(),
-            ntex::fn_service(move |msg: DispatchItem<BytesCodec>| {
+            ntex::service::fn_service(move |msg: DispatchItem<BytesCodec>| {
                 let waiter = waiter.clone();
                 async move {
                     waiter.await;
@@ -628,7 +628,7 @@ mod tests {
             server,
             BytesCodec,
             st.clone(),
-            ntex::fn_service(|msg: DispatchItem<BytesCodec>| async move {
+            ntex::service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 if let DispatchItem::Item(msg) = msg {
                     Ok::<_, ()>(Some(msg.freeze()))
                 } else {
@@ -663,7 +663,7 @@ mod tests {
             server,
             BytesCodec,
             state.clone(),
-            ntex::fn_service(|_: DispatchItem<BytesCodec>| async move {
+            ntex::service::fn_service(|_: DispatchItem<BytesCodec>| async move {
                 Err::<Option<Bytes>, _>(())
             }),
         );

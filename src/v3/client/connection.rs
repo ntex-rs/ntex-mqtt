@@ -1,8 +1,8 @@
-use std::{future::Future, marker::PhantomData, rc::Rc, time::Instant};
+use std::{fmt, future::Future, marker::PhantomData, rc::Rc, time::Instant};
 
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::router::{IntoPattern, Router, RouterBuilder};
-use ntex::service::{apply_fn, boxed::BoxService, into_service, IntoService, Service};
+use ntex::service::{apply_fn, boxed, into_service, IntoService, Service};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{Either, Ready};
 
@@ -22,6 +22,17 @@ pub struct Client<Io> {
     disconnect_timeout: Seconds,
     session_present: bool,
     max_receive: usize,
+}
+
+impl<Io> fmt::Debug for Client<Io> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v3::Client")
+            .field("keepalive", &self.keepalive)
+            .field("disconnect_timeout", &self.disconnect_timeout)
+            .field("session_present", &self.session_present)
+            .field("max_receive", &self.max_receive)
+            .finish()
+    }
 }
 
 impl<T> Client<T>
@@ -74,7 +85,7 @@ where
     {
         let mut builder = Router::build();
         builder.path(address, 0);
-        let handlers = vec![ntex::boxed::service(service.into_service())];
+        let handlers = vec![boxed::service(service.into_service())];
 
         ClientRouter {
             builder,
@@ -146,7 +157,7 @@ where
     }
 }
 
-type Handler<E> = BoxService<Publish, (), E>;
+type Handler<E> = boxed::BoxService<Publish, (), E>;
 
 /// Mqtt client with routing capabilities
 pub struct ClientRouter<Io, Err, PErr> {
@@ -158,6 +169,16 @@ pub struct ClientRouter<Io, Err, PErr> {
     disconnect_timeout: Seconds,
     max_receive: usize,
     _t: PhantomData<Err>,
+}
+
+impl<Io, Err, PErr> fmt::Debug for ClientRouter<Io, Err, PErr> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v3::ClientRouter")
+            .field("keepalive", &self.keepalive)
+            .field("disconnect_timeout", &self.disconnect_timeout)
+            .field("max_receive", &self.max_receive)
+            .finish()
+    }
 }
 
 impl<Io, Err, PErr> ClientRouter<Io, Err, PErr>
@@ -174,7 +195,7 @@ where
         S: Service<Request = Publish, Response = (), Error = PErr> + 'static,
     {
         self.builder.path(address, self.handlers.len());
-        self.handlers.push(ntex::boxed::service(service.into_service()));
+        self.handlers.push(boxed::service(service.into_service()));
         self
     }
 

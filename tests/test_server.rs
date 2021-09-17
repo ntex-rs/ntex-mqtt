@@ -246,8 +246,8 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
 async fn test_disconnect() -> std::io::Result<()> {
     let srv = server::test_server(|| {
         MqttServer::new(handshake)
-            .publish(ntex::fn_factory_with_config(|session: Session<St>| {
-                ok(ntex::fn_service(move |_: Publish| {
+            .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
+                ok(ntex::service::fn_service(move |_: Publish| {
                     session.sink().force_close();
                     async {
                         sleep(Duration::from_millis(100)).await;

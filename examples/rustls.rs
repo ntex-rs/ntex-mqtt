@@ -1,8 +1,8 @@
 use std::{fs::File, io::BufReader};
 
-use ntex::pipeline_factory;
 use ntex::rt::net::TcpStream;
 use ntex::server::rustls::Acceptor;
+use ntex::service::pipeline_factory;
 use ntex_mqtt::{v3, v5, MqttError, MqttServer};
 use rustls::internal::pemfile::{certs, rsa_private_keys};
 use rustls::{NoClientAuth, ServerConfig};

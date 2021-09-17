@@ -1,6 +1,6 @@
-use ntex::pipeline_factory;
 use ntex::rt::net::TcpStream;
 use ntex::server::openssl::Acceptor;
+use ntex::service::pipeline_factory;
 use ntex_mqtt::{v3, v5, MqttError, MqttServer};
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 use tokio_openssl::SslStream;
