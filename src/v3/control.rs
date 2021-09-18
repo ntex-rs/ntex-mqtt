@@ -104,6 +104,12 @@ impl<E> Error<E> {
     pub fn ack(self) -> ControlResult {
         ControlResult { result: ControlResultKind::Disconnect }
     }
+
+    #[inline]
+    /// Ack service error, return disconnect packet and close connection.
+    pub fn ack_and_error(self) -> (ControlResult, E) {
+        (ControlResult { result: ControlResultKind::Disconnect }, self.err)
+    }
 }
 
 /// Protocol level error
@@ -127,6 +133,12 @@ impl ProtocolError {
     /// Ack protocol error, return disconnect packet and close connection.
     pub fn ack(self) -> ControlResult {
         ControlResult { result: ControlResultKind::Disconnect }
+    }
+
+    #[inline]
+    /// Ack protocol error, return disconnect packet and close connection.
+    pub fn ack_and_error(self) -> (ControlResult, error::ProtocolError) {
+        (ControlResult { result: ControlResultKind::Disconnect }, self.err)
     }
 }
 

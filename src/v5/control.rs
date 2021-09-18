@@ -571,4 +571,16 @@ impl ProtocolError {
     pub fn ack(self) -> ControlResult {
         ControlResult { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true }
     }
+
+    #[inline]
+    /// Ack protocol error, return disconnect packet and close connection.
+    pub fn ack_and_error(self) -> (ControlResult, error::ProtocolError) {
+        (
+            ControlResult {
+                packet: Some(codec::Packet::Disconnect(self.pkt)),
+                disconnect: true,
+            },
+            self.err,
+        )
+    }
 }

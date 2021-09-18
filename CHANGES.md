@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.1] - 2021-09-18
+
+* Allow to extract error from control message
+
 ## [0.7.0] - 2021-09-17
 
 * Update ntex to 0.4
