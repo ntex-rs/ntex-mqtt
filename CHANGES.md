@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.2] - 2021-10-01
+
+* Serialize control message handling
+
 ## [0.7.1] - 2021-09-18
 
 * Allow to extract error from control message

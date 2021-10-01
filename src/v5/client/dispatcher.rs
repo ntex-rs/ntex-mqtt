@@ -3,7 +3,7 @@ use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use ntex::service::Service;
-use ntex::util::{Either, HashSet, Ready};
+use ntex::util::{buffer::BufferService, inflight::InFlightService, Either, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::v5::shared::{Ack, MqttShared};
@@ -26,13 +26,16 @@ pub(super) fn create_dispatcher<T, C, E>(
 >
 where
     E: From<T::Error> + 'static,
-    T: Service<
-            Request = Publish,
-            Response = ntex::util::Either<Publish, PublishAck>,
-            Error = E,
-        > + 'static,
+    T: Service<Request = Publish, Response = Either<Publish, PublishAck>, Error = E> + 'static,
     C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
 {
+    let control = BufferService::new(
+        16,
+        || MqttError::<C::Error>::Disconnected,
+        // limit number of in-flight messages
+        InFlightService::new(1, control.map_err(MqttError::Service)),
+    );
+
     Dispatcher::<_, _, E>::new(sink, max_receive as usize, max_topic_alias, publish, control)
 }
 
@@ -59,12 +62,8 @@ struct PublishInfo {
 
 impl<T, C, E> Dispatcher<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = ntex::util::Either<Publish, PublishAck>,
-        Error = E,
-    >,
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
+    T: Service<Request = Publish, Response = Either<Publish, PublishAck>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     fn new(
         sink: MqttSink,
@@ -93,12 +92,8 @@ where
 
 impl<T, C, E> Service for Dispatcher<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = ntex::util::Either<Publish, PublishAck>,
-        Error = E,
-    >,
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
+    T: Service<Request = Publish, Response = Either<Publish, PublishAck>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
     C::Future: 'static,
 {
     type Request = DispatchItem<Rc<MqttShared>>;
@@ -111,7 +106,7 @@ where
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service)?;
-        let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::Service)?;
+        let res2 = self.inner.control.poll_ready(cx)?;
 
         if res1.is_pending() || res2.is_pending() {
             Poll::Pending
@@ -327,12 +322,8 @@ pin_project_lite::pin_project! {
 
 impl<T, C, E> Future for PublishResponse<T, C, E>
 where
-    T: Service<
-        Request = Publish,
-        Response = ntex::util::Either<Publish, PublishAck>,
-        Error = E,
-    >,
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
+    T: Service<Request = Publish, Response = Either<Publish, PublishAck>, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
@@ -343,8 +334,8 @@ where
             PublishResponseStateProject::Publish { fut } => {
                 let ack = match fut.poll(cx) {
                     Poll::Ready(Ok(res)) => match res {
-                        ntex::util::Either::Right(ack) => ack,
-                        ntex::util::Either::Left(pkt) => {
+                        Either::Right(ack) => ack,
+                        Either::Left(pkt) => {
                             this.state.set(PublishResponseState::Control {
                                 fut: ControlResponse::new(
                                     ControlMessage::publish(pkt.into_inner()),
@@ -397,7 +388,7 @@ pin_project_lite::pin_project! {
 
 impl<C: Service, E> ControlResponse<C, E>
 where
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     #[allow(clippy::match_like_matches_macro)]
     fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
@@ -423,7 +414,7 @@ where
 
 impl<C, E> Future for ControlResponse<C, E>
 where
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
@@ -439,15 +430,20 @@ where
             }
             Poll::Ready(Err(err)) => {
                 // do not handle nested error
-                if *this.error {
-                    return Poll::Ready(Err(MqttError::Service(err)));
+                return if *this.error {
+                    Poll::Ready(Err(err))
                 } else {
                     // handle error from control service
-                    *this.error = true;
-                    let fut = this.inner.control.call(ControlMessage::error(err));
-                    self.as_mut().project().fut.set(fut);
-                    return self.poll(cx);
-                }
+                    match err {
+                        MqttError::Service(err) => {
+                            *this.error = true;
+                            let fut = this.inner.control.call(ControlMessage::error(err));
+                            self.as_mut().project().fut.set(fut);
+                            self.poll(cx)
+                        }
+                        _ => Poll::Ready(Err(err)),
+                    }
+                };
             }
             Poll::Pending => return Poll::Pending,
         };

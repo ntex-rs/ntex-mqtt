@@ -3,7 +3,9 @@ use std::task::{Context, Poll};
 use std::{convert::TryFrom, future::Future, marker, num, pin::Pin, rc::Rc};
 
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
-use ntex::util::{join, Either, HashSet, Ready};
+use ntex::util::{
+    buffer::BufferService, inflight::InFlightService, join, Either, HashSet, Ready,
+};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::DispatchItem;
@@ -52,12 +54,19 @@ where
         async move {
             let (publish, control) = fut.await;
 
+            let control = BufferService::new(
+                16,
+                || MqttError::<C::Error>::Disconnected,
+                // limit number of in-flight messages
+                InFlightService::new(1, control?.map_err(MqttError::Service)),
+            );
+
             Ok(Dispatcher::<_, _, E, T::Error>::new(
                 cfg.sink().clone(),
                 max_receive as usize,
                 max_topic_alias,
                 publish?,
-                control?,
+                control,
             ))
         }
     })
@@ -89,7 +98,7 @@ impl<T, C, E, E2> Dispatcher<T, C, E, E2>
 where
     T: Service<Request = Publish, Response = PublishAck, Error = E2>,
     PublishAck: TryFrom<E2, Error = E>,
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     fn new(
         sink: MqttSink,
@@ -121,7 +130,7 @@ impl<T, C, E, E2> Service for Dispatcher<T, C, E, E2>
 where
     T: Service<Request = Publish, Response = PublishAck, Error = E2>,
     PublishAck: TryFrom<E2, Error = E>,
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
     C::Future: 'static,
     E: From<E2> + 'static,
 {
@@ -135,7 +144,7 @@ where
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx).map_err(|e| MqttError::Service(e.into()))?;
-        let res2 = self.inner.control.poll_ready(cx).map_err(MqttError::Service)?;
+        let res2 = self.inner.control.poll_ready(cx)?;
 
         if res1.is_pending() || res2.is_pending() {
             Poll::Pending
@@ -346,7 +355,7 @@ where
     E: From<E2>,
     T: Service<Request = Publish, Response = PublishAck, Error = E2>,
     PublishAck: TryFrom<E2, Error = E>,
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
@@ -416,7 +425,7 @@ pin_project_lite::pin_project! {
 
 impl<C: Service, E> ControlResponse<C, E>
 where
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     #[allow(clippy::match_like_matches_macro)]
     fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
@@ -442,7 +451,7 @@ where
 
 impl<C, E> Future for ControlResponse<C, E>
 where
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E>,
+    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
@@ -458,15 +467,20 @@ where
             }
             Poll::Ready(Err(err)) => {
                 // do not handle nested error
-                if *this.error {
-                    return Poll::Ready(Err(MqttError::Service(err)));
+                return if *this.error {
+                    Poll::Ready(Err(err))
                 } else {
                     // handle error from control service
-                    *this.error = true;
-                    let fut = this.inner.control.call(ControlMessage::error(err));
-                    self.as_mut().project().fut.set(fut);
-                    return self.poll(cx);
-                }
+                    match err {
+                        MqttError::Service(err) => {
+                            *this.error = true;
+                            let fut = this.inner.control.call(ControlMessage::error(err));
+                            self.as_mut().project().fut.set(fut);
+                            self.poll(cx)
+                        }
+                        _ => Poll::Ready(Err(err)),
+                    }
+                };
             }
             Poll::Pending => return Poll::Pending,
         };

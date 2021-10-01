@@ -123,7 +123,7 @@ where
 
     /// Service to handle control packets
     ///
-    /// All control packets are processed sequentially, max buffered
+    /// All control packets are processed sequentially, max number of buffered
     /// control packets is 16.
     pub fn control<F, Srv>(self, service: F) -> MqttServer<Io, St, C, Srv, P>
     where
