@@ -434,7 +434,7 @@ where
                             *this.st = IoDispatcherState::Stop;
                             this.inner.borrow_mut().error =
                                 Some(IoDispatcherError::Service(err));
-                            this.state.dispatcher_stopped();
+                            this.state.dispatcher_ready_err();
 
                             // unregister keep-alive timer
                             if this.keepalive_timeout.non_zero() {
@@ -453,7 +453,9 @@ where
             // drain service responses
             IoDispatcherState::Stop => {
                 // service may relay on poll_ready for response results
-                let _ = this.service.poll_ready(cx);
+                if !this.state.is_dispatcher_ready_err() {
+                    let _ = this.service.poll_ready(cx);
+                }
 
                 if this.inner.borrow().queue.is_empty() {
                     this.state.shutdown_io();
@@ -490,11 +492,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use ntex::channel::condition::Condition;
     use ntex::codec::BytesCodec;
     use ntex::testing::Io;
     use ntex::time::{sleep, Millis};
-    use ntex::util::Bytes;
+    use ntex::util::{Bytes, Ready};
 
     use super::*;
 
@@ -555,7 +559,7 @@ mod tests {
             BytesCodec,
             State::new(),
             ntex::service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
-                sleep(time::Duration::from_millis(50)).await;
+                sleep(Millis(50)).await;
                 if let DispatchItem::Item(msg) = msg {
                     Ok::<_, ()>(Some(msg.freeze()))
                 } else {
@@ -566,6 +570,11 @@ mod tests {
         ntex::rt::spawn(async move {
             let _ = disp.await;
         });
+        sleep(Millis(25)).await;
+        client.write("GET /test HTTP/1\r\n\r\n");
+
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
 
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
@@ -687,5 +696,57 @@ mod tests {
         // close read side
         client.close().await;
         assert!(client.is_server_dropped());
+    }
+
+    #[ntex::test]
+    async fn test_err_in_service_ready() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+        client.write("GET /test HTTP/1\r\n\r\n");
+
+        let counter = Rc::new(Cell::new(0));
+
+        struct Srv(Rc<Cell<usize>>);
+
+        impl Service for Srv {
+            type Request = DispatchItem<BytesCodec>;
+            type Response = Option<Response<BytesCodec>>;
+            type Error = ();
+            type Future = Ready<Option<Response<BytesCodec>>, ()>;
+
+            fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+                self.0.set(self.0.get() + 1);
+                Poll::Ready(Err(()))
+            }
+
+            fn call(&self, _: DispatchItem<BytesCodec>) -> Self::Future {
+                Ready::Ok(None)
+            }
+        }
+
+        let state = State::new();
+        let disp = Dispatcher::new(server, BytesCodec, state.clone(), Srv(counter.clone()));
+        state
+            .write()
+            .encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &mut BytesCodec)
+            .unwrap();
+        ntex::rt::spawn(async move {
+            let _ = disp.await;
+        });
+
+        // buffer should be flushed
+        client.remote_buffer_cap(1024);
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
+
+        // write side must be closed, dispatcher waiting for read side to close
+        assert!(client.is_closed());
+
+        // close read side
+        client.close().await;
+        assert!(client.is_server_dropped());
+
+        // service must be checked for readiness only once
+        assert_eq!(counter.get(), 1);
     }
 }

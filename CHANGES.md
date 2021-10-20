@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.3] - 2021-10-20
+
+* Do not poll service for readiness if it failed before
+
 ## [0.7.2] - 2021-10-01
 
 * Serialize control message handling
