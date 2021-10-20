@@ -18,7 +18,9 @@ pub struct Publish {
 pub struct PublishAck;
 
 impl Publish {
-    pub(crate) fn new(publish: codec::Publish) -> Self {
+    /// Create a new `Publish` message from a PUBLISH
+    /// packet
+    pub fn new(publish: codec::Publish) -> Self {
         Self { topic: Path::new(publish.topic.clone()), publish }
     }
 
