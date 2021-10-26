@@ -35,26 +35,31 @@ pub struct ControlResult {
 
 impl<E> ControlMessage<E> {
     /// Create a new `ControlMessage` from AUTH packet.
+    #[doc(hidden)]
     pub fn auth(pkt: codec::Auth) -> Self {
         ControlMessage::Auth(Auth(pkt))
     }
 
     /// Create a new `ControlMessage` from SUBSCRIBE packet.
+    #[doc(hidden)]
     pub fn subscribe(pkt: codec::Subscribe) -> Self {
         ControlMessage::Subscribe(Subscribe::new(pkt))
     }
 
     /// Create a new `ControlMessage` from UNSUBSCRIBE packet.
+    #[doc(hidden)]
     pub fn unsubscribe(pkt: codec::Unsubscribe) -> Self {
         ControlMessage::Unsubscribe(Unsubscribe::new(pkt))
     }
 
     /// Create a new PING `ControlMessage`.
+    #[doc(hidden)]
     pub fn ping() -> Self {
         ControlMessage::Ping(Ping)
     }
 
     /// Create a new `ControlMessage` from DISCONNECT packet.
+    #[doc(hidden)]
     pub fn dis(pkt: codec::Disconnect) -> Self {
         ControlMessage::Disconnect(Disconnect(pkt))
     }

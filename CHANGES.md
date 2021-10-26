@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.3] - 2021-10-26
+
+* Expose some control plane type constructors
+
 ## [0.7.2] - 2021-10-01
 
 * Serialize control message handling

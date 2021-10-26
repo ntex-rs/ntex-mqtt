@@ -40,21 +40,25 @@ pub(crate) enum ControlResultKind {
 
 impl<E> ControlMessage<E> {
     /// Create a new PING `ControlMessage`.
+    #[doc(hidden)]
     pub fn ping() -> Self {
         ControlMessage::Ping(Ping)
     }
 
     /// Create a new `ControlMessage` from SUBSCRIBE packet.
+    #[doc(hidden)]
     pub fn subscribe(pkt: Subscribe) -> Self {
         ControlMessage::Subscribe(pkt)
     }
 
     /// Create a new `ControlMessage` from UNSUBSCRIBE packet.
+    #[doc(hidden)]
     pub fn unsubscribe(pkt: Unsubscribe) -> Self {
         ControlMessage::Unsubscribe(pkt)
     }
 
     /// Create a new `ControlMessage` from DISCONNECT packet.
+    #[doc(hidden)]
     pub fn dis() -> Self {
         ControlMessage::Disconnect(Disconnect)
     }
@@ -173,6 +177,7 @@ pub(crate) struct SubscribeResult {
 impl Subscribe {
     /// Create a new `Subscribe` control message from packet id and
     /// a list of topics.
+    #[doc(hidden)]
     pub fn new(packet_id: NonZeroU16, topics: Vec<(ByteString, QoS)>) -> Self {
         let mut codes = Vec::with_capacity(topics.len());
         (0..topics.len()).for_each(|_| codes.push(codec::SubscribeReturnCode::Failure));
@@ -298,6 +303,7 @@ pub(crate) struct UnsubscribeResult {
 impl Unsubscribe {
     /// Create a new `Unsubscribe` control message from packet id and
     /// a list of topics.
+    #[doc(hidden)]
     pub fn new(packet_id: NonZeroU16, topics: Vec<ByteString>) -> Self {
         Self { packet_id, topics }
     }

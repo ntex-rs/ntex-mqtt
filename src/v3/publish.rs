@@ -20,6 +20,7 @@ pub struct PublishAck;
 impl Publish {
     /// Create a new `Publish` message from a PUBLISH
     /// packet
+    #[doc(hidden)]
     pub fn new(publish: codec::Publish) -> Self {
         Self { topic: Path::new(publish.topic.clone()), publish }
     }
