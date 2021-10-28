@@ -208,7 +208,7 @@ where
                 )))
             }
             DispatchItem::Item(codec::Packet::Disconnect) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::dis(), &self.inner),
+                ControlResponse::new(ControlMessage::remote_disconnect(), &self.inner),
             )),
             DispatchItem::Item(_) => Either::Right(Either::Left(Ready::Ok(None))),
             DispatchItem::EncoderError(err) => {

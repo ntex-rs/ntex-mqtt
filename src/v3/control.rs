@@ -59,7 +59,7 @@ impl<E> ControlMessage<E> {
 
     /// Create a new `ControlMessage` from DISCONNECT packet.
     #[doc(hidden)]
-    pub fn dis() -> Self {
+    pub fn remote_disconnect() -> Self {
         ControlMessage::Disconnect(Disconnect)
     }
 

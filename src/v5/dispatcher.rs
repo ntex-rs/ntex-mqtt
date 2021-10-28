@@ -255,7 +255,7 @@ where
                 ControlResponse::new(ControlMessage::ping(), &self.inner),
             )),
             DispatchItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::dis(pkt), &self.inner),
+                ControlResponse::new(ControlMessage::remote_disconnect(pkt), &self.inner),
             )),
             DispatchItem::Item(codec::Packet::Subscribe(pkt)) => {
                 // register inflight packet id

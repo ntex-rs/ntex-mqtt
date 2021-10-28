@@ -60,7 +60,7 @@ impl<E> ControlMessage<E> {
 
     /// Create a new `ControlMessage` from DISCONNECT packet.
     #[doc(hidden)]
-    pub fn dis(pkt: codec::Disconnect) -> Self {
+    pub fn remote_disconnect(pkt: codec::Disconnect) -> Self {
         ControlMessage::Disconnect(Disconnect(pkt))
     }
 

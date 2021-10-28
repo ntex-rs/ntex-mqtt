@@ -1,6 +1,6 @@
 # Changes
 
-## [0.7.4] - 2021-10-26
+## [0.7.4] - 2021-10-29
 
 * Expose some control plane type constructors
 
