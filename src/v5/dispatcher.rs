@@ -275,7 +275,7 @@ where
                 }
                 let id = pkt.packet_id;
                 Either::Right(Either::Right(
-                    ControlResponse::new(control::Subscribe::create(pkt), &self.inner)
+                    ControlResponse::new(ControlMessage::subscribe(pkt), &self.inner)
                         .packet_id(id),
                 ))
             }
@@ -297,7 +297,7 @@ where
                 }
                 let id = pkt.packet_id;
                 Either::Right(Either::Right(
-                    ControlResponse::new(control::Unsubscribe::create(pkt), &self.inner)
+                    ControlResponse::new(ControlMessage::unsubscribe(pkt), &self.inner)
                         .packet_id(id),
                 ))
             }

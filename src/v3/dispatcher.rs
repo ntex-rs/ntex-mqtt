@@ -190,7 +190,7 @@ where
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::Subscribe(Subscribe::new(packet_id, topic_filters)),
+                    ControlMessage::subscribe(Subscribe::new(packet_id, topic_filters)),
                     &self.inner,
                 )))
             }
@@ -203,12 +203,12 @@ where
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::Unsubscribe(Unsubscribe::new(packet_id, topic_filters)),
+                    ControlMessage::unsubscribe(Unsubscribe::new(packet_id, topic_filters)),
                     &self.inner,
                 )))
             }
             DispatchItem::Item(codec::Packet::Disconnect) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::pkt_disconnect(), &self.inner),
+                ControlResponse::new(ControlMessage::dis(), &self.inner),
             )),
             DispatchItem::Item(_) => Either::Right(Either::Left(Ready::Ok(None))),
             DispatchItem::EncoderError(err) => {

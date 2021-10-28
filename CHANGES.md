@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.4] - 2021-10-26
+
+* Expose some control plane type constructors
+
 ## [0.7.3] - 2021-10-20
 
 * Do not poll service for readiness if it failed before

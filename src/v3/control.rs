@@ -39,15 +39,31 @@ pub(crate) enum ControlResultKind {
 }
 
 impl<E> ControlMessage<E> {
-    pub(crate) fn ping() -> Self {
+    /// Create a new PING `ControlMessage`.
+    #[doc(hidden)]
+    pub fn ping() -> Self {
         ControlMessage::Ping(Ping)
     }
 
-    pub(crate) fn pkt_disconnect() -> Self {
+    /// Create a new `ControlMessage` from SUBSCRIBE packet.
+    #[doc(hidden)]
+    pub fn subscribe(pkt: Subscribe) -> Self {
+        ControlMessage::Subscribe(pkt)
+    }
+
+    /// Create a new `ControlMessage` from UNSUBSCRIBE packet.
+    #[doc(hidden)]
+    pub fn unsubscribe(pkt: Unsubscribe) -> Self {
+        ControlMessage::Unsubscribe(pkt)
+    }
+
+    /// Create a new `ControlMessage` from DISCONNECT packet.
+    #[doc(hidden)]
+    pub fn dis() -> Self {
         ControlMessage::Disconnect(Disconnect)
     }
 
-    pub(crate) fn closed(is_error: bool) -> Self {
+    pub(super) fn closed(is_error: bool) -> Self {
         ControlMessage::Closed(Closed::new(is_error))
     }
 
@@ -59,6 +75,7 @@ impl<E> ControlMessage<E> {
         ControlMessage::ProtocolError(ProtocolError::new(err))
     }
 
+    /// Disconnects the client by sending DISCONNECT packet.
     pub fn disconnect(&self) -> ControlResult {
         ControlResult { result: ControlResultKind::Disconnect }
     }
@@ -158,7 +175,10 @@ pub(crate) struct SubscribeResult {
 }
 
 impl Subscribe {
-    pub(crate) fn new(packet_id: NonZeroU16, topics: Vec<(ByteString, QoS)>) -> Self {
+    /// Create a new `Subscribe` control message from packet id and
+    /// a list of topics.
+    #[doc(hidden)]
+    pub fn new(packet_id: NonZeroU16, topics: Vec<(ByteString, QoS)>) -> Self {
         let mut codes = Vec::with_capacity(topics.len());
         (0..topics.len()).for_each(|_| codes.push(codec::SubscribeReturnCode::Failure));
 
@@ -281,7 +301,10 @@ pub(crate) struct UnsubscribeResult {
 }
 
 impl Unsubscribe {
-    pub(crate) fn new(packet_id: NonZeroU16, topics: Vec<ByteString>) -> Self {
+    /// Create a new `Unsubscribe` control message from packet id and
+    /// a list of topics.
+    #[doc(hidden)]
+    pub fn new(packet_id: NonZeroU16, topics: Vec<ByteString>) -> Self {
         Self { packet_id, topics }
     }
 

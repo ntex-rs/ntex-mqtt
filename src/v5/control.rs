@@ -8,13 +8,21 @@ use crate::error;
 /// Control plain messages
 #[derive(Debug)]
 pub enum ControlMessage<E> {
+    /// Auth packet from a client
     Auth(Auth),
+    /// Ping packet from a client
     Ping(Ping),
+    /// Disconnect packet from a client
     Disconnect(Disconnect),
+    /// Subscribe packet from a client
     Subscribe(Subscribe),
+    /// Unsubscribe packet from a client
     Unsubscribe(Unsubscribe),
+    /// Underlying transport connection closed
     Closed(Closed),
+    /// Unhandled application level error from handshake, publish and control services
     Error(Error<E>),
+    /// Protocol level error
     ProtocolError(ProtocolError),
 }
 
@@ -26,15 +34,33 @@ pub struct ControlResult {
 }
 
 impl<E> ControlMessage<E> {
-    pub(super) fn auth(pkt: codec::Auth) -> Self {
+    /// Create a new `ControlMessage` from AUTH packet.
+    #[doc(hidden)]
+    pub fn auth(pkt: codec::Auth) -> Self {
         ControlMessage::Auth(Auth(pkt))
     }
 
-    pub(super) fn ping() -> Self {
+    /// Create a new `ControlMessage` from SUBSCRIBE packet.
+    #[doc(hidden)]
+    pub fn subscribe(pkt: codec::Subscribe) -> Self {
+        ControlMessage::Subscribe(Subscribe::new(pkt))
+    }
+
+    /// Create a new `ControlMessage` from UNSUBSCRIBE packet.
+    #[doc(hidden)]
+    pub fn unsubscribe(pkt: codec::Unsubscribe) -> Self {
+        ControlMessage::Unsubscribe(Unsubscribe::new(pkt))
+    }
+
+    /// Create a new PING `ControlMessage`.
+    #[doc(hidden)]
+    pub fn ping() -> Self {
         ControlMessage::Ping(Ping)
     }
 
-    pub(super) fn dis(pkt: codec::Disconnect) -> Self {
+    /// Create a new `ControlMessage` from DISCONNECT packet.
+    #[doc(hidden)]
+    pub fn dis(pkt: codec::Disconnect) -> Self {
         ControlMessage::Disconnect(Disconnect(pkt))
     }
 
@@ -50,6 +76,8 @@ impl<E> ControlMessage<E> {
         ControlMessage::ProtocolError(ProtocolError::new(err))
     }
 
+    /// Disconnects the client by sending DISCONNECT packet
+    /// with `NormalDisconnection` reason code.
     pub fn disconnect(&self) -> ControlResult {
         let pkt = codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::NormalDisconnection,
@@ -61,6 +89,8 @@ impl<E> ControlMessage<E> {
         ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
 
+    /// Disconnects the client by sending DISCONNECT packet
+    /// with provided reason code.
     pub fn disconnect_with(&self, pkt: codec::Disconnect) -> ControlResult {
         ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
@@ -112,7 +142,9 @@ pub struct Subscribe {
 }
 
 impl Subscribe {
-    pub(crate) fn create<E>(packet: codec::Subscribe) -> ControlMessage<E> {
+    /// Create a new `Subscribe` control message from a Subscribe
+    /// packet
+    pub fn new(packet: codec::Subscribe) -> Self {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
             .for_each(|_| status.push(codec::SubscribeAckReason::UnspecifiedError));
@@ -124,7 +156,7 @@ impl Subscribe {
             reason_string: None,
         };
 
-        ControlMessage::Subscribe(Self { packet, result })
+        Self { packet, result }
     }
 
     #[inline]
@@ -261,7 +293,9 @@ pub struct Unsubscribe {
 }
 
 impl Unsubscribe {
-    pub(crate) fn create<E>(packet: codec::Unsubscribe) -> ControlMessage<E> {
+    /// Create a new `Unsubscribe` control message from an Unsubscribe
+    /// packet
+    pub fn new(packet: codec::Unsubscribe) -> Self {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
             .for_each(|_| status.push(codec::UnsubscribeAckReason::Success));
@@ -273,7 +307,7 @@ impl Unsubscribe {
             reason_string: None,
         };
 
-        ControlMessage::Unsubscribe(Self { packet, result })
+        Self { packet, result }
     }
 
     /// Unsubscribe packet user properties

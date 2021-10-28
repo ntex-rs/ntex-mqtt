@@ -14,7 +14,10 @@ pub struct Publish {
 }
 
 impl Publish {
-    pub(crate) fn new(publish: codec::Publish) -> Self {
+    /// Create a new `Publish` message from a PUBLISH
+    /// packet
+    #[doc(hidden)]
+    pub fn new(publish: codec::Publish) -> Self {
         Self { topic: Path::new(publish.topic.clone()), publish }
     }
 
@@ -112,7 +115,7 @@ pub struct PublishAck {
 }
 
 impl PublishAck {
-    /// Create new `PublishAck` instance
+    /// Create new `PublishAck` instance from a reason code.
     pub fn new(code: codec::PublishAckReason) -> Self {
         PublishAck {
             reason_code: code,
