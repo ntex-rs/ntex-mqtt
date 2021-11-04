@@ -1,5 +1,9 @@
 # Changes
 
+## [0.7.5] - 2021-11-04
+
+* v5: Use variable length byte to encode the subscription ID #73
+
 ## [0.7.4] - 2021-10-29
 
 * Expose some control plane type constructors
