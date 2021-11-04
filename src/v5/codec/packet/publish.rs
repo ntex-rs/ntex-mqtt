@@ -3,7 +3,7 @@ use std::{convert::TryFrom, fmt, num::NonZeroU16, num::NonZeroU32};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;
-use crate::utils::{self, Decode, Encode, Property};
+use crate::utils::{self, write_variable_length, Decode, Encode, Property};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties};
 
 /// PUBLISH message
@@ -183,7 +183,7 @@ impl EncodeLtd for PublishProperties {
         if let Some(sub_ids) = self.subscription_ids.as_ref() {
             for sub_id in sub_ids.iter() {
                 buf.put_u8(pt::SUB_ID);
-                sub_id.encode(buf)?;
+                write_variable_length(sub_id.get(), buf);
             }
         }
         self.user_properties.encode(buf)

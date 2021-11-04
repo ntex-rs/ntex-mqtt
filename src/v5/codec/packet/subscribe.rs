@@ -5,7 +5,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;
-use crate::utils::{self, Decode, Encode};
+use crate::utils::{self, write_variable_length, Decode, Encode};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 
 /// Represents SUBSCRIBE packet
@@ -191,7 +191,12 @@ impl EncodeLtd for Subscribe {
         let prop_len = self.id.map_or(0, |v| var_int_len(v.get() as usize))
             + self.user_properties.encoded_size() as u32; // safe: size was already checked against maximum
         utils::write_variable_length(prop_len, buf);
-        encode_property(&self.id, pt::SUB_ID, buf)?;
+
+        if let Some(id) = self.id {
+            buf.put_u8(pt::SUB_ID);
+            write_variable_length(id.get(), buf);
+        }
+
         for (filter, opts) in self.topic_filters.iter() {
             filter.encode(buf)?;
             opts.encode(buf)?;

@@ -272,7 +272,7 @@ pub(super) fn reduce_limit(limit: u32, reduction: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use ntex::util::Bytes;
-    use std::num::NonZeroU16;
+    use std::num::{NonZeroU16, NonZeroU32};
 
     use super::*;
     use crate::types::{QoS, MAX_PACKET_SIZE};
@@ -411,6 +411,22 @@ mod tests {
             }),
             b"\x30\x0c\x00\x05topic\x00data",
         );
+
+        assert_encode_packet(
+            &Packet::Publish(Publish {
+                dup: false,
+                retain: false,
+                qos: QoS::AtMostOnce,
+                topic: ByteString::from_static("topic"),
+                packet_id: None,
+                payload: Bytes::from_static(b"data"),
+                properties: PublishProperties {
+                    subscription_ids: Some(vec![NonZeroU32::new(1).unwrap()]),
+                    ..Default::default()
+                },
+            }),
+            b"\x30\x0e\x00\x05topic\x02\x0b\x01data",
+        );
     }
 
     #[test]
@@ -442,6 +458,35 @@ mod tests {
                 ],
             }),
             b"\x82\x13\x12\x34\x00\x00\x04test\x01\x00\x06filter\x02",
+        );
+
+        assert_encode_packet(
+            &Packet::Subscribe(Subscribe {
+                packet_id: packet_id(0x1234),
+                id: Some(NonZeroU32::new(1).unwrap()),
+                user_properties: Vec::new(),
+                topic_filters: vec![
+                    (
+                        ByteString::from_static("test"),
+                        SubscriptionOptions {
+                            qos: QoS::AtLeastOnce,
+                            no_local: false,
+                            retain_as_published: false,
+                            retain_handling: RetainHandling::AtSubscribe,
+                        },
+                    ),
+                    (
+                        ByteString::from_static("filter"),
+                        SubscriptionOptions {
+                            qos: QoS::ExactlyOnce,
+                            no_local: false,
+                            retain_as_published: false,
+                            retain_handling: RetainHandling::AtSubscribe,
+                        },
+                    ),
+                ],
+            }),
+            b"\x82\x14\x12\x34\x01\x0b\x01\x00\x04test\x01\x00\x06filter\x02",
         );
 
         assert_encode_packet(
