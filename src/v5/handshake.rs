@@ -60,14 +60,21 @@ impl<Io> Handshake<Io> {
             packet.receive_max = Some(NonZeroU16::new(self.max_receive).unwrap());
         }
 
+        let Handshake { io, shared, pkt, .. } = self;
+        // [MQTT-3.1.2-22]
+        let keepalive = if pkt.keep_alive != 0 {
+            (pkt.keep_alive << 2).checked_mul(3).unwrap_or(u16::MAX)
+        } else {
+            30
+        };
         HandshakeAck {
-            io: self.io,
-            shared: self.shared,
+            io,
+            shared,
             session: Some(st),
             lw: 256,
             read_hw: 4 * 1024,
             write_hw: 4 * 1024,
-            keepalive: 30,
+            keepalive,
             packet,
         }
     }

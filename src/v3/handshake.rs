@@ -38,15 +38,22 @@ impl<Io> Handshake<Io> {
 
     /// Ack handshake message and set state
     pub fn ack<St>(self, st: St, session_present: bool) -> HandshakeAck<Io, St> {
+        let Handshake { io, shared, pkt } = self;
+        // [MQTT-3.1.2-24].
+        let keepalive = if pkt.keep_alive != 0 {
+            (pkt.keep_alive << 2).checked_mul(3).unwrap_or(u16::MAX)
+        } else {
+            30
+        };
         HandshakeAck {
             session_present,
-            io: self.io,
-            shared: self.shared,
+            io,
+            shared,
             session: Some(st),
             lw: 256,
             read_hw: 4 * 1024,
             write_hw: 4 * 1024,
-            keepalive: Seconds(30),
+            keepalive: Seconds(keepalive),
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
         }
     }
