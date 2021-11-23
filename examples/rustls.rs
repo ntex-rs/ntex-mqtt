@@ -4,8 +4,8 @@ use ntex::rt::net::TcpStream;
 use ntex::server::rustls::Acceptor;
 use ntex::service::pipeline_factory;
 use ntex_mqtt::{v3, v5, MqttError, MqttServer};
-use rustls::internal::pemfile::{certs, rsa_private_keys};
-use rustls::{NoClientAuth, ServerConfig};
+use rustls::{Certificate, PrivateKey, ServerConfig};
+use rustls_pemfile::{certs, rsa_private_keys};
 use tokio_rustls::server::TlsStream;
 
 #[derive(Clone)]
@@ -57,17 +57,20 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,basic=trace");
     env_logger::init();
 
-    let mut tls_config = ServerConfig::new(NoClientAuth::new());
-
     // create self-signed certificates using:
     //   openssl req -x509 -nodes -subj '/CN=localhost' -newkey rsa:4096 -keyout examples/key8.pem -out examples/cert.pem -days 365 -keyform PEM
     //   openssl rsa -in examples/key8.pem -out examples/key.pem
     let cert_file = &mut BufReader::new(File::open("./examples/cert.pem").unwrap());
     let key_file = &mut BufReader::new(File::open("./examples/key.pem").unwrap());
 
-    let cert_chain = certs(cert_file).unwrap();
-    let mut keys = rsa_private_keys(key_file).unwrap();
-    tls_config.set_single_cert(cert_chain, keys.remove(0)).unwrap();
+    let keys = PrivateKey(rsa_private_keys(key_file).unwrap().remove(0));
+    let cert_chain =
+        certs(cert_file).unwrap().iter().map(|c| Certificate(c.to_vec())).collect();
+    let tls_config = ServerConfig::builder()
+        .with_safe_defaults()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, keys)
+        .unwrap();
 
     let tls_acceptor = Acceptor::new(tls_config);
 
