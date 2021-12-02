@@ -2,7 +2,7 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, rc::Rc};
 
 use ntex::channel::pool;
 use ntex::codec::{Decoder, Encoder};
-use ntex::util::{BytesMut, HashMap};
+use ntex::util::{BytesMut, HashMap, PoolId, PoolRef};
 
 use super::codec;
 use crate::{error, io::State, types::packet_type};
@@ -25,11 +25,16 @@ pub(super) struct MqttSharedQueues {
 pub(super) struct MqttSinkPool {
     pub(super) queue: pool::Pool<Ack>,
     pub(super) waiters: pool::Pool<()>,
+    pub(super) pool: Cell<PoolRef>,
 }
 
 impl Default for MqttSinkPool {
     fn default() -> Self {
-        Self { queue: pool::new(), waiters: pool::new() }
+        Self {
+            queue: pool::new(),
+            waiters: pool::new(),
+            pool: Cell::new(PoolId::P5.pool_ref()),
+        }
     }
 }
 

@@ -4,7 +4,7 @@ use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 use ntex::service::{apply_fn_factory, IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{Millis, Seconds, Sleep};
-use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either, Ready};
+use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either, PoolId, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::{DispatchItem, Dispatcher, State, Timer};
@@ -121,6 +121,15 @@ where
         self
     }
 
+    /// Set memory pool.
+    ///
+    /// Use specified memory pool for memory allocations. By default P5
+    /// memory pool is used.
+    pub fn memory_pool(self, id: PoolId) -> Self {
+        self.pool.pool.set(id.pool_ref());
+        self
+    }
+
     /// Service to handle control packets
     ///
     /// All control packets are processed sequentially, max number of buffered
@@ -173,6 +182,7 @@ where
         self,
     ) -> impl ServiceFactory<Config = (), Request = Io, Response = (), Error = MqttError<C::Error>>
     {
+        let pool = self.pool.pool.get().pool();
         let handshake = self.handshake;
         let publish = self
             .publish
@@ -190,6 +200,7 @@ where
                 self.pool,
             ),
             factory(publish, control, self.inflight),
+            pool,
             self.disconnect_timeout,
         )
     }
@@ -204,6 +215,7 @@ where
         Error = MqttError<C::Error>,
         InitError = C::InitError,
     > {
+        let pool = self.pool.pool.get().pool();
         let handshake = self.handshake;
         let publish = self
             .publish
@@ -221,6 +233,7 @@ where
                 self.pool,
             ),
             factory(publish, control, self.inflight),
+            pool,
             self.disconnect_timeout,
         )
     }
@@ -348,7 +361,7 @@ where
 {
     log::trace!("Starting mqtt handshake");
 
-    let state = state.unwrap_or_else(State::new);
+    let state = state.unwrap_or_else(|| State::with_memory_pool(pool.pool.get()));
     let shared = Rc::new(MqttShared::new(
         state.clone(),
         mqtt::Codec::default().max_size(max_size),
@@ -385,9 +398,7 @@ where
 
                     log::trace!("Sending success handshake ack: {:#?}", pkt);
 
-                    state.set_buffer_params(ack.read_hw, ack.write_hw, ack.lw);
                     state.send(&mut ack.io, &ack.shared.codec, pkt).await?;
-
                     Ok((
                         ack.io,
                         ack.shared.state.clone(),
@@ -572,7 +583,6 @@ where
                         );
 
                         ack.shared.codec.set_max_size(max_size);
-                        state.set_buffer_params(ack.read_hw, ack.write_hw, ack.lw);
                         state
                             .send(&mut ack.io, &ack.shared.codec, pkt)
                             .await

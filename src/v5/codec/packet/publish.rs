@@ -35,7 +35,7 @@ impl fmt::Debug for Publish {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Default)]
 pub struct PublishProperties {
     pub topic_alias: Option<NonZeroU16>,
     pub correlation_data: Option<Bytes>,
@@ -45,21 +45,6 @@ pub struct PublishProperties {
     pub is_utf8_payload: Option<bool>,
     pub response_topic: Option<ByteString>,
     pub subscription_ids: Option<Vec<NonZeroU32>>,
-}
-
-impl Default for PublishProperties {
-    fn default() -> Self {
-        Self {
-            topic_alias: None,
-            correlation_data: None,
-            message_expiry_interval: None,
-            content_type: None,
-            user_properties: Vec::new(),
-            is_utf8_payload: None,
-            response_topic: None,
-            subscription_ids: None,
-        }
-    }
 }
 
 impl Publish {

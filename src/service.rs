@@ -4,7 +4,7 @@ use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{Millis, Seconds, Sleep};
-use ntex::util::{select, Either};
+use ntex::util::{select, Either, Pool};
 
 use super::io::{DispatchItem, Dispatcher, State, Timer};
 
@@ -15,12 +15,14 @@ pub(crate) struct FramedService<St, C, T, Io, Codec> {
     handler: Rc<T>,
     disconnect_timeout: Seconds,
     time: Timer,
+    pool: Pool,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
 impl<St, C, T, Io, Codec> FramedService<St, C, T, Io, Codec> {
-    pub(crate) fn new(connect: C, service: T, disconnect_timeout: Seconds) -> Self {
+    pub(crate) fn new(connect: C, service: T, pool: Pool, disconnect_timeout: Seconds) -> Self {
         FramedService {
+            pool,
             connect,
             disconnect_timeout,
             handler: Rc::new(service),
@@ -62,12 +64,14 @@ where
         let handler = self.handler.clone();
         let disconnect_timeout = self.disconnect_timeout;
         let time = self.time.clone();
+        let pool = self.pool.clone();
 
         // create connect service and then create service impl
         Box::pin(async move {
             Ok(FramedServiceImpl {
                 handler,
                 disconnect_timeout,
+                pool,
                 time,
                 connect: fut.await?,
                 _t: PhantomData,
@@ -80,6 +84,7 @@ pub(crate) struct FramedServiceImpl<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: Seconds,
+    pool: Pool,
     time: Timer,
     _t: PhantomData<(St, Io, Codec)>,
 }
@@ -109,7 +114,14 @@ where
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connect.poll_ready(cx)
+        let ready1 = self.connect.poll_ready(cx)?.is_ready();
+        let ready2 = self.pool.poll_ready(cx).is_ready();
+
+        if ready1 && ready2 {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
     }
 
     #[inline]
@@ -148,14 +160,16 @@ pub(crate) struct FramedService2<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: Seconds,
+    pool: Pool,
     time: Timer,
     _t: PhantomData<(St, Io, Codec)>,
 }
 
 impl<St, C, T, Io, Codec> FramedService2<St, C, T, Io, Codec> {
-    pub(crate) fn new(connect: C, service: T, disconnect_timeout: Seconds) -> Self {
+    pub(crate) fn new(connect: C, service: T, pool: Pool, disconnect_timeout: Seconds) -> Self {
         FramedService2 {
             connect,
+            pool,
             disconnect_timeout,
             handler: Rc::new(service),
             time: Timer::new(Millis::ONE_SEC),
@@ -200,6 +214,7 @@ where
         let handler = self.handler.clone();
         let disconnect_timeout = self.disconnect_timeout;
         let time = self.time.clone();
+        let pool = self.pool.clone();
 
         // create connect service and then create service impl
         Box::pin(async move {
@@ -207,6 +222,7 @@ where
                 handler,
                 disconnect_timeout,
                 time,
+                pool,
                 connect: fut.await?,
                 _t: PhantomData,
             })
@@ -217,6 +233,7 @@ where
 pub(crate) struct FramedServiceImpl2<St, C, T, Io, Codec> {
     connect: C,
     handler: Rc<T>,
+    pool: Pool,
     disconnect_timeout: Seconds,
     time: Timer,
     _t: PhantomData<(St, Io, Codec)>,
@@ -247,7 +264,14 @@ where
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connect.poll_ready(cx)
+        let ready1 = self.connect.poll_ready(cx)?.is_ready();
+        let ready2 = self.pool.poll_ready(cx).is_ready();
+
+        if ready1 && ready2 {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
     }
 
     #[inline]

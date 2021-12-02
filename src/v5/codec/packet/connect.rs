@@ -270,7 +270,7 @@ impl EncodeLtd for Connect {
     }
 
     fn encode(&self, buf: &mut BytesMut, _size: u32) -> Result<(), EncodeError> {
-        Bytes::from_static(b"MQTT").encode(buf)?;
+        b"MQTT".as_ref().encode(buf)?;
 
         let mut flags = ConnectFlags::empty();
 
