@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
@@ -72,10 +72,10 @@ where
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<St, T, C, E> {
+pub(crate) struct Dispatcher<St, T, C: Service, E> {
     session: Session<St>,
     publish: T,
-    shutdown: Cell<bool>,
+    shutdown: RefCell<Option<Pin<Box<C::Future>>>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<(E,)>,
 }
@@ -97,7 +97,7 @@ where
         Self {
             session,
             publish,
-            shutdown: Cell::new(false),
+            shutdown: RefCell::new(None),
             inner: Rc::new(Inner { sink, control, inflight: RefCell::new(HashSet::default()) }),
             _t: PhantomData,
         }
@@ -130,16 +130,22 @@ where
         }
     }
 
-    fn poll_shutdown(&self, _: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        if !self.shutdown.get() {
+    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+        let mut shutdown = self.shutdown.borrow_mut();
+        if !shutdown.is_some() {
             self.inner.sink.close();
-            self.shutdown.set(true);
-            let fut = self.inner.control.call(ControlMessage::closed(is_error));
-            ntex::rt::spawn(async move {
-                let _ = fut.await;
-            });
+            *shutdown =
+                Some(Box::pin(self.inner.control.call(ControlMessage::closed(is_error))));
         }
-        Poll::Ready(())
+
+        let res0 = shutdown.as_mut().expect("guard above").as_mut().poll(cx);
+        let res1 = self.publish.poll_shutdown(cx, is_error);
+        let res2 = self.inner.control.poll_shutdown(cx, is_error);
+        if res0.is_pending() || res1.is_pending() || res2.is_pending() {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
     }
 
     fn call(&self, req: DispatchItem<Rc<MqttShared>>) -> Self::Future {
