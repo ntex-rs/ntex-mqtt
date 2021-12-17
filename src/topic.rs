@@ -250,7 +250,7 @@ impl FromStr for Topic {
     #[inline]
     fn from_str(s: &str) -> Result<Self, TopicError> {
         s.split('/')
-            .map(|level| Level::from_str(level))
+            .map(Level::from_str)
             .collect::<Result<Vec<_>, TopicError>>()
             .map(Topic)
             .and_then(

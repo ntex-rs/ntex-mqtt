@@ -1,5 +1,13 @@
 # Changes
 
+## [0.7.7] - 2021-12-14
+
+* Wait for close control message and inner services on dispatcher shutdown
+
+## [0.7.6] - 2021-12-02
+
+* Add memory pools support
+
 ## [0.7.5] - 2021-11-04
 
 * v5: Use variable length byte to encode the subscription ID #73

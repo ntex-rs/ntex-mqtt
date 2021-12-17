@@ -3,7 +3,7 @@ use std::{fmt, future::Future, marker, pin::Pin, rc::Rc, task::Context, task::Po
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::service::{apply_fn_factory, boxed, IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{sleep, Seconds, Sleep};
-use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either, Ready};
+use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either, PoolId, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::{DispatchItem, State};
@@ -73,6 +73,15 @@ where
     /// By default max size is set to `0`
     pub fn max_size(mut self, size: u32) -> Self {
         self.max_size = size;
+        self
+    }
+
+    /// Set memory pool.
+    ///
+    /// Use specified memory pool for memory allocations. By default P5
+    /// memory pool is used.
+    pub fn memory_pool(self, id: PoolId) -> Self {
+        self.pool.pool.set(id.pool_ref());
         self
     }
 
@@ -205,7 +214,7 @@ where
     #[inline]
     fn call(&self, mut io: Io) -> Self::Future {
         let servers = self.servers.clone();
-        let state = State::new();
+        let state = State::with_memory_pool(self.pool.pool.get());
         let shared = Rc::new(MqttShared::new(
             state.clone(),
             mqtt::Codec::default().max_size(self.max_size),

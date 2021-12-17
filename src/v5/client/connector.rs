@@ -4,7 +4,7 @@ use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::connect::{self, Address, Connect, Connector};
 use ntex::service::Service;
 use ntex::time::{timeout, Seconds};
-use ntex::util::{select, ByteString, Bytes, Either};
+use ntex::util::{select, ByteString, Bytes, Either, PoolId};
 
 #[cfg(feature = "openssl")]
 use ntex::connect::openssl::{OpensslConnector, SslConnector};
@@ -176,6 +176,15 @@ where
         self
     }
 
+    /// Set memory pool.
+    ///
+    /// Use specified memory pool for memory allocations. By default P5
+    /// memory pool is used.
+    pub fn memory_pool(self, id: PoolId) -> Self {
+        self.pool.pool.set(id.pool_ref());
+        self
+    }
+
     /// Use custom connector
     pub fn connector<U>(self, connector: U) -> MqttConnector<A, U>
     where
@@ -246,7 +255,7 @@ where
 
         async move {
             let mut io = fut.await?;
-            let state = State::new();
+            let state = State::with_memory_pool(pool.pool.get());
             let codec = codec::Codec::new().max_inbound_size(max_packet_size);
 
             state.send(&mut io, &codec, codec::Packet::Connect(Box::new(pkt))).await?;

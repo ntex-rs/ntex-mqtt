@@ -4,7 +4,7 @@ use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin, rc::Rc, t
 use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::service::{Service, ServiceFactory};
 use ntex::time::{sleep, Seconds, Sleep};
-use ntex::util::{join, Ready};
+use ntex::util::{join, Pool, PoolId, PoolRef, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::State;
@@ -16,6 +16,7 @@ pub struct MqttServer<Io, V3, V5, Err, InitErr> {
     v3: V3,
     v5: V5,
     handshake_timeout: Seconds,
+    pool: Pool,
     _t: marker::PhantomData<(Io, Err, InitErr)>,
 }
 
@@ -33,6 +34,7 @@ impl<Io, Err, InitErr>
         MqttServer {
             v3: DefaultProtocolServer::new(ProtocolVersion::MQTT3),
             v5: DefaultProtocolServer::new(ProtocolVersion::MQTT5),
+            pool: PoolId::P5.pool(),
             handshake_timeout: Seconds::ZERO,
             _t: marker::PhantomData,
         }
@@ -60,6 +62,15 @@ impl<Io, V3, V5, Err, InitErr> MqttServer<Io, V3, V5, Err, InitErr> {
     /// By default handshake timeuot is disabled.
     pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
         self.handshake_timeout = timeout;
+        self
+    }
+
+    /// Set memory pool.
+    ///
+    /// Use specified memory pool for memory allocations. By default P5
+    /// memory pool is used.
+    pub fn memory_pool(mut self, id: PoolId) -> Self {
+        self.pool = id.pool();
         self
     }
 }
@@ -124,6 +135,7 @@ where
         MqttServer {
             v3: service.inner_finish(),
             v5: self.v5,
+            pool: self.pool,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
         }
@@ -153,6 +165,7 @@ where
         MqttServer {
             v3: service.finish_server(),
             v5: self.v5,
+            pool: self.pool,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
         }
@@ -205,6 +218,7 @@ where
         MqttServer {
             v3: self.v3,
             v5: service.inner_finish(),
+            pool: self.pool,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
         }
@@ -234,6 +248,7 @@ where
         MqttServer {
             v3: self.v3,
             v5: service.finish_server(),
+            pool: self.pool,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
         }
@@ -275,6 +290,7 @@ where
     >;
 
     fn new_service(&self, _: ()) -> Self::Future {
+        let pool = self.pool.clone();
         let handshake_timeout = self.handshake_timeout;
         let fut = join(self.v3.new_service(()), self.v5.new_service(()));
         Box::pin(async move {
@@ -283,6 +299,7 @@ where
             let v5 = v5?;
             Ok(MqttServerImpl {
                 handlers: Rc::new((v3, v5)),
+                pool,
                 handshake_timeout,
                 _t: marker::PhantomData,
             })
@@ -294,6 +311,7 @@ where
 pub struct MqttServerImpl<Io, V3, V5, Err> {
     handlers: Rc<(V3, V5)>,
     handshake_timeout: Seconds,
+    pool: Pool,
     _t: marker::PhantomData<(Io, Err)>,
 }
 
@@ -311,8 +329,9 @@ where
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let ready1 = self.handlers.0.poll_ready(cx)?.is_ready();
         let ready2 = self.handlers.1.poll_ready(cx)?.is_ready();
+        let ready3 = self.pool.poll_ready(cx).is_ready();
 
-        if ready1 && ready2 {
+        if ready1 && ready2 && ready3 {
             Poll::Ready(Ok(()))
         } else {
             Poll::Pending
@@ -331,11 +350,18 @@ where
     }
 
     fn call(&self, req: Io) -> Self::Future {
+        let pool = self.pool.pool_ref();
         let delay = self.handshake_timeout.map(sleep);
 
         MqttServerImplResponse {
             state: MqttServerImplState::Version {
-                item: Some((req, State::new(), VersionCodec, self.handlers.clone(), delay)),
+                item: Some((
+                    req,
+                    State::with_memory_pool(pool),
+                    VersionCodec,
+                    self.handlers.clone(),
+                    delay,
+                )),
             },
         }
     }

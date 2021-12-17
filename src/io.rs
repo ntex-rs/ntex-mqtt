@@ -6,7 +6,7 @@ pub(crate) use ntex::framed::{DispatchItem, ReadTask, State, Timer, Write, Write
 
 use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
 use ntex::service::{IntoService, Service};
-use ntex::{time::Seconds, util::Either};
+use ntex::{time::Seconds, util::Either, util::Pool};
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -26,6 +26,7 @@ pin_project_lite::pin_project! {
         state: State,
         inner: Rc<RefCell<DispatcherState<S, U>>>,
         st: IoDispatcherState,
+        pool: Pool,
         timer: Timer,
         updated: time::Instant,
         keepalive_timeout: Seconds,
@@ -141,6 +142,7 @@ where
             service: service.into_service(),
             response: None,
             response_idx: 0,
+            pool: state.memory_pool().pool(),
             inner,
             state,
             codec,
@@ -257,6 +259,12 @@ where
                     this.response.set(None);
                 }
             }
+        }
+
+        // handle memory pool pressure
+        if this.pool.poll_ready(cx).is_pending() {
+            read.pause(cx.waker());
+            return Poll::Pending;
         }
 
         match this.st {
@@ -536,6 +544,7 @@ mod tests {
             Dispatcher {
                 service: service.into_service(),
                 st: IoDispatcherState::Processing,
+                pool: state.memory_pool().pool(),
                 response: None,
                 response_idx: 0,
                 inner,

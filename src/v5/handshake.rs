@@ -70,12 +70,9 @@ impl<Io> Handshake<Io> {
         HandshakeAck {
             io,
             shared,
-            session: Some(st),
-            lw: 256,
-            read_hw: 4 * 1024,
-            write_hw: 4 * 1024,
             keepalive,
             packet,
+            session: Some(st),
         }
     }
 
@@ -87,9 +84,6 @@ impl<Io> Handshake<Io> {
             shared: self.shared,
             session: None,
             keepalive: 30,
-            lw: 256,
-            read_hw: 4 * 1024,
-            write_hw: 4 * 1024,
             packet: codec::ConnectAck { reason_code, ..codec::ConnectAck::default() },
         }
     }
@@ -102,9 +96,6 @@ impl<Io> Handshake<Io> {
             shared: self.shared,
             session: None,
             packet: ack,
-            lw: 256,
-            read_hw: 4 * 1024,
-            write_hw: 4 * 1024,
             keepalive: 30,
         }
     }
@@ -123,9 +114,6 @@ pub struct HandshakeAck<Io, St> {
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) packet: codec::ConnectAck,
     pub(crate) keepalive: u16,
-    pub(crate) lw: u16,
-    pub(crate) read_hw: u16,
-    pub(crate) write_hw: u16,
 }
 
 impl<Io, St> HandshakeAck<Io, St> {
@@ -143,41 +131,19 @@ impl<Io, St> HandshakeAck<Io, St> {
         self
     }
 
+    #[doc(hidden)]
+    #[deprecated(since = "0.7.6", note = "Use memory pool config")]
     #[inline]
     /// Set read/write buffer sizes
     ///
     /// By default max buffer size is 4kb for both read and write buffer,
     /// Min size is 256 bytes.
     pub fn buffer_params(
-        mut self,
-        max_read_buf: u16,
-        max_write_buf: u16,
-        min_buf_size: u16,
+        self,
+        _max_read_buf: u16,
+        _max_write_buf: u16,
+        _min_buf_size: u16,
     ) -> Self {
-        self.read_hw = max_read_buf;
-        self.write_hw = max_write_buf;
-        self.lw = min_buf_size;
-        self
-    }
-
-    #[doc(hidden)]
-    #[deprecated(since = "0.6.3")]
-    pub fn low_watermark(mut self, lw: u16) -> Self {
-        self.lw = lw;
-        self
-    }
-
-    #[doc(hidden)]
-    #[deprecated(since = "0.6.3")]
-    pub fn read_high_watermark(mut self, hw: u16) -> Self {
-        self.read_hw = hw;
-        self
-    }
-
-    #[doc(hidden)]
-    #[deprecated(since = "0.6.3")]
-    pub fn write_high_watermark(mut self, hw: u16) -> Self {
-        self.write_hw = hw;
         self
     }
 
