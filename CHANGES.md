@@ -1,8 +1,10 @@
 # Changes
 
-## [0.7.7] - 2021-12-14
+## [0.7.7] - 2021-12-17
 
-* Wait for close control message and inner services on dispatcher shutdown
+* Wait for close control message and inner services on dispatcher shutdown #78
+
+* Use default keepalive from Connect packet. #75
 
 ## [0.7.6] - 2021-12-02
 

@@ -67,13 +67,7 @@ impl<Io> Handshake<Io> {
         } else {
             30
         };
-        HandshakeAck {
-            io,
-            shared,
-            keepalive,
-            packet,
-            session: Some(st),
-        }
+        HandshakeAck { io, shared, keepalive, packet, session: Some(st) }
     }
 
     #[inline]
