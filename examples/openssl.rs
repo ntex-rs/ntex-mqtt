@@ -1,9 +1,7 @@
-use ntex::rt::net::TcpStream;
-use ntex::server::openssl::Acceptor;
 use ntex::service::pipeline_factory;
 use ntex_mqtt::{v3, v5, MqttError, MqttServer};
+use ntex_tls::openssl::Acceptor;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
-use tokio_openssl::SslStream;
 
 #[derive(Clone)]
 struct Session;
@@ -26,8 +24,8 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 }
 
 async fn handshake_v3(
-    handshake: v3::Handshake<SslStream<TcpStream>>,
-) -> Result<v3::HandshakeAck<SslStream<TcpStream>, Session>, ServerError> {
+    handshake: v3::Handshake,
+) -> Result<v3::HandshakeAck<Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session, false))
 }
@@ -38,8 +36,8 @@ async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
 }
 
 async fn handshake_v5(
-    handshake: v5::Handshake<SslStream<TcpStream>>,
-) -> Result<v5::HandshakeAck<SslStream<TcpStream>, Session>, ServerError> {
+    handshake: v5::Handshake,
+) -> Result<v5::HandshakeAck<Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session))
 }
@@ -63,7 +61,7 @@ async fn main() -> std::io::Result<()> {
     let acceptor = builder.build();
 
     ntex::server::Server::build()
-        .bind("mqtt", "127.0.0.1:8883", move || {
+        .bind("mqtt", "127.0.0.1:8883", move |_| {
             pipeline_factory(Acceptor::new(acceptor.clone()))
                 .map_err(|_err| MqttError::Service(ServerError {}))
                 .and_then(

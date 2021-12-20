@@ -1,12 +1,11 @@
 use std::{fmt, future::Future, marker, pin::Pin, rc::Rc, task::Context, task::Poll, time};
 
-use ntex::codec::{AsyncRead, AsyncWrite};
+use ntex::io::{DispatchItem, Io, IoBoxed, IoRef};
 use ntex::service::{apply_fn_factory, boxed, IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{sleep, Seconds, Sleep};
 use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either, PoolId, Ready};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::io::{DispatchItem, State};
 
 use super::control::{ControlMessage, ControlResult};
 use super::default::{DefaultControlService, DefaultPublishService};
@@ -14,32 +13,26 @@ use super::handshake::{Handshake, HandshakeAck};
 use super::shared::{MqttShared, MqttSinkPool};
 use super::{codec as mqtt, dispatcher::factory, MqttServer, MqttSink, Publish, Session};
 
-pub(crate) type SelectItem<Io> = (Handshake<Io>, State, Option<Sleep>);
+pub(crate) type SelectItem = (Handshake, Option<Sleep>);
 
-type ServerFactory<Io, Err, InitErr> = boxed::BoxServiceFactory<
-    (),
-    SelectItem<Io>,
-    Either<SelectItem<Io>, ()>,
-    MqttError<Err>,
-    InitErr,
->;
+type ServerFactory<Err, InitErr> =
+    boxed::BoxServiceFactory<(), SelectItem, Either<SelectItem, ()>, MqttError<Err>, InitErr>;
 
-type Server<Io, Err> =
-    boxed::BoxService<SelectItem<Io>, Either<SelectItem<Io>, ()>, MqttError<Err>>;
+type Server<Err> = boxed::BoxService<SelectItem, Either<SelectItem, ()>, MqttError<Err>>;
 
 /// Mqtt server selector
 ///
 /// Selector allows to choose different mqtt server impls depends on
 /// connectt packet.
-pub struct Selector<Io, Err, InitErr> {
-    servers: Vec<ServerFactory<Io, Err, InitErr>>,
+pub struct Selector<Err, InitErr> {
+    servers: Vec<ServerFactory<Err, InitErr>>,
     max_size: u32,
     handshake_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
-    _t: marker::PhantomData<(Io, Err, InitErr)>,
+    _t: marker::PhantomData<(Err, InitErr)>,
 }
 
-impl<Io, Err, InitErr> Selector<Io, Err, InitErr> {
+impl<Err, InitErr> Selector<Err, InitErr> {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Selector {
@@ -52,9 +45,8 @@ impl<Io, Err, InitErr> Selector<Io, Err, InitErr> {
     }
 }
 
-impl<Io, Err, InitErr> Selector<Io, Err, InitErr>
+impl<Err, InitErr> Selector<Err, InitErr>
 where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     Err: 'static,
     InitErr: 'static,
 {
@@ -76,29 +68,20 @@ where
         self
     }
 
-    /// Set memory pool.
-    ///
-    /// Use specified memory pool for memory allocations. By default P5
-    /// memory pool is used.
-    pub fn memory_pool(self, id: PoolId) -> Self {
-        self.pool.pool.set(id.pool_ref());
-        self
-    }
-
     /// Add server variant
     pub fn variant<F, R, St, C, Cn, P>(
         mut self,
         check: F,
-        mut server: MqttServer<Io, St, C, Cn, P>,
+        mut server: MqttServer<St, C, Cn, P>,
     ) -> Self
     where
-        F: Fn(&Handshake<Io>) -> R + 'static,
+        F: Fn(&Handshake) -> R + 'static,
         R: Future<Output = Result<bool, Err>> + 'static,
         St: 'static,
         C: ServiceFactory<
                 Config = (),
-                Request = Handshake<Io>,
-                Response = HandshakeAck<Io, St>,
+                Request = Handshake,
+                Response = HandshakeAck<St>,
                 Error = Err,
                 InitError = InitErr,
             > + 'static,
@@ -124,7 +107,7 @@ where
         self,
     ) -> impl ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Sleep>),
+        Request = (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -138,18 +121,17 @@ where
     }
 }
 
-impl<Io, Err, InitErr> ServiceFactory for Selector<Io, Err, InitErr>
+impl<Err, InitErr> ServiceFactory for Selector<Err, InitErr>
 where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     Err: 'static,
     InitErr: 'static,
 {
     type Config = ();
-    type Request = Io;
+    type Request = IoBoxed;
     type Response = ();
     type Error = MqttError<Err>;
     type InitError = InitErr;
-    type Service = SelectorService<Io, Err>;
+    type Service = SelectorService<Err>;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
 
     fn new_service(&self, _: ()) -> Self::Future {
@@ -168,19 +150,18 @@ where
     }
 }
 
-pub struct SelectorService<Io, Err> {
-    servers: Rc<Vec<Server<Io, Err>>>,
+pub struct SelectorService<Err> {
+    servers: Rc<Vec<Server<Err>>>,
     max_size: u32,
     handshake_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
 }
 
-impl<Io, Err> Service for SelectorService<Io, Err>
+impl<Err> Service for SelectorService<Err>
 where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     Err: 'static,
 {
-    type Request = Io;
+    type Request = IoBoxed;
     type Response = ();
     type Error = MqttError<Err>;
     type Future = Pin<Box<dyn Future<Output = Result<(), MqttError<Err>>>>>;
@@ -212,11 +193,10 @@ where
     }
 
     #[inline]
-    fn call(&self, mut io: Io) -> Self::Future {
+    fn call(&self, io: IoBoxed) -> Self::Future {
         let servers = self.servers.clone();
-        let state = State::with_memory_pool(self.pool.pool.get());
         let shared = Rc::new(MqttShared::new(
-            state.clone(),
+            io.clone(),
             mqtt::Codec::default().max_size(self.max_size),
             16,
             self.pool.clone(),
@@ -225,18 +205,16 @@ where
 
         Box::pin(async move {
             // read first packet
-            let packet = state
-                .next(&mut io, &shared.codec)
+            let packet = io
+                .next(&shared.codec)
                 .await
+                .ok_or_else(|| {
+                    log::trace!("Server mqtt is disconnected during handshake");
+                    MqttError::Disconnected
+                })?
                 .map_err(|err| {
                     log::trace!("Error is received during mqtt handshake: {:?}", err);
                     MqttError::from(err)
-                })
-                .and_then(|res| {
-                    res.ok_or_else(|| {
-                        log::trace!("Server mqtt is disconnected during handshake");
-                        MqttError::Disconnected
-                    })
                 })?;
 
             let connect = match packet {
@@ -251,7 +229,7 @@ where
             };
 
             // call servers
-            let mut item = (Handshake::new(connect, io, shared), state, delay);
+            let mut item = (Handshake::new(connect, io, shared), delay);
             for srv in servers.iter() {
                 match srv.call(item).await? {
                     Either::Left(result) => {
@@ -266,25 +244,24 @@ where
     }
 }
 
-pub(crate) struct Selector2<Io, Err, InitErr> {
-    servers: Vec<ServerFactory<Io, Err, InitErr>>,
+pub(crate) struct Selector2<Err, InitErr> {
+    servers: Vec<ServerFactory<Err, InitErr>>,
     max_size: u32,
     pool: Rc<MqttSinkPool>,
-    _t: marker::PhantomData<(Io, Err, InitErr)>,
+    _t: marker::PhantomData<(Err, InitErr)>,
 }
 
-impl<Io, Err, InitErr> ServiceFactory for Selector2<Io, Err, InitErr>
+impl<Err, InitErr> ServiceFactory for Selector2<Err, InitErr>
 where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     Err: 'static,
     InitErr: 'static,
 {
     type Config = ();
-    type Request = (Io, State, Option<Sleep>);
+    type Request = (IoBoxed, Option<Sleep>);
     type Response = ();
     type Error = MqttError<Err>;
     type InitError = InitErr;
-    type Service = SelectorService2<Io, Err>;
+    type Service = SelectorService2<Err>;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
 
     fn new_service(&self, _: ()) -> Self::Future {
@@ -302,18 +279,17 @@ where
     }
 }
 
-pub(crate) struct SelectorService2<Io, Err> {
-    servers: Rc<Vec<Server<Io, Err>>>,
+pub(crate) struct SelectorService2<Err> {
+    servers: Rc<Vec<Server<Err>>>,
     max_size: u32,
     pool: Rc<MqttSinkPool>,
 }
 
-impl<Io, Err> Service for SelectorService2<Io, Err>
+impl<Err> Service for SelectorService2<Err>
 where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     Err: 'static,
 {
-    type Request = (Io, State, Option<Sleep>);
+    type Request = (IoBoxed, Option<Sleep>);
     type Response = ();
     type Error = MqttError<Err>;
     type Future = Pin<Box<dyn Future<Output = Result<(), MqttError<Err>>>>>;
@@ -345,10 +321,10 @@ where
     }
 
     #[inline]
-    fn call(&self, (mut io, state, delay): Self::Request) -> Self::Future {
+    fn call(&self, (io, delay): Self::Request) -> Self::Future {
         let servers = self.servers.clone();
         let shared = Rc::new(MqttShared::new(
-            state.clone(),
+            io.get_ref(),
             mqtt::Codec::default().max_size(self.max_size),
             16,
             self.pool.clone(),
@@ -356,18 +332,16 @@ where
 
         Box::pin(async move {
             // read first packet
-            let packet = state
-                .next(&mut io, &shared.codec)
+            let packet = io
+                .next(&shared.codec)
                 .await
+                .ok_or_else(|| {
+                    log::trace!("Server mqtt is disconnected during handshake");
+                    MqttError::Disconnected
+                })?
                 .map_err(|err| {
                     log::trace!("Error is received during mqtt handshake: {:?}", err);
                     MqttError::from(err)
-                })
-                .and_then(|res| {
-                    res.ok_or_else(|| {
-                        log::trace!("Server mqtt is disconnected during handshake");
-                        MqttError::Disconnected
-                    })
                 })?;
 
             let connect = match packet {
@@ -382,7 +356,7 @@ where
             };
 
             // call servers
-            let mut item = (Handshake::new(connect, io, shared), state, delay);
+            let mut item = (Handshake::new(connect, io, shared), delay);
             for srv in servers.iter() {
                 match srv.call(item).await? {
                     Either::Left(result) => {

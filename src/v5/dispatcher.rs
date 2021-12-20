@@ -2,13 +2,13 @@ use std::cell::RefCell;
 use std::task::{Context, Poll};
 use std::{convert::TryFrom, future::Future, marker, num, pin::Pin, rc::Rc};
 
+use ntex::io::DispatchItem;
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::{
     buffer::BufferService, inflight::InFlightService, join, Either, HashSet, Ready,
 };
 
 use crate::error::{MqttError, ProtocolError};
-use crate::io::DispatchItem;
 
 use super::control::{self, ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
@@ -326,10 +326,9 @@ where
                     &self.inner,
                 )))
             }
-            DispatchItem::IoError(err) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(ProtocolError::Io(err)),
-                &self.inner,
-            ))),
+            DispatchItem::Disconnect(err) => Either::Right(Either::Right(
+                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner),
+            )),
             DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
                 Either::Right(Either::Left(Ready::Ok(None)))
             }

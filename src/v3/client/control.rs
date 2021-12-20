@@ -1,4 +1,6 @@
-pub use crate::v3::control::{Closed, ControlResult, Disconnect, Error, ProtocolError};
+pub use crate::v3::control::{
+    Closed, ControlResult, Disconnect, Error, PeerGone, ProtocolError,
+};
 use crate::v3::{codec, control::ControlResultKind, error};
 
 pub enum ControlMessage<E> {
@@ -12,6 +14,8 @@ pub enum ControlMessage<E> {
     Error(Error<E>),
     /// Protocol level error
     ProtocolError(ProtocolError),
+    /// Peer is gone
+    PeerGone(PeerGone),
 }
 
 impl<E> ControlMessage<E> {
@@ -33,6 +37,10 @@ impl<E> ControlMessage<E> {
 
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
         ControlMessage::ProtocolError(ProtocolError::new(err))
+    }
+
+    pub(super) fn peer_gone() -> Self {
+        ControlMessage::PeerGone(PeerGone)
     }
 
     pub fn disconnect(&self) -> ControlResult {

@@ -2,13 +2,14 @@ use std::cell::RefCell;
 use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
+use ntex::io::DispatchItem;
 use ntex::service::Service;
 use ntex::util::{buffer::BufferService, inflight::InFlightService, Either, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
+use crate::types::packet_type;
 use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{codec, publish::Publish, publish::PublishAck, sink::MqttSink};
-use crate::{io::DispatchItem, types::packet_type};
 
 use super::control::{ControlMessage, ControlResult};
 
@@ -290,10 +291,9 @@ where
                     &self.inner,
                 )))
             }
-            DispatchItem::IoError(err) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(ProtocolError::Io(err)),
-                &self.inner,
-            ))),
+            DispatchItem::Disconnect(err) => Either::Right(Either::Right(
+                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner),
+            )),
             DispatchItem::KeepAliveTimeout => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),

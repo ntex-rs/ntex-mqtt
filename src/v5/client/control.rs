@@ -1,3 +1,5 @@
+use std::io;
+
 use ntex::util::ByteString;
 
 use crate::{error, v5::codec};
@@ -15,6 +17,8 @@ pub enum ControlMessage<E> {
     ProtocolError(ProtocolError),
     /// Connection closed
     Closed(Closed),
+    /// Peer is gone
+    PeerGone(PeerGone),
 }
 
 impl<E> ControlMessage<E> {
@@ -36,6 +40,10 @@ impl<E> ControlMessage<E> {
 
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
         ControlMessage::ProtocolError(ProtocolError::new(err))
+    }
+
+    pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
+        ControlMessage::PeerGone(PeerGone(err))
     }
 
     pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlResult {
@@ -91,5 +99,20 @@ impl Publish {
             }),
             disconnect: false,
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct PeerGone(Option<io::Error>);
+
+impl PeerGone {
+    /// Returns error reference
+    pub fn error(&self) -> Option<&io::Error> {
+        self.0.as_ref()
+    }
+
+    /// Ack PeerGone message
+    pub fn ack(self) -> ControlResult {
+        ControlResult { packet: None, disconnect: true }
     }
 }

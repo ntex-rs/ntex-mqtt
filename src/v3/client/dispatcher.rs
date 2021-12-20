@@ -2,12 +2,13 @@ use std::cell::RefCell;
 use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
+use ntex::io::DispatchItem;
 use ntex::service::Service;
 use ntex::util::{buffer::BufferService, inflight::InFlightService, Either, HashSet, Ready};
 
 use crate::v3::shared::{Ack, MqttShared};
 use crate::v3::{codec, control::ControlResultKind, publish::Publish, sink::MqttSink};
-use crate::{error::MqttError, error::ProtocolError, io::DispatchItem, types::packet_type};
+use crate::{error::MqttError, error::ProtocolError, types::packet_type};
 
 use super::control::{ControlMessage, ControlResult};
 
@@ -199,10 +200,16 @@ where
                     &self.inner,
                 )))
             }
-            DispatchItem::IoError(err) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(ProtocolError::Io(err)),
-                &self.inner,
-            ))),
+            DispatchItem::Disconnect(err) => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    if let Some(err) = err {
+                        ControlMessage::proto_error(ProtocolError::Io(err))
+                    } else {
+                        ControlMessage::peer_gone()
+                    },
+                    &self.inner,
+                )))
+            }
             DispatchItem::KeepAliveTimeout => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),

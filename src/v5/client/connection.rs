@@ -3,14 +3,14 @@ use std::{
     cell::RefCell, convert::TryFrom, fmt, future::Future, marker, num::NonZeroU16, rc::Rc,
 };
 
-use ntex::codec::{AsyncRead, AsyncWrite};
+use ntex::io::{IoBoxed, Timer};
 use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex::service::{boxed, into_service, IntoService, Service};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{ByteString, Either, HashMap, Ready};
 
 use crate::error::MqttError;
-use crate::io::{Dispatcher, Timer};
+use crate::io::Dispatcher;
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{codec, shared::MqttShared, sink::MqttSink, ControlResult};
 
@@ -18,8 +18,8 @@ use super::control::ControlMessage;
 use super::dispatcher::create_dispatcher;
 
 /// Mqtt client
-pub struct Client<Io> {
-    io: Io,
+pub struct Client {
+    io: IoBoxed,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     disconnect_timeout: Seconds,
@@ -27,7 +27,7 @@ pub struct Client<Io> {
     pkt: Box<codec::ConnectAck>,
 }
 
-impl<Io> fmt::Debug for Client<Io> {
+impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("v5::Client")
             .field("keepalive", &self.keepalive)
@@ -38,13 +38,10 @@ impl<Io> fmt::Debug for Client<Io> {
     }
 }
 
-impl<T> Client<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
+impl Client {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
     pub(super) fn new(
-        io: T,
+        io: IoBoxed,
         shared: Rc<MqttShared>,
         pkt: Box<codec::ConnectAck>,
         max_receive: u16,
@@ -62,10 +59,7 @@ where
     }
 }
 
-impl<Io> Client<Io>
-where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
-{
+impl Client {
     #[inline]
     /// Get client sink
     pub fn sink(&self) -> MqttSink {
@@ -91,7 +85,7 @@ where
     }
 
     /// Configure mqtt resource for a specific topic
-    pub fn resource<T, F, U, E>(self, address: T, service: F) -> ClientRouter<Io, E, U::Error>
+    pub fn resource<T, F, U, E>(self, address: T, service: F) -> ClientRouter<E, U::Error>
     where
         T: IntoPattern,
         F: IntoService<U>,
@@ -133,16 +127,10 @@ where
             }),
         );
 
-        let _ = Dispatcher::with(
-            self.io,
-            self.shared.state.clone(),
-            self.shared,
-            dispatcher,
-            Timer::new(Millis::ONE_SEC),
-        )
-        .keepalive_timeout(Seconds::ZERO)
-        .disconnect_timeout(self.disconnect_timeout)
-        .await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, Timer::new(Millis::ONE_SEC))
+            .keepalive_timeout(Seconds::ZERO)
+            .disconnect_timeout(self.disconnect_timeout)
+            .await;
     }
 
     /// Run client with provided control messages handler
@@ -164,26 +152,20 @@ where
             service.into_service(),
         );
 
-        Dispatcher::with(
-            self.io,
-            self.shared.state.clone(),
-            self.shared,
-            dispatcher,
-            Timer::new(Millis::ONE_SEC),
-        )
-        .keepalive_timeout(Seconds::ZERO)
-        .disconnect_timeout(self.disconnect_timeout)
-        .await
+        Dispatcher::new(self.io, self.shared, dispatcher, Timer::new(Millis::ONE_SEC))
+            .keepalive_timeout(Seconds::ZERO)
+            .disconnect_timeout(self.disconnect_timeout)
+            .await
     }
 }
 
 type Handler<E> = boxed::BoxService<Publish, PublishAck, E>;
 
 /// Mqtt client with routing capabilities
-pub struct ClientRouter<Io, Err, PErr> {
+pub struct ClientRouter<Err, PErr> {
+    io: IoBoxed,
     builder: RouterBuilder<usize>,
     handlers: Vec<Handler<PErr>>,
-    io: Io,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     disconnect_timeout: Seconds,
@@ -191,7 +173,7 @@ pub struct ClientRouter<Io, Err, PErr> {
     _t: marker::PhantomData<Err>,
 }
 
-impl<Io, Err, PErr> fmt::Debug for ClientRouter<Io, Err, PErr> {
+impl<Err, PErr> fmt::Debug for ClientRouter<Err, PErr> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("v5::ClientRouter")
             .field("keepalive", &self.keepalive)
@@ -201,9 +183,8 @@ impl<Io, Err, PErr> fmt::Debug for ClientRouter<Io, Err, PErr> {
     }
 }
 
-impl<Io, Err, PErr> ClientRouter<Io, Err, PErr>
+impl<Err, PErr> ClientRouter<Err, PErr>
 where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     Err: From<PErr> + 'static,
     PublishAck: TryFrom<PErr, Error = Err>,
     PErr: 'static,
@@ -236,16 +217,10 @@ where
             }),
         );
 
-        let _ = Dispatcher::with(
-            self.io,
-            self.shared.state.clone(),
-            self.shared,
-            dispatcher,
-            Timer::new(Millis::ONE_SEC),
-        )
-        .keepalive_timeout(Seconds::ZERO)
-        .disconnect_timeout(self.disconnect_timeout)
-        .await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, Timer::new(Millis::ONE_SEC))
+            .keepalive_timeout(Seconds::ZERO)
+            .disconnect_timeout(self.disconnect_timeout)
+            .await;
     }
 
     /// Run client and handle control messages
@@ -267,16 +242,10 @@ where
             service.into_service(),
         );
 
-        Dispatcher::with(
-            self.io,
-            self.shared.state.clone(),
-            self.shared,
-            dispatcher,
-            Timer::new(Millis::ONE_SEC),
-        )
-        .keepalive_timeout(Seconds::ZERO)
-        .disconnect_timeout(self.disconnect_timeout)
-        .await
+        Dispatcher::new(self.io, self.shared, dispatcher, Timer::new(Millis::ONE_SEC))
+            .keepalive_timeout(Seconds::ZERO)
+            .disconnect_timeout(self.disconnect_timeout)
+            .await
     }
 }
 

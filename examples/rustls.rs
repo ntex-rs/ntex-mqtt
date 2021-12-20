@@ -1,12 +1,10 @@
-use std::{fs::File, io::BufReader};
+use std::{fs::File, io::BufReader, sync::Arc};
 
-use ntex::rt::net::TcpStream;
-use ntex::server::rustls::Acceptor;
 use ntex::service::pipeline_factory;
 use ntex_mqtt::{v3, v5, MqttError, MqttServer};
+use ntex_tls::rustls::Acceptor;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, rsa_private_keys};
-use tokio_rustls::server::TlsStream;
 
 #[derive(Clone)]
 struct Session;
@@ -29,8 +27,8 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 }
 
 async fn handshake_v3(
-    handshake: v3::Handshake<TlsStream<TcpStream>>,
-) -> Result<v3::HandshakeAck<TlsStream<TcpStream>, Session>, ServerError> {
+    handshake: v3::Handshake,
+) -> Result<v3::HandshakeAck<Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session, false))
 }
@@ -41,8 +39,8 @@ async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
 }
 
 async fn handshake_v5(
-    handshake: v5::Handshake<TlsStream<TcpStream>>,
-) -> Result<v5::HandshakeAck<TlsStream<TcpStream>, Session>, ServerError> {
+    handshake: v5::Handshake,
+) -> Result<v5::HandshakeAck<Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session))
 }
@@ -72,11 +70,11 @@ async fn main() -> std::io::Result<()> {
         .with_single_cert(cert_chain, keys)
         .unwrap();
 
-    let tls_acceptor = Acceptor::new(tls_config);
+    let tls_acceptor = Arc::new(tls_config);
 
     ntex::server::Server::build()
-        .bind("mqtt", "127.0.0.1:8883", move || {
-            pipeline_factory(tls_acceptor.clone())
+        .bind("mqtt", "127.0.0.1:8883", move |_| {
+            pipeline_factory(Acceptor::new(tls_acceptor.clone()))
                 .map_err(|_err| MqttError::Service(ServerError {}))
                 .and_then(
                     MqttServer::new()

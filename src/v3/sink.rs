@@ -28,7 +28,7 @@ impl MqttSink {
     ///
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
-        if self.0.state.is_open() {
+        if !self.0.io.is_closed() {
             self.0
                 .with_queues(|q| {
                     if q.inflight.len() >= self.0.cap.get() {
@@ -47,8 +47,8 @@ impl MqttSink {
 
     /// Close mqtt connection
     pub fn close(&self) {
-        if self.0.state.is_open() {
-            let _ = self.0.state.close();
+        if !self.0.io.is_closed() {
+            let _ = self.0.io.close();
         }
         self.0.with_queues(|q| {
             q.inflight.clear();
@@ -59,8 +59,8 @@ impl MqttSink {
     /// Force close mqtt connection. mqtt dispatcher does not wait for uncompleted
     /// responses, but it flushes buffers.
     pub fn force_close(&self) {
-        if self.0.state.is_open() {
-            let _ = self.0.state.force_close();
+        if !self.0.io.is_closed() {
+            let _ = self.0.io.force_close();
         }
         self.0.with_queues(|q| {
             q.inflight.clear();
@@ -70,7 +70,7 @@ impl MqttSink {
 
     /// Send ping
     pub(super) fn ping(&self) -> bool {
-        self.0.state.write().encode(codec::Packet::PingRequest, &self.0.codec).is_ok()
+        self.0.io.encode(codec::Packet::PingRequest, &self.0.codec).is_ok()
     }
 
     /// Create publish message builder
@@ -187,11 +187,10 @@ impl PublishBuilder {
     pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
         let packet = self.packet;
 
-        if self.shared.state.is_open() {
+        if !self.shared.io.is_closed() {
             log::trace!("Publish (QoS-0) to {:?}", packet.topic);
             self.shared
-                .state
-                .write()
+                .io
                 .encode(codec::Packet::Publish(packet), &self.shared.codec)
                 .map_err(SendPacketError::Encode)
                 .map(|_| ())
@@ -208,7 +207,7 @@ impl PublishBuilder {
         let mut packet = self.packet;
         packet.qos = codec::QoS::AtLeastOnce;
 
-        if shared.state.is_open() {
+        if !shared.io.is_closed() {
             // handle client receive maximum
             if !shared.has_credit() {
                 let (tx, rx) = shared.pool.waiters.channel();
@@ -256,7 +255,7 @@ impl PublishBuilder {
 
         log::trace!("Publish (QoS1) to {:#?}", packet);
 
-        match shared.state.write().encode(codec::Packet::Publish(packet), &shared.codec) {
+        match shared.io.encode(codec::Packet::Publish(packet), &shared.codec) {
             Ok(_) => Either::Right(async move {
                 rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
             }),
@@ -296,7 +295,7 @@ impl SubscribeBuilder {
         let shared = self.shared;
         let filters = self.topic_filters;
 
-        if shared.state.is_open() {
+        if !shared.io.is_closed() {
             // handle client receive maximum
             if !shared.has_credit() {
                 let (tx, rx) = shared.pool.waiters.channel();
@@ -323,7 +322,7 @@ impl SubscribeBuilder {
             // send subscribe to client
             log::trace!("Sending subscribe packet id: {} filters:{:?}", idx, filters);
 
-            match shared.state.write().encode(
+            match shared.io.encode(
                 codec::Packet::Subscribe {
                     packet_id: NonZeroU16::new(idx).unwrap(),
                     topic_filters: filters,
@@ -375,7 +374,7 @@ impl UnsubscribeBuilder {
         let shared = self.shared;
         let filters = self.topic_filters;
 
-        if shared.state.is_open() {
+        if !shared.io.is_closed() {
             // handle client receive maximum
             if !shared.has_credit() {
                 let (tx, rx) = shared.pool.waiters.channel();
@@ -402,7 +401,7 @@ impl UnsubscribeBuilder {
             // send subscribe to client
             log::trace!("Sending unsubscribe packet id: {} filters:{:?}", idx, filters);
 
-            match shared.state.write().encode(
+            match shared.io.encode(
                 codec::Packet::Unsubscribe {
                     packet_id: NonZeroU16::new(idx).unwrap(),
                     topic_filters: filters,

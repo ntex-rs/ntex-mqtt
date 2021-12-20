@@ -2,10 +2,11 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, num::NonZeroU16, rc:
 
 use ntex::channel::pool;
 use ntex::codec::{Decoder, Encoder};
+use ntex::io::IoRef;
 use ntex::util::{BytesMut, HashMap, PoolId, PoolRef};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::{io::State, types::packet_type, v3::codec};
+use crate::{types::packet_type, v3::codec};
 
 pub(super) enum Ack {
     Publish(NonZeroU16),
@@ -37,11 +38,11 @@ impl Default for MqttSinkPool {
 }
 
 pub(crate) struct MqttShared {
+    pub(super) io: IoRef,
     pub(super) cap: Cell<usize>,
     queues: RefCell<MqttSharedQueues>,
     pub(super) inflight_idx: Cell<u16>,
     pub(super) pool: Rc<MqttSinkPool>,
-    pub(super) state: State,
     pub(super) codec: codec::Codec,
 }
 
@@ -53,13 +54,13 @@ pub(super) struct MqttSharedQueues {
 
 impl MqttShared {
     pub(super) fn new(
-        state: State,
+        io: IoRef,
         codec: codec::Codec,
         cap: usize,
         pool: Rc<MqttSinkPool>,
     ) -> Self {
         Self {
-            state,
+            io,
             pool,
             codec,
             cap: Cell::new(cap),

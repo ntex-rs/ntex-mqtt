@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{io, marker::PhantomData};
 
 use ntex::util::ByteString;
 
@@ -24,6 +24,8 @@ pub enum ControlMessage<E> {
     Error(Error<E>),
     /// Protocol level error
     ProtocolError(ProtocolError),
+    /// Peer is gone
+    PeerGone(PeerGone),
 }
 
 /// Control message handling result
@@ -72,6 +74,10 @@ impl<E> ControlMessage<E> {
         ControlMessage::Error(Error::new(err))
     }
 
+    pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
+        ControlMessage::PeerGone(PeerGone(err))
+    }
+
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
         ControlMessage::ProtocolError(ProtocolError::new(err))
     }
@@ -100,7 +106,7 @@ impl<E> ControlMessage<E> {
 pub struct Auth(codec::Auth);
 
 impl Auth {
-    /// Returns reference to dusconnect packet
+    /// Returns reference to auth packet
     pub fn packet(&self) -> &codec::Auth {
         &self.0
     }
@@ -123,7 +129,7 @@ impl Ping {
 pub struct Disconnect(pub(crate) codec::Disconnect);
 
 impl Disconnect {
-    /// Returns reference to dusconnect packet
+    /// Returns reference to disconnect packet
     pub fn packet(&self) -> &codec::Disconnect {
         &self.0
     }
@@ -616,5 +622,20 @@ impl ProtocolError {
             },
             self.err,
         )
+    }
+}
+
+#[derive(Debug)]
+pub struct PeerGone(Option<io::Error>);
+
+impl PeerGone {
+    /// Returns error reference
+    pub fn error(&self) -> Option<&io::Error> {
+        self.0.as_ref()
+    }
+
+    /// Ack PeerGone message
+    pub fn ack(self) -> ControlResult {
+        ControlResult { packet: None, disconnect: true }
     }
 }

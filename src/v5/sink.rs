@@ -23,7 +23,7 @@ impl MqttSink {
 
     /// Check connection status
     pub fn is_open(&self) -> bool {
-        self.0.state.is_open()
+        !self.0.io.is_closed()
     }
 
     /// Get client's receive credit
@@ -36,7 +36,7 @@ impl MqttSink {
     ///
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
-        if self.0.state.is_open() {
+        if !self.0.io.is_closed() {
             self.0
                 .with_queues(|q| {
                     if q.inflight.len() >= self.0.cap.get() {
@@ -58,10 +58,9 @@ impl MqttSink {
         if self.is_open() {
             let _ = self
                 .0
-                .state
-                .write()
+                .io
                 .encode(codec::Packet::Disconnect(codec::Disconnect::default()), &self.0.codec);
-            self.0.state.close();
+            self.0.io.close();
         }
         self.0.with_queues(|q| {
             q.inflight.clear();
@@ -72,8 +71,8 @@ impl MqttSink {
     /// Close mqtt connection
     pub fn close_with_reason(&self, pkt: codec::Disconnect) {
         if self.is_open() {
-            let _ = self.0.state.write().encode(codec::Packet::Disconnect(pkt), &self.0.codec);
-            self.0.state.close();
+            let _ = self.0.io.encode(codec::Packet::Disconnect(pkt), &self.0.codec);
+            self.0.io.close();
         }
         self.0.with_queues(|q| {
             q.inflight.clear();
@@ -82,12 +81,12 @@ impl MqttSink {
     }
 
     pub(super) fn send(&self, pkt: codec::Packet) {
-        let _ = self.0.state.write().encode(pkt, &self.0.codec);
+        let _ = self.0.io.encode(pkt, &self.0.codec);
     }
 
     /// Send ping
     pub(super) fn ping(&self) -> bool {
-        self.0.state.write().encode(codec::Packet::PingRequest, &self.0.codec).is_ok()
+        self.0.io.encode(codec::Packet::PingRequest, &self.0.codec).is_ok()
     }
 
     /// Close mqtt connection, dont send disconnect message
@@ -96,7 +95,7 @@ impl MqttSink {
             q.waiters.clear();
             q.inflight.clear();
         });
-        self.0.state.close();
+        self.0.io.close();
     }
 
     pub(super) fn pkt_ack(&self, pkt: Ack) -> Result<(), ProtocolError> {
@@ -252,11 +251,10 @@ impl PublishBuilder {
     pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
         let packet = self.packet;
 
-        if self.shared.state.is_open() {
+        if !self.shared.io.is_closed() {
             log::trace!("Publish (QoS-0) to {:?}", packet.topic);
             self.shared
-                .state
-                .write()
+                .io
                 .encode(codec::Packet::Publish(packet), &self.shared.codec)
                 .map_err(SendPacketError::Encode)
                 .map(|_| ())
@@ -274,7 +272,7 @@ impl PublishBuilder {
         let mut packet = self.packet;
         packet.qos = QoS::AtLeastOnce;
 
-        if shared.state.is_open() {
+        if !shared.io.is_closed() {
             // handle client receive maximum
             if !shared.has_credit() {
                 let (tx, rx) = shared.pool.waiters.channel();
@@ -324,7 +322,7 @@ impl PublishBuilder {
         // send publish to client
         log::trace!("Publish (QoS1) to {:#?}", packet);
 
-        match shared.state.write().encode(codec::Packet::Publish(packet), &shared.codec) {
+        match shared.io.encode(codec::Packet::Publish(packet), &shared.codec) {
             Ok(_) => {
                 // wait ack from peer
                 Either::Right(async move {
@@ -383,7 +381,7 @@ impl SubscribeBuilder {
         let shared = self.shared;
         let mut packet = self.packet;
 
-        if shared.state.is_open() {
+        if !shared.io.is_closed() {
             // handle client receive maximum
             if !shared.has_credit() {
                 let (tx, rx) = shared.pool.waiters.channel();
@@ -411,7 +409,7 @@ impl SubscribeBuilder {
             // send subscribe to client
             log::trace!("Sending subscribe packet {:#?}", packet);
 
-            match shared.state.write().encode(codec::Packet::Subscribe(packet), &shared.codec) {
+            match shared.io.encode(codec::Packet::Subscribe(packet), &shared.codec) {
                 Ok(_) => {
                     // wait ack from peer
                     rx.await
@@ -463,7 +461,7 @@ impl UnsubscribeBuilder {
         let shared = self.shared;
         let mut packet = self.packet;
 
-        if shared.state.is_open() {
+        if !shared.io.is_closed() {
             // handle client receive maximum
             if !shared.has_credit() {
                 let (tx, rx) = shared.pool.waiters.channel();
@@ -491,8 +489,7 @@ impl UnsubscribeBuilder {
             // send unsubscribe to client
             log::trace!("Sending unsubscribe packet {:#?}", packet);
 
-            match shared.state.write().encode(codec::Packet::Unsubscribe(packet), &shared.codec)
-            {
+            match shared.io.encode(codec::Packet::Unsubscribe(packet), &shared.codec) {
                 Ok(_) => {
                     // wait ack from peer
                     rx.await

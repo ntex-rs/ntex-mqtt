@@ -1,7 +1,7 @@
 use std::{future::Future, num::NonZeroU16, num::NonZeroU32, rc::Rc, time::Duration};
 
-use ntex::codec::{AsyncRead, AsyncWrite};
 use ntex::connect::{self, Address, Connect, Connector};
+use ntex::io::{Filter, Io, IoBoxed};
 use ntex::service::Service;
 use ntex::time::{timeout, Seconds};
 use ntex::util::{select, ByteString, Bytes, Either, PoolId};
@@ -13,7 +13,6 @@ use ntex::connect::openssl::{OpensslConnector, SslConnector};
 use ntex::connect::rustls::{ClientConfig, RustlsConnector};
 
 use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
-use crate::io::State;
 use crate::v5::shared::{MqttShared, MqttSinkPool};
 
 /// Mqtt client connector
@@ -32,11 +31,16 @@ where
 {
     #[allow(clippy::new_ret_no_self)]
     /// Create new mqtt connector
-    pub fn new(address: A) -> MqttConnector<A, Connector<A>> {
+    pub fn new(
+        address: A,
+    ) -> MqttConnector<
+        A,
+        impl Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+    > {
         MqttConnector {
             address,
             pkt: codec::Connect::default(),
-            connector: Connector::default(),
+            connector: Connector::default().map(|io| io.into_boxed()),
             handshake_timeout: Seconds::ZERO,
             disconnect_timeout: Seconds(3),
             pool: Rc::new(MqttSinkPool::default()),
@@ -47,8 +51,7 @@ where
 impl<A, T> MqttConnector<A, T>
 where
     A: Address + Clone,
-    T: Service<Request = Connect<A>, Error = connect::ConnectError>,
-    T::Response: AsyncRead + AsyncWrite + Unpin + 'static,
+    T: Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
 {
     #[inline]
     /// Create new client and provide client id
@@ -186,13 +189,19 @@ where
     }
 
     /// Use custom connector
-    pub fn connector<U>(self, connector: U) -> MqttConnector<A, U>
+    pub fn connector<U, F>(
+        self,
+        connector: U,
+    ) -> MqttConnector<
+        A,
+        impl Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+    >
     where
-        U: Service<Request = Connect<A>, Error = connect::ConnectError>,
-        U::Response: AsyncRead + AsyncWrite + Unpin + 'static,
+        F: Filter,
+        U: Service<Request = Connect<A>, Response = Io<F>, Error = connect::ConnectError>,
     {
         MqttConnector {
-            connector,
+            connector: connector.map(|io| io.into_boxed()),
             pkt: self.pkt,
             address: self.address,
             handshake_timeout: self.handshake_timeout,
@@ -203,11 +212,17 @@ where
 
     #[cfg(feature = "openssl")]
     /// Use openssl connector
-    pub fn openssl(self, connector: SslConnector) -> MqttConnector<A, OpensslConnector<A>> {
+    pub fn openssl(
+        self,
+        connector: SslConnector,
+    ) -> MqttConnector<
+        A,
+        impl Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+    > {
         MqttConnector {
             pkt: self.pkt,
             address: self.address,
-            connector: OpensslConnector::new(connector),
+            connector: OpensslConnector::new(connector).map(|io| io.into_boxed()),
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
@@ -216,13 +231,19 @@ where
 
     #[cfg(feature = "rustls")]
     /// Use rustls connector
-    pub fn rustls(self, config: ClientConfig) -> MqttConnector<A, RustlsConnector<A>> {
+    pub fn rustls(
+        self,
+        config: ClientConfig,
+    ) -> MqttConnector<
+        A,
+        impl Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+    > {
         use std::sync::Arc;
 
         MqttConnector {
             pkt: self.pkt,
             address: self.address,
-            connector: RustlsConnector::new(Arc::new(config)),
+            connector: RustlsConnector::new(Arc::new(config)).map(|io| io.into_boxed()),
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
@@ -230,7 +251,7 @@ where
     }
 
     /// Connect to mqtt server
-    pub fn connect(&self) -> impl Future<Output = Result<Client<T::Response>, ClientError>> {
+    pub fn connect(&self) -> impl Future<Output = Result<Client, ClientError>> {
         if self.handshake_timeout.non_zero() {
             let fut = timeout(self.handshake_timeout, self._connect());
             Either::Left(async move {
@@ -244,7 +265,7 @@ where
         }
     }
 
-    fn _connect(&self) -> impl Future<Output = Result<Client<T::Response>, ClientError>> {
+    fn _connect(&self) -> impl Future<Output = Result<Client, ClientError>> {
         let fut = self.connector.call(Connect::new(self.address.clone()));
         let pkt = self.pkt.clone();
         let keep_alive = pkt.keep_alive;
@@ -254,23 +275,21 @@ where
         let pool = self.pool.clone();
 
         async move {
-            let mut io = fut.await?;
-            let state = State::with_memory_pool(pool.pool.get());
+            let io = fut.await?;
             let codec = codec::Codec::new().max_inbound_size(max_packet_size);
 
-            state.send(&mut io, &codec, codec::Packet::Connect(Box::new(pkt))).await?;
+            io.send(codec::Packet::Connect(Box::new(pkt)), &codec).await?;
 
-            let packet = state
-                .next(&mut io, &codec)
+            let packet = io
+                .next(&codec)
                 .await
-                .map_err(|e| ClientError::from(ProtocolError::from(e)))
-                .and_then(|res| {
-                    res.ok_or_else(|| {
-                        log::trace!("Mqtt server is disconnected during handshake");
-                        ClientError::Disconnected
-                    })
-                })?;
-            let shared = Rc::new(MqttShared::new(state.clone(), codec, 0, pool));
+                .ok_or_else(|| {
+                    log::trace!("Mqtt server is disconnected during handshake");
+                    ClientError::Disconnected
+                })?
+                .map_err(|e| ClientError::from(ProtocolError::from(e)))?;
+
+            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, 0, pool));
 
             match packet {
                 codec::Packet::ConnectAck(pkt) => {

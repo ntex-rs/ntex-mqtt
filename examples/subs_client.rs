@@ -52,6 +52,10 @@ async fn main() -> std::io::Result<()> {
                 log::error!("Protocol error: {:?}", msg);
                 Ready::Ok(msg.ack())
             }
+            v5::client::ControlMessage::PeerGone(msg) => {
+                log::warn!("Peer closed connection: {:?}", msg.error());
+                Ready::Ok(msg.ack())
+            }
             v5::client::ControlMessage::Closed(msg) => {
                 log::warn!("Server closed connection: {:?}", msg);
                 Ready::Ok(msg.ack())

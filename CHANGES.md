@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.0-b.0] - 2021-12-21
+
+* Upgrade to ntex 0.5
+
 ## [0.7.7] - 2021-12-17
 
 * Wait for close control message and inner services on dispatcher shutdown #78
