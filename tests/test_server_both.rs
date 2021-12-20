@@ -1,8 +1,7 @@
 use std::convert::TryFrom;
 
-use futures::future::ok;
 use ntex::server;
-use ntex::util::{ByteString, Bytes};
+use ntex::util::{ByteString, Bytes, Ready};
 
 use ntex_mqtt::{v3, v5, MqttServer};
 
@@ -29,12 +28,14 @@ impl TryFrom<TestError> for v5::PublishAck {
 async fn test_simple() -> std::io::Result<()> {
     let srv = server::test_server(|| {
         MqttServer::new()
-            .v3(v3::MqttServer::new(|con: v3::Handshake<_>| {
-                ok::<_, TestError>(con.ack(St, false))
+            .v3(v3::MqttServer::new(|con: v3::Handshake| {
+                Ready::Ok::<_, TestError>(con.ack(St, false))
             })
-            .publish(|_| ok::<_, TestError>(())))
-            .v5(v5::MqttServer::new(|con: v5::Handshake<_>| ok::<_, TestError>(con.ack(St)))
-                .publish(|p: v5::Publish| ok::<_, TestError>(p.ack())))
+            .publish(|_| Ready::Ok::<_, TestError>(())))
+            .v5(v5::MqttServer::new(|con: v5::Handshake| {
+                Ready::Ok::<_, TestError>(con.ack(St))
+            })
+            .publish(|p: v5::Publish| Ready::Ok::<_, TestError>(p.ack())))
     });
 
     // connect to v5 server

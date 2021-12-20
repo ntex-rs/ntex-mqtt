@@ -30,9 +30,9 @@ impl std::convert::TryFrom<MyServerError> for PublishAck {
     }
 }
 
-async fn handshake<Io>(
-    handshake: v5::Handshake<Io>,
-) -> Result<v5::HandshakeAck<Io, MySession>, MyServerError> {
+async fn handshake(
+    handshake: v5::Handshake,
+) -> Result<v5::HandshakeAck<MySession>, MyServerError> {
     log::info!("new connection: {:?}", handshake);
 
     let session = MySession {
@@ -96,6 +96,7 @@ fn control_service_factory() -> impl ServiceFactory<
             }
             v5::ControlMessage::Unsubscribe(s) => Ready::Ok(s.ack()),
             v5::ControlMessage::Closed(c) => Ready::Ok(c.ack()),
+            v5::ControlMessage::PeerGone(c) => Ready::Ok(c.ack()),
         }))
     })
 }
@@ -106,7 +107,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     ntex::server::Server::build()
-        .bind("mqtt", "127.0.0.1:1883", || {
+        .bind("mqtt", "127.0.0.1:1883", |_| {
             MqttServer::new(handshake)
                 .control(control_service_factory())
                 .publish(fn_factory_with_config(|session: Session<MySession>| {

@@ -1,11 +1,10 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{convert::TryFrom, num::NonZeroU16, time::Duration};
 
-use futures::{future::ok, FutureExt, SinkExt, StreamExt};
-use ntex::codec::Framed;
+use futures::FutureExt;
 use ntex::server;
 use ntex::time::sleep;
-use ntex::util::{poll_fn, ByteString, Bytes};
+use ntex::util::{ByteString, Bytes, Ready};
 
 use ntex_mqtt::v5::{
     client, codec, error, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish,
@@ -43,14 +42,16 @@ fn pkt_publish() -> codec::Publish {
     }
 }
 
-async fn handshake<Io>(packet: Handshake<Io>) -> Result<HandshakeAck<Io, St>, TestError> {
+async fn handshake(packet: Handshake) -> Result<HandshakeAck<St>, TestError> {
     Ok(packet.ack(St))
 }
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
     let srv = server::test_server(|| {
-        MqttServer::new(handshake).publish(|p: Publish| ok::<_, TestError>(p.ack())).finish()
+        MqttServer::new(handshake)
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .finish()
     });
 
     // connect to server
@@ -74,7 +75,7 @@ async fn test_disconnect() -> std::io::Result<()> {
     let srv = server::test_server(|| {
         MqttServer::new(handshake)
             .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
-                ok::<_, TestError>(ntex::service::fn_service(move |p: Publish| {
+                Ready::Ok::<_, TestError>(ntex::service::fn_service(move |p: Publish| {
                     session.sink().close();
                     async move {
                         sleep(Duration::from_millis(100)).await;
@@ -105,7 +106,7 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
     let srv = server::test_server(|| {
         MqttServer::new(handshake)
             .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
-                ok::<_, TestError>(ntex::service::fn_service(move |p: Publish| {
+                Ready::Ok::<_, TestError>(ntex::service::fn_service(move |p: Publish| {
                     let pkt = codec::Disconnect {
                         reason_code: codec::DisconnectReasonCode::ServerMoved,
                         ..Default::default()
@@ -143,30 +144,32 @@ async fn test_ping() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         let ping = ping2.clone();
         MqttServer::new(handshake)
-            .publish(|p: Publish| ok::<_, TestError>(p.ack()))
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
             .control(move |msg| {
                 let ping = ping.clone();
                 match msg {
                     ControlMessage::Ping(msg) => {
                         ping.store(true, Relaxed);
-                        ok::<_, TestError>(msg.ack())
+                        Ready::Ok::<_, TestError>(msg.ack())
                     }
-                    _ => ok(msg.disconnect_with(codec::Disconnect::default())),
+                    _ => Ready::Ok(msg.disconnect_with(codec::Disconnect::default())),
                 }
             })
             .finish()
     });
 
     let io = srv.connect().await.unwrap();
-    let mut framed = Framed::new(io, codec::Codec::new());
-    framed
-        .send(codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))))
-        .await
-        .unwrap();
-    let _ = framed.next().await.unwrap().unwrap();
+    let codec = codec::Codec::new();
+    io.send(
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let _ = io.next(&codec).await.unwrap().unwrap();
 
-    framed.send(codec::Packet::PingRequest).await.unwrap();
-    let pkt = framed.next().await.unwrap().unwrap();
+    io.send(codec::Packet::PingRequest, &codec).await.unwrap();
+    let pkt = io.next(&codec).await.unwrap().unwrap();
     assert_eq!(pkt, codec::Packet::PingResponse);
     assert!(ping.load(Relaxed));
 
@@ -187,50 +190,51 @@ async fn test_ack_order() -> std::io::Result<()> {
                         sub.options();
                         sub.subscribe(codec::QoS::AtLeastOnce);
                     }
-                    ok::<_, TestError>(msg.ack())
+                    Ready::Ok::<_, TestError>(msg.ack())
                 }
-                _ => ok(msg.disconnect()),
+                _ => Ready::Ok(msg.disconnect()),
             })
             .finish()
     });
 
     let io = srv.connect().await.unwrap();
-    let mut framed = Framed::new(io, codec::Codec::default());
-    framed
-        .send(codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))))
-        .await
-        .unwrap();
-    let _ = framed.next().await.unwrap().unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let _ = io.next(&codec).await.unwrap().unwrap();
 
-    framed
-        .send(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
-                .into(),
-        )
-        .await
-        .unwrap();
-    framed
-        .send(
-            codec::Subscribe {
-                id: None,
-                packet_id: NonZeroU16::new(2).unwrap(),
-                user_properties: Default::default(),
-                topic_filters: vec![(
-                    ByteString::from("topic1"),
-                    codec::SubscriptionOptions {
-                        qos: codec::QoS::AtLeastOnce,
-                        no_local: false,
-                        retain_as_published: false,
-                        retain_handling: codec::RetainHandling::AtSubscribe,
-                    },
-                )],
-            }
-            .into(),
-        )
-        .await
-        .unwrap();
+    io.send(
+        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
+        &codec,
+    )
+    .await
+    .unwrap();
+    io.send(
+        codec::Subscribe {
+            id: None,
+            packet_id: NonZeroU16::new(2).unwrap(),
+            user_properties: Default::default(),
+            topic_filters: vec![(
+                ByteString::from("topic1"),
+                codec::SubscriptionOptions {
+                    qos: codec::QoS::AtLeastOnce,
+                    no_local: false,
+                    retain_as_published: false,
+                    retain_handling: codec::RetainHandling::AtSubscribe,
+                },
+            )],
+        }
+        .into(),
+        &codec,
+    )
+    .await
+    .unwrap();
 
-    let pkt = framed.next().await.unwrap().unwrap();
+    let pkt = io.next(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::PublishAck(codec::PublishAck {
@@ -241,7 +245,7 @@ async fn test_ack_order() -> std::io::Result<()> {
         })
     );
 
-    let pkt = framed.next().await.unwrap().unwrap();
+    let pkt = io.next(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::SubscribeAck(codec::SubscribeAck {
@@ -266,69 +270,69 @@ async fn test_dups() {
     });
 
     let io = srv.connect().await.unwrap();
-    let mut framed = Framed::new(io, codec::Codec::default());
-    framed
-        .send(codec::Packet::Connect(Box::new(
+    let codec = codec::Codec::default();
+    io.send(
+        codec::Packet::Connect(Box::new(
             codec::Connect::default().client_id("user").receive_max(2),
-        )))
-        .await
-        .unwrap();
-    let _ = framed.next().await.unwrap().unwrap();
+        )),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let _ = io.next(&codec).await.unwrap().unwrap();
 
-    framed
-        .send(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
-                .into(),
-        )
-        .await
-        .unwrap();
+    io.send(
+        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
+        &codec,
+    )
+    .await
+    .unwrap();
 
     // send packet_id dup
-    framed
-        .send(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
-                .into(),
-        )
-        .await
-        .unwrap();
+    io.send(
+        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
+        &codec,
+    )
+    .await
+    .unwrap();
 
     // send subscribe dup
-    framed
-        .send(
-            codec::Subscribe {
-                id: None,
-                packet_id: NonZeroU16::new(1).unwrap(),
-                user_properties: Default::default(),
-                topic_filters: vec![(
-                    ByteString::from("topic1"),
-                    codec::SubscriptionOptions {
-                        qos: codec::QoS::AtLeastOnce,
-                        no_local: false,
-                        retain_as_published: false,
-                        retain_handling: codec::RetainHandling::AtSubscribe,
-                    },
-                )],
-            }
-            .into(),
-        )
-        .await
-        .unwrap();
+    io.send(
+        codec::Subscribe {
+            id: None,
+            packet_id: NonZeroU16::new(1).unwrap(),
+            user_properties: Default::default(),
+            topic_filters: vec![(
+                ByteString::from("topic1"),
+                codec::SubscriptionOptions {
+                    qos: codec::QoS::AtLeastOnce,
+                    no_local: false,
+                    retain_as_published: false,
+                    retain_handling: codec::RetainHandling::AtSubscribe,
+                },
+            )],
+        }
+        .into(),
+        &codec,
+    )
+    .await
+    .unwrap();
 
     // send unsubscribe dup
-    framed
-        .send(
-            codec::Unsubscribe {
-                packet_id: NonZeroU16::new(1).unwrap(),
-                user_properties: Default::default(),
-                topic_filters: vec![ByteString::from("topic1")],
-            }
-            .into(),
-        )
-        .await
-        .unwrap();
+    io.send(
+        codec::Unsubscribe {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            user_properties: Default::default(),
+            topic_filters: vec![ByteString::from("topic1")],
+        }
+        .into(),
+        &codec,
+    )
+    .await
+    .unwrap();
 
     // PublishAck
-    let pkt = framed.next().await.unwrap().unwrap();
+    let pkt = io.next(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::PublishAck(codec::PublishAck {
@@ -340,7 +344,7 @@ async fn test_dups() {
     );
 
     // SubscribeAck
-    let pkt = framed.next().await.unwrap().unwrap();
+    let pkt = io.next(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::SubscribeAck {
@@ -353,7 +357,7 @@ async fn test_dups() {
     );
 
     // UnsubscribeAck
-    let pkt = framed.next().await.unwrap().unwrap();
+    let pkt = io.next(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::UnsubscribeAck {
@@ -376,19 +380,21 @@ async fn test_max_receive() {
                 sleep(Duration::from_millis(10000)).map(move |_| Ok::<_, TestError>(p.ack()))
             })
             .control(move |msg| match msg {
-                ControlMessage::ProtocolError(msg) => ok::<_, TestError>(msg.ack()),
-                _ => ok(msg.disconnect()),
+                ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+                _ => Ready::Ok(msg.disconnect()),
             })
             .finish()
     });
     let io = srv.connect().await.unwrap();
-    let mut framed = Framed::new(io, codec::Codec::default());
+    let codec = codec::Codec::default();
 
-    framed
-        .send(codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))))
-        .await
-        .unwrap();
-    let ack = framed.next().await.unwrap().unwrap();
+    io.send(
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let ack = io.next(&codec).await.unwrap().unwrap();
     assert_eq!(
         ack,
         codec::Packet::ConnectAck(Box::new(codec::ConnectAck {
@@ -400,21 +406,19 @@ async fn test_max_receive() {
         }))
     );
 
-    framed
-        .send(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
-                .into(),
-        )
-        .await
-        .unwrap();
-    framed
-        .send(
-            codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() }
-                .into(),
-        )
-        .await
-        .unwrap();
-    let pkt = framed.next().await.unwrap().unwrap();
+    io.send(
+        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
+        &codec,
+    )
+    .await
+    .unwrap();
+    io.send(
+        codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() }.into(),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let pkt = io.next(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::Disconnect(codec::Disconnect {
@@ -435,16 +439,16 @@ async fn test_keepalive() {
     let srv = server::test_server(move || {
         let ka = ka2.clone();
 
-        MqttServer::new(|con: Handshake<_>| async move { Ok(con.ack(St).keep_alive(1)) })
+        MqttServer::new(|con: Handshake| async move { Ok(con.ack(St).keep_alive(1)) })
             .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
             .control(move |msg| match msg {
                 ControlMessage::ProtocolError(msg) => {
                     if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
                         ka.store(true, Relaxed);
                     }
-                    ok::<_, TestError>(msg.ack())
+                    Ready::Ok::<_, TestError>(msg.ack())
                 }
-                _ => ok(msg.disconnect()),
+                _ => Ready::Ok(msg.disconnect()),
             })
             .finish()
     });
@@ -471,16 +475,16 @@ async fn test_keepalive2() {
     let srv = server::test_server(move || {
         let ka = ka2.clone();
 
-        MqttServer::new(|con: Handshake<_>| async move { Ok(con.ack(St).keep_alive(1)) })
+        MqttServer::new(|con: Handshake| async move { Ok(con.ack(St).keep_alive(1)) })
             .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
             .control(move |msg| match msg {
                 ControlMessage::ProtocolError(msg) => {
                     if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
                         ka.store(true, Relaxed);
                     }
-                    ok::<_, TestError>(msg.ack())
+                    Ready::Ok::<_, TestError>(msg.ack())
                 }
-                _ => ok(msg.disconnect()),
+                _ => Ready::Ok(msg.disconnect()),
             })
             .finish()
     });
@@ -497,11 +501,11 @@ async fn test_keepalive2() {
     let res =
         sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
-    sleep(Duration::from_millis(1200)).await;
+    sleep(Duration::from_millis(500)).await;
     let res =
         sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
-    sleep(Duration::from_millis(2500)).await;
+    sleep(Duration::from_millis(2000)).await;
 
     assert!(!sink.is_open());
     assert!(ka.load(Relaxed));
@@ -510,7 +514,7 @@ async fn test_keepalive2() {
 #[ntex::test]
 async fn test_sink_encoder_error_pub_qos1() {
     let srv = server::test_server(move || {
-        MqttServer::new(|con: Handshake<_>| async move {
+        MqttServer::new(|con: Handshake| async move {
             let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
                 props.user_properties.push((
                     "ssssssssssssssssssssssssssssssssssss".into(),
@@ -530,8 +534,8 @@ async fn test_sink_encoder_error_pub_qos1() {
             sleep(Duration::from_millis(50)).map(move |_| Ok::<_, TestError>(p.ack()))
         })
         .control(move |msg| match msg {
-            ControlMessage::ProtocolError(msg) => ok::<_, TestError>(msg.ack()),
-            _ => ok(msg.disconnect()),
+            ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+            _ => Ready::Ok(msg.disconnect()),
         })
         .finish()
     });
@@ -556,7 +560,7 @@ async fn test_sink_encoder_error_pub_qos1() {
 #[ntex::test]
 async fn test_sink_encoder_error_pub_qos0() {
     let srv = server::test_server(move || {
-        MqttServer::new(|con: Handshake<_>| async move {
+        MqttServer::new(|con: Handshake| async move {
             let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
                 props.user_properties.push((
                     "ssssssssssssssssssssssssssssssssssss".into(),
@@ -574,8 +578,8 @@ async fn test_sink_encoder_error_pub_qos0() {
             sleep(Duration::from_millis(50)).map(move |_| Ok::<_, TestError>(p.ack()))
         })
         .control(move |msg| match msg {
-            ControlMessage::ProtocolError(msg) => ok::<_, TestError>(msg.ack()),
-            _ => ok(msg.disconnect()),
+            ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+            _ => Ready::Ok(msg.disconnect()),
         })
         .finish()
     });
@@ -600,7 +604,7 @@ async fn test_sink_encoder_error_pub_qos0() {
 #[ntex::test]
 async fn test_request_problem_info() {
     let srv = server::test_server(move || {
-        MqttServer::new(|con: Handshake<_>| async move { Ok(con.ack(St)) })
+        MqttServer::new(|con: Handshake| async move { Ok(con.ack(St)) })
             .publish(|p: Publish| async move {
                 Ok::<_, TestError>(
                     p.ack()
@@ -647,23 +651,25 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
                     msg.iter_mut().for_each(|mut s| {
                         s.fail(codec::SubscribeAckReason::ImplementationSpecificError)
                     });
-                    ok::<_, TestError>(msg.ack_reason("some reason".into()).ack())
+                    Ready::Ok::<_, TestError>(msg.ack_reason("some reason".into()).ack())
                 }
-                _ => ok(msg.disconnect()),
+                _ => Ready::Ok(msg.disconnect()),
             })
             .finish()
     });
 
     let io = srv.connect().await.unwrap();
-    let mut framed = Framed::new(io, codec::Codec::new());
-    framed
-        .send(codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))))
-        .await
-        .unwrap();
-    let _ = framed.next().await.unwrap().unwrap();
+    let codec = codec::Codec::new();
+    io.send(
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let _ = io.next(&codec).await.unwrap().unwrap();
 
-    framed
-        .send(codec::Packet::Subscribe(codec::Subscribe {
+    io.send(
+        codec::Packet::Subscribe(codec::Subscribe {
             packet_id: NonZeroU16::new(1).unwrap(),
             topic_filters: vec![(
                 "topic1".into(),
@@ -676,10 +682,12 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
             )],
             id: None,
             user_properties: codec::UserProperties::default(),
-        }))
-        .await
-        .unwrap();
-    let pkt = framed.next().await.unwrap().unwrap();
+        }),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let pkt = io.next(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::SubscribeAck(codec::SubscribeAck {
@@ -706,36 +714,41 @@ async fn test_handle_incoming() -> std::io::Result<()> {
         MqttServer::new(handshake)
             .publish(move |p: Publish| {
                 publish.store(true, Relaxed);
-                ok::<_, TestError>(p.ack())
+                Ready::Ok::<_, TestError>(p.ack())
             })
             .control(move |msg| match msg {
                 ControlMessage::Disconnect(msg) => {
                     disconnect.store(true, Relaxed);
-                    ok::<_, TestError>(msg.ack())
+                    Ready::Ok::<_, TestError>(msg.ack())
                 }
-                _ => ok(msg.disconnect()),
+                _ => Ready::Ok(msg.disconnect()),
             })
             .finish()
     });
 
     let io = srv.connect().await.unwrap();
-    let mut framed = Framed::new(io, codec::Codec::default());
-    framed
-        .write(codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))))
-        .unwrap();
-    framed.write(pkt_publish().into()).unwrap();
-    framed
-        .write(codec::Packet::Disconnect(codec::Disconnect {
+    let codec = codec::Codec::default();
+    io.encode(
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
+        &codec,
+    )
+    .unwrap();
+    io.encode(pkt_publish().into(), &codec).unwrap();
+    io.encode(
+        codec::Packet::Disconnect(codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::ReceiveMaximumExceeded,
             session_expiry_interval_secs: None,
             server_reference: None,
             reason_string: None,
             user_properties: Default::default(),
-        }))
-        .unwrap();
-    poll_fn(|cx| framed.flush(cx)).await.unwrap();
-    drop(framed);
-    sleep(Duration::from_millis(500)).await;
+        }),
+        &codec,
+    )
+    .unwrap();
+    io.write_ready(true).await.unwrap();
+    sleep(Duration::from_millis(50)).await;
+    drop(io);
+    sleep(Duration::from_millis(50)).await;
 
     assert!(publish.load(Relaxed));
     assert!(disconnect.load(Relaxed));

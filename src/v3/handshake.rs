@@ -1,20 +1,20 @@
 use std::{fmt, rc::Rc};
 
-use ntex::time::Seconds;
+use ntex::{io::IoBoxed, time::Seconds};
 
 use super::codec as mqtt;
 use super::shared::MqttShared;
 use super::sink::MqttSink;
 
 /// Connect message
-pub struct Handshake<Io> {
-    io: Io,
+pub struct Handshake {
+    io: IoBoxed,
     pkt: Box<mqtt::Connect>,
     shared: Rc<MqttShared>,
 }
 
-impl<Io> Handshake<Io> {
-    pub(crate) fn new(pkt: Box<mqtt::Connect>, io: Io, shared: Rc<MqttShared>) -> Self {
+impl Handshake {
+    pub(crate) fn new(pkt: Box<mqtt::Connect>, io: IoBoxed, shared: Rc<MqttShared>) -> Self {
         Self { io, pkt, shared }
     }
 
@@ -27,8 +27,8 @@ impl<Io> Handshake<Io> {
     }
 
     #[inline]
-    pub fn io(&mut self) -> &mut Io {
-        &mut self.io
+    pub fn io(&self) -> &IoBoxed {
+        &self.io
     }
 
     /// Returns mqtt server sink
@@ -37,7 +37,7 @@ impl<Io> Handshake<Io> {
     }
 
     /// Ack handshake message and set state
-    pub fn ack<St>(self, st: St, session_present: bool) -> HandshakeAck<Io, St> {
+    pub fn ack<St>(self, st: St, session_present: bool) -> HandshakeAck<St> {
         let Handshake { io, shared, pkt } = self;
         // [MQTT-3.1.2-24].
         let keepalive = if pkt.keep_alive != 0 {
@@ -46,9 +46,9 @@ impl<Io> Handshake<Io> {
             30
         };
         HandshakeAck {
-            session_present,
             io,
             shared,
+            session_present,
             session: Some(st),
             keepalive: Seconds(keepalive),
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
@@ -56,7 +56,7 @@ impl<Io> Handshake<Io> {
     }
 
     /// Create connect ack object with `identifier rejected` return code
-    pub fn identifier_rejected<St>(self) -> HandshakeAck<Io, St> {
+    pub fn identifier_rejected<St>(self) -> HandshakeAck<St> {
         HandshakeAck {
             io: self.io,
             shared: self.shared,
@@ -68,7 +68,7 @@ impl<Io> Handshake<Io> {
     }
 
     /// Create connect ack object with `bad user name or password` return code
-    pub fn bad_username_or_pwd<St>(self) -> HandshakeAck<Io, St> {
+    pub fn bad_username_or_pwd<St>(self) -> HandshakeAck<St> {
         HandshakeAck {
             io: self.io,
             shared: self.shared,
@@ -80,7 +80,7 @@ impl<Io> Handshake<Io> {
     }
 
     /// Create connect ack object with `not authorized` return code
-    pub fn not_authorized<St>(self) -> HandshakeAck<Io, St> {
+    pub fn not_authorized<St>(self) -> HandshakeAck<St> {
         HandshakeAck {
             io: self.io,
             shared: self.shared,
@@ -92,7 +92,7 @@ impl<Io> Handshake<Io> {
     }
 
     /// Create connect ack object with `service unavailable` return code
-    pub fn service_unavailable<St>(self) -> HandshakeAck<Io, St> {
+    pub fn service_unavailable<St>(self) -> HandshakeAck<St> {
         HandshakeAck {
             io: self.io,
             shared: self.shared,
@@ -104,15 +104,15 @@ impl<Io> Handshake<Io> {
     }
 }
 
-impl<T> fmt::Debug for Handshake<T> {
+impl fmt::Debug for Handshake {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.pkt.fmt(f)
     }
 }
 
 /// Ack connect message
-pub struct HandshakeAck<Io, St> {
-    pub(crate) io: Io,
+pub struct HandshakeAck<St> {
+    pub(crate) io: IoBoxed,
     pub(crate) session: Option<St>,
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectAckReason,
@@ -120,28 +120,12 @@ pub struct HandshakeAck<Io, St> {
     pub(crate) keepalive: Seconds,
 }
 
-impl<Io, St> HandshakeAck<Io, St> {
+impl<St> HandshakeAck<St> {
     /// Set idle time-out for the connection in seconds
     ///
     /// By default idle time-out is set to 30 seconds.
     pub fn idle_timeout(mut self, timeout: Seconds) -> Self {
         self.keepalive = timeout;
-        self
-    }
-
-    #[doc(hidden)]
-    #[deprecated(since = "0.7.6", note = "Use memory pool config")]
-    #[inline]
-    /// Set read/write buffer sizes
-    ///
-    /// By default max buffer size is 4kb for both read and write buffer,
-    /// Min size is 256 bytes.
-    pub fn buffer_params(
-        self,
-        _max_read_buf: u16,
-        _max_write_buf: u16,
-        _min_buf_size: u16,
-    ) -> Self {
         self
     }
 }

@@ -2,17 +2,18 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, rc::Rc};
 
 use ntex::channel::pool;
 use ntex::codec::{Decoder, Encoder};
+use ntex::io::IoRef;
 use ntex::util::{BytesMut, HashMap, PoolId, PoolRef};
 
 use super::codec;
-use crate::{error, io::State, types::packet_type};
+use crate::{error, types::packet_type};
 
 pub(crate) struct MqttShared {
+    pub(super) io: IoRef,
     pub(super) cap: Cell<usize>,
     queues: RefCell<MqttSharedQueues>,
     pub(super) inflight_idx: Cell<u16>,
     pub(super) pool: Rc<MqttSinkPool>,
-    pub(super) state: State,
     pub(super) codec: codec::Codec,
 }
 
@@ -40,13 +41,13 @@ impl Default for MqttSinkPool {
 
 impl MqttShared {
     pub(super) fn new(
-        state: State,
+        io: IoRef,
         codec: codec::Codec,
         cap: usize,
         pool: Rc<MqttSinkPool>,
     ) -> Self {
         Self {
-            state,
+            io,
             pool,
             codec,
             cap: Cell::new(cap),

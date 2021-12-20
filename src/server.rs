@@ -1,30 +1,28 @@
 use std::task::{Context, Poll};
 use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin, rc::Rc, time};
 
-use ntex::codec::{AsyncRead, AsyncWrite};
+use ntex::io::{Filter, Io, IoBoxed};
 use ntex::service::{Service, ServiceFactory};
 use ntex::time::{sleep, Seconds, Sleep};
 use ntex::util::{join, Pool, PoolId, PoolRef, Ready};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::io::State;
 use crate::version::{ProtocolVersion, VersionCodec};
 use crate::{v3, v5};
 
 /// Mqtt Server
-pub struct MqttServer<Io, V3, V5, Err, InitErr> {
+pub struct MqttServer<F, V3, V5, Err, InitErr> {
     v3: V3,
     v5: V5,
     handshake_timeout: Seconds,
-    pool: Pool,
-    _t: marker::PhantomData<(Io, Err, InitErr)>,
+    _t: marker::PhantomData<(F, Err, InitErr)>,
 }
 
-impl<Io, Err, InitErr>
+impl<F, Err, InitErr>
     MqttServer<
-        Io,
-        DefaultProtocolServer<Io, Err, InitErr>,
-        DefaultProtocolServer<Io, Err, InitErr>,
+        F,
+        DefaultProtocolServer<Err, InitErr>,
+        DefaultProtocolServer<Err, InitErr>,
         Err,
         InitErr,
     >
@@ -34,18 +32,17 @@ impl<Io, Err, InitErr>
         MqttServer {
             v3: DefaultProtocolServer::new(ProtocolVersion::MQTT3),
             v5: DefaultProtocolServer::new(ProtocolVersion::MQTT5),
-            pool: PoolId::P5.pool(),
             handshake_timeout: Seconds::ZERO,
             _t: marker::PhantomData,
         }
     }
 }
 
-impl<Io, Err, InitErr> Default
+impl<F, Err, InitErr> Default
     for MqttServer<
-        Io,
-        DefaultProtocolServer<Io, Err, InitErr>,
-        DefaultProtocolServer<Io, Err, InitErr>,
+        F,
+        DefaultProtocolServer<Err, InitErr>,
+        DefaultProtocolServer<Err, InitErr>,
         Err,
         InitErr,
     >
@@ -55,7 +52,7 @@ impl<Io, Err, InitErr> Default
     }
 }
 
-impl<Io, V3, V5, Err, InitErr> MqttServer<Io, V3, V5, Err, InitErr> {
+impl<F, V3, V5, Err, InitErr> MqttServer<F, V3, V5, Err, InitErr> {
     /// Set handshake timeout.
     ///
     /// Handshake includes `connect` packet.
@@ -64,30 +61,20 @@ impl<Io, V3, V5, Err, InitErr> MqttServer<Io, V3, V5, Err, InitErr> {
         self.handshake_timeout = timeout;
         self
     }
-
-    /// Set memory pool.
-    ///
-    /// Use specified memory pool for memory allocations. By default P5
-    /// memory pool is used.
-    pub fn memory_pool(mut self, id: PoolId) -> Self {
-        self.pool = id.pool();
-        self
-    }
 }
 
-impl<Io, V3, V5, Err, InitErr> MqttServer<Io, V3, V5, Err, InitErr>
+impl<F, V3, V5, Err, InitErr> MqttServer<F, V3, V5, Err, InitErr>
 where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
     V3: ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Sleep>),
+        Request = (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Sleep>),
+        Request = (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -96,12 +83,12 @@ where
     /// Service to handle v3 protocol
     pub fn v3<St, C, Cn, P>(
         self,
-        service: v3::MqttServer<Io, St, C, Cn, P>,
+        service: v3::MqttServer<St, C, Cn, P>,
     ) -> MqttServer<
-        Io,
+        F,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, State, Option<Sleep>),
+            Request = (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -114,8 +101,8 @@ where
         St: 'static,
         C: ServiceFactory<
                 Config = (),
-                Request = v3::Handshake<Io>,
-                Response = v3::HandshakeAck<Io, St>,
+                Request = v3::Handshake,
+                Response = v3::HandshakeAck<St>,
                 Error = Err,
                 InitError = InitErr,
             > + 'static,
@@ -135,7 +122,6 @@ where
         MqttServer {
             v3: service.inner_finish(),
             v5: self.v5,
-            pool: self.pool,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
         }
@@ -144,12 +130,12 @@ where
     /// Service to handle v3 protocol
     pub fn v3_variants(
         self,
-        service: v3::Selector<Io, Err, InitErr>,
+        service: v3::Selector<Err, InitErr>,
     ) -> MqttServer<
-        Io,
+        F,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, State, Option<Sleep>),
+            Request = (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -165,7 +151,6 @@ where
         MqttServer {
             v3: service.finish_server(),
             v5: self.v5,
-            pool: self.pool,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
         }
@@ -174,13 +159,13 @@ where
     /// Service to handle v5 protocol
     pub fn v5<St, C, Cn, P>(
         self,
-        service: v5::MqttServer<Io, St, C, Cn, P>,
+        service: v5::MqttServer<St, C, Cn, P>,
     ) -> MqttServer<
-        Io,
+        F,
         V3,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, State, Option<Sleep>),
+            Request = (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -192,8 +177,8 @@ where
         St: 'static,
         C: ServiceFactory<
                 Config = (),
-                Request = v5::Handshake<Io>,
-                Response = v5::HandshakeAck<Io, St>,
+                Request = v5::Handshake,
+                Response = v5::HandshakeAck<St>,
                 Error = Err,
                 InitError = InitErr,
             > + 'static,
@@ -218,7 +203,6 @@ where
         MqttServer {
             v3: self.v3,
             v5: service.inner_finish(),
-            pool: self.pool,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
         }
@@ -227,13 +211,13 @@ where
     /// Service to handle v5 protocol
     pub fn v5_variants<St, C, Cn, P>(
         self,
-        service: v5::Selector<Io, Err, InitErr>,
+        service: v5::Selector<Err, InitErr>,
     ) -> MqttServer<
-        Io,
+        F,
         V3,
         impl ServiceFactory<
             Config = (),
-            Request = (Io, State, Option<Sleep>),
+            Request = (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -248,26 +232,25 @@ where
         MqttServer {
             v3: self.v3,
             v5: service.finish_server(),
-            pool: self.pool,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
         }
     }
 }
 
-impl<Io, V3, V5, Err, InitErr> ServiceFactory for MqttServer<Io, V3, V5, Err, InitErr>
+impl<F, V3, V5, Err, InitErr> ServiceFactory for MqttServer<F, V3, V5, Err, InitErr>
 where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
+    F: Filter,
     V3: ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Sleep>),
+        Request = (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
         Config = (),
-        Request = (Io, State, Option<Sleep>),
+        Request = (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -276,21 +259,20 @@ where
     V5::Future: 'static,
 {
     type Config = ();
-    type Request = Io;
+    type Request = Io<F>;
     type Response = ();
     type Error = MqttError<Err>;
-    type Service = MqttServerImpl<Io, V3::Service, V5::Service, Err>;
+    type Service = MqttServerImpl<F, V3::Service, V5::Service, Err>;
     type InitError = InitErr;
     type Future = Pin<
         Box<
             dyn Future<
-                Output = Result<MqttServerImpl<Io, V3::Service, V5::Service, Err>, InitErr>,
+                Output = Result<MqttServerImpl<F, V3::Service, V5::Service, Err>, InitErr>,
             >,
         >,
     >;
 
     fn new_service(&self, _: ()) -> Self::Future {
-        let pool = self.pool.clone();
         let handshake_timeout = self.handshake_timeout;
         let fut = join(self.v3.new_service(()), self.v5.new_service(()));
         Box::pin(async move {
@@ -299,7 +281,6 @@ where
             let v5 = v5?;
             Ok(MqttServerImpl {
                 handlers: Rc::new((v3, v5)),
-                pool,
                 handshake_timeout,
                 _t: marker::PhantomData,
             })
@@ -308,30 +289,28 @@ where
 }
 
 /// Mqtt Server
-pub struct MqttServerImpl<Io, V3, V5, Err> {
+pub struct MqttServerImpl<F, V3, V5, Err> {
     handlers: Rc<(V3, V5)>,
     handshake_timeout: Seconds,
-    pool: Pool,
-    _t: marker::PhantomData<(Io, Err)>,
+    _t: marker::PhantomData<(F, Err)>,
 }
 
-impl<Io, V3, V5, Err> Service for MqttServerImpl<Io, V3, V5, Err>
+impl<F, V3, V5, Err> Service for MqttServerImpl<F, V3, V5, Err>
 where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    V3: Service<Request = (Io, State, Option<Sleep>), Response = (), Error = MqttError<Err>>,
-    V5: Service<Request = (Io, State, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    F: Filter,
+    V3: Service<Request = (IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    V5: Service<Request = (IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
 {
-    type Request = Io;
+    type Request = Io<F>;
     type Response = ();
     type Error = MqttError<Err>;
-    type Future = MqttServerImplResponse<Io, V3, V5, Err>;
+    type Future = MqttServerImplResponse<V3, V5, Err>;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let ready1 = self.handlers.0.poll_ready(cx)?.is_ready();
         let ready2 = self.handlers.1.poll_ready(cx)?.is_ready();
-        let ready3 = self.pool.poll_ready(cx).is_ready();
 
-        if ready1 && ready2 && ready3 {
+        if ready1 && ready2 {
             Poll::Ready(Ok(()))
         } else {
             Poll::Pending
@@ -349,57 +328,50 @@ where
         }
     }
 
-    fn call(&self, req: Io) -> Self::Future {
-        let pool = self.pool.pool_ref();
+    fn call(&self, req: Io<F>) -> Self::Future {
+        let req = req.into_boxed();
         let delay = self.handshake_timeout.map(sleep);
 
         MqttServerImplResponse {
             state: MqttServerImplState::Version {
-                item: Some((
-                    req,
-                    State::with_memory_pool(pool),
-                    VersionCodec,
-                    self.handlers.clone(),
-                    delay,
-                )),
+                item: Some((req, VersionCodec, self.handlers.clone(), delay)),
             },
         }
     }
 }
 
 pin_project_lite::pin_project! {
-    pub struct MqttServerImplResponse<Io, V3, V5, Err>
+    pub struct MqttServerImplResponse<V3, V5, Err>
     where
         V3: Service<
-            Request = (Io, State, Option<Sleep>),
+            Request = (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
         >,
         V5: Service<
-            Request = (Io, State, Option<Sleep>),
+            Request = (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
         >,
     {
         #[pin]
-        state: MqttServerImplState<Io, V3, V5>,
+        state: MqttServerImplState<V3, V5>,
     }
 }
 
 pin_project_lite::pin_project! {
     #[project = MqttServerImplStateProject]
-    pub(crate) enum MqttServerImplState<Io, V3: Service, V5: Service> {
+    pub(crate) enum MqttServerImplState<V3: Service, V5: Service> {
         V3 { #[pin] fut: V3::Future },
         V5 { #[pin] fut: V5::Future },
-        Version { item: Option<(Io, State, VersionCodec, Rc<(V3, V5)>, Option<Sleep>)> },
+        Version { item: Option<(IoBoxed, VersionCodec, Rc<(V3, V5)>, Option<Sleep>)> },
     }
 }
 
-impl<Io, V3, V5, Err> Future for MqttServerImplResponse<Io, V3, V5, Err>
+impl<V3, V5, Err> Future for MqttServerImplResponse<V3, V5, Err>
 where
-    Io: AsyncRead + AsyncWrite + Unpin + 'static,
-    V3: Service<Request = (Io, State, Option<Sleep>), Response = (), Error = MqttError<Err>>,
-    V5: Service<Request = (Io, State, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    V3: Service<Request = (IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    V5: Service<Request = (IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
 {
     type Output = Result<(), MqttError<Err>>;
 
@@ -411,7 +383,7 @@ where
                 MqttServerImplStateProject::V3 { fut } => return fut.poll(cx),
                 MqttServerImplStateProject::V5 { fut } => return fut.poll(cx),
                 MqttServerImplStateProject::Version { ref mut item } => {
-                    if let Some(ref mut delay) = item.as_mut().unwrap().4 {
+                    if let Some(ref mut delay) = item.as_mut().unwrap().3 {
                         match Pin::new(delay).poll(cx) {
                             Poll::Pending => (),
                             Poll::Ready(_) => {
@@ -422,28 +394,28 @@ where
 
                     let st = item.as_mut().unwrap();
 
-                    match st.1.poll_next(&mut st.0, &st.2, cx) {
-                        Poll::Ready(Ok(Some(ver))) => {
-                            let (io, state, _, handlers, delay) = item.take().unwrap();
+                    match st.0.poll_read_next(&st.1, cx) {
+                        Poll::Ready(Some(Ok(ver))) => {
+                            let (io, _, handlers, delay) = item.take().unwrap();
                             this = self.as_mut().project();
                             match ver {
                                 ProtocolVersion::MQTT3 => {
                                     this.state.set(MqttServerImplState::V3 {
-                                        fut: handlers.0.call((io, state, delay)),
+                                        fut: handlers.0.call((io, delay)),
                                     })
                                 }
                                 ProtocolVersion::MQTT5 => {
                                     this.state.set(MqttServerImplState::V5 {
-                                        fut: handlers.1.call((io, state, delay)),
+                                        fut: handlers.1.call((io, delay)),
                                     })
                                 }
                             }
                             continue;
                         }
-                        Poll::Ready(Ok(None)) => {
-                            return Poll::Ready(Err(MqttError::Disconnected))
+                        Poll::Ready(None) => return Poll::Ready(Err(MqttError::Disconnected)),
+                        Poll::Ready(Some(Err(err))) => {
+                            return Poll::Ready(Err(MqttError::from(err)))
                         }
-                        Poll::Ready(Err(err)) => return Poll::Ready(Err(MqttError::from(err))),
                         Poll::Pending => return Poll::Pending,
                     }
                 }
@@ -452,23 +424,23 @@ where
     }
 }
 
-pub struct DefaultProtocolServer<Io, Err, InitErr> {
+pub struct DefaultProtocolServer<Err, InitErr> {
     ver: ProtocolVersion,
-    _t: marker::PhantomData<(Io, Err, InitErr)>,
+    _t: marker::PhantomData<(Err, InitErr)>,
 }
 
-impl<Io, Err, InitErr> DefaultProtocolServer<Io, Err, InitErr> {
+impl<Err, InitErr> DefaultProtocolServer<Err, InitErr> {
     fn new(ver: ProtocolVersion) -> Self {
         Self { ver, _t: marker::PhantomData }
     }
 }
 
-impl<Io, Err, InitErr> ServiceFactory for DefaultProtocolServer<Io, Err, InitErr> {
+impl<Err, InitErr> ServiceFactory for DefaultProtocolServer<Err, InitErr> {
     type Config = ();
-    type Request = (Io, State, Option<Sleep>);
+    type Request = (IoBoxed, Option<Sleep>);
     type Response = ();
     type Error = MqttError<Err>;
-    type Service = DefaultProtocolServer<Io, Err, InitErr>;
+    type Service = DefaultProtocolServer<Err, InitErr>;
     type InitError = InitErr;
     type Future = Ready<Self::Service, Self::InitError>;
 
@@ -477,8 +449,8 @@ impl<Io, Err, InitErr> ServiceFactory for DefaultProtocolServer<Io, Err, InitErr
     }
 }
 
-impl<Io, Err, InitErr> Service for DefaultProtocolServer<Io, Err, InitErr> {
-    type Request = (Io, State, Option<Sleep>);
+impl<Err, InitErr> Service for DefaultProtocolServer<Err, InitErr> {
+    type Request = (IoBoxed, Option<Sleep>);
     type Response = ();
     type Error = MqttError<Err>;
     type Future = Ready<Self::Response, Self::Error>;

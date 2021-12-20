@@ -20,6 +20,8 @@ pub enum ControlMessage<E> {
     Error(Error<E>),
     /// Protocol level error
     ProtocolError(ProtocolError),
+    /// Peer is gone
+    PeerGone(PeerGone),
 }
 
 #[derive(Debug)]
@@ -75,13 +77,18 @@ impl<E> ControlMessage<E> {
         ControlMessage::ProtocolError(ProtocolError::new(err))
     }
 
+    /// Create a new `ControlMessage` from DISCONNECT packet.
+    pub(super) fn peer_gone() -> Self {
+        ControlMessage::PeerGone(PeerGone)
+    }
+
     /// Disconnects the client by sending DISCONNECT packet.
     pub fn disconnect(&self) -> ControlResult {
         ControlResult { result: ControlResultKind::Disconnect }
     }
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct Ping;
 
 impl Ping {
@@ -90,7 +97,7 @@ impl Ping {
     }
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct Disconnect;
 
 impl Disconnect {
@@ -344,5 +351,14 @@ impl Closed {
     /// convert packet to a result
     pub fn ack(self) -> ControlResult {
         ControlResult { result: ControlResultKind::Closed }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct PeerGone;
+
+impl PeerGone {
+    pub fn ack(self) -> ControlResult {
+        ControlResult { result: ControlResultKind::Nothing }
     }
 }

@@ -1,10 +1,11 @@
+use ntex::io::IoBoxed;
 use std::{fmt, num::NonZeroU16, rc::Rc};
 
 use super::{codec, shared::MqttShared, sink::MqttSink};
 
 /// Handshake message
-pub struct Handshake<Io> {
-    io: Io,
+pub struct Handshake {
+    io: IoBoxed,
     pkt: Box<codec::Connect>,
     pub(super) shared: Rc<MqttShared>,
     pub(super) max_size: u32,
@@ -12,10 +13,10 @@ pub struct Handshake<Io> {
     pub(super) max_topic_alias: u16,
 }
 
-impl<Io> Handshake<Io> {
+impl Handshake {
     pub(crate) fn new(
         pkt: Box<codec::Connect>,
-        io: Io,
+        io: IoBoxed,
         shared: Rc<MqttShared>,
         max_size: u32,
         max_receive: u16,
@@ -35,8 +36,8 @@ impl<Io> Handshake<Io> {
     }
 
     #[inline]
-    pub fn io(&mut self) -> &mut Io {
-        &mut self.io
+    pub fn io(&self) -> &IoBoxed {
+        &self.io
     }
 
     #[inline]
@@ -47,7 +48,7 @@ impl<Io> Handshake<Io> {
 
     #[inline]
     /// Ack handshake message and set state
-    pub fn ack<St>(self, st: St) -> HandshakeAck<Io, St> {
+    pub fn ack<St>(self, st: St) -> HandshakeAck<St> {
         let mut packet = codec::ConnectAck {
             reason_code: codec::ConnectAckReason::Success,
             topic_alias_max: self.max_topic_alias,
@@ -72,7 +73,7 @@ impl<Io> Handshake<Io> {
 
     #[inline]
     /// Create handshake ack object with error
-    pub fn failed<St>(self, reason_code: codec::ConnectAckReason) -> HandshakeAck<Io, St> {
+    pub fn failed<St>(self, reason_code: codec::ConnectAckReason) -> HandshakeAck<St> {
         HandshakeAck {
             io: self.io,
             shared: self.shared,
@@ -84,7 +85,7 @@ impl<Io> Handshake<Io> {
 
     #[inline]
     /// Create handshake ack object with provided ConnectAck packet
-    pub fn fail_with<St>(self, ack: codec::ConnectAck) -> HandshakeAck<Io, St> {
+    pub fn fail_with<St>(self, ack: codec::ConnectAck) -> HandshakeAck<St> {
         HandshakeAck {
             io: self.io,
             shared: self.shared,
@@ -95,22 +96,22 @@ impl<Io> Handshake<Io> {
     }
 }
 
-impl<T> fmt::Debug for Handshake<T> {
+impl fmt::Debug for Handshake {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.pkt.fmt(f)
     }
 }
 
 /// Handshake ack message
-pub struct HandshakeAck<Io, St> {
-    pub(crate) io: Io,
+pub struct HandshakeAck<St> {
+    pub(crate) io: IoBoxed,
     pub(crate) session: Option<St>,
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) packet: codec::ConnectAck,
     pub(crate) keepalive: u16,
 }
 
-impl<Io, St> HandshakeAck<Io, St> {
+impl<St> HandshakeAck<St> {
     #[inline]
     /// Set idle keep-alive for the connection in seconds.
     /// This method sets `server_keepalive_sec` property for `ConnectAck`
@@ -122,22 +123,6 @@ impl<Io, St> HandshakeAck<Io, St> {
             panic!("Timeout must be greater than 0")
         }
         self.keepalive = timeout;
-        self
-    }
-
-    #[doc(hidden)]
-    #[deprecated(since = "0.7.6", note = "Use memory pool config")]
-    #[inline]
-    /// Set read/write buffer sizes
-    ///
-    /// By default max buffer size is 4kb for both read and write buffer,
-    /// Min size is 256 bytes.
-    pub fn buffer_params(
-        self,
-        _max_read_buf: u16,
-        _max_write_buf: u16,
-        _min_buf_size: u16,
-    ) -> Self {
         self
     }
 

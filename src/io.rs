@@ -2,11 +2,11 @@
 use std::task::{Context, Poll};
 use std::{cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time};
 
-pub(crate) use ntex::framed::{DispatchItem, ReadTask, State, Timer, Write, WriteTask};
-
-use ntex::codec::{AsyncRead, AsyncWrite, Decoder, Encoder};
+use ntex::codec::{Decoder, Encoder};
+use ntex::io::{DispatchItem, Io, IoBoxed, IoRef, Timer};
 use ntex::service::{IntoService, Service};
-use ntex::{time::Seconds, util::Either, util::Pool};
+use ntex::time::{now, Seconds};
+use ntex::util::{Either, Pool};
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -23,13 +23,14 @@ pin_project_lite::pin_project! {
     {
         service: S,
         codec: U,
-        state: State,
+        io: IoBoxed,
         inner: Rc<RefCell<DispatcherState<S, U>>>,
         st: IoDispatcherState,
-        pool: Pool,
         timer: Timer,
         updated: time::Instant,
         keepalive_timeout: Seconds,
+        ready_err: bool,
+        pool: Pool,
         #[pin]
         response: Option<S::Future>,
         response_idx: usize,
@@ -71,12 +72,9 @@ pub(crate) enum IoDispatcherError<S, U> {
     Service(S),
 }
 
-impl<S, U> From<Either<S, U>> for IoDispatcherError<S, U> {
-    fn from(err: Either<S, U>) -> Self {
-        match err {
-            Either::Left(err) => IoDispatcherError::Service(err),
-            Either::Right(err) => IoDispatcherError::Encoder(err),
-        }
+impl<S, U> From<S> for IoDispatcherError<S, U> {
+    fn from(err: S) -> Self {
+        IoDispatcherError::Service(err)
     }
 }
 
@@ -109,23 +107,18 @@ where
     <U as Encoder>::Item: 'static,
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
-    pub(crate) fn with<T, F: IntoService<S>>(
-        io: T,
-        state: State,
+    pub(crate) fn new<F: IntoService<S>>(
+        io: IoBoxed,
         codec: U,
         service: F,
         timer: Timer,
-    ) -> Self
-    where
-        T: AsyncRead + AsyncWrite + Unpin + 'static,
-    {
-        let updated = timer.now();
+    ) -> Self {
+        let updated = now();
         let keepalive_timeout = Seconds(30);
-        let io = Rc::new(RefCell::new(io));
 
         // register keepalive timer
         let expire = updated + time::Duration::from(keepalive_timeout);
-        timer.register(expire, expire, &state);
+        timer.register(expire, expire, io.as_ref());
 
         let inner = Rc::new(RefCell::new(DispatcherState {
             error: None,
@@ -133,18 +126,15 @@ where
             queue: VecDeque::new(),
         }));
 
-        // start support tasks
-        ntex::rt::spawn(ReadTask::new(io.clone(), state.clone()));
-        ntex::rt::spawn(WriteTask::new(io, state.clone()));
-
         Dispatcher {
             st: IoDispatcherState::Processing,
             service: service.into_service(),
             response: None,
             response_idx: 0,
-            pool: state.memory_pool().pool(),
+            pool: io.memory_pool().pool(),
+            ready_err: false,
             inner,
-            state,
+            io,
             codec,
             timer,
             updated,
@@ -161,10 +151,10 @@ where
         // register keepalive timer
         let prev = self.updated + time::Duration::from(self.keepalive_timeout);
         if timeout.is_zero() {
-            self.timer.unregister(prev, &self.state);
+            self.timer.unregister(prev, self.io.as_ref());
         } else {
             let expire = self.updated + time::Duration::from(timeout);
-            self.timer.register(expire, prev, &self.state);
+            self.timer.register(expire, prev, self.io.as_ref());
         }
 
         self.keepalive_timeout = timeout;
@@ -180,16 +170,14 @@ where
     ///
     /// By default disconnect timeout is set to 1 seconds.
     pub(crate) fn disconnect_timeout(self, val: Seconds) -> Self {
-        self.state.set_disconnect_timeout(val);
+        self.io.set_disconnect_timeout(val.into());
         self
     }
 }
 
 impl<S, U> DispatcherState<S, U>
 where
-    S: Service<Request = DispatchItem<U>, Response = Option<Response<U>>>,
-    S::Error: 'static,
-    S::Future: 'static,
+    S: Service<Request = DispatchItem<U>, Response = Option<Response<U>>> + 'static,
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
@@ -197,7 +185,7 @@ where
         &mut self,
         item: Result<S::Response, S::Error>,
         response_idx: usize,
-        write: Write<'_>,
+        write: &IoRef,
         codec: &U,
         wake: bool,
     ) {
@@ -207,16 +195,32 @@ where
         if idx == 0 {
             let _ = self.queue.pop_front();
             self.base = self.base.wrapping_add(1);
-            if let Err(err) = write.encode_result(item, codec) {
-                self.error = Some(err.into());
+            match item {
+                Err(err) => {
+                    self.error = Some(err.into());
+                }
+                Ok(Some(item)) => {
+                    if let Err(err) = write.encode(item, codec) {
+                        self.error = Some(IoDispatcherError::Encoder(err));
+                    }
+                }
+                Ok(None) => (),
             }
 
             // check remaining response
             while let Some(item) = self.queue.front_mut().and_then(|v| v.take()) {
                 let _ = self.queue.pop_front();
                 self.base = self.base.wrapping_add(1);
-                if let Err(err) = write.encode_result(item, codec) {
-                    self.error = Some(err.into());
+                match item {
+                    Err(err) => {
+                        self.error = Some(err.into());
+                    }
+                    Ok(Some(item)) => {
+                        if let Err(err) = write.encode(item, codec) {
+                            self.error = Some(IoDispatcherError::Encoder(err));
+                        }
+                    }
+                    Ok(None) => (),
                 }
             }
 
@@ -239,8 +243,7 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.as_mut().project();
-        let read = this.state.read();
-        let write = this.state.write();
+        let io = this.io;
 
         // log::trace!("IO-DISP poll :{:?}:", this.st);
 
@@ -252,7 +255,7 @@ where
                     this.inner.borrow_mut().handle_result(
                         item,
                         *this.response_idx,
-                        write,
+                        io.as_ref(),
                         this.codec,
                         false,
                     );
@@ -263,113 +266,104 @@ where
 
         // handle memory pool pressure
         if this.pool.poll_ready(cx).is_pending() {
-            read.pause(cx.waker());
+            io.pause(cx);
             return Poll::Pending;
         }
 
-        match this.st {
-            IoDispatcherState::Processing => {
-                loop {
-                    // log::trace!("IO-DISP state :{:?}:", this.state.flags());
+        loop {
+            match this.st {
+                IoDispatcherState::Processing => {
+                    // log::trace!("IO-DISP state :{:?}:", io.flags());
 
                     match this.service.poll_ready(cx) {
                         Poll::Ready(Ok(_)) => {
-                            let mut retry = false;
-
                             // service is ready, wake io read task
-                            read.resume();
+                            io.resume();
 
                             // check keepalive timeout
-                            if this.state.is_keepalive() {
+                            if io.is_keepalive() {
                                 log::trace!("keepalive timeout");
                                 let mut inner = this.inner.borrow_mut();
                                 if inner.error.is_none() {
                                     inner.error = Some(IoDispatcherError::KeepAlive);
                                 }
-                                this.state.dispatcher_stopped();
+                                io.stop_dispatcher();
                             }
 
-                            let item = if this.state.is_dispatcher_stopped() {
-                                retry = true;
-                                let mut inner = this.inner.borrow_mut();
+                            // decode incoming bytes stream
+                            let item = match io.poll_read_next(this.codec, cx) {
+                                Poll::Pending => {
+                                    // log::trace!("not enough data to decode next frame, register dispatch task");
+                                    if io.is_dispatcher_stopped() {
+                                        log::trace!("dispatcher is instructed to stop");
+                                        let mut inner = this.inner.borrow_mut();
 
-                                // unregister keep-alive timer
-                                if this.keepalive_timeout.non_zero() {
-                                    this.timer.unregister(
-                                        *this.updated
-                                            + time::Duration::from(*this.keepalive_timeout),
-                                        this.state,
-                                    );
-                                }
-
-                                // process unhandled data
-                                if let Ok(Some(el)) = read.decode(this.codec) {
-                                    Some(DispatchItem::Item(el))
-                                } else {
-                                    log::trace!("dispatcher is instructed to stop");
-
-                                    // check for errors
-                                    let item = inner
-                                        .error
-                                        .as_mut()
-                                        .and_then(|err| err.take())
-                                        .or_else(|| {
-                                            this.state
-                                                .take_io_error()
-                                                .map(DispatchItem::IoError)
-                                        });
-                                    *this.st = IoDispatcherState::Stop;
-                                    item
-                                }
-                            } else {
-                                // decode incoming bytes stream
-                                if read.is_ready() {
-                                    match read.decode(this.codec) {
-                                        Ok(Some(el)) => {
-                                            // update keep-alive timer
-                                            if this.keepalive_timeout.non_zero() {
-                                                let updated = this.timer.now();
-                                                if updated != *this.updated {
-                                                    let ka = time::Duration::from(
+                                        // unregister keep-alive timer
+                                        if this.keepalive_timeout.non_zero() {
+                                            this.timer.unregister(
+                                                *this.updated
+                                                    + time::Duration::from(
                                                         *this.keepalive_timeout,
-                                                    );
-                                                    this.timer.register(
-                                                        updated + ka,
-                                                        *this.updated + ka,
-                                                        this.state,
-                                                    );
-                                                    *this.updated = updated;
-                                                }
-                                            }
-
-                                            Some(DispatchItem::Item(el))
+                                                    ),
+                                                io.as_ref(),
+                                            );
                                         }
-                                        Ok(None) => {
-                                            // log::trace!("not enough data to decode next frame, register dispatch task");
-                                            read.wake(cx.waker());
-                                            return Poll::Pending;
-                                        }
-                                        Err(err) => {
-                                            retry = true;
-                                            *this.st = IoDispatcherState::Stop;
 
-                                            // unregister keep-alive timer
-                                            if this.keepalive_timeout.non_zero() {
-                                                this.timer.unregister(
-                                                    *this.updated
-                                                        + time::Duration::from(
-                                                            *this.keepalive_timeout,
-                                                        ),
-                                                    this.state,
-                                                );
-                                            }
-
-                                            Some(DispatchItem::DecoderError(err))
+                                        // check for errors
+                                        let item = inner
+                                            .error
+                                            .as_mut()
+                                            .and_then(|err| err.take())
+                                            .or_else(|| {
+                                                io.take_error()
+                                                    .map(|e| DispatchItem::Disconnect(Some(e)))
+                                            });
+                                        *this.st = IoDispatcherState::Stop;
+                                        item
+                                    } else {
+                                        return Poll::Pending;
+                                    }
+                                }
+                                Poll::Ready(Some(Ok(el))) => {
+                                    // update keep-alive timer
+                                    if this.keepalive_timeout.non_zero() {
+                                        let updated = now();
+                                        if updated != *this.updated {
+                                            let ka =
+                                                time::Duration::from(*this.keepalive_timeout);
+                                            this.timer.register(
+                                                updated + ka,
+                                                *this.updated + ka,
+                                                io.as_ref(),
+                                            );
+                                            *this.updated = updated;
                                         }
                                     }
-                                } else {
-                                    this.state.register_dispatcher(cx.waker());
-                                    return Poll::Pending;
+
+                                    Some(DispatchItem::Item(el))
+                                }
+                                Poll::Ready(Some(Err(err))) => {
+                                    *this.st = IoDispatcherState::Stop;
+
+                                    // unregister keep-alive timer
+                                    if this.keepalive_timeout.non_zero() {
+                                        this.timer.unregister(
+                                            *this.updated
+                                                + time::Duration::from(*this.keepalive_timeout),
+                                            io.as_ref(),
+                                        );
+                                    }
+
+                                    match err {
+                                        Either::Left(e) => Some(DispatchItem::DecoderError(e)),
+                                        Either::Right(e) => {
+                                            Some(DispatchItem::Disconnect(Some(e)))
+                                        }
+                                    }
+                                }
+                                Poll::Ready(None) => {
+                                    *this.st = IoDispatcherState::Stop;
+                                    Some(DispatchItem::Disconnect(None))
                                 }
                             };
 
@@ -388,10 +382,20 @@ where
                                     if let Poll::Ready(res) = res {
                                         // check if current result is only response atm
                                         if inner.queue.is_empty() {
-                                            if let Err(err) =
-                                                write.encode_result(res, this.codec)
-                                            {
-                                                inner.error = Some(err.into());
+                                            match res {
+                                                Err(err) => {
+                                                    inner.error = Some(err.into());
+                                                }
+                                                Ok(Some(item)) => {
+                                                    if let Err(err) =
+                                                        io.encode(item, this.codec)
+                                                    {
+                                                        inner.error = Some(
+                                                            IoDispatcherError::Encoder(err),
+                                                        );
+                                                    }
+                                                }
+                                                Ok(None) => (),
                                             }
                                         } else {
                                             *this.response_idx = response_idx;
@@ -408,7 +412,7 @@ where
                                         inner.base.wrapping_add(inner.queue.len() as usize);
                                     inner.queue.push_back(ServiceResult::Pending);
 
-                                    let st = this.state.clone();
+                                    let st = io.get_ref();
                                     let codec = this.codec.clone();
                                     let inner = this.inner.clone();
                                     let fut = this.service.call(item);
@@ -417,23 +421,18 @@ where
                                         inner.borrow_mut().handle_result(
                                             item,
                                             response_idx,
-                                            st.write(),
+                                            &st,
                                             &codec,
                                             true,
                                         );
                                     });
                                 }
                             }
-
-                            // run again
-                            if retry {
-                                return self.poll(cx);
-                            }
                         }
                         Poll::Pending => {
                             // pause io read task
                             log::trace!("service is not ready, register dispatch task");
-                            read.pause(cx.waker());
+                            io.pause(cx);
                             return Poll::Pending;
                         }
                         Poll::Ready(Err(err)) => {
@@ -442,57 +441,56 @@ where
                             *this.st = IoDispatcherState::Stop;
                             this.inner.borrow_mut().error =
                                 Some(IoDispatcherError::Service(err));
-                            this.state.dispatcher_ready_err();
+                            *this.ready_err = true;
 
                             // unregister keep-alive timer
                             if this.keepalive_timeout.non_zero() {
                                 this.timer.unregister(
                                     *this.updated
                                         + time::Duration::from(*this.keepalive_timeout),
-                                    this.state,
+                                    io.as_ref(),
                                 );
                             }
-
-                            return self.poll(cx);
                         }
                     }
                 }
-            }
-            // drain service responses
-            IoDispatcherState::Stop => {
-                // service may relay on poll_ready for response results
-                if !this.state.is_dispatcher_ready_err() {
-                    let _ = this.service.poll_ready(cx);
+                // drain service responses and shutdown io
+                IoDispatcherState::Stop => {
+                    // service may relay on poll_ready for response results
+                    if !*this.ready_err {
+                        let _ = this.service.poll_ready(cx);
+                    }
+
+                    if this.inner.borrow().queue.is_empty() {
+                        if io.poll_shutdown(cx).is_ready() {
+                            *this.st = IoDispatcherState::Shutdown;
+                            continue;
+                        }
+                    } else {
+                        io.register_dispatcher(cx);
+                    }
+                    return Poll::Pending;
                 }
+                // shutdown service
+                IoDispatcherState::Shutdown => {
+                    let is_err = this.inner.borrow().error.is_some();
 
-                if this.inner.borrow().queue.is_empty() {
-                    this.state.shutdown_io();
-                    *this.st = IoDispatcherState::Shutdown;
-                    self.poll(cx)
-                } else {
-                    this.state.register_dispatcher(cx.waker());
-                    Poll::Pending
+                    return if this.service.poll_shutdown(cx, is_err).is_ready() {
+                        log::trace!("service shutdown is completed, stop");
+
+                        Poll::Ready(
+                            if let Some(IoDispatcherError::Service(err)) =
+                                this.inner.borrow_mut().error.take()
+                            {
+                                Err(err)
+                            } else {
+                                Ok(())
+                            },
+                        )
+                    } else {
+                        Poll::Pending
+                    };
                 }
-            }
-            // shutdown service
-            IoDispatcherState::Shutdown => {
-                let is_err = this.inner.borrow().error.is_some();
-
-                return if this.service.poll_shutdown(cx, is_err).is_ready() {
-                    log::trace!("service shutdown is completed, stop");
-
-                    Poll::Ready(
-                        if let Some(IoDispatcherError::Service(err)) =
-                            this.inner.borrow_mut().error.take()
-                        {
-                            Err(err)
-                        } else {
-                            Ok(())
-                        },
-                    )
-                } else {
-                    Poll::Pending
-                };
             }
         }
     }
@@ -504,6 +502,7 @@ mod tests {
 
     use ntex::channel::condition::Condition;
     use ntex::codec::BytesCodec;
+    use ntex::io as nio;
     use ntex::testing::Io;
     use ntex::time::{sleep, Millis};
     use ntex::util::{Bytes, Ready};
@@ -519,21 +518,16 @@ mod tests {
         <U as Encoder>::Item: 'static,
     {
         /// Construct new `Dispatcher` instance
-        pub(crate) fn new<T, F: IntoService<S>>(
-            io: T,
+        pub(crate) fn new_debug<F: IntoService<S>>(
+            io: Io,
             codec: U,
-            state: State,
             service: F,
-        ) -> Self
-        where
-            T: AsyncRead + AsyncWrite + Unpin + 'static,
-        {
+        ) -> (Self, nio::IoRef) {
             let timer = Timer::new(Millis::ONE_SEC);
             let keepalive_timeout = Seconds(30);
-            let updated = timer.now();
-            let io = Rc::new(RefCell::new(io));
-            ntex::rt::spawn(ReadTask::new(io.clone(), state.clone()));
-            ntex::rt::spawn(WriteTask::new(io.clone(), state.clone()));
+            let updated = now();
+            let io = nio::Io::new(io).into_boxed();
+            let rio = io.get_ref();
 
             let inner = Rc::new(RefCell::new(DispatcherState {
                 error: None,
@@ -541,19 +535,23 @@ mod tests {
                 queue: VecDeque::new(),
             }));
 
-            Dispatcher {
-                service: service.into_service(),
-                st: IoDispatcherState::Processing,
-                pool: state.memory_pool().pool(),
-                response: None,
-                response_idx: 0,
-                inner,
-                state,
-                timer,
-                codec,
-                updated,
-                keepalive_timeout,
-            }
+            (
+                Dispatcher {
+                    service: service.into_service(),
+                    st: IoDispatcherState::Processing,
+                    response: None,
+                    response_idx: 0,
+                    pool: io.memory_pool().pool(),
+                    ready_err: false,
+                    inner,
+                    io,
+                    timer,
+                    codec,
+                    updated,
+                    keepalive_timeout,
+                },
+                rio,
+            )
         }
     }
 
@@ -563,10 +561,9 @@ mod tests {
         client.remote_buffer_cap(1024);
         client.write("GET /test HTTP/1\r\n\r\n");
 
-        let disp = Dispatcher::new(
+        let (disp, _) = Dispatcher::new_debug(
             server,
             BytesCodec,
-            State::new(),
             ntex::service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 sleep(Millis(50)).await;
                 if let DispatchItem::Item(msg) = msg {
@@ -601,10 +598,9 @@ mod tests {
         let condition = Condition::new();
         let waiter = condition.wait();
 
-        let disp = Dispatcher::new(
+        let (disp, _) = Dispatcher::new_debug(
             server,
             BytesCodec,
-            State::new(),
             ntex::service::fn_service(move |msg: DispatchItem<BytesCodec>| {
                 let waiter = waiter.clone();
                 async move {
@@ -641,11 +637,9 @@ mod tests {
         client.remote_buffer_cap(1024);
         client.write("GET /test HTTP/1\r\n\r\n");
 
-        let st = State::new();
-        let disp = Dispatcher::new(
+        let (disp, io) = Dispatcher::new_debug(
             server,
             BytesCodec,
-            st.clone(),
             ntex::service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 if let DispatchItem::Item(msg) = msg {
                     Ok::<_, ()>(Some(msg.freeze()))
@@ -661,11 +655,11 @@ mod tests {
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
 
-        assert!(st.write().encode(Bytes::from_static(b"test"), &BytesCodec).is_ok());
+        assert!(io.encode(Bytes::from_static(b"test"), &BytesCodec).is_ok());
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"test"));
 
-        st.close();
+        io.close();
         sleep(Millis(1200)).await;
         assert!(client.is_server_dropped());
     }
@@ -676,11 +670,9 @@ mod tests {
         client.remote_buffer_cap(0);
         client.write("GET /test HTTP/1\r\n\r\n");
 
-        let state = State::new();
-        let disp = Dispatcher::new(
+        let (disp, io) = Dispatcher::new_debug(
             server,
             BytesCodec,
-            state.clone(),
             ntex::service::fn_service(|_: DispatchItem<BytesCodec>| async move {
                 Err::<Option<Bytes>, _>(())
             }),
@@ -689,10 +681,7 @@ mod tests {
             let _ = disp.await;
         });
 
-        state
-            .write()
-            .encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec)
-            .unwrap();
+        io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec).unwrap();
 
         // buffer should be flushed
         client.remote_buffer_cap(1024);
@@ -700,7 +689,7 @@ mod tests {
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
 
         // write side must be closed, dispatcher waiting for read side to close
-        assert!(client.is_closed());
+        assert!(!client.is_closed());
 
         // close read side
         client.close().await;
@@ -733,12 +722,8 @@ mod tests {
             }
         }
 
-        let state = State::new();
-        let disp = Dispatcher::new(server, BytesCodec, state.clone(), Srv(counter.clone()));
-        state
-            .write()
-            .encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &mut BytesCodec)
-            .unwrap();
+        let (disp, io) = Dispatcher::new_debug(server, BytesCodec, Srv(counter.clone()));
+        io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &mut BytesCodec).unwrap();
         ntex::rt::spawn(async move {
             let _ = disp.await;
         });
