@@ -166,10 +166,10 @@ async fn test_ping() -> std::io::Result<()> {
     )
     .await
     .unwrap();
-    let _ = io.next(&codec).await.unwrap().unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(codec::Packet::PingRequest, &codec).await.unwrap();
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(pkt, codec::Packet::PingResponse);
     assert!(ping.load(Relaxed));
 
@@ -205,7 +205,7 @@ async fn test_ack_order() -> std::io::Result<()> {
     )
     .await
     .unwrap();
-    let _ = io.next(&codec).await.unwrap().unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
         codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
@@ -234,7 +234,7 @@ async fn test_ack_order() -> std::io::Result<()> {
     .await
     .unwrap();
 
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::PublishAck(codec::PublishAck {
@@ -245,7 +245,7 @@ async fn test_ack_order() -> std::io::Result<()> {
         })
     );
 
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::SubscribeAck(codec::SubscribeAck {
@@ -279,7 +279,7 @@ async fn test_dups() {
     )
     .await
     .unwrap();
-    let _ = io.next(&codec).await.unwrap().unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
         codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
@@ -332,7 +332,7 @@ async fn test_dups() {
     .unwrap();
 
     // PublishAck
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::PublishAck(codec::PublishAck {
@@ -344,7 +344,7 @@ async fn test_dups() {
     );
 
     // SubscribeAck
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::SubscribeAck {
@@ -357,7 +357,7 @@ async fn test_dups() {
     );
 
     // UnsubscribeAck
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::UnsubscribeAck {
@@ -394,7 +394,7 @@ async fn test_max_receive() {
     )
     .await
     .unwrap();
-    let ack = io.next(&codec).await.unwrap().unwrap();
+    let ack = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         ack,
         codec::Packet::ConnectAck(Box::new(codec::ConnectAck {
@@ -418,7 +418,7 @@ async fn test_max_receive() {
     )
     .await
     .unwrap();
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::Disconnect(codec::Disconnect {
@@ -666,7 +666,7 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
     )
     .await
     .unwrap();
-    let _ = io.next(&codec).await.unwrap().unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
         codec::Packet::Subscribe(codec::Subscribe {
@@ -687,7 +687,7 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
     )
     .await
     .unwrap();
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::SubscribeAck(codec::SubscribeAck {
@@ -745,7 +745,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
         &codec,
     )
     .unwrap();
-    io.write_ready(true).await.unwrap();
+    io.flush(true).await.unwrap();
     sleep(Duration::from_millis(50)).await;
     drop(io);
     sleep(Duration::from_millis(50)).await;

@@ -266,7 +266,7 @@ where
 
         // handle memory pool pressure
         if this.pool.poll_ready(cx).is_pending() {
-            io.pause(cx);
+            io.pause();
             return Poll::Pending;
         }
 
@@ -291,7 +291,7 @@ where
                             }
 
                             // decode incoming bytes stream
-                            let item = match io.poll_read_next(this.codec, cx) {
+                            let item = match io.poll_recv(this.codec, cx) {
                                 Poll::Pending => {
                                     // log::trace!("not enough data to decode next frame, register dispatch task");
                                     if io.is_dispatcher_stopped() {
@@ -432,7 +432,7 @@ where
                         Poll::Pending => {
                             // pause io read task
                             log::trace!("service is not ready, register dispatch task");
-                            io.pause(cx);
+                            io.pause();
                             return Poll::Pending;
                         }
                         Poll::Ready(Err(err)) => {

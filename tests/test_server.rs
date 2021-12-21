@@ -125,10 +125,10 @@ async fn test_ping() -> std::io::Result<()> {
     io.send(codec::Packet::Connect(codec::Connect::default().client_id("user").into()), &codec)
         .await
         .unwrap();
-    io.next(&codec).await.unwrap().unwrap();
+    io.recv(&codec).await.unwrap().unwrap();
 
     io.send(codec::Packet::PingRequest, &codec).await.unwrap();
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(pkt, codec::Packet::PingResponse);
     assert!(ping.load(Relaxed));
 
@@ -157,7 +157,7 @@ async fn test_ack_order() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(codec::Connect::default().client_id("user").into(), &codec).await.unwrap();
-    let _ = io.next(&codec).await.unwrap().unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
         codec::Publish {
@@ -197,10 +197,10 @@ async fn test_ack_order() -> std::io::Result<()> {
     .await
     .unwrap();
 
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(pkt, codec::Packet::PublishAck { packet_id: NonZeroU16::new(1).unwrap() });
 
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
         codec::Packet::SubscribeAck {
@@ -209,7 +209,7 @@ async fn test_ack_order() -> std::io::Result<()> {
         }
     );
 
-    let pkt = io.next(&codec).await.unwrap().unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(pkt, codec::Packet::PublishAck { packet_id: NonZeroU16::new(3).unwrap() });
 
     Ok(())
@@ -319,7 +319,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     )
     .unwrap();
     io.encode(codec::Packet::Disconnect, &codec).unwrap();
-    io.write_ready(true).await.unwrap();
+    io.flush(true).await.unwrap();
     sleep(Millis(50)).await;
     drop(io);
     sleep(Millis(50)).await;

@@ -281,7 +281,7 @@ where
             io.send(codec::Packet::Connect(Box::new(pkt)), &codec).await?;
 
             let packet = io
-                .next(&codec)
+                .recv(&codec)
                 .await
                 .ok_or_else(|| {
                     log::trace!("Mqtt server is disconnected during handshake");

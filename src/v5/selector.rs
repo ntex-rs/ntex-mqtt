@@ -214,7 +214,7 @@ where
         Box::pin(async move {
             // read first packet
             let packet = io
-                .next(&shared.codec)
+                .recv(&shared.codec)
                 .await
                 .ok_or_else(|| {
                     log::trace!("Server mqtt is disconnected during handshake");
@@ -341,7 +341,7 @@ where
         Box::pin(async move {
             // read first packet
             let packet = io
-                .next(&shared.codec)
+                .recv(&shared.codec)
                 .await
                 .ok_or_else(|| {
                     log::trace!("Server mqtt is disconnected during handshake");
