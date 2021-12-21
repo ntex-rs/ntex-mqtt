@@ -630,8 +630,13 @@ pub struct PeerGone(Option<io::Error>);
 
 impl PeerGone {
     /// Returns error reference
-    pub fn error(&self) -> Option<&io::Error> {
+    pub fn err(&self) -> Option<&io::Error> {
         self.0.as_ref()
+    }
+
+    /// Take error
+    pub fn take(&mut self) -> Option<io::Error> {
+        self.0.take()
     }
 
     /// Ack PeerGone message
