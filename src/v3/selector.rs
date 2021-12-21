@@ -208,13 +208,13 @@ where
             let packet = io
                 .recv(&shared.codec)
                 .await
-                .ok_or_else(|| {
-                    log::trace!("Server mqtt is disconnected during handshake");
-                    MqttError::Disconnected
-                })?
                 .map_err(|err| {
                     log::trace!("Error is received during mqtt handshake: {:?}", err);
                     MqttError::from(err)
+                })?
+                .ok_or_else(|| {
+                    log::trace!("Server mqtt is disconnected during handshake");
+                    MqttError::Disconnected
                 })?;
 
             let connect = match packet {
@@ -335,13 +335,13 @@ where
             let packet = io
                 .recv(&shared.codec)
                 .await
-                .ok_or_else(|| {
-                    log::trace!("Server mqtt is disconnected during handshake");
-                    MqttError::Disconnected
-                })?
                 .map_err(|err| {
                     log::trace!("Error is received during mqtt handshake: {:?}", err);
                     MqttError::from(err)
+                })?
+                .ok_or_else(|| {
+                    log::trace!("Server mqtt is disconnected during handshake");
+                    MqttError::Disconnected
                 })?;
 
             let connect = match packet {

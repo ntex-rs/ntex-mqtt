@@ -372,13 +372,13 @@ where
     let packet = io
         .recv(&shared.codec)
         .await
-        .ok_or_else(|| {
-            log::trace!("Server mqtt is disconnected during handshake");
-            MqttError::Disconnected
-        })?
         .map_err(|err| {
             log::trace!("Error is received during mqtt handshake: {:?}", err);
             MqttError::from(err)
+        })?
+        .ok_or_else(|| {
+            log::trace!("Server mqtt is disconnected during handshake");
+            MqttError::Disconnected
         })?;
 
     match packet {
@@ -429,7 +429,7 @@ where
                     }
 
                     ack.io
-                        .send(mqtt::Packet::ConnectAck(Box::new(ack.packet)), &shared.codec)
+                        .send(&shared.codec, mqtt::Packet::ConnectAck(Box::new(ack.packet)))
                         .await?;
 
                     Ok((
@@ -664,7 +664,7 @@ where
                         }
 
                         ack.io
-                            .send(mqtt::Packet::ConnectAck(Box::new(ack.packet)), &shared.codec)
+                            .send(&shared.codec, mqtt::Packet::ConnectAck(Box::new(ack.packet)))
                             .await?;
 
                         let session = Session::new_v5(

@@ -161,14 +161,14 @@ async fn test_ping() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::new();
     io.send(
-        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
         &codec,
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
     )
     .await
     .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
-    io.send(codec::Packet::PingRequest, &codec).await.unwrap();
+    io.send(&codec, codec::Packet::PingRequest).await.unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(pkt, codec::Packet::PingResponse);
     assert!(ping.load(Relaxed));
@@ -200,20 +200,21 @@ async fn test_ack_order() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
         &codec,
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
     )
     .await
     .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
-        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
         &codec,
+        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
     )
     .await
     .unwrap();
     io.send(
+        &codec,
         codec::Subscribe {
             id: None,
             packet_id: NonZeroU16::new(2).unwrap(),
@@ -229,7 +230,6 @@ async fn test_ack_order() -> std::io::Result<()> {
             )],
         }
         .into(),
-        &codec,
     )
     .await
     .unwrap();
@@ -272,32 +272,33 @@ async fn test_dups() {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
+        &codec,
         codec::Packet::Connect(Box::new(
             codec::Connect::default().client_id("user").receive_max(2),
         )),
-        &codec,
     )
     .await
     .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
-        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
         &codec,
+        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
     )
     .await
     .unwrap();
 
     // send packet_id dup
     io.send(
-        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
         &codec,
+        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
     )
     .await
     .unwrap();
 
     // send subscribe dup
     io.send(
+        &codec,
         codec::Subscribe {
             id: None,
             packet_id: NonZeroU16::new(1).unwrap(),
@@ -313,20 +314,19 @@ async fn test_dups() {
             )],
         }
         .into(),
-        &codec,
     )
     .await
     .unwrap();
 
     // send unsubscribe dup
     io.send(
+        &codec,
         codec::Unsubscribe {
             packet_id: NonZeroU16::new(1).unwrap(),
             user_properties: Default::default(),
             topic_filters: vec![ByteString::from("topic1")],
         }
         .into(),
-        &codec,
     )
     .await
     .unwrap();
@@ -389,8 +389,8 @@ async fn test_max_receive() {
     let codec = codec::Codec::default();
 
     io.send(
-        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
         &codec,
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
     )
     .await
     .unwrap();
@@ -407,14 +407,14 @@ async fn test_max_receive() {
     );
 
     io.send(
-        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
         &codec,
+        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
     )
     .await
     .unwrap();
     io.send(
-        codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() }.into(),
         &codec,
+        codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() }.into(),
     )
     .await
     .unwrap();
@@ -661,14 +661,15 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::new();
     io.send(
-        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
         &codec,
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
     )
     .await
     .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
+        &codec,
         codec::Packet::Subscribe(codec::Subscribe {
             packet_id: NonZeroU16::new(1).unwrap(),
             topic_filters: vec![(
@@ -683,7 +684,6 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
             id: None,
             user_properties: codec::UserProperties::default(),
         }),
-        &codec,
     )
     .await
     .unwrap();

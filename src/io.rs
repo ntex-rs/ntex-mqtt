@@ -324,7 +324,7 @@ where
                                         return Poll::Pending;
                                     }
                                 }
-                                Poll::Ready(Some(Ok(el))) => {
+                                Poll::Ready(Ok(Some(el))) => {
                                     // update keep-alive timer
                                     if this.keepalive_timeout.non_zero() {
                                         let updated = now();
@@ -342,7 +342,7 @@ where
 
                                     Some(DispatchItem::Item(el))
                                 }
-                                Poll::Ready(Some(Err(err))) => {
+                                Poll::Ready(Err(err)) => {
                                     *this.st = IoDispatcherState::Stop;
 
                                     // unregister keep-alive timer
@@ -361,7 +361,7 @@ where
                                         }
                                     }
                                 }
-                                Poll::Ready(None) => {
+                                Poll::Ready(Ok(None)) => {
                                     *this.st = IoDispatcherState::Stop;
                                     Some(DispatchItem::Disconnect(None))
                                 }

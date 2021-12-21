@@ -309,13 +309,13 @@ where
     let packet = io
         .recv(&shared.codec)
         .await
-        .ok_or_else(|| {
-            log::trace!("Server mqtt is disconnected during handshake");
-            MqttError::Disconnected
-        })?
         .map_err(|err| {
             log::trace!("Error is received during mqtt handshake: {:?}", err);
             MqttError::from(err)
+        })?
+        .ok_or_else(|| {
+            log::trace!("Server mqtt is disconnected during handshake");
+            MqttError::Disconnected
         })?;
 
     match packet {
@@ -332,7 +332,7 @@ where
 
                     log::trace!("Sending success handshake ack: {:#?}", pkt);
 
-                    ack.io.send(pkt, &ack.shared.codec).await?;
+                    ack.io.send(&ack.shared.codec, pkt).await?;
                     Ok((
                         ack.io,
                         ack.shared.clone(),
@@ -347,7 +347,7 @@ where
                     };
 
                     log::trace!("Sending failed handshake ack: {:#?}", pkt);
-                    ack.io.send(pkt, &ack.shared.codec).await?;
+                    ack.io.send(&ack.shared.codec, pkt).await?;
 
                     Err(MqttError::Disconnected)
                 }
@@ -513,7 +513,7 @@ where
                         );
 
                         ack.shared.codec.set_max_size(max_size);
-                        ack.io.send(pkt, &ack.shared.codec).await.map_err(MqttError::from)?;
+                        ack.io.send(&ack.shared.codec, pkt).await.map_err(MqttError::from)?;
 
                         let session = Session::new(session, MqttSink::new(ack.shared.clone()));
                         let handler = handler.new_service(session).await?;
@@ -532,7 +532,7 @@ where
                         };
 
                         log::trace!("Sending failed handshake ack: {:#?}", pkt);
-                        ack.io.send(pkt, &ack.shared.codec).await?;
+                        ack.io.send(&ack.shared.codec, pkt).await?;
 
                         Err(MqttError::Disconnected)
                     }

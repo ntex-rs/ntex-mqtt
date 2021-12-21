@@ -4,7 +4,7 @@ use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin, rc::Rc, t
 use ntex::io::{Filter, Io, IoBoxed};
 use ntex::service::{Service, ServiceFactory};
 use ntex::time::{sleep, Seconds, Sleep};
-use ntex::util::{join, Pool, PoolId, PoolRef, Ready};
+use ntex::util::{join, ready, Pool, PoolId, PoolRef, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::version::{ProtocolVersion, VersionCodec};
@@ -394,8 +394,8 @@ where
 
                     let st = item.as_mut().unwrap();
 
-                    match st.0.poll_recv(&st.1, cx) {
-                        Poll::Ready(Some(Ok(ver))) => {
+                    match ready!(st.0.poll_recv(&st.1, cx)) {
+                        Ok(Some(ver)) => {
                             let (io, _, handlers, delay) = item.take().unwrap();
                             this = self.as_mut().project();
                             match ver {
@@ -412,11 +412,8 @@ where
                             }
                             continue;
                         }
-                        Poll::Ready(None) => return Poll::Ready(Err(MqttError::Disconnected)),
-                        Poll::Ready(Some(Err(err))) => {
-                            return Poll::Ready(Err(MqttError::from(err)))
-                        }
-                        Poll::Pending => return Poll::Pending,
+                        Ok(None) => return Poll::Ready(Err(MqttError::Disconnected)),
+                        Err(err) => return Poll::Ready(Err(MqttError::from(err))),
                     }
                 }
             }
