@@ -1,5 +1,5 @@
 use ntex::util::ByteString;
-use std::{marker::PhantomData, num::NonZeroU16};
+use std::{io, marker::PhantomData, num::NonZeroU16};
 
 use super::codec;
 use crate::{error, types::QoS};
@@ -78,8 +78,8 @@ impl<E> ControlMessage<E> {
     }
 
     /// Create a new `ControlMessage` from DISCONNECT packet.
-    pub(super) fn peer_gone() -> Self {
-        ControlMessage::PeerGone(PeerGone)
+    pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
+        ControlMessage::PeerGone(PeerGone(err))
     }
 
     /// Disconnects the client by sending DISCONNECT packet.
@@ -354,10 +354,20 @@ impl Closed {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct PeerGone;
+#[derive(Debug)]
+pub struct PeerGone(pub(super) Option<io::Error>);
 
 impl PeerGone {
+    /// Returns error reference
+    pub fn err(&self) -> Option<&io::Error> {
+        self.0.as_ref()
+    }
+
+    /// Take error
+    pub fn take(&mut self) -> Option<io::Error> {
+        self.0.take()
+    }
+
     pub fn ack(self) -> ControlResult {
         ControlResult { result: ControlResultKind::Nothing }
     }

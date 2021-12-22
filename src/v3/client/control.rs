@@ -1,3 +1,5 @@
+use std::io;
+
 pub use crate::v3::control::{
     Closed, ControlResult, Disconnect, Error, PeerGone, ProtocolError,
 };
@@ -39,8 +41,8 @@ impl<E> ControlMessage<E> {
         ControlMessage::ProtocolError(ProtocolError::new(err))
     }
 
-    pub(super) fn peer_gone() -> Self {
-        ControlMessage::PeerGone(PeerGone)
+    pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
+        ControlMessage::PeerGone(PeerGone(err))
     }
 
     pub fn disconnect(&self) -> ControlResult {

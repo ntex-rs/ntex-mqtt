@@ -315,7 +315,7 @@ where
         })?
         .ok_or_else(|| {
             log::trace!("Server mqtt is disconnected during handshake");
-            MqttError::Disconnected
+            MqttError::Disconnected(None)
         })?;
 
     match packet {
@@ -349,7 +349,7 @@ where
                     log::trace!("Sending failed handshake ack: {:#?}", pkt);
                     ack.io.send(&ack.shared.codec, pkt).await?;
 
-                    Err(MqttError::Disconnected)
+                    Err(MqttError::Disconnected(None))
                 }
             }
         }
@@ -534,7 +534,7 @@ where
                         log::trace!("Sending failed handshake ack: {:#?}", pkt);
                         ack.io.send(&ack.shared.codec, pkt).await?;
 
-                        Err(MqttError::Disconnected)
+                        Err(MqttError::Disconnected(None))
                     }
                 }
             }

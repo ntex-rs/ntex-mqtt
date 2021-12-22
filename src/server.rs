@@ -394,8 +394,8 @@ where
 
                     let st = item.as_mut().unwrap();
 
-                    match ready!(st.0.poll_recv(&st.1, cx)) {
-                        Ok(Some(ver)) => {
+                    match ready!(st.0.poll_recv(&st.1, cx))? {
+                        Some(ver) => {
                             let (io, _, handlers, delay) = item.take().unwrap();
                             this = self.as_mut().project();
                             match ver {
@@ -412,8 +412,7 @@ where
                             }
                             continue;
                         }
-                        Ok(None) => return Poll::Ready(Err(MqttError::Disconnected)),
-                        Err(err) => return Poll::Ready(Err(MqttError::from(err))),
+                        None => return Poll::Ready(Err(MqttError::Disconnected(None))),
                     }
                 }
             }
@@ -457,7 +456,7 @@ impl<Err, InitErr> Service for DefaultProtocolServer<Err, InitErr> {
     }
 
     fn call(&self, _: Self::Request) -> Self::Future {
-        Ready::Err(MqttError::Protocol(ProtocolError::Io(io::Error::new(
+        Ready::Err(MqttError::Disconnected(Some(io::Error::new(
             io::ErrorKind::Other,
             format!("Protocol is not supported: {:?}", self.ver),
         ))))

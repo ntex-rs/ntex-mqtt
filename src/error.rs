@@ -12,7 +12,7 @@ pub enum MqttError<E> {
     /// Handshake timeout
     HandshakeTimeout,
     /// Peer disconnect
-    Disconnected,
+    Disconnected(Option<io::Error>),
     /// Server error
     ServerError(&'static str),
 }
@@ -44,9 +44,6 @@ pub enum ProtocolError {
     /// Keep alive timeout
     #[display(fmt = "Keep alive timeout")]
     KeepAliveTimeout,
-    /// Unexpected io error
-    #[display(fmt = "Unexpected io error: {}", _0)]
-    Io(io::Error),
 }
 
 impl error::Error for ProtocolError {}
@@ -61,7 +58,7 @@ impl<E> From<Either<DecodeError, io::Error>> for MqttError<E> {
     fn from(err: Either<DecodeError, io::Error>) -> Self {
         match err {
             Either::Left(err) => MqttError::Protocol(ProtocolError::Decode(err)),
-            Either::Right(err) => MqttError::Protocol(ProtocolError::Io(err)),
+            Either::Right(err) => MqttError::Disconnected(Some(err)),
         }
     }
 }
@@ -70,16 +67,7 @@ impl<E> From<Either<EncodeError, io::Error>> for MqttError<E> {
     fn from(err: Either<EncodeError, io::Error>) -> Self {
         match err {
             Either::Left(err) => MqttError::Protocol(ProtocolError::Encode(err)),
-            Either::Right(err) => MqttError::Protocol(ProtocolError::Io(err)),
-        }
-    }
-}
-
-impl From<Either<DecodeError, io::Error>> for ProtocolError {
-    fn from(err: Either<DecodeError, io::Error>) -> Self {
-        match err {
-            Either::Left(err) => ProtocolError::Decode(err),
-            Either::Right(err) => ProtocolError::Io(err),
+            Either::Right(err) => MqttError::Disconnected(Some(err)),
         }
     }
 }

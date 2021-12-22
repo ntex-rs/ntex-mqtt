@@ -17,7 +17,7 @@ pub enum ClientError {
     HandshakeTimeout,
     /// Peer disconnected
     #[display(fmt = "Peer disconnected")]
-    Disconnected,
+    Disconnected(Option<std::io::Error>),
     /// Connect error
     #[display(fmt = "Connect error: {}", _0)]
     Connect(ntex::connect::ConnectError),
@@ -29,7 +29,16 @@ impl From<Either<EncodeError, std::io::Error>> for ClientError {
     fn from(err: Either<EncodeError, std::io::Error>) -> Self {
         match err {
             Either::Left(err) => ClientError::Protocol(ProtocolError::Encode(err)),
-            Either::Right(err) => ClientError::Protocol(ProtocolError::Io(err)),
+            Either::Right(err) => ClientError::Disconnected(Some(err)),
+        }
+    }
+}
+
+impl From<Either<DecodeError, std::io::Error>> for ClientError {
+    fn from(err: Either<DecodeError, std::io::Error>) -> Self {
+        match err {
+            Either::Left(err) => ClientError::Protocol(ProtocolError::Decode(err)),
+            Either::Right(err) => ClientError::Disconnected(Some(err)),
         }
     }
 }

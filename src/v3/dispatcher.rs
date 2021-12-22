@@ -55,7 +55,7 @@ where
 
             let control = BufferService::new(
                 16,
-                || MqttError::<C::Error>::Disconnected,
+                || MqttError::<C::Error>::Disconnected(None),
                 // limit number of in-flight messages
                 InFlightService::new(1, control?.map_err(MqttError::Service)),
             );
@@ -235,16 +235,9 @@ where
                     &self.inner,
                 )))
             }
-            DispatchItem::Disconnect(err) => {
-                Either::Right(Either::Right(ControlResponse::new(
-                    if let Some(err) = err {
-                        ControlMessage::proto_error(ProtocolError::Io(err))
-                    } else {
-                        ControlMessage::peer_gone()
-                    },
-                    &self.inner,
-                )))
-            }
+            DispatchItem::Disconnect(err) => Either::Right(Either::Right(
+                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner),
+            )),
             DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
                 Either::Right(Either::Left(Ready::Ok(None)))
             }

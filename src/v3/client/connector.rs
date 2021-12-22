@@ -281,13 +281,10 @@ where
 
             io.send(&codec, pkt.into()).await?;
 
-            let packet = io
-                .recv(&codec)
-                .await
-                .map_err(|e| ClientError::from(ProtocolError::from(e)))?
-                .ok_or_else(|| {
+            let packet =
+                io.recv(&codec).await.map_err(ClientError::from)?.ok_or_else(|| {
                     log::trace!("Mqtt server is disconnected during handshake");
-                    ClientError::Disconnected
+                    ClientError::Disconnected(None)
                 })?;
 
             let shared = Rc::new(MqttShared::new(io.get_ref(), codec, max_send, pool));

@@ -222,7 +222,7 @@ where
                 })?
                 .ok_or_else(|| {
                     log::trace!("Server mqtt is disconnected during handshake");
-                    MqttError::Disconnected
+                    MqttError::Disconnected(None)
                 })?;
 
             let connect = match packet {
@@ -349,7 +349,7 @@ where
                 })?
                 .ok_or_else(|| {
                     log::trace!("Server mqtt is disconnected during handshake");
-                    MqttError::Disconnected
+                    MqttError::Disconnected(None)
                 })?;
 
             let connect = match packet {

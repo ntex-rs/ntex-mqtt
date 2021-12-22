@@ -56,7 +56,7 @@ where
 
             let control = BufferService::new(
                 16,
-                || MqttError::<C::Error>::Disconnected,
+                || MqttError::<C::Error>::Disconnected(None),
                 // limit number of in-flight messages
                 InFlightService::new(1, control?.map_err(MqttError::Service)),
             );

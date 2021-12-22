@@ -378,7 +378,7 @@ where
         })?
         .ok_or_else(|| {
             log::trace!("Server mqtt is disconnected during handshake");
-            MqttError::Disconnected
+            MqttError::Disconnected(None)
         })?;
 
     match packet {
@@ -458,7 +458,7 @@ where
                     {
                         let _ = ack.io.shutdown().await;
                     }
-                    Err(MqttError::Disconnected)
+                    Err(MqttError::Disconnected(None))
                 }
             }
         }
@@ -696,7 +696,7 @@ where
                         {
                             let _ = ack.io.shutdown().await;
                         }
-                        Err(MqttError::Disconnected)
+                        Err(MqttError::Disconnected(None))
                     }
                 }
             }
