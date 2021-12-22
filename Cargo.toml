@@ -29,9 +29,3 @@ rustls-pemfile = "0.2"
 openssl = "0.10"
 
 ntex = { version = "0.5.0-b.2", features = ["rustls", "openssl"] }
-
-[patch.crates-io]
-ntex = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-rt = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-tls = { git = "https://github.com/ntex-rs/ntex.git" }

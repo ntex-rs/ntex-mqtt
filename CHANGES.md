@@ -1,6 +1,6 @@
 # Changes
 
-## [0.8.0-b.1] - 2021-12-xx
+## [0.8.0-b.1] - 2021-12-22
 
 * Better handling for io::Error
 
