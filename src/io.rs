@@ -277,9 +277,6 @@ where
 
                     match this.service.poll_ready(cx) {
                         Poll::Ready(Ok(_)) => {
-                            // service is ready, wake io read task
-                            io.resume();
-
                             // check keepalive timeout
                             if io.is_keepalive() {
                                 log::trace!("keepalive timeout");
@@ -431,7 +428,7 @@ where
                         }
                         Poll::Pending => {
                             // pause io read task
-                            log::trace!("service is not ready, register dispatch task");
+                            log::trace!("service is not ready, pause read task");
                             io.pause();
                             return Poll::Pending;
                         }
