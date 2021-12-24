@@ -18,9 +18,7 @@ impl<St, Err> Default for DefaultPublishService<St, Err> {
     }
 }
 
-impl<St, Err> ServiceFactory for DefaultPublishService<St, Err> {
-    type Config = Session<St>;
-    type Request = Publish;
+impl<St, Err> ServiceFactory<Publish, Session<St>> for DefaultPublishService<St, Err> {
     type Response = PublishAck;
     type Error = Err;
     type Service = DefaultPublishService<St, Err>;
@@ -32,8 +30,7 @@ impl<St, Err> ServiceFactory for DefaultPublishService<St, Err> {
     }
 }
 
-impl<St, Err> Service for DefaultPublishService<St, Err> {
-    type Request = Publish;
+impl<St, Err> Service<Publish> for DefaultPublishService<St, Err> {
     type Response = PublishAck;
     type Error = Err;
     type Future = Ready<Self::Response, Self::Error>;
@@ -57,9 +54,9 @@ impl<S, E: fmt::Debug> Default for DefaultControlService<S, E> {
     }
 }
 
-impl<S, E: fmt::Debug> ServiceFactory for DefaultControlService<S, E> {
-    type Config = Session<S>;
-    type Request = ControlMessage<E>;
+impl<S, E: fmt::Debug> ServiceFactory<ControlMessage<E>, Session<S>>
+    for DefaultControlService<S, E>
+{
     type Response = ControlResult;
     type Error = E;
     type InitError = E;
@@ -71,8 +68,7 @@ impl<S, E: fmt::Debug> ServiceFactory for DefaultControlService<S, E> {
     }
 }
 
-impl<S, E: fmt::Debug> Service for DefaultControlService<S, E> {
-    type Request = ControlMessage<E>;
+impl<S, E: fmt::Debug> Service<ControlMessage<E>> for DefaultControlService<S, E> {
     type Response = ControlResult;
     type Error = E;
     type Future = Ready<Self::Response, Self::Error>;
@@ -83,7 +79,7 @@ impl<S, E: fmt::Debug> Service for DefaultControlService<S, E> {
     }
 
     #[inline]
-    fn call(&self, pkt: Self::Request) -> Self::Future {
+    fn call(&self, pkt: ControlMessage<E>) -> Self::Future {
         match pkt {
             ControlMessage::Ping(pkt) => Ready::Ok(pkt.ack()),
             ControlMessage::Disconnect(pkt) => Ready::Ok(pkt.ack()),

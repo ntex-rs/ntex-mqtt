@@ -30,14 +30,8 @@ where
     /// Default service to be used if no matching resource could be found.
     pub fn new<F, U: 'static>(default_service: F) -> Self
     where
-        F: IntoServiceFactory<U>,
-        U: ServiceFactory<
-            Config = S,
-            Request = Publish,
-            Response = PublishAck,
-            Error = Err,
-            InitError = Err,
-        >,
+        F: IntoServiceFactory<U, Publish, S>,
+        U: ServiceFactory<Publish, S, Response = PublishAck, Error = Err, InitError = Err>,
     {
         Router {
             router: ntex::router::Router::build(),
@@ -50,8 +44,8 @@ where
     pub fn resource<T, F, U: 'static>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoServiceFactory<U>,
-        U: ServiceFactory<Config = S, Request = Publish, Response = PublishAck, Error = Err>,
+        F: IntoServiceFactory<U, Publish, S>,
+        U: ServiceFactory<Publish, S, Response = PublishAck, Error = Err>,
         Err: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
@@ -60,7 +54,7 @@ where
     }
 }
 
-impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>> for Router<S, Err>
+impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, Publish, S> for Router<S, Err>
 where
     S: Clone + 'static,
     Err: 'static,
@@ -80,13 +74,11 @@ pub struct RouterFactory<S, Err> {
     default: Handler<S, Err>,
 }
 
-impl<S, Err> ServiceFactory for RouterFactory<S, Err>
+impl<S, Err> ServiceFactory<Publish, S> for RouterFactory<S, Err>
 where
     S: Clone + 'static,
     Err: 'static,
 {
-    type Config = S;
-    type Request = Publish;
     type Response = PublishAck;
     type Error = Err;
     type InitError = Err;
@@ -159,8 +151,7 @@ impl<S: Clone + 'static, Err: 'static> RouterService<S, Err> {
     }
 }
 
-impl<S: Clone + 'static, Err: 'static> Service for RouterService<S, Err> {
-    type Request = Publish;
+impl<S: Clone + 'static, Err: 'static> Service<Publish> for RouterService<S, Err> {
     type Response = PublishAck;
     type Error = Err;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
@@ -190,7 +181,7 @@ impl<S: Clone + 'static, Err: 'static> Service for RouterService<S, Err> {
         }
     }
 
-    fn call(&self, mut req: Self::Request) -> Self::Future {
+    fn call(&self, mut req: Publish) -> Self::Future {
         if !req.publish_topic().is_empty() {
             if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
                 // save info for topic alias

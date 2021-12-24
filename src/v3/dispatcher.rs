@@ -22,8 +22,8 @@ pub(super) fn factory<St, T, C, E>(
     control: C,
     inflight: usize,
 ) -> impl ServiceFactory<
-    Config = Session<St>,
-    Request = DispatchItem<Rc<MqttShared>>,
+    DispatchItem<Rc<MqttShared>>,
+    Session<St>,
     Response = Option<codec::Packet>,
     Error = MqttError<E>,
     InitError = MqttError<E>,
@@ -31,16 +31,11 @@ pub(super) fn factory<St, T, C, E>(
 where
     E: 'static,
     St: 'static,
-    T: ServiceFactory<
-            Config = Session<St>,
-            Request = Publish,
-            Response = (),
-            Error = E,
-            InitError = MqttError<E>,
-        > + 'static,
+    T: ServiceFactory<Publish, Session<St>, Response = (), Error = E, InitError = MqttError<E>>
+        + 'static,
     C: ServiceFactory<
-            Config = Session<St>,
-            Request = ControlMessage<E>,
+            ControlMessage<E>,
+            Session<St>,
             Response = ControlResult,
             Error = E,
             InitError = MqttError<E>,
@@ -72,7 +67,7 @@ where
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<St, T, C: Service, E> {
+pub(crate) struct Dispatcher<St, T, C: Service<ControlMessage<E>>, E> {
     session: Session<St>,
     publish: T,
     shutdown: RefCell<Option<Pin<Box<C::Future>>>>,
@@ -88,8 +83,8 @@ struct Inner<C> {
 
 impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
-    T: Service<Request = Publish, Response = (), Error = E>,
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    T: Service<Publish, Response = (), Error = E>,
+    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     pub(crate) fn new(session: Session<St>, publish: T, control: C) -> Self {
         let sink = session.sink().clone();
@@ -104,14 +99,13 @@ where
     }
 }
 
-impl<St, T, C, E> Service for Dispatcher<St, T, C, E>
+impl<St, T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<St, T, C, E>
 where
-    T: Service<Request = Publish, Response = (), Error = E>,
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    T: Service<Publish, Response = (), Error = E>,
+    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
     C::Future: 'static,
     E: 'static,
 {
-    type Request = DispatchItem<Rc<MqttShared>>;
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
     type Future = Either<
@@ -247,7 +241,7 @@ where
 
 pin_project_lite::pin_project! {
     /// Publish service response future
-    pub(crate) struct PublishResponse<T: Service, C: Service, E> {
+    pub(crate) struct PublishResponse<T: Service<Publish>, C: Service<ControlMessage<E>>, E> {
         #[pin]
         state: PublishResponseState<T, C, E>,
         packet_id: Option<NonZeroU16>,
@@ -257,7 +251,7 @@ pin_project_lite::pin_project! {
 
 pin_project_lite::pin_project! {
     #[project = PublishResponseStateProject]
-    enum PublishResponseState<T: Service, C: Service, E> {
+    enum PublishResponseState<T: Service<Publish>, C: Service<ControlMessage<E>>, E> {
         Publish { #[pin] fut: T::Future },
         Control { #[pin] fut: ControlResponse<C, E> },
     }
@@ -265,8 +259,8 @@ pin_project_lite::pin_project! {
 
 impl<T, C, E> Future for PublishResponse<T, C, E>
 where
-    T: Service<Request = Publish, Response = (), Error = E>,
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    T: Service<Publish, Response = (), Error = E>,
+    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 
@@ -302,7 +296,7 @@ where
 
 pin_project_lite::pin_project! {
     /// Control service response future
-    pub(crate) struct ControlResponse<C: Service, E>
+    pub(crate) struct ControlResponse<C: Service<ControlMessage<E>>, E>
     {
         #[pin]
         fut: C::Future,
@@ -312,9 +306,9 @@ pin_project_lite::pin_project! {
     }
 }
 
-impl<C: Service, E> ControlResponse<C, E>
+impl<C, E> ControlResponse<C, E>
 where
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     #[allow(clippy::match_like_matches_macro)]
     fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
@@ -329,7 +323,7 @@ where
 
 impl<C, E> Future for ControlResponse<C, E>
 where
-    C: Service<Request = ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
 

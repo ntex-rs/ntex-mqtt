@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.0-b.2] - 2021-12-xx
+
+* Upgrade to ntex-service 0.3.0
+
 ## [0.8.0-b.1] - 2021-12-22
 
 * Better handling for io::Error

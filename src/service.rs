@@ -31,14 +31,14 @@ impl<St, C, T, Codec> FramedService<St, C, T, Codec> {
     }
 }
 
-impl<St, C, T, Codec> ServiceFactory for FramedService<St, C, T, Codec>
+impl<St, C, T, Codec> ServiceFactory<IoBoxed> for FramedService<St, C, T, Codec>
 where
-    C: ServiceFactory<Config = (), Request = IoBoxed, Response = (IoBoxed, Codec, St, Seconds)>
-        + 'static,
+    St: 'static,
+    C: ServiceFactory<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
     C::Error: fmt::Debug,
     T: ServiceFactory<
-            Config = St,
-            Request = DispatchItem<Codec>,
+            DispatchItem<Codec>,
+            St,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
@@ -46,8 +46,6 @@ where
     Codec: Decoder + Encoder + Clone + 'static,
     <Codec as Encoder>::Item: 'static,
 {
-    type Config = ();
-    type Request = IoBoxed;
     type Response = ();
     type Error = C::Error;
     type InitError = C::InitError;
@@ -81,20 +79,20 @@ pub(crate) struct FramedServiceImpl<St, C, T, Codec> {
     _t: PhantomData<(St, Codec)>,
 }
 
-impl<St, C, T, Codec> Service for FramedServiceImpl<St, C, T, Codec>
+impl<St, C, T, Codec> Service<IoBoxed> for FramedServiceImpl<St, C, T, Codec>
 where
-    C: Service<Request = IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
+    St: 'static,
+    C: Service<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
     C::Error: fmt::Debug,
     T: ServiceFactory<
-            Config = St,
-            Request = DispatchItem<Codec>,
+            DispatchItem<Codec>,
+            St,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
     Codec: Decoder + Encoder + Clone + 'static,
 {
-    type Request = IoBoxed;
     type Response = ();
     type Error = C::Error;
     type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
@@ -156,22 +154,21 @@ impl<St, C, T, Codec> FramedService2<St, C, T, Codec> {
     }
 }
 
-impl<St, C, T, Codec> ServiceFactory for FramedService2<St, C, T, Codec>
+impl<St, C, T, Codec> ServiceFactory<(IoBoxed, Option<Sleep>)>
+    for FramedService2<St, C, T, Codec>
 where
-    C: ServiceFactory<Config = (), Request = IoBoxed, Response = (IoBoxed, Codec, St, Seconds)>
-        + 'static,
+    St: 'static,
+    C: ServiceFactory<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
     C::Error: fmt::Debug,
     T: ServiceFactory<
-            Config = St,
-            Request = DispatchItem<Codec>,
+            DispatchItem<Codec>,
+            St,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
     Codec: Decoder + Encoder + Clone + 'static,
 {
-    type Config = ();
-    type Request = (IoBoxed, Option<Sleep>);
     type Response = ();
     type Error = C::Error;
     type InitError = C::InitError;
@@ -205,20 +202,20 @@ pub(crate) struct FramedServiceImpl2<St, C, T, Codec> {
     _t: PhantomData<(St, Codec)>,
 }
 
-impl<St, C, T, Codec> Service for FramedServiceImpl2<St, C, T, Codec>
+impl<St, C, T, Codec> Service<(IoBoxed, Option<Sleep>)> for FramedServiceImpl2<St, C, T, Codec>
 where
-    C: Service<Request = IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
+    St: 'static,
+    C: Service<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
     C::Error: fmt::Debug,
     T: ServiceFactory<
-            Config = St,
-            Request = DispatchItem<Codec>,
+            DispatchItem<Codec>,
+            St,
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
     Codec: Decoder + Encoder + Clone + 'static,
 {
-    type Request = (IoBoxed, Option<Sleep>);
     type Response = ();
     type Error = C::Error;
     type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
@@ -234,7 +231,7 @@ where
     }
 
     #[inline]
-    fn call(&self, (req, delay): Self::Request) -> Self::Future {
+    fn call(&self, (req, delay): (IoBoxed, Option<Sleep>)) -> Self::Future {
         log::trace!("Start connection handshake");
 
         let handler = self.handler.clone();

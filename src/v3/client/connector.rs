@@ -38,12 +38,12 @@ where
         address: A,
     ) -> MqttConnector<
         A,
-        impl Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+        impl Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
     > {
         MqttConnector {
             address,
             pkt: codec::Connect::default(),
-            connector: Connector::default().map(|io| io.into_boxed()),
+            connector: Connector::default().map(|io| io.seal()),
             max_send: 16,
             max_receive: 16,
             max_packet_size: 64 * 1024,
@@ -57,7 +57,7 @@ where
 impl<A, T> MqttConnector<A, T>
 where
     A: Address + Clone,
-    T: Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+    T: Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
 {
     #[inline]
     /// Create new client and provide client id
@@ -187,14 +187,14 @@ where
         connector: U,
     ) -> MqttConnector<
         A,
-        impl Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+        impl Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
     >
     where
         F: Filter,
-        U: Service<Request = Connect<A>, Response = Io<F>, Error = connect::ConnectError>,
+        U: Service<Connect<A>, Response = Io<F>, Error = connect::ConnectError>,
     {
         MqttConnector {
-            connector: connector.map(|io| io.into_boxed()),
+            connector: connector.map(|io| io.seal()),
             pkt: self.pkt,
             address: self.address,
             max_send: self.max_send,
@@ -213,7 +213,7 @@ where
         connector: SslConnector,
     ) -> MqttConnector<
         A,
-        impl Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+        impl Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
     > {
         MqttConnector {
             pkt: self.pkt,
@@ -235,7 +235,7 @@ where
         config: ClientConfig,
     ) -> MqttConnector<
         A,
-        impl Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+        impl Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
     > {
         MqttConnector {
             pkt: self.pkt,

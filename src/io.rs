@@ -14,7 +14,7 @@ pin_project_lite::pin_project! {
     /// Dispatcher for mqtt protocol
     pub(crate) struct Dispatcher<S, U>
     where
-        S: Service<Request = DispatchItem<U>, Response = Option<Response<U>>>,
+        S: Service<DispatchItem<U>, Response = Option<Response<U>>>,
         S::Error: 'static,
         S::Future: 'static,
         U: Encoder,
@@ -37,7 +37,7 @@ pin_project_lite::pin_project! {
     }
 }
 
-struct DispatcherState<S: Service, U: Encoder + Decoder> {
+struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder> {
     error: Option<IoDispatcherError<S::Error, <U as Encoder>::Error>>,
     base: usize,
     queue: VecDeque<ServiceResult<Result<S::Response, S::Error>>>,
@@ -102,12 +102,12 @@ impl<E1, E2: std::fmt::Debug> IoDispatcherError<E1, E2> {
 
 impl<S, U> Dispatcher<S, U>
 where
-    S: Service<Request = DispatchItem<U>, Response = Option<Response<U>>> + 'static,
+    S: Service<DispatchItem<U>, Response = Option<Response<U>>> + 'static,
     U: Decoder + Encoder + Clone + 'static,
     <U as Encoder>::Item: 'static,
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
-    pub(crate) fn new<F: IntoService<S>>(
+    pub(crate) fn new<F: IntoService<S, DispatchItem<U>>>(
         io: IoBoxed,
         codec: U,
         service: F,
@@ -177,7 +177,7 @@ where
 
 impl<S, U> DispatcherState<S, U>
 where
-    S: Service<Request = DispatchItem<U>, Response = Option<Response<U>>> + 'static,
+    S: Service<DispatchItem<U>, Response = Option<Response<U>>> + 'static,
     U: Encoder + Decoder,
     <U as Encoder>::Item: 'static,
 {
@@ -235,7 +235,7 @@ where
 
 impl<S, U> Future for Dispatcher<S, U>
 where
-    S: Service<Request = DispatchItem<U>, Response = Option<Response<U>>> + 'static,
+    S: Service<DispatchItem<U>, Response = Option<Response<U>>> + 'static,
     U: Decoder + Encoder + Clone + 'static,
     <U as Encoder>::Item: 'static,
 {
@@ -508,14 +508,14 @@ mod tests {
 
     impl<S, U> Dispatcher<S, U>
     where
-        S: Service<Request = DispatchItem<U>, Response = Option<Response<U>>>,
+        S: Service<DispatchItem<U>, Response = Option<Response<U>>>,
         S::Error: 'static,
         S::Future: 'static,
         U: Decoder + Encoder + 'static,
         <U as Encoder>::Item: 'static,
     {
         /// Construct new `Dispatcher` instance
-        pub(crate) fn new_debug<F: IntoService<S>>(
+        pub(crate) fn new_debug<F: IntoService<S, DispatchItem<U>>>(
             io: Io,
             codec: U,
             service: F,
@@ -523,7 +523,7 @@ mod tests {
             let timer = Timer::new(Millis::ONE_SEC);
             let keepalive_timeout = Seconds(30);
             let updated = now();
-            let io = nio::Io::new(io).into_boxed();
+            let io = nio::Io::new(io).seal();
             let rio = io.get_ref();
 
             let inner = Rc::new(RefCell::new(DispatcherState {
@@ -703,8 +703,7 @@ mod tests {
 
         struct Srv(Rc<Cell<usize>>);
 
-        impl Service for Srv {
-            type Request = DispatchItem<BytesCodec>;
+        impl Service<DispatchItem<BytesCodec>> for Srv {
             type Response = Option<Response<BytesCodec>>;
             type Error = ();
             type Future = Ready<Option<Response<BytesCodec>>, ()>;

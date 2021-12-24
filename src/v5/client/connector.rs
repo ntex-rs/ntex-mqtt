@@ -35,12 +35,12 @@ where
         address: A,
     ) -> MqttConnector<
         A,
-        impl Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+        impl Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
     > {
         MqttConnector {
             address,
             pkt: codec::Connect::default(),
-            connector: Connector::default().map(|io| io.into_boxed()),
+            connector: Connector::default().map(|io| io.seal()),
             handshake_timeout: Seconds::ZERO,
             disconnect_timeout: Seconds(3),
             pool: Rc::new(MqttSinkPool::default()),
@@ -51,7 +51,7 @@ where
 impl<A, T> MqttConnector<A, T>
 where
     A: Address + Clone,
-    T: Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+    T: Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
 {
     #[inline]
     /// Create new client and provide client id
@@ -194,14 +194,14 @@ where
         connector: U,
     ) -> MqttConnector<
         A,
-        impl Service<Request = Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
+        impl Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
     >
     where
         F: Filter,
-        U: Service<Request = Connect<A>, Response = Io<F>, Error = connect::ConnectError>,
+        U: Service<Connect<A>, Response = Io<F>, Error = connect::ConnectError>,
     {
         MqttConnector {
-            connector: connector.map(|io| io.into_boxed()),
+            connector: connector.map(|io| io.seal()),
             pkt: self.pkt,
             address: self.address,
             handshake_timeout: self.handshake_timeout,

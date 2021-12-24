@@ -73,8 +73,8 @@ impl Client {
     pub fn resource<T, F, U, E>(self, address: T, service: F) -> ClientRouter<E, U::Error>
     where
         T: IntoPattern,
-        F: IntoService<U>,
-        U: Service<Request = Publish, Response = ()> + 'static,
+        F: IntoService<U, Publish>,
+        U: Service<Publish, Response = ()> + 'static,
         E: From<U::Error>,
     {
         let mut builder = Router::build();
@@ -123,8 +123,8 @@ impl Client {
     pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
     where
         E: 'static,
-        F: IntoService<S> + 'static,
-        S: Service<Request = ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
+        F: IntoService<S, ControlMessage<E>> + 'static,
+        S: Service<ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
     {
         if self.keepalive.non_zero() {
             ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
@@ -177,8 +177,8 @@ where
     pub fn resource<T, F, S>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoService<S>,
-        S: Service<Request = Publish, Response = (), Error = PErr> + 'static,
+        F: IntoService<S, Publish>,
+        S: Service<Publish, Response = (), Error = PErr> + 'static,
     {
         self.builder.path(address, self.handlers.len());
         self.handlers.push(boxed::service(service.into_service()));
@@ -212,9 +212,8 @@ where
     /// Run client and handle control messages
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
-        F: IntoService<S> + 'static,
-        S: Service<Request = ControlMessage<Err>, Response = ControlResult, Error = Err>
-            + 'static,
+        F: IntoService<S, ControlMessage<Err>>,
+        S: Service<ControlMessage<Err>, Response = ControlResult, Error = Err> + 'static,
     {
         if self.keepalive.non_zero() {
             ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
@@ -237,7 +236,7 @@ where
 fn dispatch<Err, PErr>(
     router: Router<usize>,
     handlers: Vec<Handler<PErr>>,
-) -> impl Service<Request = Publish, Response = Either<(), Publish>, Error = Err>
+) -> impl Service<Publish, Response = Either<(), Publish>, Error = Err>
 where
     PErr: 'static,
     Err: From<PErr>,
@@ -258,7 +257,7 @@ fn call<S, Err, PErr>(
     srv: &S,
 ) -> impl Future<Output = Result<Either<(), Publish>, Err>>
 where
-    S: Service<Request = Publish, Response = (), Error = PErr>,
+    S: Service<Publish, Response = (), Error = PErr>,
     Err: From<PErr>,
 {
     let fut = srv.call(req);

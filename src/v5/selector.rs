@@ -83,8 +83,7 @@ where
         R: Future<Output = Result<bool, Err>> + 'static,
         St: 'static,
         C: ServiceFactory<
-                Config = (),
-                Request = Handshake,
+                Handshake,
                 Response = HandshakeAck<St>,
                 Error = Err,
                 InitError = InitErr,
@@ -94,14 +93,10 @@ where
             + From<P::Error>
             + From<P::InitError>
             + fmt::Debug,
-        Cn: ServiceFactory<
-                Config = Session<St>,
-                Request = ControlMessage<C::Error>,
-                Response = ControlResult,
-            > + 'static,
-
-        P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck>
+        Cn: ServiceFactory<ControlMessage<Err>, Session<St>, Response = ControlResult>
             + 'static,
+
+        P: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
         P::Error: fmt::Debug,
         PublishAck: TryFrom<P::Error, Error = C::Error>,
     {
@@ -114,8 +109,7 @@ where
     pub(crate) fn finish_server(
         self,
     ) -> impl ServiceFactory<
-        Config = (),
-        Request = (IoBoxed, Option<Sleep>),
+        (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -129,13 +123,11 @@ where
     }
 }
 
-impl<Err, InitErr> ServiceFactory for Selector<Err, InitErr>
+impl<Err, InitErr> ServiceFactory<IoBoxed> for Selector<Err, InitErr>
 where
     Err: 'static,
     InitErr: 'static,
 {
-    type Config = ();
-    type Request = IoBoxed;
     type Response = ();
     type Error = MqttError<Err>;
     type InitError = InitErr;
@@ -165,11 +157,10 @@ pub struct SelectorService<Err> {
     pool: Rc<MqttSinkPool>,
 }
 
-impl<Err> Service for SelectorService<Err>
+impl<Err> Service<IoBoxed> for SelectorService<Err>
 where
     Err: 'static,
 {
-    type Request = IoBoxed;
     type Response = ();
     type Error = MqttError<Err>;
     type Future = Pin<Box<dyn Future<Output = Result<(), MqttError<Err>>>>>;
@@ -259,13 +250,11 @@ pub(crate) struct Selector2<Err, InitErr> {
     _t: marker::PhantomData<(Err, InitErr)>,
 }
 
-impl<Err, InitErr> ServiceFactory for Selector2<Err, InitErr>
+impl<Err, InitErr> ServiceFactory<(IoBoxed, Option<Sleep>)> for Selector2<Err, InitErr>
 where
     Err: 'static,
     InitErr: 'static,
 {
-    type Config = ();
-    type Request = (IoBoxed, Option<Sleep>);
     type Response = ();
     type Error = MqttError<Err>;
     type InitError = InitErr;
@@ -293,11 +282,10 @@ pub(crate) struct SelectorService2<Err> {
     pool: Rc<MqttSinkPool>,
 }
 
-impl<Err> Service for SelectorService2<Err>
+impl<Err> Service<(IoBoxed, Option<Sleep>)> for SelectorService2<Err>
 where
     Err: 'static,
 {
-    type Request = (IoBoxed, Option<Sleep>);
     type Response = ();
     type Error = MqttError<Err>;
     type Future = Pin<Box<dyn Future<Output = Result<(), MqttError<Err>>>>>;
@@ -329,7 +317,7 @@ where
     }
 
     #[inline]
-    fn call(&self, (io, delay): Self::Request) -> Self::Future {
+    fn call(&self, (io, delay): (IoBoxed, Option<Sleep>)) -> Self::Future {
         let servers = self.servers.clone();
         let shared = Rc::new(MqttShared::new(
             io.get_ref(),

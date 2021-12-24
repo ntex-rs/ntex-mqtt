@@ -66,15 +66,13 @@ impl<F, V3, V5, Err, InitErr> MqttServer<F, V3, V5, Err, InitErr> {
 impl<F, V3, V5, Err, InitErr> MqttServer<F, V3, V5, Err, InitErr>
 where
     V3: ServiceFactory<
-        Config = (),
-        Request = (IoBoxed, Option<Sleep>),
+        (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
-        Config = (),
-        Request = (IoBoxed, Option<Sleep>),
+        (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -87,8 +85,7 @@ where
     ) -> MqttServer<
         F,
         impl ServiceFactory<
-            Config = (),
-            Request = (IoBoxed, Option<Sleep>),
+            (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -100,19 +97,17 @@ where
     where
         St: 'static,
         C: ServiceFactory<
-                Config = (),
-                Request = v3::Handshake,
+                v3::Handshake,
                 Response = v3::HandshakeAck<St>,
                 Error = Err,
                 InitError = InitErr,
             > + 'static,
         Cn: ServiceFactory<
-                Config = v3::Session<St>,
-                Request = v3::ControlMessage<C::Error>,
+                v3::ControlMessage<Err>,
+                v3::Session<St>,
                 Response = v3::ControlResult,
             > + 'static,
-        P: ServiceFactory<Config = v3::Session<St>, Request = v3::Publish, Response = ()>
-            + 'static,
+        P: ServiceFactory<v3::Publish, v3::Session<St>, Response = ()> + 'static,
         C::Error: From<Cn::Error>
             + From<Cn::InitError>
             + From<P::Error>
@@ -134,8 +129,7 @@ where
     ) -> MqttServer<
         F,
         impl ServiceFactory<
-            Config = (),
-            Request = (IoBoxed, Option<Sleep>),
+            (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -164,8 +158,7 @@ where
         F,
         V3,
         impl ServiceFactory<
-            Config = (),
-            Request = (IoBoxed, Option<Sleep>),
+            (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -176,22 +169,17 @@ where
     where
         St: 'static,
         C: ServiceFactory<
-                Config = (),
-                Request = v5::Handshake,
+                v5::Handshake,
                 Response = v5::HandshakeAck<St>,
                 Error = Err,
                 InitError = InitErr,
             > + 'static,
         Cn: ServiceFactory<
-                Config = v5::Session<St>,
-                Request = v5::ControlMessage<C::Error>,
+                v5::ControlMessage<Err>,
+                v5::Session<St>,
                 Response = v5::ControlResult,
             > + 'static,
-        P: ServiceFactory<
-                Config = v5::Session<St>,
-                Request = v5::Publish,
-                Response = v5::PublishAck,
-            > + 'static,
+        P: ServiceFactory<v5::Publish, v5::Session<St>, Response = v5::PublishAck> + 'static,
         P::Error: fmt::Debug,
         C::Error: From<Cn::Error>
             + From<Cn::InitError>
@@ -216,8 +204,7 @@ where
         F,
         V3,
         impl ServiceFactory<
-            Config = (),
-            Request = (IoBoxed, Option<Sleep>),
+            (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
             InitError = InitErr,
@@ -238,19 +225,17 @@ where
     }
 }
 
-impl<F, V3, V5, Err, InitErr> ServiceFactory for MqttServer<F, V3, V5, Err, InitErr>
+impl<F, V3, V5, Err, InitErr> ServiceFactory<Io<F>> for MqttServer<F, V3, V5, Err, InitErr>
 where
     F: Filter,
     V3: ServiceFactory<
-        Config = (),
-        Request = (IoBoxed, Option<Sleep>),
+        (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
     >,
     V5: ServiceFactory<
-        Config = (),
-        Request = (IoBoxed, Option<Sleep>),
+        (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<Err>,
         InitError = InitErr,
@@ -258,8 +243,6 @@ where
     V3::Future: 'static,
     V5::Future: 'static,
 {
-    type Config = ();
-    type Request = Io<F>;
     type Response = ();
     type Error = MqttError<Err>;
     type Service = MqttServerImpl<F, V3::Service, V5::Service, Err>;
@@ -295,13 +278,12 @@ pub struct MqttServerImpl<F, V3, V5, Err> {
     _t: marker::PhantomData<(F, Err)>,
 }
 
-impl<F, V3, V5, Err> Service for MqttServerImpl<F, V3, V5, Err>
+impl<F, V3, V5, Err> Service<Io<F>> for MqttServerImpl<F, V3, V5, Err>
 where
     F: Filter,
-    V3: Service<Request = (IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
-    V5: Service<Request = (IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    V3: Service<(IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    V5: Service<(IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
 {
-    type Request = Io<F>;
     type Response = ();
     type Error = MqttError<Err>;
     type Future = MqttServerImplResponse<V3, V5, Err>;
@@ -329,7 +311,7 @@ where
     }
 
     fn call(&self, req: Io<F>) -> Self::Future {
-        let req = req.into_boxed();
+        let req = req.seal();
         let delay = self.handshake_timeout.map(sleep);
 
         MqttServerImplResponse {
@@ -344,12 +326,12 @@ pin_project_lite::pin_project! {
     pub struct MqttServerImplResponse<V3, V5, Err>
     where
         V3: Service<
-            Request = (IoBoxed, Option<Sleep>),
+            (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
         >,
         V5: Service<
-            Request = (IoBoxed, Option<Sleep>),
+        (IoBoxed, Option<Sleep>),
             Response = (),
             Error = MqttError<Err>,
         >,
@@ -361,7 +343,7 @@ pin_project_lite::pin_project! {
 
 pin_project_lite::pin_project! {
     #[project = MqttServerImplStateProject]
-    pub(crate) enum MqttServerImplState<V3: Service, V5: Service> {
+    pub(crate) enum MqttServerImplState<V3: Service<(IoBoxed, Option<Sleep>)>, V5: Service<(IoBoxed, Option<Sleep>)>> {
         V3 { #[pin] fut: V3::Future },
         V5 { #[pin] fut: V5::Future },
         Version { item: Option<(IoBoxed, VersionCodec, Rc<(V3, V5)>, Option<Sleep>)> },
@@ -370,8 +352,8 @@ pin_project_lite::pin_project! {
 
 impl<V3, V5, Err> Future for MqttServerImplResponse<V3, V5, Err>
 where
-    V3: Service<Request = (IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
-    V5: Service<Request = (IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    V3: Service<(IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    V5: Service<(IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
 {
     type Output = Result<(), MqttError<Err>>;
 
@@ -431,9 +413,9 @@ impl<Err, InitErr> DefaultProtocolServer<Err, InitErr> {
     }
 }
 
-impl<Err, InitErr> ServiceFactory for DefaultProtocolServer<Err, InitErr> {
-    type Config = ();
-    type Request = (IoBoxed, Option<Sleep>);
+impl<Err, InitErr> ServiceFactory<(IoBoxed, Option<Sleep>)>
+    for DefaultProtocolServer<Err, InitErr>
+{
     type Response = ();
     type Error = MqttError<Err>;
     type Service = DefaultProtocolServer<Err, InitErr>;
@@ -445,8 +427,7 @@ impl<Err, InitErr> ServiceFactory for DefaultProtocolServer<Err, InitErr> {
     }
 }
 
-impl<Err, InitErr> Service for DefaultProtocolServer<Err, InitErr> {
-    type Request = (IoBoxed, Option<Sleep>);
+impl<Err, InitErr> Service<(IoBoxed, Option<Sleep>)> for DefaultProtocolServer<Err, InitErr> {
     type Response = ();
     type Error = MqttError<Err>;
     type Future = Ready<Self::Response, Self::Error>;
@@ -455,7 +436,7 @@ impl<Err, InitErr> Service for DefaultProtocolServer<Err, InitErr> {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&self, _: Self::Request) -> Self::Future {
+    fn call(&self, _: (IoBoxed, Option<Sleep>)) -> Self::Future {
         Ready::Err(MqttError::Disconnected(Some(io::Error::new(
             io::ErrorKind::Other,
             format!("Protocol is not supported: {:?}", self.ver),

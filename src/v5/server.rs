@@ -1,7 +1,7 @@
 use std::task::{Context, Poll};
 use std::{cell::RefCell, convert::TryFrom, fmt, future::Future, marker, pin::Pin, rc::Rc};
 
-use ntex::io::{into_boxed, DispatchItem, Filter, Io, IoBoxed, Timer};
+use ntex::io::{seal, DispatchItem, Filter, Io, IoBoxed, Timer};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{Millis, Seconds, Sleep};
 use ntex::util::timeout::{Timeout, TimeoutError};
@@ -21,7 +21,7 @@ use super::shared::{MqttShared, MqttSinkPool};
 use super::{codec as mqtt, dispatcher::factory, MqttSink, Session};
 
 /// Mqtt Server
-pub struct MqttServer<St, C: ServiceFactory, Cn: ServiceFactory, P: ServiceFactory> {
+pub struct MqttServer<St, C, Cn, P> {
     handshake: C,
     srv_control: Cn,
     srv_publish: P,
@@ -39,13 +39,13 @@ impl<St, C>
     MqttServer<St, C, DefaultControlService<St, C::Error>, DefaultPublishService<St, C::Error>>
 where
     St: 'static,
-    C: ServiceFactory<Config = (), Request = Handshake, Response = HandshakeAck<St>> + 'static,
+    C: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
     C::Error: fmt::Debug,
 {
     /// Create server factory and provide handshake service
     pub fn new<F>(handshake: F) -> Self
     where
-        F: IntoServiceFactory<C>,
+        F: IntoServiceFactory<C, Handshake>,
     {
         MqttServer {
             handshake: handshake.into_factory(),
@@ -66,14 +66,11 @@ where
 impl<St, C, Cn, P> MqttServer<St, C, Cn, P>
 where
     St: 'static,
-    C: ServiceFactory<Config = (), Request = Handshake, Response = HandshakeAck<St>> + 'static,
+    C: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
     C::Error: fmt::Debug,
-    Cn: ServiceFactory<
-            Config = Session<St>,
-            Request = ControlMessage<C::Error>,
-            Response = ControlResult,
-        > + 'static,
-    P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
+    Cn: ServiceFactory<ControlMessage<C::Error>, Session<St>, Response = ControlResult>
+        + 'static,
+    P: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
 {
     /// Set handshake timeout.
     ///
@@ -137,12 +134,9 @@ where
     /// control packets is 16.
     pub fn control<F, Srv>(self, service: F) -> MqttServer<St, C, Srv, P>
     where
-        F: IntoServiceFactory<Srv>,
-        Srv: ServiceFactory<
-                Config = Session<St>,
-                Request = ControlMessage<C::Error>,
-                Response = ControlResult,
-            > + 'static,
+        F: IntoServiceFactory<Srv, ControlMessage<C::Error>, Session<St>>,
+        Srv: ServiceFactory<ControlMessage<C::Error>, Session<St>, Response = ControlResult>
+            + 'static,
         C::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         MqttServer {
@@ -163,10 +157,9 @@ where
     /// Set service to handle publish packets and create mqtt server factory
     pub fn publish<F, Srv>(self, publish: F) -> MqttServer<St, C, Cn, Srv>
     where
-        F: IntoServiceFactory<Srv> + 'static,
+        F: IntoServiceFactory<Srv, Publish, Session<St>>,
         C::Error: From<Srv::Error> + From<Srv::InitError>,
-        Srv: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck>
-            + 'static,
+        Srv: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
         Srv::Error: fmt::Debug,
         PublishAck: TryFrom<Srv::Error, Error = C::Error>,
     {
@@ -189,26 +182,22 @@ where
 impl<St, C, Cn, P> MqttServer<St, C, Cn, P>
 where
     St: 'static,
-    C: ServiceFactory<Config = (), Request = Handshake, Response = HandshakeAck<St>> + 'static,
+    C: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
     C::Error: From<Cn::Error>
         + From<Cn::InitError>
         + From<P::Error>
         + From<P::InitError>
         + fmt::Debug,
-    Cn: ServiceFactory<
-            Config = Session<St>,
-            Request = ControlMessage<C::Error>,
-            Response = ControlResult,
-        > + 'static,
-    P: ServiceFactory<Config = Session<St>, Request = Publish, Response = PublishAck> + 'static,
+    Cn: ServiceFactory<ControlMessage<C::Error>, Session<St>, Response = ControlResult>
+        + 'static,
+    P: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
     P::Error: fmt::Debug,
     PublishAck: TryFrom<P::Error, Error = C::Error>,
 {
     /// Set service to handle publish packets and create mqtt server factory
     pub fn finish<F: Filter>(
         self,
-    ) -> impl ServiceFactory<Config = (), Request = Io<F>, Response = (), Error = MqttError<C::Error>>
-    {
+    ) -> impl ServiceFactory<Io<F>, Response = (), Error = MqttError<C::Error>> {
         let handshake = self.handshake;
         let publish = self.srv_publish.map_init_err(|e| MqttError::Service(e.into()));
         let control = self
@@ -216,7 +205,7 @@ where
             .map_err(<C::Error>::from)
             .map_init_err(|e| MqttError::Service(e.into()));
 
-        into_boxed(FramedService::new(
+        seal(FramedService::new(
             handshake_service_factory(
                 handshake,
                 self.max_size,
@@ -235,8 +224,7 @@ where
     pub(crate) fn inner_finish(
         self,
     ) -> impl ServiceFactory<
-        Config = (),
-        Request = (IoBoxed, Option<Sleep>),
+        (IoBoxed, Option<Sleep>),
         Response = (),
         Error = MqttError<C::Error>,
         InitError = C::InitError,
@@ -268,8 +256,7 @@ where
         self,
         check: F,
     ) -> impl ServiceFactory<
-        Config = (),
-        Request = SelectItem,
+        SelectItem,
         Response = Either<SelectItem, ()>,
         Error = MqttError<C::Error>,
         InitError = C::InitError,
@@ -308,14 +295,13 @@ fn handshake_service_factory<St, C>(
     handshake_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
 ) -> impl ServiceFactory<
-    Config = (),
-    Request = IoBoxed,
+    IoBoxed,
     Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds),
     Error = MqttError<C::Error>,
     InitError = C::InitError,
 >
 where
-    C: ServiceFactory<Config = (), Request = Handshake, Response = HandshakeAck<St>>,
+    C: ServiceFactory<Handshake, Response = HandshakeAck<St>>,
     C::Error: fmt::Debug,
 {
     ntex::service::apply(
@@ -359,7 +345,7 @@ async fn handshake<S, St, E>(
     pool: Rc<MqttSinkPool>,
 ) -> Result<(IoBoxed, Rc<MqttShared>, Session<St>, Seconds), S::Error>
 where
-    S: Service<Request = Handshake, Response = HandshakeAck<St>, Error = MqttError<E>>,
+    S: Service<Handshake, Response = HandshakeAck<St>, Error = MqttError<E>>,
 {
     log::trace!("Starting mqtt v5 handshake");
 
@@ -485,22 +471,21 @@ pub(crate) struct ServerSelector<St, C, T, F, R> {
     _t: marker::PhantomData<(St, R)>,
 }
 
-impl<St, C, T, F, R> ServiceFactory for ServerSelector<St, C, T, F, R>
+impl<St, C, T, F, R> ServiceFactory<SelectItem> for ServerSelector<St, C, T, F, R>
 where
+    St: 'static,
     F: Fn(&Handshake) -> R + 'static,
     R: Future<Output = Result<bool, C::Error>>,
-    C: ServiceFactory<Config = (), Request = Handshake, Response = HandshakeAck<St>> + 'static,
+    C: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
     C::Error: fmt::Debug,
     T: ServiceFactory<
-            Config = Session<St>,
-            Request = DispatchItem<Rc<MqttShared>>,
+            DispatchItem<Rc<MqttShared>>,
+            Session<St>,
             Response = Option<mqtt::Packet>,
             Error = MqttError<C::Error>,
             InitError = MqttError<C::Error>,
         > + 'static,
 {
-    type Config = ();
-    type Request = SelectItem;
     type Response = Either<SelectItem, ()>;
     type Error = MqttError<C::Error>;
     type InitError = C::InitError;
@@ -549,21 +534,21 @@ pub(crate) struct ServerSelectorImpl<St, C, T, F, R> {
     _t: marker::PhantomData<(St, R)>,
 }
 
-impl<St, C, T, F, R> Service for ServerSelectorImpl<St, C, T, F, R>
+impl<St, C, T, F, R> Service<SelectItem> for ServerSelectorImpl<St, C, T, F, R>
 where
+    St: 'static,
     F: Fn(&Handshake) -> R + 'static,
     R: Future<Output = Result<bool, C::Error>>,
-    C: Service<Request = Handshake, Response = HandshakeAck<St>> + 'static,
+    C: Service<Handshake, Response = HandshakeAck<St>> + 'static,
     C::Error: fmt::Debug,
     T: ServiceFactory<
-            Config = Session<St>,
-            Request = DispatchItem<Rc<MqttShared>>,
+            DispatchItem<Rc<MqttShared>>,
+            Session<St>,
             Response = Option<mqtt::Packet>,
             Error = MqttError<C::Error>,
             InitError = MqttError<C::Error>,
         > + 'static,
 {
-    type Request = SelectItem;
     type Response = Either<SelectItem, ()>;
     type Error = MqttError<C::Error>;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
@@ -579,7 +564,7 @@ where
     }
 
     #[inline]
-    fn call(&self, req: Self::Request) -> Self::Future {
+    fn call(&self, req: SelectItem) -> Self::Future {
         log::trace!("Start connection handshake");
 
         let check = self.check.clone();

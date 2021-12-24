@@ -70,8 +70,8 @@ async fn publish(
 }
 
 fn control_service_factory() -> impl ServiceFactory<
-    Config = Session<MySession>,
-    Request = ControlMessage<MyServerError>,
+    ControlMessage<MyServerError>,
+    Session<MySession>,
     Response = ControlResult,
     Error = MyServerError,
     InitError = MyServerError,

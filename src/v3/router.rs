@@ -28,14 +28,8 @@ where
     /// Default service to be used if no matching resource could be found.
     pub fn new<F, U: 'static>(default_service: F) -> Self
     where
-        F: IntoServiceFactory<U>,
-        U: ServiceFactory<
-            Config = S,
-            Request = Publish,
-            Response = (),
-            Error = Err,
-            InitError = Err,
-        >,
+        F: IntoServiceFactory<U, Publish, S>,
+        U: ServiceFactory<Publish, S, Response = (), Error = Err, InitError = Err>,
     {
         Router {
             router: ntex::router::Router::build(),
@@ -48,8 +42,8 @@ where
     pub fn resource<T, F, U: 'static>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoServiceFactory<U>,
-        U: ServiceFactory<Config = S, Request = Publish, Response = (), Error = Err>,
+        F: IntoServiceFactory<U, Publish, S>,
+        U: ServiceFactory<Publish, S, Response = (), Error = Err>,
         Err: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
@@ -58,7 +52,7 @@ where
     }
 }
 
-impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>> for Router<S, Err>
+impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, Publish, S> for Router<S, Err>
 where
     S: Clone + 'static,
     Err: 'static,
@@ -78,13 +72,11 @@ pub struct RouterFactory<S, Err> {
     default: Handler<S, Err>,
 }
 
-impl<S, Err> ServiceFactory for RouterFactory<S, Err>
+impl<S, Err> ServiceFactory<Publish, S> for RouterFactory<S, Err>
 where
     S: Clone + 'static,
     Err: 'static,
 {
-    type Config = S;
-    type Request = Publish;
     type Response = ();
     type Error = Err;
     type InitError = Err;
@@ -114,8 +106,7 @@ pub struct RouterService<Err> {
     default: HandlerService<Err>,
 }
 
-impl<Err> Service for RouterService<Err> {
-    type Request = Publish;
+impl<Err> Service<Publish> for RouterService<Err> {
     type Response = ();
     type Error = Err;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
@@ -139,7 +130,7 @@ impl<Err> Service for RouterService<Err> {
         }
     }
 
-    fn call(&self, mut req: Self::Request) -> Self::Future {
+    fn call(&self, mut req: Publish) -> Self::Future {
         if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
             self.handlers[*idx].call(req)
         } else {
