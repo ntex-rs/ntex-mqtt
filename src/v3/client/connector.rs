@@ -1,7 +1,7 @@
 use std::{future::Future, rc::Rc};
 
 use ntex::connect::{self, Address, Connect, Connector};
-use ntex::io::{Filter, Io, IoBoxed};
+use ntex::io::{Boxed, Filter, Io, IoBoxed};
 use ntex::service::Service;
 use ntex::time::{timeout, Millis, Seconds};
 use ntex::util::{select, ByteString, Bytes, Either, PoolId};
@@ -34,16 +34,11 @@ where
 {
     #[allow(clippy::new_ret_no_self)]
     /// Create new mqtt connector
-    pub fn new(
-        address: A,
-    ) -> MqttConnector<
-        A,
-        impl Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
-    > {
+    pub fn new(address: A) -> MqttConnector<A, Boxed<Connector<A>, Connect<A>>> {
         MqttConnector {
             address,
             pkt: codec::Connect::default(),
-            connector: Connector::default().map(|io| io.seal()),
+            connector: Boxed::new(Connector::default()),
             max_send: 16,
             max_receive: 16,
             max_packet_size: 64 * 1024,
@@ -182,19 +177,13 @@ where
     }
 
     /// Use custom connector
-    pub fn connector<U, F>(
-        self,
-        connector: U,
-    ) -> MqttConnector<
-        A,
-        impl Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
-    >
+    pub fn connector<U, F>(self, connector: U) -> MqttConnector<A, Boxed<U, Connect<A>>>
     where
         F: Filter,
         U: Service<Connect<A>, Response = Io<F>, Error = connect::ConnectError>,
     {
         MqttConnector {
-            connector: connector.map(|io| io.seal()),
+            connector: Boxed::new(connector),
             pkt: self.pkt,
             address: self.address,
             max_send: self.max_send,

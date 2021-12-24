@@ -311,12 +311,11 @@ where
     }
 
     fn call(&self, req: Io<F>) -> Self::Future {
-        let req = req.seal();
         let delay = self.handshake_timeout.map(sleep);
 
         MqttServerImplResponse {
             state: MqttServerImplState::Version {
-                item: Some((req, VersionCodec, self.handlers.clone(), delay)),
+                item: Some((IoBoxed::from(req), VersionCodec, self.handlers.clone(), delay)),
             },
         }
     }

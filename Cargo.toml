@@ -23,16 +23,9 @@ pin-project-lite = "0.2"
 [dev-dependencies]
 env_logger = "0.9"
 futures = "0.3"
-ntex-tls = "0.1.0-b.2"
+ntex-tls = "0.1.0-b.3"
 rustls = "0.20"
 rustls-pemfile = "0.2"
 openssl = "0.10"
 
 ntex = { version = "0.5.0-b.3", features = ["rustls", "openssl"] }
-
-[patch.crates-io]
-ntex = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-rt = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-service = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-tls = { git = "https://github.com/ntex-rs/ntex.git" }
