@@ -156,7 +156,7 @@ where
     /// Finish server configuration and create mqtt server factory
     pub fn finish<F>(
         self,
-    ) -> impl ServiceFactory<Io<F>, Response = (), Error = MqttError<C::Error>>
+    ) -> impl ServiceFactory<IoBoxed, Response = (), Error = MqttError<C::Error>>
     where
         F: Filter,
     {
@@ -169,7 +169,7 @@ where
         let control =
             self.control.map_err(|e| e.into()).map_init_err(|e| MqttError::Service(e.into()));
 
-        seal(FramedService::new(
+        FramedService::new(
             handshake_service_factory(
                 handshake,
                 self.max_size,
@@ -178,7 +178,7 @@ where
             ),
             factory(publish, control, self.inflight),
             self.disconnect_timeout,
-        ))
+        )
     }
 
     /// Set service to handle publish packets and create mqtt server factory

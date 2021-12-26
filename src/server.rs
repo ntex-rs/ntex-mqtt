@@ -11,16 +11,15 @@ use crate::version::{ProtocolVersion, VersionCodec};
 use crate::{v3, v5};
 
 /// Mqtt Server
-pub struct MqttServer<F, V3, V5, Err, InitErr> {
+pub struct MqttServer<V3, V5, Err, InitErr> {
     v3: V3,
     v5: V5,
     handshake_timeout: Seconds,
-    _t: marker::PhantomData<(F, Err, InitErr)>,
+    _t: marker::PhantomData<(Err, InitErr)>,
 }
 
-impl<F, Err, InitErr>
+impl<Err, InitErr>
     MqttServer<
-        F,
         DefaultProtocolServer<Err, InitErr>,
         DefaultProtocolServer<Err, InitErr>,
         Err,
@@ -38,9 +37,8 @@ impl<F, Err, InitErr>
     }
 }
 
-impl<F, Err, InitErr> Default
+impl<Err, InitErr> Default
     for MqttServer<
-        F,
         DefaultProtocolServer<Err, InitErr>,
         DefaultProtocolServer<Err, InitErr>,
         Err,
@@ -52,7 +50,7 @@ impl<F, Err, InitErr> Default
     }
 }
 
-impl<F, V3, V5, Err, InitErr> MqttServer<F, V3, V5, Err, InitErr> {
+impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr> {
     /// Set handshake timeout.
     ///
     /// Handshake includes `connect` packet.
@@ -63,7 +61,7 @@ impl<F, V3, V5, Err, InitErr> MqttServer<F, V3, V5, Err, InitErr> {
     }
 }
 
-impl<F, V3, V5, Err, InitErr> MqttServer<F, V3, V5, Err, InitErr>
+impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr>
 where
     V3: ServiceFactory<
         (IoBoxed, Option<Sleep>),
@@ -83,7 +81,6 @@ where
         self,
         service: v3::MqttServer<St, C, Cn, P>,
     ) -> MqttServer<
-        F,
         impl ServiceFactory<
             (IoBoxed, Option<Sleep>),
             Response = (),
@@ -127,7 +124,6 @@ where
         self,
         service: v3::Selector<Err, InitErr>,
     ) -> MqttServer<
-        F,
         impl ServiceFactory<
             (IoBoxed, Option<Sleep>),
             Response = (),
@@ -155,7 +151,6 @@ where
         self,
         service: v5::MqttServer<St, C, Cn, P>,
     ) -> MqttServer<
-        F,
         V3,
         impl ServiceFactory<
             (IoBoxed, Option<Sleep>),
@@ -201,7 +196,6 @@ where
         self,
         service: v5::Selector<Err, InitErr>,
     ) -> MqttServer<
-        F,
         V3,
         impl ServiceFactory<
             (IoBoxed, Option<Sleep>),
@@ -225,9 +219,8 @@ where
     }
 }
 
-impl<F, V3, V5, Err, InitErr> ServiceFactory<Io<F>> for MqttServer<F, V3, V5, Err, InitErr>
+impl<V3, V5, Err, InitErr> ServiceFactory<IoBoxed> for MqttServer<V3, V5, Err, InitErr>
 where
-    F: Filter,
     V3: ServiceFactory<
         (IoBoxed, Option<Sleep>),
         Response = (),
@@ -245,13 +238,11 @@ where
 {
     type Response = ();
     type Error = MqttError<Err>;
-    type Service = MqttServerImpl<F, V3::Service, V5::Service, Err>;
+    type Service = MqttServerImpl<V3::Service, V5::Service, Err>;
     type InitError = InitErr;
     type Future = Pin<
         Box<
-            dyn Future<
-                Output = Result<MqttServerImpl<F, V3::Service, V5::Service, Err>, InitErr>,
-            >,
+            dyn Future<Output = Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr>>,
         >,
     >;
 
@@ -272,15 +263,14 @@ where
 }
 
 /// Mqtt Server
-pub struct MqttServerImpl<F, V3, V5, Err> {
+pub struct MqttServerImpl<V3, V5, Err> {
     handlers: Rc<(V3, V5)>,
     handshake_timeout: Seconds,
-    _t: marker::PhantomData<(F, Err)>,
+    _t: marker::PhantomData<Err>,
 }
 
-impl<F, V3, V5, Err> Service<Io<F>> for MqttServerImpl<F, V3, V5, Err>
+impl<V3, V5, Err> Service<IoBoxed> for MqttServerImpl<V3, V5, Err>
 where
-    F: Filter,
     V3: Service<(IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
     V5: Service<(IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
 {
@@ -310,12 +300,12 @@ where
         }
     }
 
-    fn call(&self, req: Io<F>) -> Self::Future {
+    fn call(&self, req: IoBoxed) -> Self::Future {
         let delay = self.handshake_timeout.map(sleep);
 
         MqttServerImplResponse {
             state: MqttServerImplState::Version {
-                item: Some((IoBoxed::from(req), VersionCodec, self.handlers.clone(), delay)),
+                item: Some((req, VersionCodec, self.handlers.clone(), delay)),
             },
         }
     }

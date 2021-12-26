@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.0-b.4] - 2021-12-27
+
+* Use IoBoxed for all server interfaces
+
 ## [0.8.0-b.3] - 2021-12-27
 
 * Upgrade to ntex 0.5 b4
