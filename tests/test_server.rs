@@ -122,12 +122,12 @@ async fn test_ping() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(&codec, codec::Packet::Connect(codec::Connect::default().client_id("user").into()))
+    io.send(codec::Packet::Connect(codec::Connect::default().client_id("user").into()), &codec)
         .await
         .unwrap();
     io.recv(&codec).await.unwrap().unwrap();
 
-    io.send(&codec, codec::Packet::PingRequest).await.unwrap();
+    io.send(codec::Packet::PingRequest, &codec).await.unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(pkt, codec::Packet::PingResponse);
     assert!(ping.load(Relaxed));
@@ -156,11 +156,10 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(&codec, codec::Connect::default().client_id("user").into()).await.unwrap();
+    io.send(codec::Connect::default().client_id("user").into(), &codec).await.unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
-        &codec,
         codec::Publish {
             dup: false,
             retain: false,
@@ -170,20 +169,20 @@ async fn test_ack_order() -> std::io::Result<()> {
             payload: Bytes::new(),
         }
         .into(),
+        &codec,
     )
     .await
     .unwrap();
     io.send(
-        &codec,
         codec::Packet::Subscribe {
             packet_id: NonZeroU16::new(2).unwrap(),
             topic_filters: vec![(ByteString::from("topic1"), codec::QoS::AtLeastOnce)],
         },
+        &codec,
     )
     .await
     .unwrap();
     io.send(
-        &codec,
         codec::Publish {
             dup: false,
             retain: false,
@@ -193,6 +192,7 @@ async fn test_ack_order() -> std::io::Result<()> {
             payload: Bytes::new(),
         }
         .into(),
+        &codec,
     )
     .await
     .unwrap();

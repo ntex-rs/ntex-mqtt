@@ -1,7 +1,7 @@
 use std::task::{Context, Poll};
 use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin, rc::Rc, time};
 
-use ntex::io::{Filter, Io, IoBoxed};
+use ntex::io::{Filter, Io, IoBoxed, RecvError};
 use ntex::service::{Service, ServiceFactory};
 use ntex::time::{sleep, Seconds, Sleep};
 use ntex::util::{join, ready, Pool, PoolId, PoolRef, Ready};
@@ -357,9 +357,9 @@ where
     type Output = Result<(), MqttError<Err>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.as_mut().project();
-
         loop {
+            let mut this = self.as_mut().project();
+
             match this.state.project() {
                 MqttServerImplStateProject::V3 { fut } => return fut.poll(cx),
                 MqttServerImplStateProject::V5 { fut } => return fut.poll(cx),
@@ -375,8 +375,8 @@ where
 
                     let st = item.as_mut().unwrap();
 
-                    match ready!(st.0.poll_recv(&st.1, cx))? {
-                        Some(ver) => {
+                    return match ready!(st.0.poll_recv(&st.1, cx)) {
+                        Ok(ver) => {
                             let (io, _, handlers, delay) = item.take().unwrap();
                             this = self.as_mut().project();
                             match ver {
@@ -393,8 +393,21 @@ where
                             }
                             continue;
                         }
-                        None => return Poll::Ready(Err(MqttError::Disconnected(None))),
-                    }
+                        Err(RecvError::KeepAlive | RecvError::Stop) => {
+                            unreachable!()
+                        }
+                        Err(RecvError::WriteBackpressure) => {
+                            ready!(st.0.poll_flush(cx, false))
+                                .map_err(|e| MqttError::Disconnected(Some(e)))?;
+                            continue;
+                        }
+                        Err(RecvError::Decoder(err)) => {
+                            Poll::Ready(Err(MqttError::Protocol(err.into())))
+                        }
+                        Err(RecvError::PeerGone(err)) => {
+                            Poll::Ready(Err(MqttError::Disconnected(err)))
+                        }
+                    };
                 }
             }
         }

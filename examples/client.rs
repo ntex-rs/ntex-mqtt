@@ -30,6 +30,7 @@ async fn main() -> std::io::Result<()> {
     // connect to server
     let client = v5::client::MqttConnector::new("127.0.0.1:1883")
         .client_id("user")
+        .max_packet_size(30)
         .keep_alive(Seconds::ONE)
         .connect()
         .await

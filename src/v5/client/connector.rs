@@ -267,7 +267,7 @@ where
             let io = fut.await?;
             let codec = codec::Codec::new().max_inbound_size(max_packet_size);
 
-            io.send(&codec, codec::Packet::Connect(Box::new(pkt))).await?;
+            io.send(codec::Packet::Connect(Box::new(pkt)), &codec).await?;
 
             let packet =
                 io.recv(&codec).await.map_err(ClientError::from)?.ok_or_else(|| {

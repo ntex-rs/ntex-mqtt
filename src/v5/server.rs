@@ -195,9 +195,9 @@ where
     PublishAck: TryFrom<P::Error, Error = C::Error>,
 {
     /// Set service to handle publish packets and create mqtt server factory
-    pub fn finish<F: Filter>(
+    pub fn finish(
         self,
-    ) -> impl ServiceFactory<Io<F>, Response = (), Error = MqttError<C::Error>> {
+    ) -> impl ServiceFactory<IoBoxed, Response = (), Error = MqttError<C::Error>> {
         let handshake = self.handshake;
         let publish = self.srv_publish.map_init_err(|e| MqttError::Service(e.into()));
         let control = self
@@ -205,7 +205,7 @@ where
             .map_err(<C::Error>::from)
             .map_init_err(|e| MqttError::Service(e.into()));
 
-        seal(FramedService::new(
+        FramedService::new(
             handshake_service_factory(
                 handshake,
                 self.max_size,
@@ -217,7 +217,7 @@ where
             ),
             factory(publish, control),
             self.disconnect_timeout,
-        ))
+        )
     }
 
     /// Set service to handle publish packets and create mqtt server factory
@@ -415,7 +415,7 @@ where
                     }
 
                     ack.io
-                        .send(&shared.codec, mqtt::Packet::ConnectAck(Box::new(ack.packet)))
+                        .send(mqtt::Packet::ConnectAck(Box::new(ack.packet)), &shared.codec)
                         .await?;
 
                     Ok((
@@ -649,7 +649,7 @@ where
                         }
 
                         ack.io
-                            .send(&shared.codec, mqtt::Packet::ConnectAck(Box::new(ack.packet)))
+                            .send(mqtt::Packet::ConnectAck(Box::new(ack.packet)), &shared.codec)
                             .await?;
 
                         let session = Session::new_v5(

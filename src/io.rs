@@ -1,12 +1,14 @@
 //! Framed transport dispatcher
 use std::task::{Context, Poll};
-use std::{cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time};
+use std::{
+    cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time,
+};
 
 use ntex::codec::{Decoder, Encoder};
-use ntex::io::{DispatchItem, Io, IoBoxed, IoRef, Timer};
+use ntex::io::{DispatchItem, Io, IoBoxed, IoRef, RecvError, Timer};
 use ntex::service::{IntoService, Service};
 use ntex::time::{now, Seconds};
-use ntex::util::{Either, Pool};
+use ntex::util::{ready, Either, Pool};
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -21,20 +23,24 @@ pin_project_lite::pin_project! {
         U: Decoder,
        <U as Encoder>::Item: 'static,
     {
-        service: S,
         codec: U,
-        io: IoBoxed,
-        inner: Rc<RefCell<DispatcherState<S, U>>>,
+        service: S,
+        state: Rc<RefCell<DispatcherState<S, U>>>,
+        inner: DispatcherInner,
         st: IoDispatcherState,
-        timer: Timer,
-        updated: time::Instant,
-        keepalive_timeout: Seconds,
         ready_err: bool,
         pool: Pool,
         #[pin]
         response: Option<S::Future>,
         response_idx: usize,
     }
+}
+
+struct DispatcherInner {
+    io: IoBoxed,
+    timer: Timer,
+    updated: Cell<time::Instant>,
+    keepalive_timeout: Cell<Seconds>,
 }
 
 struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder> {
@@ -113,32 +119,30 @@ where
         service: F,
         timer: Timer,
     ) -> Self {
-        let updated = now();
-        let keepalive_timeout = Seconds(30);
+        let updated = Cell::new(now());
+        let keepalive_timeout = Cell::new(Seconds(30));
 
         // register keepalive timer
-        let expire = updated + time::Duration::from(keepalive_timeout);
+        let expire = updated.get() + time::Duration::from(keepalive_timeout.get());
         timer.register(expire, expire, io.as_ref());
 
-        let inner = Rc::new(RefCell::new(DispatcherState {
+        let state = Rc::new(RefCell::new(DispatcherState {
             error: None,
             base: 0,
             queue: VecDeque::new(),
         }));
+        let pool = io.memory_pool().pool();
 
         Dispatcher {
+            state,
+            codec,
+            pool,
             st: IoDispatcherState::Processing,
             service: service.into_service(),
             response: None,
             response_idx: 0,
-            pool: io.memory_pool().pool(),
             ready_err: false,
-            inner,
-            io,
-            codec,
-            timer,
-            updated,
-            keepalive_timeout,
+            inner: DispatcherInner { io, timer, updated, keepalive_timeout },
         }
     }
 
@@ -147,17 +151,18 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default keep-alive timeout is set to 30 seconds.
-    pub(crate) fn keepalive_timeout(mut self, timeout: Seconds) -> Self {
+    pub(crate) fn keepalive_timeout(self, timeout: Seconds) -> Self {
         // register keepalive timer
-        let prev = self.updated + time::Duration::from(self.keepalive_timeout);
+        let prev =
+            self.inner.updated.get() + time::Duration::from(self.inner.keepalive_timeout.get());
         if timeout.is_zero() {
-            self.timer.unregister(prev, self.io.as_ref());
+            self.inner.timer.unregister(prev, self.inner.io.as_ref());
         } else {
-            let expire = self.updated + time::Duration::from(timeout);
-            self.timer.register(expire, prev, self.io.as_ref());
+            let expire = self.inner.updated.get() + time::Duration::from(timeout);
+            self.inner.timer.register(expire, prev, self.inner.io.as_ref());
         }
 
-        self.keepalive_timeout = timeout;
+        self.inner.keepalive_timeout.set(timeout);
         self
     }
 
@@ -170,8 +175,34 @@ where
     ///
     /// By default disconnect timeout is set to 1 seconds.
     pub(crate) fn disconnect_timeout(self, val: Seconds) -> Self {
-        self.io.set_disconnect_timeout(val.into());
+        self.inner.io.set_disconnect_timeout(val.into());
         self
+    }
+}
+
+impl DispatcherInner {
+    fn update_keepalive(&self) {
+        // update keep-alive timer
+        let ka = self.keepalive_timeout.get();
+        if ka.non_zero() {
+            let updated = now();
+            if updated != self.updated.get() {
+                let ka = time::Duration::from(ka);
+                self.timer.register(updated + ka, self.updated.get() + ka, self.io.as_ref());
+                self.updated.set(updated);
+            }
+        }
+    }
+
+    fn unregister_keepalive(&self) {
+        // unregister keep-alive timer
+        if self.keepalive_timeout.get().non_zero() {
+            self.keepalive_timeout.set(Seconds::ZERO);
+            self.timer.unregister(
+                self.updated.get() + time::Duration::from(self.keepalive_timeout.get()),
+                self.io.as_ref(),
+            );
+        }
     }
 }
 
@@ -243,7 +274,7 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.as_mut().project();
-        let io = this.io;
+        let io = &this.inner.io;
 
         // log::trace!("IO-DISP poll :{:?}:", this.st);
 
@@ -252,7 +283,7 @@ where
             match fut.poll(cx) {
                 Poll::Pending => (),
                 Poll::Ready(item) => {
-                    this.inner.borrow_mut().handle_result(
+                    this.state.borrow_mut().handle_result(
                         item,
                         *this.response_idx,
                         io.as_ref(),
@@ -277,90 +308,55 @@ where
 
                     match this.service.poll_ready(cx) {
                         Poll::Ready(Ok(_)) => {
-                            // check keepalive timeout
-                            if io.is_keepalive() {
-                                log::trace!("keepalive timeout");
-                                let mut inner = this.inner.borrow_mut();
-                                if inner.error.is_none() {
-                                    inner.error = Some(IoDispatcherError::KeepAlive);
-                                }
-                                io.stop_dispatcher();
-                            }
-
                             // decode incoming bytes stream
-                            let item = match io.poll_recv(this.codec, cx) {
-                                Poll::Pending => {
-                                    // log::trace!("not enough data to decode next frame, register dispatch task");
-                                    if io.is_dispatcher_stopped() {
-                                        log::trace!("dispatcher is instructed to stop");
-                                        let mut inner = this.inner.borrow_mut();
-
-                                        // unregister keep-alive timer
-                                        if this.keepalive_timeout.non_zero() {
-                                            this.timer.unregister(
-                                                *this.updated
-                                                    + time::Duration::from(
-                                                        *this.keepalive_timeout,
-                                                    ),
-                                                io.as_ref(),
-                                            );
-                                        }
-
-                                        // check for errors
-                                        let item = inner
-                                            .error
-                                            .as_mut()
-                                            .and_then(|err| err.take())
-                                            .or_else(|| {
-                                                io.take_error()
-                                                    .map(|e| DispatchItem::Disconnect(Some(e)))
-                                            });
-                                        *this.st = IoDispatcherState::Stop;
-                                        item
-                                    } else {
-                                        return Poll::Pending;
-                                    }
-                                }
-                                Poll::Ready(Ok(Some(el))) => {
+                            let item = match ready!(io.poll_recv(this.codec, cx)) {
+                                Ok(el) => {
                                     // update keep-alive timer
-                                    if this.keepalive_timeout.non_zero() {
-                                        let updated = now();
-                                        if updated != *this.updated {
-                                            let ka =
-                                                time::Duration::from(*this.keepalive_timeout);
-                                            this.timer.register(
-                                                updated + ka,
-                                                *this.updated + ka,
-                                                io.as_ref(),
-                                            );
-                                            *this.updated = updated;
-                                        }
-                                    }
+                                    this.inner.update_keepalive();
 
                                     Some(DispatchItem::Item(el))
                                 }
-                                Poll::Ready(Err(err)) => {
+                                Err(RecvError::Stop) => {
+                                    log::trace!("dispatcher is instructed to stop");
+                                    let mut inner = this.state.borrow_mut();
+
+                                    // check for errors
+                                    let item = inner
+                                        .error
+                                        .as_mut()
+                                        .and_then(|err| err.take())
+                                        .or_else(|| {
+                                            io.take_error()
+                                                .map(|e| DispatchItem::Disconnect(Some(e)))
+                                        });
                                     *this.st = IoDispatcherState::Stop;
-
-                                    // unregister keep-alive timer
-                                    if this.keepalive_timeout.non_zero() {
-                                        this.timer.unregister(
-                                            *this.updated
-                                                + time::Duration::from(*this.keepalive_timeout),
-                                            io.as_ref(),
-                                        );
+                                    item
+                                }
+                                Err(RecvError::KeepAlive) => {
+                                    // check keepalive timeout
+                                    log::trace!("keepalive timeout");
+                                    *this.st = IoDispatcherState::Stop;
+                                    let mut inner = this.state.borrow_mut();
+                                    if inner.error.is_none() {
+                                        inner.error = Some(IoDispatcherError::KeepAlive);
                                     }
-
-                                    match err {
-                                        Either::Left(e) => Some(DispatchItem::DecoderError(e)),
-                                        Either::Right(e) => {
-                                            Some(DispatchItem::Disconnect(Some(e)))
-                                        }
+                                    Some(DispatchItem::KeepAliveTimeout)
+                                }
+                                Err(RecvError::WriteBackpressure) => {
+                                    if let Err(err) = ready!(io.poll_flush(cx, false)) {
+                                        *this.st = IoDispatcherState::Stop;
+                                        Some(DispatchItem::Disconnect(Some(err)))
+                                    } else {
+                                        continue;
                                     }
                                 }
-                                Poll::Ready(Ok(None)) => {
+                                Err(RecvError::Decoder(err)) => {
                                     *this.st = IoDispatcherState::Stop;
-                                    Some(DispatchItem::Disconnect(None))
+                                    Some(DispatchItem::DecoderError(err))
+                                }
+                                Err(RecvError::PeerGone(err)) => {
+                                    *this.st = IoDispatcherState::Stop;
+                                    Some(DispatchItem::Disconnect(err))
                                 }
                             };
 
@@ -372,7 +368,7 @@ where
                                     let res =
                                         this.response.as_mut().as_pin_mut().unwrap().poll(cx);
 
-                                    let mut inner = this.inner.borrow_mut();
+                                    let mut inner = this.state.borrow_mut();
                                     let response_idx =
                                         inner.base.wrapping_add(inner.queue.len() as usize);
 
@@ -404,14 +400,14 @@ where
                                         inner.queue.push_back(ServiceResult::Pending);
                                     }
                                 } else {
-                                    let mut inner = this.inner.borrow_mut();
+                                    let mut inner = this.state.borrow_mut();
                                     let response_idx =
                                         inner.base.wrapping_add(inner.queue.len() as usize);
                                     inner.queue.push_back(ServiceResult::Pending);
 
                                     let st = io.get_ref();
                                     let codec = this.codec.clone();
-                                    let inner = this.inner.clone();
+                                    let inner = this.state.clone();
                                     let fut = this.service.call(item);
                                     ntex::rt::spawn(async move {
                                         let item = fut.await;
@@ -436,29 +432,22 @@ where
                             log::trace!("service readiness check failed, stopping");
                             // service readiness error
                             *this.st = IoDispatcherState::Stop;
-                            this.inner.borrow_mut().error =
+                            this.state.borrow_mut().error =
                                 Some(IoDispatcherError::Service(err));
                             *this.ready_err = true;
-
-                            // unregister keep-alive timer
-                            if this.keepalive_timeout.non_zero() {
-                                this.timer.unregister(
-                                    *this.updated
-                                        + time::Duration::from(*this.keepalive_timeout),
-                                    io.as_ref(),
-                                );
-                            }
                         }
                     }
                 }
                 // drain service responses and shutdown io
                 IoDispatcherState::Stop => {
+                    this.inner.unregister_keepalive();
+
                     // service may relay on poll_ready for response results
                     if !*this.ready_err {
                         let _ = this.service.poll_ready(cx);
                     }
 
-                    if this.inner.borrow().queue.is_empty() {
+                    if this.state.borrow().queue.is_empty() {
                         if io.poll_shutdown(cx).is_ready() {
                             *this.st = IoDispatcherState::Shutdown;
                             continue;
@@ -470,14 +459,14 @@ where
                 }
                 // shutdown service
                 IoDispatcherState::Shutdown => {
-                    let is_err = this.inner.borrow().error.is_some();
+                    let is_err = this.state.borrow().error.is_some();
 
                     return if this.service.poll_shutdown(cx, is_err).is_ready() {
                         log::trace!("service shutdown is completed, stop");
 
                         Poll::Ready(
                             if let Some(IoDispatcherError::Service(err)) =
-                                this.inner.borrow_mut().error.take()
+                                this.state.borrow_mut().error.take()
                             {
                                 Err(err)
                             } else {
@@ -521,12 +510,12 @@ mod tests {
             service: F,
         ) -> (Self, nio::IoRef) {
             let timer = Timer::new(Millis::ONE_SEC);
-            let keepalive_timeout = Seconds(30);
-            let updated = now();
+            let keepalive_timeout = Cell::new(Seconds(30));
+            let updated = Cell::new(now());
             let io = nio::Io::new(io).seal();
             let rio = io.get_ref();
 
-            let inner = Rc::new(RefCell::new(DispatcherState {
+            let state = Rc::new(RefCell::new(DispatcherState {
                 error: None,
                 base: 0,
                 queue: VecDeque::new(),
@@ -534,18 +523,20 @@ mod tests {
 
             (
                 Dispatcher {
+                    state,
+                    codec,
                     service: service.into_service(),
                     st: IoDispatcherState::Processing,
                     response: None,
                     response_idx: 0,
                     pool: io.memory_pool().pool(),
                     ready_err: false,
-                    io: IoBoxed::from(io),
-                    inner,
-                    timer,
-                    codec,
-                    updated,
-                    keepalive_timeout,
+                    inner: DispatcherInner {
+                        timer,
+                        updated,
+                        keepalive_timeout,
+                        io: IoBoxed::from(io),
+                    },
                 },
                 rio,
             )
