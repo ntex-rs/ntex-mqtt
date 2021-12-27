@@ -154,12 +154,9 @@ where
     }
 
     /// Finish server configuration and create mqtt server factory
-    pub fn finish<F>(
+    pub fn finish(
         self,
-    ) -> impl ServiceFactory<IoBoxed, Response = (), Error = MqttError<C::Error>>
-    where
-        F: Filter,
-    {
+    ) -> impl ServiceFactory<IoBoxed, Response = (), Error = MqttError<C::Error>> {
         let handshake = self.handshake;
         let publish = self
             .publish

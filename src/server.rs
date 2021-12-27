@@ -262,6 +262,50 @@ where
     }
 }
 
+impl<F, V3, V5, Err, InitErr> ServiceFactory<Io<F>> for MqttServer<V3, V5, Err, InitErr>
+where
+    F: Filter,
+    V3: ServiceFactory<
+        (IoBoxed, Option<Sleep>),
+        Response = (),
+        Error = MqttError<Err>,
+        InitError = InitErr,
+    >,
+    V5: ServiceFactory<
+        (IoBoxed, Option<Sleep>),
+        Response = (),
+        Error = MqttError<Err>,
+        InitError = InitErr,
+    >,
+    V3::Future: 'static,
+    V5::Future: 'static,
+{
+    type Response = ();
+    type Error = MqttError<Err>;
+    type Service = MqttServerImpl<V3::Service, V5::Service, Err>;
+    type InitError = InitErr;
+    type Future = Pin<
+        Box<
+            dyn Future<Output = Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr>>,
+        >,
+    >;
+
+    fn new_service(&self, _: ()) -> Self::Future {
+        let handshake_timeout = self.handshake_timeout;
+        let fut = join(self.v3.new_service(()), self.v5.new_service(()));
+        Box::pin(async move {
+            let (v3, v5) = fut.await;
+            let v3 = v3?;
+            let v5 = v5?;
+            Ok(MqttServerImpl {
+                handlers: Rc::new((v3, v5)),
+                handshake_timeout,
+                _t: marker::PhantomData,
+            })
+        })
+    }
+}
+
 /// Mqtt Server
 pub struct MqttServerImpl<V3, V5, Err> {
     handlers: Rc<(V3, V5)>,
@@ -306,6 +350,49 @@ where
         MqttServerImplResponse {
             state: MqttServerImplState::Version {
                 item: Some((req, VersionCodec, self.handlers.clone(), delay)),
+            },
+        }
+    }
+}
+
+impl<F, V3, V5, Err> Service<Io<F>> for MqttServerImpl<V3, V5, Err>
+where
+    F: Filter,
+    V3: Service<(IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+    V5: Service<(IoBoxed, Option<Sleep>), Response = (), Error = MqttError<Err>>,
+{
+    type Response = ();
+    type Error = MqttError<Err>;
+    type Future = MqttServerImplResponse<V3, V5, Err>;
+
+    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let ready1 = self.handlers.0.poll_ready(cx)?.is_ready();
+        let ready2 = self.handlers.1.poll_ready(cx)?.is_ready();
+
+        if ready1 && ready2 {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+
+    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+        let ready1 = self.handlers.0.poll_shutdown(cx, is_error).is_ready();
+        let ready2 = self.handlers.1.poll_shutdown(cx, is_error).is_ready();
+
+        if ready1 && ready2 {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+
+    fn call(&self, req: Io<F>) -> Self::Future {
+        let delay = self.handshake_timeout.map(sleep);
+
+        MqttServerImplResponse {
+            state: MqttServerImplState::Version {
+                item: Some((IoBoxed::from(req), VersionCodec, self.handlers.clone(), delay)),
             },
         }
     }
