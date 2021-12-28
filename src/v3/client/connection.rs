@@ -1,12 +1,12 @@
-use std::{fmt, future::Future, marker::PhantomData, rc::Rc, time::Instant};
+use std::{fmt, future::Future, marker::PhantomData, rc::Rc};
 
-use ntex::io::{DispatchItem, IoBoxed, Timer};
+use ntex::io::{IoBoxed, Timer};
 use ntex::router::{IntoPattern, Router, RouterBuilder};
-use ntex::service::{apply_fn, boxed, into_service, IntoService, Service};
+use ntex::service::{boxed, into_service, IntoService, Service};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{Either, Ready};
 
-use crate::error::{MqttError, ProtocolError};
+use crate::error::MqttError;
 use crate::io::Dispatcher;
 use crate::v3::{shared::MqttShared, sink::MqttSink};
 use crate::v3::{ControlResult, Publish};

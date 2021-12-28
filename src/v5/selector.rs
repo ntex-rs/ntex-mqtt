@@ -1,21 +1,18 @@
 use std::{
     convert::TryFrom, fmt, future::Future, marker, pin::Pin, rc::Rc, task::Context, task::Poll,
-    time,
 };
 
-use ntex::io::{DispatchItem, Io, IoBoxed};
-use ntex::service::{apply_fn_factory, boxed, IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{boxed, Service, ServiceFactory};
 use ntex::time::{sleep, Seconds, Sleep};
-use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either, PoolId, Ready};
+use ntex::{io::IoBoxed, util::Either};
 
 use crate::error::{MqttError, ProtocolError};
 
 use super::control::{ControlMessage, ControlResult};
-use super::default::{DefaultControlService, DefaultPublishService};
 use super::handshake::{Handshake, HandshakeAck};
 use super::publish::{Publish, PublishAck};
 use super::shared::{MqttShared, MqttSinkPool};
-use super::{codec as mqtt, dispatcher::factory, MqttServer, MqttSink, Session};
+use super::{codec as mqtt, MqttServer, Session};
 
 pub(crate) type SelectItem = (Handshake, Option<Sleep>);
 

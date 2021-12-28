@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, mem, num::NonZeroU16};
+use std::{mem, num::NonZeroU16};
 
 use ntex::router::Path;
 use ntex::util::{ByteString, Bytes};

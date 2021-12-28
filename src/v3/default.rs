@@ -80,7 +80,7 @@ impl<S, E: fmt::Debug> Service<ControlMessage<E>> for DefaultControlService<S, E
 
     #[inline]
     fn call(&self, pkt: ControlMessage<E>) -> Self::Future {
-        log::warn!("MQTT Subscribe is not supported");
+        log::warn!("MQTT3 Subscribe is not supported");
 
         Ready::Ok(match pkt {
             ControlMessage::Ping(ping) => ping.ack(),

@@ -5,10 +5,10 @@ use std::{
 };
 
 use ntex::codec::{Decoder, Encoder};
-use ntex::io::{DispatchItem, Io, IoBoxed, IoRef, RecvError, Timer};
+use ntex::io::{DispatchItem, IoBoxed, IoRef, RecvError, Timer};
 use ntex::service::{IntoService, Service};
 use ntex::time::{now, Seconds};
-use ntex::util::{ready, Either, Pool};
+use ntex::util::{ready, Pool};
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -276,7 +276,7 @@ where
         let mut this = self.as_mut().project();
         let io = &this.inner.io;
 
-        // log::trace!("IO-DISP poll :{:?}:", this.st);
+        // println!("IO-DISP poll :{:?}:", this.st);
 
         // handle service response future
         if let Some(fut) = this.response.as_mut().as_pin_mut() {
@@ -304,7 +304,7 @@ where
         loop {
             match this.st {
                 IoDispatcherState::Processing => {
-                    // log::trace!("IO-DISP state :{:?}:", io.flags());
+                    // println!("IO-DISP state :{:?}:", io.flags());
 
                     match this.service.poll_ready(cx) {
                         Poll::Ready(Ok(_)) => {
@@ -449,6 +449,7 @@ where
 
                     if this.state.borrow().queue.is_empty() {
                         if io.poll_shutdown(cx).is_ready() {
+                            log::trace!("io shutdown completed");
                             *this.st = IoDispatcherState::Shutdown;
                             continue;
                         }

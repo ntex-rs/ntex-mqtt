@@ -1,11 +1,10 @@
 use std::task::{Context, Poll};
 use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
 
-use ntex::codec::{Decoder, Encoder};
-use ntex::io::{seal, DispatchItem, Filter, Io, IoBoxed, IoRef, Timer};
-use ntex::service::{apply_fn_factory, IntoServiceFactory, Service, ServiceFactory};
+use ntex::io::{DispatchItem, IoBoxed, Timer};
+use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{Millis, Seconds, Sleep};
-use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either, PoolId, Ready};
+use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::Dispatcher;
@@ -335,6 +334,7 @@ where
 
                     log::trace!("Sending failed handshake ack: {:#?}", pkt);
                     ack.io.send(pkt, &ack.shared.codec).await?;
+                    let _ = ack.io.shutdown().await;
 
                     Err(MqttError::Disconnected(None))
                 }
@@ -519,6 +519,7 @@ where
 
                         log::trace!("Sending failed handshake ack: {:#?}", pkt);
                         ack.io.send(pkt, &ack.shared.codec).await?;
+                        let _ = ack.io.shutdown().await;
 
                         Err(MqttError::Disconnected(None))
                     }

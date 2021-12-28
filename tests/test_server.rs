@@ -2,9 +2,10 @@ use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{num::NonZeroU16, time::Duration};
 
 use futures::FutureExt;
+use ntex::service::{Service, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{ByteString, Bytes, Ready};
-use ntex::{io::seal, server};
+use ntex::{io::seal, server, service::pipeline_factory};
 
 use ntex_mqtt::v3::{
     client, codec, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish, Session,
@@ -351,6 +352,87 @@ async fn test_handle_incoming() -> std::io::Result<()> {
 
     assert!(publish.load(Relaxed));
     assert!(disconnect.load(Relaxed));
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_large_publish() -> std::io::Result<()> {
+    let srv = server::test_server(move || {
+        seal(MqttServer::new(handshake).publish(|_| Ready::Ok(())).finish())
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
+    let _ = io.recv(&codec).await;
+
+    let p = codec::Publish {
+        dup: false,
+        retain: false,
+        qos: codec::QoS::AtLeastOnce,
+        topic: ByteString::from("test"),
+        packet_id: Some(NonZeroU16::new(3).unwrap()),
+        payload: Bytes::from(vec![b'*'; 270 * 1024]),
+    }
+    .into();
+    let res = io.send(p, &codec).await;
+    assert!(res.is_ok());
+    let result = io.recv(&codec).await;
+    assert!(result.is_ok());
+
+    Ok(())
+}
+
+fn ssl_acceptor() -> openssl::ssl::SslAcceptor {
+    use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+
+    // load ssl keys
+    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+    builder.set_private_key_file("./tests/key.pem", SslFiletype::PEM).unwrap();
+    builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
+    builder.build()
+}
+
+#[ntex::test]
+async fn test_large_publish_openssl() -> std::io::Result<()> {
+    use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
+    env_logger::init();
+
+    let srv = server::test_server(move || {
+        pipeline_factory(server::openssl::Acceptor::new(ssl_acceptor()).map_err(|_| ()))
+            .and_then(seal(
+                MqttServer::new(handshake)
+                    .publish(|_| Ready::Ok(()))
+                    .finish()
+                    .map_err(|_| ())
+                    .map_init_err(|_| ()),
+            ))
+    });
+
+    let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
+    builder.set_verify(SslVerifyMode::NONE);
+    let con = ntex::connect::openssl::Connector::new(builder.build());
+    let addr = format!("127.0.0.1:{}", srv.addr().port());
+    let io = con.call(addr.into()).await.unwrap();
+
+    let codec = codec::Codec::default();
+    io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
+    let _ = io.recv(&codec).await;
+
+    let p = codec::Publish {
+        dup: false,
+        retain: false,
+        qos: codec::QoS::AtLeastOnce,
+        topic: ByteString::from("test"),
+        packet_id: Some(NonZeroU16::new(3).unwrap()),
+        payload: Bytes::from(vec![b'*'; 270 * 1024]),
+    }
+    .into();
+    let res = io.send(p, &codec).await;
+    assert!(res.is_ok());
+    let result = io.recv(&codec).await;
+    assert!(result.is_ok());
 
     Ok(())
 }

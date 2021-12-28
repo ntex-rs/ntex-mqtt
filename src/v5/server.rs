@@ -1,11 +1,10 @@
 use std::task::{Context, Poll};
-use std::{cell::RefCell, convert::TryFrom, fmt, future::Future, marker, pin::Pin, rc::Rc};
+use std::{convert::TryFrom, fmt, future::Future, marker, pin::Pin, rc::Rc};
 
-use ntex::io::{seal, DispatchItem, Filter, Io, IoBoxed, Timer};
+use ntex::io::{DispatchItem, IoBoxed, Timer};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{Millis, Seconds, Sleep};
-use ntex::util::timeout::{Timeout, TimeoutError};
-use ntex::util::{Either, PoolId, PoolRef};
+use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::io::Dispatcher;
@@ -433,17 +432,10 @@ where
                 None => {
                     log::trace!("Failed to complete handshake: {:#?}", ack.packet);
 
-                    if !ack.io.is_closed()
-                        && ack
-                            .io
-                            .encode(
-                                mqtt::Packet::ConnectAck(Box::new(ack.packet)),
-                                &ack.shared.codec,
-                            )
-                            .is_ok()
-                    {
-                        let _ = ack.io.shutdown().await;
-                    }
+                    ack.io
+                        .send(mqtt::Packet::ConnectAck(Box::new(ack.packet)), &ack.shared.codec)
+                        .await?;
+                    let _ = ack.io.shutdown().await;
                     Err(MqttError::Disconnected(None))
                 }
             }
@@ -670,17 +662,13 @@ where
                     None => {
                         log::trace!("Failed to complete handshake: {:#?}", ack.packet);
 
-                        if !ack.io.is_closed()
-                            && ack
-                                .io
-                                .encode(
-                                    mqtt::Packet::ConnectAck(Box::new(ack.packet)),
-                                    &ack.shared.codec,
-                                )
-                                .is_ok()
-                        {
-                            let _ = ack.io.shutdown().await;
-                        }
+                        ack.io
+                            .send(
+                                mqtt::Packet::ConnectAck(Box::new(ack.packet)),
+                                &ack.shared.codec,
+                            )
+                            .await?;
+                        let _ = ack.io.shutdown().await;
                         Err(MqttError::Disconnected(None))
                     }
                 }

@@ -3,9 +3,9 @@ use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
 
 use ntex::codec::{Decoder, Encoder};
 use ntex::io::{DispatchItem, IoBoxed, Timer};
-use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{Service, ServiceFactory};
 use ntex::time::{Millis, Seconds, Sleep};
-use ntex::util::{select, Either, Pool};
+use ntex::util::{select, Either};
 
 use crate::io::Dispatcher;
 

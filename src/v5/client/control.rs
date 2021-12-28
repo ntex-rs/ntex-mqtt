@@ -6,6 +6,7 @@ use crate::{error, v5::codec};
 
 pub use crate::v5::control::{Closed, ControlResult, Disconnect, Error, ProtocolError};
 
+#[derive(Debug)]
 pub enum ControlMessage<E> {
     /// Unhandled publish packet
     Publish(Publish),
@@ -51,6 +52,7 @@ impl<E> ControlMessage<E> {
     }
 }
 
+#[derive(Debug)]
 pub struct Publish(codec::Publish);
 
 impl Publish {

@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.0-b.5] - 2021-12-28
+
+* Shutdown io stream after failed handshake
+
 ## [0.8.0-b.4] - 2021-12-27
 
 * Use IoBoxed for all server interfaces

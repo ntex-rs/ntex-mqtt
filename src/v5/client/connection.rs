@@ -1,4 +1,3 @@
-use std::time::Instant;
 use std::{
     cell::RefCell, convert::TryFrom, fmt, future::Future, marker, num::NonZeroU16, rc::Rc,
 };

@@ -10,7 +10,7 @@ use ntex::util::{
 
 use crate::error::{MqttError, ProtocolError};
 
-use super::control::{self, ControlMessage, ControlResult};
+use super::control::{ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
 use super::shared::{Ack, MqttShared};
 use super::sink::MqttSink;

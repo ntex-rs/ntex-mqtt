@@ -1,14 +1,13 @@
 use std::task::{Context, Poll};
-use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin, rc::Rc, time};
+use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin, rc::Rc};
 
 use ntex::io::{Filter, Io, IoBoxed, RecvError};
 use ntex::service::{Service, ServiceFactory};
 use ntex::time::{sleep, Seconds, Sleep};
-use ntex::util::{join, ready, Pool, PoolId, PoolRef, Ready};
+use ntex::util::{join, ready, Ready};
 
-use crate::error::{MqttError, ProtocolError};
 use crate::version::{ProtocolVersion, VersionCodec};
-use crate::{v3, v5};
+use crate::{error::MqttError, v3, v5};
 
 /// Mqtt Server
 pub struct MqttServer<V3, V5, Err, InitErr> {

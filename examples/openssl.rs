@@ -49,15 +49,16 @@ async fn publish_v5(publish: v5::Publish) -> Result<v5::PublishAck, ServerError>
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,basic=trace");
+    //std::env::set_var("RUST_LOG", "ntex=info,ntex_io=info,ntex_mqtt=trace,openssl=trace");
+    std::env::set_var("RUST_LOG", "trace");
     env_logger::init();
 
     // create self-signed certificates using:
     //   openssl req -x509 -nodes -subj '/CN=localhost' -newkey rsa:4096 -keyout examples/key8.pem -out examples/cert.pem -days 365 -keyform PEM
     //   openssl rsa -in examples/key8.pem -out examples/key.pem
     let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-    builder.set_private_key_file("./examples/key.pem", SslFiletype::PEM).unwrap();
-    builder.set_certificate_chain_file("./examples/cert.pem").unwrap();
+    builder.set_private_key_file("./tests/key.pem", SslFiletype::PEM).unwrap();
+    builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
     let acceptor = builder.build();
 
     ntex::server::Server::build()

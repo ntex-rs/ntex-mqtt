@@ -167,6 +167,60 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_disconnect_after_control_error() -> std::io::Result<()> {
+    env_logger::init();
+    let srv = server::test_server(|| {
+        seal(
+            MqttServer::new(handshake)
+                .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+                .control(move |msg| match msg {
+                    ControlMessage::Subscribe(_) => Ready::Err(TestError),
+                    _ => Ready::Ok(msg.disconnect()),
+                })
+                .finish(),
+        )
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    io.send(
+        codec::Subscribe {
+            id: None,
+            packet_id: NonZeroU16::new(2).unwrap(),
+            user_properties: Default::default(),
+            topic_filters: vec![(
+                ByteString::from("topic1"),
+                codec::SubscriptionOptions {
+                    qos: codec::QoS::AtLeastOnce,
+                    no_local: false,
+                    retain_as_published: false,
+                    retain_handling: codec::RetainHandling::AtSubscribe,
+                },
+            )],
+        }
+        .into(),
+        &codec,
+    )
+    .await
+    .unwrap();
+
+    let result = io.recv(&codec).await.unwrap().unwrap();
+    if let codec::Packet::Disconnect(_) = result {
+    } else {
+        panic!();
+    }
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_ping() -> std::io::Result<()> {
     let ping = Arc::new(AtomicBool::new(false));
     let ping2 = ping.clone();
