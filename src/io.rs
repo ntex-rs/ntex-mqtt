@@ -72,7 +72,6 @@ enum IoDispatcherState {
 }
 
 pub(crate) enum IoDispatcherError<S, U> {
-    None,
     KeepAlive,
     Encoder(U),
     Service(S),
@@ -81,28 +80,6 @@ pub(crate) enum IoDispatcherError<S, U> {
 impl<S, U> From<S> for IoDispatcherError<S, U> {
     fn from(err: S) -> Self {
         IoDispatcherError::Service(err)
-    }
-}
-
-impl<E1, E2: std::fmt::Debug> IoDispatcherError<E1, E2> {
-    fn take<U>(&mut self) -> Option<DispatchItem<U>>
-    where
-        U: Encoder<Error = E2> + Decoder,
-    {
-        match self {
-            IoDispatcherError::KeepAlive => {
-                *self = IoDispatcherError::None;
-                Some(DispatchItem::KeepAliveTimeout)
-            }
-            IoDispatcherError::Encoder(_) => {
-                let err = std::mem::replace(self, IoDispatcherError::None);
-                match err {
-                    IoDispatcherError::Encoder(err) => Some(DispatchItem::EncoderError(err)),
-                    _ => None,
-                }
-            }
-            IoDispatcherError::None | IoDispatcherError::Service(_) => None,
-        }
     }
 }
 
@@ -256,7 +233,7 @@ where
             }
 
             if wake && self.queue.is_empty() {
-                write.wake_dispatcher()
+                write.wake()
             }
         } else {
             self.queue[idx] = ServiceResult::Ready(item);
@@ -318,19 +295,8 @@ where
                                 }
                                 Err(RecvError::Stop) => {
                                     log::trace!("dispatcher is instructed to stop");
-                                    let mut inner = this.state.borrow_mut();
-
-                                    // check for errors
-                                    let item = inner
-                                        .error
-                                        .as_mut()
-                                        .and_then(|err| err.take())
-                                        .or_else(|| {
-                                            io.take_error()
-                                                .map(|e| DispatchItem::Disconnect(Some(e)))
-                                        });
                                     *this.st = IoDispatcherState::Stop;
-                                    item
+                                    None
                                 }
                                 Err(RecvError::KeepAlive) => {
                                     // check keepalive timeout

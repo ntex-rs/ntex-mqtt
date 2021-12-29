@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.0-b.6] - 2021-12-30
+
+* Update to ntex-io 0.1.0-b.10
+
 ## [0.8.0-b.5] - 2021-12-28
 
 * Shutdown io stream after failed handshake
