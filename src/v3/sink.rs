@@ -47,9 +47,7 @@ impl MqttSink {
 
     /// Close mqtt connection
     pub fn close(&self) {
-        if !self.0.io.is_closed() {
-            let _ = self.0.io.close();
-        }
+        self.0.io.close();
         self.0.with_queues(|q| {
             q.inflight.clear();
             q.waiters.clear();
@@ -59,9 +57,7 @@ impl MqttSink {
     /// Force close mqtt connection. mqtt dispatcher does not wait for uncompleted
     /// responses, but it flushes buffers.
     pub fn force_close(&self) {
-        if !self.0.io.is_closed() {
-            let _ = self.0.io.force_close();
-        }
+        self.0.io.force_close();
         self.0.with_queues(|q| {
             q.inflight.clear();
             q.waiters.clear();

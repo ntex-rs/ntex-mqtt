@@ -282,7 +282,6 @@ where
             match this.st {
                 IoDispatcherState::Processing => {
                     // println!("IO-DISP state :{:?}:", io.flags());
-
                     match this.service.poll_ready(cx) {
                         Poll::Ready(Ok(_)) => {
                             // decode incoming bytes stream
