@@ -2,7 +2,7 @@ use std::{
     cell::RefCell, convert::TryFrom, fmt, future::Future, marker, num::NonZeroU16, rc::Rc,
 };
 
-use ntex::io::{IoBoxed, Timer};
+use ntex::io::IoBoxed;
 use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex::service::{boxed, into_service, IntoService, Service};
 use ntex::time::{sleep, Millis, Seconds};
@@ -126,7 +126,7 @@ impl Client {
             }),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher, Timer::new(Millis::ONE_SEC))
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher)
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(self.disconnect_timeout)
             .await;
@@ -151,7 +151,7 @@ impl Client {
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared, dispatcher, Timer::new(Millis::ONE_SEC))
+        Dispatcher::new(self.io, self.shared, dispatcher)
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(self.disconnect_timeout)
             .await
@@ -216,7 +216,7 @@ where
             }),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher, Timer::new(Millis::ONE_SEC))
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher)
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(self.disconnect_timeout)
             .await;
@@ -240,7 +240,7 @@ where
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared, dispatcher, Timer::new(Millis::ONE_SEC))
+        Dispatcher::new(self.io, self.shared, dispatcher)
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(self.disconnect_timeout)
             .await

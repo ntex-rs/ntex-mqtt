@@ -1,6 +1,6 @@
 use std::{fmt, future::Future, marker::PhantomData, rc::Rc};
 
-use ntex::io::{IoBoxed, Timer};
+use ntex::io::IoBoxed;
 use ntex::router::{IntoPattern, Router, RouterBuilder};
 use ntex::service::{boxed, into_service, IntoService, Service};
 use ntex::time::{sleep, Millis, Seconds};
@@ -108,15 +108,10 @@ impl Client {
             into_service(|msg: ControlMessage<()>| Ready::<_, ()>::Ok(msg.disconnect())),
         );
 
-        let _ = Dispatcher::new(
-            self.io,
-            self.shared.clone(),
-            dispatcher,
-            Timer::new(Millis::ONE_SEC),
-        )
-        .keepalive_timeout(Seconds::ZERO)
-        .disconnect_timeout(self.disconnect_timeout)
-        .await;
+        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher)
+            .keepalive_timeout(Seconds::ZERO)
+            .disconnect_timeout(self.disconnect_timeout)
+            .await;
     }
 
     /// Run client with provided control messages handler
@@ -137,7 +132,7 @@ impl Client {
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared.clone(), dispatcher, Timer::new(Millis::ONE_SEC))
+        Dispatcher::new(self.io, self.shared.clone(), dispatcher)
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(self.disconnect_timeout)
             .await
@@ -198,15 +193,10 @@ where
             into_service(|msg: ControlMessage<Err>| Ready::<_, Err>::Ok(msg.disconnect())),
         );
 
-        let _ = Dispatcher::new(
-            self.io,
-            self.shared.clone(),
-            dispatcher,
-            Timer::new(Millis::ONE_SEC),
-        )
-        .keepalive_timeout(Seconds::ZERO)
-        .disconnect_timeout(self.disconnect_timeout)
-        .await;
+        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher)
+            .keepalive_timeout(Seconds::ZERO)
+            .disconnect_timeout(self.disconnect_timeout)
+            .await;
     }
 
     /// Run client and handle control messages
@@ -226,7 +216,7 @@ where
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared.clone(), dispatcher, Timer::new(Millis::ONE_SEC))
+        Dispatcher::new(self.io, self.shared.clone(), dispatcher)
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(self.disconnect_timeout)
             .await

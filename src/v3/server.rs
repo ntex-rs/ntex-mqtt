@@ -1,7 +1,7 @@
 use std::task::{Context, Poll};
 use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
 
-use ntex::io::{DispatchItem, IoBoxed, Timer};
+use ntex::io::{DispatchItem, IoBoxed};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{Millis, Seconds, Sleep};
 use ntex::util::{timeout::Timeout, timeout::TimeoutError, Either};
@@ -232,7 +232,6 @@ where
             handler: Rc::new(factory(publish, control, self.inflight)),
             max_size: self.max_size,
             disconnect_timeout: self.disconnect_timeout,
-            time: Timer::new(Millis::ONE_SEC),
             _t: PhantomData,
         }
     }
@@ -354,7 +353,6 @@ pub(crate) struct ServerSelector<St, C, T, F, R> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: Seconds,
-    time: Timer,
     check: Rc<F>,
     max_size: u32,
     _t: PhantomData<(St, R)>,
@@ -385,7 +383,6 @@ where
         let fut = self.connect.new_service(());
         let handler = self.handler.clone();
         let disconnect_timeout = self.disconnect_timeout;
-        let time = self.time.clone();
         let check = self.check.clone();
         let max_size = self.max_size;
 
@@ -394,7 +391,6 @@ where
             Ok(ServerSelectorImpl {
                 handler,
                 disconnect_timeout,
-                time,
                 check,
                 max_size,
                 connect: Rc::new(fut.await?),
@@ -409,7 +405,6 @@ pub(crate) struct ServerSelectorImpl<St, C, T, F, R> {
     connect: Rc<C>,
     handler: Rc<T>,
     disconnect_timeout: Seconds,
-    time: Timer,
     max_size: u32,
     _t: PhantomData<(St, R)>,
 }
@@ -451,7 +446,6 @@ where
         let connect = self.connect.clone();
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
-        let time = self.time.clone();
         let max_size = self.max_size;
 
         Box::pin(async move {
@@ -505,7 +499,7 @@ where
                         let handler = handler.new_service(session).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 
-                        Dispatcher::new(ack.io, ack.shared, handler, time)
+                        Dispatcher::new(ack.io, ack.shared, handler)
                             .keepalive_timeout(ack.keepalive)
                             .disconnect_timeout(timeout)
                             .await?;

@@ -1,7 +1,7 @@
 use std::{future::Future, rc::Rc};
 
 use ntex::connect::{self, Address, Connect, Connector};
-use ntex::io::{Boxed, Filter, Io, IoBoxed};
+use ntex::io::{utils::Boxed, Filter, Io, IoBoxed};
 use ntex::service::Service;
 use ntex::time::{timeout, Seconds};
 use ntex::util::{ByteString, Bytes, Either, PoolId};

@@ -1,5 +1,5 @@
 #![deny(rust_2018_idioms, warnings)]
-#![allow(clippy::type_complexity)]
+#![allow(clippy::type_complexity, clippy::return_self_not_must_use)]
 
 //! MQTT Client/Server framework
 

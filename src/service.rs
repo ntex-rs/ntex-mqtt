@@ -2,9 +2,9 @@ use std::task::{Context, Poll};
 use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
 
 use ntex::codec::{Decoder, Encoder};
-use ntex::io::{DispatchItem, IoBoxed, Timer};
+use ntex::io::{DispatchItem, IoBoxed};
 use ntex::service::{Service, ServiceFactory};
-use ntex::time::{Millis, Seconds, Sleep};
+use ntex::time::{Seconds, Sleep};
 use ntex::util::{select, Either};
 
 use crate::io::Dispatcher;
@@ -15,7 +15,6 @@ pub(crate) struct FramedService<St, C, T, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: Seconds,
-    time: Timer,
     _t: PhantomData<(St, Codec)>,
 }
 
@@ -25,7 +24,6 @@ impl<St, C, T, Codec> FramedService<St, C, T, Codec> {
             connect,
             disconnect_timeout,
             handler: Rc::new(service),
-            time: Timer::new(Millis::ONE_SEC),
             _t: PhantomData,
         }
     }
@@ -56,14 +54,12 @@ where
         let fut = self.connect.new_service(());
         let handler = self.handler.clone();
         let disconnect_timeout = self.disconnect_timeout;
-        let time = self.time.clone();
 
         // create connect service and then create service impl
         Box::pin(async move {
             Ok(FramedServiceImpl {
                 handler,
                 disconnect_timeout,
-                time,
                 connect: fut.await?,
                 _t: PhantomData,
             })
@@ -75,7 +71,6 @@ pub(crate) struct FramedServiceImpl<St, C, T, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: Seconds,
-    time: Timer,
     _t: PhantomData<(St, Codec)>,
 }
 
@@ -114,7 +109,6 @@ where
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
         let handshake = self.connect.call(req);
-        let time = self.time.clone();
 
         Box::pin(async move {
             let (io, codec, session, keepalive) = handshake.await.map_err(|e| {
@@ -126,7 +120,7 @@ where
             let handler = handler.new_service(session).await?;
             log::trace!("Connection handler is created, starting dispatcher");
 
-            Dispatcher::new(io, codec, handler, time)
+            Dispatcher::new(io, codec, handler)
                 .keepalive_timeout(keepalive)
                 .disconnect_timeout(timeout)
                 .await
@@ -138,7 +132,6 @@ pub(crate) struct FramedService2<St, C, T, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: Seconds,
-    time: Timer,
     _t: PhantomData<(St, Codec)>,
 }
 
@@ -148,7 +141,6 @@ impl<St, C, T, Codec> FramedService2<St, C, T, Codec> {
             connect,
             disconnect_timeout,
             handler: Rc::new(service),
-            time: Timer::new(Millis::ONE_SEC),
             _t: PhantomData,
         }
     }
@@ -179,14 +171,12 @@ where
         let fut = self.connect.new_service(());
         let handler = self.handler.clone();
         let disconnect_timeout = self.disconnect_timeout;
-        let time = self.time.clone();
 
         // create connect service and then create service impl
         Box::pin(async move {
             Ok(FramedServiceImpl2 {
                 handler,
                 disconnect_timeout,
-                time,
                 connect: fut.await?,
                 _t: PhantomData,
             })
@@ -198,7 +188,6 @@ pub(crate) struct FramedServiceImpl2<St, C, T, Codec> {
     connect: C,
     handler: Rc<T>,
     disconnect_timeout: Seconds,
-    time: Timer,
     _t: PhantomData<(St, Codec)>,
 }
 
@@ -237,7 +226,6 @@ where
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
         let handshake = self.connect.call(req);
-        let time = self.time.clone();
 
         Box::pin(async move {
             let (io, codec, ka, handler) = if let Some(delay) = delay {
@@ -277,7 +265,7 @@ where
                 (io, codec, ka, handler)
             };
 
-            Dispatcher::new(io, codec, handler, time)
+            Dispatcher::new(io, codec, handler)
                 .keepalive_timeout(ka)
                 .disconnect_timeout(timeout)
                 .await

@@ -36,7 +36,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --all --all-features --no-fail-fast -- --nocapture
+          args: --all --features=ntex/tokio -- --nocapture
 
       - name: Clear the cargo caches
         run: |

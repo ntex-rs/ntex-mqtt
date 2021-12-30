@@ -5,7 +5,7 @@ use futures::FutureExt;
 use ntex::service::{Service, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{ByteString, Bytes, Ready};
-use ntex::{io::seal, server, service::pipeline_factory};
+use ntex::{io::utils::seal, server, service::pipeline_factory};
 
 use ntex_mqtt::v3::{
     client, codec, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish, Session,

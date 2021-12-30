@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 
-use ntex::io::seal;
+use ntex::io::utils::seal;
 use ntex::service::{fn_factory_with_config, fn_service, ServiceFactory};
 use ntex::util::{ByteString, Ready};
 use ntex_mqtt::v5::{

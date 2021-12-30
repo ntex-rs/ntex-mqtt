@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.0] - 2021-12-30
+
+* Upgrade to ntex 0.5.0
+
 ## [0.8.0-b.6] - 2021-12-30
 
 * Update to ntex-io 0.1.0-b.10

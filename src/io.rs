@@ -5,9 +5,9 @@ use std::{
 };
 
 use ntex::codec::{Decoder, Encoder};
-use ntex::io::{DispatchItem, IoBoxed, IoRef, RecvError, Timer};
+use ntex::io::{DispatchItem, IoBoxed, IoRef, IoStatusUpdate, RecvError};
 use ntex::service::{IntoService, Service};
-use ntex::time::{now, Seconds};
+use ntex::time::Seconds;
 use ntex::util::{ready, Pool};
 
 type Response<U> = <U as Encoder>::Item;
@@ -28,7 +28,7 @@ pin_project_lite::pin_project! {
         state: Rc<RefCell<DispatcherState<S, U>>>,
         inner: DispatcherInner,
         st: IoDispatcherState,
-        ready_err: bool,
+        flags: Cell<Flags>,
         pool: Pool,
         #[pin]
         response: Option<S::Future>,
@@ -36,11 +36,16 @@ pin_project_lite::pin_project! {
     }
 }
 
+bitflags::bitflags! {
+    struct Flags: u8  {
+        const READY_ERR  = 0b0001;
+        const IO_ERR     = 0b0010;
+    }
+}
+
 struct DispatcherInner {
     io: IoBoxed,
-    timer: Timer,
-    updated: Cell<time::Instant>,
-    keepalive_timeout: Cell<Seconds>,
+    keepalive_timeout: Cell<time::Duration>,
 }
 
 struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder> {
@@ -83,6 +88,12 @@ impl<S, U> From<S> for IoDispatcherError<S, U> {
     }
 }
 
+fn insert_flags(flags: &mut Cell<Flags>, f: Flags) {
+    let mut val = flags.get();
+    val.insert(f);
+    flags.set(val);
+}
+
 impl<S, U> Dispatcher<S, U>
 where
     S: Service<DispatchItem<U>, Response = Option<Response<U>>> + 'static,
@@ -94,14 +105,11 @@ where
         io: IoBoxed,
         codec: U,
         service: F,
-        timer: Timer,
     ) -> Self {
-        let updated = Cell::new(now());
-        let keepalive_timeout = Cell::new(Seconds(30));
+        let keepalive_timeout = Cell::new(Seconds(30).into());
 
         // register keepalive timer
-        let expire = updated.get() + time::Duration::from(keepalive_timeout.get());
-        timer.register(expire, expire, io.as_ref());
+        io.start_keepalive_timer(keepalive_timeout.get());
 
         let state = Rc::new(RefCell::new(DispatcherState {
             error: None,
@@ -118,8 +126,8 @@ where
             service: service.into_service(),
             response: None,
             response_idx: 0,
-            ready_err: false,
-            inner: DispatcherInner { io, timer, updated, keepalive_timeout },
+            flags: Cell::new(Flags::empty()),
+            inner: DispatcherInner { io, keepalive_timeout },
         }
     }
 
@@ -129,16 +137,8 @@ where
     ///
     /// By default keep-alive timeout is set to 30 seconds.
     pub(crate) fn keepalive_timeout(self, timeout: Seconds) -> Self {
-        // register keepalive timer
-        let prev =
-            self.inner.updated.get() + time::Duration::from(self.inner.keepalive_timeout.get());
-        if timeout.is_zero() {
-            self.inner.timer.unregister(prev, self.inner.io.as_ref());
-        } else {
-            let expire = self.inner.updated.get() + time::Duration::from(timeout);
-            self.inner.timer.register(expire, prev, self.inner.io.as_ref());
-        }
-
+        let timeout = timeout.into();
+        self.inner.io.start_keepalive_timer(timeout);
         self.inner.keepalive_timeout.set(timeout);
         self
     }
@@ -160,26 +160,13 @@ where
 impl DispatcherInner {
     fn update_keepalive(&self) {
         // update keep-alive timer
-        let ka = self.keepalive_timeout.get();
-        if ka.non_zero() {
-            let updated = now();
-            if updated != self.updated.get() {
-                let ka = time::Duration::from(ka);
-                self.timer.register(updated + ka, self.updated.get() + ka, self.io.as_ref());
-                self.updated.set(updated);
-            }
-        }
+        self.io.start_keepalive_timer(self.keepalive_timeout.get());
     }
 
     fn unregister_keepalive(&self) {
         // unregister keep-alive timer
-        if self.keepalive_timeout.get().non_zero() {
-            self.keepalive_timeout.set(Seconds::ZERO);
-            self.timer.unregister(
-                self.updated.get() + time::Duration::from(self.keepalive_timeout.get()),
-                self.io.as_ref(),
-            );
-        }
+        self.io.remove_keepalive_timer();
+        self.keepalive_timeout.set(time::Duration::ZERO);
     }
 }
 
@@ -399,7 +386,7 @@ where
                             *this.st = IoDispatcherState::Stop;
                             this.state.borrow_mut().error =
                                 Some(IoDispatcherError::Service(err));
-                            *this.ready_err = true;
+                            insert_flags(&mut *this.flags, Flags::READY_ERR);
                         }
                     }
                 }
@@ -408,7 +395,7 @@ where
                     this.inner.unregister_keepalive();
 
                     // service may relay on poll_ready for response results
-                    if !*this.ready_err {
+                    if !this.flags.get().contains(Flags::READY_ERR) {
                         let _ = this.service.poll_ready(cx);
                     }
 
@@ -418,8 +405,21 @@ where
                             *this.st = IoDispatcherState::Shutdown;
                             continue;
                         }
-                    } else {
-                        io.register_dispatcher(cx);
+                    } else if !this.flags.get().contains(Flags::IO_ERR) {
+                        match ready!(this.inner.io.poll_status_update(cx)) {
+                            IoStatusUpdate::PeerGone(_)
+                            | IoStatusUpdate::Stop
+                            | IoStatusUpdate::KeepAlive => {
+                                insert_flags(&mut *this.flags, Flags::IO_ERR);
+                                continue;
+                            }
+                            IoStatusUpdate::WriteBackpressure => {
+                                if ready!(this.inner.io.poll_flush(cx, true)).is_err() {
+                                    insert_flags(&mut *this.flags, Flags::IO_ERR);
+                                }
+                                continue;
+                            }
+                        }
                     }
                     return Poll::Pending;
                 }
@@ -475,10 +475,9 @@ mod tests {
             codec: U,
             service: F,
         ) -> (Self, nio::IoRef) {
-            let timer = Timer::new(Millis::ONE_SEC);
-            let keepalive_timeout = Cell::new(Seconds(30));
-            let updated = Cell::new(now());
+            let keepalive_timeout = Cell::new(Seconds(30).into());
             let io = nio::Io::new(io).seal();
+            io.start_keepalive_timer(keepalive_timeout.get());
             let rio = io.get_ref();
 
             let state = Rc::new(RefCell::new(DispatcherState {
@@ -496,13 +495,8 @@ mod tests {
                     response: None,
                     response_idx: 0,
                     pool: io.memory_pool().pool(),
-                    ready_err: false,
-                    inner: DispatcherInner {
-                        timer,
-                        updated,
-                        keepalive_timeout,
-                        io: IoBoxed::from(io),
-                    },
+                    flags: Cell::new(Flags::empty()),
+                    inner: DispatcherInner { keepalive_timeout, io: IoBoxed::from(io) },
                 },
                 rio,
             )

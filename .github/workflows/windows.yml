@@ -69,4 +69,4 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --all --all-features -- --nocapture
+          args: --all --features=ntex/tokio -- --nocapture

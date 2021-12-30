@@ -3,7 +3,7 @@ use std::{convert::TryFrom, num::NonZeroU16, time::Duration};
 
 use futures::FutureExt;
 use ntex::util::{ByteString, Bytes, Ready};
-use ntex::{io::seal, server, service::fn_service, time::sleep};
+use ntex::{io::utils::seal, server, service::fn_service, time::sleep};
 
 use ntex_mqtt::v5::{
     client, codec, error, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish,
