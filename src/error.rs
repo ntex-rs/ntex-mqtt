@@ -1,21 +1,28 @@
+use std::{error, fmt, io};
+
 use derive_more::{Display, From};
 use ntex::util::Either;
-use std::{error, io};
 
 /// Errors which can occur when attempting to handle mqtt connection.
-#[derive(Debug)]
+#[derive(Debug, Display)]
 pub enum MqttError<E> {
     /// Publish handler service error
+    #[display(fmt = "Service error")]
     Service(E),
     /// Protocol error
+    #[display(fmt = "Mqtt protocol error: {}", _0)]
     Protocol(ProtocolError),
     /// Handshake timeout
     HandshakeTimeout,
     /// Peer disconnect
+    #[display(fmt = "Peer is disconnected, error: {:?}", _0)]
     Disconnected(Option<io::Error>),
     /// Server error
+    #[display(fmt = "Server error: {}", _0)]
     ServerError(&'static str),
 }
+
+impl<E: fmt::Debug> error::Error for MqttError<E> {}
 
 /// Protocol level errors
 #[derive(Debug, Display, From)]
@@ -51,6 +58,18 @@ impl error::Error for ProtocolError {}
 impl<E> From<ProtocolError> for MqttError<E> {
     fn from(err: ProtocolError) -> Self {
         MqttError::Protocol(err)
+    }
+}
+
+impl<E> From<io::Error> for MqttError<E> {
+    fn from(err: io::Error) -> Self {
+        MqttError::Disconnected(Some(err))
+    }
+}
+
+impl<E> From<Either<io::Error, io::Error>> for MqttError<E> {
+    fn from(err: Either<io::Error, io::Error>) -> Self {
+        MqttError::Disconnected(Some(err.into_inner()))
     }
 }
 

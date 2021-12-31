@@ -2,7 +2,7 @@ use std::{future::Future, rc::Rc};
 
 use ntex::connect::{self, Address, Connect, Connector};
 use ntex::io::{utils::Boxed, Filter, Io, IoBoxed};
-use ntex::service::Service;
+use ntex::service::{IntoService, Service};
 use ntex::time::{timeout, Seconds};
 use ntex::util::{ByteString, Bytes, Either, PoolId};
 
@@ -177,13 +177,14 @@ where
     }
 
     /// Use custom connector
-    pub fn connector<U, F>(self, connector: U) -> MqttConnector<A, Boxed<U, Connect<A>>>
+    pub fn connector<S, U, F>(self, connector: U) -> MqttConnector<A, Boxed<S, Connect<A>>>
     where
         F: Filter,
-        U: Service<Connect<A>, Response = Io<F>, Error = connect::ConnectError>,
+        U: IntoService<S, Connect<A>>,
+        S: Service<Connect<A>, Response = Io<F>, Error = connect::ConnectError>,
     {
         MqttConnector {
-            connector: Boxed::new(connector),
+            connector: Boxed::new(connector.into_service()),
             pkt: self.pkt,
             address: self.address,
             max_send: self.max_send,

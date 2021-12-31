@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.1] - 2021-12-31
+
+* Cleanup MqttError types
+
 ## [0.8.0] - 2021-12-30
 
 * Upgrade to ntex 0.5.0

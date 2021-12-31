@@ -70,12 +70,11 @@ impl Client {
     }
 
     /// Configure mqtt resource for a specific topic
-    pub fn resource<T, F, U, E>(self, address: T, service: F) -> ClientRouter<E, U::Error>
+    pub fn resource<T, F, U>(self, address: T, service: F) -> ClientRouter<U::Error, U::Error>
     where
         T: IntoPattern,
         F: IntoService<U, Publish>,
         U: Service<Publish, Response = ()> + 'static,
-        E: From<U::Error>,
     {
         let mut builder = Router::build();
         builder.path(address, 0);
