@@ -9,7 +9,7 @@ use ntex_mqtt::v5::{
 
 #[derive(Clone, Debug)]
 struct MySession {
-    client_id: String,
+    _client_id: String,
     subscriptions: RefCell<Vec<ByteString>>,
     sink: v5::MqttSink,
 }
@@ -37,7 +37,7 @@ async fn handshake(
     log::info!("new connection: {:?}", handshake);
 
     let session = MySession {
-        client_id: handshake.packet().client_id.to_string(),
+        _client_id: handshake.packet().client_id.to_string(),
         subscriptions: RefCell::new(Vec::new()),
         sink: handshake.sink(),
     };
