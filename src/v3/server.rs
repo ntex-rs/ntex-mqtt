@@ -171,24 +171,15 @@ where
         >,
         Rc<MqttShared>,
     > {
-        let handshake = self.handshake;
-        let publish = self
-            .publish
-            .into_factory()
-            .map_err(|e| e.into())
-            .map_init_err(|e| MqttError::Service(e.into()));
-        let control =
-            self.control.map_err(|e| e.into()).map_init_err(|e| MqttError::Service(e.into()));
-
         service::MqttServer::new(
             HandshakeFactory {
-                factory: handshake,
+                factory: self.handshake,
                 max_size: self.max_size,
                 handshake_timeout: self.handshake_timeout,
                 pool: self.pool.clone(),
                 _t: PhantomData,
             },
-            factory(publish, control, self.inflight),
+            factory(self.publish, self.control, self.inflight),
             self.disconnect_timeout,
         )
     }
@@ -207,15 +198,10 @@ where
         F: Fn(&Handshake) -> R + 'static,
         R: Future<Output = Result<bool, C::Error>> + 'static,
     {
-        let publish =
-            self.publish.map_err(|e| e.into()).map_init_err(|e| MqttError::Service(e.into()));
-        let control =
-            self.control.map_err(|e| e.into()).map_init_err(|e| MqttError::Service(e.into()));
-
         ServerSelector {
             check: Rc::new(check),
             connect: self.handshake,
-            handler: Rc::new(factory(publish, control, self.inflight)),
+            handler: Rc::new(factory(self.publish, self.control, self.inflight)),
             max_size: self.max_size,
             disconnect_timeout: self.disconnect_timeout,
             _t: PhantomData,

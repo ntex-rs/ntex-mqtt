@@ -29,17 +29,10 @@ pub(super) fn factory<St, T, C, E>(
     InitError = MqttError<E>,
 >
 where
-    E: 'static,
     St: 'static,
-    T: ServiceFactory<Publish, Session<St>, Response = (), Error = E, InitError = MqttError<E>>
-        + 'static,
-    C: ServiceFactory<
-            ControlMessage<E>,
-            Session<St>,
-            Response = ControlResult,
-            Error = E,
-            InitError = MqttError<E>,
-        > + 'static,
+    T: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
+    C: ServiceFactory<ControlMessage<E>, Session<St>, Response = ControlResult> + 'static,
+    E: From<C::Error> + From<C::InitError> + From<T::Error> + From<T::InitError> + 'static,
 {
     fn_factory_with_config(move |cfg: Session<St>| {
         // create services
@@ -47,19 +40,23 @@ where
 
         async move {
             let (publish, control) = fut.await;
+            let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
+            let control = control
+                .map_err(|e| MqttError::Service(e.into()))?
+                .map_err(|e| MqttError::Service(E::from(e)));
 
             let control = BufferService::new(
                 16,
-                || MqttError::<C::Error>::Disconnected(None),
+                || MqttError::<E>::Disconnected(None),
                 // limit number of in-flight messages
-                InFlightService::new(1, control?.map_err(MqttError::Service)),
+                InFlightService::new(1, control),
             );
 
             Ok(
                 // limit number of in-flight messages
                 InFlightService::new(
                     inflight,
-                    Dispatcher::<_, _, _, E>::new(cfg, publish?, control),
+                    Dispatcher::<_, _, _, E>::new(cfg, publish, control),
                 ),
             )
         }
@@ -83,7 +80,8 @@ struct Inner<C> {
 
 impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
-    T: Service<Publish, Response = (), Error = E>,
+    E: From<T::Error>,
+    T: Service<Publish, Response = ()>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     pub(crate) fn new(session: Session<St>, publish: T, control: C) -> Self {
@@ -101,10 +99,9 @@ where
 
 impl<St, T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<St, T, C, E>
 where
-    T: Service<Publish, Response = (), Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
-    C::Future: 'static,
-    E: 'static,
+    E: From<T::Error> + 'static,
+    T: Service<Publish, Response = ()>,
+    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>> + 'static,
 {
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
@@ -114,7 +111,7 @@ where
     >;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service)?;
+        let res1 = self.publish.poll_ready(cx).map_err(|e| MqttError::Service(e.into()))?;
         let res2 = self.inner.control.poll_ready(cx)?;
 
         if res1.is_pending() || res2.is_pending() {
@@ -259,7 +256,8 @@ pin_project_lite::pin_project! {
 
 impl<T, C, E> Future for PublishResponse<T, C, E>
 where
-    T: Service<Publish, Response = (), Error = E>,
+    E: From<T::Error>,
+    T: Service<Publish, Response = ()>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     type Output = Result<Option<codec::Packet>, MqttError<E>>;
@@ -283,7 +281,7 @@ where
                 }
                 Poll::Ready(Err(e)) => {
                     this.state.set(PublishResponseState::Control {
-                        fut: ControlResponse::new(ControlMessage::error(e), this.inner),
+                        fut: ControlResponse::new(ControlMessage::error(e.into()), this.inner),
                     });
                     self.poll(cx)
                 }
