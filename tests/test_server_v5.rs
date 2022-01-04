@@ -3,7 +3,7 @@ use std::{convert::TryFrom, num::NonZeroU16, time::Duration};
 
 use futures::FutureExt;
 use ntex::util::{ByteString, Bytes, Ready};
-use ntex::{io::utils::seal, server, service::fn_service, time::sleep};
+use ntex::{server, service::fn_service, time::sleep};
 
 use ntex_mqtt::v5::{
     client, codec, error, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish,
@@ -48,11 +48,9 @@ async fn handshake(packet: Handshake) -> Result<HandshakeAck<St>, TestError> {
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
     let srv = server::test_server(|| {
-        seal(
-            MqttServer::new(handshake)
-                .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
-                .finish(),
-        )
+        MqttServer::new(handshake)
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .finish()
     });
 
     // connect to server
@@ -74,13 +72,11 @@ async fn test_simple() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_handshake_failed() -> std::io::Result<()> {
     let srv = server::test_server(|| {
-        seal(
-            MqttServer::new(fn_service(|hnd: Handshake| async move {
-                Ok(hnd.failed::<St>(codec::ConnectAckReason::NotAuthorized))
-            }))
-            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
-            .finish(),
-        )
+        MqttServer::new(fn_service(|hnd: Handshake| async move {
+            Ok(hnd.failed::<St>(codec::ConnectAckReason::NotAuthorized))
+        }))
+        .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+        .finish()
     });
 
     // connect to server
@@ -99,19 +95,17 @@ async fn test_handshake_failed() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_disconnect() -> std::io::Result<()> {
     let srv = server::test_server(|| {
-        seal(
-            MqttServer::new(handshake)
-                .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
-                    Ready::Ok::<_, TestError>(ntex::service::fn_service(move |p: Publish| {
-                        session.sink().close();
-                        async move {
-                            sleep(Duration::from_millis(100)).await;
-                            Ok::<_, TestError>(p.ack())
-                        }
-                    }))
+        MqttServer::new(handshake)
+            .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
+                Ready::Ok::<_, TestError>(ntex::service::fn_service(move |p: Publish| {
+                    session.sink().close();
+                    async move {
+                        sleep(Duration::from_millis(100)).await;
+                        Ok::<_, TestError>(p.ack())
+                    }
                 }))
-                .finish(),
-        )
+            }))
+            .finish()
     });
 
     // connect to server
@@ -132,23 +126,21 @@ async fn test_disconnect() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_disconnect_with_reason() -> std::io::Result<()> {
     let srv = server::test_server(|| {
-        seal(
-            MqttServer::new(handshake)
-                .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
-                    Ready::Ok::<_, TestError>(ntex::service::fn_service(move |p: Publish| {
-                        let pkt = codec::Disconnect {
-                            reason_code: codec::DisconnectReasonCode::ServerMoved,
-                            ..Default::default()
-                        };
-                        session.sink().close_with_reason(pkt);
-                        async move {
-                            sleep(Duration::from_millis(100)).await;
-                            Ok::<_, TestError>(p.ack())
-                        }
-                    }))
+        MqttServer::new(handshake)
+            .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
+                Ready::Ok::<_, TestError>(ntex::service::fn_service(move |p: Publish| {
+                    let pkt = codec::Disconnect {
+                        reason_code: codec::DisconnectReasonCode::ServerMoved,
+                        ..Default::default()
+                    };
+                    session.sink().close_with_reason(pkt);
+                    async move {
+                        sleep(Duration::from_millis(100)).await;
+                        Ok::<_, TestError>(p.ack())
+                    }
                 }))
-                .finish(),
-        )
+            }))
+            .finish()
     });
 
     // connect to server
@@ -170,15 +162,13 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
 async fn test_disconnect_after_control_error() -> std::io::Result<()> {
     env_logger::init();
     let srv = server::test_server(|| {
-        seal(
-            MqttServer::new(handshake)
-                .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
-                .control(move |msg| match msg {
-                    ControlMessage::Subscribe(_) => Ready::Err(TestError),
-                    _ => Ready::Ok(msg.disconnect()),
-                })
-                .finish(),
-        )
+        MqttServer::new(handshake)
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .control(move |msg| match msg {
+                ControlMessage::Subscribe(_) => Ready::Err(TestError),
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
     });
 
     let io = srv.connect().await.unwrap();
@@ -227,21 +217,19 @@ async fn test_ping() -> std::io::Result<()> {
 
     let srv = server::test_server(move || {
         let ping = ping2.clone();
-        seal(
-            MqttServer::new(handshake)
-                .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
-                .control(move |msg| {
-                    let ping = ping.clone();
-                    match msg {
-                        ControlMessage::Ping(msg) => {
-                            ping.store(true, Relaxed);
-                            Ready::Ok::<_, TestError>(msg.ack())
-                        }
-                        _ => Ready::Ok(msg.disconnect_with(codec::Disconnect::default())),
+        MqttServer::new(handshake)
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .control(move |msg| {
+                let ping = ping.clone();
+                match msg {
+                    ControlMessage::Ping(msg) => {
+                        ping.store(true, Relaxed);
+                        Ready::Ok::<_, TestError>(msg.ack())
                     }
-                })
-                .finish(),
-        )
+                    _ => Ready::Ok(msg.disconnect_with(codec::Disconnect::default())),
+                }
+            })
+            .finish()
     });
 
     let io = srv.connect().await.unwrap();
@@ -265,24 +253,22 @@ async fn test_ping() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_ack_order() -> std::io::Result<()> {
     let srv = server::test_server(move || {
-        seal(
-            MqttServer::new(handshake)
-                .publish(|p: Publish| {
-                    sleep(Duration::from_millis(100)).map(move |_| Ok::<_, TestError>(p.ack()))
-                })
-                .control(move |msg| match msg {
-                    ControlMessage::Subscribe(mut msg) => {
-                        for mut sub in &mut msg {
-                            sub.topic();
-                            sub.options();
-                            sub.subscribe(codec::QoS::AtLeastOnce);
-                        }
-                        Ready::Ok::<_, TestError>(msg.ack())
+        MqttServer::new(handshake)
+            .publish(|p: Publish| {
+                sleep(Duration::from_millis(100)).map(move |_| Ok::<_, TestError>(p.ack()))
+            })
+            .control(move |msg| match msg {
+                ControlMessage::Subscribe(mut msg) => {
+                    for mut sub in &mut msg {
+                        sub.topic();
+                        sub.options();
+                        sub.subscribe(codec::QoS::AtLeastOnce);
                     }
-                    _ => Ready::Ok(msg.disconnect()),
-                })
-                .finish(),
-        )
+                    Ready::Ok::<_, TestError>(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
     });
 
     let io = srv.connect().await.unwrap();
@@ -350,14 +336,11 @@ async fn test_ack_order() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_dups() {
     let srv = server::test_server(move || {
-        seal(
-            MqttServer::new(handshake)
-                .publish(|p: Publish| {
-                    sleep(Duration::from_millis(10000))
-                        .map(move |_| Ok::<_, TestError>(p.ack()))
-                })
-                .finish(),
-        )
+        MqttServer::new(handshake)
+            .publish(|p: Publish| {
+                sleep(Duration::from_millis(10000)).map(move |_| Ok::<_, TestError>(p.ack()))
+            })
+            .finish()
     });
 
     let io = srv.connect().await.unwrap();
@@ -464,20 +447,17 @@ async fn test_dups() {
 #[ntex::test]
 async fn test_max_receive() {
     let srv = server::test_server(move || {
-        seal(
-            MqttServer::new(handshake)
-                .receive_max(1)
-                .max_qos(codec::QoS::AtLeastOnce)
-                .publish(|p: Publish| {
-                    sleep(Duration::from_millis(10000))
-                        .map(move |_| Ok::<_, TestError>(p.ack()))
-                })
-                .control(move |msg| match msg {
-                    ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
-                    _ => Ready::Ok(msg.disconnect()),
-                })
-                .finish(),
-        )
+        MqttServer::new(handshake)
+            .receive_max(1)
+            .max_qos(codec::QoS::AtLeastOnce)
+            .publish(|p: Publish| {
+                sleep(Duration::from_millis(10000)).map(move |_| Ok::<_, TestError>(p.ack()))
+            })
+            .control(move |msg| match msg {
+                ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
     });
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
@@ -533,20 +513,18 @@ async fn test_keepalive() {
     let srv = server::test_server(move || {
         let ka = ka2.clone();
 
-        seal(
-            MqttServer::new(|con: Handshake| async move { Ok(con.ack(St).keep_alive(1)) })
-                .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
-                .control(move |msg| match msg {
-                    ControlMessage::ProtocolError(msg) => {
-                        if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
-                            ka.store(true, Relaxed);
-                        }
-                        Ready::Ok::<_, TestError>(msg.ack())
+        MqttServer::new(|con: Handshake| async move { Ok(con.ack(St).keep_alive(1)) })
+            .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
+            .control(move |msg| match msg {
+                ControlMessage::ProtocolError(msg) => {
+                    if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
+                        ka.store(true, Relaxed);
                     }
-                    _ => Ready::Ok(msg.disconnect()),
-                })
-                .finish(),
-        )
+                    Ready::Ok::<_, TestError>(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
     });
 
     // connect to server
@@ -571,20 +549,18 @@ async fn test_keepalive2() {
     let srv = server::test_server(move || {
         let ka = ka2.clone();
 
-        seal(
-            MqttServer::new(|con: Handshake| async move { Ok(con.ack(St).keep_alive(1)) })
-                .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
-                .control(move |msg| match msg {
-                    ControlMessage::ProtocolError(msg) => {
-                        if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
-                            ka.store(true, Relaxed);
-                        }
-                        Ready::Ok::<_, TestError>(msg.ack())
+        MqttServer::new(|con: Handshake| async move { Ok(con.ack(St).keep_alive(1)) })
+            .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
+            .control(move |msg| match msg {
+                ControlMessage::ProtocolError(msg) => {
+                    if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
+                        ka.store(true, Relaxed);
                     }
-                    _ => Ready::Ok(msg.disconnect()),
-                })
-                .finish(),
-        )
+                    Ready::Ok::<_, TestError>(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
     });
 
     // connect to server
@@ -612,32 +588,30 @@ async fn test_keepalive2() {
 #[ntex::test]
 async fn test_sink_encoder_error_pub_qos1() {
     let srv = server::test_server(move || {
-        seal(
-            MqttServer::new(|con: Handshake| async move {
-                let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
-                    props.user_properties.push((
-                        "ssssssssssssssssssssssssssssssssssss".into(),
-                        "ssssssssssssssssssssssssssssssssssss".into(),
-                    ));
-                });
-                ntex::rt::spawn(async move {
-                    let res = builder.send_at_least_once().await;
-                    assert_eq!(
-                        res,
-                        Err(error::PublishQos1Error::Encode(error::EncodeError::InvalidLength))
-                    );
-                });
-                Ok(con.ack(St))
-            })
-            .publish(|p: Publish| {
-                sleep(Duration::from_millis(50)).map(move |_| Ok::<_, TestError>(p.ack()))
-            })
-            .control(move |msg| match msg {
-                ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
-                _ => Ready::Ok(msg.disconnect()),
-            })
-            .finish(),
-        )
+        MqttServer::new(|con: Handshake| async move {
+            let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
+                props.user_properties.push((
+                    "ssssssssssssssssssssssssssssssssssss".into(),
+                    "ssssssssssssssssssssssssssssssssssss".into(),
+                ));
+            });
+            ntex::rt::spawn(async move {
+                let res = builder.send_at_least_once().await;
+                assert_eq!(
+                    res,
+                    Err(error::PublishQos1Error::Encode(error::EncodeError::InvalidLength))
+                );
+            });
+            Ok(con.ack(St))
+        })
+        .publish(|p: Publish| {
+            sleep(Duration::from_millis(50)).map(move |_| Ok::<_, TestError>(p.ack()))
+        })
+        .control(move |msg| match msg {
+            ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+            _ => Ready::Ok(msg.disconnect()),
+        })
+        .finish()
     });
 
     // connect to server
@@ -660,30 +634,28 @@ async fn test_sink_encoder_error_pub_qos1() {
 #[ntex::test]
 async fn test_sink_encoder_error_pub_qos0() {
     let srv = server::test_server(move || {
-        seal(
-            MqttServer::new(|con: Handshake| async move {
-                let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
-                    props.user_properties.push((
-                        "ssssssssssssssssssssssssssssssssssss".into(),
-                        "ssssssssssssssssssssssssssssssssssss".into(),
-                    ));
-                });
-                let res = builder.send_at_most_once();
-                assert_eq!(
-                    res,
-                    Err(error::SendPacketError::Encode(error::EncodeError::InvalidLength))
-                );
-                Ok(con.ack(St))
-            })
-            .publish(|p: Publish| {
-                sleep(Duration::from_millis(50)).map(move |_| Ok::<_, TestError>(p.ack()))
-            })
-            .control(move |msg| match msg {
-                ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
-                _ => Ready::Ok(msg.disconnect()),
-            })
-            .finish(),
-        )
+        MqttServer::new(|con: Handshake| async move {
+            let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
+                props.user_properties.push((
+                    "ssssssssssssssssssssssssssssssssssss".into(),
+                    "ssssssssssssssssssssssssssssssssssss".into(),
+                ));
+            });
+            let res = builder.send_at_most_once();
+            assert_eq!(
+                res,
+                Err(error::SendPacketError::Encode(error::EncodeError::InvalidLength))
+            );
+            Ok(con.ack(St))
+        })
+        .publish(|p: Publish| {
+            sleep(Duration::from_millis(50)).map(move |_| Ok::<_, TestError>(p.ack()))
+        })
+        .control(move |msg| match msg {
+            ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+            _ => Ready::Ok(msg.disconnect()),
+        })
+        .finish()
     });
 
     // connect to server
@@ -706,22 +678,20 @@ async fn test_sink_encoder_error_pub_qos0() {
 #[ntex::test]
 async fn test_request_problem_info() {
     let srv = server::test_server(move || {
-        seal(
-            MqttServer::new(|con: Handshake| async move { Ok(con.ack(St)) })
-                .publish(|p: Publish| async move {
-                    Ok::<_, TestError>(
-                        p.ack()
-                            .properties(|props| {
-                                props.push((
-                                    "ssssssssssssssssssssssssssssssssssss".into(),
-                                    "ssssssssssssssssssssssssssssssssssss".into(),
-                                ))
-                            })
-                            .reason("TEST".into()),
-                    )
-                })
-                .finish(),
-        )
+        MqttServer::new(|con: Handshake| async move { Ok(con.ack(St)) })
+            .publish(|p: Publish| async move {
+                Ok::<_, TestError>(
+                    p.ack()
+                        .properties(|props| {
+                            props.push((
+                                "ssssssssssssssssssssssssssssssssssss".into(),
+                                "ssssssssssssssssssssssssssssssssssss".into(),
+                            ))
+                        })
+                        .reason("TEST".into()),
+                )
+            })
+            .finish()
     });
 
     // connect to server
@@ -749,19 +719,17 @@ async fn test_request_problem_info() {
 #[ntex::test]
 async fn test_suback_with_reason() -> std::io::Result<()> {
     let srv = server::test_server(move || {
-        seal(
-            MqttServer::new(handshake)
-                .control(move |msg| match msg {
-                    ControlMessage::Subscribe(mut msg) => {
-                        msg.iter_mut().for_each(|mut s| {
-                            s.fail(codec::SubscribeAckReason::ImplementationSpecificError)
-                        });
-                        Ready::Ok::<_, TestError>(msg.ack_reason("some reason".into()).ack())
-                    }
-                    _ => Ready::Ok(msg.disconnect()),
-                })
-                .finish(),
-        )
+        MqttServer::new(handshake)
+            .control(move |msg| match msg {
+                ControlMessage::Subscribe(mut msg) => {
+                    msg.iter_mut().for_each(|mut s| {
+                        s.fail(codec::SubscribeAckReason::ImplementationSpecificError)
+                    });
+                    Ready::Ok::<_, TestError>(msg.ack_reason("some reason".into()).ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
     });
 
     let io = srv.connect().await.unwrap();
@@ -817,21 +785,19 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         let publish = publish2.clone();
         let disconnect = disconnect2.clone();
-        seal(
-            MqttServer::new(handshake)
-                .publish(move |p: Publish| {
-                    publish.store(true, Relaxed);
-                    Ready::Ok::<_, TestError>(p.ack())
-                })
-                .control(move |msg| match msg {
-                    ControlMessage::Disconnect(msg) => {
-                        disconnect.store(true, Relaxed);
-                        Ready::Ok::<_, TestError>(msg.ack())
-                    }
-                    _ => Ready::Ok(msg.disconnect()),
-                })
-                .finish(),
-        )
+        MqttServer::new(handshake)
+            .publish(move |p: Publish| {
+                publish.store(true, Relaxed);
+                Ready::Ok::<_, TestError>(p.ack())
+            })
+            .control(move |msg| match msg {
+                ControlMessage::Disconnect(msg) => {
+                    disconnect.store(true, Relaxed);
+                    Ready::Ok::<_, TestError>(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
     });
 
     let io = srv.connect().await.unwrap();

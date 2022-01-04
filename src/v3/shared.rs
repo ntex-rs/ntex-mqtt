@@ -37,7 +37,7 @@ impl Default for MqttSinkPool {
     }
 }
 
-pub(crate) struct MqttShared {
+pub struct MqttShared {
     pub(super) io: IoRef,
     pub(super) cap: Cell<usize>,
     queues: RefCell<MqttSharedQueues>,

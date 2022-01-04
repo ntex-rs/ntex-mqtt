@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.2] - 2022-01-04
+
+* Optimize compilation times
+
 ## [0.8.1] - 2022-01-03
 
 * Cleanup MqttError types

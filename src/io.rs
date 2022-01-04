@@ -476,7 +476,7 @@ mod tests {
             service: F,
         ) -> (Self, nio::IoRef) {
             let keepalive_timeout = Cell::new(Seconds(30).into());
-            let io = nio::Io::new(io).seal();
+            let io = nio::Io::new(io);
             io.start_keepalive_timer(keepalive_timeout.get());
             let rio = io.get_ref();
 

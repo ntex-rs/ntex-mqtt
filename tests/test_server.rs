@@ -5,7 +5,7 @@ use futures::FutureExt;
 use ntex::service::{Service, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{ByteString, Bytes, Ready};
-use ntex::{io::utils::seal, server, service::pipeline_factory};
+use ntex::{server, service::pipeline_factory};
 
 use ntex_mqtt::v3::{
     client, codec, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish, Session,
@@ -23,9 +23,8 @@ async fn handshake(mut packet: Handshake) -> Result<HandshakeAck<St>, ()> {
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    let srv = server::test_server(|| {
-        seal(MqttServer::new(handshake).publish(|_t| Ready::Ok(())).finish())
-    });
+    let srv =
+        server::test_server(|| MqttServer::new(handshake).publish(|_t| Ready::Ok(())).finish());
 
     // connect to server
     let client =
@@ -47,13 +46,9 @@ async fn test_simple() -> std::io::Result<()> {
 async fn test_connect_fail() -> std::io::Result<()> {
     // bad user name or password
     let srv = server::test_server(|| {
-        seal(
-            MqttServer::new(|conn: Handshake| {
-                Ready::Ok::<_, ()>(conn.bad_username_or_pwd::<St>())
-            })
+        MqttServer::new(|conn: Handshake| Ready::Ok::<_, ()>(conn.bad_username_or_pwd::<St>()))
             .publish(|_t| Ready::Ok(()))
-            .finish(),
-        )
+            .finish()
     });
     let err =
         client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
@@ -64,13 +59,9 @@ async fn test_connect_fail() -> std::io::Result<()> {
 
     // identifier rejected
     let srv = server::test_server(|| {
-        seal(
-            MqttServer::new(|conn: Handshake| {
-                Ready::Ok::<_, ()>(conn.identifier_rejected::<St>())
-            })
+        MqttServer::new(|conn: Handshake| Ready::Ok::<_, ()>(conn.identifier_rejected::<St>()))
             .publish(|_t| Ready::Ok(()))
-            .finish(),
-        )
+            .finish()
     });
     let err =
         client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
@@ -81,11 +72,9 @@ async fn test_connect_fail() -> std::io::Result<()> {
 
     // not authorized
     let srv = server::test_server(|| {
-        seal(
-            MqttServer::new(|conn: Handshake| Ready::Ok::<_, ()>(conn.not_authorized::<St>()))
-                .publish(|_t| Ready::Ok(()))
-                .finish(),
-        )
+        MqttServer::new(|conn: Handshake| Ready::Ok::<_, ()>(conn.not_authorized::<St>()))
+            .publish(|_t| Ready::Ok(()))
+            .finish()
     });
     let err =
         client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
@@ -96,13 +85,9 @@ async fn test_connect_fail() -> std::io::Result<()> {
 
     // service unavailable
     let srv = server::test_server(|| {
-        seal(
-            MqttServer::new(|conn: Handshake| {
-                Ready::Ok::<_, ()>(conn.service_unavailable::<St>())
-            })
+        MqttServer::new(|conn: Handshake| Ready::Ok::<_, ()>(conn.service_unavailable::<St>()))
             .publish(|_t| Ready::Ok(()))
-            .finish(),
-        )
+            .finish()
     });
     let err =
         client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
@@ -121,21 +106,19 @@ async fn test_ping() -> std::io::Result<()> {
 
     let srv = server::test_server(move || {
         let ping = ping2.clone();
-        seal(
-            MqttServer::new(handshake)
-                .publish(|_| Ready::Ok(()))
-                .control(move |msg| {
-                    let ping = ping.clone();
-                    match msg {
-                        ControlMessage::Ping(msg) => {
-                            ping.store(true, Relaxed);
-                            Ready::Ok(msg.ack())
-                        }
-                        _ => Ready::Ok(msg.disconnect()),
+        MqttServer::new(handshake)
+            .publish(|_| Ready::Ok(()))
+            .control(move |msg| {
+                let ping = ping.clone();
+                match msg {
+                    ControlMessage::Ping(msg) => {
+                        ping.store(true, Relaxed);
+                        Ready::Ok(msg.ack())
                     }
-                })
-                .finish(),
-        )
+                    _ => Ready::Ok(msg.disconnect()),
+                }
+            })
+            .finish()
     });
 
     let io = srv.connect().await.unwrap();
@@ -156,22 +139,20 @@ async fn test_ping() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_ack_order() -> std::io::Result<()> {
     let srv = server::test_server(move || {
-        seal(
-            MqttServer::new(handshake)
-                .publish(|_| sleep(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
-                .control(move |msg| match msg {
-                    ControlMessage::Subscribe(mut msg) => {
-                        for mut sub in &mut msg {
-                            assert_eq!(sub.qos(), codec::QoS::AtLeastOnce);
-                            sub.topic();
-                            sub.subscribe(codec::QoS::AtLeastOnce);
-                        }
-                        Ready::Ok(msg.ack())
+        MqttServer::new(handshake)
+            .publish(|_| sleep(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
+            .control(move |msg| match msg {
+                ControlMessage::Subscribe(mut msg) => {
+                    for mut sub in &mut msg {
+                        assert_eq!(sub.qos(), codec::QoS::AtLeastOnce);
+                        sub.topic();
+                        sub.subscribe(codec::QoS::AtLeastOnce);
                     }
-                    _ => Ready::Ok(msg.disconnect()),
-                })
-                .finish(),
-        )
+                    Ready::Ok(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
     });
 
     let io = srv.connect().await.unwrap();
@@ -238,11 +219,9 @@ async fn test_ack_order() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_ack_order_sink() -> std::io::Result<()> {
     let srv = server::test_server(move || {
-        seal(
-            MqttServer::new(handshake)
-                .publish(|_| sleep(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
-                .finish(),
-        )
+        MqttServer::new(handshake)
+            .publish(|_| sleep(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
+            .finish()
     });
 
     // connect to server
@@ -268,19 +247,17 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_disconnect() -> std::io::Result<()> {
     let srv = server::test_server(|| {
-        seal(
-            MqttServer::new(handshake)
-                .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
-                    Ready::Ok(ntex::service::fn_service(move |_: Publish| {
-                        session.sink().force_close();
-                        async {
-                            sleep(Duration::from_millis(100)).await;
-                            Ok(())
-                        }
-                    }))
+        MqttServer::new(handshake)
+            .publish(ntex::service::fn_factory_with_config(|session: Session<St>| {
+                Ready::Ok(ntex::service::fn_service(move |_: Publish| {
+                    session.sink().force_close();
+                    async {
+                        sleep(Duration::from_millis(100)).await;
+                        Ok(())
+                    }
                 }))
-                .finish(),
-        )
+            }))
+            .finish()
     });
 
     // connect to server
@@ -308,24 +285,22 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         let publish = publish2.clone();
         let disconnect = disconnect2.clone();
-        seal(
-            MqttServer::new(handshake)
-                .publish(move |_| {
-                    publish.store(true, Relaxed);
-                    async {
-                        sleep(Duration::from_millis(100)).await;
-                        Ok(())
-                    }
-                })
-                .control(move |msg| match msg {
-                    ControlMessage::Disconnect(msg) => {
-                        disconnect.store(true, Relaxed);
-                        Ready::Ok(msg.ack())
-                    }
-                    _ => Ready::Ok(msg.disconnect()),
-                })
-                .finish(),
-        )
+        MqttServer::new(handshake)
+            .publish(move |_| {
+                publish.store(true, Relaxed);
+                async {
+                    sleep(Duration::from_millis(100)).await;
+                    Ok(())
+                }
+            })
+            .control(move |msg| match msg {
+                ControlMessage::Disconnect(msg) => {
+                    disconnect.store(true, Relaxed);
+                    Ready::Ok(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
     });
 
     let io = srv.connect().await.unwrap();
@@ -359,7 +334,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_large_publish() -> std::io::Result<()> {
     let srv = server::test_server(move || {
-        seal(MqttServer::new(handshake).publish(|_| Ready::Ok(())).finish())
+        MqttServer::new(handshake).publish(|_| Ready::Ok(())).finish()
     });
 
     let io = srv.connect().await.unwrap();
@@ -401,13 +376,13 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
 
     let srv = server::test_server(move || {
         pipeline_factory(server::openssl::Acceptor::new(ssl_acceptor()).map_err(|_| ()))
-            .and_then(seal(
+            .and_then(
                 MqttServer::new(handshake)
                     .publish(|_| Ready::Ok(()))
                     .finish()
                     .map_err(|_| ())
                     .map_init_err(|_| ()),
-            ))
+            )
     });
 
     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();

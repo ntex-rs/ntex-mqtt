@@ -111,7 +111,7 @@ where
             + fmt::Debug,
     {
         MqttServer {
-            v3: service.inner_finish(),
+            v3: service.finish(),
             v5: self.v5,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
@@ -138,7 +138,7 @@ where
         InitErr: 'static,
     {
         MqttServer {
-            v3: service.finish_server(),
+            v3: service,
             v5: self.v5,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
@@ -184,7 +184,7 @@ where
     {
         MqttServer {
             v3: self.v3,
-            v5: service.inner_finish(),
+            v5: service.finish(),
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
         }
@@ -211,9 +211,43 @@ where
     {
         MqttServer {
             v3: self.v3,
-            v5: service.finish_server(),
+            v5: service,
             handshake_timeout: self.handshake_timeout,
             _t: marker::PhantomData,
+        }
+    }
+}
+
+impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr>
+where
+    V3: ServiceFactory<
+        (IoBoxed, Option<Sleep>),
+        Response = (),
+        Error = MqttError<Err>,
+        InitError = InitErr,
+    >,
+    V5: ServiceFactory<
+        (IoBoxed, Option<Sleep>),
+        Response = (),
+        Error = MqttError<Err>,
+        InitError = InitErr,
+    >,
+{
+    fn create_service(
+        &self,
+    ) -> impl Future<Output = Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr>>
+    {
+        let handshake_timeout = self.handshake_timeout;
+        let fut = join(self.v3.new_service(()), self.v5.new_service(()));
+        async move {
+            let (v3, v5) = fut.await;
+            let v3 = v3?;
+            let v5 = v5?;
+            Ok(MqttServerImpl {
+                handlers: Rc::new((v3, v5)),
+                handshake_timeout,
+                _t: marker::PhantomData,
+            })
         }
     }
 }
@@ -221,19 +255,19 @@ where
 impl<V3, V5, Err, InitErr> ServiceFactory<IoBoxed> for MqttServer<V3, V5, Err, InitErr>
 where
     V3: ServiceFactory<
-        (IoBoxed, Option<Sleep>),
-        Response = (),
-        Error = MqttError<Err>,
-        InitError = InitErr,
-    >,
+            (IoBoxed, Option<Sleep>),
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        > + 'static,
     V5: ServiceFactory<
-        (IoBoxed, Option<Sleep>),
-        Response = (),
-        Error = MqttError<Err>,
-        InitError = InitErr,
-    >,
-    V3::Future: 'static,
-    V5::Future: 'static,
+            (IoBoxed, Option<Sleep>),
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        > + 'static,
+    Err: 'static,
+    InitErr: 'static,
 {
     type Response = ();
     type Error = MqttError<Err>;
@@ -245,19 +279,9 @@ where
         >,
     >;
 
+    #[inline]
     fn new_service(&self, _: ()) -> Self::Future {
-        let handshake_timeout = self.handshake_timeout;
-        let fut = join(self.v3.new_service(()), self.v5.new_service(()));
-        Box::pin(async move {
-            let (v3, v5) = fut.await;
-            let v3 = v3?;
-            let v5 = v5?;
-            Ok(MqttServerImpl {
-                handlers: Rc::new((v3, v5)),
-                handshake_timeout,
-                _t: marker::PhantomData,
-            })
-        })
+        Box::pin(self.create_service())
     }
 }
 
@@ -265,19 +289,19 @@ impl<F, V3, V5, Err, InitErr> ServiceFactory<Io<F>> for MqttServer<V3, V5, Err, 
 where
     F: Filter,
     V3: ServiceFactory<
-        (IoBoxed, Option<Sleep>),
-        Response = (),
-        Error = MqttError<Err>,
-        InitError = InitErr,
-    >,
+            (IoBoxed, Option<Sleep>),
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        > + 'static,
     V5: ServiceFactory<
-        (IoBoxed, Option<Sleep>),
-        Response = (),
-        Error = MqttError<Err>,
-        InitError = InitErr,
-    >,
-    V3::Future: 'static,
-    V5::Future: 'static,
+            (IoBoxed, Option<Sleep>),
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        > + 'static,
+    Err: 'static,
+    InitErr: 'static,
 {
     type Response = ();
     type Error = MqttError<Err>;
@@ -289,19 +313,9 @@ where
         >,
     >;
 
+    #[inline]
     fn new_service(&self, _: ()) -> Self::Future {
-        let handshake_timeout = self.handshake_timeout;
-        let fut = join(self.v3.new_service(()), self.v5.new_service(()));
-        Box::pin(async move {
-            let (v3, v5) = fut.await;
-            let v3 = v3?;
-            let v5 = v5?;
-            Ok(MqttServerImpl {
-                handlers: Rc::new((v3, v5)),
-                handshake_timeout,
-                _t: marker::PhantomData,
-            })
-        })
+        Box::pin(self.create_service())
     }
 }
 
@@ -321,6 +335,7 @@ where
     type Error = MqttError<Err>;
     type Future = MqttServerImplResponse<V3, V5, Err>;
 
+    #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let ready1 = self.handlers.0.poll_ready(cx)?.is_ready();
         let ready2 = self.handlers.1.poll_ready(cx)?.is_ready();
@@ -332,6 +347,7 @@ where
         }
     }
 
+    #[inline]
     fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
         let ready1 = self.handlers.0.poll_shutdown(cx, is_error).is_ready();
         let ready2 = self.handlers.1.poll_shutdown(cx, is_error).is_ready();
@@ -343,6 +359,7 @@ where
         }
     }
 
+    #[inline]
     fn call(&self, req: IoBoxed) -> Self::Future {
         let delay = self.handshake_timeout.map(sleep);
 
@@ -364,36 +381,19 @@ where
     type Error = MqttError<Err>;
     type Future = MqttServerImplResponse<V3, V5, Err>;
 
+    #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let ready1 = self.handlers.0.poll_ready(cx)?.is_ready();
-        let ready2 = self.handlers.1.poll_ready(cx)?.is_ready();
-
-        if ready1 && ready2 {
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
-        }
+        Service::<IoBoxed>::poll_ready(self, cx)
     }
 
+    #[inline]
     fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        let ready1 = self.handlers.0.poll_shutdown(cx, is_error).is_ready();
-        let ready2 = self.handlers.1.poll_shutdown(cx, is_error).is_ready();
-
-        if ready1 && ready2 {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
+        Service::<IoBoxed>::poll_shutdown(self, cx, is_error)
     }
 
-    fn call(&self, req: Io<F>) -> Self::Future {
-        let delay = self.handshake_timeout.map(sleep);
-
-        MqttServerImplResponse {
-            state: MqttServerImplState::Version {
-                item: Some((IoBoxed::from(req), VersionCodec, self.handlers.clone(), delay)),
-            },
-        }
+    #[inline]
+    fn call(&self, io: Io<F>) -> Self::Future {
+        Service::<IoBoxed>::call(self, IoBoxed::from(io))
     }
 }
 

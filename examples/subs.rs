@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 
-use ntex::io::utils::seal;
 use ntex::service::{fn_factory_with_config, fn_service, ServiceFactory};
 use ntex::util::{ByteString, Ready};
 use ntex_mqtt::v5::{
@@ -109,16 +108,14 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::Server::build()
         .bind("mqtt", "127.0.0.1:1883", |_| {
-            seal(
-                MqttServer::new(handshake)
-                    .control(control_service_factory())
-                    .publish(fn_factory_with_config(|session: Session<MySession>| {
-                        Ready::Ok::<_, MyServerError>(fn_service(move |req| {
-                            publish(session.clone(), req)
-                        }))
+            MqttServer::new(handshake)
+                .control(control_service_factory())
+                .publish(fn_factory_with_config(|session: Session<MySession>| {
+                    Ready::Ok::<_, MyServerError>(fn_service(move |req| {
+                        publish(session.clone(), req)
                     }))
-                    .finish(),
-            )
+                }))
+                .finish()
         })?
         .workers(1)
         .run()

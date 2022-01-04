@@ -2,7 +2,7 @@
 use std::io;
 
 use ntex::http::{body, h1, HttpService, Request, Response, ResponseError};
-use ntex::io::{utils::seal, Io, IoBoxed};
+use ntex::io::{Filter, Io};
 use ntex::service::{pipeline_factory, ServiceFactory};
 use ntex::util::{variant, Ready};
 use ntex::ws;
@@ -31,9 +31,8 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 }
 
 /// Create mqtt server factory
-fn mqtt_server(
-) -> impl ServiceFactory<IoBoxed, Response = (), Error = MqttError<ServerError>, InitError = ()>
-{
+fn mqtt_server<F: Filter>(
+) -> impl ServiceFactory<Io<F>, Response = (), Error = MqttError<ServerError>, InitError = ()> {
     MqttServer::new()
         .v3(v3::MqttServer::new(|handshake: v3::Handshake| async move {
             log::info!("new mqtt v3 connection: {:?}", handshake);
@@ -115,7 +114,7 @@ async fn main() -> std::io::Result<()> {
                 // for this purpose we are going to use ntex::util::variant helper service
                 .and_then(
                     // normal mqtt server
-                    variant::variant(seal(mqtt_server()))
+                    variant::variant(mqtt_server())
                         // http server for websockets
                         .v2(HttpService::build()
                             // websocket handler, we need to verify websocket handshake
@@ -159,7 +158,6 @@ async fn main() -> std::io::Result<()> {
                                                 ws::Codec::default(),
                                             ))
                                             .await
-                                            .map(|io| IoBoxed::from(io))
                                             .map_err(|_| {
                                                 MqttError::ServerError(
                                                     "Cannot construct ws transport",

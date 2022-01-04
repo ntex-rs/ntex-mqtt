@@ -1,8 +1,9 @@
 use std::{fmt, future::Future, marker, pin::Pin, rc::Rc, task::Context, task::Poll};
 
+use ntex::io::{Filter, Io, IoBoxed};
 use ntex::service::{boxed, Service, ServiceFactory};
 use ntex::time::{sleep, Seconds, Sleep};
-use ntex::{io::IoBoxed, util::Either};
+use ntex::util::Either;
 
 use crate::error::{MqttError, ProtocolError};
 
@@ -95,22 +96,43 @@ where
         self.servers.push(boxed::factory(server.finish_selector(check)));
         self
     }
+}
 
-    /// Set service to handle publish packets and create mqtt server factory
-    pub(crate) fn finish_server(
-        self,
-    ) -> impl ServiceFactory<
-        (IoBoxed, Option<Sleep>),
-        Response = (),
-        Error = MqttError<Err>,
-        InitError = InitErr,
-    > {
-        Selector2 {
-            servers: self.servers,
-            max_size: self.max_size,
-            pool: self.pool,
-            _t: marker::PhantomData,
+impl<Err, InitErr> Selector<Err, InitErr>
+where
+    Err: 'static,
+    InitErr: 'static,
+{
+    fn create_service(&self) -> impl Future<Output = Result<SelectorService<Err>, InitErr>> {
+        let futs: Vec<_> = self.servers.iter().map(|srv| srv.new_service(())).collect();
+        let max_size = self.max_size;
+        let handshake_timeout = self.handshake_timeout;
+        let pool = self.pool.clone();
+
+        async move {
+            let mut servers = Vec::new();
+            for fut in futs {
+                servers.push(fut.await?);
+            }
+            Ok(SelectorService { max_size, handshake_timeout, pool, servers: Rc::new(servers) })
         }
+    }
+}
+
+impl<F, Err, InitErr> ServiceFactory<Io<F>> for Selector<Err, InitErr>
+where
+    F: Filter,
+    Err: 'static,
+    InitErr: 'static,
+{
+    type Response = ();
+    type Error = MqttError<Err>;
+    type InitError = InitErr;
+    type Service = SelectorService<Err>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+
+    fn new_service(&self, _: ()) -> Self::Future {
+        Box::pin(self.create_service())
     }
 }
 
@@ -126,18 +148,23 @@ where
     type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
 
     fn new_service(&self, _: ()) -> Self::Future {
-        let futs: Vec<_> = self.servers.iter().map(|srv| srv.new_service(())).collect();
-        let max_size = self.max_size;
-        let handshake_timeout = self.handshake_timeout;
-        let pool = self.pool.clone();
+        Box::pin(self.create_service())
+    }
+}
 
-        Box::pin(async move {
-            let mut servers = Vec::new();
-            for fut in futs {
-                servers.push(fut.await?);
-            }
-            Ok(SelectorService { max_size, handshake_timeout, pool, servers: Rc::new(servers) })
-        })
+impl<Err, InitErr> ServiceFactory<(IoBoxed, Option<Sleep>)> for Selector<Err, InitErr>
+where
+    Err: 'static,
+    InitErr: 'static,
+{
+    type Response = ();
+    type Error = MqttError<Err>;
+    type InitError = InitErr;
+    type Service = SelectorService<Err>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+
+    fn new_service(&self, _: ()) -> Self::Future {
+        Box::pin(self.create_service())
     }
 }
 
@@ -146,6 +173,31 @@ pub struct SelectorService<Err> {
     max_size: u32,
     handshake_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
+}
+
+impl<F, Err> Service<Io<F>> for SelectorService<Err>
+where
+    F: Filter,
+    Err: 'static,
+{
+    type Response = ();
+    type Error = MqttError<Err>;
+    type Future = Pin<Box<dyn Future<Output = Result<(), MqttError<Err>>>>>;
+
+    #[inline]
+    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Service::<IoBoxed>::poll_ready(self, cx)
+    }
+
+    #[inline]
+    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+        Service::<IoBoxed>::poll_shutdown(self, cx, is_error)
+    }
+
+    #[inline]
+    fn call(&self, io: Io<F>) -> Self::Future {
+        Service::<IoBoxed>::call(self, IoBoxed::from(io))
+    }
 }
 
 impl<Err> Service<IoBoxed> for SelectorService<Err>
@@ -234,46 +286,7 @@ where
     }
 }
 
-pub(crate) struct Selector2<Err, InitErr> {
-    servers: Vec<ServerFactory<Err, InitErr>>,
-    max_size: u32,
-    pool: Rc<MqttSinkPool>,
-    _t: marker::PhantomData<(Err, InitErr)>,
-}
-
-impl<Err, InitErr> ServiceFactory<(IoBoxed, Option<Sleep>)> for Selector2<Err, InitErr>
-where
-    Err: 'static,
-    InitErr: 'static,
-{
-    type Response = ();
-    type Error = MqttError<Err>;
-    type InitError = InitErr;
-    type Service = SelectorService2<Err>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
-
-    fn new_service(&self, _: ()) -> Self::Future {
-        let futs: Vec<_> = self.servers.iter().map(|srv| srv.new_service(())).collect();
-        let max_size = self.max_size;
-        let pool = self.pool.clone();
-
-        Box::pin(async move {
-            let mut servers = Vec::new();
-            for fut in futs {
-                servers.push(fut.await?);
-            }
-            Ok(SelectorService2 { max_size, pool, servers: Rc::new(servers) })
-        })
-    }
-}
-
-pub(crate) struct SelectorService2<Err> {
-    servers: Rc<Vec<Server<Err>>>,
-    max_size: u32,
-    pool: Rc<MqttSinkPool>,
-}
-
-impl<Err> Service<(IoBoxed, Option<Sleep>)> for SelectorService2<Err>
+impl<Err> Service<(IoBoxed, Option<Sleep>)> for SelectorService<Err>
 where
     Err: 'static,
 {
@@ -283,28 +296,12 @@ where
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut ready = true;
-        for srv in self.servers.iter() {
-            ready &= srv.poll_ready(cx)?.is_ready();
-        }
-        if ready {
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
-        }
+        Service::<IoBoxed>::poll_ready(self, cx)
     }
 
     #[inline]
     fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        let mut ready = true;
-        for srv in self.servers.iter() {
-            ready &= srv.poll_shutdown(cx, is_error).is_ready()
-        }
-        if ready {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
+        Service::<IoBoxed>::poll_shutdown(self, cx, is_error)
     }
 
     #[inline]
