@@ -1,10 +1,9 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{num::NonZeroU16, time::Duration};
 
-use futures::FutureExt;
 use ntex::service::{Service, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
-use ntex::util::{ByteString, Bytes, Ready};
+use ntex::util::{join_all, ByteString, Bytes, Ready};
 use ntex::{server, service::pipeline_factory};
 
 use ntex_mqtt::v3::{
@@ -140,7 +139,10 @@ async fn test_ping() -> std::io::Result<()> {
 async fn test_ack_order() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         MqttServer::new(handshake)
-            .publish(|_| sleep(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
+            .publish(|_| async {
+                sleep(Duration::from_millis(100)).await;
+                Ok::<_, ()>(())
+            })
             .control(move |msg| match msg {
                 ControlMessage::Subscribe(mut msg) => {
                     for mut sub in &mut msg {
@@ -220,7 +222,10 @@ async fn test_ack_order() -> std::io::Result<()> {
 async fn test_ack_order_sink() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         MqttServer::new(handshake)
-            .publish(|_| sleep(Duration::from_millis(100)).map(|_| Ok::<_, ()>(())))
+            .publish(|_| async {
+                sleep(Duration::from_millis(100)).await;
+                Ok::<_, ()>(())
+            })
             .finish()
     });
 
@@ -236,10 +241,10 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
     let fut2 = sink.publish(topic.clone(), Bytes::from_static(b"pkt2")).send_at_least_once();
     let fut3 = sink.publish(topic.clone(), Bytes::from_static(b"pkt3")).send_at_least_once();
 
-    let (res1, res2, res3) = futures::future::join3(fut1, fut2, fut3).await;
-    assert!(res1.is_ok());
-    assert!(res2.is_ok());
-    assert!(res3.is_ok());
+    let res = join_all(vec![fut1, fut2, fut3]).await;
+    assert!(res[0].is_ok());
+    assert!(res[1].is_ok());
+    assert!(res[2].is_ok());
 
     Ok(())
 }

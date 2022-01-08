@@ -35,8 +35,7 @@ pub struct MqttServer<St, C, Cn, P> {
 impl<St, C>
     MqttServer<St, C, DefaultControlService<St, C::Error>, DefaultPublishService<St, C::Error>>
 where
-    St: 'static,
-    C: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
+    C: ServiceFactory<Handshake, Response = HandshakeAck<St>>,
     C::Error: fmt::Debug,
 {
     /// Create server factory and provide handshake service

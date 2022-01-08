@@ -1,7 +1,6 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{convert::TryFrom, num::NonZeroU16, time::Duration};
 
-use futures::FutureExt;
 use ntex::util::{ByteString, Bytes, Ready};
 use ntex::{server, service::fn_service, time::sleep};
 
@@ -254,8 +253,9 @@ async fn test_ping() -> std::io::Result<()> {
 async fn test_ack_order() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         MqttServer::new(handshake)
-            .publish(|p: Publish| {
-                sleep(Duration::from_millis(100)).map(move |_| Ok::<_, TestError>(p.ack()))
+            .publish(|p: Publish| async move {
+                sleep(Duration::from_millis(100)).await;
+                Ok::<_, TestError>(p.ack())
             })
             .control(move |msg| match msg {
                 ControlMessage::Subscribe(mut msg) => {
@@ -337,8 +337,9 @@ async fn test_ack_order() -> std::io::Result<()> {
 async fn test_dups() {
     let srv = server::test_server(move || {
         MqttServer::new(handshake)
-            .publish(|p: Publish| {
-                sleep(Duration::from_millis(10000)).map(move |_| Ok::<_, TestError>(p.ack()))
+            .publish(|p: Publish| async move {
+                sleep(Duration::from_millis(10000)).await;
+                Ok::<_, TestError>(p.ack())
             })
             .finish()
     });
@@ -450,8 +451,9 @@ async fn test_max_receive() {
         MqttServer::new(handshake)
             .receive_max(1)
             .max_qos(codec::QoS::AtLeastOnce)
-            .publish(|p: Publish| {
-                sleep(Duration::from_millis(10000)).map(move |_| Ok::<_, TestError>(p.ack()))
+            .publish(|p: Publish| async move {
+                sleep(Duration::from_millis(10000)).await;
+                Ok::<_, TestError>(p.ack())
             })
             .control(move |msg| match msg {
                 ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
@@ -604,8 +606,9 @@ async fn test_sink_encoder_error_pub_qos1() {
             });
             Ok(con.ack(St))
         })
-        .publish(|p: Publish| {
-            sleep(Duration::from_millis(50)).map(move |_| Ok::<_, TestError>(p.ack()))
+        .publish(|p: Publish| async move {
+            sleep(Duration::from_millis(50)).await;
+            Ok::<_, TestError>(p.ack())
         })
         .control(move |msg| match msg {
             ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
@@ -648,8 +651,9 @@ async fn test_sink_encoder_error_pub_qos0() {
             );
             Ok(con.ack(St))
         })
-        .publish(|p: Publish| {
-            sleep(Duration::from_millis(50)).map(move |_| Ok::<_, TestError>(p.ack()))
+        .publish(|p: Publish| async move {
+            sleep(Duration::from_millis(50)).await;
+            Ok::<_, TestError>(p.ack())
         })
         .control(move |msg| match msg {
             ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),

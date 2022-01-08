@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.3] - 2022-01-10
+
+* Cleanup v3/v5 client connectors
+
 ## [0.8.2] - 2022-01-04
 
 * Optimize compilation times

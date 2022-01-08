@@ -126,7 +126,7 @@ impl Decode for Bytes {
 impl Decode for ByteString {
     fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let bytes = Bytes::decode(src)?;
-        Ok(ByteString::try_from(bytes)?)
+        Ok(ByteString::try_from(bytes).map_err(|_| DecodeError::Utf8Error)?)
     }
 }
 

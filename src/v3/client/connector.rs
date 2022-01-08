@@ -1,16 +1,10 @@
 use std::{future::Future, rc::Rc};
 
 use ntex::connect::{self, Address, Connect, Connector};
-use ntex::io::{utils::Boxed, Filter, Io, IoBoxed};
+use ntex::io::IoBoxed;
 use ntex::service::{IntoService, Service};
-use ntex::time::{timeout, Seconds};
-use ntex::util::{ByteString, Bytes, Either, PoolId};
-
-#[cfg(feature = "openssl")]
-use ntex::connect::openssl::{OpensslConnector, SslConnector};
-
-#[cfg(feature = "rustls")]
-use ntex::connect::rustls::{ClientConfig, RustlsConnector};
+use ntex::time::{timeout_checked, Seconds};
+use ntex::util::{ByteString, Bytes, PoolId};
 
 use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
 use crate::v3::shared::{MqttShared, MqttSinkPool};
@@ -34,11 +28,11 @@ where
 {
     #[allow(clippy::new_ret_no_self)]
     /// Create new mqtt connector
-    pub fn new(address: A) -> MqttConnector<A, Boxed<Connector<A>, Connect<A>>> {
+    pub fn new(address: A) -> MqttConnector<A, Connector<A>> {
         MqttConnector {
             address,
             pkt: codec::Connect::default(),
-            connector: Boxed::new(Connector::default()),
+            connector: Connector::default(),
             max_send: 16,
             max_receive: 16,
             max_packet_size: 64 * 1024,
@@ -52,7 +46,6 @@ where
 impl<A, T> MqttConnector<A, T>
 where
     A: Address + Clone,
-    T: Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
 {
     #[inline]
     /// Create new client and provide client id
@@ -177,14 +170,14 @@ where
     }
 
     /// Use custom connector
-    pub fn connector<S, U, F>(self, connector: U) -> MqttConnector<A, Boxed<S, Connect<A>>>
+    pub fn connector<U, F>(self, connector: F) -> MqttConnector<A, U>
     where
-        F: Filter,
-        U: IntoService<S, Connect<A>>,
-        S: Service<Connect<A>, Response = Io<F>, Error = connect::ConnectError>,
+        F: IntoService<U, Connect<A>>,
+        U: Service<Connect<A>, Error = connect::ConnectError>,
+        IoBoxed: From<U::Response>,
     {
         MqttConnector {
-            connector: Boxed::new(connector.into_service()),
+            connector: connector.into_service(),
             pkt: self.pkt,
             address: self.address,
             max_send: self.max_send,
@@ -195,63 +188,22 @@ where
             pool: self.pool,
         }
     }
+}
 
-    #[cfg(feature = "openssl")]
-    /// Use openssl connector
-    pub fn openssl(
-        self,
-        connector: SslConnector,
-    ) -> MqttConnector<
-        A,
-        impl Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
-    > {
-        MqttConnector {
-            pkt: self.pkt,
-            address: self.address,
-            max_send: self.max_send,
-            max_receive: self.max_receive,
-            max_packet_size: self.max_packet_size,
-            connector: OpensslConnector::new(connector).map(|io| io.into_boxed()),
-            handshake_timeout: self.handshake_timeout,
-            disconnect_timeout: self.disconnect_timeout,
-            pool: self.pool,
-        }
-    }
-
-    #[cfg(feature = "rustls")]
-    /// Use rustls connector
-    pub fn rustls(
-        self,
-        config: ClientConfig,
-    ) -> MqttConnector<
-        A,
-        impl Service<Connect<A>, Response = IoBoxed, Error = connect::ConnectError>,
-    > {
-        MqttConnector {
-            pkt: self.pkt,
-            address: self.address,
-            max_send: self.max_send,
-            max_receive: self.max_receive,
-            max_packet_size: self.max_packet_size,
-            connector: RustlsConnector::new(Arc::new(config)).map(|io| io.into_boxed()),
-            handshake_timeout: self.handshake_timeout,
-            disconnect_timeout: self.disconnect_timeout,
-            pool: self.pool,
-        }
-    }
-
+impl<A, T> MqttConnector<A, T>
+where
+    A: Address + Clone,
+    T: Service<Connect<A>, Error = connect::ConnectError>,
+    IoBoxed: From<T::Response>,
+{
     /// Connect to mqtt server
     pub fn connect(&self) -> impl Future<Output = Result<Client, ClientError>> {
-        if self.handshake_timeout.non_zero() {
-            let fut = timeout(self.handshake_timeout, self._connect());
-            Either::Left(async move {
-                match fut.await {
-                    Ok(res) => res.map_err(From::from),
-                    Err(_) => Err(ClientError::HandshakeTimeout),
-                }
-            })
-        } else {
-            Either::Right(self._connect())
+        let fut = timeout_checked(self.handshake_timeout, self._connect());
+        async move {
+            match fut.await {
+                Ok(res) => res.map_err(From::from),
+                Err(_) => Err(ClientError::HandshakeTimeout),
+            }
         }
     }
 
@@ -266,7 +218,7 @@ where
         let pool = self.pool.clone();
 
         async move {
-            let io = fut.await?;
+            let io = IoBoxed::from(fut.await?);
             let codec = codec::Codec::new().max_size(max_packet_size);
 
             io.send(pkt.into(), &codec).await?;
