@@ -3,6 +3,10 @@ target/
 guide/build/
 /gh-pages
 
+
+.idea
+target
+
 *.so
 *.out
 *.pyc
