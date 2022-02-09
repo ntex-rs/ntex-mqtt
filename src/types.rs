@@ -8,7 +8,7 @@ pub const MAX_PACKET_SIZE: u32 = 0xF_FF_FF_FF;
 
 prim_enum! {
     /// Quality of Service
-    #[derive(Serialize, Deserialize)]
+    #[derive(serde::Serialize, serde::Deserialize)]
     pub enum QoS {
         /// At most once delivery
         ///

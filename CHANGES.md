@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.4] - 2022-0x-xx
+
+* Add serializer and deserializer derive (#89)
+
 ## [0.8.3] - 2022-01-10
 
 * Cleanup v3/v5 client connectors
