@@ -4,8 +4,8 @@ use std::{
 
 use ntex::io::{Filter, Io, IoBoxed};
 use ntex::service::{boxed, Service, ServiceFactory};
-use ntex::time::{sleep, Seconds, Sleep};
-use ntex::util::Either;
+use ntex::time::{Deadline, Millis, Seconds};
+use ntex::util::{select, Either};
 
 use crate::error::{MqttError, ProtocolError};
 
@@ -15,7 +15,7 @@ use super::publish::{Publish, PublishAck};
 use super::shared::{MqttShared, MqttSinkPool};
 use super::{codec as mqtt, MqttServer, Session};
 
-pub(crate) type SelectItem = (Handshake, Option<Sleep>);
+pub(crate) type SelectItem = (Handshake, Deadline);
 
 type ServerFactory<Err, InitErr> =
     boxed::BoxServiceFactory<(), SelectItem, Either<SelectItem, ()>, MqttError<Err>, InitErr>;
@@ -29,7 +29,7 @@ type Server<Err> = boxed::BoxService<SelectItem, Either<SelectItem, ()>, MqttErr
 pub struct Selector<Err, InitErr> {
     servers: Vec<ServerFactory<Err, InitErr>>,
     max_size: u32,
-    handshake_timeout: Seconds,
+    handshake_timeout: Millis,
     pool: Rc<MqttSinkPool>,
     _t: marker::PhantomData<(Err, InitErr)>,
 }
@@ -40,7 +40,7 @@ impl<Err, InitErr> Selector<Err, InitErr> {
         Selector {
             servers: Vec::new(),
             max_size: 0,
-            handshake_timeout: Seconds::ZERO,
+            handshake_timeout: Millis(10000),
             pool: Default::default(),
             _t: marker::PhantomData,
         }
@@ -55,9 +55,9 @@ where
     /// Set handshake timeout.
     ///
     /// Handshake includes `connect` packet and response `connect-ack`.
-    /// By default handshake timeuot is disabled.
+    /// By default handshake timeuot is 10 seconds.
     pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
-        self.handshake_timeout = timeout;
+        self.handshake_timeout = timeout.into();
         self
     }
 
@@ -158,7 +158,7 @@ where
     }
 }
 
-impl<Err, InitErr> ServiceFactory<(IoBoxed, Option<Sleep>)> for Selector<Err, InitErr>
+impl<Err, InitErr> ServiceFactory<(IoBoxed, Deadline)> for Selector<Err, InitErr>
 where
     Err: 'static,
     InitErr: 'static,
@@ -177,7 +177,7 @@ where
 pub struct SelectorService<Err> {
     servers: Rc<Vec<Server<Err>>>,
     max_size: u32,
-    handshake_timeout: Seconds,
+    handshake_timeout: Millis,
     pool: Rc<MqttSinkPool>,
 }
 
@@ -250,20 +250,27 @@ where
             self.pool.clone(),
         ));
 
-        let delay = self.handshake_timeout.map(sleep);
+        let mut timeout = Deadline::new(self.handshake_timeout);
         Box::pin(async move {
             // read first packet
-            let packet = io
-                .recv(&shared.codec)
-                .await
-                .map_err(|err| {
-                    log::trace!("Error is received during mqtt handshake: {:?}", err);
-                    MqttError::from(err)
-                })?
-                .ok_or_else(|| {
-                    log::trace!("Server mqtt is disconnected during handshake");
-                    MqttError::Disconnected(None)
-                })?;
+            let result = select(&mut timeout, async {
+                io.recv(&shared.codec)
+                    .await
+                    .map_err(|err| {
+                        log::trace!("Error is received during mqtt handshake: {:?}", err);
+                        MqttError::from(err)
+                    })?
+                    .ok_or_else(|| {
+                        log::trace!("Server mqtt is disconnected during handshake");
+                        MqttError::Disconnected(None)
+                    })
+            })
+            .await;
+
+            let packet = match result {
+                Either::Left(_) => Err(MqttError::HandshakeTimeout),
+                Either::Right(item) => item,
+            }?;
 
             let connect = match packet {
                 mqtt::Packet::Connect(connect) => connect,
@@ -277,7 +284,7 @@ where
             };
 
             // call servers
-            let mut item = (Handshake::new(connect, io, shared, 0, 0, 0), delay);
+            let mut item = (Handshake::new(connect, io, shared, 0, 0, 0), timeout);
             for srv in servers.iter() {
                 match srv.call(item).await? {
                     Either::Left(result) => {
@@ -292,7 +299,7 @@ where
     }
 }
 
-impl<Err> Service<(IoBoxed, Option<Sleep>)> for SelectorService<Err>
+impl<Err> Service<(IoBoxed, Deadline)> for SelectorService<Err>
 where
     Err: 'static,
 {
@@ -311,7 +318,7 @@ where
     }
 
     #[inline]
-    fn call(&self, (io, delay): (IoBoxed, Option<Sleep>)) -> Self::Future {
+    fn call(&self, (io, mut timeout): (IoBoxed, Deadline)) -> Self::Future {
         let servers = self.servers.clone();
         let shared = Rc::new(MqttShared::new(
             io.get_ref(),
@@ -322,17 +329,24 @@ where
 
         Box::pin(async move {
             // read first packet
-            let packet = io
-                .recv(&shared.codec)
-                .await
-                .map_err(|err| {
-                    // log::trace!("Error is received during mqtt handshake: {:?}", err);
-                    MqttError::from(err)
-                })?
-                .ok_or_else(|| {
-                    log::trace!("Server mqtt is disconnected during handshake");
-                    MqttError::Disconnected(None)
-                })?;
+            let result = select(&mut timeout, async {
+                io.recv(&shared.codec)
+                    .await
+                    .map_err(|err| {
+                        // log::trace!("Error is received during mqtt handshake: {:?}", err);
+                        MqttError::from(err)
+                    })?
+                    .ok_or_else(|| {
+                        log::trace!("Server mqtt is disconnected during handshake");
+                        MqttError::Disconnected(None)
+                    })
+            })
+            .await;
+
+            let packet = match result {
+                Either::Left(_) => Err(MqttError::HandshakeTimeout),
+                Either::Right(item) => item,
+            }?;
 
             let connect = match packet {
                 mqtt::Packet::Connect(connect) => connect,
@@ -346,7 +360,7 @@ where
             };
 
             // call servers
-            let mut item = (Handshake::new(connect, io, shared, 0, 0, 0), delay);
+            let mut item = (Handshake::new(connect, io, shared, 0, 0, 0), timeout);
             for srv in servers.iter() {
                 match srv.call(item).await? {
                     Either::Left(result) => {

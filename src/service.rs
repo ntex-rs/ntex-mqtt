@@ -4,7 +4,7 @@ use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
 use ntex::codec::{Decoder, Encoder};
 use ntex::io::{DispatchItem, Filter, Io, IoBoxed};
 use ntex::service::{Service, ServiceFactory};
-use ntex::time::{Seconds, Sleep};
+use ntex::time::{Deadline, Seconds};
 use ntex::util::{select, Either};
 
 use crate::io::Dispatcher;
@@ -98,7 +98,7 @@ where
     }
 }
 
-impl<St, C, T, Codec> ServiceFactory<(IoBoxed, Option<Sleep>)> for MqttServer<St, C, T, Codec>
+impl<St, C, T, Codec> ServiceFactory<(IoBoxed, Deadline)> for MqttServer<St, C, T, Codec>
 where
     St: 'static,
     C: ServiceFactory<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
@@ -217,7 +217,7 @@ where
     }
 }
 
-impl<St, C, T, Codec> Service<(IoBoxed, Option<Sleep>)> for MqttHandler<St, C, T, Codec>
+impl<St, C, T, Codec> Service<(IoBoxed, Deadline)> for MqttHandler<St, C, T, Codec>
 where
     St: 'static,
     C: Service<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
@@ -246,13 +246,13 @@ where
     }
 
     #[inline]
-    fn call(&self, (io, delay): (IoBoxed, Option<Sleep>)) -> Self::Future {
+    fn call(&self, (io, delay): (IoBoxed, Deadline)) -> Self::Future {
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
         let handshake = self.connect.call(io);
 
         Box::pin(async move {
-            let (io, codec, ka, handler) = if let Some(delay) = delay {
+            let (io, codec, ka, handler) = {
                 let res = select(
                     delay,
                     Box::pin(async {
@@ -277,16 +277,6 @@ where
                     }
                     Either::Right(item) => item?,
                 }
-            } else {
-                let (io, codec, st, ka) = handshake.await.map_err(|e| {
-                    log::trace!("Connection handshake failed: {:?}", e);
-                    e
-                })?;
-                log::trace!("Connection handshake succeeded");
-
-                let handler = handler.new_service(st).await?;
-                log::trace!("Connection handler is created, starting dispatcher");
-                (io, codec, ka, handler)
             };
 
             Dispatcher::new(io, codec, handler)

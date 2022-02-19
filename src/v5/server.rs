@@ -4,7 +4,7 @@ use std::{convert::TryFrom, fmt, future::Future, marker::PhantomData, pin::Pin, 
 use ntex::io::{DispatchItem, IoBoxed};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{timeout_checked, Millis, Seconds};
-use ntex::util::Either;
+use ntex::util::{select, Either};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::{io::Dispatcher, service, types::QoS};
@@ -575,14 +575,9 @@ where
         Box::pin(async move {
             let (mut hnd, mut delay) = req;
 
-            let result = if let Some(ref mut delay) = delay {
-                let fut = (&*check)(&hnd);
-                match crate::utils::select(fut, delay).await {
-                    Either::Left(res) => res,
-                    Either::Right(_) => return Err(MqttError::HandshakeTimeout),
-                }
-            } else {
-                (&*check)(&hnd).await
+            let result = match select((&*check)(&hnd), &mut delay).await {
+                Either::Left(res) => res,
+                Either::Right(_) => return Err(MqttError::HandshakeTimeout),
             };
 
             if !result.map_err(MqttError::Service)? {
@@ -602,20 +597,12 @@ where
                 hnd.max_topic_alias = max_topic_alias;
 
                 // authenticate mqtt connection
-                let mut ack = if let Some(ref mut delay) = delay {
-                    let fut = connect.call(hnd);
-                    match crate::utils::select(fut, delay).await {
-                        Either::Left(res) => res.map_err(|e| {
-                            log::trace!("Connection handshake failed: {:?}", e);
-                            MqttError::Service(e)
-                        })?,
-                        Either::Right(_) => return Err(MqttError::HandshakeTimeout),
-                    }
-                } else {
-                    connect.call(hnd).await.map_err(|e| {
+                let mut ack = match select(connect.call(hnd), &mut delay).await {
+                    Either::Left(res) => res.map_err(|e| {
                         log::trace!("Connection handshake failed: {:?}", e);
                         MqttError::Service(e)
-                    })?
+                    })?,
+                    Either::Right(_) => return Err(MqttError::HandshakeTimeout),
                 };
 
                 match ack.session {
