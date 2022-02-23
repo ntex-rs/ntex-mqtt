@@ -3,7 +3,7 @@
 ## [0.8.4] - 2022-0x-xx
 
 * Add serializer and deserializer derive (#89)
-* Correct spelling of SubscribeAckReason::SharedSubsriptionNotSupported (#93)
+* Correct spelling of SubscribeAckReason::SharedSubsriptionNotSupported and DisconnectReasonCode::SharedSubsriptionNotSupported (#93)
 
 ## [0.8.3] - 2022-01-10
 
