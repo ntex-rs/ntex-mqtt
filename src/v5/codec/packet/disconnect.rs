@@ -43,7 +43,7 @@ prim_enum! {
         QosNotSupported = 155,
         UseAnotherServer = 156,
         ServerMoved = 157,
-        SharedSubsriptionNotSupported = 158,
+        SharedSubscriptionNotSupported = 158,
         ConnectionRateExceeded = 159,
         MaximumConnectTime = 160,
         SubscriptionIdentifiersNotSupported = 161,

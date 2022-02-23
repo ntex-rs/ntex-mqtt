@@ -78,7 +78,7 @@ prim_enum! {
         TopicFilterInvalid = 143,
         PacketIdentifierInUse = 145,
         QuotaExceeded = 151,
-        SharedSubsriptionNotSupported = 158,
+        SharedSubscriptionNotSupported = 158,
         SubscriptionIdentifiersNotSupported = 161,
         WildcardSubscriptionsNotSupported = 162
     }
