@@ -38,7 +38,6 @@ prim_enum! {
         NotAuthorized = 135,
         TopicNameInvalid = 144,
         PacketIdentifierInUse = 145,
-        ReceiveMaximumExceeded = 147,
         QuotaExceeded = 151,
         PayloadFormatInvalid = 153
     }
