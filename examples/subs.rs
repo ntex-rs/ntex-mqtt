@@ -89,7 +89,7 @@ fn control_service_factory() -> impl ServiceFactory<
                 // store subscribed topics in session, publish service uses this list for echos
                 s.iter_mut().for_each(|mut s| {
                     session.subscriptions.borrow_mut().push(s.topic().clone());
-                    s.subscribe(v5::QoS::AtLeastOnce);
+                    s.confirm(v5::QoS::AtLeastOnce);
                 });
 
                 Ready::Ok(s.ack())

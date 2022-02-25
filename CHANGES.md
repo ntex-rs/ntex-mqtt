@@ -5,6 +5,7 @@
 * Add serializer and deserializer derive (#89)
 * Correct spelling of SubscribeAckReason::SharedSubsriptionNotSupported and DisconnectReasonCode::SharedSubsriptionNotSupported (#93)
 * Removed PubAckReason::ReceiveMaximumExceeded as this error code is only valid for DISCONNECT packets (#95)
+* Update subs.rs example to use confirm instead of subscribe (#97)
 
 ## [0.8.3] - 2022-01-10
 
