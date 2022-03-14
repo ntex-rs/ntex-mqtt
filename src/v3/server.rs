@@ -48,7 +48,8 @@ pub struct MqttServer<St, H, C, P> {
     control: C,
     publish: P,
     max_size: u32,
-    inflight: usize,
+    max_inflight: u16,
+    max_inflight_size: usize,
     handshake_timeout: Seconds,
     disconnect_timeout: Seconds,
     pub(super) pool: Rc<MqttSinkPool>,
@@ -72,7 +73,8 @@ where
             control: DefaultControlService::default(),
             publish: DefaultPublishService::default(),
             max_size: 0,
-            inflight: 16,
+            max_inflight: 16,
+            max_inflight_size: 65535,
             handshake_timeout: Seconds::ZERO,
             disconnect_timeout: Seconds(3),
             pool: Default::default(),
@@ -125,8 +127,16 @@ where
     /// Number of in-flight concurrent messages.
     ///
     /// By default in-flight is set to 16 messages
-    pub fn inflight(mut self, val: usize) -> Self {
-        self.inflight = val;
+    pub fn inflight(mut self, val: u16) -> Self {
+        self.max_inflight = val;
+        self
+    }
+
+    /// Total size of in-flight messages.
+    ///
+    /// By default total in-flight size is set to 64Kb
+    pub fn inflight_size(mut self, val: usize) -> Self {
+        self.max_inflight_size = val;
         self
     }
 
@@ -146,7 +156,8 @@ where
             publish: self.publish,
             control: service.into_factory(),
             max_size: self.max_size,
-            inflight: self.inflight,
+            max_inflight: self.max_inflight,
+            max_inflight_size: self.max_inflight_size,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
@@ -166,7 +177,8 @@ where
             publish: publish.into_factory(),
             control: self.control,
             max_size: self.max_size,
-            inflight: self.inflight,
+            max_inflight: self.max_inflight,
+            max_inflight_size: self.max_inflight_size,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
@@ -202,7 +214,7 @@ where
                 pool: self.pool.clone(),
                 _t: PhantomData,
             },
-            factory(self.publish, self.control, self.inflight),
+            factory(self.publish, self.control, self.max_inflight, self.max_inflight_size),
             self.disconnect_timeout,
         )
     }
@@ -224,7 +236,12 @@ where
         ServerSelector {
             check: Rc::new(check),
             handshake: self.handshake,
-            handler: Rc::new(factory(self.publish, self.control, self.inflight)),
+            handler: Rc::new(factory(
+                self.publish,
+                self.control,
+                self.max_inflight,
+                self.max_inflight_size,
+            )),
             max_size: self.max_size,
             disconnect_timeout: self.disconnect_timeout,
             _t: PhantomData,

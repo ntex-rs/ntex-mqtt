@@ -14,12 +14,13 @@ use super::control::{ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
 use super::shared::{Ack, MqttShared};
 use super::sink::MqttSink;
-use super::{codec, Session};
+use super::{codec, codec::EncodeLtd, Session};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
+    max_inflight_size: usize,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
     Session<St>,
@@ -54,15 +55,29 @@ where
                 InFlightService::new(1, control),
             );
 
-            Ok(Dispatcher::<_, _, E>::new(
-                cfg.sink().clone(),
-                max_receive as usize,
-                max_topic_alias,
-                publish,
-                control,
+            Ok(crate::inflight::InFlightService::new(
+                0,
+                max_inflight_size,
+                Dispatcher::<_, _, E>::new(
+                    cfg.sink().clone(),
+                    max_receive as usize,
+                    max_topic_alias,
+                    publish,
+                    control,
+                ),
             ))
         }
     })
+}
+
+impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
+    fn size(&self) -> u32 {
+        if let DispatchItem::Item(ref item) = self {
+            item.encoded_size(u32::MAX) as u32
+        } else {
+            0
+        }
+    }
 }
 
 /// Mqtt protocol dispatcher

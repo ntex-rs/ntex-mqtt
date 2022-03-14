@@ -12,6 +12,7 @@ pub mod error;
 pub mod v3;
 pub mod v5;
 
+mod inflight;
 mod io;
 mod server;
 mod service;

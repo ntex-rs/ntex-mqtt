@@ -1,6 +1,8 @@
 # Changes
 
-## [0.8.4] - 2022-0x-xx
+## [0.8.4] - 2022-03-14
+
+* Add support in-flight messages size back-pressure
 
 * Refactor handshake timeout handling
 

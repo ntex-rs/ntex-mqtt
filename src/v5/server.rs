@@ -25,6 +25,7 @@ pub struct MqttServer<St, C, Cn, P> {
     max_size: u32,
     max_receive: u16,
     max_qos: Option<QoS>,
+    max_inflight_size: usize,
     handshake_timeout: Seconds,
     disconnect_timeout: Seconds,
     max_topic_alias: u16,
@@ -50,6 +51,7 @@ where
             max_size: 0,
             max_receive: 15,
             max_qos: None,
+            max_inflight_size: 65535,
             handshake_timeout: Seconds::ZERO,
             disconnect_timeout: Seconds(3),
             max_topic_alias: 32,
@@ -124,6 +126,14 @@ where
         self
     }
 
+    /// Total size of in-flight messages.
+    ///
+    /// By default total in-flight size is set to 64Kb
+    pub fn max_inflight_size(mut self, val: usize) -> Self {
+        self.max_inflight_size = val;
+        self
+    }
+
     /// Service to handle control packets
     ///
     /// All control packets are processed sequentially, max number of buffered
@@ -143,6 +153,7 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
+            max_inflight_size: self.max_inflight_size,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
@@ -167,6 +178,7 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
+            max_inflight_size: self.max_inflight_size,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
@@ -221,7 +233,7 @@ where
                 pool: self.pool,
                 _t: PhantomData,
             },
-            factory(self.srv_publish, self.srv_control),
+            factory(self.srv_publish, self.srv_control, self.max_inflight_size),
             self.disconnect_timeout,
         )
     }
@@ -243,7 +255,11 @@ where
         ServerSelector::<St, _, _, _, _> {
             check: Rc::new(check),
             connect: self.handshake,
-            handler: Rc::new(factory(self.srv_publish, self.srv_control)),
+            handler: Rc::new(factory(
+                self.srv_publish,
+                self.srv_control,
+                self.max_inflight_size,
+            )),
             max_size: self.max_size,
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,

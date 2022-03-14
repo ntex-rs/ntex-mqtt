@@ -6,7 +6,7 @@ use crate::error::EncodeError;
 use crate::types::packet_type;
 use crate::utils::{write_variable_length, Encode};
 
-pub(super) trait EncodeLtd {
+pub(crate) trait EncodeLtd {
     fn encoded_size(&self, limit: u32) -> usize;
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError>;

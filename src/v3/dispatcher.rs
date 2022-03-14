@@ -20,7 +20,8 @@ use super::{codec, publish::Publish, shared::Ack, sink::MqttSink, Session};
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
-    inflight: usize,
+    inflight: u16,
+    inflight_size: usize,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
     Session<St>,
@@ -54,13 +55,24 @@ where
 
             Ok(
                 // limit number of in-flight messages
-                InFlightService::new(
+                crate::inflight::InFlightService::new(
                     inflight,
+                    inflight_size,
                     Dispatcher::<_, _, _, E>::new(cfg, publish, control),
                 ),
             )
         }
     })
+}
+
+impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
+    fn size(&self) -> u32 {
+        if let DispatchItem::Item(ref item) = self {
+            codec::encode::get_encoded_size(item) as u32
+        } else {
+            0
+        }
+    }
 }
 
 /// Mqtt protocol dispatcher

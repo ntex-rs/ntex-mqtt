@@ -3,7 +3,7 @@
 #[allow(clippy::module_inception)]
 mod codec;
 mod decode;
-mod encode;
+pub(crate) mod encode;
 mod packet;
 
 pub use self::codec::Codec;

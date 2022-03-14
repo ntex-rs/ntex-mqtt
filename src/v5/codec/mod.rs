@@ -9,6 +9,7 @@ mod encode;
 mod packet;
 
 pub use self::codec::Codec;
+pub(crate) use self::encode::EncodeLtd;
 pub use self::packet::*;
 
 pub type UserProperty = (ByteString, ByteString);
