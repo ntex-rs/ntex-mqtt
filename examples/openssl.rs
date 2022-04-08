@@ -49,7 +49,7 @@ async fn publish_v5(publish: v5::Publish) -> Result<v5::PublishAck, ServerError>
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex=info,ntex_io=info,ntex_mqtt=trace,openssl=trace");
+    std::env::set_var("RUST_LOG", "ntex=info,ntex_io=trace,ntex_mqtt=trace,openssl=trace");
     env_logger::init();
 
     // create self-signed certificates using:

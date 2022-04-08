@@ -70,13 +70,16 @@ impl MqttSink {
     }
 
     /// Create publish message builder
-    pub fn publish(&self, topic: ByteString, payload: Bytes) -> PublishBuilder {
+    pub fn publish<U>(&self, topic: U, payload: Bytes) -> PublishBuilder
+    where
+        ByteString: From<U>,
+    {
         PublishBuilder {
             packet: codec::Publish {
-                topic,
                 payload,
                 dup: false,
                 retain: false,
+                topic: topic.into(),
                 qos: codec::QoS::AtMostOnce,
                 packet_id: None,
             },

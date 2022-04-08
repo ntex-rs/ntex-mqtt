@@ -60,7 +60,10 @@ enum Protocol {
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex=info,ntex_io=info,ntex_mqtt=trace,openssl=trace");
+    std::env::set_var(
+        "RUST_LOG",
+        "ntex=info,ntex_io=info,ntex_mqtt=trace,mqtt_ws_server=trace",
+    );
     env_logger::init();
 
     // create self-signed certificates using:
