@@ -216,7 +216,7 @@ where
         let pkt = self.pkt.clone();
         let keep_alive = pkt.keep_alive;
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
-        let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(0);
+        let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(65535);
         let disconnect_timeout = self.disconnect_timeout;
         let pool = self.pool.clone();
 
@@ -245,7 +245,7 @@ where
                         // server keep-alive
                         let keep_alive = pkt.server_keepalive_sec.unwrap_or(keep_alive);
 
-                        shared.cap.set(pkt.receive_max.map(|v| v.get()).unwrap_or(0) as usize);
+                        shared.cap.set(pkt.receive_max.map(|v| v.get()).unwrap_or(65535) as usize);
 
                         Ok(Client::new(
                             io,
