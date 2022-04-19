@@ -245,7 +245,9 @@ where
                         // server keep-alive
                         let keep_alive = pkt.server_keepalive_sec.unwrap_or(keep_alive);
 
-                        shared.cap.set(pkt.receive_max.map(|v| v.get()).unwrap_or(65535) as usize);
+                        shared
+                            .cap
+                            .set(pkt.receive_max.map(|v| v.get()).unwrap_or(65535) as usize);
 
                         Ok(Client::new(
                             io,
