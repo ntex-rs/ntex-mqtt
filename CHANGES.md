@@ -3,6 +3,7 @@
 ## [0.8.5] - 2022-xx-xx
 
 * v3: Make topic generic type for MqttSink::publish() method
+* Correct receive max value for v5 connector when broker omits value #100
 
 ## [0.8.4] - 2022-03-14
 
