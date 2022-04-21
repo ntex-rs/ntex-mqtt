@@ -206,23 +206,24 @@ impl PublishBuilder {
         let mut packet = self.packet;
         packet.qos = codec::QoS::AtLeastOnce;
 
-        if !shared.io.is_closed() {
-            // handle client receive maximum
-            if !shared.has_credit() {
-                let (tx, rx) = shared.pool.waiters.channel();
-                shared.with_queues(|q| q.waiters.push_back(tx));
-
-                return Either::Left(Either::Right(async move {
-                    if rx.await.is_err() {
-                        return Err(SendPacketError::Disconnected);
-                    }
-                    Self::send_at_least_once_inner(packet, shared).await
-                }));
-            }
-            Either::Right(Self::send_at_least_once_inner(packet, shared))
-        } else {
-            Either::Left(Either::Left(Ready::Err(SendPacketError::Disconnected)))
+        if shared.io.is_closed() {
+            return Either::Left(Either::Left(Ready::Err(SendPacketError::Disconnected)));
         }
+
+        if shared.has_credit() {
+            return Either::Right(Self::send_at_least_once_inner(packet, shared));
+        }
+
+        // handle client receive maximum
+        let (tx, rx) = shared.pool.waiters.channel();
+        shared.with_queues(|q| q.waiters.push_back(tx));
+
+        Either::Left(Either::Right(async move {
+            if rx.await.is_err() {
+                return Err(SendPacketError::Disconnected);
+            }
+            Self::send_at_least_once_inner(packet, shared).await
+        }))
     }
 
     fn send_at_least_once_inner(
