@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.6] - 2022-xx-xx
+
+* v5: Add Router::finish() helper method, it converts router to service factory
+
 ## [0.8.5] - 2022-04-20
 
 * v3: Make topic generic type for MqttSink::publish() method

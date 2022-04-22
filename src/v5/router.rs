@@ -52,6 +52,15 @@ where
         self.handlers.push(boxed::factory(service.into_factory().map_init_err(Err::from)));
         self
     }
+
+    /// Finish router configuration and create router service factory
+    pub fn finish(self) -> RouterFactory<S, Err> {
+        RouterFactory {
+            router: self.router.finish(),
+            handlers: Rc::new(self.handlers),
+            default: self.default,
+        }
+    }
 }
 
 impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, Publish, S> for Router<S, Err>
@@ -60,11 +69,7 @@ where
     Err: 'static,
 {
     fn into_factory(self) -> RouterFactory<S, Err> {
-        RouterFactory {
-            router: self.router.finish(),
-            handlers: Rc::new(self.handlers),
-            default: self.default,
-        }
+        self.finish()
     }
 }
 
