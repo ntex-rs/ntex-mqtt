@@ -8,8 +8,9 @@ use ntex::task::LocalWaker;
 use ntex::util::{ByteString, HashMap};
 
 use super::publish::{Publish, PublishAck};
+use super::Session;
 
-type Handler<S, E> = BoxServiceFactory<S, Publish, PublishAck, E, E>;
+type Handler<S, E> = BoxServiceFactory<Session<S>, Publish, PublishAck, E, E>;
 type HandlerService<E> = BoxService<Publish, PublishAck, E>;
 
 /// Router - structure that follows the builder pattern
@@ -22,7 +23,7 @@ pub struct Router<S, Err> {
 
 impl<S, Err> Router<S, Err>
 where
-    S: Clone + 'static,
+    S: 'static,
     Err: 'static,
 {
     /// Create mqtt application router.
@@ -30,8 +31,14 @@ where
     /// Default service to be used if no matching resource could be found.
     pub fn new<F, U: 'static>(default_service: F) -> Self
     where
-        F: IntoServiceFactory<U, Publish, S>,
-        U: ServiceFactory<Publish, S, Response = PublishAck, Error = Err, InitError = Err>,
+        F: IntoServiceFactory<U, Publish, Session<S>>,
+        U: ServiceFactory<
+            Publish,
+            Session<S>,
+            Response = PublishAck,
+            Error = Err,
+            InitError = Err,
+        >,
     {
         Router {
             router: ntex::router::Router::build(),
@@ -44,8 +51,8 @@ where
     pub fn resource<T, F, U: 'static>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoServiceFactory<U, Publish, S>,
-        U: ServiceFactory<Publish, S, Response = PublishAck, Error = Err>,
+        F: IntoServiceFactory<U, Publish, Session<S>>,
+        U: ServiceFactory<Publish, Session<S>, Response = PublishAck, Error = Err>,
         Err: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
@@ -63,9 +70,9 @@ where
     }
 }
 
-impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, Publish, S> for Router<S, Err>
+impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, Publish, Session<S>> for Router<S, Err>
 where
-    S: Clone + 'static,
+    S: 'static,
     Err: 'static,
 {
     fn into_factory(self) -> RouterFactory<S, Err> {
@@ -79,9 +86,9 @@ pub struct RouterFactory<S, Err> {
     default: Handler<S, Err>,
 }
 
-impl<S, Err> ServiceFactory<Publish, S> for RouterFactory<S, Err>
+impl<S, Err> ServiceFactory<Publish, Session<S>> for RouterFactory<S, Err>
 where
-    S: Clone + 'static,
+    S: 'static,
     Err: 'static,
 {
     type Response = PublishAck;
@@ -90,7 +97,7 @@ where
     type Service = RouterService<S, Err>;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Err>>>>;
 
-    fn new_service(&self, session: S) -> Self::Future {
+    fn new_service(&self, session: Session<S>) -> Self::Future {
         let router = self.router.clone();
         let factories = self.handlers.clone();
         let default_fut = self.default.new_service(session.clone());
@@ -122,7 +129,7 @@ pub struct RouterService<S, Err> {
 }
 
 struct Inner<S, Err> {
-    session: S,
+    session: Session<S>,
     handlers: RefCell<Vec<Option<HandlerService<Err>>>>,
     factories: Rc<Vec<Handler<S, Err>>>,
     aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>>,
@@ -130,7 +137,7 @@ struct Inner<S, Err> {
     creating: Cell<bool>,
 }
 
-impl<S: Clone + 'static, Err: 'static> RouterService<S, Err> {
+impl<S: 'static, Err: 'static> RouterService<S, Err> {
     fn create_handler(
         &self,
         idx: usize,
@@ -156,7 +163,7 @@ impl<S: Clone + 'static, Err: 'static> RouterService<S, Err> {
     }
 }
 
-impl<S: Clone + 'static, Err: 'static> Service<Publish> for RouterService<S, Err> {
+impl<S: 'static, Err: 'static> Service<Publish> for RouterService<S, Err> {
     type Response = PublishAck;
     type Error = Err;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;

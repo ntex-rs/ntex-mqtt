@@ -1,9 +1,9 @@
 //! Examples show how to handle different mqtt topics
-use ntex::service::{fn_service, ServiceFactory};
+use ntex::service::{fn_factory_with_config, fn_service, ServiceFactory};
 use ntex_mqtt::v5;
 
 #[derive(Clone)]
-struct Session;
+struct MySession;
 
 #[derive(Debug)]
 struct ServerError;
@@ -33,7 +33,7 @@ async fn main() -> std::io::Result<()> {
             v5::MqttServer::new(
                 fn_service(|handshake: v5::Handshake| async move {
                     log::info!("new mqtt v3 connection: {:?}", handshake);
-                    Ok::<_, ServerError>(handshake.ack(Session))
+                    Ok::<_, ServerError>(handshake.ack(MySession))
                 })
                 .map_init_err(|_| ServerError),
             )
@@ -48,10 +48,15 @@ async fn main() -> std::io::Result<()> {
                     .map_init_err(|_| ServerError),
                 )
                 // this handler can handle topic1, topic2 and topic3 topics
-                .resource(["topic1", "topic2", "topic3"], |p: v5::Publish| async move {
-                    log::info!("incoming publish for {:?} -> {:?}", p.topic(), p.id());
-                    Ok(p.ack())
-                })
+                .resource(
+                    ["topic1", "topic2", "topic3"],
+                    fn_factory_with_config(|_: v5::Session<MySession>| async {
+                        Ok::<_, ServerError>(fn_service(|p: v5::Publish| async move {
+                            log::info!("incoming publish for {:?} -> {:?}", p.topic(), p.id());
+                            Ok(p.ack())
+                        }))
+                    }),
+                )
                 // this handler can handle topic with dynamic section
                 // ie `topic4/id1/files`, `topic4/id100/files`, etc
                 .resource(["topic4/{id}/files"], |p: v5::Publish| async move {

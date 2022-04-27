@@ -6,8 +6,9 @@ use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 
 use super::publish::Publish;
+use super::Session;
 
-type Handler<S, E> = BoxServiceFactory<S, Publish, (), E, E>;
+type Handler<S, E> = BoxServiceFactory<Session<S>, Publish, (), E, E>;
 type HandlerService<E> = BoxService<Publish, (), E>;
 
 /// Router - structure that follows the builder pattern
@@ -20,7 +21,7 @@ pub struct Router<S, Err> {
 
 impl<S, Err> Router<S, Err>
 where
-    S: Clone + 'static,
+    S: 'static,
     Err: 'static,
 {
     /// Create mqtt application router.
@@ -28,8 +29,8 @@ where
     /// Default service to be used if no matching resource could be found.
     pub fn new<F, U: 'static>(default_service: F) -> Self
     where
-        F: IntoServiceFactory<U, Publish, S>,
-        U: ServiceFactory<Publish, S, Response = (), Error = Err, InitError = Err>,
+        F: IntoServiceFactory<U, Publish, Session<S>>,
+        U: ServiceFactory<Publish, Session<S>, Response = (), Error = Err, InitError = Err>,
     {
         Router {
             router: ntex::router::Router::build(),
@@ -42,8 +43,8 @@ where
     pub fn resource<T, F, U: 'static>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoServiceFactory<U, Publish, S>,
-        U: ServiceFactory<Publish, S, Response = (), Error = Err>,
+        F: IntoServiceFactory<U, Publish, Session<S>>,
+        U: ServiceFactory<Publish, Session<S>, Response = (), Error = Err>,
         Err: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
@@ -52,9 +53,9 @@ where
     }
 }
 
-impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, Publish, S> for Router<S, Err>
+impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, Publish, Session<S>> for Router<S, Err>
 where
-    S: Clone + 'static,
+    S: 'static,
     Err: 'static,
 {
     fn into_factory(self) -> RouterFactory<S, Err> {
@@ -72,9 +73,9 @@ pub struct RouterFactory<S, Err> {
     default: Handler<S, Err>,
 }
 
-impl<S, Err> ServiceFactory<Publish, S> for RouterFactory<S, Err>
+impl<S, Err> ServiceFactory<Publish, Session<S>> for RouterFactory<S, Err>
 where
-    S: Clone + 'static,
+    S: 'static,
     Err: 'static,
 {
     type Response = ();
@@ -83,7 +84,7 @@ where
     type Service = RouterService<Err>;
     type Future = Pin<Box<dyn Future<Output = Result<RouterService<Err>, Err>>>>;
 
-    fn new_service(&self, session: S) -> Self::Future {
+    fn new_service(&self, session: Session<S>) -> Self::Future {
         let fut: Vec<_> =
             self.handlers.iter().map(|h| h.new_service(session.clone())).collect();
         let default_fut = self.default.new_service(session);

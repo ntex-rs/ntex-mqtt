@@ -4,6 +4,8 @@
 
 * v5: Add Router::finish() helper method, it converts router to service factory
 
+* v3/v3: Clearify session type for Router
+
 ## [0.8.5] - 2022-04-20
 
 * v3: Make topic generic type for MqttSink::publish() method
