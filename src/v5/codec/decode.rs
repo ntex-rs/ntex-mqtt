@@ -313,7 +313,7 @@ mod tests {
             user_properties: Vec::new(),
         });
 
-        assert_decode_packet(b"\x82\x14\x12\x34\x02\x0b\x01\x00\x04test\x01\x00\x06filter\x02", p);
+        assert_decode_packet(b"\x82\x15\x12\x34\x02\x0b\x01\x00\x04test\x01\x00\x06filter\x02", p);
 
         let p = Packet::SubscribeAck(SubscribeAck {
             packet_id: packet_id(0x1234),
