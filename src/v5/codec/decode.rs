@@ -39,7 +39,7 @@ impl Decode for UserProperty {
 #[cfg(test)]
 mod tests {
     use ntex::util::{Bytes, BytesMut};
-    use std::num::NonZeroU16;
+    use std::num::{NonZeroU16, NonZeroU32};
 
     use super::*;
     use crate::types::QoS;
