@@ -486,7 +486,7 @@ mod tests {
                     ),
                 ],
             }),
-            b"\x82\x14\x12\x34\x01\x0b\x01\x00\x04test\x01\x00\x06filter\x02",
+            b"\x82\x15\x12\x34\x02\x0b\x01\x00\x04test\x01\x00\x06filter\x02",
         );
 
         assert_encode_packet(

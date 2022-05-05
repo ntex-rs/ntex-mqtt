@@ -39,7 +39,7 @@ impl Decode for UserProperty {
 #[cfg(test)]
 mod tests {
     use ntex::util::{Bytes, BytesMut};
-    use std::num::NonZeroU16;
+    use std::num::{NonZeroU16, NonZeroU32};
 
     use super::*;
     use crate::types::QoS;
@@ -286,6 +286,34 @@ mod tests {
         });
 
         assert_decode_packet(b"\x82\x13\x12\x34\x00\x00\x04test\x01\x00\x06filter\x02", p);
+
+        let p = Packet::Subscribe(Subscribe {
+            packet_id: packet_id(0x1234),
+            topic_filters: vec![
+                (
+                    ByteString::from_static("test"),
+                    SubscriptionOptions {
+                        qos: QoS::AtLeastOnce,
+                        no_local: false,
+                        retain_as_published: false,
+                        retain_handling: RetainHandling::AtSubscribe,
+                    },
+                ),
+                (
+                    ByteString::from_static("filter"),
+                    SubscriptionOptions {
+                        qos: QoS::ExactlyOnce,
+                        no_local: false,
+                        retain_as_published: false,
+                        retain_handling: RetainHandling::AtSubscribe,
+                    },
+                ),
+            ],
+            id: Some(NonZeroU32::new(1).unwrap()),
+            user_properties: Vec::new(),
+        });
+
+        assert_decode_packet(b"\x82\x15\x12\x34\x02\x0b\x01\x00\x04test\x01\x00\x06filter\x02", p);
 
         let p = Packet::SubscribeAck(SubscribeAck {
             packet_id: packet_id(0x1234),

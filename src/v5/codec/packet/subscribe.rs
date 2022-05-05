@@ -176,7 +176,7 @@ impl UnsubscribeAck {
 
 impl EncodeLtd for Subscribe {
     fn encoded_size(&self, _limit: u32) -> usize {
-        let prop_len = self.id.map_or(0, |v| var_int_len(v.get() as usize) as usize)
+        let prop_len = self.id.map_or(0, |v| 1 + var_int_len(v.get() as usize) as usize) // +1 to account for property type byte
             + self.user_properties.encoded_size();
         let payload_len = self
             .topic_filters
@@ -188,7 +188,7 @@ impl EncodeLtd for Subscribe {
     fn encode(&self, buf: &mut BytesMut, _: u32) -> Result<(), EncodeError> {
         self.packet_id.encode(buf)?;
 
-        let prop_len = self.id.map_or(0, |v| var_int_len(v.get() as usize))
+        let prop_len = self.id.map_or(0, |v| 1 + var_int_len(v.get() as usize))
             + self.user_properties.encoded_size() as u32; // safe: size was already checked against maximum
         utils::write_variable_length(prop_len, buf);
 
