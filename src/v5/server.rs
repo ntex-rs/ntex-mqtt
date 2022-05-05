@@ -591,7 +591,7 @@ where
         Box::pin(async move {
             let (mut hnd, mut delay) = req;
 
-            let result = match select((&*check)(&hnd), &mut delay).await {
+            let result = match select((*check)(&hnd), &mut delay).await {
                 Either::Left(res) => res,
                 Either::Right(_) => return Err(MqttError::HandshakeTimeout),
             };

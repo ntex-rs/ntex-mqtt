@@ -1,10 +1,8 @@
 # Changes
 
-## [0.8.7] - 2022-05-04
+## [0.8.6] - 2022-05-05
 
 * v5: Account for property type byte in property length when encoding Subscribe packet
-
-## [0.8.6] - 2022-xx-xx
 
 * v5: Add Router::finish() helper method, it converts router to service factory
 
