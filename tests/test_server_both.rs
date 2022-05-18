@@ -1,6 +1,7 @@
 use std::convert::TryFrom;
 
 use ntex::server;
+use ntex::time::Millis;
 use ntex::util::{ByteString, Bytes, Ready};
 
 use ntex_mqtt::{v3, v5, MqttServer};
@@ -44,8 +45,9 @@ async fn test_simple() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_ok());
     sink.close();
 
@@ -55,8 +57,9 @@ async fn test_simple() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_ok());
     sink.close();
 

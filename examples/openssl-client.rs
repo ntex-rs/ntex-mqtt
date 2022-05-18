@@ -48,7 +48,8 @@ async fn main() -> std::io::Result<()> {
     let router = client.resource("response", publish);
     ntex::rt::spawn(router.start_default());
 
-    sink.publish("test-topic", "Publish data".into()).send_at_least_once().await.unwrap();
+    let timeout = Millis(1_000);
+    sink.publish("test-topic", "Publish data".into()).send_at_least_once(timeout).await.unwrap();
 
     sleep(Millis(10_000)).await;
 

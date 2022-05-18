@@ -33,8 +33,9 @@ async fn test_simple() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_ok());
 
     sink.close();
@@ -236,10 +237,11 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let topic = ByteString::from_static("test");
-    let fut1 = sink.publish(topic.clone(), Bytes::from_static(b"pkt1")).send_at_least_once();
-    let fut2 = sink.publish(topic.clone(), Bytes::from_static(b"pkt2")).send_at_least_once();
-    let fut3 = sink.publish(topic.clone(), Bytes::from_static(b"pkt3")).send_at_least_once();
+    let fut1 = sink.publish(topic.clone(), Bytes::from_static(b"pkt1")).send_at_least_once(timeout);
+    let fut2 = sink.publish(topic.clone(), Bytes::from_static(b"pkt2")).send_at_least_once(timeout);
+    let fut3 = sink.publish(topic.clone(), Bytes::from_static(b"pkt3")).send_at_least_once(timeout);
 
     let res = join_all(vec![fut1, fut2, fut3]).await;
     assert!(res[0].is_ok());
@@ -273,8 +275,9 @@ async fn test_disconnect() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_err());
 
     Ok(())

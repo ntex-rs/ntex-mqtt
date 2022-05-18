@@ -1,7 +1,8 @@
 use std::future::{ready, Future};
 use std::{fmt, num::NonZeroU16, rc::Rc};
 
-use ntex::util::{ByteString, Bytes, Either, Ready};
+use ntex::time::{ Millis, timeout};
+use ntex::util::{poll_fn, ByteString, Bytes, Either, Ready};
 
 use super::shared::{Ack, AckType, MqttShared};
 use super::{codec, error::ProtocolError, error::SendPacketError};
@@ -131,12 +132,12 @@ impl MqttSink {
                         }
                     } else {
                         log::error!("In-flight state inconsistency");
-                        Err(ProtocolError::PacketIdMismatch)
+                        Ok(())
                     }
                 }
             } else {
                 log::trace!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
-                Err(ProtocolError::PacketIdMismatch)
+                Ok(())
             }
         });
         result.map_err(|e| {
@@ -201,7 +202,10 @@ impl PublishBuilder {
 
     #[allow(clippy::await_holding_refcell_ref)]
     /// Send publish packet with QoS 1
-    pub fn send_at_least_once(self) -> impl Future<Output = Result<(), SendPacketError>> {
+    pub fn send_at_least_once(
+        self,
+        timeout: Millis,
+    ) -> impl Future<Output = Result<(), SendPacketError>> {
         let shared = self.shared;
         let mut packet = self.packet;
         packet.qos = codec::QoS::AtLeastOnce;
@@ -216,10 +220,10 @@ impl PublishBuilder {
                     if rx.await.is_err() {
                         return Err(SendPacketError::Disconnected);
                     }
-                    Self::send_at_least_once_inner(packet, shared).await
+                    Self::send_at_least_once_inner(packet, shared, timeout).await
                 }));
             }
-            Either::Right(Self::send_at_least_once_inner(packet, shared))
+            Either::Right(Self::send_at_least_once_inner(packet, shared, timeout))
         } else {
             Either::Left(Either::Left(Ready::Err(SendPacketError::Disconnected)))
         }
@@ -228,6 +232,7 @@ impl PublishBuilder {
     fn send_at_least_once_inner(
         mut packet: codec::Publish,
         shared: Rc<MqttShared>,
+        _timeout: Millis,
     ) -> impl Future<Output = Result<(), SendPacketError>> {
         let rx = shared.with_queues(|queues| {
             // publish ack channel
@@ -254,12 +259,32 @@ impl PublishBuilder {
 
         log::trace!("Publish (QoS1) to {:#?}", packet);
 
-        match shared.io.encode(codec::Packet::Publish(packet), &shared.codec) {
-            Ok(_) => Either::Right(async move {
-                rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
-            }),
-            Err(err) => Either::Left(Ready::Err(SendPacketError::Encode(err))),
-        }
+        // wait ack from peer
+        Either::Right(async move {
+            let mut pkt = packet.clone();
+
+            // send publish to client
+            loop {
+                log::trace!("Publish (QoS1) to {:#?}", &pkt);
+
+                if let Err(err) =
+                    shared.io.encode(codec::Packet::Publish(pkt.clone()), &shared.codec)
+                {
+                    return Err(SendPacketError::Encode(err));
+                }
+
+                match timeout(_timeout, poll_fn(|cx| rx.poll_recv(cx))).await {
+                    Ok(resp) => match resp {
+                        Ok(_) => return Ok(()),
+                        Err(_) => return Err(SendPacketError::Disconnected),
+                    },
+                    Err(_) => {
+                        log::warn!("Publish (QoS1) Timeout! Try again!");
+                        pkt.dup = true;
+                    }
+                }
+            }
+        })
     }
 }
 

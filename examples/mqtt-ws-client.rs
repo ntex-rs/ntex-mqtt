@@ -57,9 +57,10 @@ async fn main() -> std::io::Result<()> {
     });
     ntex::rt::spawn(router.start_default());
 
+    let timeout = Millis(1_000);
     let _ack = sink
         .publish("test-topic", Bytes::from_static(b"data"))
-        .send_at_least_once()
+        .send_at_least_once(timeout)
         .await
         .unwrap();
     println!("ack is received");

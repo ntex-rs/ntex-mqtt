@@ -79,7 +79,8 @@ async fn main() -> std::io::Result<()> {
         .unwrap();
 
     log::info!("sending client publish");
-    let ack = sink.publish("topic1", "Hello world!".into()).send_at_least_once().await.unwrap();
+    let timeout = Millis(1_000);
+    let ack = sink.publish("topic1", "Hello world!".into()).send_at_least_once(timeout).await.unwrap();
     log::info!("ack received: {:?}", ack);
 
     sleep(Millis(1_000)).await;

@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 
 use ntex::service::{fn_factory_with_config, fn_service, ServiceFactory};
+use ntex::time::Millis;
 use ntex::util::{ByteString, Ready};
 use ntex_mqtt::v5::{
     self, ControlMessage, ControlResult, MqttServer, Publish, PublishAck, Session,
@@ -58,10 +59,11 @@ async fn publish(
     // client is subscribed to this topic, send echo
     if session.subscriptions.borrow().contains(&publish.packet().topic) {
         log::info!("client is subscribed to topic, sending echo");
+        let timeout = Millis(1_000);
         session
             .sink
             .publish(publish.packet().topic.clone(), publish.packet().payload.clone())
-            .send_at_least_once()
+            .send_at_least_once(timeout)
             .await
             .unwrap();
     }

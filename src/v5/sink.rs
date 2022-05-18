@@ -1,7 +1,8 @@
 use std::future::{ready, Future};
 use std::{fmt, num::NonZeroU16, num::NonZeroU32, rc::Rc};
 
-use ntex::util::{ByteString, Bytes, Either, Ready};
+use ntex::time::{timeout, Millis};
+use ntex::util::{poll_fn, ByteString, Bytes, Either, Ready};
 
 use super::codec;
 use super::error::{ProtocolError, PublishQos1Error, SendPacketError};
@@ -142,7 +143,7 @@ impl MqttSink {
             } else {
                 log::trace!("Unexpected PublishAck packet");
             }
-            return Err(ProtocolError::PacketIdMismatch);
+            return Ok(());
         })
     }
 
@@ -267,6 +268,7 @@ impl PublishBuilder {
     /// Send publish packet with QoS 1
     pub fn send_at_least_once(
         self,
+        timeout: Millis,
     ) -> impl Future<Output = Result<codec::PublishAck, PublishQos1Error>> {
         let shared = self.shared;
         let mut packet = self.packet;
@@ -282,10 +284,10 @@ impl PublishBuilder {
                     if rx.await.is_err() {
                         return Err(PublishQos1Error::Disconnected);
                     }
-                    Self::send_at_least_once_inner(packet, shared).await
+                    Self::send_at_least_once_inner(packet, shared, timeout).await
                 }));
             }
-            Either::Right(Self::send_at_least_once_inner(packet, shared))
+            Either::Right(Self::send_at_least_once_inner(packet, shared, timeout))
         } else {
             Either::Left(Either::Left(Ready::Err(PublishQos1Error::Disconnected)))
         }
@@ -294,6 +296,7 @@ impl PublishBuilder {
     fn send_at_least_once_inner(
         mut packet: codec::Publish,
         shared: Rc<MqttShared>,
+        _timeout: Millis,
     ) -> impl Future<Output = Result<codec::PublishAck, PublishQos1Error>> {
         // packet id
         let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
@@ -319,24 +322,41 @@ impl PublishBuilder {
             Err(e) => return Either::Left(Ready::Err(e)),
         };
 
-        // send publish to client
-        log::trace!("Publish (QoS1) to {:#?}", packet);
+        // wait ack from peer
+        Either::Right(async move {
+            let mut pkt = packet.clone();
 
-        match shared.io.encode(codec::Packet::Publish(packet), &shared.codec) {
-            Ok(_) => {
-                // wait ack from peer
-                Either::Right(async move {
-                    rx.await.map_err(|_| PublishQos1Error::Disconnected).and_then(|pkt| {
-                        let pkt = pkt.publish();
-                        match pkt.reason_code {
-                            codec::PublishAckReason::Success => Ok(pkt),
-                            _ => Err(PublishQos1Error::Fail(pkt)),
+            // send publish to client
+            loop {
+                log::trace!("Publish (QoS1) to {:#?}", &pkt);
+
+                if let Err(err) =
+                    shared.io.encode(codec::Packet::Publish(pkt.clone()), &shared.codec)
+                {
+                    return Err(PublishQos1Error::Encode(err));
+                }
+
+                match timeout(_timeout, poll_fn(|cx| rx.poll_recv(cx))).await {
+                    Ok(resp) => match resp {
+                        Ok(pkt) => {
+                            let pkt = pkt.publish();
+                            match pkt.reason_code {
+                                codec::PublishAckReason::Success => return Ok(pkt),
+                                _ => return Err(PublishQos1Error::Fail(pkt)),
+                            }
                         }
-                    })
-                })
+                        Err(e) => {
+                            log::error!("{:#?}", e);
+                            return Err(PublishQos1Error::Disconnected);
+                        }
+                    },
+                    Err(_) => {
+                        log::warn!("Publish (QoS1) Timeout! Try again!");
+                        pkt.dup = true;
+                    }
+                }
             }
-            Err(err) => Either::Left(Ready::Err(PublishQos1Error::Encode(err))),
-        }
+        })
     }
 }
 

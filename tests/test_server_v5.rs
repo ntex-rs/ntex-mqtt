@@ -1,6 +1,7 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{convert::TryFrom, num::NonZeroU16, time::Duration};
 
+use ntex::time::Millis;
 use ntex::util::{ByteString, Bytes, Ready};
 use ntex::{server, service::fn_service, time::sleep};
 
@@ -60,8 +61,9 @@ async fn test_simple() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_ok());
 
     sink.close();
@@ -115,8 +117,9 @@ async fn test_disconnect() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_err());
 
     Ok(())
@@ -150,8 +153,9 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_err());
 
     Ok(())
@@ -573,13 +577,14 @@ async fn test_keepalive2() {
 
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     assert!(sink.is_open());
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_ok());
     sleep(Duration::from_millis(500)).await;
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_ok());
     sleep(Duration::from_millis(2000)).await;
 
@@ -598,7 +603,8 @@ async fn test_sink_encoder_error_pub_qos1() {
                 ));
             });
             ntex::rt::spawn(async move {
-                let res = builder.send_at_least_once().await;
+                let timeout = Millis(1_000);
+                let res = builder.send_at_least_once(timeout).await;
                 assert_eq!(
                     res,
                     Err(error::PublishQos1Error::Encode(error::EncodeError::InvalidLength))
@@ -629,8 +635,9 @@ async fn test_sink_encoder_error_pub_qos1() {
 
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_ok());
 }
 
@@ -674,8 +681,9 @@ async fn test_sink_encoder_error_pub_qos0() {
 
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once(timeout).await;
     assert!(res.is_ok());
 }
 
@@ -711,9 +719,10 @@ async fn test_request_problem_info() {
 
     ntex::rt::spawn(client.start_default());
 
+    let timeout = Millis(1_000);
     let res = sink
         .publish(ByteString::from_static("#"), Bytes::new())
-        .send_at_least_once()
+        .send_at_least_once(timeout)
         .await
         .unwrap();
     assert!(res.properties.is_empty());
