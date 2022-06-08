@@ -373,6 +373,42 @@ mod tests {
         );
 
         assert_encode_packet(
+            &Packet::Connect(Box::new(Connect {
+                clean_start: false,
+                keep_alive: 60,
+                client_id: ByteString::from_static("12345"),
+                last_will: Some(LastWill {
+                    qos: QoS::ExactlyOnce,
+                    retain: true,
+                    topic: ByteString::from_static("topic"),
+                    message: Bytes::from_static(b"message"),
+                    will_delay_interval_sec: Some(5),
+                    correlation_data: Some(Bytes::from_static(b"correlationData")),
+                    message_expiry_interval: NonZeroU32::new(7),
+                    content_type: Some(ByteString::from_static("contentType")),
+                    user_properties: vec![
+                        (ByteString::from_static("name"), ByteString::from_static("value"))
+                    ],
+                    is_utf8_payload: Some(true),
+                    response_topic: Some(ByteString::from_static("responseTopic")),
+                }),
+                username: None,
+                password: None,
+                session_expiry_interval_secs: None,
+                auth_method: None,
+                auth_data: None,
+                request_problem_info: true,
+                request_response_info: false,
+                receive_max: None,
+                topic_alias_max: 0,
+                user_properties: vec![],
+                max_packet_size: None,
+            })),
+            &b"\x10\x6D\x00\x04MQTT\x05\x34\x00\x3C\x00\x00\
+\x0512345\x4A\x18\0\0\0\x05\x01\x01\x02\0\0\0\x07\x03\0\x0bcontentType\x08\x00\x0dresponseTopic\x09\0\x0fcorrelationData\x26\0\x04name\0\x05value\x00\x05topic\x00\x07message"[..],
+        );
+
+        assert_encode_packet(
             &Packet::Disconnect(Disconnect {
                 reason_code: DisconnectReasonCode::NormalDisconnection,
                 session_expiry_interval_secs: None,
