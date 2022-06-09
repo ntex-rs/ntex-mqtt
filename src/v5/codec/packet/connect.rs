@@ -320,6 +320,13 @@ impl EncodeLtd for Connect {
             let prop_len = will.properties_len();
             utils::write_variable_length(prop_len as u32, buf); // safe: whole message size is checked for max already
 
+            encode_property(&will.will_delay_interval_sec, pt::WILL_DELAY_INT, buf)?;
+            encode_property(&will.is_utf8_payload, pt::UTF8_PAYLOAD, buf)?;
+            encode_property(&will.message_expiry_interval, pt::MSG_EXPIRY_INT, buf)?;
+            encode_property(&will.content_type, pt::CONTENT_TYPE, buf)?;
+            encode_property(&will.response_topic, pt::RESP_TOPIC, buf)?;
+            encode_property(&will.correlation_data, pt::CORR_DATA, buf)?;
+            will.user_properties.encode(buf)?;
             will.topic.encode(buf)?;
             will.message.encode(buf)?;
         }
