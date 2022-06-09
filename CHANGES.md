@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.7] - 2022-xx-xx
+
+* v5: Encoding missing will properties: will_delay_interval_sec, is_utf8_payload, message_expiry_interval, content_type, response_topic, correlation_data
+
 ## [0.8.6] - 2022-05-05
 
 * v5: Account for property type byte in property length when encoding Subscribe packet
