@@ -2,7 +2,7 @@
 
 ## [0.8.7] - 2022-xx-xx
 
-* v5: Encoding missing will properties: will_delay_interval_sec, is_utf8_payload, message_expiry_interval, content_type, response_topic, correlation_data
+* v5: Encoding missing will properties: will_delay_interval_sec, is_utf8_payload, message_expiry_interval, content_type, response_topic, correlation_data, user_properties
 
 ## [0.8.6] - 2022-05-05
 
