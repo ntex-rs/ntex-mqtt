@@ -214,6 +214,19 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
+            DispatchItem::Item(codec::Packet::PublishRelease(pubrel)) => {
+                if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish2(pubrel.clone())) {
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(err),
+                        &self.inner,
+                    )))
+                } else {
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::pubrel(pubrel),
+                        &self.inner,
+                    )))
+                }
+            }
             DispatchItem::Item(codec::Packet::SubscribeAck(packet)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Subscribe(packet)) {
                     Either::Right(Either::Right(ControlResponse::new(

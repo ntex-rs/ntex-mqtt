@@ -5,7 +5,7 @@ use ntex::time::{timeout, Millis};
 use ntex::util::{poll_fn, ByteString, Bytes, Either, Ready};
 
 use super::codec;
-use super::error::{ProtocolError, PublishQos1Error, SendPacketError};
+use super::error::{ProtocolError, PublishQos1Error, PublishQos2Error, SendPacketError};
 use super::shared::{Ack, AckType, MqttShared};
 use crate::types::QoS;
 
@@ -352,6 +352,147 @@ impl PublishBuilder {
                     },
                     Err(_) => {
                         log::warn!("Publish (QoS1) Timeout! Try again!");
+                        pkt.dup = true;
+                    }
+                }
+            }
+        })
+    }
+
+    /// Send publish packet with QoS 2
+    pub fn send_exactly_once(
+        self,
+        timeout: Millis,
+    ) -> impl Future<Output = Result<codec::PublishAck2, PublishQos2Error>> {
+        let shared = self.shared;
+        let mut packet = self.packet;
+        packet.qos = QoS::ExactlyOnce;
+
+        if !shared.io.is_closed() {
+            // handle client receive maximum
+            if !shared.has_credit() {
+                let (tx, rx) = shared.pool.waiters.channel();
+                shared.with_queues(|q| q.waiters.push_back(tx));
+
+                return Either::Left(Either::Right(async move {
+                    if rx.await.is_err() {
+                        return Err(PublishQos2Error::Disconnected);
+                    }
+                    Self::send_exactly_once_inner(packet, shared, timeout).await
+                }));
+            }
+            Either::Right(Self::send_exactly_once_inner(packet, shared, timeout))
+        } else {
+            Either::Left(Either::Left(Ready::Err(PublishQos2Error::Disconnected)))
+        }
+    }
+
+    fn send_exactly_once_inner(
+        mut packet: codec::Publish,
+        shared: Rc<MqttShared>,
+        _timeout: Millis,
+    ) -> impl Future<Output = Result<codec::PublishAck2, PublishQos2Error>> {
+        // packet id
+        let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
+        if idx == 0 {
+            idx = shared.next_id();
+            packet.packet_id = NonZeroU16::new(idx);
+        }
+
+        let rx = shared.with_queues(|queues| {
+            // publish ack channel
+            let (tx, rx) = shared.pool.queue.channel();
+
+            if queues.inflight.contains_key(&idx) {
+                return Err(PublishQos2Error::PacketIdInUse(idx));
+            }
+            queues.inflight.insert(idx, (tx, AckType::Publish));
+            queues.inflight_order.push_back(idx);
+            Ok(rx)
+        });
+
+        let rx = match rx {
+            Ok(rx) => rx,
+            Err(e) => return Either::Left(Ready::Err(e)),
+        };
+
+        // wait ack from peer
+        Either::Right(async move {
+            let mut pkt = packet.clone();
+
+            // send publish to client
+            loop {
+                log::trace!("Publish (QoS2) to {:#?}", &pkt);
+
+                if let Err(err) =
+                    shared.io.encode(codec::Packet::Publish(pkt.clone()), &shared.codec)
+                {
+                    return Err(PublishQos2Error::Encode(err));
+                }
+
+                match timeout(_timeout, poll_fn(|cx| rx.poll_recv(cx))).await {
+                    Ok(resp) => match resp {
+                        Ok(pkt) => {
+                            let pkt = pkt.publish();
+
+                            let pkt2 = codec::PublishAck2 {
+                                packet_id: pkt.packet_id,
+                                reason_code: codec::PublishAck2Reason::Success,
+                                properties: pkt.properties,
+                                reason_string: pkt.reason_string,
+                            };
+
+                            let rx = shared.with_queues(|queues| {
+                                // publish ack channel
+                                let (tx, rx) = shared.pool.queue.channel();
+
+                                if queues.inflight.contains_key(&idx) {
+                                    return Err(PublishQos2Error::PacketIdInUse(idx));
+                                }
+                                queues.inflight.insert(idx, (tx, AckType::Publish2));
+                                queues.inflight_order.push_back(idx);
+                                Ok(rx)
+                            });
+                            let rx = match rx {
+                                Ok(rx) => rx,
+                                Err(_) => return Err(PublishQos2Error::PacketIdInUse(idx)),
+                            };
+
+                            loop {
+                                if let Err(err) = shared.io.encode(
+                                    codec::Packet::PublishRelease(pkt2.clone()),
+                                    &shared.codec,
+                                ) {
+                                    return Err(PublishQos2Error::Encode(err));
+                                }
+
+                                match timeout(_timeout, poll_fn(|cx| rx.poll_recv(cx))).await {
+                                    Ok(resp) => match resp {
+                                        Ok(pkt) => {
+                                            let pkt = pkt.publish2();
+                                            match pkt.reason_code {
+                                                codec::PublishAck2Reason::Success => {
+                                                    return Ok(pkt)
+                                                }
+                                                _ => return Err(PublishQos2Error::Fail(pkt)),
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::error!("{:#?}", e);
+                                            return Err(PublishQos2Error::Disconnected);
+                                        }
+                                    },
+                                    Err(_) => log::warn!("Publish (QoS2) Timeout! Try again!"),
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("{:#?}", e);
+                            return Err(PublishQos2Error::Disconnected);
+                        }
+                    },
+                    Err(_) => {
+                        log::warn!("Publish (QoS2) Timeout! Try again!");
                         pkt.dup = true;
                     }
                 }

@@ -260,6 +260,16 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
+            DispatchItem::Item(codec::Packet::PublishComplete(pubcomp)) => {
+                if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish2(pubcomp)) {
+                    Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(err),
+                        &self.inner,
+                    )))
+                } else {
+                Either::Right(Either::Left(Ready::Ok(None)))
+                }
+            }
             DispatchItem::Item(codec::Packet::Auth(pkt)) => Either::Right(Either::Right(
                 ControlResponse::new(ControlMessage::auth(pkt), &self.inner),
             )),

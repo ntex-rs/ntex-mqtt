@@ -20,11 +20,17 @@ pub enum ControlMessage<E> {
     Closed(Closed),
     /// Peer is gone
     PeerGone(PeerGone),
+    /// Pubrel
+    Pubrel(Pubrel),
 }
 
 impl<E> ControlMessage<E> {
     pub(super) fn publish(pkt: codec::Publish) -> Self {
         ControlMessage::Publish(Publish(pkt))
+    }
+
+    pub(super) fn pubrel(pkt: codec::PublishAck2) -> Self {
+        ControlMessage::Pubrel(Pubrel(pkt))
     }
 
     pub(super) fn dis(pkt: codec::Disconnect) -> Self {
@@ -99,6 +105,56 @@ impl Publish {
                     reason_string,
                 })
             }),
+            disconnect: false,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Pubrel(codec::PublishAck2);
+
+impl Pubrel {
+    /// Returns reference to publish packet
+    pub fn packet(&self) -> &codec::PublishAck2 {
+        &self.0
+    }
+
+    /// Returns reference to publish packet
+    pub fn packet_mut(&mut self) -> &mut codec::PublishAck2 {
+        &mut self.0
+    }
+
+    pub fn ack_qos0(self) -> ControlResult {
+        ControlResult { packet: None, disconnect: false }
+    }
+
+    pub fn ack(self, reason_code: codec::PublishAck2Reason) -> ControlResult {
+        let packet_id = self.0.packet_id;
+        ControlResult {
+            packet: Some(codec::Packet::PublishComplete(codec::PublishAck2 {
+                packet_id,
+                reason_code,
+                properties: codec::UserProperties::new(),
+                reason_string: None,
+            })),
+            disconnect: false,
+        }
+    }
+
+    pub fn ack_with(
+        self,
+        reason_code: codec::PublishAck2Reason,
+        properties: codec::UserProperties,
+        reason_string: Option<ByteString>,
+    ) -> ControlResult {
+        let packet_id = self.0.packet_id;
+        ControlResult {
+            packet: Some(codec::Packet::PublishComplete(codec::PublishAck2 {
+                packet_id,
+                reason_code,
+                properties,
+                reason_string,
+            })),
             disconnect: false,
         }
     }

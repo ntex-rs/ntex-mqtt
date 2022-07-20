@@ -105,12 +105,14 @@ impl Decoder for MqttShared {
 #[derive(Copy, Clone)]
 pub(super) enum AckType {
     Publish,
+    Publish2,
     Subscribe,
     Unsubscribe,
 }
 
 pub(super) enum Ack {
     Publish(codec::PublishAck),
+    Publish2(codec::PublishAck2),
     Subscribe(codec::SubscribeAck),
     Unsubscribe(codec::UnsubscribeAck),
 }
@@ -119,6 +121,7 @@ impl Ack {
     pub(super) fn packet_type(&self) -> u8 {
         match self {
             Ack::Publish(_) => packet_type::PUBACK,
+            Ack::Publish2(_) => packet_type::PUBCOMP,
             Ack::Subscribe(_) => packet_type::SUBACK,
             Ack::Unsubscribe(_) => packet_type::UNSUBACK,
         }
@@ -127,6 +130,7 @@ impl Ack {
     pub(super) fn packet_id(&self) -> u16 {
         match self {
             Ack::Publish(ref pkt) => pkt.packet_id.get(),
+            Ack::Publish2(ref pkt) => pkt.packet_id.get(),
             Ack::Subscribe(ref pkt) => pkt.packet_id.get(),
             Ack::Unsubscribe(ref pkt) => pkt.packet_id.get(),
         }
@@ -134,6 +138,14 @@ impl Ack {
 
     pub(super) fn publish(self) -> codec::PublishAck {
         if let Ack::Publish(pkt) = self {
+            pkt
+        } else {
+            panic!()
+        }
+    }
+
+    pub(super) fn publish2(self) -> codec::PublishAck2 {
+        if let Ack::Publish2(pkt) = self {
             pkt
         } else {
             panic!()
@@ -159,6 +171,7 @@ impl Ack {
     pub(super) fn is_match(&self, tp: AckType) -> bool {
         match (self, tp) {
             (Ack::Publish(_), AckType::Publish) => true,
+            (Ack::Publish2(_), AckType::Publish2) => true,
             (Ack::Subscribe(_), AckType::Subscribe) => true,
             (Ack::Unsubscribe(_), AckType::Unsubscribe) => true,
             (_, _) => false,
@@ -170,6 +183,7 @@ impl AckType {
     pub(super) fn name(&self) -> &'static str {
         match self {
             AckType::Publish => "PublishAck",
+            AckType::Publish2 => "PublishAck2",
             AckType::Subscribe => "SubscribeAck",
             AckType::Unsubscribe => "UnsubscribeAck",
         }
