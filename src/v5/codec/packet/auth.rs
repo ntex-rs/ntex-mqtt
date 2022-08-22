@@ -6,7 +6,7 @@ use crate::utils::{self, Decode, Property};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 
 /// AUTH message
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Auth {
     pub reason_code: AuthReasonCode,
     pub auth_method: Option<ByteString>,

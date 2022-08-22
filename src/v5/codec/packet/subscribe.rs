@@ -9,7 +9,7 @@ use crate::utils::{self, write_variable_length, Decode, Encode};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 
 /// Represents SUBSCRIBE packet
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Subscribe {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
@@ -20,7 +20,7 @@ pub struct Subscribe {
     pub topic_filters: Vec<(ByteString, SubscriptionOptions)>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct SubscriptionOptions {
     pub qos: QoS,
     pub no_local: bool,
@@ -37,7 +37,7 @@ prim_enum! {
 }
 
 /// Represents SUBACK packet
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SubscribeAck {
     pub packet_id: NonZeroU16,
     pub properties: UserProperties,
@@ -47,7 +47,7 @@ pub struct SubscribeAck {
 }
 
 /// Represents UNSUBSCRIBE packet
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Unsubscribe {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
@@ -57,7 +57,7 @@ pub struct Unsubscribe {
 }
 
 /// Represents UNSUBACK packet
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct UnsubscribeAck {
     /// Packet Identifier
     pub packet_id: NonZeroU16,

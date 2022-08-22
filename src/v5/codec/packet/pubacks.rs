@@ -9,7 +9,7 @@ use crate::v5::codec::{encode::*, UserProperties};
 const HEADER_LEN: u32 = 2 + 1; // packet id + reason code
 
 /// PUBACK/PUBREC message content
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct PublishAck {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
@@ -19,7 +19,7 @@ pub struct PublishAck {
 }
 
 /// PUBREL/PUBCOMP message content
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct PublishAck2 {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
