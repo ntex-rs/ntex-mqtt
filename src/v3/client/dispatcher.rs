@@ -4,7 +4,7 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 
 use ntex::io::DispatchItem;
 use ntex::service::Service;
-use ntex::util::{buffer::BufferService, inflight::InFlightService, Either, HashSet, Ready};
+use ntex::util::{inflight::InFlightService, Either, HashSet, Ready};
 
 use crate::v3::shared::{Ack, MqttShared};
 use crate::v3::{codec, control::ControlResultKind, publish::Publish, sink::MqttSink};
@@ -24,16 +24,11 @@ where
     T: Service<Publish, Response = Either<(), Publish>, Error = E> + 'static,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
 {
-    // limit inflight control messages
-    let control = BufferService::new(
-        16,
-        || MqttError::<E>::Disconnected(None),
-        // limit number of in-flight messages
-        InFlightService::new(1, control.map_err(MqttError::Service)),
-    );
-
     // limit number of in-flight messages
-    InFlightService::new(inflight, Dispatcher::new(sink, publish, control))
+    InFlightService::new(
+        inflight,
+        Dispatcher::new(sink, publish, control.map_err(MqttError::Service)),
+    )
 }
 
 /// Mqtt protocol dispatcher
