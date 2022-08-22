@@ -8,14 +8,14 @@ use crate::error::{DecodeError, EncodeError};
 use crate::types::{FixedHeader, QoS};
 use crate::utils::decode_variable_length;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// Mqtt v3.1.1 protocol codec
 pub struct Codec {
     state: Cell<DecodeState>,
     max_size: Cell<u32>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum DecodeState {
     FrameHeader,
     Frame(FixedHeader),

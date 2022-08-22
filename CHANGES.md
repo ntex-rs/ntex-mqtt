@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.8] - 2022-08-22
+
+* Allow to get inner io stream and codec for negotiated clients
+
 ## [0.8.7] - 2022-06-09
 
 * v5: Encoding missing will properties: will_delay_interval_sec, is_utf8_payload, message_expiry_interval, content_type, response_topic, correlation_data, user_properties
