@@ -8,8 +8,7 @@ use ntex::util::{Either, Ready};
 
 use crate::error::MqttError;
 use crate::io::Dispatcher;
-use crate::v3::{shared::MqttShared, sink::MqttSink};
-use crate::v3::{ControlResult, Publish};
+use crate::v3::{codec, shared::MqttShared, sink::MqttSink, ControlResult, Publish};
 
 use super::control::ControlMessage;
 use super::dispatcher::create_dispatcher;
@@ -135,6 +134,11 @@ impl Client {
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(self.disconnect_timeout)
             .await
+    }
+
+    /// Get negotiated io stream and codec
+    pub fn into_inner(self) -> (IoBoxed, codec::Codec) {
+        (self.io, self.shared.codec.clone())
     }
 }
 
@@ -266,7 +270,7 @@ async fn keepalive(sink: MqttSink, timeout: Seconds) {
     loop {
         sleep(keepalive).await;
 
-        if !sink.ping() {
+        if !sink.ping() || !sink.is_open() {
             // connection is closed
             log::debug!("mqtt client connection is closed, stopping keep-alive task");
             break;

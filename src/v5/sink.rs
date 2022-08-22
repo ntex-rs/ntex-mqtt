@@ -21,11 +21,13 @@ impl MqttSink {
         MqttSink(state)
     }
 
-    /// Check connection status
+    #[inline]
+    /// Check if io stream is open
     pub fn is_open(&self) -> bool {
         !self.0.io.is_closed()
     }
 
+    #[inline]
     /// Get client's receive credit
     pub fn credit(&self) -> usize {
         let cap = self.0.cap.get();
@@ -53,6 +55,7 @@ impl MqttSink {
         }
     }
 
+    #[inline]
     /// Close mqtt connection with default Disconnect message
     pub fn close(&self) {
         if self.is_open() {
@@ -68,6 +71,7 @@ impl MqttSink {
         });
     }
 
+    #[inline]
     /// Close mqtt connection
     pub fn close_with_reason(&self, pkt: codec::Disconnect) {
         if self.is_open() {
@@ -146,6 +150,7 @@ impl MqttSink {
         })
     }
 
+    #[inline]
     /// Create publish packet builder
     pub fn publish<U>(&self, topic: U, payload: Bytes) -> PublishBuilder
     where
@@ -165,6 +170,7 @@ impl MqttSink {
         }
     }
 
+    #[inline]
     /// Create subscribe packet builder
     pub fn subscribe(&self, id: Option<NonZeroU32>) -> SubscribeBuilder {
         SubscribeBuilder {
@@ -179,6 +185,7 @@ impl MqttSink {
         }
     }
 
+    #[inline]
     /// Create unsubscribe packet builder
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
         UnsubscribeBuilder {
@@ -205,6 +212,7 @@ pub struct PublishBuilder {
 }
 
 impl PublishBuilder {
+    #[inline]
     /// Set packet id.
     ///
     /// Note: if packet id is not set, it gets generated automatically.
@@ -218,18 +226,21 @@ impl PublishBuilder {
         self
     }
 
+    #[inline]
     /// This might be re-delivery of an earlier attempt to send the Packet.
     pub fn dup(mut self, val: bool) -> Self {
         self.packet.dup = val;
         self
     }
 
+    #[inline]
     /// Set retain flag
     pub fn retain(mut self) -> Self {
         self.packet.retain = true;
         self
     }
 
+    #[inline]
     /// Set publish packet properties
     pub fn properties<F>(mut self, f: F) -> Self
     where
@@ -239,6 +250,7 @@ impl PublishBuilder {
         self
     }
 
+    #[inline]
     /// Set publish packet properties
     pub fn set_properties<F>(&mut self, f: F)
     where
@@ -247,6 +259,7 @@ impl PublishBuilder {
         f(&mut self.packet.properties);
     }
 
+    #[inline]
     /// Send publish packet with QoS 0
     pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
         let packet = self.packet;
@@ -348,6 +361,7 @@ pub struct SubscribeBuilder {
 }
 
 impl SubscribeBuilder {
+    #[inline]
     /// Set packet id.
     ///
     /// panics if id is 0
@@ -359,6 +373,7 @@ impl SubscribeBuilder {
         self
     }
 
+    #[inline]
     /// Add topic filter
     pub fn topic_filter(
         mut self,
@@ -369,6 +384,7 @@ impl SubscribeBuilder {
         self
     }
 
+    #[inline]
     /// Add user property
     pub fn property(mut self, key: ByteString, value: ByteString) -> Self {
         self.packet.user_properties.push((key, value));
@@ -432,6 +448,7 @@ pub struct UnsubscribeBuilder {
 }
 
 impl UnsubscribeBuilder {
+    #[inline]
     /// Set packet id.
     ///
     /// panics if id is 0
@@ -443,12 +460,14 @@ impl UnsubscribeBuilder {
         self
     }
 
+    #[inline]
     /// Add topic filter
     pub fn topic_filter(mut self, filter: ByteString) -> Self {
         self.packet.topic_filters.push(filter);
         self
     }
 
+    #[inline]
     /// Add user property
     pub fn property(mut self, key: ByteString, value: ByteString) -> Self {
         self.packet.user_properties.push((key, value));

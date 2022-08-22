@@ -44,7 +44,7 @@ impl From<Either<DecodeError, std::io::Error>> for ClientError {
     }
 }
 
-#[derive(Debug, Display, PartialEq)]
+#[derive(Debug, Display, PartialEq, Eq)]
 pub enum PublishQos1Error {
     /// Negative ack from peer
     #[display(fmt = "Negative ack: {:?}", _0)]

@@ -67,7 +67,7 @@ pub(super) mod packet_type {
     pub(crate) const AUTH: u8 = 0b1111_0000;
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) struct FixedHeader {
     /// Fixed Header byte
     pub(crate) first_byte: u8,

@@ -24,7 +24,7 @@ pub use pubacks::*;
 pub use publish::*;
 pub use subscribe::*;
 
-#[derive(Debug, PartialEq, Clone, From)]
+#[derive(Debug, PartialEq, Eq, Clone, From)]
 /// MQTT Control Packets
 pub enum Packet {
     /// Client request to connect to Server

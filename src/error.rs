@@ -91,7 +91,7 @@ impl<E> From<Either<EncodeError, io::Error>> for MqttError<E> {
     }
 }
 
-#[derive(Debug, Display, From)]
+#[derive(Debug, Display, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum DecodeError {
     InvalidProtocol,
     InvalidLength,
@@ -119,28 +119,7 @@ pub enum EncodeError {
 
 impl error::Error for EncodeError {}
 
-impl PartialEq for DecodeError {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (DecodeError::InvalidProtocol, DecodeError::InvalidProtocol) => true,
-            (DecodeError::InvalidLength, DecodeError::InvalidLength) => true,
-            (DecodeError::UnsupportedProtocolLevel, DecodeError::UnsupportedProtocolLevel) => {
-                true
-            }
-            (DecodeError::ConnectReservedFlagSet, DecodeError::ConnectReservedFlagSet) => true,
-            (DecodeError::ConnAckReservedFlagSet, DecodeError::ConnAckReservedFlagSet) => true,
-            (DecodeError::InvalidClientId, DecodeError::InvalidClientId) => true,
-            (DecodeError::UnsupportedPacketType, DecodeError::UnsupportedPacketType) => true,
-            (DecodeError::PacketIdRequired, DecodeError::PacketIdRequired) => true,
-            (DecodeError::MaxSizeExceeded, DecodeError::MaxSizeExceeded) => true,
-            (DecodeError::MalformedPacket, DecodeError::MalformedPacket) => true,
-            (DecodeError::Utf8Error, DecodeError::Utf8Error) => true,
-            _ => false,
-        }
-    }
-}
-
-#[derive(Debug, Display, PartialEq)]
+#[derive(Debug, Display, PartialEq, Eq, Copy, Clone)]
 pub enum SendPacketError {
     /// Encoder error
     Encode(EncodeError),

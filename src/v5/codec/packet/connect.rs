@@ -7,7 +7,7 @@ use crate::types::{ConnectFlags, QoS, MQTT, MQTT_LEVEL_5, WILL_QOS_SHIFT};
 use crate::utils::{self, Decode, Encode, Property};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 /// Connect packet content
 pub struct Connect {
     /// the handling of the Session state.
@@ -35,7 +35,7 @@ pub struct Connect {
     pub password: Option<Bytes>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 /// Connection Will
 pub struct LastWill {
     /// the QoS level to be used when publishing the Will Message.

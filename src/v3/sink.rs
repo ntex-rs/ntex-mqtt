@@ -19,6 +19,13 @@ impl MqttSink {
         MqttSink(state)
     }
 
+    #[inline]
+    /// Check if io stream is open
+    pub fn is_open(&self) -> bool {
+        !self.0.io.is_closed()
+    }
+
+    #[inline]
     /// Get client receive credit
     pub fn credit(&self) -> usize {
         self.0.cap.get() - self.0.with_queues(|q| q.inflight.len())
@@ -45,6 +52,7 @@ impl MqttSink {
         }
     }
 
+    #[inline]
     /// Close mqtt connection
     pub fn close(&self) {
         self.0.io.close();
@@ -54,6 +62,7 @@ impl MqttSink {
         });
     }
 
+    #[inline]
     /// Force close mqtt connection. mqtt dispatcher does not wait for uncompleted
     /// responses, but it flushes buffers.
     pub fn force_close(&self) {
@@ -64,6 +73,7 @@ impl MqttSink {
         });
     }
 
+    #[inline]
     /// Send ping
     pub(super) fn ping(&self) -> bool {
         self.0.io.encode(codec::Packet::PingRequest, &self.0.codec).is_ok()
@@ -87,6 +97,7 @@ impl MqttSink {
         }
     }
 
+    #[inline]
     /// Create subscribe packet builder
     ///
     /// panics if id is 0
@@ -94,6 +105,7 @@ impl MqttSink {
         SubscribeBuilder { id: 0, topic_filters: Vec::new(), shared: self.0.clone() }
     }
 
+    #[inline]
     /// Create unsubscribe packet builder
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
         UnsubscribeBuilder { id: 0, topic_filters: Vec::new(), shared: self.0.clone() }
@@ -158,6 +170,7 @@ pub struct PublishBuilder {
 }
 
 impl PublishBuilder {
+    #[inline]
     /// Set packet id.
     ///
     /// Note: if packet id is not set, it gets generated automatically.
@@ -171,17 +184,21 @@ impl PublishBuilder {
         self
     }
 
-    /// this might be re-delivery of an earlier attempt to send the Packet.
+    #[inline]
+    /// This might be re-delivery of an earlier attempt to send the Packet.
     pub fn dup(mut self, val: bool) -> Self {
         self.packet.dup = val;
         self
     }
 
+    #[inline]
+    /// Set retain flag
     pub fn retain(mut self) -> Self {
         self.packet.retain = true;
         self
     }
 
+    #[inline]
     /// Send publish packet with QoS 0
     pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
         let packet = self.packet;
@@ -271,6 +288,7 @@ pub struct SubscribeBuilder {
 }
 
 impl SubscribeBuilder {
+    #[inline]
     /// Set packet id.
     ///
     /// panics if id is 0
@@ -282,6 +300,7 @@ impl SubscribeBuilder {
         self
     }
 
+    #[inline]
     /// Add topic filter
     pub fn topic_filter(mut self, filter: ByteString, qos: codec::QoS) -> Self {
         self.topic_filters.push((filter, qos));
@@ -350,6 +369,7 @@ pub struct UnsubscribeBuilder {
 }
 
 impl UnsubscribeBuilder {
+    #[inline]
     /// Set packet id.
     ///
     /// panics if id is 0
@@ -361,6 +381,7 @@ impl UnsubscribeBuilder {
         self
     }
 
+    #[inline]
     /// Add topic filter
     pub fn topic_filter(mut self, filter: ByteString) -> Self {
         self.topic_filters.push(filter);

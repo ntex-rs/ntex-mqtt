@@ -8,7 +8,7 @@ use crate::error::{DecodeError, EncodeError};
 use crate::types::{FixedHeader, MAX_PACKET_SIZE};
 use crate::utils::decode_variable_length;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Codec {
     state: Cell<DecodeState>,
     max_in_size: Cell<u32>,

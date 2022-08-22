@@ -5,7 +5,7 @@ fn is_metadata<T: AsRef<str>>(s: T) -> bool {
     s.as_ref().starts_with('$')
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TopicError {
     InvalidTopic,
     InvalidLevel,

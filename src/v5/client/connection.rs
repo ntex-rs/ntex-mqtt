@@ -245,6 +245,11 @@ where
             .disconnect_timeout(self.disconnect_timeout)
             .await
     }
+
+    /// Get negotiated io stream and codec
+    pub fn into_inner(self) -> (IoBoxed, codec::Codec) {
+        (self.io, self.shared.codec.clone())
+    }
 }
 
 fn dispatch<Err, PErr>(
@@ -313,7 +318,7 @@ async fn keepalive(sink: MqttSink, timeout: Seconds) {
     loop {
         sleep(keepalive).await;
 
-        if !sink.ping() {
+        if !sink.ping() || !sink.is_open() {
             // connection is closed
             log::debug!("mqtt client connection is closed, stopping keep-alive task");
             break;

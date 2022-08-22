@@ -7,7 +7,7 @@ use crate::utils::{self, Decode, Encode, Property};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 
 /// Connect acknowledgment packet
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ConnectAck {
     /// enables a Client to establish whether the Client and Server have a consistent view
     /// about whether there is already stored Session state.
