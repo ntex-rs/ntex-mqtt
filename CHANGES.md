@@ -4,6 +4,10 @@
 
 * Allow to get inner io stream and codec for negotiated clients
 
+* Remove inflight limit for client's control service
+
+* v3: Add Debug trait for client's ControlMessage
+
 ## [0.8.7] - 2022-06-09
 
 * v5: Encoding missing will properties: will_delay_interval_sec, is_utf8_payload, message_expiry_interval, content_type, response_topic, correlation_data, user_properties
