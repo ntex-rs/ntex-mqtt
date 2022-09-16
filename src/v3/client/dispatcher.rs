@@ -138,9 +138,15 @@ where
             DispatchItem::Item(codec::Packet::PingRequest) => {
                 Either::Right(Either::Left(Ready::Ok(Some(codec::Packet::PingResponse))))
             }
-            DispatchItem::Item(codec::Packet::Disconnect) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::dis(), &self.inner),
-            )),
+            DispatchItem::Item(codec::Packet::Disconnect) => {
+                Either::Right(Either::Left(Ready::Err(
+                    ProtocolError::Unexpected(
+                        packet_type::DISCONNECT,
+                        "Disconnect packet is not allowed",
+                    )
+                    .into(),
+                )))
+            }
             DispatchItem::Item(codec::Packet::SubscribeAck { packet_id, status }) => {
                 if let Err(e) = self.sink.pkt_ack(Ack::Subscribe { packet_id, status }) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
@@ -159,7 +165,7 @@ where
                 Either::Right(Either::Left(Ready::Err(
                     ProtocolError::Unexpected(
                         packet_type::SUBSCRIBE,
-                        "Subscribe packet is not supported",
+                        "Subscribe packet is not allowed",
                     )
                     .into(),
                 )))
@@ -168,7 +174,7 @@ where
                 Either::Right(Either::Left(Ready::Err(
                     ProtocolError::Unexpected(
                         packet_type::UNSUBSCRIBE,
-                        "Unsubscribe packet is not supported",
+                        "Unsubscribe packet is not allowed",
                     )
                     .into(),
                 )))
@@ -302,7 +308,7 @@ where
                 ControlResultKind::Unsubscribe(_) => unreachable!(),
                 ControlResultKind::Disconnect => {
                     this.inner.sink.close();
-                    Some(codec::Packet::Disconnect)
+                    None
                 }
                 ControlResultKind::Closed | ControlResultKind::Nothing => None,
             },

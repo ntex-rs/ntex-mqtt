@@ -44,6 +44,7 @@ pub struct MqttShared {
     pub(super) inflight_idx: Cell<u16>,
     pub(super) pool: Rc<MqttSinkPool>,
     pub(super) codec: codec::Codec,
+    pub(super) client: bool,
 }
 
 pub(super) struct MqttSharedQueues {
@@ -57,12 +58,14 @@ impl MqttShared {
         io: IoRef,
         codec: codec::Codec,
         cap: usize,
+        client: bool,
         pool: Rc<MqttSinkPool>,
     ) -> Self {
         Self {
             io,
             pool,
             codec,
+            client,
             cap: Cell::new(cap),
             queues: RefCell::new(MqttSharedQueues {
                 inflight: HashMap::default(),

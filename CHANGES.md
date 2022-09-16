@@ -1,5 +1,11 @@
 # Changes
 
+## [0.8.9] - 2022-09-16
+
+* v3: Send disconnect packet on sink close
+
+* v3: Treat disconnect packet as error on client side
+
 ## [0.8.8] - 2022-08-22
 
 * Allow to get inner io stream and codec for negotiated clients

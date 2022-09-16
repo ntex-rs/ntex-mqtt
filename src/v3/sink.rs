@@ -55,6 +55,9 @@ impl MqttSink {
     #[inline]
     /// Close mqtt connection
     pub fn close(&self) {
+        if self.0.client {
+            let _ = self.0.io.encode(codec::Packet::Disconnect, &self.0.codec);
+        }
         self.0.io.close();
         self.0.with_queues(|q| {
             q.inflight.clear();

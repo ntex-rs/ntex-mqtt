@@ -321,6 +321,7 @@ where
             io.get_ref(),
             mqtt::Codec::default().max_size(self.max_size),
             16,
+            false,
             self.pool.clone(),
         ));
         let handshake_timeout = self.handshake_timeout;

@@ -10,6 +10,8 @@ pub enum ControlMessage<E> {
     /// Unhandled publish packet
     Publish(Publish),
     /// Disconnect packet
+    #[doc(hidden)]
+    #[deprecated(since = "0.8.9", note = "Disconnect is not allowed on client side")]
     Disconnect(Disconnect),
     /// Connection closed
     Closed(Closed),
@@ -24,10 +26,6 @@ pub enum ControlMessage<E> {
 impl<E> ControlMessage<E> {
     pub(super) fn publish(pkt: codec::Publish) -> Self {
         ControlMessage::Publish(Publish(pkt))
-    }
-
-    pub(super) fn dis() -> Self {
-        ControlMessage::Disconnect(Disconnect)
     }
 
     pub(super) fn closed(is_error: bool) -> Self {
@@ -46,6 +44,7 @@ impl<E> ControlMessage<E> {
         ControlMessage::PeerGone(PeerGone(err))
     }
 
+    /// Initiate clean disconnect
     pub fn disconnect(&self) -> ControlResult {
         ControlResult { result: ControlResultKind::Disconnect }
     }

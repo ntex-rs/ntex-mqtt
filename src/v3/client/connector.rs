@@ -229,7 +229,7 @@ where
                     ClientError::Disconnected(None)
                 })?;
 
-            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, max_send, pool));
+            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, max_send, true, pool));
 
             match packet {
                 codec::Packet::ConnectAck { session_present, return_code } => {
