@@ -281,6 +281,46 @@ async fn test_disconnect() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_client_disconnect() -> std::io::Result<()> {
+    let disconnect = Arc::new(AtomicBool::new(false));
+    let disconnect2 = disconnect.clone();
+
+    let srv = server::test_server(move || {
+        let disconnect = disconnect2.clone();
+
+        MqttServer::new(handshake)
+            .publish(ntex::service::fn_factory_with_config(|_: Session<St>| {
+                Ready::Ok(ntex::service::fn_service(move |_: Publish| async { Ok(()) }))
+            }))
+            .control(move |msg| match msg {
+                ControlMessage::Disconnect(msg) => {
+                    disconnect.store(true, Relaxed);
+                    Ready::Ok(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_ok());
+    sink.close();
+    sleep(Millis(50)).await;
+    assert!(disconnect.load(Relaxed));
+
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_handle_incoming() -> std::io::Result<()> {
     let publish = Arc::new(AtomicBool::new(false));
     let publish2 = publish.clone();
