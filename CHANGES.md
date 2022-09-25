@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.10] - 2022-09-25
+
+* Add .into_inner() client's helper for publish control message
+
 ## [0.8.9] - 2022-09-16
 
 * v3: Send disconnect packet on sink close

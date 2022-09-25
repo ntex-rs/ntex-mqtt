@@ -102,6 +102,26 @@ impl Publish {
             disconnect: false,
         }
     }
+
+    pub fn into_inner(
+        self,
+        reason_code: codec::PublishAckReason,
+    ) -> (ControlResult, codec::Publish) {
+        (
+            ControlResult {
+                packet: self.0.packet_id.map(|packet_id| {
+                    codec::Packet::PublishAck(codec::PublishAck {
+                        packet_id,
+                        reason_code,
+                        properties: codec::UserProperties::new(),
+                        reason_string: None,
+                    })
+                }),
+                disconnect: false,
+            },
+            self.0,
+        )
+    }
 }
 
 #[derive(Debug)]

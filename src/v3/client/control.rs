@@ -71,4 +71,12 @@ impl Publish {
             ControlResult { result: ControlResultKind::Nothing }
         }
     }
+
+    pub fn into_inner(self) -> (ControlResult, codec::Publish) {
+        if let Some(id) = self.0.packet_id {
+            (ControlResult { result: ControlResultKind::PublishAck(id) }, self.0)
+        } else {
+            (ControlResult { result: ControlResultKind::Nothing }, self.0)
+        }
+    }
 }
