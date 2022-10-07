@@ -14,12 +14,13 @@ use super::control::{ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
 use super::shared::{Ack, MqttShared};
 use super::sink::MqttSink;
-use super::{codec, codec::EncodeLtd, Session};
+use super::{codec, codec::EncodeLtd, QoS, Session};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
+    max_qos: QoS,
     max_inflight_size: usize,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
@@ -60,6 +61,7 @@ where
                 max_inflight_size,
                 Dispatcher::<_, _, E>::new(
                     cfg.sink().clone(),
+                    max_qos,
                     max_receive as usize,
                     max_topic_alias,
                     publish,
@@ -85,6 +87,7 @@ pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     sink: MqttSink,
     publish: T,
     shutdown: RefCell<Option<Pin<Box<C::Future>>>>,
+    max_qos: QoS,
     max_receive: usize,
     max_topic_alias: u16,
     inner: Rc<Inner<C>>,
@@ -111,6 +114,7 @@ where
 {
     fn new(
         sink: MqttSink,
+        max_qos: QoS,
         max_receive: usize,
         max_topic_alias: u16,
         publish: T,
@@ -118,6 +122,7 @@ where
     ) -> Self {
         Self {
             publish,
+            max_qos,
             max_receive,
             max_topic_alias,
             sink: sink.clone(),
@@ -201,6 +206,21 @@ where
                                 ControlMessage::proto_error(
                                     ProtocolError::ReceiveMaximumExceeded,
                                 ),
+                                &self.inner,
+                            )));
+                        }
+
+                        // check max allowed qos
+                        if publish.qos > self.max_qos {
+                            log::trace!(
+                                "Max allowed QoS is violated, max {:?} provided {:?}",
+                                self.max_qos,
+                                publish.qos
+                            );
+                            return Either::Right(Either::Right(ControlResponse::new(
+                                ControlMessage::proto_error(ProtocolError::MaxQoSViolated(
+                                    publish.qos,
+                                )),
                                 &self.inner,
                             )));
                         }

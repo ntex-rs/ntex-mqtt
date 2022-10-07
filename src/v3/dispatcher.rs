@@ -174,9 +174,10 @@ where
                     }
                 }
 
+                // check max allowed qos
                 if publish.qos > self.max_qos {
                     log::trace!(
-                        "Max allowed QoS is viaolated, max {:?} provided {:?}",
+                        "Max allowed QoS is violated, max {:?} provided {:?}",
                         self.max_qos,
                         publish.qos
                     );

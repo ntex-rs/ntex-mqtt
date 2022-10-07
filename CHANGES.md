@@ -6,6 +6,8 @@
 
 * v3: Allow to specify max allowed qos for server publishes
 
+* v5: Check max qos violations in server dispatcher
+
 ## [0.8.10] - 2022-09-25
 
 * Add .into_inner() client's helper for publish control message

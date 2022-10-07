@@ -117,10 +117,10 @@ where
         self
     }
 
-    /// Set max QoS allowed.
+    /// Set max allowed QoS.
     ///
     /// If peer sends publish with higher qos then ProtocolError::MaxQoSViolated(..)
-    /// By default max qos is not set.
+    /// By default max qos is set to `ExactlyOnce`.
     pub fn max_qos(mut self, qos: QoS) -> Self {
         self.max_qos = qos;
         self

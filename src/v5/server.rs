@@ -120,7 +120,7 @@ where
 
     /// Set server max qos setting.
     ///
-    /// By default max qos is not set`
+    /// By default max qos is not set.
     pub fn max_qos(mut self, qos: QoS) -> Self {
         self.max_qos = Some(qos);
         self
@@ -233,7 +233,12 @@ where
                 pool: self.pool,
                 _t: PhantomData,
             },
-            factory(self.srv_publish, self.srv_control, self.max_inflight_size),
+            factory(
+                self.srv_publish,
+                self.srv_control,
+                self.max_qos.unwrap_or(QoS::ExactlyOnce),
+                self.max_inflight_size,
+            ),
             self.disconnect_timeout,
         )
     }
@@ -258,6 +263,7 @@ where
             handler: Rc::new(factory(
                 self.srv_publish,
                 self.srv_control,
+                self.max_qos.unwrap_or(QoS::ExactlyOnce),
                 self.max_inflight_size,
             )),
             max_size: self.max_size,

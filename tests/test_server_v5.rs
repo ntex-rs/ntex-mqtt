@@ -6,7 +6,7 @@ use ntex::{server, service::fn_service, time::sleep};
 
 use ntex_mqtt::v5::{
     client, codec, error, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish,
-    PublishAck, Session,
+    PublishAck, QoS, Session,
 };
 
 struct St;
@@ -830,6 +830,57 @@ async fn test_handle_incoming() -> std::io::Result<()> {
 
     assert!(publish.load(Relaxed));
     assert!(disconnect.load(Relaxed));
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_max_qos() -> std::io::Result<()> {
+    let violated = Arc::new(AtomicBool::new(false));
+    let violated2 = violated.clone();
+
+    let srv = server::test_server(move || {
+        let violated = violated2.clone();
+        MqttServer::new(handshake)
+            .max_qos(QoS::AtMostOnce)
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .control(move |msg| {
+                let violated = violated.clone();
+                match msg {
+                    ControlMessage::ProtocolError(msg) => {
+                        match msg.get_ref() {
+                            error::ProtocolError::MaxQoSViolated(_) => {
+                                violated.store(true, Relaxed);
+                            }
+                            _ => (),
+                        }
+                        Ready::Ok::<_, TestError>(msg.ack())
+                    }
+                    _ => Ready::Ok(msg.disconnect()),
+                }
+            })
+            .finish()
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode(
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
+        &codec,
+    )
+    .unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    io.encode(pkt_publish().into(), &codec).unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        pkt,
+        codec::Packet::Disconnect(codec::Disconnect {
+            reason_code: codec::DisconnectReasonCode::ImplementationSpecificError,
+            ..Default::default()
+        })
+    );
+    assert!(violated.load(Relaxed));
 
     Ok(())
 }
