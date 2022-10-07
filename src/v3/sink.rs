@@ -82,22 +82,26 @@ impl MqttSink {
         self.0.io.encode(codec::Packet::PingRequest, &self.0.codec).is_ok()
     }
 
+    #[inline]
     /// Create publish message builder
     pub fn publish<U>(&self, topic: U, payload: Bytes) -> PublishBuilder
     where
         ByteString: From<U>,
     {
-        PublishBuilder {
-            packet: codec::Publish {
-                payload,
-                dup: false,
-                retain: false,
-                topic: topic.into(),
-                qos: codec::QoS::AtMostOnce,
-                packet_id: None,
-            },
-            shared: self.0.clone(),
-        }
+        self.publish_pkt(codec::Publish {
+            payload,
+            dup: false,
+            retain: false,
+            topic: topic.into(),
+            qos: codec::QoS::AtMostOnce,
+            packet_id: None,
+        })
+    }
+
+    #[inline]
+    /// Create publish builder with publish packet
+    pub fn publish_pkt(&self, packet: codec::Publish) -> PublishBuilder {
+        PublishBuilder { packet, shared: self.0.clone() }
     }
 
     #[inline]
@@ -203,14 +207,13 @@ impl PublishBuilder {
 
     #[inline]
     /// Send publish packet with QoS 0
-    pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
-        let packet = self.packet;
-
+    pub fn send_at_most_once(mut self) -> Result<(), SendPacketError> {
         if !self.shared.io.is_closed() {
-            log::trace!("Publish (QoS-0) to {:?}", packet.topic);
+            log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
+            self.packet.qos = codec::QoS::AtMostOnce;
             self.shared
                 .io
-                .encode(codec::Packet::Publish(packet), &self.shared.codec)
+                .encode(codec::Packet::Publish(self.packet), &self.shared.codec)
                 .map_err(SendPacketError::Encode)
                 .map(|_| ())
         } else {
@@ -222,11 +225,11 @@ impl PublishBuilder {
     #[allow(clippy::await_holding_refcell_ref)]
     /// Send publish packet with QoS 1
     pub fn send_at_least_once(self) -> impl Future<Output = Result<(), SendPacketError>> {
-        let shared = self.shared;
-        let mut packet = self.packet;
-        packet.qos = codec::QoS::AtLeastOnce;
+        if !self.shared.io.is_closed() {
+            let shared = self.shared;
+            let mut packet = self.packet;
+            packet.qos = codec::QoS::AtLeastOnce;
 
-        if !shared.io.is_closed() {
             // handle client receive maximum
             if !shared.has_credit() {
                 let (tx, rx) = shared.pool.waiters.channel();

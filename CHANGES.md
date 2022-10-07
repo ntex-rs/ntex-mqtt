@@ -1,5 +1,9 @@
 # Changes
 
+## [0.8.11] - 2022-10-07
+
+* v3/v5: Allow to create `PublishBuilder` with predefined Publish packet
+
 ## [0.8.10] - 2022-09-25
 
 * Add .into_inner() client's helper for publish control message

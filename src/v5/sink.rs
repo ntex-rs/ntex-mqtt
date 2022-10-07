@@ -156,18 +156,21 @@ impl MqttSink {
     where
         ByteString: From<U>,
     {
-        PublishBuilder {
-            packet: codec::Publish {
-                payload,
-                dup: false,
-                retain: false,
-                topic: topic.into(),
-                qos: QoS::AtMostOnce,
-                packet_id: None,
-                properties: codec::PublishProperties::default(),
-            },
-            shared: self.0.clone(),
-        }
+        self.publish_pkt(codec::Publish {
+            payload,
+            dup: false,
+            retain: false,
+            topic: topic.into(),
+            qos: QoS::AtMostOnce,
+            packet_id: None,
+            properties: codec::PublishProperties::default(),
+        })
+    }
+
+    #[inline]
+    /// Create publish builder with publish packet
+    pub fn publish_pkt(&self, packet: codec::Publish) -> PublishBuilder {
+        PublishBuilder { packet, shared: self.0.clone() }
     }
 
     #[inline]
@@ -261,14 +264,13 @@ impl PublishBuilder {
 
     #[inline]
     /// Send publish packet with QoS 0
-    pub fn send_at_most_once(self) -> Result<(), SendPacketError> {
-        let packet = self.packet;
-
+    pub fn send_at_most_once(mut self) -> Result<(), SendPacketError> {
         if !self.shared.io.is_closed() {
-            log::trace!("Publish (QoS-0) to {:?}", packet.topic);
+            log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
+            self.packet.qos = QoS::AtMostOnce;
             self.shared
                 .io
-                .encode(codec::Packet::Publish(packet), &self.shared.codec)
+                .encode(codec::Packet::Publish(self.packet), &self.shared.codec)
                 .map_err(SendPacketError::Encode)
                 .map(|_| ())
         } else {
