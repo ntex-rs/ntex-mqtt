@@ -3,6 +3,8 @@ use std::{error, fmt, io};
 use derive_more::{Display, From};
 use ntex::util::Either;
 
+use crate::types::QoS;
+
 /// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug, Display)]
 pub enum MqttError<E> {
@@ -39,6 +41,9 @@ pub enum ProtocolError {
     /// Packet id of publish ack packet does not match of send publish packet
     #[display(fmt = "Packet id of publish ack packet does not match of send publish packet")]
     PacketIdMismatch,
+    /// Peer sent publish with higher qos than configured
+    #[display(fmt = "Max allowed QoS level is violated {:?}", _0)]
+    MaxQoSViolated(QoS),
     /// Topic alias is greater than max topic alias
     #[display(fmt = "Topic alias is greater than max topic alias")]
     MaxTopicAlias,

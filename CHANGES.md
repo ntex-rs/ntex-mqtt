@@ -4,6 +4,8 @@
 
 * v3/v5: Allow to create `PublishBuilder` with predefined Publish packet
 
+* v3: Allow to specify max allowed qos for server publishes
+
 ## [0.8.10] - 2022-09-25
 
 * Add .into_inner() client's helper for publish control message

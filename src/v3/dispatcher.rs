@@ -9,6 +9,7 @@ use ntex::util::{
 };
 
 use crate::error::{MqttError, ProtocolError};
+use crate::types::QoS;
 
 use super::control::{
     ControlMessage, ControlResult, ControlResultKind, Subscribe, Unsubscribe,
@@ -22,6 +23,7 @@ pub(super) fn factory<St, T, C, E>(
     control: C,
     inflight: u16,
     inflight_size: usize,
+    max_qos: QoS,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
     Session<St>,
@@ -58,7 +60,7 @@ where
                 crate::inflight::InFlightService::new(
                     inflight,
                     inflight_size,
-                    Dispatcher::<_, _, _, E>::new(cfg, publish, control),
+                    Dispatcher::<_, _, _, E>::new(cfg, publish, control, max_qos),
                 ),
             )
         }
@@ -79,6 +81,7 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 pub(crate) struct Dispatcher<St, T, C: Service<ControlMessage<E>>, E> {
     session: Session<St>,
     publish: T,
+    max_qos: QoS,
     shutdown: RefCell<Option<Pin<Box<C::Future>>>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<(E,)>,
@@ -96,12 +99,13 @@ where
     T: Service<Publish, Response = ()>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    pub(crate) fn new(session: Session<St>, publish: T, control: C) -> Self {
+    pub(crate) fn new(session: Session<St>, publish: T, control: C, max_qos: QoS) -> Self {
         let sink = session.sink().clone();
 
         Self {
             session,
             publish,
+            max_qos,
             shutdown: RefCell::new(None),
             inner: Rc::new(Inner { sink, control, inflight: RefCell::new(HashSet::default()) }),
             _t: PhantomData,
@@ -169,6 +173,19 @@ where
                         )));
                     }
                 }
+
+                if publish.qos > self.max_qos {
+                    log::trace!(
+                        "Max allowed QoS is viaolated, max {:?} provided {:?}",
+                        self.max_qos,
+                        publish.qos
+                    );
+                    return Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(ProtocolError::MaxQoSViolated(publish.qos)),
+                        &self.inner,
+                    )));
+                }
+
                 Either::Left(PublishResponse {
                     packet_id,
                     inner,

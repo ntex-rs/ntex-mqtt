@@ -9,6 +9,7 @@ use ntex::{server, service::pipeline_factory};
 use ntex_mqtt::v3::{
     client, codec, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish, Session,
 };
+use ntex_mqtt::{error::ProtocolError, types::QoS};
 
 struct St;
 
@@ -453,6 +454,58 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
     assert!(res.is_ok());
     let result = io.recv(&codec).await;
     assert!(result.is_ok());
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_max_qos() -> std::io::Result<()> {
+    let violated = Arc::new(AtomicBool::new(false));
+    let violated2 = violated.clone();
+
+    let srv = server::test_server(move || {
+        let violated = violated2.clone();
+        MqttServer::new(handshake)
+            .max_qos(QoS::AtMostOnce)
+            .publish(|_| Ready::Ok(()))
+            .control(move |msg| {
+                let violated = violated.clone();
+                match msg {
+                    ControlMessage::ProtocolError(msg) => {
+                        match msg.get_ref() {
+                            ProtocolError::MaxQoSViolated(_) => {
+                                violated.store(true, Relaxed);
+                            }
+                            _ => (),
+                        }
+                        Ready::Ok(msg.ack())
+                    }
+                    _ => Ready::Ok(msg.disconnect()),
+                }
+            })
+            .finish()
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(codec::Packet::Connect(codec::Connect::default().client_id("user").into()), &codec)
+        .await
+        .unwrap();
+    io.recv(&codec).await.unwrap().unwrap();
+
+    let p = codec::Publish {
+        dup: false,
+        retain: false,
+        qos: codec::QoS::AtLeastOnce,
+        topic: ByteString::from("test"),
+        packet_id: Some(NonZeroU16::new(3).unwrap()),
+        payload: Bytes::from(vec![b'*'; 270 * 1024]),
+    }
+    .into();
+
+    io.send(p, &codec).await.unwrap();
+    assert!(io.recv(&codec).await.unwrap().is_none());
+    assert!(violated.load(Relaxed));
 
     Ok(())
 }

@@ -7,7 +7,7 @@ use ntex::time::{timeout_checked, Millis, Seconds};
 use ntex::util::{select, Either};
 
 use crate::error::{MqttError, ProtocolError};
-use crate::{io::Dispatcher, service};
+use crate::{io::Dispatcher, service, types::QoS};
 
 use super::control::{ControlMessage, ControlResult};
 use super::default::{DefaultControlService, DefaultPublishService};
@@ -47,6 +47,7 @@ pub struct MqttServer<St, H, C, P> {
     handshake: H,
     control: C,
     publish: P,
+    max_qos: QoS,
     max_size: u32,
     max_inflight: u16,
     max_inflight_size: usize,
@@ -72,6 +73,7 @@ where
             handshake: handshake.into_factory(),
             control: DefaultControlService::default(),
             publish: DefaultPublishService::default(),
+            max_qos: QoS::ExactlyOnce,
             max_size: 0,
             max_inflight: 16,
             max_inflight_size: 65535,
@@ -115,6 +117,15 @@ where
         self
     }
 
+    /// Set max QoS allowed.
+    ///
+    /// If peer sends publish with higher qos then ProtocolError::MaxQoSViolated(..)
+    /// By default max qos is not set.
+    pub fn max_qos(mut self, qos: QoS) -> Self {
+        self.max_qos = qos;
+        self
+    }
+
     /// Set max inbound frame size.
     ///
     /// If max size is set to `0`, size is unlimited.
@@ -155,6 +166,7 @@ where
             handshake: self.handshake,
             publish: self.publish,
             control: service.into_factory(),
+            max_qos: self.max_qos,
             max_size: self.max_size,
             max_inflight: self.max_inflight,
             max_inflight_size: self.max_inflight_size,
@@ -176,6 +188,7 @@ where
             handshake: self.handshake,
             publish: publish.into_factory(),
             control: self.control,
+            max_qos: self.max_qos,
             max_size: self.max_size,
             max_inflight: self.max_inflight,
             max_inflight_size: self.max_inflight_size,
@@ -214,7 +227,13 @@ where
                 pool: self.pool.clone(),
                 _t: PhantomData,
             },
-            factory(self.publish, self.control, self.max_inflight, self.max_inflight_size),
+            factory(
+                self.publish,
+                self.control,
+                self.max_inflight,
+                self.max_inflight_size,
+                self.max_qos,
+            ),
             self.disconnect_timeout,
         )
     }
@@ -241,6 +260,7 @@ where
                 self.control,
                 self.max_inflight,
                 self.max_inflight_size,
+                self.max_qos,
             )),
             max_size: self.max_size,
             disconnect_timeout: self.disconnect_timeout,
