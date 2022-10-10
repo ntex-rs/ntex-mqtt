@@ -3,6 +3,9 @@ use std::{convert::TryFrom, io, ops};
 
 use ntex::util::ByteString;
 
+#[deprecated = "Use TopicFilter instead"]
+pub type Topic = TopicFilter;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TopicError {
     InvalidTopic,
@@ -29,20 +32,23 @@ impl Level {
     }
 }
 
-fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(topic_filter: &Topic, topic: L) -> bool {
+fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(
+    topic_filter: &TopicFilter,
+    topic: L,
+) -> bool {
     let mut topic_filter = topic_filter.0.iter();
 
-    for topic_level in topic {
+    for (index, topic_level) in topic.enumerate() {
         match topic_filter.next() {
-            Some(&Level::SingleWildcard) => {
-                if !topic_level.match_level(&Level::SingleWildcard) {
+            Some(Level::SingleWildcard) => {
+                if !topic_level.match_level(&Level::SingleWildcard, index) {
                     break;
                 }
             }
-            Some(&Level::MultiWildcard) => {
-                return topic_level.match_level(&Level::MultiWildcard);
+            Some(Level::MultiWildcard) => {
+                return topic_level.match_level(&Level::MultiWildcard, index);
             }
-            Some(level) if topic_level.match_level(level) => continue,
+            Some(level) if topic_level.match_level(level, index) => continue,
             _ => return false,
         }
     }
@@ -55,9 +61,9 @@ fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(topic_filter: &Topic, topic
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Topic(Vec<Level>);
+pub struct TopicFilter(Vec<Level>);
 
-impl Topic {
+impl TopicFilter {
     pub fn levels(&self) -> &Vec<Level> {
         &self.0
     }
@@ -76,38 +82,56 @@ impl Topic {
             .is_none()
     }
 
-    pub fn matches(&self, topic: &Topic) -> bool {
+    pub fn matches_filter(&self, topic: &TopicFilter) -> bool {
         match_topic(self, topic.0.iter())
     }
 
+    pub fn matches_topic<S: AsRef<str> + ?Sized>(&self, topic: &S) -> bool {
+        match_topic(self, topic.as_ref().split('/'))
+    }
+
+    #[deprecated = "Use matches_filter instead"]
+    pub fn matches(&self, topic: &TopicFilter) -> bool {
+        match_topic(self, topic.0.iter())
+    }
+
+    #[deprecated = "Use matches_topic instead"]
     pub fn matches_str<S: AsRef<str> + ?Sized>(&self, topic: &S) -> bool {
         match_topic(self, topic.as_ref().split('/'))
     }
 }
 
-impl<'a> From<&'a [Level]> for Topic {
-    fn from(s: &[Level]) -> Self {
-        let mut v = vec![];
+impl<'a> TryFrom<&'a [Level]> for TopicFilter {
+    type Error = TopicError;
 
+    fn try_from(s: &[Level]) -> Result<Self, Self::Error> {
+        let mut v = vec![];
         v.extend_from_slice(s);
 
-        Topic(v)
+        TopicFilter::try_from(v)
     }
 }
 
-impl From<Vec<Level>> for Topic {
-    fn from(v: Vec<Level>) -> Self {
-        Topic(v)
+impl TryFrom<Vec<Level>> for TopicFilter {
+    type Error = TopicError;
+
+    fn try_from(v: Vec<Level>) -> Result<Self, Self::Error> {
+        let tf = TopicFilter(v);
+        if tf.is_valid() {
+            Ok(tf)
+        } else {
+            Err(TopicError::InvalidTopic)
+        }
     }
 }
 
-impl From<Topic> for Vec<Level> {
-    fn from(t: Topic) -> Self {
+impl From<TopicFilter> for Vec<Level> {
+    fn from(t: TopicFilter) -> Self {
         t.0
     }
 }
 
-impl ops::Deref for Topic {
+impl ops::Deref for TopicFilter {
     type Target = Vec<Level>;
 
     fn deref(&self) -> &Self::Target {
@@ -115,49 +139,50 @@ impl ops::Deref for Topic {
     }
 }
 
-impl ops::DerefMut for Topic {
+impl ops::DerefMut for TopicFilter {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-pub(crate) trait MatchLevel {
-    fn match_level(&self, level: &Level) -> bool;
+trait MatchLevel {
+    fn match_level(&self, level: &Level, index: usize) -> bool;
 }
 
 impl MatchLevel for Level {
-    fn match_level(&self, level: &Level) -> bool {
-        match_level_impl(self, level)
+    fn match_level(&self, level: &Level, index: usize) -> bool {
+        match_level_impl(self, level, index)
     }
 }
 
 impl<'a> MatchLevel for &'a Level {
-    fn match_level(&self, level: &Level) -> bool {
-        match_level_impl(self, level)
+    fn match_level(&self, level: &Level, index: usize) -> bool {
+        match_level_impl(self, level, index)
     }
 }
 
-fn match_level_impl(this: &Level, level: &Level) -> bool {
+fn match_level_impl(this: &Level, level: &Level, _index: usize) -> bool {
     match level {
         Level::Normal(rhs) => matches!(this, Level::Normal(lhs) if lhs == rhs),
         Level::Metadata(rhs) => matches!(this, Level::Metadata(lhs) if lhs == rhs),
         Level::Blank => *this == Level::Blank,
-        Level::SingleWildcard | Level::MultiWildcard => true,
+        Level::SingleWildcard => *this != Level::MultiWildcard,
+        Level::MultiWildcard => true,
     }
 }
 
 impl<T: AsRef<str>> MatchLevel for T {
-    fn match_level(&self, level: &Level) -> bool {
+    fn match_level(&self, level: &Level, index: usize) -> bool {
         match level {
             Level::Normal(lhs) => lhs == self.as_ref(),
             Level::Metadata(ref lhs) => is_system(self) && lhs == self.as_ref(),
             Level::Blank => self.as_ref().is_empty(),
-            Level::SingleWildcard | Level::MultiWildcard => true,
+            Level::SingleWildcard | Level::MultiWildcard => !(index == 0 && is_system(self)),
         }
     }
 }
 
-impl TryFrom<ByteString> for Topic {
+impl TryFrom<ByteString> for TopicFilter {
     type Error = TopicError;
 
     fn try_from(value: ByteString) -> Result<Self, Self::Error> {
@@ -183,7 +208,7 @@ impl TryFrom<ByteString> for Topic {
                 }
             })
             .collect::<Result<Vec<_>, TopicError>>()
-            .map(Topic)
+            .map(TopicFilter)
             .and_then(
                 |topic| {
                     if topic.is_valid() {
@@ -207,20 +232,19 @@ impl fmt::Display for Level {
     }
 }
 
-impl fmt::Display for Topic {
+impl fmt::Display for TopicFilter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut first = true;
-
-        for level in &self.0 {
-            if first {
-                first = false;
-            } else {
-                f.write_char('/')?;
-            }
-
+        let mut iter = self.0.iter();
+        let mut level = iter.next().unwrap();
+        loop {
             level.fmt(f)?;
+            if let Some(l) = iter.next() {
+                level = l;
+                f.write_char('/')?;
+            } else {
+                break;
+            }
         }
-
         Ok(())
     }
 }
@@ -235,20 +259,19 @@ pub(crate) trait WriteTopicExt: io::Write {
         }
     }
 
-    fn write_topic(&mut self, topic: &Topic) -> io::Result<usize> {
+    fn write_topic(&mut self, topic: &TopicFilter) -> io::Result<usize> {
         let mut n = 0;
-        let mut first = true;
-
-        for level in topic.levels() {
-            if first {
-                first = false;
-            } else {
-                n += self.write(b"/")?;
-            }
-
+        let mut iter = topic.0.iter();
+        let mut level = iter.next().unwrap();
+        loop {
             n += self.write_level(level)?;
+            if let Some(l) = iter.next() {
+                level = l;
+                n += self.write(b"/")?;
+            } else {
+                break;
+            }
         }
-
         Ok(n)
     }
 }
@@ -290,8 +313,8 @@ mod tests {
         Level::Metadata(s.as_ref().into())
     }
 
-    pub fn topic(topic: &'static str) -> Topic {
-        Topic::try_from(ByteString::from_static(topic)).unwrap()
+    pub fn topic(topic: &'static str) -> TopicFilter {
+        TopicFilter::try_from(ByteString::from_static(topic)).unwrap()
     }
 
     #[test_case("level", Ok(vec![lvl_normal("level")]) ; "1")]
@@ -307,8 +330,8 @@ mod tests {
     #[test_case("/finance", Ok(vec![Level::Blank, lvl_normal("finance")]) ; "12")]
     #[test_case("finance/", Ok(vec![lvl_normal("finance"), Level::Blank]) ; "13")]
     fn parsing(input: &str, expected: Result<Vec<Level>, TopicError>) {
-        let actual = Topic::try_from(ByteString::from(input));
-        assert_eq!(actual, expected.map(|levels| Topic::from(levels)));
+        let actual = TopicFilter::try_from(ByteString::from(input));
+        assert_eq!(actual, expected.map(|levels| TopicFilter(levels)));
     }
 
     #[test_case(vec![lvl_normal("sport"), lvl_normal("tennis"), lvl_normal("player1")], true; "1")]
@@ -318,33 +341,34 @@ mod tests {
     #[test_case(vec![lvl_normal("sport"), Level::MultiWildcard, lvl_normal("player1")], false; "5")]
     #[test_case(vec![lvl_normal("sport"), lvl_sys("$SYS"), lvl_normal("player1")], false; "6")]
     fn topic_is_valid(levels: Vec<Level>, expected: bool) {
-        assert_eq!(expected, Topic(levels).is_valid());
+        assert_eq!(expected, TopicFilter::try_from(levels).is_ok());
     }
 
     #[test]
     fn test_multi_wildcard_topic() {
-        assert!(topic("sport/tennis/#").matches(&Topic::from(vec![
+        assert!(topic("sport/tennis/#").matches_filter(&TopicFilter(vec![
             lvl_normal("sport"),
             lvl_normal("tennis"),
             Level::MultiWildcard
         ])));
 
-        assert!(topic("sport/tennis/#").matches_str("sport/tennis"));
+        assert!(topic("sport/tennis/#").matches_topic("sport/tennis"));
 
-        assert!(topic("#").matches(&Topic::from(vec![Level::MultiWildcard])));
+        assert!(topic("#").matches_filter(&TopicFilter(vec![Level::MultiWildcard])));
     }
 
     #[test]
     fn test_single_wildcard_topic() {
-        assert!(topic("+").matches(&Topic::from(vec![Level::SingleWildcard])));
+        assert!(topic("+")
+            .matches_filter(&TopicFilter::try_from(vec![Level::SingleWildcard]).unwrap()));
 
-        assert!(topic("+/tennis/#").matches(&Topic::from(vec![
+        assert!(topic("+/tennis/#").matches_filter(&TopicFilter(vec![
             Level::SingleWildcard,
             lvl_normal("tennis"),
             Level::MultiWildcard
         ])));
 
-        assert!(topic("sport/+/player1").matches(&Topic::from(vec![
+        assert!(topic("sport/+/player1").matches_filter(&TopicFilter(vec![
             lvl_normal("sport"),
             Level::SingleWildcard,
             lvl_normal("player1")
@@ -354,7 +378,11 @@ mod tests {
     #[test]
     fn test_write_topic() {
         let mut v = vec![];
-        let t = vec![Level::SingleWildcard, lvl_normal("tennis"), Level::MultiWildcard].into();
+        let t = TopicFilter(vec![
+            Level::SingleWildcard,
+            lvl_normal("tennis"),
+            Level::MultiWildcard,
+        ]);
 
         assert_eq!(v.write_topic(&t).unwrap(), 10);
         assert_eq!(v, b"+/tennis/#");
@@ -365,35 +393,35 @@ mod tests {
 
     #[test]
     fn test_matches() {
-        assert!("test".match_level(&Level::Normal("test".into())));
-        assert!("$SYS".match_level(&Level::Metadata("$SYS".into())));
+        assert!("test".match_level(&Level::Normal("test".into()), 0));
+        assert!("$SYS".match_level(&Level::Metadata("$SYS".into()), 0));
 
-        let t: Topic = topic("sport/tennis/player1/#");
+        let t: TopicFilter = topic("sport/tennis/player1/#");
 
-        assert!(t.matches_str("sport/tennis/player1"));
-        assert!(t.matches_str("sport/tennis/player1/ranking"));
-        assert!(t.matches_str("sport/tennis/player1/score/wimbledon"));
+        assert!(t.matches_topic("sport/tennis/player1"));
+        assert!(t.matches_topic("sport/tennis/player1/ranking"));
+        assert!(t.matches_topic("sport/tennis/player1/score/wimbledon"));
 
-        assert!(topic("sport/#").matches_str("sport"));
+        assert!(topic("sport/#").matches_topic("sport"));
 
-        let t: Topic = topic("sport/tennis/+");
+        let t: TopicFilter = topic("sport/tennis/+");
 
-        assert!(t.matches_str("sport/tennis/player1"));
-        assert!(t.matches_str("sport/tennis/player2"));
-        assert!(!t.matches_str("sport/tennis/player1/ranking"));
+        assert!(t.matches_topic("sport/tennis/player1"));
+        assert!(t.matches_topic("sport/tennis/player2"));
+        assert!(!t.matches_topic("sport/tennis/player1/ranking"));
 
-        let t: Topic = topic("sport/+");
+        let t: TopicFilter = topic("sport/+");
 
-        assert!(!t.matches_str("sport"));
-        assert!(t.matches_str("sport/"));
+        assert!(!t.matches_topic("sport"));
+        assert!(t.matches_topic("sport/"));
 
-        assert!(topic("+/+").matches_str("/finance"));
-        assert!(topic("/+").matches_str("/finance"));
-        assert!(!topic("+").matches_str("/finance"));
+        assert!(topic("+/+").matches_topic("/finance"));
+        assert!(topic("/+").matches_topic("/finance"));
+        assert!(!topic("+").matches_topic("/finance"));
 
-        assert!(!topic("#").matches_str("$SYS"));
-        assert!(!topic("+/monitor/Clients").matches_str("$SYS/monitor/Clients"));
-        assert!(topic(&"$SYS/#").matches_str("$SYS/"));
-        assert!(topic("$SYS/monitor/+").matches_str("$SYS/monitor/Clients"));
+        assert!(!topic("#").matches_topic("$SYS"));
+        assert!(!topic("+/monitor/Clients").matches_topic("$SYS/monitor/Clients"));
+        assert!(topic(&"$SYS/#").matches_topic("$SYS/"));
+        assert!(topic("$SYS/monitor/+").matches_topic("$SYS/monitor/Clients"));
     }
 }
