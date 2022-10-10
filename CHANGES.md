@@ -1,5 +1,17 @@
 # Changes
 
+## [0.9.0-b.0] - 2022-10-10
+
+* Renamed Topic into TopicFilter, TopicError into TopicFilterError
+* Changes to topic filter validation: levels starting with `$` are allowed at any level and are recognized as system
+  only at first position
+* Changes to topic matching logic: when topic filter is matched against another topic filter via TopicFilter.match_filter(),
+  left hand side topic filter must be strict superset of all topics allowed with topic filter on right hand side
+* Changes to topic matching logic: having `+/#` in the end of topic filter does not wrongly recover failed match on `+` level
+* Validation is now part of TopicFilter instantiation, e.g. it is impossible to create non-validated topic filter from
+  set of Levels.
+* Level API is removed completely as level itself is not a valuable concept.
+
 ## [0.8.11] - 2022-10-07
 
 * v3/v5: Allow to create `PublishBuilder` with predefined Publish packet

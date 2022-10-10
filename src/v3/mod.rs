@@ -26,5 +26,5 @@ pub use self::server::MqttServer;
 pub use self::sink::{MqttSink, PublishBuilder, SubscribeBuilder, UnsubscribeBuilder};
 
 pub use crate::error::MqttError;
-pub use crate::topic::Topic;
+pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;
