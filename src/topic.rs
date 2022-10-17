@@ -86,16 +86,6 @@ impl TopicFilter {
     pub fn matches_topic<S: AsRef<str> + ?Sized>(&self, topic: &S) -> bool {
         match_topic(self, topic.as_ref().split('/'))
     }
-
-    #[deprecated = "Use matches_filter instead"]
-    pub fn matches(&self, topic: &TopicFilter) -> bool {
-        match_topic(self, topic.0.iter())
-    }
-
-    #[deprecated = "Use matches_topic instead"]
-    pub fn matches_str<S: AsRef<str> + ?Sized>(&self, topic: &S) -> bool {
-        match_topic(self, topic.as_ref().split('/'))
-    }
 }
 
 impl<'a> TryFrom<&'a [Level]> for TopicFilter {

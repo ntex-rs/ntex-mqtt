@@ -1,5 +1,9 @@
 # Changes
 
+## [0.9.0-b.1] - 2022-10-17
+
+* Remove deprecated methods
+
 ## [0.9.0-b.0] - 2022-10-10
 
 * Renamed Topic into TopicFilter, TopicError into TopicFilterError

@@ -9,10 +9,6 @@ use crate::v3::{codec, control::ControlResultKind, error};
 pub enum ControlMessage<E> {
     /// Unhandled publish packet
     Publish(Publish),
-    /// Disconnect packet
-    #[doc(hidden)]
-    #[deprecated(since = "0.8.9", note = "Disconnect is not allowed on client side")]
-    Disconnect(Disconnect),
     /// Connection closed
     Closed(Closed),
     /// Application level error from resources and control services
