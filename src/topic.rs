@@ -320,6 +320,9 @@ mod tests {
     #[test_case(vec![lvl_normal("sport"), Level::SingleWildcard, lvl_normal("player1")] => true; "4")]
     #[test_case(vec![lvl_normal("sport"), Level::MultiWildcard, lvl_normal("player1")] => false; "5")]
     #[test_case(vec![lvl_normal("sport"), lvl_sys("$SYS"), lvl_normal("player1")] => false; "6")]
+    // [MQTT-4.7.1-1] [The wildcard characters can be used in Topic Filters, but MUST NOT be used within a Topic Name
+    #[test_case(vec![lvl_normal("sport"), Level::SingleWildcard] => false; "7")]
+    #[test_case(vec![lvl_normal("sport"), Level::MultiWildcard] => false; "8")]
     fn topic_is_valid(levels: Vec<Level>) -> bool {
         TopicFilter::try_from(levels).is_ok()
     }
