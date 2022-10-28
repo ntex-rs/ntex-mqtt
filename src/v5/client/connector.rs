@@ -232,7 +232,7 @@ where
                     ClientError::Disconnected(None)
                 })?;
 
-            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, 0, pool));
+            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, pool));
 
             match packet {
                 codec::Packet::ConnectAck(pkt) => {
@@ -245,9 +245,7 @@ where
                         // server keep-alive
                         let keep_alive = pkt.server_keepalive_sec.unwrap_or(keep_alive);
 
-                        shared
-                            .cap
-                            .set(pkt.receive_max.map(|v| v.get()).unwrap_or(65535) as usize);
+                        shared.set_cap(pkt.receive_max.map(|v| v.get()).unwrap_or(65535) as usize);
 
                         Ok(Client::new(
                             io,

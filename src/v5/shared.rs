@@ -10,7 +10,7 @@ use crate::{error, types::packet_type};
 
 pub struct MqttShared {
     pub(super) io: IoRef,
-    pub(super) cap: Cell<usize>,
+    cap: Cell<usize>,
     queues: RefCell<MqttSharedQueues>,
     pub(super) inflight_idx: Cell<u16>,
     pub(super) pool: Rc<MqttSinkPool>,
@@ -40,17 +40,12 @@ impl Default for MqttSinkPool {
 }
 
 impl MqttShared {
-    pub(super) fn new(
-        io: IoRef,
-        codec: codec::Codec,
-        cap: usize,
-        pool: Rc<MqttSinkPool>,
-    ) -> Self {
+    pub(super) fn new(io: IoRef, codec: codec::Codec, pool: Rc<MqttSinkPool>) -> Self {
         Self {
             io,
             pool,
             codec,
-            cap: Cell::new(cap),
+            cap: Cell::new(0),
             queues: RefCell::new(MqttSharedQueues {
                 inflight: HashMap::default(),
                 inflight_order: VecDeque::with_capacity(8),
@@ -60,13 +55,21 @@ impl MqttShared {
         }
     }
 
+    pub(super) fn cap(&self) -> usize {
+        self.cap.get()
+    }
+
     pub(super) fn with_queues<R>(&self, f: impl FnOnce(&mut MqttSharedQueues) -> R) -> R {
         let mut queues = self.queues.borrow_mut();
         f(&mut queues)
     }
 
+    pub(super) fn credit(&self) -> usize {
+        self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
+    }
+
     pub(super) fn has_credit(&self) -> bool {
-        self.cap.get() - self.queues.borrow().inflight.len() > 0
+        self.credit() > 0
     }
 
     pub(super) fn next_id(&self) -> u16 {
@@ -79,6 +82,21 @@ impl MqttShared {
             self.inflight_idx.set(idx);
             idx
         }
+    }
+
+    pub(super) fn set_cap(&self, cap: usize) {
+        let mut queues = self.queues.borrow_mut();
+
+        // wake up queued request (receive max limit)
+        'outer: for _ in 0..cap {
+            while let Some(tx) = queues.waiters.pop_front() {
+                if tx.send(()).is_ok() {
+                    continue 'outer;
+                }
+            }
+            break;
+        }
+        self.cap.set(cap);
     }
 }
 

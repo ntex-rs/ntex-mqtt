@@ -340,7 +340,6 @@ where
         let shared = Rc::new(MqttShared::new(
             io.get_ref(),
             mqtt::Codec::default().max_size(self.max_size),
-            16,
             false,
             self.pool.clone(),
         ));
@@ -377,6 +376,7 @@ where
 
                             log::trace!("Sending success handshake ack: {:#?}", pkt);
 
+                            ack.shared.set_cap(16);
                             ack.io.send(pkt, &ack.shared.codec).await?;
                             Ok((
                                 ack.io,
@@ -549,6 +549,7 @@ where
                             pkt
                         );
 
+                        ack.shared.set_cap(16);
                         ack.shared.codec.set_max_size(max_size);
                         ack.io.send(pkt, &ack.shared.codec).await.map_err(MqttError::from)?;
 

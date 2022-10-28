@@ -1,9 +1,9 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
-use std::{num::NonZeroU16, time::Duration};
+use std::{future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 
-use ntex::service::{Service, ServiceFactory};
+use ntex::service::{fn_service, Service, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
-use ntex::util::{join_all, ByteString, Bytes, Ready};
+use ntex::util::{join_all, lazy, ByteString, Bytes, Ready};
 use ntex::{server, service::pipeline_factory};
 
 use ntex_mqtt::v3::{
@@ -506,6 +506,43 @@ async fn test_max_qos() -> std::io::Result<()> {
     io.send(p, &codec).await.unwrap();
     assert!(io.recv(&codec).await.unwrap().is_none());
     assert!(violated.load(Relaxed));
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_sink_ready() -> std::io::Result<()> {
+    let srv = server::test_server(|| {
+        MqttServer::new(fn_service(|packet: Handshake| async move {
+            let sink = packet.sink();
+            let mut ready = Box::pin(sink.ready());
+            let res = lazy(|cx| Pin::new(&mut ready).poll(cx)).await;
+            assert!(res.is_pending());
+            assert!(!sink.is_ready());
+
+            ntex::rt::spawn(async move {
+                assert!(!sink.is_ready());
+                sink.ready().await;
+                assert!(sink.is_ready());
+                sink.publish("/test", Bytes::from_static(b"body")).send_at_most_once().unwrap();
+            });
+
+            Ok::<_, ()>(packet.ack(St, false).idle_timeout(Seconds(16)))
+        }))
+        .publish(|_| Ready::Ok(()))
+        .finish()
+    });
+
+    // connect to server
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(codec::Packet::Connect(codec::Connect::default().client_id("user").into()), &codec)
+        .await
+        .unwrap();
+    io.recv(&codec).await.unwrap().unwrap();
+
+    let result = io.recv(&codec).await;
+    assert!(result.is_ok());
 
     Ok(())
 }

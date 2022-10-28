@@ -26,9 +26,19 @@ impl MqttSink {
     }
 
     #[inline]
+    /// Check if sink is ready
+    pub fn is_ready(&self) -> bool {
+        if self.0.io.is_closed() {
+            false
+        } else {
+            self.0.has_credit()
+        }
+    }
+
+    #[inline]
     /// Get client receive credit
     pub fn credit(&self) -> usize {
-        self.0.cap.get() - self.0.with_queues(|q| q.inflight.len())
+        self.0.credit()
     }
 
     /// Get notification when packet could be send to the peer.
@@ -38,7 +48,7 @@ impl MqttSink {
         if !self.0.io.is_closed() {
             self.0
                 .with_queues(|q| {
-                    if q.inflight.len() >= self.0.cap.get() {
+                    if q.inflight.len() >= self.0.cap() {
                         let (tx, rx) = self.0.pool.waiters.channel();
                         q.waiters.push_back(tx);
                         return Some(rx);

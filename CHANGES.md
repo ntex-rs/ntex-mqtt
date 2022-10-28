@@ -1,5 +1,9 @@
 # Changes
 
+## [0.9.0-b.2] - 2022-10-28
+
+* v3/v5: MqttSink::ready() is not ready until CONNACK get sent to peer
+
 ## [0.9.0-b.1] - 2022-10-17
 
 * Remove deprecated methods

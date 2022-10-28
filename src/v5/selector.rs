@@ -246,7 +246,6 @@ where
         let shared = Rc::new(MqttShared::new(
             io.get_ref(),
             mqtt::Codec::default().max_inbound_size(self.max_size),
-            0,
             self.pool.clone(),
         ));
 
@@ -323,7 +322,6 @@ where
         let shared = Rc::new(MqttShared::new(
             io.get_ref(),
             mqtt::Codec::default().max_inbound_size(self.max_size),
-            0,
             self.pool.clone(),
         ));
 

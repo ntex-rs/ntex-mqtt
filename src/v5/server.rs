@@ -357,7 +357,7 @@ where
 
         let service = self.service.clone();
         let codec = mqtt::Codec::default().max_inbound_size(self.max_size);
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, 0, self.pool.clone()));
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
 
         let max_size = self.max_size;
         let mut max_receive = self.max_receive;
@@ -385,9 +385,9 @@ where
                     if let Some(size) = connect.max_packet_size {
                         shared.codec.set_max_outbound_size(size.get());
                     }
-                    shared.cap.set(connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize);
-
                     let keep_alive = connect.keep_alive;
+                    let peer_receive_max =
+                        connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize;
 
                     // authenticate mqtt connection
                     let mut ack = service
@@ -426,6 +426,7 @@ where
                             {
                                 ack.packet.server_keepalive_sec = Some(ack.keepalive as u16);
                             }
+                            shared.set_cap(peer_receive_max);
 
                             ack.io
                                 .send(
@@ -609,11 +610,9 @@ where
                 if let Some(size) = hnd.packet().max_packet_size {
                     hnd.shared.codec.set_max_outbound_size(size.get());
                 }
-                hnd.shared
-                    .cap
-                    .set(hnd.packet().receive_max.map(|v| v.get()).unwrap_or(16) as usize);
-
                 let keep_alive = hnd.packet().keep_alive;
+                let peer_receive_max =
+                    hnd.packet().receive_max.map(|v| v.get()).unwrap_or(16) as usize;
                 hnd.max_size = max_size;
                 hnd.max_receive = max_receive;
                 hnd.max_topic_alias = max_topic_alias;
@@ -651,7 +650,7 @@ where
                         {
                             ack.packet.server_keepalive_sec = Some(ack.keepalive as u16);
                         }
-
+                        shared.set_cap(peer_receive_max);
                         ack.io
                             .send(mqtt::Packet::ConnectAck(Box::new(ack.packet)), &shared.codec)
                             .await?;

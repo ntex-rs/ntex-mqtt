@@ -229,12 +229,13 @@ where
                     ClientError::Disconnected(None)
                 })?;
 
-            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, max_send, true, pool));
+            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, true, pool));
 
             match packet {
                 codec::Packet::ConnectAck { session_present, return_code } => {
                     log::trace!("Connect ack response from server: session: present: {:?}, return code: {:?}", session_present, return_code);
                     if return_code == codec::ConnectAckReason::ConnectionAccepted {
+                        shared.set_cap(max_send);
                         Ok(Client::new(
                             io,
                             shared,
