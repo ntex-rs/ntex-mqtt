@@ -559,7 +559,7 @@ impl ProtocolError {
                     error::ProtocolError::UnknownTopicAlias => {
                         DisconnectReasonCode::TopicAliasInvalid
                     }
-                    error::ProtocolError::MaxQoSViolated(qos) => {
+                    error::ProtocolError::MaxQoSViolated(_) => {
                         DisconnectReasonCode::QosNotSupported
                     }
                     error::ProtocolError::Encode(_) => {
