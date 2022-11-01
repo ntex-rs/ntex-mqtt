@@ -1,5 +1,11 @@
 # Changes
 
+## [0.9.0] - 2022-11-01
+
+* Rename `Level` to `TopicFilterLevel` for better spec compliance
+
+* v5: Use correct reason code for MaxQosViolated error #117
+
 ## [0.9.0-b.2] - 2022-10-28
 
 * v3/v5: MqttSink::ready() is not ready until CONNACK get sent to peer
