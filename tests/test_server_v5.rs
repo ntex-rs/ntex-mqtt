@@ -876,7 +876,7 @@ async fn test_max_qos() -> std::io::Result<()> {
     assert_eq!(
         pkt,
         codec::Packet::Disconnect(codec::Disconnect {
-            reason_code: codec::DisconnectReasonCode::ImplementationSpecificError,
+            reason_code: codec::DisconnectReasonCode::QosNotSupported,
             ..Default::default()
         })
     );
