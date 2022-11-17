@@ -71,13 +71,6 @@ impl<T: Decode> Property for Option<T> {
     }
 }
 
-impl<T: Decode> Property for Vec<T> {
-    fn read_value(&mut self, src: &mut Bytes) -> Result<(), DecodeError> {
-        self.push(T::decode(src)?);
-        Ok(())
-    }
-}
-
 impl Decode for bool {
     fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         ensure!(src.has_remaining(), DecodeError::InvalidLength); // expected more data within the field

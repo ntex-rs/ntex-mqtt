@@ -1,5 +1,9 @@
 # Changes
 
+## [0.9.1] - 2022-11-17
+
+* v5: allow omitting properties length if it is 0 in packets without payload regardless of reason code or its presence.
+
 ## [0.9.0] - 2022-11-01
 
 * Rename `Level` to `TopicFilterLevel` for better spec compliance

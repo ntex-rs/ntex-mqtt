@@ -64,42 +64,41 @@ impl Disconnect {
     }
 
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        if src.has_remaining() {
+        let disconnect = if src.has_remaining() {
             let reason_code = src.get_u8().try_into()?;
 
-            let mut session_expiry_interval_secs = None;
-            let mut server_reference = None;
-            let mut reason_string = None;
-            let mut user_properties = Vec::new();
+            if src.has_remaining() {
+                let mut session_exp_secs = None;
+                let mut server_reference = None;
+                let mut reason_string = None;
+                let mut user_properties = Vec::new();
 
-            let prop_src = &mut utils::take_properties(src)?;
-            while prop_src.has_remaining() {
-                match prop_src.get_u8() {
-                    pt::SESS_EXPIRY_INT => session_expiry_interval_secs.read_value(prop_src)?,
-                    pt::REASON_STRING => reason_string.read_value(prop_src)?,
-                    pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
-                    pt::SERVER_REF => server_reference.read_value(prop_src)?,
-                    _ => return Err(DecodeError::MalformedPacket),
+                let prop_src = &mut utils::take_properties(src)?;
+                while prop_src.has_remaining() {
+                    match prop_src.get_u8() {
+                        pt::SESS_EXPIRY_INT => session_exp_secs.read_value(prop_src)?,
+                        pt::REASON_STRING => reason_string.read_value(prop_src)?,
+                        pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
+                        pt::SERVER_REF => server_reference.read_value(prop_src)?,
+                        _ => return Err(DecodeError::MalformedPacket),
+                    }
                 }
-            }
-            ensure!(!src.has_remaining(), DecodeError::InvalidLength);
+                ensure!(!src.has_remaining(), DecodeError::InvalidLength);
 
-            Ok(Disconnect {
-                reason_code,
-                session_expiry_interval_secs,
-                server_reference,
-                reason_string,
-                user_properties,
-            })
+                Self {
+                    reason_code,
+                    session_expiry_interval_secs: session_exp_secs,
+                    server_reference,
+                    reason_string,
+                    user_properties,
+                }
+            } else {
+                Self { reason_code, ..Default::default() }
+            }
         } else {
-            Ok(Disconnect {
-                reason_code: DisconnectReasonCode::NormalDisconnection,
-                session_expiry_interval_secs: None,
-                server_reference: None,
-                reason_string: None,
-                user_properties: Vec::new(),
-            })
-        }
+            Self::default()
+        };
+        Ok(disconnect)
     }
 }
 
