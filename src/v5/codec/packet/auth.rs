@@ -26,39 +26,37 @@ prim_enum! {
 
 impl Auth {
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        if src.has_remaining() {
-            ensure!(src.remaining() > 1, DecodeError::InvalidLength);
+        let auth = if src.has_remaining() {
             let reason_code = src.get_u8().try_into()?;
 
-            let mut auth_method = None;
-            let mut auth_data = None;
-            let mut reason_string = None;
-            let mut user_properties = Vec::new();
+            if src.has_remaining() {
+                let mut auth_method = None;
+                let mut auth_data = None;
+                let mut reason_string = None;
+                let mut user_properties = Vec::new();
 
-            if reason_code != AuthReasonCode::Success || src.has_remaining() {
-                let prop_src = &mut utils::take_properties(src)?;
-                while prop_src.has_remaining() {
-                    match prop_src.get_u8() {
-                        pt::AUTH_METHOD => auth_method.read_value(prop_src)?,
-                        pt::AUTH_DATA => auth_data.read_value(prop_src)?,
-                        pt::REASON_STRING => reason_string.read_value(prop_src)?,
-                        pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
-                        _ => return Err(DecodeError::MalformedPacket),
+                if reason_code != AuthReasonCode::Success || src.has_remaining() {
+                    let prop_src = &mut utils::take_properties(src)?;
+                    while prop_src.has_remaining() {
+                        match prop_src.get_u8() {
+                            pt::AUTH_METHOD => auth_method.read_value(prop_src)?,
+                            pt::AUTH_DATA => auth_data.read_value(prop_src)?,
+                            pt::REASON_STRING => reason_string.read_value(prop_src)?,
+                            pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
+                            _ => return Err(DecodeError::MalformedPacket),
+                        }
                     }
+                    ensure!(!src.has_remaining(), DecodeError::InvalidLength);
                 }
-                ensure!(!src.has_remaining(), DecodeError::InvalidLength);
-            }
 
-            Ok(Auth { reason_code, auth_method, auth_data, reason_string, user_properties })
+                Self { reason_code, auth_method, auth_data, reason_string, user_properties }
+            } else {
+                Self { reason_code, ..Default::default() }
+            }
         } else {
-            Ok(Auth {
-                reason_code: AuthReasonCode::Success,
-                auth_method: None,
-                auth_data: None,
-                reason_string: None,
-                user_properties: Vec::new(),
-            })
-        }
+            Self::default()
+        };
+        Ok(auth)
     }
 }
 

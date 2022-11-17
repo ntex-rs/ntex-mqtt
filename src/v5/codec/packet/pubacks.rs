@@ -54,16 +54,21 @@ prim_enum! {
 impl PublishAck {
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
-        let (reason_code, properties, reason_string) = if src.has_remaining() {
+
+        let ack = if src.has_remaining() {
             let reason_code = src.get_u8().try_into()?;
-            let (properties, reason_string) = ack_props::decode(src)?;
-            ensure!(!src.has_remaining(), DecodeError::InvalidLength); // no bytes should be left
-            (reason_code, properties, reason_string)
+            if src.has_remaining() {
+                let (properties, reason_string) = ack_props::decode(src)?;
+                ensure!(!src.has_remaining(), DecodeError::InvalidLength); // no data should be left in src
+                Self { packet_id, reason_code, properties, reason_string }
+            } else {
+                Self { packet_id, reason_code, ..Default::default() }
+            }
         } else {
-            (PublishAckReason::Success, UserProperties::default(), None)
+            Self { packet_id, ..Default::default() }
         };
 
-        Ok(Self { packet_id, reason_code, properties, reason_string })
+        Ok(ack)
     }
 }
 
@@ -81,16 +86,31 @@ impl Default for PublishAck {
 impl PublishAck2 {
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
-        let (reason_code, properties, reason_string) = if src.has_remaining() {
+        let ack = if src.has_remaining() {
             let reason_code = src.get_u8().try_into()?;
-            let (properties, reason_string) = ack_props::decode(src)?;
-            ensure!(!src.has_remaining(), DecodeError::InvalidLength); // no bytes should be left
-            (reason_code, properties, reason_string)
+            if src.has_remaining() {
+                let (properties, reason_string) = ack_props::decode(src)?;
+                ensure!(!src.has_remaining(), DecodeError::InvalidLength); // no data should be left in src
+                Self { packet_id, reason_code, properties, reason_string }
+            } else {
+                Self { packet_id, reason_code, ..Default::default() }
+            }
         } else {
-            (PublishAck2Reason::Success, UserProperties::default(), None)
+            Self { packet_id, ..Default::default() }
         };
 
-        Ok(Self { packet_id, reason_code, properties, reason_string })
+        Ok(ack)
+    }
+}
+
+impl Default for PublishAck2 {
+    fn default() -> Self {
+        Self {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            reason_code: PublishAck2Reason::Success,
+            properties: UserProperties::default(),
+            reason_string: None,
+        }
     }
 }
 
@@ -128,5 +148,46 @@ impl EncodeLtd for PublishAck2 {
         buf.put_u8(self.reason_code.into());
         ack_props::encode(&self.properties, &self.reason_string, buf, size - 3)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_case::test_case;
+
+    #[test_case(b"\xFF\xFF\x00\x00", 65535, PublishAckReason::Success, vec![], None; "success_empty")]
+    #[test_case(b"\x00\x01", 1, PublishAckReason::Success, vec![], None; "success_no_reason")]
+    #[test_case(b"\x01\x01\x00", 257, PublishAckReason::Success, vec![], None; "success_no_prop_len")]
+    #[test_case(b"\x00\x01\x87", 1, PublishAckReason::NotAuthorized, vec![], None; "no_success_no_prop_len")]
+    #[test_case(b"\x00\x01\x83\x00", 1, PublishAckReason::ImplementationSpecificError, vec![], None; "no_success_min")]
+    #[test_case(b"\x00\xFF\x80\x0D\x26\x00\x01a\x00\x01b\x1F\x00\x03123", 255, PublishAckReason::UnspecifiedError, vec![("a", "b")], Some("123"); "all_out")]
+    fn puback_decode_success(
+        input: &'static [u8],
+        packet_id: u16,
+        reason_code: PublishAckReason,
+        properties: Vec<(&'static str, &'static str)>,
+        reason_string: Option<&'static str>,
+    ) {
+        let mut input = input.into();
+        let result = PublishAck::decode(&mut input);
+        assert_eq!(
+            result,
+            Ok(PublishAck {
+                packet_id: packet_id.try_into().unwrap(),
+                reason_code,
+                properties: properties.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+                reason_string: reason_string.map(|s| s.into())
+            })
+        );
+        assert_eq!(input.len(), 0);
+    }
+
+    #[test_case(b"\x00\x00", DecodeError::MalformedPacket; "packet_id_zero")]
+    #[test_case(b"\x00\x01\x00\x01", DecodeError::InvalidLength; "properties_promised")]
+    fn puback_decode_must_fail(input: &'static [u8], error: DecodeError) {
+        let mut input = input.into();
+        let result = PublishAck::decode(&mut input);
+        assert_eq!(result, Err(error));
     }
 }
