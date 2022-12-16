@@ -28,7 +28,7 @@ where
 {
     Dispatcher::<_, _, E>::new(
         sink,
-        max_receive as usize,
+        max_receive,
         max_topic_alias,
         publish,
         control.map_err(MqttError::Service),

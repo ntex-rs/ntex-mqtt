@@ -1,8 +1,10 @@
 # Changes
 
-## [0.9.2] - 2022-12-15
+## [0.9.2] - 2022-12-16
 
-* v5: fix topic alias handling
+* v5: Fix topic alias handling #122
+
+* v3/v5: Fix sink inflight messages handling after local codec error
 
 ## [0.9.1] - 2022-11-17
 

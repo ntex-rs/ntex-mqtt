@@ -49,7 +49,7 @@ pub(crate) fn get_encoded_size(packet: &Packet) -> usize {
         Packet::PublishComplete { .. } | // Packet Id
         Packet::UnsubscribeAck { .. } => 2, // Packet Id
         Packet::Subscribe { ref topic_filters, .. } => {
-            2 + topic_filters.iter().fold(0, |acc, &(ref filter, _)| acc + 2 + filter.len() + 1)
+            2 + topic_filters.iter().fold(0, |acc, (filter, _)| acc + 2 + filter.len() + 1)
         }
 
         Packet::SubscribeAck { ref status, .. } => 2 + status.len(),
@@ -76,7 +76,7 @@ pub(crate) fn encode(
         Packet::ConnectAck { session_present, return_code } => {
             dst.put_u8(packet_type::CONNACK);
             write_variable_length(content_size, dst);
-            let flags_byte = if *session_present { 0x01 } else { 0x00 };
+            let flags_byte = u8::from(*session_present);
             let code: u8 = From::from(*return_code);
             dst.put_slice(&[flags_byte, code]);
         }

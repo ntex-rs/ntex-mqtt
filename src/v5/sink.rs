@@ -326,28 +326,25 @@ impl PublishBuilder {
             packet.packet_id = NonZeroU16::new(idx);
         }
 
-        let rx = shared.with_queues(|queues| {
-            // publish ack channel
-            let (tx, rx) = shared.pool.queue.channel();
-
-            if queues.inflight.contains_key(&idx) {
-                return Err(PublishQos1Error::PacketIdInUse(idx));
-            }
-            queues.inflight.insert(idx, (tx, AckType::Publish));
-            queues.inflight_order.push_back(idx);
-            Ok(rx)
-        });
-
-        let rx = match rx {
-            Ok(rx) => rx,
-            Err(e) => return Either::Left(Ready::Err(e)),
-        };
+        let pkt_in_use = shared.with_queues(|queues| queues.inflight.contains_key(&idx));
+        if pkt_in_use {
+            return Either::Left(Ready::Err(PublishQos1Error::PacketIdInUse(idx)));
+        }
 
         // send publish to client
         log::trace!("Publish (QoS1) to {:#?}", packet);
 
         match shared.io.encode(codec::Packet::Publish(packet), &shared.codec) {
             Ok(_) => {
+                let rx = shared.with_queues(|queues| {
+                    // publish ack channel
+                    let (tx, rx) = shared.pool.queue.channel();
+
+                    queues.inflight.insert(idx, (tx, AckType::Publish));
+                    queues.inflight_order.push_back(idx);
+                    rx
+                });
+
                 // wait ack from peer
                 Either::Right(async move {
                     rx.await.map_err(|_| PublishQos1Error::Disconnected).and_then(|pkt| {
@@ -402,7 +399,6 @@ impl SubscribeBuilder {
         self
     }
 
-    #[allow(clippy::await_holding_refcell_ref)]
     /// Send subscribe packet
     pub async fn send(self) -> Result<codec::SubscribeAck, SendPacketError> {
         let shared = self.shared;
@@ -485,7 +481,6 @@ impl UnsubscribeBuilder {
         self
     }
 
-    #[allow(clippy::await_holding_refcell_ref)]
     /// Send unsubscribe packet
     pub async fn send(self) -> Result<codec::UnsubscribeAck, SendPacketError> {
         let shared = self.shared;

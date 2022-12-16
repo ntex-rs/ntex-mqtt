@@ -215,10 +215,7 @@ impl EncodeLtd for ConnectAck {
         // todo: move upstream: write_variable_length(size, buf);
         let start_len = buf.len();
 
-        buf.put_slice(&[
-            if self.session_present { 0x01 } else { 0x00 },
-            self.reason_code.into(),
-        ]);
+        buf.put_slice(&[u8::from(self.session_present), self.reason_code.into()]);
 
         let prop_len = var_int_len_from_size(size - 2);
         utils::write_variable_length(prop_len, buf);

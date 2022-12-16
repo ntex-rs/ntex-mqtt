@@ -232,7 +232,6 @@ impl PublishBuilder {
         }
     }
 
-    #[allow(clippy::await_holding_refcell_ref)]
     /// Send publish packet with QoS 1
     pub fn send_at_least_once(self) -> impl Future<Output = Result<(), SendPacketError>> {
         if !self.shared.io.is_closed() {
@@ -262,35 +261,33 @@ impl PublishBuilder {
         mut packet: codec::Publish,
         shared: Rc<MqttShared>,
     ) -> impl Future<Output = Result<(), SendPacketError>> {
-        let rx = shared.with_queues(|queues| {
-            // publish ack channel
-            let (tx, rx) = shared.pool.queue.channel();
+        // packet id
+        let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
+        if idx == 0 {
+            idx = shared.next_id();
+            packet.packet_id = NonZeroU16::new(idx);
+        }
 
-            // packet id
-            let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
-            if idx == 0 {
-                idx = shared.next_id();
-                packet.packet_id = NonZeroU16::new(idx);
-            }
-            if queues.inflight.contains_key(&idx) {
-                return Err(SendPacketError::PacketIdInUse(idx));
-            }
-            queues.inflight.insert(idx, (tx, AckType::Publish));
-            queues.inflight_order.push_back(idx);
-            Ok(rx)
-        });
-
-        let rx = match rx {
-            Ok(rx) => rx,
-            Err(e) => return Either::Left(Ready::Err(e)),
-        };
+        let in_use = shared.with_queues(|queues| queues.inflight.contains_key(&idx));
+        if in_use {
+            return Either::Left(Ready::Err(SendPacketError::PacketIdInUse(idx)));
+        }
 
         log::trace!("Publish (QoS1) to {:#?}", packet);
 
         match shared.io.encode(codec::Packet::Publish(packet), &shared.codec) {
-            Ok(_) => Either::Right(async move {
-                rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
-            }),
+            Ok(_) => {
+                let rx = shared.with_queues(|queues| {
+                    // publish ack channel
+                    let (tx, rx) = shared.pool.queue.channel();
+                    queues.inflight.insert(idx, (tx, AckType::Publish));
+                    queues.inflight_order.push_back(idx);
+                    rx
+                });
+                Either::Right(async move {
+                    rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
+                })
+            }
             Err(err) => Either::Left(Ready::Err(SendPacketError::Encode(err))),
         }
     }
@@ -323,7 +320,6 @@ impl SubscribeBuilder {
         self
     }
 
-    #[allow(clippy::await_holding_refcell_ref)]
     /// Send subscribe packet
     pub async fn send(self) -> Result<Vec<codec::SubscribeReturnCode>, SendPacketError> {
         let shared = self.shared;
@@ -404,7 +400,6 @@ impl UnsubscribeBuilder {
         self
     }
 
-    #[allow(clippy::await_holding_refcell_ref)]
     /// Send unsubscribe packet
     pub async fn send(self) -> Result<(), SendPacketError> {
         let shared = self.shared;
