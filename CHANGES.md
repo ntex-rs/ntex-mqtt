@@ -1,5 +1,9 @@
 # Changes
 
+## [0.9.2] - 2022-12-15
+
+* v5: fix topic alias handling
+
 ## [0.9.1] - 2022-11-17
 
 * v5: allow omitting properties length if it is 0 in packets without payload regardless of reason code or its presence.
