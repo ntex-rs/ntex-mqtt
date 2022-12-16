@@ -679,6 +679,72 @@ async fn test_sink_encoder_error_pub_qos0() {
     assert!(res.is_ok());
 }
 
+/// Make sure we can publish message to client after local codec error
+#[ntex::test]
+async fn test_sink_success_after_encoder_error_qos1() {
+    let success = Arc::new(AtomicBool::new(false));
+    let success2 = success.clone();
+
+    let _ = env_logger::try_init();
+    let srv = server::test_server(move || {
+        let success = success2.clone();
+        MqttServer::new(move |con: Handshake| {
+            let sink = con.sink().clone();
+            let success = success.clone();
+
+            ntex::rt::spawn(async move {
+                let builder = sink.publish("test", Bytes::new()).properties(|props| {
+                    props.user_properties.push((
+                        "ssssssssssssssssssssssssssssssssssss".into(),
+                        "ssssssssssssssssssssssssssssssssssss".into(),
+                    ));
+                });
+                let res = builder.send_at_least_once().await;
+                assert_eq!(
+                    res,
+                    Err(error::PublishQos1Error::Encode(error::EncodeError::InvalidLength))
+                );
+
+                let res = sink.publish("test", Bytes::new()).send_at_least_once().await;
+                assert!(res.is_ok());
+                success.store(true, Relaxed);
+            });
+            Ready::Ok(con.ack(St))
+        })
+        .publish(|p: Publish| async move {
+            sleep(Duration::from_millis(50)).await;
+            Ok::<_, TestError>(p.ack())
+        })
+        .control(move |msg| match msg {
+            ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+            _ => Ready::Ok(msg.disconnect()),
+        })
+        .finish()
+    });
+
+    // connect to server
+    let client = client::MqttConnector::new(srv.addr())
+        .client_id("user")
+        .max_packet_size(30)
+        .connect()
+        .await
+        .unwrap();
+
+    let sink = client.sink();
+
+    async fn publish(pkt: Publish) -> Result<PublishAck, TestError> {
+        Ok(pkt.ack())
+    }
+
+    let router = client.resource("test", publish);
+    ntex::rt::spawn(router.start_default());
+
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_ok());
+    assert!(success.load(Relaxed));
+}
+
 #[ntex::test]
 async fn test_request_problem_info() {
     let srv = server::test_server(move || {

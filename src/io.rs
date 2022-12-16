@@ -322,7 +322,7 @@ where
 
                                     let mut inner = this.state.borrow_mut();
                                     let response_idx =
-                                        inner.base.wrapping_add(inner.queue.len() as usize);
+                                        inner.base.wrapping_add(inner.queue.len());
 
                                     if let Poll::Ready(res) = res {
                                         // check if current result is only response atm
@@ -354,7 +354,7 @@ where
                                 } else {
                                     let mut inner = this.state.borrow_mut();
                                     let response_idx =
-                                        inner.base.wrapping_add(inner.queue.len() as usize);
+                                        inner.base.wrapping_add(inner.queue.len());
                                     inner.queue.push_back(ServiceResult::Pending);
 
                                     let st = io.get_ref();

@@ -422,9 +422,9 @@ where
                                 shared.codec.set_max_inbound_size(size);
                             }
                             if ack.packet.server_keepalive_sec.is_none()
-                                && (keep_alive > ack.keepalive as u16)
+                                && (keep_alive > ack.keepalive)
                             {
-                                ack.packet.server_keepalive_sec = Some(ack.keepalive as u16);
+                                ack.packet.server_keepalive_sec = Some(ack.keepalive);
                             }
                             shared.set_cap(peer_receive_max);
 
@@ -646,9 +646,9 @@ where
                             shared.codec.set_max_inbound_size(size);
                         }
                         if ack.packet.server_keepalive_sec.is_none()
-                            && (keep_alive > ack.keepalive as u16)
+                            && (keep_alive > ack.keepalive)
                         {
-                            ack.packet.server_keepalive_sec = Some(ack.keepalive as u16);
+                            ack.packet.server_keepalive_sec = Some(ack.keepalive);
                         }
                         shared.set_cap(peer_receive_max);
                         ack.io
