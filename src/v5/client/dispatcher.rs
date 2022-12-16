@@ -171,7 +171,7 @@ where
                     // handle topic aliases
                     if let Some(alias) = publish.properties.topic_alias {
                         if publish.topic.is_empty() {
-                            // lookup topic by provided alias 
+                            // lookup topic by provided alias
                             match inner.aliases.get(&alias) {
                                 Some(aliased_topic) => publish.topic = aliased_topic.clone(),
                                 None => {
