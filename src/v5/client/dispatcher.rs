@@ -4,7 +4,7 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 
 use ntex::io::DispatchItem;
 use ntex::service::Service;
-use ntex::util::{Either, HashSet, Ready};
+use ntex::util::{ByteString, Either, HashMap, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::types::packet_type;
@@ -53,7 +53,7 @@ struct Inner<C> {
 
 struct PublishInfo {
     inflight: HashSet<NonZeroU16>,
-    aliases: HashSet<NonZeroU16>,
+    aliases: HashMap<NonZeroU16, ByteString>,
 }
 
 impl<T, C, E> Dispatcher<T, C, E>
@@ -77,7 +77,7 @@ where
                 control,
                 sink,
                 info: RefCell::new(PublishInfo {
-                    aliases: HashSet::default(),
+                    aliases: HashMap::default(),
                     inflight: HashSet::default(),
                 }),
             }),
@@ -132,7 +132,7 @@ where
         log::trace!("Dispatch packet: {:#?}", request);
 
         match request {
-            DispatchItem::Item(codec::Packet::Publish(publish)) => {
+            DispatchItem::Item(codec::Packet::Publish(mut publish)) => {
                 let info = self.inner.clone();
                 let packet_id = publish.packet_id;
 
@@ -170,26 +170,45 @@ where
 
                     // handle topic aliases
                     if let Some(alias) = publish.properties.topic_alias {
-                        // check existing topic
                         if publish.topic.is_empty() {
-                            if !inner.aliases.contains(&alias) {
-                                return Either::Right(Either::Right(ControlResponse::new(
-                                    ControlMessage::proto_error(
-                                        ProtocolError::UnknownTopicAlias,
-                                    ),
-                                    &self.inner,
-                                )));
+                            // lookup topic by provided alias
+                            match inner.aliases.get(&alias) {
+                                Some(aliased_topic) => publish.topic = aliased_topic.clone(),
+                                None => {
+                                    return Either::Right(Either::Right(ControlResponse::new(
+                                        ControlMessage::proto_error(
+                                            ProtocolError::UnknownTopicAlias,
+                                        ),
+                                        &self.inner,
+                                    )));
+                                }
                             }
                         } else {
-                            if alias.get() > self.max_topic_alias {
-                                return Either::Right(Either::Right(ControlResponse::new(
-                                    ControlMessage::proto_error(ProtocolError::MaxTopicAlias),
-                                    &self.inner,
-                                )));
-                            }
-
                             // record new alias
-                            inner.aliases.insert(alias);
+                            match inner.aliases.entry(alias) {
+                                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                    if entry.get().as_str() != publish.topic.as_str() {
+                                        let mut topic = publish.topic.clone();
+                                        topic.trimdown();
+                                        entry.insert(topic);
+                                    }
+                                }
+                                std::collections::hash_map::Entry::Vacant(entry) => {
+                                    if alias.get() > self.max_topic_alias {
+                                        return Either::Right(Either::Right(
+                                            ControlResponse::new(
+                                                ControlMessage::proto_error(
+                                                    ProtocolError::MaxTopicAlias,
+                                                ),
+                                                &self.inner,
+                                            ),
+                                        ));
+                                    }
+                                    let mut topic = publish.topic.clone();
+                                    topic.trimdown();
+                                    entry.insert(topic);
+                                }
+                            }
                         }
                     }
                 }
