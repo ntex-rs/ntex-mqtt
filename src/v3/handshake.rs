@@ -6,6 +6,9 @@ use super::codec as mqtt;
 use super::shared::MqttShared;
 use super::sink::MqttSink;
 
+const DEFAULT_KEEPALIVE: Seconds = Seconds(30);
+const DEFAULT_OUTGOING_INFLIGHT: u16 = 16;
+
 /// Connect message
 pub struct Handshake {
     io: IoBoxed,
@@ -41,16 +44,17 @@ impl Handshake {
         let Handshake { io, shared, pkt } = self;
         // [MQTT-3.1.2-24].
         let keepalive = if pkt.keep_alive != 0 {
-            (pkt.keep_alive >> 1).checked_add(pkt.keep_alive).unwrap_or(u16::MAX)
+            Seconds((pkt.keep_alive >> 1).checked_add(pkt.keep_alive).unwrap_or(u16::MAX))
         } else {
-            30
+            DEFAULT_KEEPALIVE
         };
         HandshakeAck {
             io,
             shared,
+            keepalive,
             session_present,
             session: Some(st),
-            keepalive: Seconds(keepalive),
+            inflight: DEFAULT_OUTGOING_INFLIGHT,
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
         }
     }
@@ -62,7 +66,8 @@ impl Handshake {
             shared: self.shared,
             session: None,
             session_present: false,
-            keepalive: Seconds(30),
+            keepalive: DEFAULT_KEEPALIVE,
+            inflight: DEFAULT_OUTGOING_INFLIGHT,
             return_code: mqtt::ConnectAckReason::IdentifierRejected,
         }
     }
@@ -74,7 +79,8 @@ impl Handshake {
             shared: self.shared,
             session: None,
             session_present: false,
-            keepalive: Seconds(30),
+            keepalive: DEFAULT_KEEPALIVE,
+            inflight: DEFAULT_OUTGOING_INFLIGHT,
             return_code: mqtt::ConnectAckReason::BadUserNameOrPassword,
         }
     }
@@ -86,7 +92,8 @@ impl Handshake {
             shared: self.shared,
             session: None,
             session_present: false,
-            keepalive: Seconds(30),
+            keepalive: DEFAULT_KEEPALIVE,
+            inflight: DEFAULT_OUTGOING_INFLIGHT,
             return_code: mqtt::ConnectAckReason::NotAuthorized,
         }
     }
@@ -98,7 +105,8 @@ impl Handshake {
             shared: self.shared,
             session: None,
             session_present: false,
-            keepalive: Seconds(30),
+            keepalive: DEFAULT_KEEPALIVE,
+            inflight: DEFAULT_OUTGOING_INFLIGHT,
             return_code: mqtt::ConnectAckReason::ServiceUnavailable,
         }
     }
@@ -118,6 +126,7 @@ pub struct HandshakeAck<St> {
     pub(crate) return_code: mqtt::ConnectAckReason,
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) keepalive: Seconds,
+    pub(crate) inflight: u16,
 }
 
 impl<St> HandshakeAck<St> {
@@ -126,6 +135,14 @@ impl<St> HandshakeAck<St> {
     /// By default idle time-out is set to 30 seconds.
     pub fn idle_timeout(mut self, timeout: Seconds) -> Self {
         self.keepalive = timeout;
+        self
+    }
+
+    /// Number of outgoing in-flight concurrent messages.
+    ///
+    /// By default in-flight is set to 16 messages
+    pub fn inflight(mut self, val: u16) -> Self {
+        self.inflight = val;
         self
     }
 }

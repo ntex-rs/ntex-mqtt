@@ -376,7 +376,7 @@ where
 
                             log::trace!("Sending success handshake ack: {:#?}", pkt);
 
-                            ack.shared.set_cap(16);
+                            ack.shared.set_cap(ack.inflight as usize);
                             ack.io.send(pkt, &ack.shared.codec).await?;
                             Ok((
                                 ack.io,
@@ -549,7 +549,7 @@ where
                             pkt
                         );
 
-                        ack.shared.set_cap(16);
+                        ack.shared.set_cap(ack.inflight as usize);
                         ack.shared.codec.set_max_size(max_size);
                         ack.io.send(pkt, &ack.shared.codec).await.map_err(MqttError::from)?;
 

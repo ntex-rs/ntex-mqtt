@@ -4,6 +4,8 @@
 
 * v5: Fix topic alias handling #122
 
+* v3: Allow to change outgoing in-flight limit
+
 * v3/v5: Fix sink inflight messages handling after local codec error #123
 
 ## [0.9.1] - 2022-11-17
