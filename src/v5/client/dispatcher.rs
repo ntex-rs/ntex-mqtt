@@ -4,7 +4,7 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 
 use ntex::io::DispatchItem;
 use ntex::service::Service;
-use ntex::util::{ByteString, Either, HashMap, HashSet, Ready};
+use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::types::packet_type;
@@ -38,7 +38,7 @@ where
 /// Mqtt protocol dispatcher
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     publish: T,
-    shutdown: RefCell<Option<Pin<Box<dyn Future<Output = ()>>>>>,
+    shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     max_receive: usize,
     max_topic_alias: u16,
     inner: Rc<Inner<C>>,

@@ -5,7 +5,7 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 use ntex::io::DispatchItem;
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::{
-    buffer::BufferService, inflight::InFlightService, join, Either, HashSet, Ready,
+    buffer::BufferService, inflight::InFlightService, join, BoxFuture, Either, HashSet, Ready,
 };
 
 use crate::error::{MqttError, ProtocolError};
@@ -86,7 +86,7 @@ pub(crate) struct Dispatcher<St, T, C: Service<ControlMessage<E>>, E> {
     session: Session<St>,
     publish: T,
     max_qos: QoS,
-    shutdown: RefCell<Option<Pin<Box<dyn Future<Output = ()>>>>>,
+    shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<(E,)>,
 }

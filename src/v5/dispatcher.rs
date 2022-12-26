@@ -6,7 +6,7 @@ use ntex::io::DispatchItem;
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::ByteString;
 use ntex::util::{
-    buffer::BufferService, inflight::InFlightService, join, Either, HashSet, Ready,
+    buffer::BufferService, inflight::InFlightService, join, BoxFuture, Either, HashSet, Ready,
 };
 use ntex_util::HashMap;
 
@@ -91,7 +91,7 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     sink: MqttSink,
     publish: T,
-    shutdown: RefCell<Option<Pin<Box<dyn Future<Output = ()>>>>>,
+    shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     max_qos: QoS,
     max_receive: usize,
     max_topic_alias: u16,

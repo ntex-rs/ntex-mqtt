@@ -4,7 +4,7 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 
 use ntex::io::DispatchItem;
 use ntex::service::Service;
-use ntex::util::{inflight::InFlightService, Either, HashSet, Ready};
+use ntex::util::{inflight::InFlightService, BoxFuture, Either, HashSet, Ready};
 
 use crate::v3::shared::{Ack, MqttShared};
 use crate::v3::{codec, control::ControlResultKind, publish::Publish, sink::MqttSink};
@@ -35,7 +35,7 @@ where
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     sink: MqttSink,
     publish: T,
-    shutdown: RefCell<Option<Pin<Box<dyn Future<Output = ()>>>>>,
+    shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<E>,
 }

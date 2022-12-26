@@ -31,11 +31,11 @@ ntex = { version = "0.6.0-alpha.0", features = ["tokio", "rustls", "openssl"] }
 test-case = "2"
 
 [patch.crates-io]
-ntex = { git = "https://github.com/ntex-rs/ntex.git", branch = "service-0-4" }
-ntex-connect = { git = "https://github.com/ntex-rs/ntex.git", branch = "service-0-4" }
-ntex-io = { git = "https://github.com/ntex-rs/ntex.git", branch = "service-0-4" }
-ntex-service = { git = "https://github.com/ntex-rs/ntex.git", branch = "service-0-4" }
-ntex-util = { git = "https://github.com/ntex-rs/ntex.git", branch = "service-0-4" }
-ntex-tls = { git = "https://github.com/ntex-rs/ntex.git", branch = "service-0-4" }
-ntex-tokio = { git = "https://github.com/ntex-rs/ntex.git", branch = "service-0-4" }
+ntex = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-connect = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-service = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-util = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-tls = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-tokio = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-h2 = { git = "https://github.com/ntex-rs/ntex-h2.git", branch = "service-0-4" }
