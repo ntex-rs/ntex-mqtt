@@ -162,7 +162,7 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
                 let idx = item.0;
                 *req.topic_mut() = item.1.clone();
                 drop(aliases);
-                return self.handlers[idx].call(req)
+                return self.handlers[idx].call(req);
             } else {
                 log::error!("Unknown topic alias: {:?}", alias);
             }

@@ -20,10 +20,11 @@ async fn main() -> std::io::Result<()> {
     builder.set_verify(ssl::SslVerifyMode::NONE);
 
     // we need custom connector that would open ws connection and enable ws transport
-    let ws_client =
-        Rc::new(ws::WsClient::with_connector("https://127.0.0.1:8883", Connector::new(builder.build()))
+    let ws_client = Rc::new(
+        ws::WsClient::with_connector("https://127.0.0.1:8883", Connector::new(builder.build()))
             .finish()
-            .unwrap());
+            .unwrap(),
+    );
 
     // connect to server
     let client = v3::client::MqttConnector::new("127.0.0.1:8883")
@@ -32,7 +33,8 @@ async fn main() -> std::io::Result<()> {
         .connector(move |_: Connect<&str>| {
             let client = ws_client.clone();
             async move {
-                Ok(client.connect()
+                Ok(client
+                    .connect()
                     .await
                     .map_err(|e| ConnectError::Io(io::Error::new(io::ErrorKind::Other, e)))?
                     .into_transport()

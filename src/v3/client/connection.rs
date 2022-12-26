@@ -241,19 +241,14 @@ where
             // exec handler
             let idx = *idx;
             let handlers = handlers.clone();
-            Either::Left(async move {
-                call(req, &handlers[idx]).await
-            })
+            Either::Left(async move { call(req, &handlers[idx]).await })
         } else {
             Either::Right(Ready::<_, Err>::Ok(Either::Right(req)))
         }
     })
 }
 
-async fn call<S, Err, PErr>(
-    req: Publish,
-    srv: &S,
-) -> Result<Either<(), Publish>, Err>
+async fn call<S, Err, PErr>(req: Publish, srv: &S) -> Result<Either<(), Publish>, Err>
 where
     S: Service<Publish, Response = (), Error = PErr>,
     Err: From<PErr>,

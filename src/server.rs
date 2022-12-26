@@ -352,11 +352,7 @@ where
     fn call(&self, req: IoBoxed) -> Self::Future<'_> {
         MqttServerImplResponse {
             state: MqttServerImplState::Version {
-                item: Some((
-                    req,
-                    VersionCodec,
-                    Deadline::new(self.handshake_timeout),
-                )),
+                item: Some((req, VersionCodec, Deadline::new(self.handshake_timeout))),
             },
             handlers: &self.handlers,
         }

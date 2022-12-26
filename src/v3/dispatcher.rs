@@ -350,12 +350,8 @@ where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
     fn new(pkt: ControlMessage<E>, inner: &'f Inner<C>) -> Self {
-        let error = match pkt {
-            ControlMessage::Error(_) | ControlMessage::ProtocolError(_) => true,
-            _ => false,
-        };
-
-        Self { error, fut: inner.control.call(pkt), inner: inner.clone(), _t: PhantomData }
+        let error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
+        Self { error, inner, fut: inner.control.call(pkt), _t: PhantomData }
     }
 }
 

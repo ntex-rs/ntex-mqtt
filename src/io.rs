@@ -1,7 +1,8 @@
 //! Framed transport dispatcher
 use std::task::{Context, Poll};
 use std::{
-    mem, cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time,
+    cell::Cell, cell::RefCell, collections::VecDeque, future::Future, mem, pin::Pin, rc::Rc,
+    time,
 };
 
 use ntex::codec::{Decoder, Encoder};
@@ -316,7 +317,8 @@ where
                                 // optimize first call
                                 if this.response.is_none() {
                                     let fut = this.service.call(item);
-                                    this.response.set(Some(unsafe { mem::transmute_copy(&fut)}));
+                                    this.response
+                                        .set(Some(unsafe { mem::transmute_copy(&fut) }));
                                     mem::forget(fut);
                                     let res =
                                         this.response.as_mut().as_pin_mut().unwrap().poll(cx);

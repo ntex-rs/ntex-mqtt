@@ -245,7 +245,7 @@ where
             Poll::Ready(Ok(item)) => item,
             Poll::Ready(Err(e)) => {
                 this.fut_c
-                    .set(Some(ControlResponse::new(ControlMessage::error(e), &*this.inner)));
+                    .set(Some(ControlResponse::new(ControlMessage::error(e), *this.inner)));
                 return self.poll(cx);
             }
             Poll::Pending => return Poll::Pending,
@@ -265,7 +265,7 @@ where
             Either::Right(pkt) => {
                 this.fut_c.set(Some(ControlResponse::new(
                     ControlMessage::publish(pkt.into_inner()),
-                    &*this.inner,
+                    *this.inner,
                 )));
                 self.poll(cx)
             }
