@@ -66,8 +66,8 @@ impl<E> ControlMessage<E> {
         ControlMessage::Disconnect(Disconnect(pkt))
     }
 
-    pub(super) fn closed(is_error: bool) -> Self {
-        ControlMessage::Closed(Closed::new(is_error))
+    pub(super) const fn closed() -> Self {
+        ControlMessage::Closed(Closed)
     }
 
     pub(super) fn error(err: E) -> Self {
@@ -435,20 +435,9 @@ impl<'a> UnsubscribeItem<'a> {
 
 /// Connection closed message
 #[derive(Debug)]
-pub struct Closed {
-    is_error: bool,
-}
+pub struct Closed;
 
 impl Closed {
-    pub(crate) fn new(is_error: bool) -> Self {
-        Self { is_error }
-    }
-
-    /// Returns error state on connection close
-    pub fn is_error(&self) -> bool {
-        self.is_error
-    }
-
     #[inline]
     /// convert packet to a result
     pub fn ack(self) -> ControlResult {

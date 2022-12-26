@@ -31,8 +31,8 @@ impl<E> ControlMessage<E> {
         ControlMessage::Disconnect(Disconnect(pkt))
     }
 
-    pub(super) fn closed(is_error: bool) -> Self {
-        ControlMessage::Closed(Closed::new(is_error))
+    pub(super) const fn closed() -> Self {
+        ControlMessage::Closed(Closed)
     }
 
     pub(super) fn error(err: E) -> Self {

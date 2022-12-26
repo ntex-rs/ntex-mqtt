@@ -27,6 +27,8 @@ where
     type Error = T::Error;
     type Future<'f> = InFlightServiceResponse<'f, T, R> where Self: 'f;
 
+    ntex::forward_poll_shutdown!(service);
+
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         if self.service.poll_ready(cx)?.is_pending() {
@@ -37,11 +39,6 @@ where
         } else {
             Poll::Ready(Ok(()))
         }
-    }
-
-    #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        self.service.poll_shutdown(cx, is_error)
     }
 
     #[inline]

@@ -1,4 +1,3 @@
-use std::task::{Context, Poll};
 use std::{fmt, future::Future, marker::PhantomData, rc::Rc};
 
 use ntex::io::{DispatchItem, IoBoxed};
@@ -325,13 +324,8 @@ where
     type Error = MqttError<H::Error>;
     type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>> where Self: 'f;
 
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.service.poll_ready(cx).map_err(MqttError::Service)
-    }
-
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        self.service.poll_shutdown(cx, is_error)
-    }
+    ntex::forward_poll_ready!(service, MqttError::Service);
+    ntex::forward_poll_shutdown!(service);
 
     fn call(&self, io: IoBoxed) -> Self::Future<'_> {
         log::trace!("Starting mqtt v3 handshake");
@@ -498,15 +492,8 @@ where
     type Error = MqttError<H::Error>;
     type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>> where Self: 'f;
 
-    #[inline]
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.handshake.poll_ready(cx).map_err(MqttError::Service)
-    }
-
-    #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        self.handshake.poll_shutdown(cx, is_error)
-    }
+    ntex::forward_poll_ready!(handshake, MqttError::Service);
+    ntex::forward_poll_shutdown!(handshake);
 
     #[inline]
     fn call(&self, req: SelectItem) -> Self::Future<'_> {

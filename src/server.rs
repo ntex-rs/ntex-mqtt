@@ -337,9 +337,9 @@ where
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        let ready1 = self.handlers.0.poll_shutdown(cx, is_error).is_ready();
-        let ready2 = self.handlers.1.poll_shutdown(cx, is_error).is_ready();
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let ready1 = self.handlers.0.poll_shutdown(cx).is_ready();
+        let ready2 = self.handlers.1.poll_shutdown(cx).is_ready();
 
         if ready1 && ready2 {
             Poll::Ready(())
@@ -375,8 +375,8 @@ where
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        Service::<IoBoxed>::poll_shutdown(self, cx, is_error)
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        Service::<IoBoxed>::poll_shutdown(self, cx)
     }
 
     #[inline]

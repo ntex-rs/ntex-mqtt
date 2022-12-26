@@ -428,9 +428,7 @@ where
                 }
                 // shutdown service
                 IoDispatcherState::Shutdown => {
-                    let is_err = this.state.borrow().error.is_some();
-
-                    return if this.service.poll_shutdown(cx, is_err).is_ready() {
+                    return if this.service.poll_shutdown(cx).is_ready() {
                         log::trace!("service shutdown is completed, stop");
 
                         Poll::Ready(

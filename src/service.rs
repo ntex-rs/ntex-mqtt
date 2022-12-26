@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData, rc::Rc, task::Context, task::Poll};
+use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex::codec::{Decoder, Encoder};
 use ntex::io::{DispatchItem, Filter, Io, IoBoxed};
@@ -141,15 +141,8 @@ where
     type Error = C::Error;
     type Future<'f> = BoxFuture<'f, Result<(), Self::Error>>;
 
-    #[inline]
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connect.poll_ready(cx)
-    }
-
-    #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        self.connect.poll_shutdown(cx, is_error)
-    }
+    ntex::forward_poll_ready!(connect);
+    ntex::forward_poll_shutdown!(connect);
 
     #[inline]
     fn call(&self, req: IoBoxed) -> Self::Future<'_> {
@@ -194,15 +187,8 @@ where
     type Error = C::Error;
     type Future<'f> = BoxFuture<'f, Result<(), Self::Error>>;
 
-    #[inline]
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connect.poll_ready(cx)
-    }
-
-    #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        self.connect.poll_shutdown(cx, is_error)
-    }
+    ntex::forward_poll_ready!(connect);
+    ntex::forward_poll_shutdown!(connect);
 
     #[inline]
     fn call(&self, io: Io<F>) -> Self::Future<'_> {
@@ -228,15 +214,8 @@ where
     type Error = C::Error;
     type Future<'f> = BoxFuture<'f, Result<(), Self::Error>>;
 
-    #[inline]
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.connect.poll_ready(cx)
-    }
-
-    #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        self.connect.poll_shutdown(cx, is_error)
-    }
+    ntex::forward_poll_ready!(connect);
+    ntex::forward_poll_shutdown!(connect);
 
     #[inline]
     fn call(&self, (io, delay): (IoBoxed, Deadline)) -> Self::Future<'_> {

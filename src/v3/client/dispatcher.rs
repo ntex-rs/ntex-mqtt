@@ -86,19 +86,19 @@ where
         }
     }
 
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
         let mut shutdown = self.shutdown.borrow_mut();
         if !shutdown.is_some() {
             self.inner.sink.close();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = inner.control.call(ControlMessage::closed(is_error)).await;
+                let _ = inner.control.call(ControlMessage::closed()).await;
             }));
         }
 
         let res0 = shutdown.as_mut().expect("guard above").as_mut().poll(cx);
-        let res1 = self.publish.poll_shutdown(cx, is_error);
-        let res2 = self.inner.control.poll_shutdown(cx, is_error);
+        let res1 = self.publish.poll_shutdown(cx);
+        let res2 = self.inner.control.poll_shutdown(cx);
         if res0.is_pending() || res1.is_pending() || res2.is_pending() {
             Poll::Pending
         } else {

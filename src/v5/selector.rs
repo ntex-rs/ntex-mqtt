@@ -192,8 +192,8 @@ where
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        Service::<IoBoxed>::poll_shutdown(self, cx, is_error)
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        Service::<IoBoxed>::poll_shutdown(self, cx)
     }
 
     #[inline]
@@ -224,10 +224,10 @@ where
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
         let mut ready = true;
         for srv in self.servers.iter() {
-            ready &= srv.poll_shutdown(cx, is_error).is_ready()
+            ready &= srv.poll_shutdown(cx).is_ready()
         }
         if ready {
             Poll::Ready(())
@@ -308,8 +308,8 @@ where
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        Service::<IoBoxed>::poll_shutdown(self, cx, is_error)
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        Service::<IoBoxed>::poll_shutdown(self, cx)
     }
 
     #[inline]
