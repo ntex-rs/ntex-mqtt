@@ -1,4 +1,4 @@
-use std::{fmt, future::Future, marker::PhantomData, rc::Rc};
+use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex::io::IoBoxed;
 use ntex::router::{IntoPattern, Router, RouterBuilder};
@@ -234,32 +234,33 @@ where
     PErr: 'static,
     Err: From<PErr>,
 {
+    let handlers = Rc::new(handlers);
+
     into_service(move |mut req: Publish| {
         if let Some((idx, _info)) = router.recognize(req.topic_mut()) {
             // exec handler
-            let fut = call(req, &handlers[*idx]);
-            Either::Left(async move { fut.await })
+            let idx = *idx;
+            let handlers = handlers.clone();
+            Either::Left(async move {
+                call(req, &handlers[idx]).await
+            })
         } else {
             Either::Right(Ready::<_, Err>::Ok(Either::Right(req)))
         }
     })
 }
 
-fn call<S, Err, PErr>(
+async fn call<S, Err, PErr>(
     req: Publish,
     srv: &S,
-) -> impl Future<Output = Result<Either<(), Publish>, Err>>
+) -> Result<Either<(), Publish>, Err>
 where
     S: Service<Publish, Response = (), Error = PErr>,
     Err: From<PErr>,
 {
-    let fut = srv.call(req);
-
-    async move {
-        match fut.await {
-            Ok(_) => Ok(Either::Left(())),
-            Err(err) => Err(err.into()),
-        }
+    match srv.call(req).await {
+        Ok(_) => Ok(Either::Left(())),
+        Err(err) => Err(err.into()),
     }
 }
 

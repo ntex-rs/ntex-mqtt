@@ -35,7 +35,7 @@ where
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     sink: MqttSink,
     publish: T,
-    shutdown: RefCell<Option<Pin<Box<C::Future>>>>,
+    shutdown: RefCell<Option<Pin<Box<dyn Future<Output = ()>>>>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<E>,
 }
@@ -70,10 +70,10 @@ where
 {
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
-    type Future = Either<
-        PublishResponse<T, C, E>,
-        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<C, E>>,
-    >;
+    type Future<'f> = Either<
+        PublishResponse<'f, T, C, E>,
+        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<'f, C, E>>,
+    > where Self: 'f;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service)?;
@@ -90,8 +90,10 @@ where
         let mut shutdown = self.shutdown.borrow_mut();
         if !shutdown.is_some() {
             self.inner.sink.close();
-            *shutdown =
-                Some(Box::pin(self.inner.control.call(ControlMessage::closed(is_error))));
+            let inner = self.inner.clone();
+            *shutdown = Some(Box::pin(async move {
+                let _ = inner.control.call(ControlMessage::closed(is_error)).await;
+            }));
         }
 
         let res0 = shutdown.as_mut().expect("guard above").as_mut().poll(cx);
@@ -104,11 +106,11 @@ where
         }
     }
 
-    fn call(&self, packet: DispatchItem<Rc<MqttShared>>) -> Self::Future {
+    fn call(&self, packet: DispatchItem<Rc<MqttShared>>) -> Self::Future<'_> {
         log::trace!("Dispatch packet: {:#?}", packet);
         match packet {
             DispatchItem::Item(codec::Packet::Publish(publish)) => {
-                let inner = self.inner.clone();
+                let inner = self.inner.as_ref();
                 let packet_id = publish.packet_id;
 
                 // check for duplicated packet id
@@ -213,18 +215,20 @@ where
 
 pin_project_lite::pin_project! {
     /// Publish service response future
-    pub(crate) struct PublishResponse<T: Service<Publish>, C: Service<ControlMessage<E>>, E> {
+    pub(crate) struct PublishResponse<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>
+    where T: 'f
+    {
         #[pin]
-        fut: T::Future,
+        fut: T::Future<'f>,
         #[pin]
-        fut_c: Option<ControlResponse<C, E>>,
+        fut_c: Option<ControlResponse<'f, C, E>>,
         packet_id: Option<NonZeroU16>,
-        inner: Rc<Inner<C>>,
+        inner: &'f Inner<C>,
         _t: PhantomData<E>,
     }
 }
 
-impl<T, C, E> Future for PublishResponse<T, C, E>
+impl<'f, T, C, E> Future for PublishResponse<'f, T, C, E>
 where
     T: Service<Publish, Response = Either<(), Publish>, Error = E>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
@@ -271,24 +275,26 @@ where
 
 pin_project_lite::pin_project! {
     /// Control service response future
-    pub(crate) struct ControlResponse<C: Service<ControlMessage<E>>, E> {
+    pub(crate) struct ControlResponse<'f, C: Service<ControlMessage<E>>, E>
+    where C: 'f, E: 'f
+    {
         #[pin]
-        fut: C::Future,
-        inner: Rc<Inner<C>>,
+        fut: C::Future<'f>,
+        inner: &'f Inner<C>,
         _t: PhantomData<E>,
     }
 }
 
-impl<C, E> ControlResponse<C, E>
+impl<'f, C, E> ControlResponse<'f, C, E>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(msg: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
-        Self { fut: inner.control.call(msg), inner: inner.clone(), _t: PhantomData }
+    fn new(msg: ControlMessage<E>, inner: &'f Inner<C>) -> Self {
+        Self { fut: inner.control.call(msg), inner, _t: PhantomData }
     }
 }
 
-impl<C, E> Future for ControlResponse<C, E>
+impl<'f, C, E> Future for ControlResponse<'f, C, E>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {

@@ -1,4 +1,4 @@
-use std::{future::Future, num::NonZeroU16, num::NonZeroU32, rc::Rc};
+use std::{num::NonZeroU16, num::NonZeroU32, rc::Rc};
 
 use ntex::connect::{self, Address, Connect, Connector};
 use ntex::io::IoBoxed;
@@ -201,70 +201,59 @@ where
     IoBoxed: From<T::Response>,
 {
     /// Connect to mqtt server
-    pub fn connect(&self) -> impl Future<Output = Result<Client, ClientError>> {
-        let fut = timeout_checked(self.handshake_timeout, self._connect());
-        async move {
-            match fut.await {
-                Ok(res) => res.map_err(From::from),
-                Err(_) => Err(ClientError::HandshakeTimeout),
-            }
+    pub async fn connect(&self) -> Result<Client, ClientError> {
+        match timeout_checked(self.handshake_timeout, self._connect()).await {
+            Ok(res) => res.map_err(From::from),
+            Err(_) => Err(ClientError::HandshakeTimeout),
         }
     }
 
-    fn _connect(&self) -> impl Future<Output = Result<Client, ClientError>> {
+    async fn _connect(&self) -> Result<Client, ClientError> {
         let fut = self.connector.call(Connect::new(self.address.clone()));
+        let io = IoBoxed::from(fut.await?);
         let pkt = self.pkt.clone();
         let keep_alive = pkt.keep_alive;
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(65535);
         let disconnect_timeout = self.disconnect_timeout;
+        let codec = codec::Codec::new().max_inbound_size(max_packet_size);
         let pool = self.pool.clone();
 
-        async move {
-            let io = IoBoxed::from(fut.await?);
-            let codec = codec::Codec::new().max_inbound_size(max_packet_size);
+        io.send(codec::Packet::Connect(Box::new(pkt)), &codec).await?;
 
-            io.send(codec::Packet::Connect(Box::new(pkt)), &codec).await?;
+        let packet = io.recv(&codec).await.map_err(ClientError::from)?.ok_or_else(|| {
+            log::trace!("Mqtt server is disconnected during handshake");
+            ClientError::Disconnected(None)
+        })?;
 
-            let packet =
-                io.recv(&codec).await.map_err(ClientError::from)?.ok_or_else(|| {
-                    log::trace!("Mqtt server is disconnected during handshake");
-                    ClientError::Disconnected(None)
-                })?;
-
-            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, pool));
-
-            match packet {
-                codec::Packet::ConnectAck(pkt) => {
-                    log::trace!("Connect ack response from server: {:#?}", pkt);
-                    if pkt.reason_code == codec::ConnectAckReason::Success {
-                        // set max outbound (encoder) packet size
-                        if let Some(size) = pkt.max_packet_size {
-                            shared.codec.set_max_outbound_size(size);
-                        }
-                        // server keep-alive
-                        let keep_alive = pkt.server_keepalive_sec.unwrap_or(keep_alive);
-
-                        shared.set_cap(pkt.receive_max.map(|v| v.get()).unwrap_or(65535) as usize);
-
-                        Ok(Client::new(
-                            io,
-                            shared,
-                            pkt,
-                            max_receive,
-                            Seconds(keep_alive),
-                            disconnect_timeout,
-                        ))
-                    } else {
-                        Err(ClientError::Ack(pkt))
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, pool));
+        match packet {
+            codec::Packet::ConnectAck(pkt) => {
+                log::trace!("Connect ack response from server: {:#?}", pkt);
+                if pkt.reason_code == codec::ConnectAckReason::Success {
+                    // set max outbound (encoder) packet size
+                    if let Some(size) = pkt.max_packet_size {
+                        shared.codec.set_max_outbound_size(size);
                     }
+                    // server keep-alive
+                    let keep_alive = pkt.server_keepalive_sec.unwrap_or(keep_alive);
+
+                    shared.set_cap(pkt.receive_max.map(|v| v.get()).unwrap_or(65535) as usize);
+
+                    Ok(Client::new(
+                        io,
+                        shared,
+                        pkt,
+                        max_receive,
+                        Seconds(keep_alive),
+                        disconnect_timeout,
+                    ))
+                } else {
+                    Err(ClientError::Ack(pkt))
                 }
-                p => Err(ProtocolError::Unexpected(
-                    p.packet_type(),
-                    "Expected CONNECT-ACK packet",
-                )
-                .into()),
             }
+            p => Err(ProtocolError::Unexpected(p.packet_type(), "Expected CONNECT-ACK packet")
+                .into()),
         }
     }
 }

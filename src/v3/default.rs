@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData, task::Context, task::Poll};
+use std::{fmt, marker::PhantomData};
 
 use ntex::service::{Service, ServiceFactory};
 use ntex::util::Ready;
@@ -23,9 +23,9 @@ impl<St, Err> ServiceFactory<Publish, Session<St>> for DefaultPublishService<St,
     type Error = Err;
     type Service = DefaultPublishService<St, Err>;
     type InitError = Err;
-    type Future = Ready<Self::Service, Self::InitError>;
+    type Future<'f> = Ready<Self::Service, Self::InitError> where Self: 'f;
 
-    fn new_service(&self, _: Session<St>) -> Self::Future {
+    fn create(&self, _: Session<St>) -> Self::Future<'_> {
         Ready::Ok(DefaultPublishService { _t: PhantomData })
     }
 }
@@ -33,13 +33,9 @@ impl<St, Err> ServiceFactory<Publish, Session<St>> for DefaultPublishService<St,
 impl<St, Err> Service<Publish> for DefaultPublishService<St, Err> {
     type Response = ();
     type Error = Err;
-    type Future = Ready<Self::Response, Self::Error>;
+    type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
-    fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&self, _: Publish) -> Self::Future {
+    fn call(&self, _: Publish) -> Self::Future<'_> {
         log::warn!("Publish service is disabled");
         Ready::Ok(())
     }
@@ -61,9 +57,9 @@ impl<S, E: fmt::Debug> ServiceFactory<ControlMessage<E>, Session<S>>
     type Error = E;
     type InitError = E;
     type Service = DefaultControlService<S, E>;
-    type Future = Ready<Self::Service, Self::InitError>;
+    type Future<'f> = Ready<Self::Service, Self::InitError> where Self: 'f;
 
-    fn new_service(&self, _: Session<S>) -> Self::Future {
+    fn create(&self, _: Session<S>) -> Self::Future<'_> {
         Ready::Ok(DefaultControlService(PhantomData))
     }
 }
@@ -71,15 +67,10 @@ impl<S, E: fmt::Debug> ServiceFactory<ControlMessage<E>, Session<S>>
 impl<S, E: fmt::Debug> Service<ControlMessage<E>> for DefaultControlService<S, E> {
     type Response = ControlResult;
     type Error = E;
-    type Future = Ready<Self::Response, Self::Error>;
+    type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
     #[inline]
-    fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    #[inline]
-    fn call(&self, pkt: ControlMessage<E>) -> Self::Future {
+    fn call(&self, pkt: ControlMessage<E>) -> Self::Future<'_> {
         log::warn!("MQTT3 Subscribe is not supported");
 
         Ready::Ok(match pkt {

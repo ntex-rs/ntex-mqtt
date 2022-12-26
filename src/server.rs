@@ -1,10 +1,10 @@
 use std::task::{Context, Poll};
-use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin, rc::Rc};
+use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin};
 
 use ntex::io::{Filter, Io, IoBoxed, RecvError};
 use ntex::service::{Service, ServiceFactory};
 use ntex::time::{Deadline, Millis, Seconds};
-use ntex::util::{join, ready, Ready};
+use ntex::util::{join, ready, BoxFuture, Ready};
 
 use crate::version::{ProtocolVersion, VersionCodec};
 use crate::{error::MqttError, v3, v5};
@@ -233,22 +233,17 @@ where
         InitError = InitErr,
     >,
 {
-    fn create_service(
+    async fn create_service(
         &self,
-    ) -> impl Future<Output = Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr>>
-    {
-        let handshake_timeout = self.handshake_timeout;
-        let fut = join(self.v3.new_service(()), self.v5.new_service(()));
-        async move {
-            let (v3, v5) = fut.await;
-            let v3 = v3?;
-            let v5 = v5?;
-            Ok(MqttServerImpl {
-                handlers: Rc::new((v3, v5)),
-                handshake_timeout,
-                _t: marker::PhantomData,
-            })
-        }
+    ) -> Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr> {
+        let (v3, v5) = join(self.v3.create(()), self.v5.create(())).await;
+        let v3 = v3?;
+        let v5 = v5?;
+        Ok(MqttServerImpl {
+            handlers: (v3, v5),
+            handshake_timeout: self.handshake_timeout,
+            _t: marker::PhantomData,
+        })
     }
 }
 
@@ -273,14 +268,11 @@ where
     type Error = MqttError<Err>;
     type Service = MqttServerImpl<V3::Service, V5::Service, Err>;
     type InitError = InitErr;
-    type Future = Pin<
-        Box<
-            dyn Future<Output = Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr>>,
-        >,
-    >;
+    type Future<'f> =
+        BoxFuture<'f, Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr>>;
 
     #[inline]
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Box::pin(self.create_service())
     }
 }
@@ -307,21 +299,18 @@ where
     type Error = MqttError<Err>;
     type Service = MqttServerImpl<V3::Service, V5::Service, Err>;
     type InitError = InitErr;
-    type Future = Pin<
-        Box<
-            dyn Future<Output = Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr>>,
-        >,
-    >;
+    type Future<'f> =
+        BoxFuture<'f, Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr>>;
 
     #[inline]
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Box::pin(self.create_service())
     }
 }
 
 /// Mqtt Server
 pub struct MqttServerImpl<V3, V5, Err> {
-    handlers: Rc<(V3, V5)>,
+    handlers: (V3, V5),
     handshake_timeout: Millis,
     _t: marker::PhantomData<Err>,
 }
@@ -333,7 +322,7 @@ where
 {
     type Response = ();
     type Error = MqttError<Err>;
-    type Future = MqttServerImplResponse<V3, V5, Err>;
+    type Future<'f> = MqttServerImplResponse<'f, V3, V5, Err> where Self: 'f;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -360,16 +349,16 @@ where
     }
 
     #[inline]
-    fn call(&self, req: IoBoxed) -> Self::Future {
+    fn call(&self, req: IoBoxed) -> Self::Future<'_> {
         MqttServerImplResponse {
             state: MqttServerImplState::Version {
                 item: Some((
                     req,
                     VersionCodec,
-                    self.handlers.clone(),
                     Deadline::new(self.handshake_timeout),
                 )),
             },
+            handlers: &self.handlers,
         }
     }
 }
@@ -382,7 +371,7 @@ where
 {
     type Response = ();
     type Error = MqttError<Err>;
-    type Future = MqttServerImplResponse<V3, V5, Err>;
+    type Future<'f> = MqttServerImplResponse<'f, V3, V5, Err> where Self: 'f;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -395,40 +384,45 @@ where
     }
 
     #[inline]
-    fn call(&self, io: Io<F>) -> Self::Future {
+    fn call(&self, io: Io<F>) -> Self::Future<'_> {
         Service::<IoBoxed>::call(self, IoBoxed::from(io))
     }
 }
 
 pin_project_lite::pin_project! {
-    pub struct MqttServerImplResponse<V3, V5, Err>
+    pub struct MqttServerImplResponse<'f, V3, V5, Err>
     where
         V3: Service<
             (IoBoxed, Deadline),
             Response = (),
             Error = MqttError<Err>,
-        >,
+    >,
+        V3: 'f,
         V5: Service<
         (IoBoxed, Deadline),
             Response = (),
             Error = MqttError<Err>,
-        >,
+    >,
+        V5: 'f,
     {
         #[pin]
-        state: MqttServerImplState<V3, V5>,
+        state: MqttServerImplState<'f, V3, V5>,
+        handlers: &'f (V3, V5),
     }
 }
 
 pin_project_lite::pin_project! {
     #[project = MqttServerImplStateProject]
-    pub(crate) enum MqttServerImplState<V3: Service<(IoBoxed, Deadline)>, V5: Service<(IoBoxed, Deadline)>> {
-        V3 { #[pin] fut: V3::Future },
-        V5 { #[pin] fut: V5::Future },
-        Version { item: Option<(IoBoxed, VersionCodec, Rc<(V3, V5)>, Deadline)> },
+        pub(crate) enum MqttServerImplState<'f, V3: Service<(IoBoxed, Deadline)>, V5: Service<(IoBoxed, Deadline)>>
+        where V3: 'f, V5: 'f
+    {
+        V3 { #[pin] fut: V3::Future<'f> },
+        V5 { #[pin] fut: V5::Future<'f> },
+        Version { item: Option<(IoBoxed, VersionCodec, Deadline)> },
     }
 }
 
-impl<V3, V5, Err> Future for MqttServerImplResponse<V3, V5, Err>
+impl<'f, V3, V5, Err> Future for MqttServerImplResponse<'f, V3, V5, Err>
 where
     V3: Service<(IoBoxed, Deadline), Response = (), Error = MqttError<Err>>,
     V5: Service<(IoBoxed, Deadline), Response = (), Error = MqttError<Err>>,
@@ -443,26 +437,25 @@ where
                 MqttServerImplStateProject::V3 { fut } => return fut.poll(cx),
                 MqttServerImplStateProject::V5 { fut } => return fut.poll(cx),
                 MqttServerImplStateProject::Version { ref mut item } => {
-                    match item.as_mut().unwrap().3.poll_elapsed(cx) {
+                    match item.as_mut().unwrap().2.poll_elapsed(cx) {
                         Poll::Pending => (),
                         Poll::Ready(_) => return Poll::Ready(Err(MqttError::HandshakeTimeout)),
                     }
 
                     let st = item.as_mut().unwrap();
-
                     return match ready!(st.0.poll_recv(&st.1, cx)) {
                         Ok(ver) => {
-                            let (io, _, handlers, delay) = item.take().unwrap();
+                            let (io, _, delay) = item.take().unwrap();
                             this = self.as_mut().project();
                             match ver {
                                 ProtocolVersion::MQTT3 => {
                                     this.state.set(MqttServerImplState::V3 {
-                                        fut: handlers.0.call((io, delay)),
+                                        fut: this.handlers.0.call((io, delay)),
                                     })
                                 }
                                 ProtocolVersion::MQTT5 => {
                                     this.state.set(MqttServerImplState::V5 {
-                                        fut: handlers.1.call((io, delay)),
+                                        fut: this.handlers.1.call((io, delay)),
                                     })
                                 }
                             }
@@ -505,9 +498,9 @@ impl<Err, InitErr> ServiceFactory<(IoBoxed, Deadline)> for DefaultProtocolServer
     type Error = MqttError<Err>;
     type Service = DefaultProtocolServer<Err, InitErr>;
     type InitError = InitErr;
-    type Future = Ready<Self::Service, Self::InitError>;
+    type Future<'f> = Ready<Self::Service, Self::InitError> where Self: 'f;
 
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Ready::Ok(DefaultProtocolServer { ver: self.ver, _t: marker::PhantomData })
     }
 }
@@ -515,13 +508,9 @@ impl<Err, InitErr> ServiceFactory<(IoBoxed, Deadline)> for DefaultProtocolServer
 impl<Err, InitErr> Service<(IoBoxed, Deadline)> for DefaultProtocolServer<Err, InitErr> {
     type Response = ();
     type Error = MqttError<Err>;
-    type Future = Ready<Self::Response, Self::Error>;
+    type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
-    fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&self, _: (IoBoxed, Deadline)) -> Self::Future {
+    fn call(&self, _: (IoBoxed, Deadline)) -> Self::Future<'_> {
         Ready::Err(MqttError::Disconnected(Some(io::Error::new(
             io::ErrorKind::Other,
             format!("Protocol is not supported: {:?}", self.ver),

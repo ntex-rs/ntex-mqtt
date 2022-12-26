@@ -1,7 +1,7 @@
 //! Framed transport dispatcher
 use std::task::{Context, Poll};
 use std::{
-    cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time,
+    mem, cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time,
 };
 
 use ntex::codec::{Decoder, Encoder};
@@ -17,21 +17,20 @@ pin_project_lite::pin_project! {
     pub(crate) struct Dispatcher<S, U>
     where
         S: Service<DispatchItem<U>, Response = Option<Response<U>>>,
-        S::Error: 'static,
-        S::Future: 'static,
+        S: 'static,
         U: Encoder,
-        U: Decoder,
-       <U as Encoder>::Item: 'static,
+    U: Decoder,
+    U: 'static,
     {
         codec: U,
-        service: S,
+        service: Rc<S>,
         state: Rc<RefCell<DispatcherState<S, U>>>,
         inner: DispatcherInner,
         st: IoDispatcherState,
         flags: Cell<Flags>,
         pool: Pool,
         #[pin]
-        response: Option<S::Future>,
+        response: Option<S::Future<'static>>,
         response_idx: usize,
     }
 }
@@ -123,7 +122,7 @@ where
             codec,
             pool,
             st: IoDispatcherState::Processing,
-            service: service.into_service(),
+            service: Rc::new(service.into_service()),
             response: None,
             response_idx: 0,
             flags: Cell::new(Flags::empty()),
@@ -316,7 +315,9 @@ where
                             if let Some(item) = item {
                                 // optimize first call
                                 if this.response.is_none() {
-                                    this.response.set(Some(this.service.call(item)));
+                                    let fut = this.service.call(item);
+                                    this.response.set(Some(unsafe { mem::transmute_copy(&fut)}));
+                                    mem::forget(fut);
                                     let res =
                                         this.response.as_mut().as_pin_mut().unwrap().poll(cx);
 
@@ -360,9 +361,9 @@ where
                                     let st = io.get_ref();
                                     let codec = this.codec.clone();
                                     let inner = this.state.clone();
-                                    let fut = this.service.call(item);
+                                    let service = this.service.clone();
                                     ntex::rt::spawn(async move {
-                                        let item = fut.await;
+                                        let item = service.call(item).await;
                                         inner.borrow_mut().handle_result(
                                             item,
                                             response_idx,
@@ -465,7 +466,6 @@ mod tests {
     where
         S: Service<DispatchItem<U>, Response = Option<Response<U>>>,
         S::Error: 'static,
-        S::Future: 'static,
         U: Decoder + Encoder + 'static,
         <U as Encoder>::Item: 'static,
     {
@@ -490,7 +490,7 @@ mod tests {
                 Dispatcher {
                     state,
                     codec,
-                    service: service.into_service(),
+                    service: Rc::new(service.into_service()),
                     st: IoDispatcherState::Processing,
                     response: None,
                     response_idx: 0,
@@ -657,14 +657,14 @@ mod tests {
         impl Service<DispatchItem<BytesCodec>> for Srv {
             type Response = Option<Response<BytesCodec>>;
             type Error = ();
-            type Future = Ready<Option<Response<BytesCodec>>, ()>;
+            type Future<'f> = Ready<Option<Response<BytesCodec>>, ()>;
 
             fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
                 self.0.set(self.0.get() + 1);
                 Poll::Ready(Err(()))
             }
 
-            fn call(&self, _: DispatchItem<BytesCodec>) -> Self::Future {
+            fn call(&self, _: DispatchItem<BytesCodec>) -> Self::Future<'_> {
                 Ready::Ok(None)
             }
         }

@@ -1,10 +1,10 @@
 use std::task::{Context, Poll};
-use std::{convert::TryFrom, fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
+use std::{convert::TryFrom, fmt, future::Future, marker::PhantomData, rc::Rc};
 
 use ntex::io::{DispatchItem, IoBoxed};
 use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{timeout_checked, Millis, Seconds};
-use ntex::util::{select, Either};
+use ntex::util::{select, BoxFuture, Either};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::{io::Dispatcher, service, types::QoS};
@@ -297,10 +297,10 @@ where
 
     type Service = HandshakeService<St, H::Service>;
     type InitError = H::InitError;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>> where Self: 'f;
 
-    fn new_service(&self, _: ()) -> Self::Future {
-        let fut = self.factory.new_service(());
+    fn create(&self, _: ()) -> Self::Future<'_> {
+        let fut = self.factory.create(());
         let max_size = self.max_size;
         let max_receive = self.max_receive;
         let max_topic_alias = self.max_topic_alias;
@@ -342,7 +342,7 @@ where
 {
     type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>> where Self: 'f;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.service.poll_ready(cx).map_err(MqttError::Service)
@@ -352,7 +352,7 @@ where
         self.service.poll_shutdown(cx, is_error)
     }
 
-    fn call(&self, io: IoBoxed) -> Self::Future {
+    fn call(&self, io: IoBoxed) -> Self::Future<'_> {
         log::trace!("Starting mqtt v5 handshake");
 
         let service = self.service.clone();
@@ -512,10 +512,10 @@ where
     type Error = MqttError<C::Error>;
     type InitError = C::InitError;
     type Service = ServerSelectorImpl<St, C::Service, T, F, R>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>> where Self: 'f;
 
-    fn new_service(&self, _: ()) -> Self::Future {
-        let fut = self.connect.new_service(());
+    fn create(&self, _: ()) -> Self::Future<'_> {
+        let fut = self.connect.create(());
         let handler = self.handler.clone();
         let check = self.check.clone();
         let max_size = self.max_size;
@@ -570,7 +570,7 @@ where
 {
     type Response = Either<SelectItem, ()>;
     type Error = MqttError<C::Error>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>> where Self: 'f;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -583,7 +583,7 @@ where
     }
 
     #[inline]
-    fn call(&self, req: SelectItem) -> Self::Future {
+    fn call(&self, req: SelectItem) -> Self::Future<'_> {
         log::trace!("Start connection handshake");
 
         let check = self.check.clone();
@@ -661,7 +661,7 @@ where
                             max_receive,
                             max_topic_alias,
                         );
-                        let handler = handler.new_service(session).await?;
+                        let handler = handler.create(session).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 
                         Dispatcher::new(ack.io, shared, handler)

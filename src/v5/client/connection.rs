@@ -1,6 +1,4 @@
-use std::{
-    cell::RefCell, convert::TryFrom, fmt, future::Future, marker, num::NonZeroU16, rc::Rc,
-};
+use std::{cell::RefCell, convert::TryFrom, fmt, marker, num::NonZeroU16, rc::Rc};
 
 use ntex::io::IoBoxed;
 use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
@@ -260,19 +258,21 @@ where
     PErr: 'static,
     PublishAck: TryFrom<PErr, Error = Err>,
 {
+    // let handlers =
     let aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>> =
         RefCell::new(HashMap::default());
+    let handlers = Rc::new(handlers);
 
     into_service(move |mut req: Publish| {
-        if !req.publish_topic().is_empty() {
+        let idx = if !req.publish_topic().is_empty() {
             if let Some((idx, _info)) = router.recognize(req.topic_mut()) {
                 // save info for topic alias
                 if let Some(alias) = req.packet().properties.topic_alias {
                     aliases.borrow_mut().insert(alias, (*idx, req.topic().clone()));
                 }
-
-                // exec handler
-                return Either::Left(call(req, &handlers[*idx]));
+                *idx
+            } else {
+                return Either::Right(Ready::<_, Err>::Ok(Either::Left(req)));
             }
         }
         // handle publish with topic alias
@@ -280,34 +280,32 @@ where
             let aliases = aliases.borrow();
             if let Some(item) = aliases.get(alias) {
                 *req.topic_mut() = item.1.clone();
-                return Either::Left(call(req, &handlers[item.0]));
+                item.0
             } else {
                 log::error!("Unknown topic alias: {:?}", alias);
+                return Either::Right(Ready::<_, Err>::Ok(Either::Left(req)));
             }
-        }
+        } else {
+            return Either::Right(Ready::<_, Err>::Ok(Either::Left(req)));
+        };
 
-        Either::Right(Ready::<_, Err>::Ok(Either::Left(req)))
+        // exec handler
+        let handlers = handlers.clone();
+        Either::Left(async move { call(req, &handlers[idx]).await })
     })
 }
 
-fn call<S, Err>(
-    req: Publish,
-    srv: &S,
-) -> impl Future<Output = Result<Either<Publish, PublishAck>, Err>>
+async fn call<S, Err>(req: Publish, srv: &S) -> Result<Either<Publish, PublishAck>, Err>
 where
     S: Service<Publish, Response = PublishAck>,
     PublishAck: TryFrom<S::Error, Error = Err>,
 {
-    let fut = srv.call(req);
-
-    async move {
-        match fut.await {
+    match srv.call(req).await {
+        Ok(ack) => Ok(Either::Right(ack)),
+        Err(err) => match PublishAck::try_from(err) {
             Ok(ack) => Ok(Either::Right(ack)),
-            Err(err) => match PublishAck::try_from(err) {
-                Ok(ack) => Ok(Either::Right(ack)),
-                Err(err) => Err(err),
-            },
-        }
+            Err(err) => Err(err),
+        },
     }
 }
 

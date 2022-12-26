@@ -1,11 +1,10 @@
-use std::task::{Context, Poll};
-use std::{fmt, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
+use std::{fmt, marker::PhantomData, rc::Rc, task::Context, task::Poll};
 
 use ntex::codec::{Decoder, Encoder};
 use ntex::io::{DispatchItem, Filter, Io, IoBoxed};
 use ntex::service::{Service, ServiceFactory};
 use ntex::time::{Deadline, Seconds};
-use ntex::util::{select, Either};
+use ntex::util::{select, BoxFuture, Either};
 
 use crate::io::Dispatcher;
 
@@ -28,22 +27,16 @@ impl<St, C, T, Codec> MqttServer<St, C, T, Codec>
 where
     C: ServiceFactory<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)>,
 {
-    fn create_service(
+    async fn create_service(
         &self,
-    ) -> impl Future<Output = Result<MqttHandler<St, C::Service, T, Codec>, C::InitError>> {
-        let fut = self.connect.new_service(());
-        let handler = self.handler.clone();
-        let disconnect_timeout = self.disconnect_timeout;
-
+    ) -> Result<MqttHandler<St, C::Service, T, Codec>, C::InitError> {
         // create connect service and then create service impl
-        async move {
-            Ok(MqttHandler {
-                handler,
-                disconnect_timeout,
-                connect: fut.await?,
-                _t: PhantomData,
-            })
-        }
+        Ok(MqttHandler {
+            handler: self.handler.clone(),
+            disconnect_timeout: self.disconnect_timeout,
+            connect: self.connect.create(()).await?,
+            _t: PhantomData,
+        })
     }
 }
 
@@ -65,9 +58,9 @@ where
     type Error = C::Error;
     type InitError = C::InitError;
     type Service = MqttHandler<St, C::Service, T, Codec>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Box::pin(self.create_service())
     }
 }
@@ -91,9 +84,9 @@ where
     type Error = C::Error;
     type InitError = C::InitError;
     type Service = MqttHandler<St, C::Service, T, Codec>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Box::pin(self.create_service())
     }
 }
@@ -116,9 +109,9 @@ where
     type Error = C::Error;
     type InitError = C::InitError;
     type Service = MqttHandler<St, C::Service, T, Codec>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Box::pin(self.create_service())
     }
 }
@@ -146,7 +139,7 @@ where
 {
     type Response = ();
     type Error = C::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
+    type Future<'f> = BoxFuture<'f, Result<(), Self::Error>>;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -159,7 +152,7 @@ where
     }
 
     #[inline]
-    fn call(&self, req: IoBoxed) -> Self::Future {
+    fn call(&self, req: IoBoxed) -> Self::Future<'_> {
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
         let handshake = self.connect.call(req);
@@ -171,7 +164,7 @@ where
             })?;
             log::trace!("Connection handshake succeeded");
 
-            let handler = handler.new_service(session).await?;
+            let handler = handler.create(session).await?;
             log::trace!("Connection handler is created, starting dispatcher");
 
             Dispatcher::new(io, codec, handler)
@@ -199,7 +192,7 @@ where
 {
     type Response = ();
     type Error = C::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
+    type Future<'f> = BoxFuture<'f, Result<(), Self::Error>>;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -212,7 +205,7 @@ where
     }
 
     #[inline]
-    fn call(&self, io: Io<F>) -> Self::Future {
+    fn call(&self, io: Io<F>) -> Self::Future<'_> {
         Service::<IoBoxed>::call(self, IoBoxed::from(io))
     }
 }
@@ -233,7 +226,7 @@ where
 {
     type Response = ();
     type Error = C::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>>>>;
+    type Future<'f> = BoxFuture<'f, Result<(), Self::Error>>;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -246,7 +239,7 @@ where
     }
 
     #[inline]
-    fn call(&self, (io, delay): (IoBoxed, Deadline)) -> Self::Future {
+    fn call(&self, (io, delay): (IoBoxed, Deadline)) -> Self::Future<'_> {
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
         let handshake = self.connect.call(io);
@@ -262,7 +255,7 @@ where
                         })?;
                         log::trace!("Connection handshake succeeded");
 
-                        let handler = handler.new_service(st).await?;
+                        let handler = handler.create(st).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 
                         Ok::<_, C::Error>((io, codec, ka, handler))
