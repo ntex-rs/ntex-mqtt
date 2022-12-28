@@ -4,11 +4,8 @@ use std::{convert::TryFrom, future::Future, marker, num, pin::Pin, rc::Rc};
 
 use ntex::io::DispatchItem;
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
-use ntex::util::ByteString;
-use ntex::util::{
-    buffer::BufferService, inflight::InFlightService, join, BoxFuture, Either, HashSet, Ready,
-};
-use ntex_util::HashMap;
+use ntex::util::{buffer::BufferService, inflight::InFlightService, join};
+use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 
