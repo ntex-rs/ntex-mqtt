@@ -1,5 +1,9 @@
 # Changes
 
+## [0.10.0-beta.0] - 2022-12-28
+
+* Migrate to ntex-service 1.0
+
 ## [0.9.2] - 2022-12-16
 
 * v5: Fix topic alias handling #122
