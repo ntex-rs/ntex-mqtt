@@ -1,9 +1,9 @@
-use std::{fmt, future::Future, marker, pin::Pin, rc::Rc, task::Context, task::Poll};
+use std::{fmt, future::Future, marker, rc::Rc, task::Context, task::Poll};
 
 use ntex::io::{Filter, Io, IoBoxed};
 use ntex::service::{boxed, Service, ServiceFactory};
 use ntex::time::{Deadline, Millis, Seconds};
-use ntex::util::{select, Either};
+use ntex::util::{select, BoxFuture, Either};
 
 use crate::error::{MqttError, ProtocolError};
 
@@ -103,19 +103,17 @@ where
     Err: 'static,
     InitErr: 'static,
 {
-    fn create_service(&self) -> impl Future<Output = Result<SelectorService<Err>, InitErr>> {
-        let futs: Vec<_> = self.servers.iter().map(|srv| srv.new_service(())).collect();
-        let max_size = self.max_size;
-        let handshake_timeout = self.handshake_timeout;
-        let pool = self.pool.clone();
-
-        async move {
-            let mut servers = Vec::new();
-            for fut in futs {
-                servers.push(fut.await?);
-            }
-            Ok(SelectorService { max_size, handshake_timeout, pool, servers: Rc::new(servers) })
+    async fn create_service(&self) -> Result<SelectorService<Err>, InitErr> {
+        let mut servers = Vec::new();
+        for fut in self.servers.iter().map(|srv| srv.create(())) {
+            servers.push(fut.await?);
         }
+        Ok(SelectorService {
+            max_size: self.max_size,
+            handshake_timeout: self.handshake_timeout,
+            pool: self.pool.clone(),
+            servers: Rc::new(servers),
+        })
     }
 }
 
@@ -129,9 +127,9 @@ where
     type Error = MqttError<Err>;
     type InitError = InitErr;
     type Service = SelectorService<Err>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Box::pin(self.create_service())
     }
 }
@@ -145,9 +143,9 @@ where
     type Error = MqttError<Err>;
     type InitError = InitErr;
     type Service = SelectorService<Err>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Box::pin(self.create_service())
     }
 }
@@ -161,9 +159,9 @@ where
     type Error = MqttError<Err>;
     type InitError = InitErr;
     type Service = SelectorService<Err>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Service, Self::InitError>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Box::pin(self.create_service())
     }
 }
@@ -182,7 +180,7 @@ where
 {
     type Response = ();
     type Error = MqttError<Err>;
-    type Future = Pin<Box<dyn Future<Output = Result<(), MqttError<Err>>>>>;
+    type Future<'f> = BoxFuture<'f, Result<(), MqttError<Err>>>;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -190,12 +188,12 @@ where
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        Service::<IoBoxed>::poll_shutdown(self, cx, is_error)
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        Service::<IoBoxed>::poll_shutdown(self, cx)
     }
 
     #[inline]
-    fn call(&self, io: Io<F>) -> Self::Future {
+    fn call(&self, io: Io<F>) -> Self::Future<'_> {
         Service::<IoBoxed>::call(self, IoBoxed::from(io))
     }
 }
@@ -206,7 +204,7 @@ where
 {
     type Response = ();
     type Error = MqttError<Err>;
-    type Future = Pin<Box<dyn Future<Output = Result<(), MqttError<Err>>>>>;
+    type Future<'f> = BoxFuture<'f, Result<(), MqttError<Err>>>;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -222,10 +220,10 @@ where
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
         let mut ready = true;
         for srv in self.servers.iter() {
-            ready &= srv.poll_shutdown(cx, is_error).is_ready()
+            ready &= srv.poll_shutdown(cx).is_ready()
         }
         if ready {
             Poll::Ready(())
@@ -235,7 +233,7 @@ where
     }
 
     #[inline]
-    fn call(&self, io: IoBoxed) -> Self::Future {
+    fn call(&self, io: IoBoxed) -> Self::Future<'_> {
         let servers = self.servers.clone();
         let shared = Rc::new(MqttShared::new(
             io.clone(),
@@ -299,7 +297,7 @@ where
 {
     type Response = ();
     type Error = MqttError<Err>;
-    type Future = Pin<Box<dyn Future<Output = Result<(), MqttError<Err>>>>>;
+    type Future<'f> = BoxFuture<'f, Result<(), MqttError<Err>>>;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -307,12 +305,12 @@ where
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        Service::<IoBoxed>::poll_shutdown(self, cx, is_error)
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
+        Service::<IoBoxed>::poll_shutdown(self, cx)
     }
 
     #[inline]
-    fn call(&self, (io, mut timeout): (IoBoxed, Deadline)) -> Self::Future {
+    fn call(&self, (io, mut timeout): (IoBoxed, Deadline)) -> Self::Future<'_> {
         let servers = self.servers.clone();
         let shared = Rc::new(MqttShared::new(
             io.get_ref(),

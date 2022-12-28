@@ -21,11 +21,13 @@ impl<S> InFlightService<S> {
 impl<T, R> Service<R> for InFlightService<T>
 where
     T: Service<R>,
-    R: SizedRequest,
+    R: SizedRequest + 'static,
 {
     type Response = T::Response;
     type Error = T::Error;
-    type Future = InFlightServiceResponse<T, R>;
+    type Future<'f> = InFlightServiceResponse<'f, T, R> where Self: 'f;
+
+    ntex::forward_poll_shutdown!(service);
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -40,12 +42,7 @@ where
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
-        self.service.poll_shutdown(cx, is_error)
-    }
-
-    #[inline]
-    fn call(&self, req: R) -> Self::Future {
+    fn call(&self, req: R) -> Self::Future<'_> {
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
         InFlightServiceResponse {
             _guard: self.count.get(size),
@@ -57,15 +54,17 @@ where
 
 pin_project_lite::pin_project! {
     #[doc(hidden)]
-    pub struct InFlightServiceResponse<T: Service<R>, R> {
+    pub struct InFlightServiceResponse<'f, T: Service<R>, R>
+    where T: 'f, R: 'f
+    {
         #[pin]
-        fut: T::Future,
+        fut: T::Future<'f>,
         _guard: CounterGuard,
         _t: marker::PhantomData<R>
     }
 }
 
-impl<T: Service<R>, R> Future for InFlightServiceResponse<T, R> {
+impl<'f, T: Service<R>, R> Future for InFlightServiceResponse<'f, T, R> {
     type Output = Result<T::Response, T::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -153,8 +152,8 @@ impl CounterInner {
 
 #[cfg(test)]
 mod tests {
-    use ntex::{service::Service, time::sleep, util::lazy};
-    use std::{task::Context, task::Poll, time::Duration};
+    use ntex::{service::Service, time::sleep, util::lazy, util::BoxFuture};
+    use std::{task::Poll, time::Duration};
 
     use super::*;
 
@@ -163,13 +162,9 @@ mod tests {
     impl Service<()> for SleepService {
         type Response = ();
         type Error = ();
-        type Future = Pin<Box<dyn Future<Output = Result<(), ()>>>>;
+        type Future<'f> = BoxFuture<'f, Result<(), ()>>;
 
-        fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn call(&self, _: ()) -> Self::Future {
+        fn call(&self, _: ()) -> Self::Future<'_> {
             let fut = sleep(self.0);
             Box::pin(async move {
                 let _ = fut.await;
@@ -196,7 +191,7 @@ mod tests {
 
         let _ = res.await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
-        assert!(lazy(|cx| srv.poll_shutdown(cx, false)).await.is_ready());
+        assert!(lazy(|cx| srv.poll_shutdown(cx)).await.is_ready());
     }
 
     #[ntex::test]

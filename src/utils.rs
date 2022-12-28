@@ -1,8 +1,5 @@
-use std::num::{NonZeroU16, NonZeroU32};
-use std::task::{Context, Poll};
-use std::{convert::TryFrom, future::Future, io::Cursor, marker::PhantomData, pin::Pin};
+use std::{convert::TryFrom, io::Cursor, num::NonZeroU16, num::NonZeroU32};
 
-use ntex::service::Service;
 use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 use crate::error::{DecodeError, EncodeError};
@@ -294,23 +291,6 @@ pub(crate) fn write_variable_length(len: u32, dst: &mut BytesMut) {
             ]);
         }
         _ => panic!("length is too big"), // todo: verify at higher level
-    }
-}
-
-/// Check service readiness
-pub(crate) fn ready<S, R>(service: &S) -> Ready<'_, S, R> {
-    Ready(service, PhantomData)
-}
-
-pub(crate) struct Ready<'a, S, R>(&'a S, PhantomData<R>);
-
-impl<'a, S, R> Unpin for Ready<'a, S, R> {}
-
-impl<'a, S: Service<R>, R> Future for Ready<'a, S, R> {
-    type Output = Result<(), S::Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.poll_ready(cx)
     }
 }
 

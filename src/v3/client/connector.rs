@@ -1,4 +1,4 @@
-use std::{future::Future, rc::Rc};
+use std::rc::Rc;
 
 use ntex::connect::{self, Address, Connect, Connector};
 use ntex::io::IoBoxed;
@@ -197,18 +197,16 @@ where
     IoBoxed: From<T::Response>,
 {
     /// Connect to mqtt server
-    pub fn connect(&self) -> impl Future<Output = Result<Client, ClientError>> {
-        let fut = timeout_checked(self.handshake_timeout, self._connect());
-        async move {
-            match fut.await {
-                Ok(res) => res.map_err(From::from),
-                Err(_) => Err(ClientError::HandshakeTimeout),
-            }
+    pub async fn connect(&self) -> Result<Client, ClientError> {
+        match timeout_checked(self.handshake_timeout, self._connect()).await {
+            Ok(res) => res.map_err(From::from),
+            Err(_) => Err(ClientError::HandshakeTimeout),
         }
     }
 
-    fn _connect(&self) -> impl Future<Output = Result<Client, ClientError>> {
+    async fn _connect(&self) -> Result<Client, ClientError> {
         let fut = self.connector.call(Connect::new(self.address.clone()));
+        let io = IoBoxed::from(fut.await?);
         let pkt = self.pkt.clone();
         let max_send = self.max_send;
         let max_receive = self.max_receive;
@@ -216,44 +214,36 @@ where
         let keepalive_timeout = pkt.keep_alive;
         let disconnect_timeout = self.disconnect_timeout;
         let pool = self.pool.clone();
+        let codec = codec::Codec::new().max_size(max_packet_size);
 
-        async move {
-            let io = IoBoxed::from(fut.await?);
-            let codec = codec::Codec::new().max_size(max_packet_size);
+        io.send(pkt.into(), &codec).await?;
 
-            io.send(pkt.into(), &codec).await?;
+        let packet = io.recv(&codec).await.map_err(ClientError::from)?.ok_or_else(|| {
+            log::trace!("Mqtt server is disconnected during handshake");
+            ClientError::Disconnected(None)
+        })?;
 
-            let packet =
-                io.recv(&codec).await.map_err(ClientError::from)?.ok_or_else(|| {
-                    log::trace!("Mqtt server is disconnected during handshake");
-                    ClientError::Disconnected(None)
-                })?;
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, true, pool));
 
-            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, true, pool));
-
-            match packet {
-                codec::Packet::ConnectAck { session_present, return_code } => {
-                    log::trace!("Connect ack response from server: session: present: {:?}, return code: {:?}", session_present, return_code);
-                    if return_code == codec::ConnectAckReason::ConnectionAccepted {
-                        shared.set_cap(max_send);
-                        Ok(Client::new(
-                            io,
-                            shared,
-                            session_present,
-                            Seconds(keepalive_timeout),
-                            disconnect_timeout,
-                            max_receive,
-                        ))
-                    } else {
-                        Err(ClientError::Ack { session_present, return_code })
-                    }
+        match packet {
+            codec::Packet::ConnectAck { session_present, return_code } => {
+                log::trace!("Connect ack response from server: session: present: {:?}, return code: {:?}", session_present, return_code);
+                if return_code == codec::ConnectAckReason::ConnectionAccepted {
+                    shared.set_cap(max_send);
+                    Ok(Client::new(
+                        io,
+                        shared,
+                        session_present,
+                        Seconds(keepalive_timeout),
+                        disconnect_timeout,
+                        max_receive,
+                    ))
+                } else {
+                    Err(ClientError::Ack { session_present, return_code })
                 }
-                p => Err(ProtocolError::Unexpected(
-                    p.packet_type(),
-                    "Expected CONNECT-ACK packet",
-                )
-                .into()),
             }
+            p => Err(ProtocolError::Unexpected(p.packet_type(), "Expected CONNECT-ACK packet")
+                .into()),
         }
     }
 }

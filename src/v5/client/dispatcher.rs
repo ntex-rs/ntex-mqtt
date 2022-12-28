@@ -4,7 +4,7 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 
 use ntex::io::DispatchItem;
 use ntex::service::Service;
-use ntex::util::{ByteString, Either, HashMap, HashSet, Ready};
+use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
 use crate::types::packet_type;
@@ -38,7 +38,7 @@ where
 /// Mqtt protocol dispatcher
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     publish: T,
-    shutdown: RefCell<Option<Pin<Box<C::Future>>>>,
+    shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     max_receive: usize,
     max_topic_alias: u16,
     inner: Rc<Inner<C>>,
@@ -89,15 +89,14 @@ where
 impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
 where
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
-    C::Future: 'static,
+    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>> + 'static,
 {
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
-    type Future = Either<
-        PublishResponse<T, C, E>,
-        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<C, E>>,
-    >;
+    type Future<'f> = Either<
+        PublishResponse<'f, T, C, E>,
+        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<'f, C, E>>,
+    > where Self: 'f;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service)?;
@@ -110,17 +109,19 @@ where
         }
     }
 
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
         let mut shutdown = self.shutdown.borrow_mut();
         if !shutdown.is_some() {
             self.inner.sink.drop_sink();
-            *shutdown =
-                Some(Box::pin(self.inner.control.call(ControlMessage::closed(is_error))));
+            let inner = self.inner.clone();
+            *shutdown = Some(Box::pin(async move {
+                let _ = inner.control.call(ControlMessage::closed()).await;
+            }));
         }
 
         let res0 = shutdown.as_mut().expect("guard above").as_mut().poll(cx);
-        let res1 = self.publish.poll_shutdown(cx, is_error);
-        let res2 = self.inner.control.poll_shutdown(cx, is_error);
+        let res1 = self.publish.poll_shutdown(cx);
+        let res2 = self.inner.control.poll_shutdown(cx);
         if res0.is_pending() || res1.is_pending() || res2.is_pending() {
             Poll::Pending
         } else {
@@ -128,12 +129,12 @@ where
         }
     }
 
-    fn call(&self, request: DispatchItem<Rc<MqttShared>>) -> Self::Future {
+    fn call(&self, request: DispatchItem<Rc<MqttShared>>) -> Self::Future<'_> {
         log::trace!("Dispatch packet: {:#?}", request);
 
         match request {
             DispatchItem::Item(codec::Packet::Publish(mut publish)) => {
-                let info = self.inner.clone();
+                let info = self.inner.as_ref();
                 let packet_id = publish.packet_id;
 
                 {
@@ -322,24 +323,26 @@ where
 
 pin_project_lite::pin_project! {
     /// Publish service response future
-    pub(crate) struct PublishResponse<T: Service<Publish>, C: Service<ControlMessage<E>>, E> {
+    pub(crate) struct PublishResponse<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E> {
         #[pin]
-        state: PublishResponseState<T, C, E>,
+        state: PublishResponseState<'f, T, C, E>,
         packet_id: u16,
-        inner: Rc<Inner<C>>,
+        inner: &'f Inner<C>,
         _t: PhantomData<E>,
     }
 }
 
 pin_project_lite::pin_project! {
     #[project = PublishResponseStateProject]
-    enum PublishResponseState<T: Service<Publish>, C: Service<ControlMessage<E>>, E> {
-        Publish { #[pin] fut: T::Future },
-        Control { #[pin] fut: ControlResponse<C, E> },
+    enum PublishResponseState<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>
+    where T: 'f, C: 'f, E: 'f
+    {
+        Publish { #[pin] fut: T::Future<'f> },
+        Control { #[pin] fut: ControlResponse<'f, C, E> },
     }
 }
 
-impl<T, C, E> Future for PublishResponse<T, C, E>
+impl<'f, T, C, E> Future for PublishResponse<'f, T, C, E>
 where
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
@@ -394,35 +397,26 @@ where
 
 pin_project_lite::pin_project! {
     /// Control service response future
-    pub(crate) struct ControlResponse<C: Service<ControlMessage<E>>, E>
+    pub(crate) struct ControlResponse<'f, C: Service<ControlMessage<E>>, E>
+    where C: 'f, E: 'f
     {
         #[pin]
-        fut: C::Future,
-        inner: Rc<Inner<C>>,
+        fut: C::Future<'f>,
+        inner: &'f Inner<C>,
         error: bool,
         packet_id: u16,
         _t: PhantomData<E>,
     }
 }
 
-impl<C, E> ControlResponse<C, E>
+impl<'f, C, E> ControlResponse<'f, C, E>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    #[allow(clippy::match_like_matches_macro)]
-    fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<C>>) -> Self {
-        let error = match pkt {
-            ControlMessage::Error(_) | ControlMessage::ProtocolError(_) => true,
-            _ => false,
-        };
+    fn new(pkt: ControlMessage<E>, inner: &'f Inner<C>) -> Self {
+        let error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
 
-        Self {
-            error,
-            fut: inner.control.call(pkt),
-            inner: inner.clone(),
-            packet_id: 0,
-            _t: PhantomData,
-        }
+        Self { error, inner, packet_id: 0, fut: inner.control.call(pkt), _t: PhantomData }
     }
 
     fn packet_id(mut self, id: u16) -> Self {
@@ -431,7 +425,7 @@ where
     }
 }
 
-impl<C, E> Future for ControlResponse<C, E>
+impl<'f, C, E> Future for ControlResponse<'f, C, E>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
