@@ -1,64 +1,60 @@
-use std::{error, fmt, io};
+use std::io;
 
-use derive_more::{Display, From};
 use ntex::util::Either;
 
 use crate::types::QoS;
 
 /// Errors which can occur when attempting to handle mqtt connection.
-#[derive(Debug, Display)]
+#[derive(Debug, thiserror::Error)]
 pub enum MqttError<E> {
     /// Publish handler service error
-    #[display(fmt = "Service error")]
+    #[error("Service error")]
     Service(E),
     /// Protocol error
-    #[display(fmt = "Mqtt protocol error: {}", _0)]
+    #[error("Mqtt protocol error: {}", _0)]
     Protocol(ProtocolError),
     /// Handshake timeout
+    #[error("Handshake timeout")]
     HandshakeTimeout,
     /// Peer disconnect
-    #[display(fmt = "Peer is disconnected, error: {:?}", _0)]
+    #[error("Peer is disconnected, error: {:?}", _0)]
     Disconnected(Option<io::Error>),
     /// Server error
-    #[display(fmt = "Server error: {}", _0)]
+    #[error("Server error: {}", _0)]
     ServerError(&'static str),
 }
 
-impl<E: fmt::Debug> error::Error for MqttError<E> {}
-
 /// Protocol level errors
-#[derive(Debug, Display, From)]
+#[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
     /// Mqtt parse error
-    #[display(fmt = "Decode error: {:?}", _0)]
-    Decode(DecodeError),
+    #[error("Decode error: {:?}", _0)]
+    Decode(#[from] DecodeError),
     /// Mqtt encode error
-    #[display(fmt = "Encode error: {:?}", _0)]
-    Encode(EncodeError),
+    #[error("Encode error: {:?}", _0)]
+    Encode(#[from] EncodeError),
     /// Unexpected packet
-    #[display(fmt = "Unexpected packet {:?}, {}", _0, _1)]
+    #[error("Unexpected packet {:?}, {}", _0, _1)]
     Unexpected(u8, &'static str),
     /// Packet id of publish ack packet does not match of send publish packet
-    #[display(fmt = "Packet id of publish ack packet does not match of send publish packet")]
+    #[error("Packet id of publish ack packet does not match of send publish packet")]
     PacketIdMismatch,
     /// Peer sent publish with higher qos than configured
-    #[display(fmt = "Max allowed QoS level is violated {:?}", _0)]
+    #[error("Max allowed QoS level is violated {:?}", _0)]
     MaxQoSViolated(QoS),
     /// Topic alias is greater than max topic alias
-    #[display(fmt = "Topic alias is greater than max topic alias")]
+    #[error("Topic alias is greater than max topic alias")]
     MaxTopicAlias,
     /// Number of in-flight messages exceeded
-    #[display(fmt = "Number of in-flight messages exceeded")]
+    #[error("Number of in-flight messages exceeded")]
     ReceiveMaximumExceeded,
     /// Unknown topic alias
-    #[display(fmt = "Unknown topic alias")]
+    #[error("Unknown topic alias")]
     UnknownTopicAlias,
     /// Keep alive timeout
-    #[display(fmt = "Keep alive timeout")]
+    #[error("Keep alive timeout")]
     KeepAliveTimeout,
 }
-
-impl error::Error for ProtocolError {}
 
 impl<E> From<ProtocolError> for MqttError<E> {
     fn from(err: ProtocolError) -> Self {
@@ -96,44 +92,54 @@ impl<E> From<Either<EncodeError, io::Error>> for MqttError<E> {
     }
 }
 
-#[derive(Debug, Display, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum DecodeError {
+    #[error("Invalid protocol")]
     InvalidProtocol,
+    #[error("Invalid length")]
     InvalidLength,
+    #[error("Malformed packet")]
     MalformedPacket,
+    #[error("Unsupported protocol level")]
     UnsupportedProtocolLevel,
+    #[error("Connect frame's reserved flag is set")]
     ConnectReservedFlagSet,
+    #[error("ConnectAck frame's reserved flag is set")]
     ConnAckReservedFlagSet,
+    #[error("Invalid client id")]
     InvalidClientId,
+    #[error("Unsupported packet type")]
     UnsupportedPacketType,
     // MQTT v3 only
+    #[error("Packet id is required")]
     PacketIdRequired,
+    #[error("Max size exceeded")]
     MaxSizeExceeded,
+    #[error("utf8 error")]
     Utf8Error,
 }
 
-impl error::Error for DecodeError {}
-
-#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum EncodeError {
+    #[error("Invalid length")]
     InvalidLength,
+    #[error("Malformed packet")]
     MalformedPacket,
+    #[error("Packet id is required")]
     PacketIdRequired,
+    #[error("Unsupported version")]
     UnsupportedVersion,
 }
 
-impl error::Error for EncodeError {}
-
-#[derive(Debug, Display, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, thiserror::Error)]
 pub enum SendPacketError {
     /// Encoder error
-    Encode(EncodeError),
+    #[error("Encoding error {:?}", _0)]
+    Encode(#[from] EncodeError),
     /// Provided packet id is in use
-    #[display(fmt = "Provided packet id is in use")]
+    #[error("Provided packet id is in use")]
     PacketIdInUse(u16),
     /// Peer disconnected
-    #[display(fmt = "Peer disconnected")]
+    #[error("Peer is disconnected")]
     Disconnected,
 }
-
-impl error::Error for SendPacketError {}
