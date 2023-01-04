@@ -1,5 +1,11 @@
 # Changes
 
+## [0.10.0-beta.1] - 2023-01-04
+
+* Migrate to ntex-0.6
+
+* Use thiserror::Error for error definitions
+
 ## [0.10.0-beta.0] - 2022-12-28
 
 * Migrate to ntex-service 1.0
