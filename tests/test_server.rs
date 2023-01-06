@@ -52,7 +52,7 @@ async fn test_connect_fail() -> std::io::Result<()> {
     });
     let err =
         client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
-    if let client::ClientError::Ack { session_present, return_code } = err {
+    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::BadUserNameOrPassword);
     }
@@ -65,7 +65,7 @@ async fn test_connect_fail() -> std::io::Result<()> {
     });
     let err =
         client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
-    if let client::ClientError::Ack { session_present, return_code } = err {
+    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::IdentifierRejected);
     }
@@ -78,7 +78,7 @@ async fn test_connect_fail() -> std::io::Result<()> {
     });
     let err =
         client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
-    if let client::ClientError::Ack { session_present, return_code } = err {
+    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::NotAuthorized);
     }
@@ -91,7 +91,7 @@ async fn test_connect_fail() -> std::io::Result<()> {
     });
     let err =
         client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
-    if let client::ClientError::Ack { session_present, return_code } = err {
+    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::ServiceUnavailable);
     }

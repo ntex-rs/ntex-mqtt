@@ -244,10 +244,10 @@ mod tests {
 
         assert_eq!(
             decode_connect_ack_packet(&mut Bytes::from_static(b"\x01\x04")),
-            Ok(Packet::ConnectAck {
+            Ok(Packet::ConnectAck(ConnectAck {
                 session_present: true,
                 return_code: ConnectAckReason::BadUserNameOrPassword
-            })
+            }))
         );
 
         assert_eq!(
@@ -257,10 +257,10 @@ mod tests {
 
         assert_decode_packet!(
             b"\x20\x02\x01\x04",
-            Packet::ConnectAck {
+            Packet::ConnectAck(ConnectAck {
                 session_present: true,
                 return_code: ConnectAckReason::BadUserNameOrPassword,
-            }
+            })
         );
 
         assert_decode_packet!(b"\xe0\x00", Packet::Disconnect);

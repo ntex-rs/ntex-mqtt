@@ -601,7 +601,7 @@ async fn test_sink_encoder_error_pub_qos1() {
                 let res = builder.send_at_least_once().await;
                 assert_eq!(
                     res,
-                    Err(error::PublishQos1Error::Encode(error::EncodeError::InvalidLength))
+                    Err(error::SendPacketError::Encode(error::EncodeError::InvalidLength))
                 );
             });
             Ok(con.ack(St))
@@ -702,7 +702,7 @@ async fn test_sink_success_after_encoder_error_qos1() {
                 let res = builder.send_at_least_once().await;
                 assert_eq!(
                     res,
-                    Err(error::PublishQos1Error::Encode(error::EncodeError::InvalidLength))
+                    Err(error::SendPacketError::Encode(error::EncodeError::InvalidLength))
                 );
 
                 let res = sink.publish("test", Bytes::new()).send_at_least_once().await;
