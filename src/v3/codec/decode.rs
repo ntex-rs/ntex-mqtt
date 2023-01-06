@@ -6,7 +6,7 @@ use crate::error::DecodeError;
 use crate::types::{packet_type, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
 use crate::utils::Decode;
 
-use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
+use super::packet::{Connect, ConnectAck, LastWill, Packet, Publish, SubscribeReturnCode};
 use super::{ConnectAckFlags, ConnectFlags};
 
 pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
@@ -103,10 +103,10 @@ fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
         ConnectAckFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnAckReservedFlagSet)?;
 
     let return_code = src.get_u8().try_into()?;
-    Ok(Packet::ConnectAck {
-        session_present: flags.contains(ConnectAckFlags::SESSION_PRESENT),
+    Ok(Packet::ConnectAck(ConnectAck {
         return_code,
-    })
+        session_present: flags.contains(ConnectAckFlags::SESSION_PRESENT),
+    }))
 }
 
 fn decode_publish_packet(src: &mut Bytes, packet_flags: u8) -> Result<Packet, DecodeError> {

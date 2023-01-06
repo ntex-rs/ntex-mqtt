@@ -5,7 +5,6 @@ pub mod codec;
 pub mod control;
 mod default;
 mod dispatcher;
-pub mod error;
 mod handshake;
 mod publish;
 mod router;
@@ -24,5 +23,6 @@ pub use self::selector::Selector;
 pub use self::server::MqttServer;
 pub use self::sink::{MqttSink, PublishBuilder, SubscribeBuilder, UnsubscribeBuilder};
 
+pub use crate::error;
 pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;

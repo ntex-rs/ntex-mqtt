@@ -113,6 +113,15 @@ impl fmt::Debug for Publish {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
+/// ConnectAck message
+pub struct ConnectAck {
+    pub return_code: ConnectAckReason,
+    /// enables a Client to establish whether the Client and Server have a consistent view
+    /// about whether there is already stored Session state.
+    pub session_present: bool,
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 /// Subscribe Return Code
 pub enum SubscribeReturnCode {
     Success(QoS),
@@ -126,12 +135,7 @@ pub enum Packet {
     Connect(Box<Connect>),
 
     /// Connect acknowledgment
-    ConnectAck {
-        /// enables a Client to establish whether the Client and Server have a consistent view
-        /// about whether there is already stored Session state.
-        session_present: bool,
-        return_code: ConnectAckReason,
-    },
+    ConnectAck(ConnectAck),
 
     /// Publish message
     Publish(Publish),

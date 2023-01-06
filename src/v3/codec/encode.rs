@@ -73,11 +73,11 @@ pub(crate) fn encode(
             write_variable_length(content_size, dst);
             encode_connect(connect, dst)?;
         }
-        Packet::ConnectAck { session_present, return_code } => {
+        Packet::ConnectAck(ack) => {
             dst.put_u8(packet_type::CONNACK);
             write_variable_length(content_size, dst);
-            let flags_byte = u8::from(*session_present);
-            let code: u8 = From::from(*return_code);
+            let flags_byte = u8::from(ack.session_present);
+            let code: u8 = From::from(ack.return_code);
             dst.put_slice(&[flags_byte, code]);
         }
         Packet::Publish(publish) => {

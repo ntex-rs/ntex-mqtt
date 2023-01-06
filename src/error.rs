@@ -1,4 +1,4 @@
-use std::io;
+use std::{fmt, io};
 
 use ntex::util::Either;
 
@@ -142,4 +142,42 @@ pub enum SendPacketError {
     /// Peer disconnected
     #[error("Peer is disconnected")]
     Disconnected,
+}
+
+/// Errors which can occur when attempting to handle mqtt client connection.
+#[derive(Debug, thiserror::Error)]
+pub enum ClientError<T: fmt::Debug> {
+    /// Connect negotiation failed
+    #[error("Connect ack failed: {:?}", _0)]
+    Ack(T),
+    /// Protocol error
+    #[error("Protocol error: {:?}", _0)]
+    Protocol(#[from] ProtocolError),
+    /// Handshake timeout
+    #[error("Handshake timeout")]
+    HandshakeTimeout,
+    /// Peer disconnected
+    #[error("Peer disconnected")]
+    Disconnected(Option<std::io::Error>),
+    /// Connect error
+    #[error("Connect error: {}", _0)]
+    Connect(#[from] ntex::connect::ConnectError),
+}
+
+impl<T: fmt::Debug> From<Either<EncodeError, std::io::Error>> for ClientError<T> {
+    fn from(err: Either<EncodeError, std::io::Error>) -> Self {
+        match err {
+            Either::Left(err) => ClientError::Protocol(ProtocolError::Encode(err)),
+            Either::Right(err) => ClientError::Disconnected(Some(err)),
+        }
+    }
+}
+
+impl<T: fmt::Debug> From<Either<DecodeError, std::io::Error>> for ClientError<T> {
+    fn from(err: Either<DecodeError, std::io::Error>) -> Self {
+        match err {
+            Either::Left(err) => ClientError::Protocol(ProtocolError::Decode(err)),
+            Either::Right(err) => ClientError::Disconnected(Some(err)),
+        }
+    }
 }
