@@ -197,14 +197,14 @@ where
     IoBoxed: From<T::Response>,
 {
     /// Connect to mqtt server
-    pub async fn connect(&self) -> Result<Client, ClientError> {
+    pub async fn connect(&self) -> Result<Client, ClientError<codec::ConnectAck>> {
         match timeout_checked(self.handshake_timeout, self._connect()).await {
             Ok(res) => res.map_err(From::from),
             Err(_) => Err(ClientError::HandshakeTimeout),
         }
     }
 
-    async fn _connect(&self) -> Result<Client, ClientError> {
+    async fn _connect(&self) -> Result<Client, ClientError<codec::ConnectAck>> {
         let fut = self.connector.call(Connect::new(self.address.clone()));
         let io = IoBoxed::from(fut.await?);
         let pkt = self.pkt.clone();
@@ -226,20 +226,20 @@ where
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, true, pool));
 
         match packet {
-            codec::Packet::ConnectAck { session_present, return_code } => {
-                log::trace!("Connect ack response from server: session: present: {:?}, return code: {:?}", session_present, return_code);
-                if return_code == codec::ConnectAckReason::ConnectionAccepted {
+            codec::Packet::ConnectAck(pkt) => {
+                log::trace!("Connect ack response from server: session: present: {:?}, return code: {:?}", pkt.session_present, pkt.return_code);
+                if pkt.return_code == codec::ConnectAckReason::ConnectionAccepted {
                     shared.set_cap(max_send);
                     Ok(Client::new(
                         io,
                         shared,
-                        session_present,
+                        pkt.session_present,
                         Seconds(keepalive_timeout),
                         disconnect_timeout,
                         max_receive,
                     ))
                 } else {
-                    Err(ClientError::Ack { session_present, return_code })
+                    Err(ClientError::Ack(pkt))
                 }
             }
             p => Err(ProtocolError::Unexpected(p.packet_type(), "Expected CONNECT-ACK packet")

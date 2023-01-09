@@ -1,5 +1,9 @@
 # Changes
 
+## [0.10.0-beta.2] - 2023-01-xx
+
+* Refactor client error
+
 ## [0.10.0-beta.1] - 2023-01-04
 
 * Migrate to ntex-0.6

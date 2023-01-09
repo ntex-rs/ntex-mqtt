@@ -201,14 +201,14 @@ where
     IoBoxed: From<T::Response>,
 {
     /// Connect to mqtt server
-    pub async fn connect(&self) -> Result<Client, ClientError> {
+    pub async fn connect(&self) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
         match timeout_checked(self.handshake_timeout, self._connect()).await {
             Ok(res) => res.map_err(From::from),
             Err(_) => Err(ClientError::HandshakeTimeout),
         }
     }
 
-    async fn _connect(&self) -> Result<Client, ClientError> {
+    async fn _connect(&self) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
         let fut = self.connector.call(Connect::new(self.address.clone()));
         let io = IoBoxed::from(fut.await?);
         let pkt = self.pkt.clone();

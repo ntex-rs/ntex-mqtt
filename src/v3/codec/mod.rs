@@ -8,6 +8,6 @@ mod packet;
 
 pub use self::codec::Codec;
 pub use self::packet::{
-    Connect, ConnectAckReason, LastWill, Packet, Publish, SubscribeReturnCode,
+    Connect, ConnectAck, ConnectAckReason, LastWill, Packet, Publish, SubscribeReturnCode,
 };
 pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};

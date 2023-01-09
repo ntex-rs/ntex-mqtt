@@ -363,10 +363,10 @@ where
 
                     match ack.session {
                         Some(session) => {
-                            let pkt = mqtt::Packet::ConnectAck {
+                            let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
                                 session_present: ack.session_present,
                                 return_code: mqtt::ConnectAckReason::ConnectionAccepted,
-                            };
+                            });
 
                             log::trace!("Sending success handshake ack: {:#?}", pkt);
 
@@ -380,10 +380,10 @@ where
                             ))
                         }
                         None => {
-                            let pkt = mqtt::Packet::ConnectAck {
+                            let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
                                 session_present: false,
                                 return_code: ack.return_code,
-                            };
+                            });
 
                             log::trace!("Sending failed handshake ack: {:#?}", pkt);
                             ack.io.send(pkt, &ack.shared.codec).await?;
@@ -527,10 +527,10 @@ where
 
                 match ack.session {
                     Some(session) => {
-                        let pkt = mqtt::Packet::ConnectAck {
+                        let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
                             session_present: ack.session_present,
                             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
-                        };
+                        });
                         log::trace!(
                             "Connection handshake succeeded, sending handshake ack: {:#?}",
                             pkt
@@ -551,10 +551,10 @@ where
                         Ok(Either::Right(()))
                     }
                     None => {
-                        let pkt = mqtt::Packet::ConnectAck {
+                        let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
                             session_present: false,
                             return_code: ack.return_code,
-                        };
+                        });
 
                         log::trace!("Sending failed handshake ack: {:#?}", pkt);
                         ack.io.send(pkt, &ack.shared.codec).await?;

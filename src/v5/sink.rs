@@ -1,10 +1,10 @@
 use std::future::{ready, Future};
 use std::{fmt, num::NonZeroU16, num::NonZeroU32, rc::Rc};
 
-use ntex::util::{ByteString, Bytes, Either, Ready};
+use ntex::util::{ByteString, Bytes, Either};
 
 use super::codec;
-use super::error::{ProtocolError, PublishQos1Error, SendPacketError};
+use super::error::{ProtocolError, SendPacketError};
 use super::shared::{Ack, AckType, MqttShared};
 use crate::types::QoS;
 
@@ -289,9 +289,7 @@ impl PublishBuilder {
     }
 
     /// Send publish packet with QoS 1
-    pub fn send_at_least_once(
-        self,
-    ) -> impl Future<Output = Result<codec::PublishAck, PublishQos1Error>> {
+    pub async fn send_at_least_once(self) -> Result<codec::PublishAck, SendPacketError> {
         let shared = self.shared;
         let mut packet = self.packet;
         packet.qos = QoS::AtLeastOnce;
@@ -302,23 +300,20 @@ impl PublishBuilder {
                 let (tx, rx) = shared.pool.waiters.channel();
                 shared.with_queues(|q| q.waiters.push_back(tx));
 
-                return Either::Left(Either::Right(async move {
-                    if rx.await.is_err() {
-                        return Err(PublishQos1Error::Disconnected);
-                    }
-                    Self::send_at_least_once_inner(packet, shared).await
-                }));
+                if rx.await.is_err() {
+                    return Err(SendPacketError::Disconnected);
+                }
             }
-            Either::Right(Self::send_at_least_once_inner(packet, shared))
+            Self::send_at_least_once_inner(packet, shared).await
         } else {
-            Either::Left(Either::Left(Ready::Err(PublishQos1Error::Disconnected)))
+            Err(SendPacketError::Disconnected)
         }
     }
 
-    fn send_at_least_once_inner(
+    async fn send_at_least_once_inner(
         mut packet: codec::Publish,
         shared: Rc<MqttShared>,
-    ) -> impl Future<Output = Result<codec::PublishAck, PublishQos1Error>> {
+    ) -> Result<codec::PublishAck, SendPacketError> {
         // packet id
         let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
         if idx == 0 {
@@ -328,7 +323,7 @@ impl PublishBuilder {
 
         let pkt_in_use = shared.with_queues(|queues| queues.inflight.contains_key(&idx));
         if pkt_in_use {
-            return Either::Left(Ready::Err(PublishQos1Error::PacketIdInUse(idx)));
+            return Err(SendPacketError::PacketIdInUse(idx));
         }
 
         // send publish to client
@@ -346,17 +341,9 @@ impl PublishBuilder {
                 });
 
                 // wait ack from peer
-                Either::Right(async move {
-                    rx.await.map_err(|_| PublishQos1Error::Disconnected).and_then(|pkt| {
-                        let pkt = pkt.publish();
-                        match pkt.reason_code {
-                            codec::PublishAckReason::Success => Ok(pkt),
-                            _ => Err(PublishQos1Error::Fail(pkt)),
-                        }
-                    })
-                })
+                rx.await.map_err(|_| SendPacketError::Disconnected).map(|pkt| pkt.publish())
             }
-            Err(err) => Either::Left(Ready::Err(PublishQos1Error::Encode(err))),
+            Err(err) => Err(SendPacketError::Encode(err)),
         }
     }
 }
