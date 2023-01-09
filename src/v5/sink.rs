@@ -65,6 +65,16 @@ impl MqttSink {
     }
 
     #[inline]
+    /// Force close MQTT connection. Dispatcher does not wait for uncompleted
+    /// responses (ending them with error), but it flushes buffers.
+    pub fn force_close(&self) {
+        if self.is_open() { // todo: mg: review: do we need to check if it's open?
+            self.0.io.force_close();
+        }
+        self.clear_state();
+    }
+
+    #[inline]
     /// Close mqtt connection with default Disconnect message
     pub fn close(&self) {
         if self.is_open() {
@@ -74,10 +84,7 @@ impl MqttSink {
                 .encode(codec::Packet::Disconnect(codec::Disconnect::default()), &self.0.codec);
             self.0.io.close();
         }
-        self.0.with_queues(|q| {
-            q.inflight.clear();
-            q.waiters.clear();
-        });
+        self.clear_state();
     }
 
     #[inline]
@@ -87,9 +94,13 @@ impl MqttSink {
             let _ = self.0.io.encode(codec::Packet::Disconnect(pkt), &self.0.codec);
             self.0.io.close();
         }
+        self.clear_state();
+    }
+
+    fn clear_state(&self) {
         self.0.with_queues(|q| {
-            q.inflight.clear();
             q.waiters.clear();
+            q.inflight.clear();
         });
     }
 
@@ -104,10 +115,7 @@ impl MqttSink {
 
     /// Close mqtt connection, dont send disconnect message
     pub(super) fn drop_sink(&self) {
-        self.0.with_queues(|q| {
-            q.waiters.clear();
-            q.inflight.clear();
-        });
+        self.clear_state();
         self.0.io.close();
     }
 

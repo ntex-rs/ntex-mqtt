@@ -19,6 +19,9 @@ pub struct Codec {
 bitflags::bitflags! {
     pub struct CodecFlags: u8 {
         const NO_PROBLEM_INFO = 0b0000_0001;
+        const NO_RETAIN       = 0b0000_0010;
+        const NO_SHARED_SUBS  = 0b0000_0100;
+        const NO_SUB_IDS      = 0b0000_1000;
     }
 }
 

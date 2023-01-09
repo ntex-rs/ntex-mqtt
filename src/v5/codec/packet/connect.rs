@@ -15,7 +15,7 @@ pub struct Connect {
     /// a time interval measured in seconds.
     pub keep_alive: u16,
 
-    pub session_expiry_interval_secs: Option<u32>,
+    pub session_expiry_interval_secs: u32,
     pub auth_method: Option<ByteString>,
     pub auth_data: Option<Bytes>,
     pub request_problem_info: bool,
@@ -89,14 +89,16 @@ impl Connect {
     }
 
     fn properties_len(&self) -> usize {
-        let mut prop_len = encoded_property_size(&self.session_expiry_interval_secs)
-            + encoded_property_size(&self.auth_method)
+        let mut prop_len = encoded_property_size(&self.auth_method)
             + encoded_property_size(&self.auth_data)
             + encoded_bool_property_size(self.request_problem_info, true) // 3.1.2.11.7 Request Problem Information
             + encoded_bool_property_size(self.request_response_info, false) // 3.1.2.11.6 Request Response Information
             + encoded_property_size(&self.receive_max)
             + encoded_property_size(&self.max_packet_size)
             + self.user_properties.encoded_size();
+        if self.session_expiry_interval_secs > 0 {
+            prop_len += 1 + self.session_expiry_interval_secs.encoded_size();
+        }
         if self.topic_alias_max > 0 {
             prop_len += 1 + self.topic_alias_max.encoded_size(); // [property type, value..]
         }
@@ -171,8 +173,7 @@ impl Connect {
         Ok(Connect {
             clean_start: flags.contains(ConnectFlags::CLEAN_START),
             keep_alive,
-
-            session_expiry_interval_secs,
+            session_expiry_interval_secs: session_expiry_interval_secs.unwrap_or(0),
             auth_method,
             auth_data,
             receive_max,
@@ -195,7 +196,7 @@ impl Default for Connect {
         Connect {
             clean_start: false,
             keep_alive: 0,
-            session_expiry_interval_secs: None,
+            session_expiry_interval_secs: 0,
             auth_method: None,
             auth_data: None,
             request_problem_info: true,
@@ -301,7 +302,10 @@ impl EncodeLtd for Connect {
 
         let prop_len = self.properties_len();
         utils::write_variable_length(prop_len as u32, buf); // safe: whole message size is vetted via max size check in codec
-        encode_property(&self.session_expiry_interval_secs, pt::SESS_EXPIRY_INT, buf)?;
+        if self.session_expiry_interval_secs > 0 {
+            buf.put_u8(pt::SESS_EXPIRY_INT);
+            self.session_expiry_interval_secs.encode(buf)?;
+        }
         encode_property(&self.auth_method, pt::AUTH_METHOD, buf)?;
         encode_property(&self.auth_data, pt::AUTH_DATA, buf)?;
         encode_bool_property(self.request_problem_info, pt::REQ_PROB_INFO, buf, true)?; // 3.1.2.11.7 Request Problem Information

@@ -9,7 +9,7 @@ use ntex::{server, service::pipeline_factory};
 use ntex_mqtt::v3::{
     client, codec, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish, Session,
 };
-use ntex_mqtt::{error::ProtocolError, types::QoS};
+use ntex_mqtt::{error::ProtocolError, QoS};
 
 struct St;
 
