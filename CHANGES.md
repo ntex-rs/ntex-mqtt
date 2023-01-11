@@ -2,7 +2,11 @@
 
 ## [0.10.0-beta.2] - 2023-01-xx
 
+* Fix dispatcher leak during stop process
+
 * Refactor client error
+
+* Drop derive_more dep
 
 ## [0.10.0-beta.1] - 2023-01-04
 

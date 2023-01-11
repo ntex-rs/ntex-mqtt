@@ -1,4 +1,3 @@
-use derive_more::From;
 use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};
@@ -24,7 +23,7 @@ pub use pubacks::*;
 pub use publish::*;
 pub use subscribe::*;
 
-#[derive(Debug, PartialEq, Eq, Clone, From)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 /// MQTT Control Packets
 pub enum Packet {
     /// Client request to connect to Server
@@ -35,12 +34,10 @@ pub enum Packet {
     Publish(Publish),
     /// Publish acknowledgment
     PublishAck(PublishAck),
-    #[from(ignore)]
     /// Publish received (assured delivery part 1)
     PublishReceived(PublishAck),
     /// Publish release (assured delivery part 2)
     PublishRelease(PublishAck2),
-    #[from(ignore)]
     /// Publish complete (assured delivery part 3)
     PublishComplete(PublishAck2),
     /// Client subscribe request
@@ -80,6 +77,78 @@ impl Packet {
             Packet::Disconnect(_) => packet_type::DISCONNECT,
             Packet::Auth(_) => packet_type::AUTH,
         }
+    }
+}
+
+impl From<Connect> for Packet {
+    fn from(pkt: Connect) -> Self {
+        Self::Connect(Box::new(pkt))
+    }
+}
+
+impl From<Box<Connect>> for Packet {
+    fn from(pkt: Box<Connect>) -> Self {
+        Self::Connect(pkt)
+    }
+}
+
+impl From<ConnectAck> for Packet {
+    fn from(pkt: ConnectAck) -> Self {
+        Self::ConnectAck(Box::new(pkt))
+    }
+}
+
+impl From<Box<ConnectAck>> for Packet {
+    fn from(pkt: Box<ConnectAck>) -> Self {
+        Self::ConnectAck(pkt)
+    }
+}
+
+impl From<Publish> for Packet {
+    fn from(pkt: Publish) -> Self {
+        Self::Publish(pkt)
+    }
+}
+
+impl From<PublishAck> for Packet {
+    fn from(pkt: PublishAck) -> Self {
+        Self::PublishAck(pkt)
+    }
+}
+
+impl From<Subscribe> for Packet {
+    fn from(pkt: Subscribe) -> Self {
+        Self::Subscribe(pkt)
+    }
+}
+
+impl From<SubscribeAck> for Packet {
+    fn from(pkt: SubscribeAck) -> Self {
+        Self::SubscribeAck(pkt)
+    }
+}
+
+impl From<Unsubscribe> for Packet {
+    fn from(pkt: Unsubscribe) -> Self {
+        Self::Unsubscribe(pkt)
+    }
+}
+
+impl From<UnsubscribeAck> for Packet {
+    fn from(pkt: UnsubscribeAck) -> Self {
+        Self::UnsubscribeAck(pkt)
+    }
+}
+
+impl From<Disconnect> for Packet {
+    fn from(pkt: Disconnect) -> Self {
+        Self::Disconnect(pkt)
+    }
+}
+
+impl From<Auth> for Packet {
+    fn from(pkt: Auth) -> Self {
+        Self::Auth(pkt)
     }
 }
 
