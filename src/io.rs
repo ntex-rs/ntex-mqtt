@@ -423,6 +423,8 @@ where
                                 continue;
                             }
                         }
+                    } else {
+                        io.poll_dispatch(cx);
                     }
                     return Poll::Pending;
                 }
