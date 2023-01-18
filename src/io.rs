@@ -453,14 +453,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::{cell::Cell, rc::Rc};
 
     use ntex::channel::condition::Condition;
-    use ntex::codec::BytesCodec;
-    use ntex::io as nio;
-    use ntex::testing::Io;
     use ntex::time::{sleep, Millis};
     use ntex::util::{Bytes, Ready};
+    use ntex::{codec::BytesCodec, io as nio, testing::Io};
 
     use super::*;
 
@@ -473,12 +471,11 @@ mod tests {
     {
         /// Construct new `Dispatcher` instance
         pub(crate) fn new_debug<F: IntoService<S, DispatchItem<U>>>(
-            io: Io,
+            io: nio::Io,
             codec: U,
             service: F,
         ) -> (Self, nio::IoRef) {
             let keepalive_timeout = Cell::new(Seconds(30).into());
-            let io = nio::Io::new(io);
             io.start_keepalive_timer(keepalive_timeout.get());
             let rio = io.get_ref();
 
@@ -512,7 +509,7 @@ mod tests {
         client.write("GET /test HTTP/1\r\n\r\n");
 
         let (disp, _) = Dispatcher::new_debug(
-            server,
+            nio::Io::new(server),
             BytesCodec,
             ntex::service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 sleep(Millis(50)).await;
@@ -549,7 +546,7 @@ mod tests {
         let waiter = condition.wait();
 
         let (disp, _) = Dispatcher::new_debug(
-            server,
+            nio::Io::new(server),
             BytesCodec,
             ntex::service::fn_service(move |msg: DispatchItem<BytesCodec>| {
                 let waiter = waiter.clone();
@@ -588,7 +585,7 @@ mod tests {
         client.write("GET /test HTTP/1\r\n\r\n");
 
         let (disp, io) = Dispatcher::new_debug(
-            server,
+            nio::Io::new(server),
             BytesCodec,
             ntex::service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 if let DispatchItem::Item(msg) = msg {
@@ -621,7 +618,7 @@ mod tests {
         client.write("GET /test HTTP/1\r\n\r\n");
 
         let (disp, io) = Dispatcher::new_debug(
-            server,
+            nio::Io::new(server),
             BytesCodec,
             ntex::service::fn_service(|_: DispatchItem<BytesCodec>| async move {
                 Err::<Option<Bytes>, _>(())
@@ -671,7 +668,8 @@ mod tests {
             }
         }
 
-        let (disp, io) = Dispatcher::new_debug(server, BytesCodec, Srv(counter.clone()));
+        let (disp, io) =
+            Dispatcher::new_debug(nio::Io::new(server), BytesCodec, Srv(counter.clone()));
         io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &mut BytesCodec).unwrap();
         ntex::rt::spawn(async move {
             let _ = disp.await;
@@ -691,5 +689,61 @@ mod tests {
 
         // service must be checked for readiness only once
         assert_eq!(counter.get(), 1);
+    }
+
+    #[ntex::test]
+    async fn test_shutdown_dispatcher_waker() {
+        let (client, server) = Io::create();
+        let server = nio::Io::new(server);
+        client.remote_buffer_cap(1024);
+
+        let flag = Rc::new(Cell::new(true));
+        let flag2 = flag.clone();
+        let server_ref = server.get_ref();
+
+        let (disp, _io) = Dispatcher::new_debug(
+            server,
+            BytesCodec,
+            ntex::service::fn_service(move |item: DispatchItem<BytesCodec>| {
+                let first = flag2.get();
+                flag2.set(false);
+                let io = server_ref.clone();
+                async move {
+                    match item {
+                        DispatchItem::Item(b) => {
+                            if !first {
+                                sleep(Millis(500)).await;
+                            }
+                            Ok(Some(b.freeze()))
+                        }
+                        _ => {
+                            io.close();
+                            Ok::<_, ()>(None)
+                        }
+                    }
+                }
+            }),
+        );
+        let (tx, rx) = ntex::channel::oneshot::channel();
+        ntex::rt::spawn(async move {
+            let _ = disp.await;
+            let _ = tx.send(());
+        });
+
+        // send first message
+        client.write(b"msg1");
+        sleep(Millis(25)).await;
+
+        // send second message
+        client.write(b"msg2");
+
+        // receive response to first message
+        sleep(Millis(150)).await;
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"msg1"));
+
+        // close read side
+        client.close().await;
+        let _ = rx.recv().await;
     }
 }

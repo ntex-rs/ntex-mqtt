@@ -28,3 +28,9 @@ rustls-pemfile = "1.0"
 openssl = "0.10"
 ntex = { version = "0.6.0", features = ["tokio", "rustls", "openssl"] }
 test-case = "2"
+
+[profile.dev]
+lto = "off" # cannot build tests with "thin"
+
+[profile.test]
+lto = "off" # cannot build tests with "thin"
