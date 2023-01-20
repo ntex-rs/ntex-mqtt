@@ -1,5 +1,9 @@
 # Changes
 
+## [0.10.0-beta.3] - 2023-01-20
+
+* Revert builders refactoring
+
 ## [0.10.0-beta.2] - 2023-01-20
 
 * Fix dispatcher leak during stop process
