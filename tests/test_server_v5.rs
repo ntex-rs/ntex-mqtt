@@ -595,14 +595,18 @@ async fn test_keepalive2() {
 async fn test_sink_encoder_error_pub_qos1() {
     let srv = server::test_server(move || {
         MqttServer::new(|con: Handshake| async move {
-            let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
-                props.user_properties.push((
-                    "ssssssssssssssssssssssssssssssssssss".into(),
-                    "ssssssssssssssssssssssssssssssssssss".into(),
-                ));
-            });
+            let sink = con.sink().clone();
             ntex::rt::spawn(async move {
-                let res = builder.send_at_least_once().await;
+                let res = sink
+                    .publish("test", Bytes::new())
+                    .properties(|props| {
+                        props.user_properties.push((
+                            "ssssssssssssssssssssssssssssssssssss".into(),
+                            "ssssssssssssssssssssssssssssssssssss".into(),
+                        ));
+                    })
+                    .send_at_least_once()
+                    .await;
                 assert_eq!(
                     res,
                     Err(error::SendPacketError::Encode(error::EncodeError::InvalidLength))
@@ -642,13 +646,16 @@ async fn test_sink_encoder_error_pub_qos1() {
 async fn test_sink_encoder_error_pub_qos0() {
     let srv = server::test_server(move || {
         MqttServer::new(|con: Handshake| async move {
-            let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
-                props.user_properties.push((
-                    "ssssssssssssssssssssssssssssssssssss".into(),
-                    "ssssssssssssssssssssssssssssssssssss".into(),
-                ));
-            });
-            let res = builder.send_at_most_once();
+            let res = con
+                .sink()
+                .publish("test", Bytes::new())
+                .properties(|props| {
+                    props.user_properties.push((
+                        "ssssssssssssssssssssssssssssssssssss".into(),
+                        "ssssssssssssssssssssssssssssssssssss".into(),
+                    ));
+                })
+                .send_at_most_once();
             assert_eq!(
                 res,
                 Err(error::SendPacketError::Encode(error::EncodeError::InvalidLength))
