@@ -156,12 +156,12 @@ impl MqttSink {
                         Ok(())
                     } else {
                         log::trace!("MQTT protocol error, unexpected packet");
-                        Err(ProtocolError::Unexpected(pkt.packet_type(), tp.name()))
+                        Err(ProtocolError::Unexpected(pkt.packet_type(), pkt.name()))
                     }
                 }
             } else {
                 log::trace!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
-                Err(ProtocolError::PacketIdMismatch)
+                Err(ProtocolError::Unexpected(pkt.packet_type(), pkt.name()))
             }
         });
         result.map_err(|e| {

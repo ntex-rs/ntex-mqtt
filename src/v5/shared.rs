@@ -192,13 +192,3 @@ impl Ack {
         }
     }
 }
-
-impl AckType {
-    pub(super) fn name(&self) -> &'static str {
-        match self {
-            AckType::Publish => "PublishAck",
-            AckType::Subscribe => "SubscribeAck",
-            AckType::Unsubscribe => "UnsubscribeAck",
-        }
-    }
-}

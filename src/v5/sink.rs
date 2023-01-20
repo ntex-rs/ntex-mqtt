@@ -129,13 +129,7 @@ impl MqttSink {
                     // cleanup ack queue
                     queues.inflight_ids.remove(&pkt.packet_id());
 
-                    if !pkt.is_match(tp) {
-                        log::trace!("MQTT protocol error, unexpeted packet");
-                        Err(ProtocolError::Unexpected(
-                            pkt.packet_type(),
-                            tp.name(),
-                        ))
-                    } else {
+                    if pkt.is_match(tp) {
                         let _ = tx.send(pkt);
 
                         // wake up queued request (receive max limit)
@@ -145,6 +139,12 @@ impl MqttSink {
                             }
                         }
                         Ok(())
+                    } else {
+                        log::trace!("MQTT protocol error, unexpeted packet");
+                        Err(ProtocolError::Unexpected(
+                            pkt.packet_type(),
+                            pkt.name(),
+                        ))
                     }
                 }
             } else {
