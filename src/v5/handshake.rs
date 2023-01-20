@@ -8,21 +8,11 @@ pub struct Handshake {
     io: IoBoxed,
     pkt: Box<codec::Connect>,
     pub(super) shared: Rc<MqttShared>,
-    pub(super) max_size: u32,
-    pub(super) max_receive: u16,
-    pub(super) max_topic_alias: u16,
 }
 
 impl Handshake {
-    pub(crate) fn new(
-        pkt: Box<codec::Connect>,
-        io: IoBoxed,
-        shared: Rc<MqttShared>,
-        max_size: u32,
-        max_receive: u16,
-        max_topic_alias: u16,
-    ) -> Self {
-        Self { io, pkt, shared, max_size, max_receive, max_topic_alias }
+    pub(crate) fn new(pkt: Box<codec::Connect>, io: IoBoxed, shared: Rc<MqttShared>) -> Self {
+        Self { io, pkt, shared }
     }
 
     #[inline]
@@ -49,17 +39,16 @@ impl Handshake {
     #[inline]
     /// Ack handshake message and set state
     pub fn ack<St>(self, st: St) -> HandshakeAck<St> {
-        let mut packet = codec::ConnectAck {
+        let max_pkt_size = self.shared.codec.max_inbound_size();
+        let receive_max = self.shared.receive_max();
+        let packet = codec::ConnectAck {
             reason_code: codec::ConnectAckReason::Success,
-            topic_alias_max: self.max_topic_alias,
+            max_qos: self.shared.max_qos(),
+            topic_alias_max: self.shared.topic_alias_max(),
+            receive_max: NonZeroU16::new(receive_max).unwrap_or(crate::v5::RECEIVE_MAX_DEFAULT),
+            max_packet_size: if max_pkt_size == 0 { None } else { Some(max_pkt_size) },
             ..codec::ConnectAck::default()
         };
-        if self.max_size != 0 {
-            packet.max_packet_size = Some(self.max_size);
-        }
-        if self.max_receive != 0 {
-            packet.receive_max = Some(NonZeroU16::new(self.max_receive).unwrap());
-        }
 
         let Handshake { io, shared, pkt, .. } = self;
         // [MQTT-3.1.2-22]

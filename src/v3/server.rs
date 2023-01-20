@@ -331,12 +331,9 @@ where
         log::trace!("Starting mqtt v3 handshake");
 
         let service = self.service.clone();
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            mqtt::Codec::default().max_size(self.max_size),
-            false,
-            self.pool.clone(),
-        ));
+        let codec = mqtt::Codec::default();
+        codec.set_max_size(self.max_size);
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, self.pool.clone()));
         let handshake_timeout = self.handshake_timeout;
 
         let f = async move {
@@ -395,7 +392,7 @@ where
                 }
                 packet => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
-                    Err(MqttError::Protocol(ProtocolError::Unexpected(
+                    Err(MqttError::Protocol(ProtocolError::unexpected_packet(
                         packet.packet_type(),
                         "MQTT-3.1.0-1: Expected CONNECT packet",
                     )))

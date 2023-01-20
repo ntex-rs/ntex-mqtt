@@ -68,7 +68,8 @@ impl MqttSink {
     /// Force close MQTT connection. Dispatcher does not wait for uncompleted
     /// responses (ending them with error), but it flushes buffers.
     pub fn force_close(&self) {
-        if self.is_open() { // todo: mg: review: do we need to check if it's open?
+        if self.is_open() {
+            // todo: mg: review: do we need to check if it's open?
             self.0.io.force_close();
         }
         self.clear_state();
@@ -171,7 +172,7 @@ impl MqttSink {
     where
         ByteString: From<U>,
     {
-        self.publish_pkt(codec::Publish {
+        self.publish_packet(codec::Publish {
             payload,
             dup: false,
             retain: false,
@@ -184,7 +185,7 @@ impl MqttSink {
 
     #[inline]
     /// Create publish builder with publish packet
-    pub fn publish_pkt(&self, packet: codec::Publish) -> PublishBuilder {
+    pub fn publish_packet(&self, packet: codec::Publish) -> PublishBuilder {
         PublishBuilder { packet, shared: self.0.clone() }
     }
 
@@ -215,6 +216,10 @@ impl MqttSink {
             },
             shared: self.0.clone(),
         }
+    }
+
+    pub(super) fn state(&self) -> &MqttShared {
+        &self.0
     }
 }
 
@@ -253,8 +258,8 @@ impl PublishBuilder {
 
     #[inline]
     /// Set retain flag
-    pub fn retain(mut self) -> Self {
-        self.packet.retain = true;
+    pub fn retain(mut self, val: bool) -> Self {
+        self.packet.retain = val;
         self
     }
 

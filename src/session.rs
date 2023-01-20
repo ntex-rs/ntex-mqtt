@@ -7,8 +7,6 @@ pub struct Session<T, St>(Rc<SessionInner<T, St>>);
 struct SessionInner<T, St> {
     st: St,
     sink: T,
-    max_receive: u16,
-    max_topic_alias: u16,
 }
 
 impl<T, St> Clone for Session<T, St> {
@@ -20,11 +18,7 @@ impl<T, St> Clone for Session<T, St> {
 
 impl<T, St> Session<T, St> {
     pub(crate) fn new(st: St, sink: T) -> Self {
-        Session(Rc::new(SessionInner { st, sink, max_receive: 0, max_topic_alias: 0 }))
-    }
-
-    pub(crate) fn new_v5(st: St, sink: T, max_receive: u16, max_topic_alias: u16) -> Self {
-        Session(Rc::new(SessionInner { st, sink, max_receive, max_topic_alias }))
+        Session(Rc::new(SessionInner { st, sink }))
     }
 
     #[inline]
@@ -35,10 +29,6 @@ impl<T, St> Session<T, St> {
     #[inline]
     pub fn state(&self) -> &St {
         &self.0.st
-    }
-
-    pub(crate) fn params(&self) -> (u16, u16) {
-        (self.0.max_receive, self.0.max_topic_alias)
     }
 }
 

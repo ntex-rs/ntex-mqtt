@@ -89,20 +89,15 @@ impl Connect {
     }
 
     fn properties_len(&self) -> usize {
-        let mut prop_len = encoded_property_size(&self.auth_method)
+        encoded_property_size(&self.auth_method)
             + encoded_property_size(&self.auth_data)
-            + encoded_bool_property_size(self.request_problem_info, true) // 3.1.2.11.7 Request Problem Information
-            + encoded_bool_property_size(self.request_response_info, false) // 3.1.2.11.6 Request Response Information
+            + encoded_property_size_default(&self.session_expiry_interval_secs, 0)
+            + encoded_property_size_default(&self.request_problem_info, true) // 3.1.2.11.7 Request Problem Information
+            + encoded_property_size_default(&self.request_response_info, false) // 3.1.2.11.6 Request Response Information
             + encoded_property_size(&self.receive_max)
             + encoded_property_size(&self.max_packet_size)
-            + self.user_properties.encoded_size();
-        if self.session_expiry_interval_secs > 0 {
-            prop_len += 1 + self.session_expiry_interval_secs.encoded_size();
-        }
-        if self.topic_alias_max > 0 {
-            prop_len += 1 + self.topic_alias_max.encoded_size(); // [property type, value..]
-        }
-        prop_len
+            + encoded_property_size_default(&self.topic_alias_max, 0)
+            + self.user_properties.encoded_size()
     }
 
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
@@ -302,20 +297,20 @@ impl EncodeLtd for Connect {
 
         let prop_len = self.properties_len();
         utils::write_variable_length(prop_len as u32, buf); // safe: whole message size is vetted via max size check in codec
-        if self.session_expiry_interval_secs > 0 {
-            buf.put_u8(pt::SESS_EXPIRY_INT);
-            self.session_expiry_interval_secs.encode(buf)?;
-        }
+
+        encode_property_default(
+            &self.session_expiry_interval_secs,
+            0,
+            pt::SESS_EXPIRY_INT,
+            buf,
+        )?;
         encode_property(&self.auth_method, pt::AUTH_METHOD, buf)?;
         encode_property(&self.auth_data, pt::AUTH_DATA, buf)?;
-        encode_bool_property(self.request_problem_info, pt::REQ_PROB_INFO, buf, true)?; // 3.1.2.11.7 Request Problem Information
-        encode_bool_property(self.request_response_info, pt::REQ_RESP_INFO, buf, false)?; // 3.1.2.11.6 Request Response Information
+        encode_property_default(&self.request_problem_info, true, pt::REQ_PROB_INFO, buf)?; // 3.1.2.11.7 Request Problem Information
+        encode_property_default(&self.request_response_info, false, pt::REQ_RESP_INFO, buf)?; // 3.1.2.11.6 Request Response Information
         encode_property(&self.receive_max, pt::RECEIVE_MAX, buf)?;
         encode_property(&self.max_packet_size, pt::MAX_PACKET_SIZE, buf)?;
-        if self.topic_alias_max > 0 {
-            buf.put_u8(pt::TOPIC_ALIAS_MAX);
-            self.topic_alias_max.encode(buf)?;
-        }
+        encode_property_default(&self.topic_alias_max, 0, pt::TOPIC_ALIAS_MAX, buf)?;
         self.user_properties.encode(buf)?;
 
         self.client_id.encode(buf)?;

@@ -23,7 +23,7 @@ pub struct MqttServer<St, C, Cn, P> {
     srv_publish: P,
     max_size: u32,
     max_receive: u16,
-    max_qos: Option<QoS>,
+    max_qos: QoS,
     max_inflight_size: usize,
     handshake_timeout: Seconds,
     disconnect_timeout: Seconds,
@@ -49,7 +49,7 @@ where
             srv_publish: DefaultPublishService::default(),
             max_size: 0,
             max_receive: 15,
-            max_qos: None,
+            max_qos: QoS::ExactlyOnce,
             max_inflight_size: 65535,
             handshake_timeout: Seconds::ZERO,
             disconnect_timeout: Seconds(3),
@@ -121,7 +121,7 @@ where
     ///
     /// By default max qos is not set.
     pub fn max_qos(mut self, qos: QoS) -> Self {
-        self.max_qos = Some(qos);
+        self.max_qos = qos;
         self
     }
 
@@ -232,12 +232,7 @@ where
                 pool: self.pool,
                 _t: PhantomData,
             },
-            factory(
-                self.srv_publish,
-                self.srv_control,
-                self.max_qos.unwrap_or(QoS::ExactlyOnce),
-                self.max_inflight_size,
-            ),
+            factory(self.srv_publish, self.srv_control, self.max_inflight_size),
             self.disconnect_timeout,
         )
     }
@@ -262,7 +257,6 @@ where
             handler: Rc::new(factory(
                 self.srv_publish,
                 self.srv_control,
-                self.max_qos.unwrap_or(QoS::ExactlyOnce),
                 self.max_inflight_size,
             )),
             max_size: self.max_size,
@@ -280,7 +274,7 @@ struct HandshakeFactory<St, H> {
     max_size: u32,
     max_receive: u16,
     max_topic_alias: u16,
-    max_qos: Option<QoS>,
+    max_qos: QoS,
     handshake_timeout: Millis,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
@@ -328,7 +322,7 @@ struct HandshakeService<St, H> {
     max_size: u32,
     max_receive: u16,
     max_topic_alias: u16,
-    max_qos: Option<QoS>,
+    max_qos: QoS,
     handshake_timeout: Millis,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
@@ -350,13 +344,13 @@ where
         log::trace!("Starting mqtt v5 handshake");
 
         let service = self.service.clone();
-        let codec = mqtt::Codec::default().max_inbound_size(self.max_size);
+        let codec = mqtt::Codec::default();
+        codec.set_max_inbound_size(self.max_size);
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
+        shared.set_max_qos(self.max_qos);
+        shared.set_receive_max(self.max_receive);
+        shared.set_topic_alias_max(self.max_topic_alias);
 
-        let max_size = self.max_size;
-        let mut max_receive = self.max_receive;
-        let mut max_topic_alias = self.max_topic_alias;
-        let max_qos = self.max_qos;
         let handshake_timeout = self.handshake_timeout;
 
         let f = async move {
@@ -385,14 +379,7 @@ where
 
                     // authenticate mqtt connection
                     let mut ack = service
-                        .call(Handshake::new(
-                            connect,
-                            io,
-                            shared,
-                            max_size,
-                            max_receive,
-                            max_topic_alias,
-                        ))
+                        .call(Handshake::new(connect, io, shared))
                         .await
                         .map_err(MqttError::Service)?;
 
@@ -401,20 +388,16 @@ where
                             log::trace!("Sending: {:#?}", ack.packet);
                             let shared = ack.shared;
 
-                            max_topic_alias = ack.packet.topic_alias_max;
-
-                            if ack.packet.max_qos.is_none() {
-                                ack.packet.max_qos = max_qos;
-                            }
-
-                            if let Some(num) = ack.packet.receive_max {
-                                max_receive = num.get();
-                            } else {
-                                max_receive = 0;
-                            }
-                            if let Some(size) = ack.packet.max_packet_size {
-                                shared.codec.set_max_inbound_size(size);
-                            }
+                            shared.set_max_qos(ack.packet.max_qos);
+                            shared.set_receive_max(ack.packet.receive_max.get());
+                            shared.set_topic_alias_max(ack.packet.topic_alias_max);
+                            shared
+                                .codec
+                                .set_max_inbound_size(ack.packet.max_packet_size.unwrap_or(0));
+                            shared.codec.set_retain_available(ack.packet.retain_available);
+                            shared.codec.set_sub_ids_available(
+                                ack.packet.subscription_identifiers_available,
+                            );
                             if ack.packet.server_keepalive_sec.is_none()
                                 && (keep_alive > ack.keepalive)
                             {
@@ -432,12 +415,7 @@ where
                             Ok((
                                 ack.io,
                                 shared.clone(),
-                                Session::new_v5(
-                                    session,
-                                    MqttSink::new(shared),
-                                    max_receive,
-                                    max_topic_alias,
-                                ),
+                                Session::new(session, MqttSink::new(shared)),
                                 Seconds(ack.keepalive),
                             ))
                         }
@@ -457,9 +435,9 @@ where
                 }
                 packet => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {}", 1);
-                    Err(MqttError::Protocol(ProtocolError::Unexpected(
+                    Err(MqttError::Protocol(ProtocolError::unexpected_packet(
                         packet.packet_type(),
-                        "MQTT-3.1.0-1: Expected CONNECT packet",
+                        "Expected CONNECT packet [MQTT-3.1.0-1]",
                     )))
                 }
             }
@@ -481,7 +459,7 @@ pub(crate) struct ServerSelector<St, C, T, F, R> {
     check: Rc<F>,
     max_size: u32,
     max_receive: u16,
-    max_qos: Option<QoS>,
+    max_qos: QoS,
     disconnect_timeout: Seconds,
     max_topic_alias: u16,
     _t: PhantomData<(St, R)>,
@@ -541,7 +519,7 @@ pub(crate) struct ServerSelectorImpl<St, C, T, F, R> {
     handler: Rc<T>,
     max_size: u32,
     max_receive: u16,
-    max_qos: Option<QoS>,
+    max_qos: QoS,
     disconnect_timeout: Seconds,
     max_topic_alias: u16,
     _t: PhantomData<(St, R)>,
@@ -577,13 +555,14 @@ where
         let connect = self.connect.clone();
         let handler = self.handler.clone();
         let timeout = self.disconnect_timeout;
-        let max_qos = self.max_qos;
-        let max_size = self.max_size;
-        let mut max_receive = self.max_receive;
-        let mut max_topic_alias = self.max_topic_alias;
+
+        req.0.shared.codec.set_max_inbound_size(self.max_size);
+        req.0.shared.set_max_qos(self.max_qos);
+        req.0.shared.set_receive_max(self.max_receive);
+        req.0.shared.set_topic_alias_max(self.max_topic_alias);
 
         Box::pin(async move {
-            let (mut hnd, mut delay) = req;
+            let (hnd, mut delay) = req;
 
             let result = match select((*check)(&hnd), &mut delay).await {
                 Either::Left(res) => res,
@@ -600,9 +579,6 @@ where
                 let keep_alive = hnd.packet().keep_alive;
                 let peer_receive_max =
                     hnd.packet().receive_max.map(|v| v.get()).unwrap_or(16) as usize;
-                hnd.max_size = max_size;
-                hnd.max_receive = max_receive;
-                hnd.max_topic_alias = max_topic_alias;
 
                 // authenticate mqtt connection
                 let mut ack = match select(connect.call(hnd), &mut delay).await {
@@ -618,20 +594,16 @@ where
                         log::trace!("Sending: {:#?}", ack.packet);
                         let shared = ack.shared;
 
-                        max_topic_alias = ack.packet.topic_alias_max;
-
-                        if ack.packet.max_qos.is_none() {
-                            ack.packet.max_qos = max_qos;
-                        }
-
-                        if let Some(num) = ack.packet.receive_max {
-                            max_receive = num.get();
-                        } else {
-                            max_receive = 0;
-                        }
-                        if let Some(size) = ack.packet.max_packet_size {
-                            shared.codec.set_max_inbound_size(size);
-                        }
+                        shared.set_max_qos(ack.packet.max_qos);
+                        shared.set_receive_max(ack.packet.receive_max.get());
+                        shared.set_topic_alias_max(ack.packet.topic_alias_max);
+                        shared
+                            .codec
+                            .set_max_inbound_size(ack.packet.max_packet_size.unwrap_or(0));
+                        shared.codec.set_retain_available(ack.packet.retain_available);
+                        shared.codec.set_sub_ids_available(
+                            ack.packet.subscription_identifiers_available,
+                        );
                         if ack.packet.server_keepalive_sec.is_none()
                             && (keep_alive > ack.keepalive)
                         {
@@ -642,12 +614,7 @@ where
                             .send(mqtt::Packet::ConnectAck(Box::new(ack.packet)), &shared.codec)
                             .await?;
 
-                        let session = Session::new_v5(
-                            session,
-                            MqttSink::new(shared.clone()),
-                            max_receive,
-                            max_topic_alias,
-                        );
+                        let session = Session::new(session, MqttSink::new(shared.clone()));
                         let handler = handler.create(session).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 

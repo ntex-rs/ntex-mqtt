@@ -7,19 +7,18 @@ use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::{buffer::BufferService, inflight::InFlightService, join};
 use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
-use crate::error::{MqttError, ProtocolError};
+use crate::error::{MqttError, ProtocolError, ProtocolViolationError};
 
 use super::control::{ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
 use super::shared::{Ack, MqttShared};
 use super::sink::MqttSink;
-use super::{codec, codec::EncodeLtd, QoS, Session};
+use super::{codec, codec::DisconnectReasonCode, codec::EncodeLtd, Session};
 
-/// mqtt3 protocol dispatcher
+/// MQTT 5 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
-    max_qos: QoS,
     max_inflight_size: usize,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
@@ -39,7 +38,6 @@ where
 
     fn_factory_with_config(move |cfg: Session<St>| {
         let factories = factories.clone();
-        let (max_receive, max_topic_alias) = cfg.params();
 
         async move {
             // create services
@@ -61,14 +59,7 @@ where
             Ok(crate::inflight::InFlightService::new(
                 0,
                 max_inflight_size,
-                Dispatcher::<_, _, E>::new(
-                    cfg.sink().clone(),
-                    max_qos,
-                    max_receive as usize,
-                    max_topic_alias,
-                    publish,
-                    control,
-                ),
+                Dispatcher::<_, _, E>::new(cfg.sink().clone(), publish, control),
             ))
         }
     })
@@ -89,9 +80,6 @@ pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     sink: MqttSink,
     publish: T,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
-    max_qos: QoS,
-    max_receive: usize,
-    max_topic_alias: u16,
     inner: Rc<Inner<C>>,
     _t: marker::PhantomData<E>,
 }
@@ -114,19 +102,9 @@ where
     PublishAck: TryFrom<T::Error, Error = E>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(
-        sink: MqttSink,
-        max_qos: QoS,
-        max_receive: usize,
-        max_topic_alias: u16,
-        publish: T,
-        control: C,
-    ) -> Self {
+    fn new(sink: MqttSink, publish: T, control: C) -> Self {
         Self {
             publish,
-            max_qos,
-            max_receive,
-            max_topic_alias,
             sink: sink.clone(),
             shutdown: RefCell::new(None),
             inner: Rc::new(Inner {
@@ -197,34 +175,57 @@ where
 
                 {
                     let mut inner = info.info.borrow_mut();
+                    let state = &self.sink.state();
 
                     if let Some(pid) = packet_id {
                         // check for receive maximum
-                        if self.max_receive != 0 && inner.inflight.len() >= self.max_receive {
+                        let receive_max = state.receive_max();
+                        if receive_max != 0 && inner.inflight.len() >= receive_max as usize {
                             log::trace!(
-                                "Receive maximum exceeded: max: {} inflight: {}",
-                                self.max_receive,
+                                "Receive maximum exceeded: max: {} in-flight: {}",
+                                receive_max,
                                 inner.inflight.len()
                             );
                             return Either::Right(Either::Right(ControlResponse::new(
                                 ControlMessage::proto_error(
-                                    ProtocolError::ReceiveMaximumExceeded,
+                                    ProtocolViolationError::new(
+                                        DisconnectReasonCode::ReceiveMaximumExceeded,
+                                        "Number of in-flight messages exceeds set maximum [MQTT-3.3.4-7]"
+                                    )
+                                    .into()
                                 ),
                                 &self.inner,
                             )));
                         }
 
                         // check max allowed qos
-                        if publish.qos > self.max_qos {
+                        if publish.qos > state.max_qos() {
                             log::trace!(
                                 "Max allowed QoS is violated, max {:?} provided {:?}",
-                                self.max_qos,
+                                state.max_qos(),
                                 publish.qos
                             );
                             return Either::Right(Either::Right(ControlResponse::new(
-                                ControlMessage::proto_error(ProtocolError::MaxQoSViolated(
-                                    publish.qos,
-                                )),
+                                ControlMessage::proto_error(
+                                    ProtocolViolationError::new(
+                                        DisconnectReasonCode::QosNotSupported,
+                                        "PUBLISH QoS is higher than supported [MQTT-3.2.2-11]",
+                                    )
+                                    .into(),
+                                ),
+                                &self.inner,
+                            )));
+                        }
+                        if publish.retain && !state.codec.retain_available() {
+                            log::trace!("Retain is not available but is set");
+                            return Either::Right(Either::Right(ControlResponse::new(
+                                ControlMessage::proto_error(
+                                    ProtocolViolationError::new(
+                                        DisconnectReasonCode::RetainNotSupported,
+                                        "[MQTT-3.2.2-14]",
+                                    )
+                                    .into(),
+                                ),
                                 &self.inner,
                             )));
                         }
@@ -249,7 +250,11 @@ where
                                 None => {
                                     return Either::Right(Either::Right(ControlResponse::new(
                                         ControlMessage::proto_error(
-                                            ProtocolError::UnknownTopicAlias,
+                                            ProtocolViolationError::new(
+                                                DisconnectReasonCode::TopicAliasInvalid,
+                                                "Unknown topic alias",
+                                            )
+                                            .into(),
                                         ),
                                         &self.inner,
                                     )));
@@ -266,11 +271,14 @@ where
                                     }
                                 }
                                 std::collections::hash_map::Entry::Vacant(entry) => {
-                                    if alias.get() > self.max_topic_alias {
+                                    if alias.get() > state.topic_alias_max() {
                                         return Either::Right(Either::Right(
                                             ControlResponse::new(
                                                 ControlMessage::proto_error(
-                                                    ProtocolError::MaxTopicAlias,
+                                                    ProtocolViolationError::generic(
+                                                        "Topic alias is greater than max allowed [MQTT-3.2.2-17]",
+                                                    )
+                                                    .into(),
                                                 ),
                                                 &self.inner,
                                             ),

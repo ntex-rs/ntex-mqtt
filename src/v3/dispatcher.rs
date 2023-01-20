@@ -8,7 +8,7 @@ use ntex::util::{
     buffer::BufferService, inflight::InFlightService, join, BoxFuture, Either, HashSet, Ready,
 };
 
-use crate::error::{MqttError, ProtocolError};
+use crate::error::{MqttError, ProtocolError, ProtocolViolationError};
 use crate::types::QoS;
 
 use super::control::{
@@ -174,7 +174,9 @@ where
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
                         return Either::Right(Either::Right(ControlResponse::new(
-                            ControlMessage::proto_error(ProtocolError::ReceiveMaximumExceeded),
+                            ControlMessage::proto_error(
+                                ProtocolViolationError::generic("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]").into(),
+                            ),
                             &self.inner,
                         )));
                     }
@@ -188,7 +190,14 @@ where
                         publish.qos
                     );
                     return Either::Right(Either::Right(ControlResponse::new(
-                        ControlMessage::proto_error(ProtocolError::MaxQoSViolated(publish.qos)),
+                        ControlMessage::proto_error(
+                            ProtocolViolationError::impl_specific(match publish.qos {
+                                QoS::AtLeastOnce => "PUBLISH with QoS 1 is not supported",
+                                QoS::ExactlyOnce => "PUBLISH with QoS 2 is not supported",
+                                QoS::AtMostOnce => unreachable!(), // max_qos cannot be lower than QoS 0
+                            })
+                            .into(),
+                        ),
                         &self.inner,
                     )));
                 }

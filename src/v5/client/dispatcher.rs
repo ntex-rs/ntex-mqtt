@@ -6,8 +6,9 @@ use ntex::io::DispatchItem;
 use ntex::service::Service;
 use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
-use crate::error::{MqttError, ProtocolError};
+use crate::error::{MqttError, ProtocolError, ProtocolViolationError};
 use crate::types::packet_type;
+use crate::v5::codec::DisconnectReasonCode;
 use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{codec, publish::Publish, publish::PublishAck, sink::MqttSink};
 
@@ -150,7 +151,11 @@ where
                             );
                             return Either::Right(Either::Right(ControlResponse::new(
                                 ControlMessage::proto_error(
-                                    ProtocolError::ReceiveMaximumExceeded,
+                                    ProtocolViolationError::new(
+                                        codec::DisconnectReasonCode::ReceiveMaximumExceeded,
+                                        "Number of in-flight messages exceeds set maximum, [MQTT-3.3.4-9]"
+                                    )
+                                    .into()
                                 ),
                                 &self.inner,
                             )));
@@ -178,7 +183,11 @@ where
                                 None => {
                                     return Either::Right(Either::Right(ControlResponse::new(
                                         ControlMessage::proto_error(
-                                            ProtocolError::UnknownTopicAlias,
+                                            ProtocolViolationError::new(
+                                                DisconnectReasonCode::TopicAliasInvalid,
+                                                "Unknown topic alias",
+                                            )
+                                            .into(),
                                         ),
                                         &self.inner,
                                     )));
@@ -199,7 +208,10 @@ where
                                         return Either::Right(Either::Right(
                                             ControlResponse::new(
                                                 ControlMessage::proto_error(
-                                                    ProtocolError::MaxTopicAlias,
+                                                    ProtocolViolationError::generic(
+                                                        "Topic alias is greater than max allowed [MQTT-3.1.2-26]",
+                                                    )
+                                                    .into(),
                                                 ),
                                                 &self.inner,
                                             ),
@@ -253,39 +265,29 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(codec::Packet::PingRequest) => {
-                Either::Right(Either::Left(Ready::Ok(Some(codec::Packet::PingResponse))))
-            }
             DispatchItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(Either::Right(
                 ControlResponse::new(ControlMessage::dis(pkt), &self.inner),
             )),
             DispatchItem::Item(codec::Packet::Auth(_)) => {
                 Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::proto_error(ProtocolError::Unexpected(
+                    ControlMessage::proto_error(ProtocolError::unexpected_packet(
                         packet_type::AUTH,
-                        "Auth packet is not supported",
+                        "AUTH packet is not supported at this time",
                     )),
                     &self.inner,
                 )))
             }
-            DispatchItem::Item(codec::Packet::Subscribe(_)) => {
-                Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::proto_error(ProtocolError::Unexpected(
-                        packet_type::SUBSCRIBE,
-                        "Subscribe packet is not supported",
-                    )),
-                    &self.inner,
-                )))
-            }
-            DispatchItem::Item(codec::Packet::Unsubscribe(_)) => {
-                Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::proto_error(ProtocolError::Unexpected(
-                        packet_type::UNSUBSCRIBE,
-                        "Unsubscribe packet is not supported",
-                    )),
-                    &self.inner,
-                )))
-            }
+            DispatchItem::Item(
+                pkt @ (codec::Packet::PingRequest
+                | codec::Packet::Subscribe(_)
+                | codec::Packet::Unsubscribe(_)),
+            ) => Either::Right(Either::Left(Ready::Err(
+                ProtocolError::unexpected_packet(
+                    pkt.packet_type(),
+                    "Packet of the type is not expected from server",
+                )
+                .into(),
+            ))),
             DispatchItem::Item(codec::Packet::PingResponse) => {
                 Either::Right(Either::Left(Ready::Ok(None)))
             }

@@ -474,8 +474,8 @@ async fn test_max_receive() {
     assert_eq!(
         ack,
         codec::Packet::ConnectAck(Box::new(codec::ConnectAck {
-            receive_max: Some(NonZeroU16::new(1).unwrap()),
-            max_qos: Some(codec::QoS::AtLeastOnce),
+            receive_max: NonZeroU16::new(1).unwrap(),
+            max_qos: codec::QoS::AtLeastOnce,
             reason_code: codec::ConnectAckReason::Success,
             topic_alias_max: 32,
             ..Default::default()
@@ -915,7 +915,7 @@ async fn test_max_qos() -> std::io::Result<()> {
                 match msg {
                     ControlMessage::ProtocolError(msg) => {
                         match msg.get_ref() {
-                            error::ProtocolError::MaxQoSViolated(_) => {
+                            error::ProtocolError::ProtocolViolation(_) => {
                                 violated.store(true, Relaxed);
                             }
                             _ => (),
@@ -985,7 +985,7 @@ async fn test_sink_ready() -> std::io::Result<()> {
     assert_eq!(
         ack,
         codec::Packet::ConnectAck(Box::new(codec::ConnectAck {
-            receive_max: Some(NonZeroU16::new(15).unwrap()),
+            receive_max: NonZeroU16::new(15).unwrap(),
             topic_alias_max: 32,
             ..Default::default()
         }))

@@ -5,6 +5,7 @@ use crate::error::{DecodeError, EncodeError};
 use crate::types::{ConnectAckFlags, QoS};
 use crate::utils::{self, Decode, Encode, Property};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
+use crate::v5::RECEIVE_MAX_DEFAULT;
 
 /// Connect acknowledgment packet
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -14,23 +15,23 @@ pub struct ConnectAck {
     pub session_present: bool,
     pub reason_code: ConnectAckReason,
 
-    pub session_expiry_interval_secs: Option<u32>,
-    pub receive_max: Option<NonZeroU16>,
-    pub max_qos: Option<QoS>,
-    pub retain_available: Option<bool>,
+    pub session_expiry_interval_secs: u32,
+    pub receive_max: NonZeroU16,
+    pub max_qos: QoS,
     pub max_packet_size: Option<u32>,
     pub assigned_client_id: Option<ByteString>,
     pub topic_alias_max: u16,
-    pub reason_string: Option<ByteString>,
-    pub user_properties: UserProperties,
-    pub wildcard_subscription_available: Option<bool>,
-    pub subscription_identifiers_available: Option<bool>,
-    pub shared_subscription_available: Option<bool>,
+    pub retain_available: bool,
+    pub wildcard_subscription_available: bool,
+    pub subscription_identifiers_available: bool,
+    pub shared_subscription_available: bool,
     pub server_keepalive_sec: Option<u16>,
     pub response_info: Option<ByteString>,
     pub server_reference: Option<ByteString>,
     pub auth_method: Option<ByteString>,
     pub auth_data: Option<Bytes>,
+    pub reason_string: Option<ByteString>,
+    pub user_properties: UserProperties,
 }
 
 impl Default for ConnectAck {
@@ -38,23 +39,23 @@ impl Default for ConnectAck {
         ConnectAck {
             session_present: false,
             reason_code: ConnectAckReason::Success,
-            session_expiry_interval_secs: None,
-            receive_max: None,
-            max_qos: None,
-            retain_available: None,
+            session_expiry_interval_secs: 0,
+            receive_max: RECEIVE_MAX_DEFAULT,
+            max_qos: QoS::ExactlyOnce,
             max_packet_size: None,
             assigned_client_id: None,
             topic_alias_max: 0,
-            reason_string: None,
-            user_properties: Vec::new(),
-            wildcard_subscription_available: None,
-            subscription_identifiers_available: None,
-            shared_subscription_available: None,
+            retain_available: true,
+            wildcard_subscription_available: true,
+            subscription_identifiers_available: true,
+            shared_subscription_available: true,
             server_keepalive_sec: None,
             response_info: None,
             server_reference: None,
             auth_method: None,
             auth_data: None,
+            reason_string: None,
+            user_properties: Vec::new(),
         }
     }
 }
@@ -159,23 +160,23 @@ impl ConnectAck {
         Ok(ConnectAck {
             session_present: flags.contains(ConnectAckFlags::SESSION_PRESENT),
             reason_code,
-            session_expiry_interval_secs,
-            receive_max,
-            max_qos,
-            retain_available,
+            session_expiry_interval_secs: session_expiry_interval_secs.unwrap_or(0),
+            receive_max: receive_max.unwrap_or(RECEIVE_MAX_DEFAULT),
+            max_qos: max_qos.unwrap_or(QoS::ExactlyOnce),
             max_packet_size,
             assigned_client_id,
             topic_alias_max: topic_alias_max.unwrap_or(0u16),
-            reason_string,
-            user_properties,
-            wildcard_subscription_available: wildcard_sub_avail,
-            subscription_identifiers_available: sub_ids_avail,
-            shared_subscription_available: shared_sub_avail,
+            retain_available: retain_available.unwrap_or(true),
+            wildcard_subscription_available: wildcard_sub_avail.unwrap_or(true),
+            subscription_identifiers_available: sub_ids_avail.unwrap_or(true),
+            shared_subscription_available: shared_sub_avail.unwrap_or(true),
             server_keepalive_sec: server_ka_sec,
             response_info,
             server_reference,
             auth_method,
             auth_data,
+            reason_string,
+            user_properties,
         })
     }
 }
@@ -184,15 +185,15 @@ impl EncodeLtd for ConnectAck {
     fn encoded_size(&self, limit: u32) -> usize {
         const HEADER_LEN: usize = 2; // state flags byte + reason code
 
-        let mut prop_len = encoded_property_size(&self.session_expiry_interval_secs)
-            + encoded_property_size(&self.receive_max)
-            + self.max_qos.map_or(0, |_| 1 + 1) // [property type, value]
-            + encoded_property_size(&self.retain_available)
+        let mut prop_len = encoded_property_size_default(&self.session_expiry_interval_secs, 0)
+            + encoded_property_size_default(&self.receive_max, RECEIVE_MAX_DEFAULT)
+            + if self.max_qos < QoS::ExactlyOnce { 1 + 1 } else { 0 }
             + encoded_property_size(&self.max_packet_size)
             + encoded_property_size(&self.assigned_client_id)
-            + encoded_property_size(&self.wildcard_subscription_available)
-            + encoded_property_size(&self.subscription_identifiers_available)
-            + encoded_property_size(&self.shared_subscription_available)
+            + encoded_property_size_default(&self.retain_available, true)
+            + encoded_property_size_default(&self.wildcard_subscription_available, true)
+            + encoded_property_size_default(&self.subscription_identifiers_available, true)
+            + encoded_property_size_default(&self.shared_subscription_available, true)
             + encoded_property_size(&self.server_keepalive_sec)
             + encoded_property_size(&self.response_info)
             + encoded_property_size(&self.server_reference)
@@ -212,7 +213,6 @@ impl EncodeLtd for ConnectAck {
     }
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
-        // todo: move upstream: write_variable_length(size, buf);
         let start_len = buf.len();
 
         buf.put_slice(&[u8::from(self.session_present), self.reason_code.into()]);
@@ -220,21 +220,38 @@ impl EncodeLtd for ConnectAck {
         let prop_len = var_int_len_from_size(size - 2);
         utils::write_variable_length(prop_len, buf);
 
-        encode_property(&self.session_expiry_interval_secs, pt::SESS_EXPIRY_INT, buf)?;
-        encode_property(&self.receive_max, pt::RECEIVE_MAX, buf)?;
-        if let Some(max_qos) = self.max_qos {
-            buf.put_slice(&[pt::MAX_QOS, max_qos.into()]);
+        encode_property_default(
+            &self.session_expiry_interval_secs,
+            0,
+            pt::SESS_EXPIRY_INT,
+            buf,
+        )?;
+        encode_property_default(&self.receive_max, RECEIVE_MAX_DEFAULT, pt::RECEIVE_MAX, buf)?;
+        if self.max_qos < QoS::ExactlyOnce {
+            buf.put_slice(&[pt::MAX_QOS, self.max_qos.into()]);
         }
-        encode_property(&self.retain_available, pt::RETAIN_AVAIL, buf)?;
+        encode_property_default(&self.retain_available, true, pt::RETAIN_AVAIL, buf)?;
         encode_property(&self.max_packet_size, pt::MAX_PACKET_SIZE, buf)?;
         encode_property(&self.assigned_client_id, pt::ASSND_CLIENT_ID, buf)?;
-        if self.topic_alias_max > 0 {
-            buf.put_u8(pt::TOPIC_ALIAS_MAX);
-            self.topic_alias_max.encode(buf)?;
-        }
-        encode_property(&self.wildcard_subscription_available, pt::WILDCARD_SUB_AVAIL, buf)?;
-        encode_property(&self.subscription_identifiers_available, pt::SUB_IDS_AVAIL, buf)?;
-        encode_property(&self.shared_subscription_available, pt::SHARED_SUB_AVAIL, buf)?;
+        encode_property_default(&self.topic_alias_max, 0, pt::TOPIC_ALIAS_MAX, buf)?;
+        encode_property_default(
+            &self.wildcard_subscription_available,
+            true,
+            pt::WILDCARD_SUB_AVAIL,
+            buf,
+        )?;
+        encode_property_default(
+            &self.subscription_identifiers_available,
+            true,
+            pt::SUB_IDS_AVAIL,
+            buf,
+        )?;
+        encode_property_default(
+            &self.shared_subscription_available,
+            true,
+            pt::SHARED_SUB_AVAIL,
+            buf,
+        )?;
         encode_property(&self.server_keepalive_sec, pt::SERVER_KA, buf)?;
         encode_property(&self.response_info, pt::RESP_INFO, buf)?;
         encode_property(&self.server_reference, pt::SERVER_REF, buf)?;

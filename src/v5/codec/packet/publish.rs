@@ -145,7 +145,7 @@ impl EncodeLtd for PublishProperties {
             + encoded_property_size(&self.correlation_data)
             + encoded_property_size(&self.message_expiry_interval)
             + encoded_property_size(&self.content_type)
-            + if self.is_utf8_payload { 2 } else { 0 }
+            + encoded_property_size_default(&self.is_utf8_payload, false)
             + encoded_property_size(&self.response_topic)
             + self
                 .subscription_ids
@@ -162,10 +162,7 @@ impl EncodeLtd for PublishProperties {
         encode_property(&self.correlation_data, pt::CORR_DATA, buf)?;
         encode_property(&self.message_expiry_interval, pt::MSG_EXPIRY_INT, buf)?;
         encode_property(&self.content_type, pt::CONTENT_TYPE, buf)?;
-        if self.is_utf8_payload {
-            buf.put_u8(pt::UTF8_PAYLOAD);
-            true.encode(buf)?;
-        }
+        encode_property_default(&self.is_utf8_payload, false, pt::UTF8_PAYLOAD, buf)?;
         encode_property(&self.response_topic, pt::RESP_TOPIC, buf)?;
         for sub_id in self.subscription_ids.iter() {
             buf.put_u8(pt::SUB_ID);

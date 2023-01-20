@@ -182,3 +182,13 @@ impl Ack {
         }
     }
 }
+
+impl AckType {
+    pub(super) fn expected_str(&self) -> &'static str {
+        match self {
+            AckType::Publish => "Expected PUBACK packet",
+            AckType::Subscribe => "Expected SUBACK packet",
+            AckType::Unsubscribe => "Expected UNSUBACK packet",
+        }
+    }
+}

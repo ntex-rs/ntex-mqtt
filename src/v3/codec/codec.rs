@@ -31,15 +31,6 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_size(self, size: u32) -> Self {
-        self.max_size.set(size);
-        self
-    }
-
-    /// Set max inbound frame size.
-    ///
-    /// If max size is set to `0`, size is unlimited.
-    /// By default max size is set to `0`
     pub fn set_max_size(&self, size: u32) {
         self.max_size.set(size);
     }
@@ -128,7 +119,8 @@ mod tests {
 
     #[test]
     fn test_max_size() {
-        let codec = Codec::new().max_size(5);
+        let codec = Codec::new();
+        codec.set_max_size(5);
 
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
