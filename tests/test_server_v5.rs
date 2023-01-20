@@ -61,8 +61,12 @@ async fn test_simple() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("test"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
+
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_err());
 
     sink.close();
     Ok(())
@@ -575,11 +579,11 @@ async fn test_keepalive2() {
 
     assert!(sink.is_open());
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
     sleep(Duration::from_millis(500)).await;
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
     sleep(Duration::from_millis(2000)).await;
 
@@ -630,7 +634,7 @@ async fn test_sink_encoder_error_pub_qos1() {
     ntex::rt::spawn(client.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
 }
 
@@ -675,7 +679,7 @@ async fn test_sink_encoder_error_pub_qos0() {
     ntex::rt::spawn(client.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
 }
 
@@ -740,7 +744,7 @@ async fn test_sink_success_after_encoder_error_qos1() {
     ntex::rt::spawn(router.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
     assert!(success.load(Relaxed));
 }
@@ -778,7 +782,7 @@ async fn test_request_problem_info() {
     ntex::rt::spawn(client.start_default());
 
     let res = sink
-        .publish(ByteString::from_static("#"), Bytes::new())
+        .publish(ByteString::from_static("topic"), Bytes::new())
         .send_at_least_once()
         .await
         .unwrap();
@@ -985,6 +989,7 @@ async fn test_sink_ready() -> std::io::Result<()> {
     assert_eq!(
         ack,
         codec::Packet::ConnectAck(Box::new(codec::ConnectAck {
+            max_qos: QoS::AtLeastOnce,
             receive_max: NonZeroU16::new(15).unwrap(),
             topic_alias_max: 32,
             ..Default::default()
