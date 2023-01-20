@@ -19,6 +19,8 @@ pub struct Codec {
 bitflags::bitflags! {
     pub struct CodecFlags: u8 {
         const NO_PROBLEM_INFO = 0b0000_0001;
+        const NO_RETAIN       = 0b0000_0010;
+        const NO_SUB_IDS      = 0b0000_1000;
     }
 }
 
@@ -43,22 +45,16 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_inbound_size(self, size: u32) -> Self {
-        self.max_in_size.set(size);
-        self
+    pub fn max_inbound_size(&self) -> u32 {
+        self.max_in_size.get()
     }
 
     /// Set max outbound frame size.
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn max_outbound_size(self, mut size: u32) -> Self {
-        if size > 5 {
-            // fixed header = 1, var_len(remaining.max_value()) = 4
-            size -= 5;
-        }
-        self.max_out_size.set(size);
-        self
+    pub fn max_outbound_size(&self) -> u32 {
+        self.max_out_size.get()
     }
 
     /// Set max inbound frame size.
@@ -73,8 +69,32 @@ impl Codec {
     ///
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
-    pub fn set_max_outbound_size(&self, size: u32) {
+    pub fn set_max_outbound_size(&self, mut size: u32) {
+        if size > 5 {
+            // fixed header = 1, var_len(remaining.max_value()) = 4
+            size -= 5;
+        }
         self.max_out_size.set(size);
+    }
+
+    pub(crate) fn retain_available(&self) -> bool {
+        !self.flags.get().contains(CodecFlags::NO_RETAIN)
+    }
+
+    pub(crate) fn sub_ids_available(&self) -> bool {
+        !self.flags.get().contains(CodecFlags::NO_SUB_IDS)
+    }
+
+    pub(crate) fn set_retain_available(&self, val: bool) {
+        let mut flags = self.flags.get();
+        flags.set(CodecFlags::NO_RETAIN, !val);
+        self.flags.set(flags);
+    }
+
+    pub(crate) fn set_sub_ids_available(&self, val: bool) {
+        let mut flags = self.flags.get();
+        flags.set(CodecFlags::NO_SUB_IDS, !val);
+        self.flags.set(flags);
     }
 }
 
@@ -204,7 +224,8 @@ mod tests {
 
     #[test]
     fn test_max_size() {
-        let codec = Codec::new().max_inbound_size(5);
+        let codec = Codec::new();
+        codec.set_max_inbound_size(5);
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
         assert_eq!(codec.decode(&mut buf), Err(DecodeError::MaxSizeExceeded));

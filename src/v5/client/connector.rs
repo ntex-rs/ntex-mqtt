@@ -216,7 +216,8 @@ where
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(65535);
         let disconnect_timeout = self.disconnect_timeout;
-        let codec = codec::Codec::new().max_inbound_size(max_packet_size);
+        let codec = codec::Codec::new();
+        codec.set_max_inbound_size(max_packet_size);
         let pool = self.pool.clone();
 
         io.send(codec::Packet::Connect(Box::new(pkt)), &codec).await?;
@@ -238,7 +239,7 @@ where
                     // server keep-alive
                     let keep_alive = pkt.server_keepalive_sec.unwrap_or(keep_alive);
 
-                    shared.set_cap(pkt.receive_max.map(|v| v.get()).unwrap_or(65535) as usize);
+                    shared.set_cap(pkt.receive_max.get() as usize);
 
                     Ok(Client::new(
                         io,
@@ -252,8 +253,11 @@ where
                     Err(ClientError::Ack(pkt))
                 }
             }
-            p => Err(ProtocolError::Unexpected(p.packet_type(), "Expected CONNECT-ACK packet")
-                .into()),
+            p => Err(ProtocolError::unexpected_packet(
+                p.packet_type(),
+                "CONNACK packet expected from server first [MQTT-3.2.0-1]",
+            )
+            .into()),
         }
     }
 }

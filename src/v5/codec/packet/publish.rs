@@ -42,9 +42,9 @@ pub struct PublishProperties {
     pub message_expiry_interval: Option<NonZeroU32>,
     pub content_type: Option<ByteString>,
     pub user_properties: UserProperties,
-    pub is_utf8_payload: Option<bool>,
+    pub is_utf8_payload: bool,
     pub response_topic: Option<ByteString>,
-    pub subscription_ids: Option<Vec<NonZeroU32>>,
+    pub subscription_ids: Vec<NonZeroU32>,
 }
 
 impl Publish {
@@ -79,7 +79,7 @@ fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, Decode
     let mut topic_alias = None;
     let mut content_type = None;
     let mut correlation_data = None;
-    let mut subscription_ids = None;
+    let mut subscription_ids = Vec::new();
     let mut response_topic = None;
     let mut is_utf8_payload = None;
     let mut user_props = Vec::new();
@@ -93,9 +93,7 @@ fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, Decode
             pt::CORR_DATA => correlation_data.read_value(prop_src)?,
             pt::SUB_ID => {
                 let id = utils::decode_variable_length_cursor(prop_src)?;
-                subscription_ids
-                    .get_or_insert_with(Vec::new)
-                    .push(NonZeroU32::new(id).ok_or(DecodeError::MalformedPacket)?);
+                subscription_ids.push(NonZeroU32::new(id).ok_or(DecodeError::MalformedPacket)?);
             }
             pt::TOPIC_ALIAS => topic_alias.read_value(prop_src)?,
             pt::USER => user_props.push(<(ByteString, ByteString)>::decode(prop_src)?),
@@ -110,7 +108,7 @@ fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, Decode
         correlation_data,
         subscription_ids,
         response_topic,
-        is_utf8_payload,
+        is_utf8_payload: is_utf8_payload.unwrap_or(false),
         user_properties: user_props,
     })
 }
@@ -147,11 +145,12 @@ impl EncodeLtd for PublishProperties {
             + encoded_property_size(&self.correlation_data)
             + encoded_property_size(&self.message_expiry_interval)
             + encoded_property_size(&self.content_type)
-            + encoded_property_size(&self.is_utf8_payload)
+            + encoded_property_size_default(&self.is_utf8_payload, false)
             + encoded_property_size(&self.response_topic)
-            + self.subscription_ids.as_ref().map_or(0, |v| {
-                v.iter().fold(0, |acc, id| acc + 1 + var_int_len(id.get() as usize) as usize)
-            })
+            + self
+                .subscription_ids
+                .iter()
+                .fold(0, |acc, id| acc + 1 + var_int_len(id.get() as usize) as usize)
             + self.user_properties.encoded_size();
         prop_len + var_int_len(prop_len) as usize
     }
@@ -163,13 +162,11 @@ impl EncodeLtd for PublishProperties {
         encode_property(&self.correlation_data, pt::CORR_DATA, buf)?;
         encode_property(&self.message_expiry_interval, pt::MSG_EXPIRY_INT, buf)?;
         encode_property(&self.content_type, pt::CONTENT_TYPE, buf)?;
-        encode_property(&self.is_utf8_payload, pt::UTF8_PAYLOAD, buf)?;
+        encode_property_default(&self.is_utf8_payload, false, pt::UTF8_PAYLOAD, buf)?;
         encode_property(&self.response_topic, pt::RESP_TOPIC, buf)?;
-        if let Some(sub_ids) = self.subscription_ids.as_ref() {
-            for sub_id in sub_ids.iter() {
-                buf.put_u8(pt::SUB_ID);
-                write_variable_length(sub_id.get(), buf);
-            }
+        for sub_id in self.subscription_ids.iter() {
+            buf.put_u8(pt::SUB_ID);
+            write_variable_length(sub_id.get(), buf);
         }
         self.user_properties.encode(buf)
     }

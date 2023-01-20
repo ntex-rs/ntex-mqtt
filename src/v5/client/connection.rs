@@ -154,6 +154,11 @@ impl Client {
             .disconnect_timeout(self.disconnect_timeout)
             .await
     }
+
+    /// Get negotiated io stream and codec
+    pub fn into_inner(self) -> (IoBoxed, codec::Codec) {
+        (self.io, self.shared.codec.clone())
+    }
 }
 
 type Handler<E> = boxed::BoxService<Publish, PublishAck, E>;

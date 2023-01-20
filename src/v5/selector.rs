@@ -239,11 +239,9 @@ where
     #[inline]
     fn call(&self, io: IoBoxed) -> Self::Future<'_> {
         let servers = self.servers.clone();
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            mqtt::Codec::default().max_inbound_size(self.max_size),
-            self.pool.clone(),
-        ));
+        let codec = mqtt::Codec::default();
+        codec.set_max_inbound_size(self.max_size);
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
 
         let mut timeout = Deadline::new(self.handshake_timeout);
         Box::pin(async move {
@@ -271,7 +269,7 @@ where
                 mqtt::Packet::Connect(connect) => connect,
                 packet => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {}", 1);
-                    return Err(MqttError::Protocol(ProtocolError::Unexpected(
+                    return Err(MqttError::Protocol(ProtocolError::unexpected_packet(
                         packet.packet_type(),
                         "MQTT-3.1.0-1: Expected CONNECT packet",
                     )));
@@ -279,7 +277,7 @@ where
             };
 
             // call servers
-            let mut item = (Handshake::new(connect, io, shared, 0, 0, 0), timeout);
+            let mut item = (Handshake::new(connect, io, shared), timeout);
             for srv in servers.iter() {
                 match srv.call(item).await? {
                     Either::Left(result) => {
@@ -315,11 +313,9 @@ where
     #[inline]
     fn call(&self, (io, mut timeout): (IoBoxed, Deadline)) -> Self::Future<'_> {
         let servers = self.servers.clone();
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            mqtt::Codec::default().max_inbound_size(self.max_size),
-            self.pool.clone(),
-        ));
+        let codec = mqtt::Codec::default();
+        codec.set_max_inbound_size(self.max_size);
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
 
         Box::pin(async move {
             // read first packet
@@ -346,15 +342,15 @@ where
                 mqtt::Packet::Connect(connect) => connect,
                 packet => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
-                    return Err(MqttError::Protocol(ProtocolError::Unexpected(
+                    return Err(MqttError::Protocol(ProtocolError::unexpected_packet(
                         packet.packet_type(),
-                        "MQTT-3.1.0-1: Expected CONNECT packet",
+                        "Expected CONNECT packet [MQTT-3.1.0-1]",
                     )));
                 }
             };
 
             // call servers
-            let mut item = (Handshake::new(connect, io, shared, 0, 0, 0), timeout);
+            let mut item = (Handshake::new(connect, io, shared), timeout);
             for srv in servers.iter() {
                 match srv.call(item).await? {
                     Either::Left(result) => {

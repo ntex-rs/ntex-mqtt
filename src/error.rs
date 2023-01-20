@@ -2,7 +2,7 @@ use std::{fmt, io, num::NonZeroU16};
 
 use ntex::util::Either;
 
-use crate::types::QoS;
+use crate::v5::codec::DisconnectReasonCode;
 
 /// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug, thiserror::Error)]
@@ -12,7 +12,7 @@ pub enum MqttError<E> {
     Service(E),
     /// Protocol error
     #[error("Mqtt protocol error: {}", _0)]
-    Protocol(ProtocolError),
+    Protocol(#[from] ProtocolError),
     /// Handshake timeout
     #[error("Handshake timeout")]
     HandshakeTimeout,
@@ -27,38 +27,61 @@ pub enum MqttError<E> {
 /// Protocol level errors
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
-    /// Mqtt parse error
-    #[error("Decode error: {:?}", _0)]
+    /// MQTT decoding error
+    #[error("Decoding error: {0:?}")]
     Decode(#[from] DecodeError),
-    /// Mqtt encode error
-    #[error("Encode error: {:?}", _0)]
+    /// MQTT encoding error
+    #[error("Encoding error: {0:?}")]
     Encode(#[from] EncodeError),
-    /// Unexpected packet
-    #[error("Unexpected packet {:?}, {}", _0, _1)]
-    Unexpected(u8, &'static str),
-    /// Packet id of publish ack packet does not match of send publish packet
-    #[error("Packet id of publish ack packet does not match of send publish packet")]
-    PacketIdMismatch,
-    /// Peer sent publish with higher qos than configured
-    #[error("Max allowed QoS level is violated {:?}", _0)]
-    MaxQoSViolated(QoS),
-    /// Topic alias is greater than max topic alias
-    #[error("Topic alias is greater than max topic alias")]
-    MaxTopicAlias,
-    /// Number of in-flight messages exceeded
-    #[error("Number of in-flight messages exceeded")]
-    ReceiveMaximumExceeded,
-    /// Unknown topic alias
-    #[error("Unknown topic alias")]
-    UnknownTopicAlias,
+    /// Peer violated MQTT protocol specification
+    #[error("Protocol violation: {0}")]
+    ProtocolViolation(#[from] ProtocolViolationError),
     /// Keep alive timeout
-    #[error("Keep alive timeout")]
+    #[error("Keep Alive timeout")]
     KeepAliveTimeout,
 }
 
-impl<E> From<ProtocolError> for MqttError<E> {
-    fn from(err: ProtocolError) -> Self {
-        MqttError::Protocol(err)
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct ProtocolViolationError {
+    inner: ViolationInner,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ViolationInner {
+    #[error("{message}")]
+    Common { reason: DisconnectReasonCode, message: &'static str },
+    #[error("{message}; received packet with type `{packet_type:b}`")]
+    UnexpectedPacket { packet_type: u8, message: &'static str },
+}
+impl ProtocolViolationError {
+    pub(crate) fn reason(&self) -> DisconnectReasonCode {
+        match self.inner {
+            ViolationInner::Common { reason, .. } => reason,
+            ViolationInner::UnexpectedPacket { .. } => DisconnectReasonCode::ProtocolError,
+        }
+    }
+}
+
+impl ProtocolError {
+    pub(crate) fn violation(reason: DisconnectReasonCode, message: &'static str) -> Self {
+        Self::ProtocolViolation(ProtocolViolationError {
+            inner: ViolationInner::Common { reason, message },
+        })
+    }
+    pub(crate) fn generic_violation(message: &'static str) -> Self {
+        Self::violation(DisconnectReasonCode::ProtocolError, message)
+    }
+
+    pub(crate) fn unexpected_packet(packet_type: u8, message: &'static str) -> ProtocolError {
+        Self::ProtocolViolation(ProtocolViolationError {
+            inner: ViolationInner::UnexpectedPacket { packet_type, message },
+        })
+    }
+    pub(crate) fn packet_id_mismatch() -> Self {
+        Self::generic_violation(
+            "Packet id of PUBACK packet does not match expected next value according to sending order of PUBLISH packets [MQTT-4.6.0-2]"
+        )
     }
 }
 

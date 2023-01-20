@@ -8,7 +8,7 @@ use ntex::util::{inflight::InFlightService, BoxFuture, Either, HashSet, Ready};
 
 use crate::v3::shared::{Ack, MqttShared};
 use crate::v3::{codec, control::ControlResultKind, publish::Publish, sink::MqttSink};
-use crate::{error::MqttError, error::ProtocolError, types::packet_type};
+use crate::{error::MqttError, error::ProtocolError};
 
 use super::control::{ControlMessage, ControlResult};
 
@@ -137,18 +137,6 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(codec::Packet::PingRequest) => {
-                Either::Right(Either::Left(Ready::Ok(Some(codec::Packet::PingResponse))))
-            }
-            DispatchItem::Item(codec::Packet::Disconnect) => {
-                Either::Right(Either::Left(Ready::Err(
-                    ProtocolError::Unexpected(
-                        packet_type::DISCONNECT,
-                        "Disconnect packet is not allowed",
-                    )
-                    .into(),
-                )))
-            }
             DispatchItem::Item(codec::Packet::SubscribeAck { packet_id, status }) => {
                 if let Err(e) = self.sink.pkt_ack(Ack::Subscribe { packet_id, status }) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
@@ -163,24 +151,18 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(codec::Packet::Subscribe { .. }) => {
-                Either::Right(Either::Left(Ready::Err(
-                    ProtocolError::Unexpected(
-                        packet_type::SUBSCRIBE,
-                        "Subscribe packet is not allowed",
-                    )
-                    .into(),
-                )))
-            }
-            DispatchItem::Item(codec::Packet::Unsubscribe { .. }) => {
-                Either::Right(Either::Left(Ready::Err(
-                    ProtocolError::Unexpected(
-                        packet_type::UNSUBSCRIBE,
-                        "Unsubscribe packet is not allowed",
-                    )
-                    .into(),
-                )))
-            }
+            DispatchItem::Item(
+                pkt @ (codec::Packet::PingRequest
+                | codec::Packet::Disconnect
+                | codec::Packet::Subscribe { .. }
+                | codec::Packet::Unsubscribe { .. }),
+            ) => Either::Right(Either::Left(Ready::Err(
+                ProtocolError::unexpected_packet(
+                    pkt.packet_type(),
+                    "Packet of the type is not expected from server",
+                )
+                .into(),
+            ))),
             DispatchItem::Item(pkt) => {
                 log::debug!("Unsupported packet: {:?}", pkt);
                 Either::Right(Either::Left(Ready::Ok(None)))

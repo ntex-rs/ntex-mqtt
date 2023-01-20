@@ -235,12 +235,9 @@ where
     #[inline]
     fn call(&self, io: IoBoxed) -> Self::Future<'_> {
         let servers = self.servers.clone();
-        let shared = Rc::new(MqttShared::new(
-            io.clone(),
-            mqtt::Codec::default().max_size(self.max_size),
-            false,
-            self.pool.clone(),
-        ));
+        let codec = mqtt::Codec::default();
+        codec.set_max_size(self.max_size);
+        let shared = Rc::new(MqttShared::new(io.clone(), codec, false, self.pool.clone()));
         let mut timeout = Deadline::new(self.handshake_timeout);
 
         Box::pin(async move {
@@ -268,9 +265,9 @@ where
                 mqtt::Packet::Connect(connect) => connect,
                 packet => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
-                    return Err(MqttError::Protocol(ProtocolError::Unexpected(
+                    return Err(MqttError::Protocol(ProtocolError::unexpected_packet(
                         packet.packet_type(),
-                        "MQTT-3.1.0-1: Expected CONNECT packet",
+                        "Expected CONNECT packet [MQTT-3.1.0-1]",
                     )));
                 }
             };
@@ -312,12 +309,9 @@ where
     #[inline]
     fn call(&self, (io, mut timeout): (IoBoxed, Deadline)) -> Self::Future<'_> {
         let servers = self.servers.clone();
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            mqtt::Codec::default().max_size(self.max_size),
-            false,
-            self.pool.clone(),
-        ));
+        let codec = mqtt::Codec::default();
+        codec.set_max_size(self.max_size);
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, self.pool.clone()));
 
         Box::pin(async move {
             // read first packet
@@ -344,7 +338,7 @@ where
                 mqtt::Packet::Connect(connect) => connect,
                 packet => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
-                    return Err(MqttError::Protocol(ProtocolError::Unexpected(
+                    return Err(MqttError::Protocol(ProtocolError::unexpected_packet(
                         packet.packet_type(),
                         "MQTT-3.1.0-1: Expected CONNECT packet",
                     )));

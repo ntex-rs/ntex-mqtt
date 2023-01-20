@@ -9,7 +9,7 @@ use ntex::{server, service::pipeline_factory};
 use ntex_mqtt::v3::{
     client, codec, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish, Session,
 };
-use ntex_mqtt::{error::ProtocolError, types::QoS};
+use ntex_mqtt::{error::ProtocolError, QoS};
 
 struct St;
 
@@ -35,8 +35,12 @@ async fn test_simple() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("test"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
+
+    let res =
+        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_err());
 
     sink.close();
     Ok(())
@@ -312,7 +316,7 @@ async fn test_client_disconnect() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("test"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
     sink.close();
     sleep(Millis(50)).await;
@@ -471,14 +475,14 @@ async fn test_max_qos() -> std::io::Result<()> {
             .control(move |msg| {
                 let violated = violated.clone();
                 match msg {
-                    ControlMessage::ProtocolError(msg) => {
-                        match msg.get_ref() {
-                            ProtocolError::MaxQoSViolated(_) => {
+                    ControlMessage::ProtocolError(err) => {
+                        match err.get_ref() {
+                            ProtocolError::ProtocolViolation(_) => {
                                 violated.store(true, Relaxed);
                             }
                             _ => (),
                         }
-                        Ready::Ok(msg.ack())
+                        Ready::Ok(err.ack())
                     }
                     _ => Ready::Ok(msg.disconnect()),
                 }

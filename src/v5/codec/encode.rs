@@ -174,6 +174,14 @@ pub(super) fn encoded_property_size<T: Encode>(v: &Option<T>) -> usize {
     v.as_ref().map_or(0, |v| 1 + v.encoded_size()) // 1 - property type byte
 }
 
+pub(super) fn encoded_property_size_default<T: Encode + PartialEq>(v: &T, default: T) -> usize {
+    if *v == default {
+        0
+    } else {
+        1 + v.encoded_size() // 1 - property type byte
+    }
+}
+
 pub(super) fn encode_property<T: Encode>(
     v: &Option<T>,
     prop_type: u8,
@@ -187,21 +195,13 @@ pub(super) fn encode_property<T: Encode>(
     }
 }
 
-pub(super) fn encoded_bool_property_size(v: bool, skip_if: bool) -> usize {
-    if v == skip_if {
-        0
-    } else {
-        2
-    }
-}
-
-pub(super) fn encode_bool_property(
-    v: bool,
+pub(super) fn encode_property_default<T: Encode + PartialEq>(
+    v: &T,
+    default: T,
     prop_type: u8,
     buf: &mut BytesMut,
-    skip_if: bool,
 ) -> Result<(), EncodeError> {
-    if v != skip_if {
+    if *v != default {
         buf.put_u8(prop_type);
         v.encode(buf)
     } else {
@@ -324,7 +324,7 @@ mod tests {
                 last_will: None,
                 username: Some(ByteString::from_static("user")),
                 password: Some(Bytes::from_static(b"pass")),
-                session_expiry_interval_secs: None,
+                session_expiry_interval_secs: 0,
                 auth_method: None,
                 auth_data: None,
                 request_problem_info: true,
@@ -358,7 +358,7 @@ mod tests {
                 }),
                 username: None,
                 password: None,
-                session_expiry_interval_secs: None,
+                session_expiry_interval_secs: 0,
                 auth_method: None,
                 auth_data: None,
                 request_problem_info: true,
@@ -394,7 +394,7 @@ mod tests {
                 }),
                 username: None,
                 password: None,
-                session_expiry_interval_secs: None,
+                session_expiry_interval_secs: 0,
                 auth_method: None,
                 auth_data: None,
                 request_problem_info: true,
@@ -457,7 +457,7 @@ mod tests {
                 packet_id: None,
                 payload: Bytes::from_static(b"data"),
                 properties: PublishProperties {
-                    subscription_ids: Some(vec![NonZeroU32::new(1).unwrap()]),
+                    subscription_ids: vec![NonZeroU32::new(1).unwrap()],
                     ..Default::default()
                 },
             }),

@@ -210,11 +210,11 @@ where
         let pkt = self.pkt.clone();
         let max_send = self.max_send;
         let max_receive = self.max_receive;
-        let max_packet_size = self.max_packet_size;
         let keepalive_timeout = pkt.keep_alive;
         let disconnect_timeout = self.disconnect_timeout;
         let pool = self.pool.clone();
-        let codec = codec::Codec::new().max_size(max_packet_size);
+        let codec = codec::Codec::new();
+        codec.set_max_size(self.max_packet_size);
 
         io.send(pkt.into(), &codec).await?;
 
@@ -242,8 +242,11 @@ where
                     Err(ClientError::Ack(pkt))
                 }
             }
-            p => Err(ProtocolError::Unexpected(p.packet_type(), "Expected CONNECT-ACK packet")
-                .into()),
+            p => Err(ProtocolError::unexpected_packet(
+                p.packet_type(),
+                "Expected CONNACK packet",
+            )
+            .into()),
         }
     }
 }

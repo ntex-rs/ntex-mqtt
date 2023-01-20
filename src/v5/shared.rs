@@ -6,6 +6,7 @@ use ntex::io::IoRef;
 use ntex::util::{BytesMut, HashSet, PoolId, PoolRef};
 
 use super::codec;
+use crate::QoS;
 use crate::{error, types::packet_type};
 
 pub struct MqttShared {
@@ -15,6 +16,9 @@ pub struct MqttShared {
     pub(super) inflight_idx: Cell<u16>,
     pub(super) pool: Rc<MqttSinkPool>,
     pub(super) codec: codec::Codec,
+    max_qos: Cell<QoS>,
+    receive_max: Cell<u16>,
+    topic_alias_max: Cell<u16>,
 }
 
 pub(super) struct MqttSharedQueues {
@@ -51,12 +55,39 @@ impl MqttShared {
                 inflight_ids: HashSet::default(),
                 waiters: VecDeque::new(),
             }),
+            receive_max: Cell::new(0),
+            topic_alias_max: Cell::new(0),
+            max_qos: Cell::new(QoS::AtLeastOnce),
             inflight_idx: Cell::new(0),
         }
     }
 
     pub(super) fn cap(&self) -> usize {
         self.cap.get()
+    }
+
+    pub(super) fn receive_max(&self) -> u16 {
+        self.receive_max.get()
+    }
+
+    pub(super) fn topic_alias_max(&self) -> u16 {
+        self.topic_alias_max.get()
+    }
+
+    pub(super) fn max_qos(&self) -> QoS {
+        self.max_qos.get()
+    }
+
+    pub(super) fn set_receive_max(&self, val: u16) {
+        self.receive_max.set(val);
+    }
+
+    pub(super) fn set_topic_alias_max(&self, val: u16) {
+        self.topic_alias_max.set(val);
+    }
+
+    pub(super) fn set_max_qos(&self, val: QoS) {
+        self.max_qos.set(val);
     }
 
     pub(super) fn with_queues<R>(&self, f: impl FnOnce(&mut MqttSharedQueues) -> R) -> R {
@@ -135,14 +166,6 @@ pub(super) enum Ack {
 }
 
 impl Ack {
-    pub(super) fn name(&self) -> &'static str {
-        match self {
-            Ack::Publish(_) => "PublishAck",
-            Ack::Subscribe(_) => "SubscribeAck",
-            Ack::Unsubscribe(_) => "UnsubscribeAck",
-        }
-    }
-
     pub(super) fn packet_type(&self) -> u8 {
         match self {
             Ack::Publish(_) => packet_type::PUBACK,
@@ -189,6 +212,16 @@ impl Ack {
             (Ack::Subscribe(_), AckType::Subscribe) => true,
             (Ack::Unsubscribe(_), AckType::Unsubscribe) => true,
             (_, _) => false,
+        }
+    }
+}
+
+impl AckType {
+    pub(super) fn expected_str(&self) -> &'static str {
+        match self {
+            AckType::Publish => "Expected PUBACK packet",
+            AckType::Subscribe => "Expected SUBACK packet",
+            AckType::Unsubscribe => "Expected UNSUBACK packet",
         }
     }
 }

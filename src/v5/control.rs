@@ -536,21 +536,10 @@ impl ProtocolError {
                     error::ProtocolError::Decode(error::DecodeError::MaxSizeExceeded) => {
                         DisconnectReasonCode::PacketTooLarge
                     }
-                    error::ProtocolError::Unexpected(_, _) => {
-                        DisconnectReasonCode::ProtocolError
-                    }
-                    error::ProtocolError::ReceiveMaximumExceeded => {
-                        DisconnectReasonCode::ReceiveMaximumExceeded
-                    }
                     error::ProtocolError::KeepAliveTimeout => {
                         DisconnectReasonCode::KeepAliveTimeout
                     }
-                    error::ProtocolError::UnknownTopicAlias => {
-                        DisconnectReasonCode::TopicAliasInvalid
-                    }
-                    error::ProtocolError::MaxQoSViolated(_) => {
-                        DisconnectReasonCode::QosNotSupported
-                    }
+                    error::ProtocolError::ProtocolViolation(ref e) => e.reason(),
                     error::ProtocolError::Encode(_) => {
                         DisconnectReasonCode::ImplementationSpecificError
                     }

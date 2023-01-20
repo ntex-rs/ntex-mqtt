@@ -28,6 +28,17 @@ pub struct SubscriptionOptions {
     pub retain_handling: RetainHandling,
 }
 
+impl Default for SubscriptionOptions {
+    fn default() -> Self {
+        Self {
+            qos: QoS::AtMostOnce,
+            no_local: false,
+            retain_as_published: false,
+            retain_handling: RetainHandling::AtSubscribe,
+        }
+    }
+}
+
 prim_enum! {
     pub enum RetainHandling {
         AtSubscribe = 0,

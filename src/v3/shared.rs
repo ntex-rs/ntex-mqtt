@@ -141,14 +141,6 @@ impl Decoder for MqttShared {
 }
 
 impl Ack {
-    pub(super) fn name(&self) -> &'static str {
-        match self {
-            Ack::Publish(_) => "PublishAck",
-            Ack::Subscribe { .. } => "SubscribeAck",
-            Ack::Unsubscribe(_) => "UnsubscribeAck",
-        }
-    }
-
     pub(super) fn packet_type(&self) -> u8 {
         match self {
             Ack::Publish(_) => packet_type::PUBACK,
@@ -179,6 +171,16 @@ impl Ack {
             (Ack::Subscribe { .. }, AckType::Subscribe) => true,
             (Ack::Unsubscribe(_), AckType::Unsubscribe) => true,
             (_, _) => false,
+        }
+    }
+}
+
+impl AckType {
+    pub(super) fn expected_str(&self) -> &'static str {
+        match self {
+            AckType::Publish => "Expected PUBACK packet",
+            AckType::Subscribe => "Expected SUBACK packet",
+            AckType::Unsubscribe => "Expected UNSUBACK packet",
         }
     }
 }

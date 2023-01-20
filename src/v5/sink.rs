@@ -65,6 +65,14 @@ impl MqttSink {
     }
 
     #[inline]
+    /// Force close MQTT connection. Dispatcher does not wait for uncompleted
+    /// responses (ending them with error), but it flushes buffers.
+    pub fn force_close(&self) {
+        self.0.io.force_close();
+        self.clear_state();
+    }
+
+    #[inline]
     /// Close mqtt connection with default Disconnect message
     pub fn close(&self) {
         if self.is_open() {
@@ -74,10 +82,7 @@ impl MqttSink {
                 .encode(codec::Packet::Disconnect(codec::Disconnect::default()), &self.0.codec);
             self.0.io.close();
         }
-        self.0.with_queues(|q| {
-            q.inflight.clear();
-            q.waiters.clear();
-        });
+        self.clear_state();
     }
 
     #[inline]
@@ -87,9 +92,13 @@ impl MqttSink {
             let _ = self.0.io.encode(codec::Packet::Disconnect(pkt), &self.0.codec);
             self.0.io.close();
         }
+        self.clear_state();
+    }
+
+    fn clear_state(&self) {
         self.0.with_queues(|q| {
-            q.inflight.clear();
             q.waiters.clear();
+            q.inflight.clear();
         });
     }
 
@@ -104,10 +113,7 @@ impl MqttSink {
 
     /// Close mqtt connection, dont send disconnect message
     pub(super) fn drop_sink(&self) {
-        self.0.with_queues(|q| {
-            q.waiters.clear();
-            q.inflight.clear();
-        });
+        self.clear_state();
         self.0.io.close();
     }
 
@@ -121,7 +127,7 @@ impl MqttSink {
                         idx,
                         pkt.packet_id()
                     );
-                    Err(ProtocolError::PacketIdMismatch)
+                    Err(ProtocolError::packet_id_mismatch())
                 } else {
                     // get publish ack channel
                     log::trace!("Ack packet with id: {}", pkt.packet_id());
@@ -141,17 +147,13 @@ impl MqttSink {
                         Ok(())
                     } else {
                         log::trace!("MQTT protocol error, unexpeted packet");
-                        Err(ProtocolError::Unexpected(
-                            pkt.packet_type(),
-                            pkt.name(),
-                        ))
+                        Err(ProtocolError::unexpected_packet(pkt.packet_type(), tp.expected_str()))
                     }
                 }
             } else {
                 log::trace!("Unexpected PublishAck packet");
-                Err(ProtocolError::Unexpected(
-                    pkt.packet_type(),
-                    pkt.name(),
+                Err(ProtocolError::generic_violation(
+                    "Received PUBACK packet while there are no unacknowledged PUBLISH packets"
                 ))
             }
         })
@@ -163,7 +165,7 @@ impl MqttSink {
     where
         ByteString: From<U>,
     {
-        self.publish_pkt(codec::Publish {
+        self.publish_packet(codec::Publish {
             payload,
             dup: false,
             retain: false,
@@ -176,7 +178,7 @@ impl MqttSink {
 
     #[inline]
     /// Create publish builder with publish packet
-    pub fn publish_pkt(&self, packet: codec::Publish) -> PublishBuilder {
+    pub fn publish_packet(&self, packet: codec::Publish) -> PublishBuilder {
         PublishBuilder { packet, shared: self.0.clone() }
     }
 
@@ -207,6 +209,10 @@ impl MqttSink {
             },
             shared: self.0.clone(),
         }
+    }
+
+    pub(super) fn state(&self) -> &MqttShared {
+        &self.0
     }
 }
 
@@ -245,8 +251,8 @@ impl PublishBuilder {
 
     #[inline]
     /// Set retain flag
-    pub fn retain(mut self) -> Self {
-        self.packet.retain = true;
+    pub fn retain(mut self, val: bool) -> Self {
+        self.packet.retain = val;
         self
     }
 
