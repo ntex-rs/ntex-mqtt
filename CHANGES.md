@@ -8,6 +8,26 @@
 
 * Drop derive_more dep
 
+* Exposed QoS at crate's level, disbanded types module
+
+* Added v5::Sink::force_close()
+
+* Added v5::Client::into_inner()
+
+* packet properties with clear defaults per spec are represented without Option, use default when absent; for example, Session Expiry Interval, Maximum QoS, Retain Available, etc. in Connect and ConnectAck
+
+* server-level settings for Maximum QoS, Topic Alias Maximum and Receive Maximum are now applied at ConnectAck construction. Any changes to ConnectAck in Handshake service are honored on connection level.
+
+* Setting RETAIN on PUBLISH when CONNACK stated `Retain Available: 0` triggers Protocol Error
+
+* Setting Subscription Identifier on SUBSCRIBE when CONNACK stated `Subscription Identifier Available: 0` triggers Protocol Error
+
+* Topic name with `+` or `#` in it will trigger Protocol Error
+
+* Protocol violation errors are now grouped under opaque ProtocolViolationError
+
+* Removed Client re-export under v3 module. Use v3::client::Client instead.
+
 ## [0.10.0-beta.1] - 2023-01-04
 
 * Migrate to ntex-0.6
