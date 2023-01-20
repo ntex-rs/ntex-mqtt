@@ -112,33 +112,24 @@ impl MqttSink {
     }
 
     pub(super) fn pkt_ack(&self, pkt: Ack) -> Result<(), ProtocolError> {
-        self.0.with_queues(|queues| loop {
+        self.0.with_queues(|queues| {
             // check ack order
-            if let Some(idx) = queues.inflight_order.pop_front() {
-                // errored publish
-                if idx == 0 {
-                    continue;
-                }
-
+            if let Some((idx, tx, tp)) = queues.inflight.pop_front() {
                 if idx != pkt.packet_id() {
                     log::trace!(
                         "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
                         idx,
                         pkt.packet_id()
                     );
+                    Err(ProtocolError::PacketIdMismatch)
                 } else {
                     // get publish ack channel
                     log::trace!("Ack packet with id: {}", pkt.packet_id());
-                    let idx = pkt.packet_id();
-                    if let Some((tx, tp)) = queues.inflight.remove(&idx) {
-                        // cleanup ack queue
-                        if !pkt.is_match(tp) {
-                            log::trace!("MQTT protocol error, unexpeted packet");
-                            return Err(ProtocolError::Unexpected(
-                                pkt.packet_type(),
-                                tp.name(),
-                            ));
-                        }
+
+                    // cleanup ack queue
+                    queues.inflight_ids.remove(&pkt.packet_id());
+
+                    if pkt.is_match(tp) {
                         let _ = tx.send(pkt);
 
                         // wake up queued request (receive max limit)
@@ -147,15 +138,22 @@ impl MqttSink {
                                 break;
                             }
                         }
-                        return Ok(());
+                        Ok(())
                     } else {
-                        log::error!("In-flight state inconsistency")
+                        log::trace!("MQTT protocol error, unexpeted packet");
+                        Err(ProtocolError::Unexpected(
+                            pkt.packet_type(),
+                            pkt.name(),
+                        ))
                     }
                 }
             } else {
                 log::trace!("Unexpected PublishAck packet");
+                Err(ProtocolError::Unexpected(
+                    pkt.packet_type(),
+                    pkt.name(),
+                ))
             }
-            return Err(ProtocolError::PacketIdMismatch);
         })
     }
 
@@ -186,7 +184,7 @@ impl MqttSink {
     /// Create subscribe packet builder
     pub fn subscribe(&self, id: Option<NonZeroU32>) -> SubscribeBuilder {
         SubscribeBuilder {
-            id: 0,
+            id: None,
             packet: codec::Subscribe {
                 id,
                 packet_id: NonZeroU16::new(1).unwrap(),
@@ -201,7 +199,7 @@ impl MqttSink {
     /// Create unsubscribe packet builder
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
         UnsubscribeBuilder {
-            id: 0,
+            id: None,
             packet: codec::Unsubscribe {
                 packet_id: NonZeroU16::new(1).unwrap(),
                 user_properties: Vec::new(),
@@ -315,13 +313,15 @@ impl PublishBuilder {
         shared: Rc<MqttShared>,
     ) -> Result<codec::PublishAck, SendPacketError> {
         // packet id
-        let mut idx = packet.packet_id.map(|i| i.get()).unwrap_or(0);
-        if idx == 0 {
-            idx = shared.next_id();
-            packet.packet_id = NonZeroU16::new(idx);
-        }
+        let idx = if let Some(idx) = packet.packet_id {
+            idx
+        } else {
+            let idx = shared.next_id();
+            packet.packet_id = Some(idx);
+            idx
+        };
 
-        let pkt_in_use = shared.with_queues(|queues| queues.inflight.contains_key(&idx));
+        let pkt_in_use = shared.with_queues(|queues| queues.inflight_ids.contains(&idx));
         if pkt_in_use {
             return Err(SendPacketError::PacketIdInUse(idx));
         }
@@ -335,8 +335,8 @@ impl PublishBuilder {
                     // publish ack channel
                     let (tx, rx) = shared.pool.queue.channel();
 
-                    queues.inflight.insert(idx, (tx, AckType::Publish));
-                    queues.inflight_order.push_back(idx);
+                    queues.inflight.push_back((idx, tx, AckType::Publish));
+                    queues.inflight_ids.insert(idx);
                     rx
                 });
 
@@ -350,7 +350,7 @@ impl PublishBuilder {
 
 /// Subscribe packet builder
 pub struct SubscribeBuilder {
-    id: u16,
+    id: Option<NonZeroU16>,
     packet: codec::Subscribe,
     shared: Rc<MqttShared>,
 }
@@ -361,11 +361,12 @@ impl SubscribeBuilder {
     ///
     /// panics if id is 0
     pub fn packet_id(mut self, id: u16) -> Self {
-        if id == 0 {
+        if let Some(id) = NonZeroU16::new(id) {
+            self.id = Some(id);
+            self
+        } else {
             panic!("id 0 is not allowed");
         }
-        self.id = id;
-        self
     }
 
     #[inline]
@@ -402,17 +403,17 @@ impl SubscribeBuilder {
                 }
             }
             // allocate packet id
-            let idx = if self.id == 0 { shared.next_id() } else { self.id };
-            packet.packet_id = NonZeroU16::new(idx).unwrap();
+            let idx = self.id.unwrap_or_else(|| shared.next_id());
+            packet.packet_id = idx;
             let rx = shared.with_queues(|queues| {
                 // ack channel
                 let (tx, rx) = shared.pool.queue.channel();
 
-                if queues.inflight.contains_key(&idx) {
+                if queues.inflight_ids.contains(&idx) {
                     return Err(SendPacketError::PacketIdInUse(idx));
                 }
-                queues.inflight.insert(idx, (tx, AckType::Subscribe));
-                queues.inflight_order.push_back(idx);
+                queues.inflight.push_back((idx, tx, AckType::Subscribe));
+                queues.inflight_ids.insert(idx);
                 Ok(rx)
             })?;
 
@@ -436,7 +437,7 @@ impl SubscribeBuilder {
 
 /// Unsubscribe packet builder
 pub struct UnsubscribeBuilder {
-    id: u16,
+    id: Option<NonZeroU16>,
     packet: codec::Unsubscribe,
     shared: Rc<MqttShared>,
 }
@@ -447,11 +448,12 @@ impl UnsubscribeBuilder {
     ///
     /// panics if id is 0
     pub fn packet_id(mut self, id: u16) -> Self {
-        if id == 0 {
+        if let Some(id) = NonZeroU16::new(id) {
+            self.id = Some(id);
+            self
+        } else {
             panic!("id 0 is not allowed");
         }
-        self.id = id;
-        self
     }
 
     #[inline]
@@ -484,19 +486,19 @@ impl UnsubscribeBuilder {
                 }
             }
             // allocate packet id
-            let idx = if self.id == 0 { shared.next_id() } else { self.id };
+            let idx = self.id.unwrap_or_else(|| shared.next_id());
             let rx = shared.with_queues(|queues| {
                 // ack channel
                 let (tx, rx) = shared.pool.queue.channel();
 
-                if queues.inflight.contains_key(&idx) {
+                if queues.inflight_ids.contains(&idx) {
                     return Err(SendPacketError::PacketIdInUse(idx));
                 }
-                queues.inflight.insert(idx, (tx, AckType::Unsubscribe));
-                queues.inflight_order.push_back(idx);
+                queues.inflight.push_back((idx, tx, AckType::Unsubscribe));
+                queues.inflight_ids.insert(idx);
                 Ok(rx)
             })?;
-            packet.packet_id = NonZeroU16::new(idx).unwrap();
+            packet.packet_id = idx;
 
             // send unsubscribe to client
             log::trace!("Sending unsubscribe packet {:#?}", packet);

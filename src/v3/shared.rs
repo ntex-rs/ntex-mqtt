@@ -3,7 +3,7 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, num::NonZeroU16, rc:
 use ntex::channel::pool;
 use ntex::codec::{Decoder, Encoder};
 use ntex::io::IoRef;
-use ntex::util::{BytesMut, HashMap, PoolId, PoolRef};
+use ntex::util::{BytesMut, HashSet, PoolId, PoolRef};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::{types::packet_type, v3::codec};
@@ -48,8 +48,8 @@ pub struct MqttShared {
 }
 
 pub(super) struct MqttSharedQueues {
-    pub(super) inflight: HashMap<u16, (pool::Sender<Ack>, AckType)>,
-    pub(super) inflight_order: VecDeque<u16>,
+    pub(super) inflight: VecDeque<(NonZeroU16, pool::Sender<Ack>, AckType)>,
+    pub(super) inflight_ids: HashSet<NonZeroU16>,
     pub(super) waiters: VecDeque<pool::Sender<()>>,
 }
 
@@ -67,8 +67,8 @@ impl MqttShared {
             client,
             cap: Cell::new(0),
             queues: RefCell::new(MqttSharedQueues {
-                inflight: HashMap::default(),
-                inflight_order: VecDeque::with_capacity(8),
+                inflight: VecDeque::with_capacity(8),
+                inflight_ids: HashSet::default(),
                 waiters: VecDeque::new(),
             }),
             inflight_idx: Cell::new(0),
@@ -92,15 +92,16 @@ impl MqttShared {
         self.credit() > 0
     }
 
-    pub(super) fn next_id(&self) -> u16 {
+    pub(super) fn next_id(&self) -> NonZeroU16 {
         let idx = self.inflight_idx.get() + 1;
-        if idx == u16::max_value() {
+        let idx = if idx == u16::max_value() {
             self.inflight_idx.set(0);
             u16::max_value()
         } else {
             self.inflight_idx.set(idx);
             idx
-        }
+        };
+        NonZeroU16::new(idx).unwrap()
     }
 
     pub(super) fn set_cap(&self, cap: usize) {
@@ -140,6 +141,14 @@ impl Decoder for MqttShared {
 }
 
 impl Ack {
+    pub(super) fn name(&self) -> &'static str {
+        match self {
+            Ack::Publish(_) => "PublishAck",
+            Ack::Subscribe { .. } => "SubscribeAck",
+            Ack::Unsubscribe(_) => "UnsubscribeAck",
+        }
+    }
+
     pub(super) fn packet_type(&self) -> u8 {
         match self {
             Ack::Publish(_) => packet_type::PUBACK,
@@ -148,11 +157,11 @@ impl Ack {
         }
     }
 
-    pub(super) fn packet_id(&self) -> u16 {
+    pub(super) fn packet_id(&self) -> NonZeroU16 {
         match self {
-            Ack::Publish(id) => id.get(),
-            Ack::Subscribe { packet_id, .. } => packet_id.get(),
-            Ack::Unsubscribe(id) => id.get(),
+            Ack::Publish(id) => *id,
+            Ack::Subscribe { packet_id, .. } => *packet_id,
+            Ack::Unsubscribe(id) => *id,
         }
     }
 
@@ -170,16 +179,6 @@ impl Ack {
             (Ack::Subscribe { .. }, AckType::Subscribe) => true,
             (Ack::Unsubscribe(_), AckType::Unsubscribe) => true,
             (_, _) => false,
-        }
-    }
-}
-
-impl AckType {
-    pub(super) fn name(&self) -> &'static str {
-        match self {
-            AckType::Publish => "PublishAck",
-            AckType::Subscribe => "SubscribeAck",
-            AckType::Unsubscribe => "UnsubscribeAck",
         }
     }
 }

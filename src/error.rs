@@ -1,4 +1,4 @@
-use std::{fmt, io};
+use std::{fmt, io, num::NonZeroU16};
 
 use ntex::util::Either;
 
@@ -138,7 +138,7 @@ pub enum SendPacketError {
     Encode(#[from] EncodeError),
     /// Provided packet id is in use
     #[error("Provided packet id is in use")]
-    PacketIdInUse(u16),
+    PacketIdInUse(NonZeroU16),
     /// Peer disconnected
     #[error("Peer is disconnected")]
     Disconnected,
