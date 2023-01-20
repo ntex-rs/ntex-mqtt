@@ -68,10 +68,7 @@ impl MqttSink {
     /// Force close MQTT connection. Dispatcher does not wait for uncompleted
     /// responses (ending them with error), but it flushes buffers.
     pub fn force_close(&self) {
-        if self.is_open() {
-            // todo: mg: review: do we need to check if it's open?
-            self.0.io.force_close();
-        }
+        self.0.io.force_close();
         self.clear_state();
     }
 
@@ -130,7 +127,7 @@ impl MqttSink {
                         idx,
                         pkt.packet_id()
                     );
-                    Err(ProtocolError::PacketIdMismatch)
+                    Err(ProtocolError::packet_id_mismatch())
                 } else {
                     // get publish ack channel
                     log::trace!("Ack packet with id: {}", pkt.packet_id());
@@ -150,17 +147,13 @@ impl MqttSink {
                         Ok(())
                     } else {
                         log::trace!("MQTT protocol error, unexpeted packet");
-                        Err(ProtocolError::Unexpected(
-                            pkt.packet_type(),
-                            pkt.name(),
-                        ))
+                        Err(ProtocolError::unexpected_packet(pkt.packet_type(), tp.expected_str()))
                     }
                 }
             } else {
                 log::trace!("Unexpected PublishAck packet");
-                Err(ProtocolError::Unexpected(
-                    pkt.packet_type(),
-                    pkt.name(),
+                Err(ProtocolError::generic_violation(
+                    "Received PUBACK packet while there are no unacknowledged PUBLISH packets"
                 ))
             }
         })

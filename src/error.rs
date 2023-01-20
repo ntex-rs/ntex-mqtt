@@ -33,9 +33,6 @@ pub enum ProtocolError {
     /// MQTT encoding error
     #[error("Encoding error: {0:?}")]
     Encode(#[from] EncodeError),
-    // /// Packet id of publish ack packet does not match of send publish packet
-    // #[error("Packet id of publish ack packet does not match of send publish packet")]
-    // PacketIdMismatch,
     /// Peer violated MQTT protocol specification
     #[error("Protocol violation: {0}")]
     ProtocolViolation(#[from] ProtocolViolationError),
@@ -45,47 +42,46 @@ pub enum ProtocolError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum ProtocolViolationError {
+#[error(transparent)]
+pub struct ProtocolViolationError {
+    inner: ViolationInner,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ViolationInner {
     #[error("{message}")]
-    Custom { reason: DisconnectReasonCode, message: &'static str },
+    Common { reason: DisconnectReasonCode, message: &'static str },
     #[error("{message}; received packet with type `{packet_type:b}`")]
     UnexpectedPacket { packet_type: u8, message: &'static str },
 }
 impl ProtocolViolationError {
-    pub(crate) fn impl_specific(message: &'static str) -> Self {
-        ProtocolViolationError::Custom {
-            reason: DisconnectReasonCode::ImplementationSpecificError,
-            message,
-        }
-    }
-    pub(crate) fn generic(message: &'static str) -> Self {
-        Self::Custom { reason: DisconnectReasonCode::ProtocolError, message }
-    }
-    pub(crate) fn new(reason: DisconnectReasonCode, message: &'static str) -> Self {
-        Self::Custom { reason, message }
-    }
-
     pub(crate) fn reason(&self) -> DisconnectReasonCode {
-        match self {
-            ProtocolViolationError::Custom { reason, .. } => *reason,
-            ProtocolViolationError::UnexpectedPacket { .. } => {
-                DisconnectReasonCode::ProtocolError
-            }
+        match self.inner {
+            ViolationInner::Common { reason, .. } => reason,
+            ViolationInner::UnexpectedPacket { .. } => DisconnectReasonCode::ProtocolError,
         }
     }
 }
 
 impl ProtocolError {
+    pub(crate) fn violation(reason: DisconnectReasonCode, message: &'static str) -> Self {
+        Self::ProtocolViolation(ProtocolViolationError {
+            inner: ViolationInner::Common { reason, message },
+        })
+    }
+    pub(crate) fn generic_violation(message: &'static str) -> Self {
+        Self::violation(DisconnectReasonCode::ProtocolError, message)
+    }
+
     pub(crate) fn unexpected_packet(packet_type: u8, message: &'static str) -> ProtocolError {
-        Self::ProtocolViolation(ProtocolViolationError::UnexpectedPacket {
-            packet_type,
-            message,
+        Self::ProtocolViolation(ProtocolViolationError {
+            inner: ViolationInner::UnexpectedPacket { packet_type, message },
         })
     }
     pub(crate) fn packet_id_mismatch() -> Self {
-        Self::ProtocolViolation(ProtocolViolationError::generic(
-            "Packet id of PUBACK packet does not match that of send publish packet [MQTT-4.6.0-2]"
-        ))
+        Self::generic_violation(
+            "Packet id of PUBACK packet does not match expected next value according to sending order of PUBLISH packets [MQTT-4.6.0-2]"
+        )
     }
 }
 

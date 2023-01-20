@@ -134,11 +134,11 @@ impl MqttSink {
             if let Some((idx, tx, tp)) = queues.inflight.pop_front() {
                 if idx != pkt.packet_id() {
                     log::trace!(
-                        "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
+                        "MQTT protocol error: packet id order does not match; expected {}, got: {}",
                         idx,
                         pkt.packet_id()
                     );
-                    Err(ProtocolError::PacketIdMismatch)
+                    Err(ProtocolError::packet_id_mismatch())
                 } else {
                     // get publish ack channel
                     log::trace!("Ack packet with id: {}", pkt.packet_id());
@@ -156,12 +156,14 @@ impl MqttSink {
                         Ok(())
                     } else {
                         log::trace!("MQTT protocol error, unexpected packet");
-                        Err(ProtocolError::Unexpected(pkt.packet_type(), pkt.name()))
+                        Err(ProtocolError::unexpected_packet(pkt.packet_type(), tp.expected_str()))
                     }
                 }
             } else {
-                log::trace!("Unexpected PublishAck packet: {:?}", pkt.packet_id());
-                Err(ProtocolError::Unexpected(pkt.packet_type(), pkt.name()))
+                log::trace!("Unexpected PUBACK packet: {:?}", pkt.packet_id());
+                Err(ProtocolError::generic_violation(
+                    "Received PUBACK packet while there are no unacknowledged PUBLISH packets"
+                ))
             }
         });
         result.map_err(|e| {

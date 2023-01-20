@@ -72,7 +72,7 @@ where
             handshake: handshake.into_factory(),
             control: DefaultControlService::default(),
             publish: DefaultPublishService::default(),
-            max_qos: QoS::ExactlyOnce,
+            max_qos: QoS::AtLeastOnce,
             max_size: 0,
             max_inflight: 16,
             max_inflight_size: 65535,

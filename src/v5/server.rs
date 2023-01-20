@@ -49,7 +49,7 @@ where
             srv_publish: DefaultPublishService::default(),
             max_size: 0,
             max_receive: 15,
-            max_qos: QoS::ExactlyOnce,
+            max_qos: QoS::AtLeastOnce,
             max_inflight_size: 65535,
             handshake_timeout: Seconds::ZERO,
             disconnect_timeout: Seconds(3),

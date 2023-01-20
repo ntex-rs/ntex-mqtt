@@ -57,7 +57,7 @@ impl MqttShared {
             }),
             receive_max: Cell::new(0),
             topic_alias_max: Cell::new(0),
-            max_qos: Cell::new(QoS::ExactlyOnce),
+            max_qos: Cell::new(QoS::AtLeastOnce),
             inflight_idx: Cell::new(0),
         }
     }
@@ -166,14 +166,6 @@ pub(super) enum Ack {
 }
 
 impl Ack {
-    pub(super) fn name(&self) -> &'static str {
-        match self {
-            Ack::Publish(_) => "PublishAck",
-            Ack::Subscribe(_) => "SubscribeAck",
-            Ack::Unsubscribe(_) => "UnsubscribeAck",
-        }
-    }
-
     pub(super) fn packet_type(&self) -> u8 {
         match self {
             Ack::Publish(_) => packet_type::PUBACK,

@@ -7,7 +7,7 @@ use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
 use ntex::util::{buffer::BufferService, inflight::InFlightService, join};
 use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
-use crate::error::{MqttError, ProtocolError, ProtocolViolationError};
+use crate::error::{MqttError, ProtocolError};
 
 use super::control::{ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
@@ -173,6 +173,17 @@ where
                 let info = self.inner.as_ref();
                 let packet_id = publish.packet_id;
 
+                if publish.topic.contains(['#', '+']) {
+                    return Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(
+                            ProtocolError::generic_violation(
+                                "PUBLISH packet's topic name contains wildcard character [MQTT-3.3.2-2]"
+                            )
+                        ),
+                        &self.inner,
+                    )));
+                }
+
                 {
                     let mut inner = info.info.borrow_mut();
                     let state = &self.sink.state();
@@ -188,11 +199,10 @@ where
                             );
                             return Either::Right(Either::Right(ControlResponse::new(
                                 ControlMessage::proto_error(
-                                    ProtocolViolationError::new(
+                                    ProtocolError::violation(
                                         DisconnectReasonCode::ReceiveMaximumExceeded,
                                         "Number of in-flight messages exceeds set maximum [MQTT-3.3.4-7]"
                                     )
-                                    .into()
                                 ),
                                 &self.inner,
                             )));
@@ -206,26 +216,20 @@ where
                                 publish.qos
                             );
                             return Either::Right(Either::Right(ControlResponse::new(
-                                ControlMessage::proto_error(
-                                    ProtocolViolationError::new(
-                                        DisconnectReasonCode::QosNotSupported,
-                                        "PUBLISH QoS is higher than supported [MQTT-3.2.2-11]",
-                                    )
-                                    .into(),
-                                ),
+                                ControlMessage::proto_error(ProtocolError::violation(
+                                    DisconnectReasonCode::QosNotSupported,
+                                    "PUBLISH QoS is higher than supported [MQTT-3.2.2-11]",
+                                )),
                                 &self.inner,
                             )));
                         }
                         if publish.retain && !state.codec.retain_available() {
                             log::trace!("Retain is not available but is set");
                             return Either::Right(Either::Right(ControlResponse::new(
-                                ControlMessage::proto_error(
-                                    ProtocolViolationError::new(
-                                        DisconnectReasonCode::RetainNotSupported,
-                                        "[MQTT-3.2.2-14]",
-                                    )
-                                    .into(),
-                                ),
+                                ControlMessage::proto_error(ProtocolError::violation(
+                                    DisconnectReasonCode::RetainNotSupported,
+                                    "RETAIN is not supported [MQTT-3.2.2-14]",
+                                )),
                                 &self.inner,
                             )));
                         }
@@ -249,13 +253,10 @@ where
                                 Some(aliased_topic) => publish.topic = aliased_topic.clone(),
                                 None => {
                                     return Either::Right(Either::Right(ControlResponse::new(
-                                        ControlMessage::proto_error(
-                                            ProtocolViolationError::new(
-                                                DisconnectReasonCode::TopicAliasInvalid,
-                                                "Unknown topic alias",
-                                            )
-                                            .into(),
-                                        ),
+                                        ControlMessage::proto_error(ProtocolError::violation(
+                                            DisconnectReasonCode::TopicAliasInvalid,
+                                            "Unknown topic alias",
+                                        )),
                                         &self.inner,
                                     )));
                                 }
@@ -275,10 +276,9 @@ where
                                         return Either::Right(Either::Right(
                                             ControlResponse::new(
                                                 ControlMessage::proto_error(
-                                                    ProtocolViolationError::generic(
+                                                    ProtocolError::generic_violation(
                                                         "Topic alias is greater than max allowed [MQTT-3.2.2-17]",
                                                     )
-                                                    .into(),
                                                 ),
                                                 &self.inner,
                                             ),
@@ -321,6 +321,17 @@ where
                 ControlResponse::new(ControlMessage::remote_disconnect(pkt), &self.inner),
             )),
             DispatchItem::Item(codec::Packet::Subscribe(pkt)) => {
+                if pkt.id.is_some() && !self.sink.state().codec.sub_ids_available() {
+                    log::trace!("Subscription Identifiers are not supported but was set");
+                    return Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(ProtocolError::violation(
+                            DisconnectReasonCode::SubscriptionIdentifiersNotSupported,
+                            "Subscription Identifiers are not supported",
+                        )),
+                        &self.inner,
+                    )));
+                }
+
                 // register inflight packet id
                 if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id

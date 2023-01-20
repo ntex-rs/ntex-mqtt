@@ -6,7 +6,7 @@ use ntex::io::DispatchItem;
 use ntex::service::Service;
 use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
-use crate::error::{MqttError, ProtocolError, ProtocolViolationError};
+use crate::error::{MqttError, ProtocolError};
 use crate::types::packet_type;
 use crate::v5::codec::DisconnectReasonCode;
 use crate::v5::shared::{Ack, MqttShared};
@@ -151,11 +151,10 @@ where
                             );
                             return Either::Right(Either::Right(ControlResponse::new(
                                 ControlMessage::proto_error(
-                                    ProtocolViolationError::new(
+                                    ProtocolError::violation(
                                         codec::DisconnectReasonCode::ReceiveMaximumExceeded,
                                         "Number of in-flight messages exceeds set maximum, [MQTT-3.3.4-9]"
                                     )
-                                    .into()
                                 ),
                                 &self.inner,
                             )));
@@ -182,13 +181,10 @@ where
                                 Some(aliased_topic) => publish.topic = aliased_topic.clone(),
                                 None => {
                                     return Either::Right(Either::Right(ControlResponse::new(
-                                        ControlMessage::proto_error(
-                                            ProtocolViolationError::new(
-                                                DisconnectReasonCode::TopicAliasInvalid,
-                                                "Unknown topic alias",
-                                            )
-                                            .into(),
-                                        ),
+                                        ControlMessage::proto_error(ProtocolError::violation(
+                                            DisconnectReasonCode::TopicAliasInvalid,
+                                            "Unknown topic alias",
+                                        )),
                                         &self.inner,
                                     )));
                                 }
@@ -208,10 +204,9 @@ where
                                         return Either::Right(Either::Right(
                                             ControlResponse::new(
                                                 ControlMessage::proto_error(
-                                                    ProtocolViolationError::generic(
+                                                    ProtocolError::generic_violation(
                                                         "Topic alias is greater than max allowed [MQTT-3.1.2-26]",
                                                     )
-                                                    .into(),
                                                 ),
                                                 &self.inner,
                                             ),

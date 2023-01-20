@@ -8,7 +8,7 @@ use ntex::util::{
     buffer::BufferService, inflight::InFlightService, join, BoxFuture, Either, HashSet, Ready,
 };
 
-use crate::error::{MqttError, ProtocolError, ProtocolViolationError};
+use crate::error::{MqttError, ProtocolError};
 use crate::types::QoS;
 
 use super::control::{
@@ -166,6 +166,17 @@ where
 
         match req {
             DispatchItem::Item(codec::Packet::Publish(publish)) => {
+                if publish.topic.contains(['#', '+']) {
+                    return Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(
+                            ProtocolError::generic_violation(
+                                "PUBLISH packet's topic name contains wildcard character [MQTT-3.3.2-2]"
+                            )
+                        ),
+                        &self.inner,
+                    )));
+                }
+
                 let inner = self.inner.as_ref();
                 let packet_id = publish.packet_id;
 
@@ -175,7 +186,7 @@ where
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
                         return Either::Right(Either::Right(ControlResponse::new(
                             ControlMessage::proto_error(
-                                ProtocolViolationError::generic("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]").into(),
+                                ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]")
                             ),
                             &self.inner,
                         )));
@@ -190,14 +201,13 @@ where
                         publish.qos
                     );
                     return Either::Right(Either::Right(ControlResponse::new(
-                        ControlMessage::proto_error(
-                            ProtocolViolationError::impl_specific(match publish.qos {
+                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                            match publish.qos {
                                 QoS::AtLeastOnce => "PUBLISH with QoS 1 is not supported",
                                 QoS::ExactlyOnce => "PUBLISH with QoS 2 is not supported",
                                 QoS::AtMostOnce => unreachable!(), // max_qos cannot be lower than QoS 0
-                            })
-                            .into(),
-                        ),
+                            },
+                        )),
                         &self.inner,
                     )));
                 }

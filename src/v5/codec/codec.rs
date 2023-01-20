@@ -70,7 +70,6 @@ impl Codec {
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
     pub fn set_max_outbound_size(&self, mut size: u32) {
-        // todo: mg: more precise calc
         if size > 5 {
             // fixed header = 1, var_len(remaining.max_value()) = 4
             size -= 5;
@@ -79,7 +78,11 @@ impl Codec {
     }
 
     pub(crate) fn retain_available(&self) -> bool {
-        self.flags.get().contains(CodecFlags::NO_RETAIN)
+        !self.flags.get().contains(CodecFlags::NO_RETAIN)
+    }
+
+    pub(crate) fn sub_ids_available(&self) -> bool {
+        !self.flags.get().contains(CodecFlags::NO_SUB_IDS)
     }
 
     pub(crate) fn set_retain_available(&self, val: bool) {
