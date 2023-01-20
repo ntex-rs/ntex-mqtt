@@ -1,6 +1,6 @@
 # Changes
 
-## [0.10.0-beta.2] - 2023-01-xx
+## [0.10.0-beta.2] - 2023-01-20
 
 * Fix dispatcher leak during stop process
 
