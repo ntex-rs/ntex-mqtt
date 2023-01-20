@@ -161,7 +161,7 @@ impl MqttSink {
 
     #[inline]
     /// Create publish packet builder
-    pub fn publish<U>(&self, topic: U, payload: Bytes) -> PublishBuilder
+    pub fn publish<U>(&self, topic: U, payload: Bytes) -> PublishBuilder<'_>
     where
         ByteString: From<U>,
     {
@@ -178,13 +178,13 @@ impl MqttSink {
 
     #[inline]
     /// Create publish builder with publish packet
-    pub fn publish_packet(&self, packet: codec::Publish) -> PublishBuilder {
-        PublishBuilder { packet, shared: self.0.clone() }
+    pub fn publish_packet(&self, packet: codec::Publish) -> PublishBuilder<'_> {
+        PublishBuilder { packet, shared: self.0.as_ref() }
     }
 
     #[inline]
     /// Create subscribe packet builder
-    pub fn subscribe(&self, id: Option<NonZeroU32>) -> SubscribeBuilder {
+    pub fn subscribe(&self, id: Option<NonZeroU32>) -> SubscribeBuilder<'_> {
         SubscribeBuilder {
             id: None,
             packet: codec::Subscribe {
@@ -193,13 +193,13 @@ impl MqttSink {
                 user_properties: Vec::new(),
                 topic_filters: Vec::new(),
             },
-            shared: self.0.clone(),
+            shared: self.0.as_ref(),
         }
     }
 
     #[inline]
     /// Create unsubscribe packet builder
-    pub fn unsubscribe(&self) -> UnsubscribeBuilder {
+    pub fn unsubscribe(&self) -> UnsubscribeBuilder<'_> {
         UnsubscribeBuilder {
             id: None,
             packet: codec::Unsubscribe {
@@ -207,7 +207,7 @@ impl MqttSink {
                 user_properties: Vec::new(),
                 topic_filters: Vec::new(),
             },
-            shared: self.0.clone(),
+            shared: self.0.as_ref(),
         }
     }
 
@@ -222,12 +222,12 @@ impl fmt::Debug for MqttSink {
     }
 }
 
-pub struct PublishBuilder {
-    shared: Rc<MqttShared>,
+pub struct PublishBuilder<'a> {
     packet: codec::Publish,
+    shared: &'a MqttShared,
 }
 
-impl PublishBuilder {
+impl<'a> PublishBuilder<'a> {
     #[inline]
     /// Set packet id.
     ///
@@ -316,7 +316,7 @@ impl PublishBuilder {
 
     async fn send_at_least_once_inner(
         mut packet: codec::Publish,
-        shared: Rc<MqttShared>,
+        shared: &'a MqttShared,
     ) -> Result<codec::PublishAck, SendPacketError> {
         // packet id
         let idx = if let Some(idx) = packet.packet_id {
@@ -327,8 +327,8 @@ impl PublishBuilder {
             idx
         };
 
-        let pkt_in_use = shared.with_queues(|queues| queues.inflight_ids.contains(&idx));
-        if pkt_in_use {
+        let id_in_use = shared.with_queues(|queues| queues.inflight_ids.contains(&idx));
+        if id_in_use {
             return Err(SendPacketError::PacketIdInUse(idx));
         }
 
@@ -355,13 +355,13 @@ impl PublishBuilder {
 }
 
 /// Subscribe packet builder
-pub struct SubscribeBuilder {
+pub struct SubscribeBuilder<'a> {
     id: Option<NonZeroU16>,
     packet: codec::Subscribe,
-    shared: Rc<MqttShared>,
+    shared: &'a MqttShared,
 }
 
-impl SubscribeBuilder {
+impl<'a> SubscribeBuilder<'a> {
     #[inline]
     /// Set packet id.
     ///
@@ -442,13 +442,13 @@ impl SubscribeBuilder {
 }
 
 /// Unsubscribe packet builder
-pub struct UnsubscribeBuilder {
+pub struct UnsubscribeBuilder<'a> {
     id: Option<NonZeroU16>,
     packet: codec::Unsubscribe,
-    shared: Rc<MqttShared>,
+    shared: &'a MqttShared,
 }
 
-impl UnsubscribeBuilder {
+impl<'a> UnsubscribeBuilder<'a> {
     #[inline]
     /// Set packet id.
     ///
