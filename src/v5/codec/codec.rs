@@ -210,7 +210,7 @@ impl Encoder for Codec {
         let max_size = if max_out_size != 0 { max_out_size } else { MAX_PACKET_SIZE };
         let content_size = item.encoded_size(max_size);
         if content_size > max_size as usize {
-            return Err(EncodeError::InvalidLength); // todo: separate error code
+            return Err(EncodeError::OverMaxPacketSize);
         }
         dst.reserve(content_size + 5);
         item.encode(dst, content_size as u32)?; // safe: max_size <= u32 max value

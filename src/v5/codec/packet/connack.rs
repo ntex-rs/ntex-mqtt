@@ -15,7 +15,7 @@ pub struct ConnectAck {
     pub session_present: bool,
     pub reason_code: ConnectAckReason,
 
-    pub session_expiry_interval_secs: u32,
+    pub session_expiry_interval_secs: Option<u32>,
     pub receive_max: NonZeroU16,
     pub max_qos: QoS,
     pub max_packet_size: Option<u32>,
@@ -39,7 +39,7 @@ impl Default for ConnectAck {
         ConnectAck {
             session_present: false,
             reason_code: ConnectAckReason::Success,
-            session_expiry_interval_secs: 0,
+            session_expiry_interval_secs: None,
             receive_max: RECEIVE_MAX_DEFAULT,
             max_qos: QoS::ExactlyOnce,
             max_packet_size: None,
@@ -160,7 +160,7 @@ impl ConnectAck {
         Ok(ConnectAck {
             session_present: flags.contains(ConnectAckFlags::SESSION_PRESENT),
             reason_code,
-            session_expiry_interval_secs: session_expiry_interval_secs.unwrap_or(0),
+            session_expiry_interval_secs,
             receive_max: receive_max.unwrap_or(RECEIVE_MAX_DEFAULT),
             max_qos: max_qos.unwrap_or(QoS::ExactlyOnce),
             max_packet_size,
@@ -185,7 +185,7 @@ impl EncodeLtd for ConnectAck {
     fn encoded_size(&self, limit: u32) -> usize {
         const HEADER_LEN: usize = 2; // state flags byte + reason code
 
-        let mut prop_len = encoded_property_size_default(&self.session_expiry_interval_secs, 0)
+        let mut prop_len = encoded_property_size(&self.session_expiry_interval_secs)
             + encoded_property_size_default(&self.receive_max, RECEIVE_MAX_DEFAULT)
             + if self.max_qos < QoS::ExactlyOnce { 1 + 1 } else { 0 }
             + encoded_property_size(&self.max_packet_size)
@@ -220,12 +220,7 @@ impl EncodeLtd for ConnectAck {
         let prop_len = var_int_len_from_size(size - 2);
         utils::write_variable_length(prop_len, buf);
 
-        encode_property_default(
-            &self.session_expiry_interval_secs,
-            0,
-            pt::SESS_EXPIRY_INT,
-            buf,
-        )?;
+        encode_property(&self.session_expiry_interval_secs, pt::SESS_EXPIRY_INT, buf)?;
         encode_property_default(&self.receive_max, RECEIVE_MAX_DEFAULT, pt::RECEIVE_MAX, buf)?;
         if self.max_qos < QoS::ExactlyOnce {
             buf.put_slice(&[pt::MAX_QOS, self.max_qos.into()]);
