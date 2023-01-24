@@ -144,6 +144,8 @@ pub enum DecodeError {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum EncodeError {
+    #[error("Packet is bigger than peer's Maximum Packet Size")]
+    OverMaxPacketSize,
     #[error("Invalid length")]
     InvalidLength,
     #[error("Malformed packet")]

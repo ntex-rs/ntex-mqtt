@@ -1,5 +1,11 @@
 # Changes
 
+## [0.10.0-beta.4] - 2023-01-23
+
+* Change ConnectAck session_expiry_interval_secs type to Option<u32>
+
+* Introduce EncodeError::OverMaxPacketSize to differentiate failure to encode due to going over peer's Maximum packet size
+
 ## [0.10.0-beta.3] - 2023-01-20
 
 * Revert builders refactoring
