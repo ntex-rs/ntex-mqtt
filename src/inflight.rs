@@ -31,10 +31,13 @@ where
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if self.service.poll_ready(cx)?.is_pending() {
-            Poll::Pending
-        } else if !self.count.available(cx) {
+        let p1 = self.service.poll_ready(cx)?.is_pending();
+        let p2 = !self.count.available(cx);
+        if p2 {
             log::trace!("InFlight limit exceeded");
+        }
+
+        if p1 || p2 {
             Poll::Pending
         } else {
             Poll::Ready(Ok(()))

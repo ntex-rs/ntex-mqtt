@@ -165,7 +165,7 @@ impl DispatcherInner {
 
     fn unregister_keepalive(&self) {
         // unregister keep-alive timer
-        self.io.remove_keepalive_timer();
+        self.io.stop_keepalive_timer();
         self.keepalive_timeout.set(time::Duration::ZERO);
     }
 }
@@ -180,7 +180,7 @@ where
         &mut self,
         item: Result<S::Response, S::Error>,
         response_idx: usize,
-        write: &IoRef,
+        io: &IoRef,
         codec: &U,
         wake: bool,
     ) {
@@ -195,7 +195,7 @@ where
                     self.error = Some(err.into());
                 }
                 Ok(Some(item)) => {
-                    if let Err(err) = write.encode(item, codec) {
+                    if let Err(err) = io.encode(item, codec) {
                         self.error = Some(IoDispatcherError::Encoder(err));
                     }
                 }
@@ -211,7 +211,7 @@ where
                         self.error = Some(err.into());
                     }
                     Ok(Some(item)) => {
-                        if let Err(err) = write.encode(item, codec) {
+                        if let Err(err) = io.encode(item, codec) {
                             self.error = Some(IoDispatcherError::Encoder(err));
                         }
                     }
@@ -220,7 +220,7 @@ where
             }
 
             if wake && self.queue.is_empty() {
-                write.wake()
+                io.wake()
             }
         } else {
             self.queue[idx] = ServiceResult::Ready(item);
@@ -244,18 +244,15 @@ where
 
         // handle service response future
         if let Some(fut) = this.response.as_mut().as_pin_mut() {
-            match fut.poll(cx) {
-                Poll::Pending => (),
-                Poll::Ready(item) => {
-                    this.state.borrow_mut().handle_result(
-                        item,
-                        *this.response_idx,
-                        io.as_ref(),
-                        this.codec,
-                        false,
-                    );
-                    this.response.set(None);
-                }
+            if let Poll::Ready(item) = fut.poll(cx) {
+                this.state.borrow_mut().handle_result(
+                    item,
+                    *this.response_idx,
+                    io.as_ref(),
+                    this.codec,
+                    false,
+                );
+                this.response.set(None);
             }
         }
 
@@ -328,7 +325,7 @@ where
                                         inner.base.wrapping_add(inner.queue.len());
 
                                     if let Poll::Ready(res) = res {
-                                        // check if current result is only response atm
+                                        // check if current result is only response
                                         if inner.queue.is_empty() {
                                             match res {
                                                 Err(err) => {
