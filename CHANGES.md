@@ -1,8 +1,10 @@
 # Changes
 
-## [0.10.1] - 2023-01-30
+## [0.10.1] - 2023-01-31
 
-* Fix missing ready wakes up from InflightService
+* Fix missing ready wakes up from InFlightService
+
+* Register Dispatcher waker when service is not ready
 
 ## [0.10.0] - 2023-01-24
 
