@@ -155,8 +155,10 @@ impl CounterInner {
 
 #[cfg(test)]
 mod tests {
-    use ntex::{service::Service, time::sleep, util::lazy, util::BoxFuture};
-    use std::{task::Poll, time::Duration};
+    use std::{cell::Cell, rc::Rc, task::Poll, time::Duration};
+
+    use ntex::util::{lazy, poll_fn, BoxFuture};
+    use ntex::{service::Service, time::sleep};
 
     use super::*;
 
@@ -209,5 +211,63 @@ mod tests {
 
         let _ = res.await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
+    }
+
+    struct Srv2 {
+        dur: Duration,
+        cnt: Cell<bool>,
+    }
+
+    impl Service<()> for Srv2 {
+        type Response = ();
+        type Error = ();
+        type Future<'f> = BoxFuture<'f, Result<(), ()>>;
+
+        fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            if !self.cnt.get() {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }
+
+        fn call(&self, _: ()) -> Self::Future<'_> {
+            let fut = sleep(self.dur);
+            self.cnt.set(true);
+
+            Box::pin(async move {
+                let _ = fut.await;
+                self.cnt.set(false);
+                Ok::<_, ()>(())
+            })
+        }
+    }
+
+    /// InflightService::poll_ready() must always register waker,
+    /// otherwise it can lose wake up if inner service's poll_ready
+    /// does not wakes dispatcher.
+    #[ntex::test]
+    async fn test_inflight3() {
+        let wait_time = Duration::from_millis(50);
+
+        let srv = Rc::new(InFlightService::new(
+            1,
+            10,
+            Srv2 { dur: wait_time, cnt: Cell::new(false) },
+        ));
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
+
+        let res = srv.call(());
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
+
+        let srv2 = srv.clone();
+        let (tx, rx) = ntex::channel::oneshot::channel();
+        ntex::rt::spawn(async move {
+            let _ = poll_fn(|cx| srv2.poll_ready(cx)).await;
+            let _ = tx.send(());
+        });
+
+        let _ = res.await;
+        let _ = rx.await;
     }
 }
