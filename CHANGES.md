@@ -1,5 +1,11 @@
 # Changes
 
+## [0.10.1] - 2023-01-31
+
+* Fix missing ready wakes up from InFlightService
+
+* Register Dispatcher waker when service is not ready
+
 ## [0.10.0] - 2023-01-24
 
 * Change ConnectAck session_expiry_interval_secs type to Option<u32>
