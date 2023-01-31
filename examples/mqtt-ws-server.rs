@@ -157,15 +157,10 @@ async fn main() -> std::io::Result<()> {
 
                                             // enable websocket streamimng, ws transport
                                             // converts incoming stream of ws frames into bytes stream
-                                            io.add_filter(ws::WsTransportFactory::new(
+                                            Ok(ws::WsTransport::create(
+                                                io,
                                                 ws::Codec::default(),
                                             ))
-                                            .await
-                                            .map_err(|_| {
-                                                MqttError::ServerError(
-                                                    "Cannot construct ws transport",
-                                                )
-                                            })
                                         }
                                     },
                                 )

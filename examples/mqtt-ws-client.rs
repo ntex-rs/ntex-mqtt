@@ -37,8 +37,7 @@ async fn main() -> std::io::Result<()> {
                     .connect()
                     .await
                     .map_err(|e| ConnectError::Io(io::Error::new(io::ErrorKind::Other, e)))?
-                    .into_transport()
-                    .await)
+                    .into_transport())
             }
         })
         .connect()

@@ -444,17 +444,17 @@ where
         match srv.poll_ready(cx) {
             Poll::Ready(Ok(_)) => {
                 // check for errors
-                Poll::Ready(if let Some(err) = self.state.borrow_mut().error.take() {
+                let mut state = self.state.borrow_mut();
+                Poll::Ready(if let Some(err) = state.error.take() {
                     log::trace!("error occured, stopping dispatcher");
-                    self.st = IoDispatcherState::Stop;
                     match err {
                         IoDispatcherError::Encoder(err) => {
+                            self.st = IoDispatcherState::Stop;
                             PollService::Item(DispatchItem::EncoderError(err))
                         }
                         IoDispatcherError::Service(err) => {
-                            self.state.borrow_mut().error =
-                                Some(IoDispatcherError::Service(err));
-                            PollService::Continue
+                            state.error = Some(IoDispatcherError::Service(err));
+                            PollService::Ready
                         }
                         IoDispatcherError::KeepAlive => {
                             self.st = IoDispatcherState::Stop;
@@ -526,8 +526,8 @@ mod tests {
             codec: U,
             service: F,
         ) -> (Self, nio::IoRef) {
-            let keepalive_timeout = Cell::new(Seconds(30).into());
-            io.start_keepalive_timer(keepalive_timeout.get());
+            let keepalive_timeout = Seconds(30).into();
+            io.start_keepalive_timer(keepalive_timeout);
             let rio = io.get_ref();
 
             let state = Rc::new(RefCell::new(DispatcherState {
@@ -538,15 +538,18 @@ mod tests {
 
             (
                 Dispatcher {
-                    state,
                     codec,
                     service: Rc::new(service.into_service()),
-                    st: IoDispatcherState::Processing,
                     response: None,
                     response_idx: 0,
                     pool: io.memory_pool().pool(),
-                    flags: Cell::new(Flags::empty()),
-                    inner: DispatcherInner { keepalive_timeout, io: IoBoxed::from(io) },
+                    inner: DispatcherInner {
+                        state,
+                        keepalive_timeout,
+                        io: IoBoxed::from(io),
+                        st: IoDispatcherState::Processing,
+                        flags: Flags::empty(),
+                    },
                 },
                 rio,
             )
