@@ -5,7 +5,7 @@ use ntex::codec::{Decoder, Encoder};
 use ntex::io::IoRef;
 use ntex::util::{BytesMut, HashSet, PoolId, PoolRef};
 
-use crate::error::{DecodeError, EncodeError};
+use crate::error::{DecodeError, EncodeError, ProtocolError, SendPacketError};
 use crate::{types::packet_type, v3::codec};
 
 pub(super) enum Ack {
@@ -22,8 +22,8 @@ pub(super) enum AckType {
 }
 
 pub(super) struct MqttSinkPool {
-    pub(super) queue: pool::Pool<Ack>,
-    pub(super) waiters: pool::Pool<()>,
+    queue: pool::Pool<Ack>,
+    waiters: pool::Pool<()>,
     pub(super) pool: Cell<PoolRef>,
 }
 
@@ -38,19 +38,19 @@ impl Default for MqttSinkPool {
 }
 
 pub struct MqttShared {
-    pub(super) io: IoRef,
+    io: IoRef,
     cap: Cell<usize>,
     queues: RefCell<MqttSharedQueues>,
-    pub(super) inflight_idx: Cell<u16>,
-    pub(super) pool: Rc<MqttSinkPool>,
+    inflight_idx: Cell<u16>,
+    pool: Rc<MqttSinkPool>,
+    client: bool,
     pub(super) codec: codec::Codec,
-    pub(super) client: bool,
 }
 
-pub(super) struct MqttSharedQueues {
-    pub(super) inflight: VecDeque<(NonZeroU16, pool::Sender<Ack>, AckType)>,
-    pub(super) inflight_ids: HashSet<NonZeroU16>,
-    pub(super) waiters: VecDeque<pool::Sender<()>>,
+struct MqttSharedQueues {
+    inflight: VecDeque<(NonZeroU16, pool::Sender<Ack>, AckType)>,
+    inflight_ids: HashSet<NonZeroU16>,
+    waiters: VecDeque<pool::Sender<()>>,
 }
 
 impl MqttShared {
@@ -62,9 +62,9 @@ impl MqttShared {
     ) -> Self {
         Self {
             io,
-            pool,
             codec,
             client,
+            pool,
             cap: Cell::new(0),
             queues: RefCell::new(MqttSharedQueues {
                 inflight: VecDeque::with_capacity(8),
@@ -75,13 +75,21 @@ impl MqttShared {
         }
     }
 
-    pub(super) fn cap(&self) -> usize {
-        self.cap.get()
+    pub(super) fn close(&self) {
+        if self.client {
+            let _ = self.encode_packet(codec::Packet::Disconnect);
+        }
+        self.io.close();
+        self.clear_queues();
     }
 
-    pub(super) fn with_queues<R>(&self, f: impl FnOnce(&mut MqttSharedQueues) -> R) -> R {
-        let mut queues = self.queues.borrow_mut();
-        f(&mut queues)
+    pub(super) fn force_close(&self) {
+        self.io.force_close();
+        self.clear_queues();
+    }
+
+    pub(super) fn is_closed(&self) -> bool {
+        self.io.is_closed()
     }
 
     pub(super) fn credit(&self) -> usize {
@@ -117,6 +125,118 @@ impl MqttShared {
             break;
         }
         self.cap.set(cap);
+    }
+
+    pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), EncodeError> {
+        self.io.encode(pkt, &self.codec)
+    }
+
+    fn clear_queues(&self) {
+        let mut queues = self.queues.borrow_mut();
+        queues.inflight.clear();
+        queues.waiters.clear();
+    }
+
+    pub(super) fn pkt_ack(&self, pkt: Ack) -> Result<(), ProtocolError> {
+        let mut queues = self.queues.borrow_mut();
+
+        // check ack order
+        if let Some((idx, tx, tp)) = queues.inflight.pop_front() {
+            if idx != pkt.packet_id() {
+                log::trace!(
+                    "MQTT protocol error: packet id order does not match; expected {}, got: {}",
+                    idx,
+                    pkt.packet_id()
+                );
+                Err(ProtocolError::packet_id_mismatch())
+            } else {
+                // get publish ack channel
+                log::trace!("Ack packet with id: {}", pkt.packet_id());
+                queues.inflight_ids.remove(&pkt.packet_id());
+
+                if pkt.is_match(tp) {
+                    let _ = tx.send(pkt);
+
+                    // wake up queued request (receive max limit)
+                    while let Some(tx) = queues.waiters.pop_front() {
+                        if tx.send(()).is_ok() {
+                            break;
+                        }
+                    }
+                    Ok(())
+                } else {
+                    log::trace!("MQTT protocol error, unexpected packet");
+                    Err(ProtocolError::unexpected_packet(pkt.packet_type(), tp.expected_str()))
+                }
+            }
+        } else {
+            log::trace!("Unexpected PUBACK packet: {:?}", pkt.packet_id());
+            Err(ProtocolError::generic_violation(
+                "Received PUBACK packet while there are no unacknowledged PUBLISH packets",
+            ))
+        }
+    }
+
+    /// Register ack in response channel
+    pub(super) fn wait_response(
+        &self,
+        id: NonZeroU16,
+        ack: AckType,
+    ) -> Result<pool::Receiver<Ack>, SendPacketError> {
+        let mut queues = self.queues.borrow_mut();
+        if queues.inflight_ids.contains(&id) {
+            Err(SendPacketError::PacketIdInUse(id))
+        } else {
+            let (tx, rx) = self.pool.queue.channel();
+            queues.inflight.push_back((id, tx, ack));
+            queues.inflight_ids.insert(id);
+            Ok(rx)
+        }
+    }
+
+    /// Register ack in response channel
+    pub(super) fn wait_packet_response(
+        &self,
+        id: NonZeroU16,
+        ack: AckType,
+        pkt: codec::Packet,
+    ) -> Result<pool::Receiver<Ack>, SendPacketError> {
+        let mut queues = self.queues.borrow_mut();
+        if queues.inflight_ids.contains(&id) {
+            Err(SendPacketError::PacketIdInUse(id))
+        } else {
+            match self.io.encode(pkt, &self.codec) {
+                Ok(_) => {
+                    let (tx, rx) = self.pool.queue.channel();
+                    queues.inflight.push_back((id, tx, ack));
+                    queues.inflight_ids.insert(id);
+                    Ok(rx)
+                }
+                Err(e) => Err(SendPacketError::Encode(e)),
+            }
+        }
+    }
+
+    pub(super) fn wait_credit(&self) -> Option<pool::Receiver<()>> {
+        if !self.has_credit() {
+            let (tx, rx) = self.pool.waiters.channel();
+            self.queues.borrow_mut().waiters.push_back(tx);
+            Some(rx)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn wait_readiness(&self) -> Option<pool::Receiver<()>> {
+        let mut queues = self.queues.borrow_mut();
+
+        if queues.inflight.len() >= self.cap.get() {
+            let (tx, rx) = self.pool.waiters.channel();
+            queues.waiters.push_back(tx);
+            Some(rx)
+        } else {
+            None
+        }
     }
 }
 
