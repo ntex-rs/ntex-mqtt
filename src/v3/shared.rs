@@ -137,7 +137,14 @@ impl MqttShared {
         queues.waiters.clear();
     }
 
-    pub(super) fn pkt_ack(&self, pkt: Ack) -> Result<(), ProtocolError> {
+    pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), ProtocolError> {
+        self.pkt_ack_inner(ack).map_err(|e| {
+            self.close();
+            e
+        })
+    }
+
+    fn pkt_ack_inner(&self, pkt: Ack) -> Result<(), ProtocolError> {
         let mut queues = self.queues.borrow_mut();
 
         // check ack order

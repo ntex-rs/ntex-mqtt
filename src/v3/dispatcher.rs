@@ -14,8 +14,7 @@ use crate::types::QoS;
 use super::control::{
     ControlMessage, ControlResult, ControlResultKind, Subscribe, Unsubscribe,
 };
-use super::shared::MqttShared;
-use super::{codec, publish::Publish, shared::Ack, sink::MqttSink, Session};
+use super::{codec, publish::Publish, shared::Ack, shared::MqttShared, Session};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
@@ -39,12 +38,13 @@ where
 {
     let factories = Rc::new((publish, control));
 
-    fn_factory_with_config(move |cfg: Session<St>| {
+    fn_factory_with_config(move |session: Session<St>| {
         let factories = factories.clone();
 
         async move {
             // create services
-            let fut = join(factories.0.create(cfg.clone()), factories.1.create(cfg.clone()));
+            let sink = session.sink().shared();
+            let fut = join(factories.0.create(session.clone()), factories.1.create(session));
             let (publish, control) = fut.await;
 
             let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
@@ -64,7 +64,7 @@ where
                 crate::inflight::InFlightService::new(
                     inflight,
                     inflight_size,
-                    Dispatcher::<_, _, _, E>::new(cfg, publish, control, max_qos),
+                    Dispatcher::<_, _, E>::new(sink, publish, control, max_qos),
                 ),
             )
         }
@@ -82,8 +82,7 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<St, T, C: Service<ControlMessage<E>>, E> {
-    session: Session<St>,
+pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     publish: T,
     max_qos: QoS,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
@@ -93,21 +92,18 @@ pub(crate) struct Dispatcher<St, T, C: Service<ControlMessage<E>>, E> {
 
 struct Inner<C> {
     control: C,
-    sink: MqttSink,
+    sink: Rc<MqttShared>,
     inflight: RefCell<HashSet<NonZeroU16>>,
 }
 
-impl<St, T, C, E> Dispatcher<St, T, C, E>
+impl<T, C, E> Dispatcher<T, C, E>
 where
     E: From<T::Error>,
     T: Service<Publish, Response = ()>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    pub(crate) fn new(session: Session<St>, publish: T, control: C, max_qos: QoS) -> Self {
-        let sink = session.sink().clone();
-
+    pub(crate) fn new(sink: Rc<MqttShared>, publish: T, control: C, max_qos: QoS) -> Self {
         Self {
-            session,
             publish,
             max_qos,
             shutdown: RefCell::new(None),
@@ -117,7 +113,7 @@ where
     }
 }
 
-impl<St, T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<St, T, C, E>
+impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
 where
     E: From<T::Error> + 'static,
     T: Service<Publish, Response = ()>,
@@ -221,7 +217,7 @@ where
                 })
             }
             DispatchItem::Item(codec::Packet::PublishAck { packet_id }) => {
-                if let Err(e) = self.session.sink().pkt_ack(Ack::Publish(packet_id)) {
+                if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(e),
                         &self.inner,

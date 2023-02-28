@@ -100,7 +100,7 @@ impl Client {
         }
 
         let dispatcher = create_dispatcher(
-            MqttSink::new(self.shared.clone()),
+            self.shared.clone(),
             self.max_receive,
             into_service(|pkt| Ready::Ok(Either::Right(pkt))),
             into_service(|msg: ControlMessage<()>| Ready::<_, ()>::Ok(msg.disconnect())),
@@ -124,7 +124,7 @@ impl Client {
         }
 
         let dispatcher = create_dispatcher(
-            MqttSink::new(self.shared.clone()),
+            self.shared.clone(),
             self.max_receive,
             into_service(|pkt| Ready::Ok(Either::Right(pkt))),
             service.into_service(),
@@ -190,7 +190,7 @@ where
         }
 
         let dispatcher = create_dispatcher(
-            MqttSink::new(self.shared.clone()),
+            self.shared.clone(),
             self.max_receive,
             dispatch(self.builder.finish(), self.handlers),
             into_service(|msg: ControlMessage<Err>| Ready::<_, Err>::Ok(msg.disconnect())),
@@ -213,7 +213,7 @@ where
         }
 
         let dispatcher = create_dispatcher(
-            MqttSink::new(self.shared.clone()),
+            self.shared.clone(),
             self.max_receive,
             dispatch(self.builder.finish(), self.handlers),
             service.into_service(),

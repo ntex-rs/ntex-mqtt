@@ -7,14 +7,14 @@ use ntex::service::Service;
 use ntex::util::{inflight::InFlightService, BoxFuture, Either, HashSet, Ready};
 
 use crate::v3::shared::{Ack, MqttShared};
-use crate::v3::{codec, control::ControlResultKind, publish::Publish, sink::MqttSink};
+use crate::v3::{codec, control::ControlResultKind, publish::Publish};
 use crate::{error::MqttError, error::ProtocolError};
 
 use super::control::{ControlMessage, ControlResult};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn create_dispatcher<T, C, E>(
-    sink: MqttSink,
+    sink: Rc<MqttShared>,
     inflight: usize,
     publish: T,
     control: C,
@@ -33,7 +33,6 @@ where
 
 /// Mqtt protocol dispatcher
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
-    sink: MqttSink,
     publish: T,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
@@ -42,7 +41,7 @@ pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
 
 struct Inner<C> {
     control: C,
-    sink: MqttSink,
+    sink: Rc<MqttShared>,
     inflight: RefCell<HashSet<NonZeroU16>>,
 }
 
@@ -51,10 +50,9 @@ where
     T: Service<Publish, Response = Either<(), Publish>, Error = E>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    pub(crate) fn new(sink: MqttSink, publish: T, control: C) -> Self {
+    pub(crate) fn new(sink: Rc<MqttShared>, publish: T, control: C) -> Self {
         Self {
             publish,
-            sink: sink.clone(),
             shutdown: RefCell::new(None),
             inner: Rc::new(Inner { sink, control, inflight: RefCell::new(HashSet::default()) }),
             _t: PhantomData,
@@ -131,21 +129,21 @@ where
                 })
             }
             DispatchItem::Item(codec::Packet::PublishAck { packet_id }) => {
-                if let Err(e) = self.sink.pkt_ack(Ack::Publish(packet_id)) {
+                if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             DispatchItem::Item(codec::Packet::SubscribeAck { packet_id, status }) => {
-                if let Err(e) = self.sink.pkt_ack(Ack::Subscribe { packet_id, status }) {
+                if let Err(e) = self.inner.sink.pkt_ack(Ack::Subscribe { packet_id, status }) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             DispatchItem::Item(codec::Packet::UnsubscribeAck { packet_id }) => {
-                if let Err(e) = self.sink.pkt_ack(Ack::Unsubscribe(packet_id)) {
+                if let Err(e) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet_id)) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))

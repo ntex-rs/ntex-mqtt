@@ -3,8 +3,8 @@ use std::{fmt, num::NonZeroU16, rc::Rc};
 
 use ntex::util::{ByteString, Bytes, Either, Ready};
 
-use super::shared::{Ack, AckType, MqttShared};
-use super::{codec, error::ProtocolError, error::SendPacketError};
+use super::shared::{AckType, MqttShared};
+use super::{codec, error::SendPacketError};
 
 pub struct MqttSink(Rc<MqttShared>);
 
@@ -17,6 +17,10 @@ impl Clone for MqttSink {
 impl MqttSink {
     pub(crate) fn new(state: Rc<MqttShared>) -> Self {
         MqttSink(state)
+    }
+
+    pub(super) fn shared(&self) -> Rc<MqttShared> {
+        self.0.clone()
     }
 
     #[inline]
@@ -108,13 +112,6 @@ impl MqttSink {
     /// Create unsubscribe packet builder
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
         UnsubscribeBuilder { id: None, topic_filters: Vec::new(), shared: self.0.clone() }
-    }
-
-    pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), ProtocolError> {
-        self.0.pkt_ack(ack).map_err(|e| {
-            self.close();
-            e
-        })
     }
 }
 
