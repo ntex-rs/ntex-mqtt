@@ -1,10 +1,8 @@
-use std::future::{ready, Future};
-use std::{fmt, num::NonZeroU16, rc::Rc};
+use std::{fmt, future::ready, future::Future, num::NonZeroU16, rc::Rc};
 
-use ntex::util::{ByteString, Bytes, Either, Ready};
+use ntex::util::{ByteString, Bytes, Either};
 
-use super::shared::{AckType, MqttShared};
-use super::{codec, error::SendPacketError};
+use super::{codec, error::SendPacketError, shared::AckType, shared::MqttShared};
 
 pub struct MqttSink(Rc<MqttShared>);
 
@@ -172,7 +170,7 @@ impl PublishBuilder {
     }
 
     /// Send publish packet with QoS 1
-    pub fn send_at_least_once(self) -> impl Future<Output = Result<(), SendPacketError>> {
+    pub async fn send_at_least_once(self) -> Result<(), SendPacketError> {
         if !self.shared.is_closed() {
             let shared = self.shared;
             let mut packet = self.packet;
@@ -180,24 +178,20 @@ impl PublishBuilder {
 
             // handle client receive maximum
             if let Some(rx) = shared.wait_credit() {
-                Either::Left(Either::Right(async move {
-                    if rx.await.is_err() {
-                        return Err(SendPacketError::Disconnected);
-                    }
-                    Self::send_at_least_once_inner(packet, shared).await
-                }))
-            } else {
-                Either::Right(Self::send_at_least_once_inner(packet, shared))
+                if rx.await.is_err() {
+                    return Err(SendPacketError::Disconnected);
+                }
             }
+            Self::send_at_least_once_inner(packet, shared).await
         } else {
-            Either::Left(Either::Left(Ready::Err(SendPacketError::Disconnected)))
+            Err(SendPacketError::Disconnected)
         }
     }
 
-    fn send_at_least_once_inner(
+    async fn send_at_least_once_inner(
         mut packet: codec::Publish,
         shared: Rc<MqttShared>,
-    ) -> impl Future<Output = Result<(), SendPacketError>> {
+    ) -> Result<(), SendPacketError> {
         // packet id
         let idx = if let Some(idx) = packet.packet_id {
             idx
@@ -208,17 +202,12 @@ impl PublishBuilder {
         };
         log::trace!("Publish (QoS1) to {:#?}", packet);
 
-        let rx = match shared.wait_packet_response(
+        let rx = shared.wait_packet_response(
             idx,
             AckType::Publish,
             codec::Packet::Publish(packet),
-        ) {
-            Ok(rx) => rx,
-            Err(e) => return Either::Left(Ready::Err(e)),
-        };
-        Either::Right(
-            async move { rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected) },
-        )
+        )?;
+        rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
     }
 }
 

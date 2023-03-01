@@ -10,8 +10,7 @@ use crate::error::MqttError;
 use crate::io::Dispatcher;
 use crate::v3::{codec, shared::MqttShared, sink::MqttSink, ControlResult, Publish};
 
-use super::control::ControlMessage;
-use super::dispatcher::create_dispatcher;
+use super::{control::ControlMessage, dispatcher::create_dispatcher};
 
 /// Mqtt client
 pub struct Client {
@@ -266,7 +265,7 @@ async fn keepalive(sink: MqttSink, timeout: Seconds) {
     loop {
         sleep(keepalive).await;
 
-        if !sink.ping() || !sink.is_open() {
+        if !sink.is_open() || !sink.ping() {
             // connection is closed
             log::debug!("mqtt client connection is closed, stopping keep-alive task");
             break;

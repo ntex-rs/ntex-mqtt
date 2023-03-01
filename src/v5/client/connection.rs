@@ -321,7 +321,7 @@ async fn keepalive(sink: MqttSink, timeout: Seconds) {
     loop {
         sleep(keepalive).await;
 
-        if !sink.ping() || !sink.is_open() {
+        if !sink.is_open() || !sink.ping() {
             // connection is closed
             log::debug!("mqtt client connection is closed, stopping keep-alive task");
             break;
