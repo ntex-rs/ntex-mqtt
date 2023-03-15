@@ -1,5 +1,9 @@
 # Changes
 
+## [0.10.2] - 2023-03-15
+
+* Sink readiness depends on write back-pressure
+
 ## [0.10.1] - 2023-01-31
 
 * Fix missing ready wakes up from InFlightService

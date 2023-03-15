@@ -37,13 +37,20 @@ impl Default for MqttSinkPool {
     }
 }
 
+bitflags::bitflags! {
+    struct Flags: u8 {
+        const CLIENT      = 0b1000_0000;
+        const WRB_ENABLED = 0b0100_0000; // write-backpressure
+    }
+}
+
 pub struct MqttShared {
     io: IoRef,
     cap: Cell<usize>,
     queues: RefCell<MqttSharedQueues>,
     inflight_idx: Cell<u16>,
     pool: Rc<MqttSinkPool>,
-    client: bool,
+    flags: Cell<Flags>,
     pub(super) codec: codec::Codec,
 }
 
@@ -63,9 +70,9 @@ impl MqttShared {
         Self {
             io,
             codec,
-            client,
             pool,
             cap: Cell::new(0),
+            flags: Cell::new(if client { Flags::CLIENT } else { Flags::empty() }),
             queues: RefCell::new(MqttSharedQueues {
                 inflight: VecDeque::with_capacity(8),
                 inflight_ids: HashSet::default(),
@@ -76,7 +83,7 @@ impl MqttShared {
     }
 
     pub(super) fn close(&self) {
-        if self.client {
+        if self.flags.get().contains(Flags::CLIENT) {
             let _ = self.encode_packet(codec::Packet::Disconnect);
         }
         self.io.close();
@@ -92,12 +99,12 @@ impl MqttShared {
         self.io.is_closed()
     }
 
-    pub(super) fn credit(&self) -> usize {
-        self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
+    pub(super) fn is_ready(&self) -> bool {
+        self.credit() > 0 && !self.flags.get().contains(Flags::WRB_ENABLED)
     }
 
-    pub(super) fn has_credit(&self) -> bool {
-        self.credit() > 0
+    pub(super) fn credit(&self) -> usize {
+        self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
     }
 
     pub(super) fn next_id(&self) -> NonZeroU16 {
@@ -135,6 +142,33 @@ impl MqttShared {
         let mut queues = self.queues.borrow_mut();
         queues.inflight.clear();
         queues.waiters.clear();
+    }
+
+    pub(super) fn enable_wr_backpressure(&self) {
+        let mut flags = self.flags.get();
+        flags.insert(Flags::WRB_ENABLED);
+        self.flags.set(flags);
+    }
+
+    pub(super) fn disable_wr_backpressure(&self) {
+        let mut flags = self.flags.get();
+        flags.remove(Flags::WRB_ENABLED);
+        self.flags.set(flags);
+
+        // check if there are waiters
+        let mut queues = self.queues.borrow_mut();
+        if queues.inflight.len() < self.cap.get() {
+            let mut num = self.cap.get() - queues.inflight.len();
+            while num > 0 {
+                if let Some(tx) = queues.waiters.pop_front() {
+                    if tx.send(()).is_ok() {
+                        num -= 1;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
     pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), ProtocolError> {
@@ -224,20 +258,12 @@ impl MqttShared {
         }
     }
 
-    pub(super) fn wait_credit(&self) -> Option<pool::Receiver<()>> {
-        if !self.has_credit() {
-            let (tx, rx) = self.pool.waiters.channel();
-            self.queues.borrow_mut().waiters.push_back(tx);
-            Some(rx)
-        } else {
-            None
-        }
-    }
-
     pub(super) fn wait_readiness(&self) -> Option<pool::Receiver<()>> {
         let mut queues = self.queues.borrow_mut();
 
-        if queues.inflight.len() >= self.cap.get() {
+        if queues.inflight.len() >= self.cap.get()
+            || self.flags.get().contains(Flags::WRB_ENABLED)
+        {
             let (tx, rx) = self.pool.waiters.channel();
             queues.waiters.push_back(tx);
             Some(rx)

@@ -33,7 +33,7 @@ impl MqttSink {
         if self.0.is_closed() {
             false
         } else {
-            self.0.has_credit()
+            self.0.is_ready()
         }
     }
 
@@ -177,7 +177,7 @@ impl PublishBuilder {
             packet.qos = codec::QoS::AtLeastOnce;
 
             // handle client receive maximum
-            if let Some(rx) = shared.wait_credit() {
+            if let Some(rx) = shared.wait_readiness() {
                 if rx.await.is_err() {
                     return Err(SendPacketError::Disconnected);
                 }
@@ -246,7 +246,7 @@ impl SubscribeBuilder {
 
         if !shared.is_closed() {
             // handle client receive maximum
-            if let Some(rx) = shared.wait_credit() {
+            if let Some(rx) = shared.wait_readiness() {
                 if rx.await.is_err() {
                     return Err(SendPacketError::Disconnected);
                 }
@@ -310,7 +310,7 @@ impl UnsubscribeBuilder {
 
         if !shared.is_closed() {
             // handle client receive maximum
-            if let Some(rx) = shared.wait_credit() {
+            if let Some(rx) = shared.wait_readiness() {
                 if rx.await.is_err() {
                     return Err(SendPacketError::Disconnected);
                 }
