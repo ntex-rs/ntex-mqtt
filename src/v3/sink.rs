@@ -1,10 +1,8 @@
-use std::future::{ready, Future};
-use std::{fmt, num::NonZeroU16, rc::Rc};
+use std::{fmt, future::ready, future::Future, num::NonZeroU16, rc::Rc};
 
-use ntex::util::{ByteString, Bytes, Either, Ready};
+use ntex::util::{ByteString, Bytes, Either};
 
-use super::shared::{Ack, AckType, MqttShared};
-use super::{codec, error::ProtocolError, error::SendPacketError};
+use super::{codec, error::SendPacketError, shared::AckType, shared::MqttShared};
 
 pub struct MqttSink(Rc<MqttShared>);
 
@@ -19,16 +17,20 @@ impl MqttSink {
         MqttSink(state)
     }
 
+    pub(super) fn shared(&self) -> Rc<MqttShared> {
+        self.0.clone()
+    }
+
     #[inline]
     /// Check if io stream is open
     pub fn is_open(&self) -> bool {
-        !self.0.io.is_closed()
+        !self.0.is_closed()
     }
 
     #[inline]
     /// Check if sink is ready
     pub fn is_ready(&self) -> bool {
-        if self.0.io.is_closed() {
+        if self.0.is_closed() {
             false
         } else {
             self.0.has_credit()
@@ -45,16 +47,9 @@ impl MqttSink {
     ///
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
-        if !self.0.io.is_closed() {
+        if !self.0.is_closed() {
             self.0
-                .with_queues(|q| {
-                    if q.inflight.len() >= self.0.cap() {
-                        let (tx, rx) = self.0.pool.waiters.channel();
-                        q.waiters.push_back(tx);
-                        return Some(rx);
-                    }
-                    None
-                })
+                .wait_readiness()
                 .map(|rx| Either::Right(async move { rx.await.is_ok() }))
                 .unwrap_or_else(|| Either::Left(ready(true)))
         } else {
@@ -65,31 +60,20 @@ impl MqttSink {
     #[inline]
     /// Close mqtt connection
     pub fn close(&self) {
-        if self.0.client {
-            let _ = self.0.io.encode(codec::Packet::Disconnect, &self.0.codec);
-        }
-        self.0.io.close();
-        self.0.with_queues(|q| {
-            q.inflight.clear();
-            q.waiters.clear();
-        });
+        self.0.close();
     }
 
     #[inline]
     /// Force close mqtt connection. mqtt dispatcher does not wait for uncompleted
     /// responses, but it flushes buffers.
     pub fn force_close(&self) {
-        self.0.io.force_close();
-        self.0.with_queues(|q| {
-            q.inflight.clear();
-            q.waiters.clear();
-        });
+        self.0.force_close();
     }
 
     #[inline]
     /// Send ping
     pub(super) fn ping(&self) -> bool {
-        self.0.io.encode(codec::Packet::PingRequest, &self.0.codec).is_ok()
+        self.0.encode_packet(codec::Packet::PingRequest).is_ok()
     }
 
     #[inline]
@@ -126,50 +110,6 @@ impl MqttSink {
     /// Create unsubscribe packet builder
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
         UnsubscribeBuilder { id: None, topic_filters: Vec::new(), shared: self.0.clone() }
-    }
-
-    pub(super) fn pkt_ack(&self, pkt: Ack) -> Result<(), ProtocolError> {
-        let result = self.0.with_queues(|queues| {
-            // check ack order
-            if let Some((idx, tx, tp)) = queues.inflight.pop_front() {
-                if idx != pkt.packet_id() {
-                    log::trace!(
-                        "MQTT protocol error: packet id order does not match; expected {}, got: {}",
-                        idx,
-                        pkt.packet_id()
-                    );
-                    Err(ProtocolError::packet_id_mismatch())
-                } else {
-                    // get publish ack channel
-                    log::trace!("Ack packet with id: {}", pkt.packet_id());
-                    queues.inflight_ids.remove(&pkt.packet_id());
-
-                    if pkt.is_match(tp) {
-                        let _ = tx.send(pkt);
-
-                        // wake up queued request (receive max limit)
-                        while let Some(tx) = queues.waiters.pop_front() {
-                            if tx.send(()).is_ok() {
-                                break;
-                            }
-                        }
-                        Ok(())
-                    } else {
-                        log::trace!("MQTT protocol error, unexpected packet");
-                        Err(ProtocolError::unexpected_packet(pkt.packet_type(), tp.expected_str()))
-                    }
-                }
-            } else {
-                log::trace!("Unexpected PUBACK packet: {:?}", pkt.packet_id());
-                Err(ProtocolError::generic_violation(
-                    "Received PUBACK packet while there are no unacknowledged PUBLISH packets"
-                ))
-            }
-        });
-        result.map_err(|e| {
-            self.close();
-            e
-        })
     }
 }
 
@@ -216,12 +156,11 @@ impl PublishBuilder {
     #[inline]
     /// Send publish packet with QoS 0
     pub fn send_at_most_once(mut self) -> Result<(), SendPacketError> {
-        if !self.shared.io.is_closed() {
+        if !self.shared.is_closed() {
             log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
             self.packet.qos = codec::QoS::AtMostOnce;
             self.shared
-                .io
-                .encode(codec::Packet::Publish(self.packet), &self.shared.codec)
+                .encode_packet(codec::Packet::Publish(self.packet))
                 .map_err(SendPacketError::Encode)
                 .map(|_| ())
         } else {
@@ -231,34 +170,28 @@ impl PublishBuilder {
     }
 
     /// Send publish packet with QoS 1
-    pub fn send_at_least_once(self) -> impl Future<Output = Result<(), SendPacketError>> {
-        if !self.shared.io.is_closed() {
+    pub async fn send_at_least_once(self) -> Result<(), SendPacketError> {
+        if !self.shared.is_closed() {
             let shared = self.shared;
             let mut packet = self.packet;
             packet.qos = codec::QoS::AtLeastOnce;
 
             // handle client receive maximum
-            if !shared.has_credit() {
-                let (tx, rx) = shared.pool.waiters.channel();
-                shared.with_queues(|q| q.waiters.push_back(tx));
-
-                return Either::Left(Either::Right(async move {
-                    if rx.await.is_err() {
-                        return Err(SendPacketError::Disconnected);
-                    }
-                    Self::send_at_least_once_inner(packet, shared).await
-                }));
+            if let Some(rx) = shared.wait_credit() {
+                if rx.await.is_err() {
+                    return Err(SendPacketError::Disconnected);
+                }
             }
-            Either::Right(Self::send_at_least_once_inner(packet, shared))
+            Self::send_at_least_once_inner(packet, shared).await
         } else {
-            Either::Left(Either::Left(Ready::Err(SendPacketError::Disconnected)))
+            Err(SendPacketError::Disconnected)
         }
     }
 
-    fn send_at_least_once_inner(
+    async fn send_at_least_once_inner(
         mut packet: codec::Publish,
         shared: Rc<MqttShared>,
-    ) -> impl Future<Output = Result<(), SendPacketError>> {
+    ) -> Result<(), SendPacketError> {
         // packet id
         let idx = if let Some(idx) = packet.packet_id {
             idx
@@ -267,29 +200,14 @@ impl PublishBuilder {
             packet.packet_id = Some(idx);
             idx
         };
-
-        let in_use = shared.with_queues(|queues| queues.inflight_ids.contains(&idx));
-        if in_use {
-            return Either::Left(Ready::Err(SendPacketError::PacketIdInUse(idx)));
-        }
-
         log::trace!("Publish (QoS1) to {:#?}", packet);
 
-        match shared.io.encode(codec::Packet::Publish(packet), &shared.codec) {
-            Ok(_) => {
-                let rx = shared.with_queues(|queues| {
-                    // publish ack channel
-                    let (tx, rx) = shared.pool.queue.channel();
-                    queues.inflight.push_back((idx, tx, AckType::Publish));
-                    queues.inflight_ids.insert(idx);
-                    rx
-                });
-                Either::Right(async move {
-                    rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
-                })
-            }
-            Err(err) => Either::Left(Ready::Err(SendPacketError::Encode(err))),
-        }
+        let rx = shared.wait_packet_response(
+            idx,
+            AckType::Publish,
+            codec::Packet::Publish(packet),
+        )?;
+        rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
     }
 }
 
@@ -326,37 +244,23 @@ impl SubscribeBuilder {
         let shared = self.shared;
         let filters = self.topic_filters;
 
-        if !shared.io.is_closed() {
+        if !shared.is_closed() {
             // handle client receive maximum
-            if !shared.has_credit() {
-                let (tx, rx) = shared.pool.waiters.channel();
-                shared.with_queues(|q| q.waiters.push_back(tx));
-
+            if let Some(rx) = shared.wait_credit() {
                 if rx.await.is_err() {
                     return Err(SendPacketError::Disconnected);
                 }
             }
             let idx = self.id.unwrap_or_else(|| shared.next_id());
-            let rx = shared.with_queues(|queues| {
-                // ack channel
-                let (tx, rx) = shared.clone().pool.queue.channel();
-
-                // allocate packet id
-                if queues.inflight_ids.contains(&idx) {
-                    return Err(SendPacketError::PacketIdInUse(idx));
-                }
-                queues.inflight.push_back((idx, tx, AckType::Subscribe));
-                queues.inflight_ids.insert(idx);
-                Ok(rx)
-            })?;
+            let rx = shared.wait_response(idx, AckType::Subscribe)?;
 
             // send subscribe to client
             log::trace!("Sending subscribe packet id: {} filters:{:?}", idx, filters);
 
-            match shared.io.encode(
-                codec::Packet::Subscribe { packet_id: idx, topic_filters: filters },
-                &shared.codec,
-            ) {
+            match shared.encode_packet(codec::Packet::Subscribe {
+                packet_id: idx,
+                topic_filters: filters,
+            }) {
                 Ok(_) => {
                     // wait ack from peer
                     rx.await
@@ -404,38 +308,24 @@ impl UnsubscribeBuilder {
         let shared = self.shared;
         let filters = self.topic_filters;
 
-        if !shared.io.is_closed() {
+        if !shared.is_closed() {
             // handle client receive maximum
-            if !shared.has_credit() {
-                let (tx, rx) = shared.pool.waiters.channel();
-                shared.with_queues(|q| q.waiters.push_back(tx));
-
+            if let Some(rx) = shared.wait_credit() {
                 if rx.await.is_err() {
                     return Err(SendPacketError::Disconnected);
                 }
             }
             // allocate packet id
             let idx = self.id.unwrap_or_else(|| shared.next_id());
-            let rx = shared.with_queues(|queues| {
-                // ack channel
-                let (tx, rx) = shared.pool.queue.channel();
-
-                // allocate packet id
-                if queues.inflight_ids.contains(&idx) {
-                    return Err(SendPacketError::PacketIdInUse(idx));
-                }
-                queues.inflight.push_back((idx, tx, AckType::Unsubscribe));
-                queues.inflight_ids.insert(idx);
-                Ok(rx)
-            })?;
+            let rx = shared.wait_response(idx, AckType::Unsubscribe)?;
 
             // send subscribe to client
             log::trace!("Sending unsubscribe packet id: {} filters:{:?}", idx, filters);
 
-            match shared.io.encode(
-                codec::Packet::Unsubscribe { packet_id: idx, topic_filters: filters },
-                &shared.codec,
-            ) {
+            match shared.encode_packet(codec::Packet::Unsubscribe {
+                packet_id: idx,
+                topic_filters: filters,
+            }) {
                 Ok(_) => {
                     // wait ack from peer
                     rx.await.map_err(|_| SendPacketError::Disconnected).map(|_| ())

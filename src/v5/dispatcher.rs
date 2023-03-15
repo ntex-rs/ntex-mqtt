@@ -1,6 +1,5 @@
-use std::cell::RefCell;
 use std::task::{Context, Poll};
-use std::{convert::TryFrom, future::Future, marker, num, pin::Pin, rc::Rc};
+use std::{cell::RefCell, convert::TryFrom, future::Future, marker, num, pin::Pin, rc::Rc};
 
 use ntex::io::DispatchItem;
 use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
@@ -12,7 +11,6 @@ use crate::error::{MqttError, ProtocolError};
 use super::control::{ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
 use super::shared::{Ack, MqttShared};
-use super::sink::MqttSink;
 use super::{codec, codec::DisconnectReasonCode, codec::EncodeLtd, Session};
 
 /// MQTT 5 protocol dispatcher
@@ -36,13 +34,14 @@ where
 {
     let factories = Rc::new((publish, control));
 
-    fn_factory_with_config(move |cfg: Session<St>| {
+    fn_factory_with_config(move |ses: Session<St>| {
         let factories = factories.clone();
 
         async move {
             // create services
+            let sink = ses.sink().shared();
             let (publish, control) =
-                join(factories.0.create(cfg.clone()), factories.1.create(cfg.clone())).await;
+                join(factories.0.create(ses.clone()), factories.1.create(ses)).await;
 
             let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
             let control = control
@@ -59,7 +58,7 @@ where
             Ok(crate::inflight::InFlightService::new(
                 0,
                 max_inflight_size,
-                Dispatcher::<_, _, E>::new(cfg.sink().clone(), publish, control),
+                Dispatcher::<_, _, E>::new(sink, publish, control),
             ))
         }
     })
@@ -77,7 +76,6 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 
 /// Mqtt protocol dispatcher
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
-    sink: MqttSink,
     publish: T,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
@@ -86,7 +84,7 @@ pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
 
 struct Inner<C> {
     control: C,
-    sink: MqttSink,
+    sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
 }
 
@@ -102,14 +100,13 @@ where
     PublishAck: TryFrom<T::Error, Error = E>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(sink: MqttSink, publish: T, control: C) -> Self {
+    fn new(sink: Rc<MqttShared>, publish: T, control: C) -> Self {
         Self {
             publish,
-            sink: sink.clone(),
             shutdown: RefCell::new(None),
             inner: Rc::new(Inner {
-                control,
                 sink,
+                control,
                 info: RefCell::new(PublishInfo {
                     aliases: HashMap::default(),
                     inflight: HashSet::default(),
@@ -186,7 +183,7 @@ where
 
                 {
                     let mut inner = info.info.borrow_mut();
-                    let state = &self.sink.state();
+                    let state = &self.inner.sink;
 
                     if let Some(pid) = packet_id {
                         // check for receive maximum
@@ -236,11 +233,13 @@ where
 
                         // check for duplicated packet id
                         if !inner.inflight.insert(pid) {
-                            self.sink.send(codec::Packet::PublishAck(codec::PublishAck {
-                                packet_id: pid,
-                                reason_code: codec::PublishAckReason::PacketIdentifierInUse,
-                                ..Default::default()
-                            }));
+                            let _ = self.inner.sink.encode_packet(codec::Packet::PublishAck(
+                                codec::PublishAck {
+                                    packet_id: pid,
+                                    reason_code: codec::PublishAckReason::PacketIdentifierInUse,
+                                    ..Default::default()
+                                },
+                            ));
                             return Either::Right(Either::Left(Ready::Ok(None)));
                         }
                     }
@@ -302,7 +301,7 @@ where
                 })
             }
             DispatchItem::Item(codec::Packet::PublishAck(packet)) => {
-                if let Err(err) = self.sink.pkt_ack(Ack::Publish(packet)) {
+                if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(err),
                         &self.inner,
@@ -321,7 +320,7 @@ where
                 ControlResponse::new(ControlMessage::remote_disconnect(pkt), &self.inner),
             )),
             DispatchItem::Item(codec::Packet::Subscribe(pkt)) => {
-                if pkt.id.is_some() && !self.sink.state().codec.sub_ids_available() {
+                if pkt.id.is_some() && !self.inner.sink.codec.sub_ids_available() {
                     log::trace!("Subscription Identifiers are not supported but was set");
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::violation(
@@ -335,16 +334,18 @@ where
                 // register inflight packet id
                 if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id
-                    self.sink.send(codec::Packet::SubscribeAck(codec::SubscribeAck {
-                        packet_id: pkt.packet_id,
-                        status: pkt
-                            .topic_filters
-                            .iter()
-                            .map(|_| codec::SubscribeAckReason::PacketIdentifierInUse)
-                            .collect(),
-                        properties: codec::UserProperties::new(),
-                        reason_string: None,
-                    }));
+                    let _ = self.inner.sink.encode_packet(codec::Packet::SubscribeAck(
+                        codec::SubscribeAck {
+                            packet_id: pkt.packet_id,
+                            status: pkt
+                                .topic_filters
+                                .iter()
+                                .map(|_| codec::SubscribeAckReason::PacketIdentifierInUse)
+                                .collect(),
+                            properties: codec::UserProperties::new(),
+                            reason_string: None,
+                        },
+                    ));
                     return Either::Right(Either::Left(Ready::Ok(None)));
                 }
                 let id = pkt.packet_id;
@@ -357,16 +358,18 @@ where
                 // register inflight packet id
                 if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id
-                    self.sink.send(codec::Packet::UnsubscribeAck(codec::UnsubscribeAck {
-                        packet_id: pkt.packet_id,
-                        status: pkt
-                            .topic_filters
-                            .iter()
-                            .map(|_| codec::UnsubscribeAckReason::PacketIdentifierInUse)
-                            .collect(),
-                        properties: codec::UserProperties::new(),
-                        reason_string: None,
-                    }));
+                    let _ = self.inner.sink.encode_packet(codec::Packet::UnsubscribeAck(
+                        codec::UnsubscribeAck {
+                            packet_id: pkt.packet_id,
+                            status: pkt
+                                .topic_filters
+                                .iter()
+                                .map(|_| codec::UnsubscribeAckReason::PacketIdentifierInUse)
+                                .collect(),
+                            properties: codec::UserProperties::new(),
+                            reason_string: None,
+                        },
+                    ));
                     return Either::Right(Either::Left(Ready::Ok(None)));
                 }
                 let id = pkt.packet_id;
@@ -560,7 +563,7 @@ where
 
         if self.error {
             if let Some(pkt) = result.packet {
-                self.inner.sink.send(pkt)
+                let _ = self.inner.sink.encode_packet(pkt);
             }
             if result.disconnect {
                 self.inner.sink.drop_sink();
