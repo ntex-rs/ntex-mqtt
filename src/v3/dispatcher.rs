@@ -433,16 +433,65 @@ where
 
 #[cfg(test)]
 mod tests {
-    use ntex::{io::Io, service::fn_service, testing::IoTest, util::lazy};
+    use ntex::time::{sleep, Seconds};
+    use ntex::util::{lazy, ByteString, Bytes};
+    use ntex::{io::Io, service::fn_service, testing::IoTest};
     use std::rc::Rc;
 
     use super::*;
-    use crate::v3::{codec::Codec, MqttSink};
+    use crate::v3::{codec, MqttSink};
+
+    #[ntex::test]
+    async fn test_dup_packet_id() {
+        let io = Io::new(IoTest::create().0);
+        let codec = codec::Codec::default();
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+        let err = Rc::new(RefCell::new(false));
+        let err2 = err.clone();
+
+        let disp = Dispatcher::<_, _, ()>::new(
+            shared.clone(),
+            fn_service(|_| async {
+                sleep(Seconds(10)).await;
+                Ok(())
+            }),
+            fn_service(move |ctrl| {
+                if let ControlMessage::ProtocolError(_) = ctrl {
+                    *err2.borrow_mut() = true;
+                }
+                Ready::Ok(ControlResult { result: ControlResultKind::Nothing })
+            }),
+            QoS::AtLeastOnce,
+        );
+
+        let mut f =
+            Box::pin(disp.call(DispatchItem::Item(codec::Packet::Publish(codec::Publish {
+                dup: false,
+                retain: false,
+                qos: QoS::AtLeastOnce,
+                topic: ByteString::new(),
+                packet_id: NonZeroU16::new(1),
+                payload: Bytes::new(),
+            }))));
+        let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
+
+        let f =
+            Box::pin(disp.call(DispatchItem::Item(codec::Packet::Publish(codec::Publish {
+                dup: false,
+                retain: false,
+                qos: QoS::AtLeastOnce,
+                topic: ByteString::new(),
+                packet_id: NonZeroU16::new(1),
+                payload: Bytes::new(),
+            }))));
+        assert!(f.await.unwrap().is_none());
+        assert!(*err.borrow());
+    }
 
     #[ntex::test]
     async fn test_wr_backpressure() {
         let io = Io::new(IoTest::create().0);
-        let codec = Codec::default();
+        let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
 
         let disp = Dispatcher::<_, _, ()>::new(

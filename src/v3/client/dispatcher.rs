@@ -312,11 +312,57 @@ where
 
 #[cfg(test)]
 mod tests {
-    use ntex::{io::Io, service::fn_service, testing::IoTest, util::lazy};
+    use ntex::time::{sleep, Seconds};
+    use ntex::util::{lazy, ByteString, Bytes};
+    use ntex::{io::Io, service::fn_service, testing::IoTest};
     use std::rc::Rc;
 
     use super::*;
-    use crate::v3::{codec::Codec, MqttSink};
+    use crate::v3::{codec::Codec, MqttSink, QoS};
+
+    #[ntex::test]
+    async fn test_dup_packet_id() {
+        let io = Io::new(IoTest::create().0);
+        let codec = codec::Codec::default();
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+
+        let disp = Dispatcher::<_, _, ()>::new(
+            shared.clone(),
+            fn_service(|_| async {
+                sleep(Seconds(10)).await;
+                Ok(Either::Left(()))
+            }),
+            fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
+        );
+
+        let mut f =
+            Box::pin(disp.call(DispatchItem::Item(codec::Packet::Publish(codec::Publish {
+                dup: false,
+                retain: false,
+                qos: QoS::AtLeastOnce,
+                topic: ByteString::new(),
+                packet_id: NonZeroU16::new(1),
+                payload: Bytes::new(),
+            }))));
+        let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
+
+        let f =
+            Box::pin(disp.call(DispatchItem::Item(codec::Packet::Publish(codec::Publish {
+                dup: false,
+                retain: false,
+                qos: QoS::AtLeastOnce,
+                topic: ByteString::new(),
+                packet_id: NonZeroU16::new(1),
+                payload: Bytes::new(),
+            }))));
+        let err = f.await.err().unwrap();
+        match err {
+            MqttError::ServerError(msg) => {
+                assert!(msg == "Duplicated packet id for publish packet")
+            }
+            _ => panic!(),
+        }
+    }
 
     #[ntex::test]
     async fn test_wr_backpressure() {
