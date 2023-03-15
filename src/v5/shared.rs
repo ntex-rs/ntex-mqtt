@@ -14,6 +14,7 @@ pub struct MqttShared {
     topic_alias_max: Cell<u16>,
     inflight_idx: Cell<u16>,
     queues: RefCell<MqttSharedQueues>,
+    wrb_enabled: Cell<bool>,
     pool: Rc<MqttSinkPool>,
     pub(super) codec: codec::Codec,
 }
@@ -56,6 +57,7 @@ impl MqttShared {
             topic_alias_max: Cell::new(0),
             max_qos: Cell::new(QoS::AtLeastOnce),
             inflight_idx: Cell::new(0),
+            wrb_enabled: Cell::new(false),
         }
     }
 
@@ -104,8 +106,8 @@ impl MqttShared {
         self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
     }
 
-    pub(super) fn has_credit(&self) -> bool {
-        self.credit() > 0
+    pub(super) fn is_ready(&self) -> bool {
+        self.credit() > 0 && !self.wrb_enabled.get()
     }
 
     pub(super) fn next_id(&self) -> NonZeroU16 {
@@ -150,6 +152,29 @@ impl MqttShared {
         let mut queues = self.queues.borrow_mut();
         queues.inflight.clear();
         queues.waiters.clear();
+    }
+
+    pub(super) fn enable_wr_backpressure(&self) {
+        self.wrb_enabled.set(true);
+    }
+
+    pub(super) fn disable_wr_backpressure(&self) {
+        self.wrb_enabled.set(false);
+
+        // check if there are waiters
+        let mut queues = self.queues.borrow_mut();
+        if queues.inflight.len() < self.cap.get() {
+            let mut num = self.cap.get() - queues.inflight.len();
+            while num > 0 {
+                if let Some(tx) = queues.waiters.pop_front() {
+                    if tx.send(()).is_ok() {
+                        num -= 1;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
     pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), error::ProtocolError> {
@@ -247,20 +272,10 @@ impl MqttShared {
         }
     }
 
-    pub(super) fn wait_credit(&self) -> Option<pool::Receiver<()>> {
-        if !self.has_credit() {
-            let (tx, rx) = self.pool.waiters.channel();
-            self.queues.borrow_mut().waiters.push_back(tx);
-            Some(rx)
-        } else {
-            None
-        }
-    }
-
     pub(super) fn wait_readiness(&self) -> Option<pool::Receiver<()>> {
         let mut queues = self.queues.borrow_mut();
 
-        if queues.inflight.len() >= self.cap.get() {
+        if queues.inflight.len() >= self.cap.get() || self.wrb_enabled.get() {
             let (tx, rx) = self.pool.waiters.channel();
             queues.waiters.push_back(tx);
             Some(rx)

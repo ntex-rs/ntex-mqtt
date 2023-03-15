@@ -400,7 +400,12 @@ where
             DispatchItem::Disconnect(err) => Either::Right(Either::Right(
                 ControlResponse::new(ControlMessage::peer_gone(err), &self.inner),
             )),
-            DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
+            DispatchItem::WBackPressureEnabled => {
+                self.inner.sink.enable_wr_backpressure();
+                Either::Right(Either::Left(Ready::Ok(None)))
+            }
+            DispatchItem::WBackPressureDisabled => {
+                self.inner.sink.disable_wr_backpressure();
                 Either::Right(Either::Left(Ready::Ok(None)))
             }
         }
@@ -575,5 +580,60 @@ where
             }
             Poll::Ready(Ok(result.packet))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex::{io::Io, service::fn_service, testing::IoTest, util::lazy};
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::v5::{codec, MqttSink};
+
+    #[derive(Debug)]
+    struct TestError;
+
+    impl TryFrom<TestError> for PublishAck {
+        type Error = TestError;
+
+        fn try_from(err: TestError) -> Result<Self, Self::Error> {
+            Err(err)
+        }
+    }
+
+    #[ntex::test]
+    async fn test_wr_backpressure() {
+        let io = Io::new(IoTest::create().0);
+        let codec = codec::Codec::default();
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Default::default()));
+
+        let disp = Dispatcher::<_, _, _>::new(
+            shared.clone(),
+            fn_service(|p: Publish| Ready::Ok::<_, TestError>(p.ack())),
+            fn_service(|_| {
+                Ready::Ok::<_, MqttError<TestError>>(ControlResult {
+                    packet: None,
+                    disconnect: false,
+                })
+            }),
+        );
+
+        let sink = MqttSink::new(shared.clone());
+        assert!(!sink.is_ready());
+        shared.set_cap(1);
+        assert!(sink.is_ready());
+        assert!(shared.wait_readiness().is_none());
+
+        disp.call(DispatchItem::WBackPressureEnabled).await.unwrap();
+        assert!(!sink.is_ready());
+        let rx = shared.wait_readiness();
+        let rx2 = shared.wait_readiness().unwrap();
+        assert!(rx.is_some());
+
+        let rx = rx.unwrap();
+        disp.call(DispatchItem::WBackPressureDisabled).await.unwrap();
+        assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
+        assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
     }
 }
