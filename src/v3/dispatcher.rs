@@ -230,6 +230,15 @@ where
                 ControlResponse::new(ControlMessage::ping(), &self.inner),
             )),
             DispatchItem::Item(codec::Packet::Subscribe { packet_id, topic_filters }) => {
+                if topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
+                    return Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                            "Topic filter is malformed [MQTT-4.7.1-*]",
+                        )),
+                        &self.inner,
+                    )));
+                }
+
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
                     return Either::Right(Either::Left(Ready::Err(MqttError::ServerError(
@@ -243,6 +252,15 @@ where
                 )))
             }
             DispatchItem::Item(codec::Packet::Unsubscribe { packet_id, topic_filters }) => {
+                if topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
+                    return Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                            "Topic filter is malformed [MQTT-4.7.1-*]",
+                        )),
+                        &self.inner,
+                    )));
+                }
+
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
                     return Either::Right(Either::Left(Ready::Err(MqttError::ServerError(
