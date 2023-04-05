@@ -98,6 +98,16 @@ impl MqttSink {
         PublishBuilder { packet, shared: self.0.clone() }
     }
 
+    /// Set publish ack callback
+    ///
+    /// Use non-blocking send, PublishBuilder::send_at_least_once_no_block()
+    pub fn publish_ack_cb<F>(&self, f: F)
+    where
+        F: Fn(NonZeroU16, bool) + 'static,
+    {
+        self.0.set_publish_ack(Box::new(f));
+    }
+
     #[inline]
     /// Create subscribe packet builder
     ///
@@ -183,6 +193,40 @@ impl PublishBuilder {
                 }
             }
             Self::send_at_least_once_inner(packet, shared).await
+        } else {
+            Err(SendPacketError::Disconnected)
+        }
+    }
+
+    /// Non-blocking send publish packet with QoS 1
+    ///
+    /// Panics if sink is not ready or publish ack callback is not set
+    pub fn send_at_least_once_no_block(self) -> Result<(), SendPacketError> {
+        if !self.shared.is_closed() {
+            let shared = self.shared;
+
+            // check readiness
+            if !shared.is_ready() {
+                panic!("Mqtt sink is not ready");
+            }
+            let mut packet = self.packet;
+            packet.qos = codec::QoS::AtLeastOnce;
+
+            // packet id
+            let idx = if let Some(idx) = packet.packet_id {
+                idx
+            } else {
+                let idx = shared.next_id();
+                packet.packet_id = Some(idx);
+                idx
+            };
+            log::trace!("Publish (QoS1) to {:#?}", packet);
+
+            shared.wait_packet_response_no_block(
+                idx,
+                AckType::Publish,
+                codec::Packet::Publish(packet),
+            )
         } else {
             Err(SendPacketError::Disconnected)
         }
