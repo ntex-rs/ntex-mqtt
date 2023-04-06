@@ -298,7 +298,7 @@ impl MqttShared {
                 Ok(_) => {
                     queues.inflight.push_back((id, None, ack));
                     queues.inflight_ids.insert(id);
-                    if self.flags.get().contains(Flags::ON_PUBLISH_ACK) {
+                    if !self.flags.get().contains(Flags::ON_PUBLISH_ACK) {
                         panic!("Publish ack callback is not set");
                     }
                     Ok(())

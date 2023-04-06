@@ -1,5 +1,5 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
-use std::{future::Future, num::NonZeroU16, pin::Pin, time::Duration};
+use std::{cell::RefCell, future::Future, num::NonZeroU16, pin::Pin, rc::Rc, time::Duration};
 
 use ntex::service::{fn_service, Service, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
@@ -548,5 +548,47 @@ async fn test_sink_ready() -> std::io::Result<()> {
     let result = io.recv(&codec).await;
     assert!(result.is_ok());
 
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_sink_publish_noblock() -> std::io::Result<()> {
+    let srv = server::test_server(move || {
+        MqttServer::new(handshake).publish(|_| Ready::Ok(())).finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    let results = Rc::new(RefCell::new(Vec::new()));
+    let results2 = results.clone();
+
+    sink.publish_ack_cb(move |idx, disconnected| {
+        assert!(!disconnected);
+        results2.borrow_mut().push(idx);
+    });
+
+    let res = sink
+        .publish(ByteString::from_static("test1"), Bytes::new())
+        .send_at_least_once_no_block();
+    assert!(res.is_ok());
+
+    let res = sink
+        .publish(ByteString::from_static("test2"), Bytes::new())
+        .send_at_least_once_no_block();
+    assert!(res.is_ok());
+
+    let res =
+        sink.publish(ByteString::from_static("test3"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_ok());
+
+    assert_eq!(*results.borrow(), &[NonZeroU16::new(1).unwrap(), NonZeroU16::new(2).unwrap()]);
+
+    sink.close();
     Ok(())
 }

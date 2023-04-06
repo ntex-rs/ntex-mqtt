@@ -101,6 +101,7 @@ impl MqttSink {
     /// Set publish ack callback
     ///
     /// Use non-blocking send, PublishBuilder::send_at_least_once_no_block()
+    /// First argument is packet id, second argument is "disconnected" state
     pub fn publish_ack_cb<F>(&self, f: F)
     where
         F: Fn(NonZeroU16, bool) + 'static,
