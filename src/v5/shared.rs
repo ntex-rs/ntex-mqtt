@@ -6,6 +6,13 @@ use ntex::{channel::pool, io::IoRef};
 
 use crate::{error, error::SendPacketError, types::packet_type, v5::codec, QoS};
 
+bitflags::bitflags! {
+    struct Flags: u8 {
+        const WRB_ENABLED    = 0b0100_0000; // write-backpressure
+        const ON_PUBLISH_ACK = 0b0010_0000; // on-publish-ack callback
+    }
+}
+
 pub struct MqttShared {
     io: IoRef,
     cap: Cell<usize>,
@@ -14,13 +21,14 @@ pub struct MqttShared {
     topic_alias_max: Cell<u16>,
     inflight_idx: Cell<u16>,
     queues: RefCell<MqttSharedQueues>,
-    wrb_enabled: Cell<bool>,
+    flags: Cell<Flags>,
     pool: Rc<MqttSinkPool>,
+    on_publish_ack: Cell<Option<Box<dyn Fn(codec::PublishAck, bool)>>>,
     pub(super) codec: codec::Codec,
 }
 
 pub(super) struct MqttSharedQueues {
-    inflight: VecDeque<(NonZeroU16, pool::Sender<Ack>, AckType)>,
+    inflight: VecDeque<(NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
     inflight_ids: HashSet<NonZeroU16>,
     waiters: VecDeque<pool::Sender<()>>,
 }
@@ -57,7 +65,8 @@ impl MqttShared {
             topic_alias_max: Cell::new(0),
             max_qos: Cell::new(QoS::AtLeastOnce),
             inflight_idx: Cell::new(0),
-            wrb_enabled: Cell::new(false),
+            flags: Cell::new(Flags::empty()),
+            on_publish_ack: Cell::new(None),
         }
     }
 
@@ -107,7 +116,7 @@ impl MqttShared {
     }
 
     pub(super) fn is_ready(&self) -> bool {
-        self.credit() > 0 && !self.wrb_enabled.get()
+        self.credit() > 0 && !self.flags.get().contains(Flags::WRB_ENABLED)
     }
 
     pub(super) fn next_id(&self) -> NonZeroU16 {
@@ -138,6 +147,13 @@ impl MqttShared {
         self.cap.set(cap);
     }
 
+    pub(super) fn set_publish_ack(&self, f: Box<dyn Fn(codec::PublishAck, bool)>) {
+        let mut flags = self.flags.get();
+        flags.insert(Flags::ON_PUBLISH_ACK);
+        self.flags.set(flags);
+        self.on_publish_ack.set(Some(f));
+    }
+
     pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), error::EncodeError> {
         self.io.encode(pkt, &self.codec)
     }
@@ -150,16 +166,29 @@ impl MqttShared {
 
     fn clear_queues(&self) {
         let mut queues = self.queues.borrow_mut();
-        queues.inflight.clear();
         queues.waiters.clear();
+
+        if let Some(cb) = self.on_publish_ack.take() {
+            for (idx, tx, _) in queues.inflight.drain(..) {
+                if tx.is_none() {
+                    (*cb)(codec::PublishAck { packet_id: idx, ..Default::default() }, true);
+                }
+            }
+        } else {
+            queues.inflight.clear()
+        }
     }
 
     pub(super) fn enable_wr_backpressure(&self) {
-        self.wrb_enabled.set(true);
+        let mut flags = self.flags.get();
+        flags.insert(Flags::WRB_ENABLED);
+        self.flags.set(flags);
     }
 
     pub(super) fn disable_wr_backpressure(&self) {
-        self.wrb_enabled.set(false);
+        let mut flags = self.flags.get();
+        flags.remove(Flags::WRB_ENABLED);
+        self.flags.set(flags);
 
         // check if there are waiters
         let mut queues = self.queues.borrow_mut();
@@ -207,7 +236,13 @@ impl MqttShared {
                 queues.inflight_ids.remove(&pkt.packet_id());
 
                 if pkt.is_match(tp) {
-                    let _ = tx.send(pkt);
+                    if let Some(tx) = tx {
+                        let _ = tx.send(pkt);
+                    } else {
+                        let cb = self.on_publish_ack.take().unwrap();
+                        (*cb)(pkt.publish(), false);
+                        self.on_publish_ack.set(Some(cb));
+                    }
 
                     // wake up queued request (receive max limit)
                     while let Some(tx) = queues.waiters.pop_front() {
@@ -243,7 +278,7 @@ impl MqttShared {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
             let (tx, rx) = self.pool.queue.channel();
-            queues.inflight.push_back((id, tx, ack));
+            queues.inflight.push_back((id, Some(tx), ack));
             queues.inflight_ids.insert(id);
             Ok(rx)
         }
@@ -263,9 +298,30 @@ impl MqttShared {
             match self.io.encode(pkt, &self.codec) {
                 Ok(_) => {
                     let (tx, rx) = self.pool.queue.channel();
-                    queues.inflight.push_back((id, tx, ack));
+                    queues.inflight.push_back((id, Some(tx), ack));
                     queues.inflight_ids.insert(id);
                     Ok(rx)
+                }
+                Err(e) => Err(SendPacketError::Encode(e)),
+            }
+        }
+    }
+
+    pub(super) fn wait_packet_response_no_block(
+        &self,
+        id: NonZeroU16,
+        ack: AckType,
+        pkt: codec::Packet,
+    ) -> Result<(), SendPacketError> {
+        let mut queues = self.queues.borrow_mut();
+        if queues.inflight_ids.contains(&id) {
+            Err(SendPacketError::PacketIdInUse(id))
+        } else {
+            match self.io.encode(pkt, &self.codec) {
+                Ok(_) => {
+                    queues.inflight.push_back((id, None, ack));
+                    queues.inflight_ids.insert(id);
+                    Ok(())
                 }
                 Err(e) => Err(SendPacketError::Encode(e)),
             }
@@ -275,7 +331,9 @@ impl MqttShared {
     pub(super) fn wait_readiness(&self) -> Option<pool::Receiver<()>> {
         let mut queues = self.queues.borrow_mut();
 
-        if queues.inflight.len() >= self.cap.get() || self.wrb_enabled.get() {
+        if queues.inflight.len() >= self.cap.get()
+            || self.flags.get().contains(Flags::WRB_ENABLED)
+        {
             let (tx, rx) = self.pool.waiters.channel();
             queues.waiters.push_back(tx);
             Some(rx)

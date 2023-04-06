@@ -39,8 +39,9 @@ impl Default for MqttSinkPool {
 
 bitflags::bitflags! {
     struct Flags: u8 {
-        const CLIENT      = 0b1000_0000;
-        const WRB_ENABLED = 0b0100_0000; // write-backpressure
+        const CLIENT         = 0b1000_0000;
+        const WRB_ENABLED    = 0b0100_0000; // write-backpressure
+        const ON_PUBLISH_ACK = 0b0010_0000; // on-publish-ack callback
     }
 }
 
@@ -51,11 +52,12 @@ pub struct MqttShared {
     inflight_idx: Cell<u16>,
     pool: Rc<MqttSinkPool>,
     flags: Cell<Flags>,
+    on_publish_ack: Cell<Option<Box<dyn Fn(NonZeroU16, bool)>>>,
     pub(super) codec: codec::Codec,
 }
 
 struct MqttSharedQueues {
-    inflight: VecDeque<(NonZeroU16, pool::Sender<Ack>, AckType)>,
+    inflight: VecDeque<(NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
     inflight_ids: HashSet<NonZeroU16>,
     waiters: VecDeque<pool::Sender<()>>,
 }
@@ -79,6 +81,7 @@ impl MqttShared {
                 waiters: VecDeque::new(),
             }),
             inflight_idx: Cell::new(0),
+            on_publish_ack: Cell::new(None),
         }
     }
 
@@ -134,14 +137,30 @@ impl MqttShared {
         self.cap.set(cap);
     }
 
+    pub(super) fn set_publish_ack(&self, f: Box<dyn Fn(NonZeroU16, bool)>) {
+        let mut flags = self.flags.get();
+        flags.insert(Flags::ON_PUBLISH_ACK);
+        self.flags.set(flags);
+        self.on_publish_ack.set(Some(f));
+    }
+
     pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), EncodeError> {
         self.io.encode(pkt, &self.codec)
     }
 
     fn clear_queues(&self) {
         let mut queues = self.queues.borrow_mut();
-        queues.inflight.clear();
         queues.waiters.clear();
+
+        if let Some(cb) = self.on_publish_ack.take() {
+            for (idx, tx, _) in queues.inflight.drain(..) {
+                if tx.is_none() {
+                    (*cb)(idx, true);
+                }
+            }
+        } else {
+            queues.inflight.clear()
+        }
     }
 
     pub(super) fn enable_wr_backpressure(&self) {
@@ -196,7 +215,13 @@ impl MqttShared {
                 queues.inflight_ids.remove(&pkt.packet_id());
 
                 if pkt.is_match(tp) {
-                    let _ = tx.send(pkt);
+                    if let Some(tx) = tx {
+                        let _ = tx.send(pkt);
+                    } else {
+                        let cb = self.on_publish_ack.take().unwrap();
+                        (*cb)(pkt.packet_id(), false);
+                        self.on_publish_ack.set(Some(cb));
+                    }
 
                     // wake up queued request (receive max limit)
                     while let Some(tx) = queues.waiters.pop_front() {
@@ -229,7 +254,7 @@ impl MqttShared {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
             let (tx, rx) = self.pool.queue.channel();
-            queues.inflight.push_back((id, tx, ack));
+            queues.inflight.push_back((id, Some(tx), ack));
             queues.inflight_ids.insert(id);
             Ok(rx)
         }
@@ -249,9 +274,34 @@ impl MqttShared {
             match self.io.encode(pkt, &self.codec) {
                 Ok(_) => {
                     let (tx, rx) = self.pool.queue.channel();
-                    queues.inflight.push_back((id, tx, ack));
+                    queues.inflight.push_back((id, Some(tx), ack));
                     queues.inflight_ids.insert(id);
                     Ok(rx)
+                }
+                Err(e) => Err(SendPacketError::Encode(e)),
+            }
+        }
+    }
+
+    /// Register ack in response channel
+    pub(super) fn wait_packet_response_no_block(
+        &self,
+        id: NonZeroU16,
+        ack: AckType,
+        pkt: codec::Packet,
+    ) -> Result<(), SendPacketError> {
+        let mut queues = self.queues.borrow_mut();
+        if queues.inflight_ids.contains(&id) {
+            Err(SendPacketError::PacketIdInUse(id))
+        } else {
+            match self.io.encode(pkt, &self.codec) {
+                Ok(_) => {
+                    queues.inflight.push_back((id, None, ack));
+                    queues.inflight_ids.insert(id);
+                    if !self.flags.get().contains(Flags::ON_PUBLISH_ACK) {
+                        panic!("Publish ack callback is not set");
+                    }
+                    Ok(())
                 }
                 Err(e) => Err(SendPacketError::Encode(e)),
             }

@@ -1,6 +1,6 @@
 use std::{fmt, future::ready, future::Future, num::NonZeroU16, rc::Rc};
 
-use ntex::util::{ByteString, Bytes, Either};
+use ntex::util::{ByteString, Bytes, Either, Ready};
 
 use super::{codec, error::SendPacketError, shared::AckType, shared::MqttShared};
 
@@ -98,6 +98,17 @@ impl MqttSink {
         PublishBuilder { packet, shared: self.0.clone() }
     }
 
+    /// Set publish ack callback
+    ///
+    /// Use non-blocking send, PublishBuilder::send_at_least_once_no_block()
+    /// First argument is packet id, second argument is "disconnected" state
+    pub fn publish_ack_cb<F>(&self, f: F)
+    where
+        F: Fn(NonZeroU16, bool) + 'static,
+    {
+        self.0.set_publish_ack(Box::new(f));
+    }
+
     #[inline]
     /// Create subscribe packet builder
     ///
@@ -170,7 +181,7 @@ impl PublishBuilder {
     }
 
     /// Send publish packet with QoS 1
-    pub async fn send_at_least_once(self) -> Result<(), SendPacketError> {
+    pub fn send_at_least_once(self) -> impl Future<Output = Result<(), SendPacketError>> {
         if !self.shared.is_closed() {
             let shared = self.shared;
             let mut packet = self.packet;
@@ -178,20 +189,58 @@ impl PublishBuilder {
 
             // handle client receive maximum
             if let Some(rx) = shared.wait_readiness() {
-                if rx.await.is_err() {
-                    return Err(SendPacketError::Disconnected);
-                }
+                Either::Left(Either::Left(async move {
+                    if rx.await.is_err() {
+                        return Err(SendPacketError::Disconnected);
+                    }
+                    Self::send_at_least_once_inner(packet, shared).await
+                }))
+            } else {
+                Either::Left(Either::Right(Self::send_at_least_once_inner(packet, shared)))
             }
-            Self::send_at_least_once_inner(packet, shared).await
+        } else {
+            Either::Right(Ready::Err(SendPacketError::Disconnected))
+        }
+    }
+
+    /// Non-blocking send publish packet with QoS 1
+    ///
+    /// Panics if sink is not ready or publish ack callback is not set
+    pub fn send_at_least_once_no_block(self) -> Result<(), SendPacketError> {
+        if !self.shared.is_closed() {
+            let shared = self.shared;
+
+            // check readiness
+            if !shared.is_ready() {
+                panic!("Mqtt sink is not ready");
+            }
+            let mut packet = self.packet;
+            packet.qos = codec::QoS::AtLeastOnce;
+
+            // packet id
+            let idx = if let Some(idx) = packet.packet_id {
+                idx
+            } else {
+                let idx = shared.next_id();
+                packet.packet_id = Some(idx);
+                idx
+            };
+            log::trace!("Publish (QoS1) to {:#?}", packet);
+
+            shared.wait_packet_response_no_block(
+                idx,
+                AckType::Publish,
+                codec::Packet::Publish(packet),
+            )
         } else {
             Err(SendPacketError::Disconnected)
         }
     }
 
-    async fn send_at_least_once_inner(
+    fn send_at_least_once_inner(
         mut packet: codec::Publish,
         shared: Rc<MqttShared>,
-    ) -> Result<(), SendPacketError> {
+    ) -> impl Future<Output = Result<(), SendPacketError>> {
         // packet id
         let idx = if let Some(idx) = packet.packet_id {
             idx
@@ -202,12 +251,9 @@ impl PublishBuilder {
         };
         log::trace!("Publish (QoS1) to {:#?}", packet);
 
-        let rx = shared.wait_packet_response(
-            idx,
-            AckType::Publish,
-            codec::Packet::Publish(packet),
-        )?;
-        rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
+        let rx =
+            shared.wait_packet_response(idx, AckType::Publish, codec::Packet::Publish(packet));
+        async move { rx?.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected) }
     }
 }
 

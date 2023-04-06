@@ -1,5 +1,11 @@
 # Changes
 
+## [0.10.3] - 2023-04-06
+
+* Adds non-blocking qos1 publish sender
+
+* Adds validation of topic filters in SUBSCRIBE and UNSUBSCRIBE (#136)
+
 ## [0.10.2] - 2023-03-15
 
 * Sink readiness depends on write back-pressure
