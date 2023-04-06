@@ -88,7 +88,7 @@ impl MqttSink {
     where
         ByteString: From<U>,
     {
-        self.publish_packet(codec::Publish {
+        self.publish_pkt(codec::Publish {
             payload,
             dup: false,
             retain: false,
@@ -101,8 +101,26 @@ impl MqttSink {
 
     #[inline]
     /// Create publish builder with publish packet
+    pub fn publish_pkt(&self, packet: codec::Publish) -> PublishBuilder {
+        PublishBuilder { packet, shared: self.0.clone() }
+    }
+
+    #[doc(hidden)]
+    #[deprecated(since = "0.10.3")]
+    /// Create publish builder with publish packet
     pub fn publish_packet(&self, packet: codec::Publish) -> PublishBuilder {
         PublishBuilder { packet, shared: self.0.clone() }
+    }
+
+    /// Set publish ack callback
+    ///
+    /// Use non-blocking send, PublishBuilder::send_at_least_once_no_block()
+    /// First argument is packet id, second argument is "disconnected" state
+    pub fn publish_ack_cb<F>(&self, f: F)
+    where
+        F: Fn(codec::PublishAck, bool) + 'static,
+    {
+        self.0.set_publish_ack(Box::new(f));
     }
 
     #[inline]
@@ -214,11 +232,11 @@ impl PublishBuilder {
     pub fn send_at_least_once(
         self,
     ) -> impl Future<Output = Result<codec::PublishAck, SendPacketError>> {
-        let shared = self.shared;
-        let mut packet = self.packet;
-        packet.qos = QoS::AtLeastOnce;
+        if !self.shared.is_closed() {
+            let shared = self.shared;
+            let mut packet = self.packet;
+            packet.qos = QoS::AtLeastOnce;
 
-        if !shared.is_closed() {
             // handle client receive maximum
             if let Some(rx) = shared.wait_readiness() {
                 Either::Left(Either::Left(async move {
@@ -232,6 +250,40 @@ impl PublishBuilder {
             }
         } else {
             Either::Right(Ready::Err(SendPacketError::Disconnected))
+        }
+    }
+
+    /// Non-blocking send publish packet with QoS 1
+    ///
+    /// Panics if sink is not ready or publish ack callback is not set
+    pub fn send_at_least_once_no_block(self) -> Result<(), SendPacketError> {
+        if !self.shared.is_closed() {
+            let shared = self.shared;
+
+            // check readiness
+            if !shared.is_ready() {
+                panic!("Mqtt sink is not ready");
+            }
+            let mut packet = self.packet;
+            packet.qos = codec::QoS::AtLeastOnce;
+
+            // packet id
+            let idx = if let Some(idx) = packet.packet_id {
+                idx
+            } else {
+                let idx = shared.next_id();
+                packet.packet_id = Some(idx);
+                idx
+            };
+            log::trace!("Publish (QoS1) to {:#?}", packet);
+
+            shared.wait_packet_response_no_block(
+                idx,
+                AckType::Publish,
+                codec::Packet::Publish(packet),
+            )
+        } else {
+            Err(SendPacketError::Disconnected)
         }
     }
 
