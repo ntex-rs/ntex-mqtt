@@ -3,6 +3,34 @@ use std::{convert::TryFrom, io};
 
 use ntex::util::ByteString;
 
+pub(crate) fn is_valid(topic: &str) -> bool {
+    if topic.is_empty() {
+        return false;
+    }
+
+    enum PrevState {
+        None,
+        LevelSep,
+        SingleWildcard,
+        MultiWildcard,
+        Other,
+    }
+
+    let mut previous = PrevState::None;
+    for current in topic.bytes() {
+        previous = match (current, &previous) {
+            (_, PrevState::MultiWildcard) => return false, // `#` is not last char
+            (b'+', PrevState::None | PrevState::LevelSep) => PrevState::SingleWildcard,
+            (b'#', PrevState::None | PrevState::LevelSep) => PrevState::MultiWildcard,
+            (b'+' | b'#', _) => return false, // `+` or `#` after char other than `/`
+            (b'/', _) => PrevState::LevelSep,
+            (_, PrevState::SingleWildcard) => return false, // `+` is followed by char other than `/`
+            _ => PrevState::Other,
+        }
+    }
+    return true;
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TopicFilterError {
     InvalidTopic,
@@ -286,6 +314,30 @@ fn recover_bstr(superset: &ByteString, subset: &str) -> ByteString {
 mod tests {
     use super::*;
     use test_case::test_case;
+
+    #[test_case("abc" => true; "pass_norm1")]
+    #[test_case("a/b" => true; "pass_norm2")]
+    #[test_case("/" => true; "pass_norm3")]
+    #[test_case("//" => true; "pass_norm4")]
+    #[test_case("a/b/+" => true; "pass_plus1")]
+    #[test_case("+/a" => true; "pass_plus2")]
+    #[test_case("+" => true; "pass_plus3")]
+    #[test_case("+//+" => true; "pass_plus4")]
+    #[test_case("a/b/#" => true; "pass_hash1")]
+    #[test_case("#" => true; "pass_hash2")]
+    #[test_case("/#" => true; "pass_hash3")]
+    #[test_case("++" => false; "fail_plus1")]
+    #[test_case("b+/" => false; "fail_plus2")]
+    #[test_case("a/+b" => false; "fail_plus3")]
+    #[test_case("+#" => false; "fail_hash1")]
+    #[test_case("a#" => false; "fail_hash2")]
+    #[test_case("a/#/" => false; "fail_hash3")]
+    #[test_case("a/#b" => false; "fail_hash4")]
+    #[test_case("a/##" => false; "fail_hash5")]
+    #[test_case("a/#+" => false; "fail_hash6")]
+    fn check_is_valid(topic_filter: &'static str) -> bool {
+        is_valid(topic_filter)
+    }
 
     pub fn lvl_normal<T: AsRef<str>>(s: T) -> TopicFilterLevel {
         if s.as_ref().contains(|c| c == '+' || c == '#') {

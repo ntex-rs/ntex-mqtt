@@ -320,6 +320,15 @@ where
                 ControlResponse::new(ControlMessage::remote_disconnect(pkt), &self.inner),
             )),
             DispatchItem::Item(codec::Packet::Subscribe(pkt)) => {
+                if pkt.topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
+                    return Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                            "Topic filter is malformed [MQTT-4.7.1-*]",
+                        )),
+                        &self.inner,
+                    )));
+                }
+
                 if pkt.id.is_some() && !self.inner.sink.codec.sub_ids_available() {
                     log::trace!("Subscription Identifiers are not supported but was set");
                     return Either::Right(Either::Right(ControlResponse::new(
@@ -355,6 +364,15 @@ where
                 ))
             }
             DispatchItem::Item(codec::Packet::Unsubscribe(pkt)) => {
+                if pkt.topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
+                    return Either::Right(Either::Right(ControlResponse::new(
+                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                            "Topic filter is malformed [MQTT-4.7.1-*]",
+                        )),
+                        &self.inner,
+                    )));
+                }
+
                 // register inflight packet id
                 if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id
