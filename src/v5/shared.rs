@@ -166,8 +166,17 @@ impl MqttShared {
 
     fn clear_queues(&self) {
         let mut queues = self.queues.borrow_mut();
-        queues.inflight.clear();
         queues.waiters.clear();
+
+        if let Some(cb) = self.on_publish_ack.take() {
+            for (idx, tx, _) in queues.inflight.drain(..) {
+                if tx.is_none() {
+                    (*cb)(codec::PublishAck { packet_id: idx, ..Default::default() }, true);
+                }
+            }
+        } else {
+            queues.inflight.clear()
+        }
     }
 
     pub(super) fn enable_wr_backpressure(&self) {

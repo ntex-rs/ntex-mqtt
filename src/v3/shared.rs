@@ -323,12 +323,6 @@ impl MqttShared {
     }
 }
 
-impl Drop for MqttShared {
-    fn drop(&mut self) {
-        self.clear_queues();
-    }
-}
-
 impl Encoder for MqttShared {
     type Item = codec::Packet;
     type Error = EncodeError;
