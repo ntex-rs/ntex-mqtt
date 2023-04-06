@@ -5,30 +5,30 @@ use ntex::util::ByteString;
 
 pub(crate) fn is_valid(topic: &str) -> bool {
     if topic.is_empty() {
-        return false;
-    }
-
-    enum PrevState {
-        None,
-        LevelSep,
-        SingleWildcard,
-        MultiWildcard,
-        Other,
-    }
-
-    let mut previous = PrevState::None;
-    for current in topic.bytes() {
-        previous = match (current, &previous) {
-            (_, PrevState::MultiWildcard) => return false, // `#` is not last char
-            (b'+', PrevState::None | PrevState::LevelSep) => PrevState::SingleWildcard,
-            (b'#', PrevState::None | PrevState::LevelSep) => PrevState::MultiWildcard,
-            (b'+' | b'#', _) => return false, // `+` or `#` after char other than `/`
-            (b'/', _) => PrevState::LevelSep,
-            (_, PrevState::SingleWildcard) => return false, // `+` is followed by char other than `/`
-            _ => PrevState::Other,
+        false
+    } else {
+        enum PrevState {
+            None,
+            LevelSep,
+            SingleWildcard,
+            MultiWildcard,
+            Other,
         }
+
+        let mut previous = PrevState::None;
+        for current in topic.bytes() {
+            previous = match (current, &previous) {
+                (_, PrevState::MultiWildcard) => return false, // `#` is not last char
+                (b'+', PrevState::None | PrevState::LevelSep) => PrevState::SingleWildcard,
+                (b'#', PrevState::None | PrevState::LevelSep) => PrevState::MultiWildcard,
+                (b'+' | b'#', _) => return false, // `+` or `#` after char other than `/`
+                (b'/', _) => PrevState::LevelSep,
+                (_, PrevState::SingleWildcard) => return false, // `+` is followed by char other than `/`
+                _ => PrevState::Other,
+            }
+        }
+        true
     }
-    return true;
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
