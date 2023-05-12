@@ -2,7 +2,7 @@
 
 ## [0.10.4] - 2023-05-12
 
-* Allow to get size of prepared packet
+* Expose size of prepared packet
 
 * Return packet and packet size from decoder
 
