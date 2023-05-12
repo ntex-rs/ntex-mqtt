@@ -107,7 +107,7 @@ where
     fn call(&self, packet: DispatchItem<Rc<MqttShared>>) -> Self::Future<'_> {
         log::trace!("Dispatch packet: {:#?}", packet);
         match packet {
-            DispatchItem::Item(codec::Packet::Publish(publish)) => {
+            DispatchItem::Item((codec::Packet::Publish(publish), size)) => {
                 let inner = self.inner.as_ref();
                 let packet_id = publish.packet_id;
 
@@ -123,45 +123,46 @@ where
                 Either::Left(PublishResponse {
                     packet_id,
                     inner,
-                    fut: self.publish.call(Publish::new(publish)),
+                    fut: self.publish.call(Publish::new(publish, size)),
                     fut_c: None,
                     _t: PhantomData,
                 })
             }
-            DispatchItem::Item(codec::Packet::PublishAck { packet_id }) => {
+            DispatchItem::Item((codec::Packet::PublishAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(codec::Packet::SubscribeAck { packet_id, status }) => {
+            DispatchItem::Item((codec::Packet::SubscribeAck { packet_id, status }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Subscribe { packet_id, status }) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(codec::Packet::UnsubscribeAck { packet_id }) => {
+            DispatchItem::Item((codec::Packet::UnsubscribeAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet_id)) {
                     Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(
+            DispatchItem::Item((
                 pkt @ (codec::Packet::PingRequest
                 | codec::Packet::Disconnect
                 | codec::Packet::Subscribe { .. }
                 | codec::Packet::Unsubscribe { .. }),
-            ) => Either::Right(Either::Left(Ready::Err(
+                _,
+            )) => Either::Right(Either::Left(Ready::Err(
                 ProtocolError::unexpected_packet(
                     pkt.packet_type(),
                     "Packet of the type is not expected from server",
                 )
                 .into(),
             ))),
-            DispatchItem::Item(pkt) => {
+            DispatchItem::Item((pkt, _)) => {
                 log::debug!("Unsupported packet: {:?}", pkt);
                 Either::Right(Either::Left(Ready::Ok(None)))
             }
@@ -335,26 +336,30 @@ mod tests {
             fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
         );
 
-        let mut f =
-            Box::pin(disp.call(DispatchItem::Item(codec::Packet::Publish(codec::Publish {
+        let mut f = Box::pin(disp.call(DispatchItem::Item((
+            codec::Packet::Publish(codec::Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtLeastOnce,
                 topic: ByteString::new(),
                 packet_id: NonZeroU16::new(1),
                 payload: Bytes::new(),
-            }))));
+            }),
+            999,
+        ))));
         let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
 
-        let f =
-            Box::pin(disp.call(DispatchItem::Item(codec::Packet::Publish(codec::Publish {
+        let f = Box::pin(disp.call(DispatchItem::Item((
+            codec::Packet::Publish(codec::Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtLeastOnce,
                 topic: ByteString::new(),
                 packet_id: NonZeroU16::new(1),
                 payload: Bytes::new(),
-            }))));
+            }),
+            999,
+        ))));
         let err = f.await.err().unwrap();
         match err {
             MqttError::ServerError(msg) => {

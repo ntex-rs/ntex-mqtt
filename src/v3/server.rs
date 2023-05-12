@@ -351,10 +351,10 @@ where
                 })?;
 
             match packet {
-                mqtt::Packet::Connect(connect) => {
+                (mqtt::Packet::Connect(connect), size) => {
                     // authenticate mqtt connection
                     let ack = service
-                        .call(Handshake::new(connect, io, shared))
+                        .call(Handshake::new(connect, size, io, shared))
                         .await
                         .map_err(MqttError::Service)?;
 
@@ -390,7 +390,7 @@ where
                         }
                     }
                 }
-                packet => {
+                (packet, _) => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
                     Err(MqttError::Protocol(ProtocolError::unexpected_packet(
                         packet.packet_type(),

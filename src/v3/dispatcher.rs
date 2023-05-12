@@ -73,8 +73,8 @@ where
 
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     fn size(&self) -> u32 {
-        if let DispatchItem::Item(ref item) = self {
-            codec::encode::get_encoded_size(item) as u32
+        if let DispatchItem::Item((_, size)) = self {
+            *size
         } else {
             0
         }
@@ -161,7 +161,7 @@ where
         log::trace!("Dispatch v3 packet: {:#?}", req);
 
         match req {
-            DispatchItem::Item(codec::Packet::Publish(publish)) => {
+            DispatchItem::Item((codec::Packet::Publish(publish), size)) => {
                 if publish.topic.contains(['#', '+']) {
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(
@@ -212,11 +212,11 @@ where
                     packet_id,
                     inner,
                     state: PublishResponseState::Publish {
-                        fut: self.publish.call(Publish::new(publish)),
+                        fut: self.publish.call(Publish::new(publish, size)),
                     },
                 })
             }
-            DispatchItem::Item(codec::Packet::PublishAck { packet_id }) => {
+            DispatchItem::Item((codec::Packet::PublishAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(e),
@@ -226,10 +226,13 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(codec::Packet::PingRequest) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::ping(), &self.inner),
-            )),
-            DispatchItem::Item(codec::Packet::Subscribe { packet_id, topic_filters }) => {
+            DispatchItem::Item((codec::Packet::PingRequest, _)) => Either::Right(
+                Either::Right(ControlResponse::new(ControlMessage::ping(), &self.inner)),
+            ),
+            DispatchItem::Item((
+                codec::Packet::Subscribe { packet_id, topic_filters },
+                size,
+            )) => {
                 if topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
@@ -247,11 +250,14 @@ where
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::subscribe(Subscribe::new(packet_id, topic_filters)),
+                    ControlMessage::subscribe(Subscribe::new(packet_id, size, topic_filters)),
                     &self.inner,
                 )))
             }
-            DispatchItem::Item(codec::Packet::Unsubscribe { packet_id, topic_filters }) => {
+            DispatchItem::Item((
+                codec::Packet::Unsubscribe { packet_id, topic_filters },
+                size,
+            )) => {
                 if topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
@@ -269,11 +275,15 @@ where
                 }
 
                 Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::unsubscribe(Unsubscribe::new(packet_id, topic_filters)),
+                    ControlMessage::unsubscribe(Unsubscribe::new(
+                        packet_id,
+                        size,
+                        topic_filters,
+                    )),
                     &self.inner,
                 )))
             }
-            DispatchItem::Item(codec::Packet::Disconnect) => Either::Right(Either::Right(
+            DispatchItem::Item((codec::Packet::Disconnect, _)) => Either::Right(Either::Right(
                 ControlResponse::new(ControlMessage::remote_disconnect(), &self.inner),
             )),
             DispatchItem::Item(_) => Either::Right(Either::Left(Ready::Ok(None))),
@@ -482,26 +492,30 @@ mod tests {
             QoS::AtLeastOnce,
         );
 
-        let mut f =
-            Box::pin(disp.call(DispatchItem::Item(codec::Packet::Publish(codec::Publish {
+        let mut f = Box::pin(disp.call(DispatchItem::Item((
+            codec::Packet::Publish(codec::Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtLeastOnce,
                 topic: ByteString::new(),
                 packet_id: NonZeroU16::new(1),
                 payload: Bytes::new(),
-            }))));
+            }),
+            999,
+        ))));
         let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
 
-        let f =
-            Box::pin(disp.call(DispatchItem::Item(codec::Packet::Publish(codec::Publish {
+        let f = Box::pin(disp.call(DispatchItem::Item((
+            codec::Packet::Publish(codec::Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtLeastOnce,
                 topic: ByteString::new(),
                 packet_id: NonZeroU16::new(1),
                 payload: Bytes::new(),
-            }))));
+            }),
+            999,
+        ))));
         assert!(f.await.unwrap().is_none());
         assert!(*err.borrow());
     }

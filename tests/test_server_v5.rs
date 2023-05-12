@@ -207,7 +207,7 @@ async fn test_disconnect_after_control_error() -> std::io::Result<()> {
     .unwrap();
 
     let result = io.recv(&codec).await.unwrap().unwrap();
-    if let codec::Packet::Disconnect(_) = result {
+    if let codec::Packet::Disconnect(_) = result.0 {
     } else {
         panic!();
     }
@@ -248,7 +248,7 @@ async fn test_ping() -> std::io::Result<()> {
 
     io.send(codec::Packet::PingRequest, &codec).await.unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(pkt, codec::Packet::PingResponse);
+    assert_eq!(pkt.0, codec::Packet::PingResponse);
     assert!(ping.load(Relaxed));
 
     Ok(())
@@ -315,7 +315,7 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        pkt,
+        pkt.0,
         codec::Packet::PublishAck(codec::PublishAck {
             packet_id: NonZeroU16::new(1).unwrap(),
             reason_code: codec::PublishAckReason::Success,
@@ -326,7 +326,7 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        pkt,
+        pkt.0,
         codec::Packet::SubscribeAck(codec::SubscribeAck {
             packet_id: NonZeroU16::new(2).unwrap(),
             properties: Default::default(),
@@ -414,7 +414,7 @@ async fn test_dups() {
     // PublishAck
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        pkt,
+        pkt.0,
         codec::Packet::PublishAck(codec::PublishAck {
             packet_id: NonZeroU16::new(1).unwrap(),
             reason_code: codec::PublishAckReason::PacketIdentifierInUse,
@@ -426,7 +426,7 @@ async fn test_dups() {
     // SubscribeAck
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        pkt,
+        pkt.0,
         codec::SubscribeAck {
             packet_id: NonZeroU16::new(1).unwrap(),
             properties: Default::default(),
@@ -439,7 +439,7 @@ async fn test_dups() {
     // UnsubscribeAck
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        pkt,
+        pkt.0,
         codec::UnsubscribeAck {
             packet_id: NonZeroU16::new(1).unwrap(),
             properties: Default::default(),
@@ -477,7 +477,7 @@ async fn test_max_receive() {
     .unwrap();
     let ack = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        ack,
+        ack.0,
         codec::Packet::ConnectAck(Box::new(codec::ConnectAck {
             receive_max: NonZeroU16::new(1).unwrap(),
             max_qos: codec::QoS::AtLeastOnce,
@@ -501,7 +501,7 @@ async fn test_max_receive() {
     .unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        pkt,
+        pkt.0,
         codec::Packet::Disconnect(codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::ReceiveMaximumExceeded,
             session_expiry_interval_secs: None,
@@ -838,7 +838,7 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
     .unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        pkt,
+        pkt.0,
         codec::Packet::SubscribeAck(codec::SubscribeAck {
             packet_id: NonZeroU16::new(1).unwrap(),
             status: vec![codec::SubscribeAckReason::ImplementationSpecificError],
@@ -945,7 +945,7 @@ async fn test_max_qos() -> std::io::Result<()> {
     io.encode(pkt_publish().into(), &codec).unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        pkt,
+        pkt.0,
         codec::Packet::Disconnect(codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::QosNotSupported,
             ..Default::default()
@@ -988,7 +988,7 @@ async fn test_sink_ready() -> std::io::Result<()> {
     .unwrap();
     let ack = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        ack,
+        ack.0,
         codec::Packet::ConnectAck(Box::new(codec::ConnectAck {
             max_qos: QoS::AtLeastOnce,
             receive_max: NonZeroU16::new(15).unwrap(),

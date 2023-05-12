@@ -1,5 +1,11 @@
 # Changes
 
+## [0.10.4] - 2023-05-12
+
+* Expose size of prepared packet
+
+* Return packet and packet size from decoder
+
 ## [0.10.3] - 2023-04-06
 
 * Adds non-blocking qos1 publish sender

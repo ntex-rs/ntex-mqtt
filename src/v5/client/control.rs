@@ -23,12 +23,12 @@ pub enum ControlMessage<E> {
 }
 
 impl<E> ControlMessage<E> {
-    pub(super) fn publish(pkt: codec::Publish) -> Self {
-        ControlMessage::Publish(Publish(pkt))
+    pub(super) fn publish(pkt: codec::Publish, size: u32) -> Self {
+        ControlMessage::Publish(Publish(pkt, size))
     }
 
-    pub(super) fn dis(pkt: codec::Disconnect) -> Self {
-        ControlMessage::Disconnect(Disconnect(pkt))
+    pub(super) fn dis(pkt: codec::Disconnect, size: u32) -> Self {
+        ControlMessage::Disconnect(Disconnect(pkt, size))
     }
 
     pub(super) const fn closed() -> Self {
@@ -53,7 +53,7 @@ impl<E> ControlMessage<E> {
 }
 
 #[derive(Debug)]
-pub struct Publish(codec::Publish);
+pub struct Publish(codec::Publish, u32);
 
 impl Publish {
     /// Returns reference to publish packet
@@ -64,6 +64,11 @@ impl Publish {
     /// Returns reference to publish packet
     pub fn packet_mut(&mut self) -> &mut codec::Publish {
         &mut self.0
+    }
+
+    /// Returns size of the packet
+    pub fn packet_size(&self) -> u32 {
+        self.1
     }
 
     pub fn ack_qos0(self) -> ControlResult {

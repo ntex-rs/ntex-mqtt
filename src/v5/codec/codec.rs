@@ -105,7 +105,7 @@ impl Default for Codec {
 }
 
 impl Decoder for Codec {
-    type Item = Packet;
+    type Item = (Packet, u32);
     type Error = DecodeError;
 
     fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
@@ -161,7 +161,7 @@ impl Decoder for Codec {
                         flags.set(CodecFlags::NO_PROBLEM_INFO, !pkt.request_problem_info);
                         self.flags.set(flags);
                     }
-                    return Ok(Some(packet));
+                    return Ok(Some((packet, fixed.remaining_length)));
                 }
             }
         }

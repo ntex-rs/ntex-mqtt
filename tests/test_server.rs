@@ -134,7 +134,7 @@ async fn test_ping() -> std::io::Result<()> {
 
     io.send(codec::Packet::PingRequest, &codec).await.unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(pkt, codec::Packet::PingResponse);
+    assert_eq!(pkt.0, codec::Packet::PingResponse);
     assert!(ping.load(Relaxed));
 
     Ok(())
@@ -206,11 +206,11 @@ async fn test_ack_order() -> std::io::Result<()> {
     .unwrap();
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(pkt, codec::Packet::PublishAck { packet_id: NonZeroU16::new(1).unwrap() });
+    assert_eq!(pkt.0, codec::Packet::PublishAck { packet_id: NonZeroU16::new(1).unwrap() });
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        pkt,
+        pkt.0,
         codec::Packet::SubscribeAck {
             packet_id: NonZeroU16::new(2).unwrap(),
             status: vec![codec::SubscribeReturnCode::Success(codec::QoS::AtLeastOnce)],
@@ -218,7 +218,7 @@ async fn test_ack_order() -> std::io::Result<()> {
     );
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(pkt, codec::Packet::PublishAck { packet_id: NonZeroU16::new(3).unwrap() });
+    assert_eq!(pkt.0, codec::Packet::PublishAck { packet_id: NonZeroU16::new(3).unwrap() });
 
     Ok(())
 }

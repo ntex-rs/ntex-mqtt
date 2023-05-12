@@ -368,7 +368,7 @@ where
                 })?;
 
             match packet {
-                mqtt::Packet::Connect(connect) => {
+                (mqtt::Packet::Connect(connect), size) => {
                     // set max outbound (encoder) packet size
                     if let Some(size) = connect.max_packet_size {
                         shared.codec.set_max_outbound_size(size.get());
@@ -379,7 +379,7 @@ where
 
                     // authenticate mqtt connection
                     let mut ack = service
-                        .call(Handshake::new(connect, io, shared))
+                        .call(Handshake::new(connect, size, io, shared))
                         .await
                         .map_err(MqttError::Service)?;
 
@@ -433,7 +433,7 @@ where
                         }
                     }
                 }
-                packet => {
+                (packet, _) => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {}", 1);
                     Err(MqttError::Protocol(ProtocolError::unexpected_packet(
                         packet.packet_type(),

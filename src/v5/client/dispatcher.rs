@@ -134,7 +134,7 @@ where
         log::trace!("Dispatch packet: {:#?}", request);
 
         match request {
-            DispatchItem::Item(codec::Packet::Publish(mut publish)) => {
+            DispatchItem::Item((codec::Packet::Publish(mut publish), size)) => {
                 let info = self.inner.as_ref();
                 let packet_id = publish.packet_id;
 
@@ -223,14 +223,15 @@ where
 
                 Either::Left(PublishResponse {
                     packet_id: packet_id.map(|v| v.get()).unwrap_or(0),
+                    packet_size: size,
                     inner: info,
                     state: PublishResponseState::Publish {
-                        fut: self.publish.call(Publish::new(publish)),
+                        fut: self.publish.call(Publish::new(publish, size)),
                     },
                     _t: PhantomData,
                 })
             }
-            DispatchItem::Item(codec::Packet::PublishAck(packet)) => {
+            DispatchItem::Item((codec::Packet::PublishAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(err),
@@ -240,7 +241,7 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(codec::Packet::SubscribeAck(packet)) => {
+            DispatchItem::Item((codec::Packet::SubscribeAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Subscribe(packet)) {
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(err),
@@ -250,7 +251,7 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(codec::Packet::UnsubscribeAck(packet)) => {
+            DispatchItem::Item((codec::Packet::UnsubscribeAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet)) {
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(err),
@@ -260,10 +261,13 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::dis(pkt), &self.inner),
-            )),
-            DispatchItem::Item(codec::Packet::Auth(_)) => {
+            DispatchItem::Item((codec::Packet::Disconnect(pkt), size)) => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::dis(pkt, size),
+                    &self.inner,
+                )))
+            }
+            DispatchItem::Item((codec::Packet::Auth(_), _)) => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::unexpected_packet(
                         packet_type::AUTH,
@@ -272,21 +276,22 @@ where
                     &self.inner,
                 )))
             }
-            DispatchItem::Item(
+            DispatchItem::Item((
                 pkt @ (codec::Packet::PingRequest
                 | codec::Packet::Subscribe(_)
                 | codec::Packet::Unsubscribe(_)),
-            ) => Either::Right(Either::Left(Ready::Err(
+                _,
+            )) => Either::Right(Either::Left(Ready::Err(
                 ProtocolError::unexpected_packet(
                     pkt.packet_type(),
                     "Packet of the type is not expected from server",
                 )
                 .into(),
             ))),
-            DispatchItem::Item(codec::Packet::PingResponse) => {
+            DispatchItem::Item((codec::Packet::PingResponse, _)) => {
                 Either::Right(Either::Left(Ready::Ok(None)))
             }
-            DispatchItem::Item(pkt) => {
+            DispatchItem::Item((pkt, _)) => {
                 log::debug!("Unsupported packet: {:?}", pkt);
                 Either::Right(Either::Left(Ready::Ok(None)))
             }
@@ -329,6 +334,7 @@ pin_project_lite::pin_project! {
         #[pin]
         state: PublishResponseState<'f, T, C, E>,
         packet_id: u16,
+        packet_size: u32,
         inner: &'f Inner<C>,
         _t: PhantomData<E>,
     }
@@ -362,7 +368,10 @@ where
                         Either::Left(pkt) => {
                             this.state.set(PublishResponseState::Control {
                                 fut: ControlResponse::new(
-                                    ControlMessage::publish(pkt.into_inner()),
+                                    ControlMessage::publish(
+                                        pkt.into_inner(),
+                                        *this.packet_size,
+                                    ),
                                     this.inner,
                                 )
                                 .packet_id(*this.packet_id),

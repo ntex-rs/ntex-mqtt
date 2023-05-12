@@ -7,12 +7,18 @@ use super::{codec, shared::MqttShared, sink::MqttSink};
 pub struct Handshake {
     io: IoBoxed,
     pkt: Box<codec::Connect>,
+    size: u32,
     pub(super) shared: Rc<MqttShared>,
 }
 
 impl Handshake {
-    pub(crate) fn new(pkt: Box<codec::Connect>, io: IoBoxed, shared: Rc<MqttShared>) -> Self {
-        Self { io, pkt, shared }
+    pub(crate) fn new(
+        pkt: Box<codec::Connect>,
+        size: u32,
+        io: IoBoxed,
+        shared: Rc<MqttShared>,
+    ) -> Self {
+        Self { io, pkt, size, shared }
     }
 
     #[inline]
@@ -23,6 +29,11 @@ impl Handshake {
     #[inline]
     pub fn packet_mut(&mut self) -> &mut codec::Connect {
         &mut self.pkt
+    }
+
+    #[inline]
+    pub fn packet_size(&self) -> u32 {
+        self.size
     }
 
     #[inline]

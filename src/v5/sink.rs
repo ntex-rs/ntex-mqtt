@@ -2,7 +2,9 @@ use std::{fmt, future::ready, future::Future, num::NonZeroU16, num::NonZeroU32, 
 
 use ntex::util::{ByteString, Bytes, Either, Ready};
 
-use super::{codec, error::SendPacketError, shared::AckType, shared::MqttShared};
+use super::{
+    codec, codec::EncodeLtd, error::SendPacketError, shared::AckType, shared::MqttShared,
+};
 use crate::types::QoS;
 
 pub struct MqttSink(Rc<MqttShared>);
@@ -213,6 +215,12 @@ impl PublishBuilder {
     }
 
     #[inline]
+    /// Get size of the publish packet
+    pub fn size(&self) -> u32 {
+        self.packet.encoded_size(u32::MAX) as u32
+    }
+
+    #[inline]
     /// Send publish packet with QoS 0
     pub fn send_at_most_once(mut self) -> Result<(), SendPacketError> {
         if !self.shared.is_closed() {
@@ -348,6 +356,12 @@ impl SubscribeBuilder {
         self
     }
 
+    #[inline]
+    /// Get size of the subscribe packet
+    pub fn size(&self) -> u32 {
+        self.packet.encoded_size(u32::MAX) as u32
+    }
+
     /// Send subscribe packet
     pub async fn send(self) -> Result<codec::SubscribeAck, SendPacketError> {
         let shared = self.shared;
@@ -416,6 +430,12 @@ impl UnsubscribeBuilder {
     pub fn property(mut self, key: ByteString, value: ByteString) -> Self {
         self.packet.user_properties.push((key, value));
         self
+    }
+
+    #[inline]
+    /// Get size of the unsubscribe packet
+    pub fn size(&self) -> u32 {
+        self.packet.encoded_size(u32::MAX) as u32
     }
 
     /// Send unsubscribe packet

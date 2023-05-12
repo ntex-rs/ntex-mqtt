@@ -38,20 +38,20 @@ pub struct ControlResult {
 impl<E> ControlMessage<E> {
     /// Create a new `ControlMessage` from AUTH packet.
     #[doc(hidden)]
-    pub fn auth(pkt: codec::Auth) -> Self {
-        ControlMessage::Auth(Auth(pkt))
+    pub fn auth(pkt: codec::Auth, size: u32) -> Self {
+        ControlMessage::Auth(Auth { pkt, size })
     }
 
     /// Create a new `ControlMessage` from SUBSCRIBE packet.
     #[doc(hidden)]
-    pub fn subscribe(pkt: codec::Subscribe) -> Self {
-        ControlMessage::Subscribe(Subscribe::new(pkt))
+    pub fn subscribe(pkt: codec::Subscribe, size: u32) -> Self {
+        ControlMessage::Subscribe(Subscribe::new(pkt, size))
     }
 
     /// Create a new `ControlMessage` from UNSUBSCRIBE packet.
     #[doc(hidden)]
-    pub fn unsubscribe(pkt: codec::Unsubscribe) -> Self {
-        ControlMessage::Unsubscribe(Unsubscribe::new(pkt))
+    pub fn unsubscribe(pkt: codec::Unsubscribe, size: u32) -> Self {
+        ControlMessage::Unsubscribe(Unsubscribe::new(pkt, size))
     }
 
     /// Create a new PING `ControlMessage`.
@@ -62,8 +62,8 @@ impl<E> ControlMessage<E> {
 
     /// Create a new `ControlMessage` from DISCONNECT packet.
     #[doc(hidden)]
-    pub fn remote_disconnect(pkt: codec::Disconnect) -> Self {
-        ControlMessage::Disconnect(Disconnect(pkt))
+    pub fn remote_disconnect(pkt: codec::Disconnect, size: u32) -> Self {
+        ControlMessage::Disconnect(Disconnect(pkt, size))
     }
 
     pub(super) const fn closed() -> Self {
@@ -103,12 +103,20 @@ impl<E> ControlMessage<E> {
 }
 
 #[derive(Debug)]
-pub struct Auth(codec::Auth);
+pub struct Auth {
+    pkt: codec::Auth,
+    size: u32,
+}
 
 impl Auth {
     /// Returns reference to auth packet
     pub fn packet(&self) -> &codec::Auth {
-        &self.0
+        &self.pkt
+    }
+
+    /// Returns size of the packet
+    pub fn packet_size(&self) -> u32 {
+        self.size
     }
 
     pub fn ack(self, response: codec::Auth) -> ControlResult {
@@ -126,12 +134,17 @@ impl Ping {
 }
 
 #[derive(Debug)]
-pub struct Disconnect(pub(crate) codec::Disconnect);
+pub struct Disconnect(pub(crate) codec::Disconnect, pub(crate) u32);
 
 impl Disconnect {
     /// Returns reference to disconnect packet
     pub fn packet(&self) -> &codec::Disconnect {
         &self.0
+    }
+
+    /// Returns size of the packet
+    pub fn packet_size(&self) -> u32 {
+        self.1
     }
 
     /// Ack disconnect message
@@ -145,12 +158,13 @@ impl Disconnect {
 pub struct Subscribe {
     packet: codec::Subscribe,
     result: codec::SubscribeAck,
+    size: u32,
 }
 
 impl Subscribe {
     /// Create a new `Subscribe` control message from a Subscribe
     /// packet
-    pub fn new(packet: codec::Subscribe) -> Self {
+    pub fn new(packet: codec::Subscribe, size: u32) -> Self {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
             .for_each(|_| status.push(codec::SubscribeAckReason::UnspecifiedError));
@@ -162,7 +176,7 @@ impl Subscribe {
             reason_string: None,
         };
 
-        Self { packet, result }
+        Self { packet, result, size }
     }
 
     #[inline]
@@ -200,6 +214,11 @@ impl Subscribe {
     /// Returns reference to subscribe packet
     pub fn packet(&self) -> &codec::Subscribe {
         &self.packet
+    }
+
+    /// Returns size of the packet
+    pub fn packet_size(&self) -> u32 {
+        self.size
     }
 }
 
@@ -296,12 +315,13 @@ impl<'a> Subscription<'a> {
 pub struct Unsubscribe {
     packet: codec::Unsubscribe,
     result: codec::UnsubscribeAck,
+    size: u32,
 }
 
 impl Unsubscribe {
     /// Create a new `Unsubscribe` control message from an Unsubscribe
     /// packet
-    pub fn new(packet: codec::Unsubscribe) -> Self {
+    pub fn new(packet: codec::Unsubscribe, size: u32) -> Self {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
             .for_each(|_| status.push(codec::UnsubscribeAckReason::Success));
@@ -313,7 +333,7 @@ impl Unsubscribe {
             reason_string: None,
         };
 
-        Self { packet, result }
+        Self { packet, result, size }
     }
 
     /// Unsubscribe packet user properties
@@ -361,6 +381,11 @@ impl Unsubscribe {
     /// Returns reference to unsubscribe packet
     pub fn packet(&self) -> &codec::Unsubscribe {
         &self.packet
+    }
+
+    /// Returns size of the packet
+    pub fn packet_size(&self) -> u32 {
+        self.size
     }
 }
 
