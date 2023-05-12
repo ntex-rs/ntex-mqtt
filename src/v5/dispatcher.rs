@@ -11,7 +11,7 @@ use crate::error::{MqttError, ProtocolError};
 use super::control::{ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
 use super::shared::{Ack, MqttShared};
-use super::{codec, codec::DisconnectReasonCode, codec::EncodeLtd, Session};
+use super::{codec, codec::DisconnectReasonCode, Session};
 
 /// MQTT 5 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
@@ -66,8 +66,8 @@ where
 
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     fn size(&self) -> u32 {
-        if let DispatchItem::Item(ref item) = self {
-            item.encoded_size(u32::MAX) as u32
+        if let DispatchItem::Item((_, size)) = self {
+            *size
         } else {
             0
         }
@@ -166,7 +166,7 @@ where
         log::trace!("Dispatch v5 packet: {:#?}", request);
 
         match request {
-            DispatchItem::Item(codec::Packet::Publish(mut publish)) => {
+            DispatchItem::Item((codec::Packet::Publish(mut publish), size)) => {
                 let info = self.inner.as_ref();
                 let packet_id = publish.packet_id;
 
@@ -296,11 +296,11 @@ where
                     packet_id: packet_id.map(|v| v.get()).unwrap_or(0),
                     inner: info,
                     state: PublishResponseState::Publish {
-                        fut: self.publish.call(Publish::new(publish)),
+                        fut: self.publish.call(Publish::new(publish, size)),
                     },
                 })
             }
-            DispatchItem::Item(codec::Packet::PublishAck(packet)) => {
+            DispatchItem::Item((codec::Packet::PublishAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(err),
@@ -310,16 +310,22 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
-            DispatchItem::Item(codec::Packet::Auth(pkt)) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::auth(pkt), &self.inner),
-            )),
-            DispatchItem::Item(codec::Packet::PingRequest) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::ping(), &self.inner),
-            )),
-            DispatchItem::Item(codec::Packet::Disconnect(pkt)) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::remote_disconnect(pkt), &self.inner),
-            )),
-            DispatchItem::Item(codec::Packet::Subscribe(pkt)) => {
+            DispatchItem::Item((codec::Packet::Auth(pkt), size)) => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::auth(pkt, size),
+                    &self.inner,
+                )))
+            }
+            DispatchItem::Item((codec::Packet::PingRequest, _)) => Either::Right(
+                Either::Right(ControlResponse::new(ControlMessage::ping(), &self.inner)),
+            ),
+            DispatchItem::Item((codec::Packet::Disconnect(pkt), size)) => {
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::remote_disconnect(pkt, size),
+                    &self.inner,
+                )))
+            }
+            DispatchItem::Item((codec::Packet::Subscribe(pkt), size)) => {
                 if pkt.topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
@@ -359,11 +365,11 @@ where
                 }
                 let id = pkt.packet_id;
                 Either::Right(Either::Right(
-                    ControlResponse::new(ControlMessage::subscribe(pkt), &self.inner)
+                    ControlResponse::new(ControlMessage::subscribe(pkt, size), &self.inner)
                         .packet_id(id),
                 ))
             }
-            DispatchItem::Item(codec::Packet::Unsubscribe(pkt)) => {
+            DispatchItem::Item((codec::Packet::Unsubscribe(pkt), size)) => {
                 if pkt.topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
@@ -392,11 +398,11 @@ where
                 }
                 let id = pkt.packet_id;
                 Either::Right(Either::Right(
-                    ControlResponse::new(ControlMessage::unsubscribe(pkt), &self.inner)
+                    ControlResponse::new(ControlMessage::unsubscribe(pkt, size), &self.inner)
                         .packet_id(id),
                 ))
             }
-            DispatchItem::Item(_) => Either::Right(Either::Left(Ready::Ok(None))),
+            DispatchItem::Item((_, _)) => Either::Right(Either::Left(Ready::Ok(None))),
             DispatchItem::EncoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Encode(err)),

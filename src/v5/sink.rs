@@ -216,8 +216,8 @@ impl PublishBuilder {
 
     #[inline]
     /// Get size of the publish packet
-    pub fn size(&self) -> usize {
-        self.packet.encoded_size(9999999)
+    pub fn size(&self) -> u32 {
+        self.packet.encoded_size(u32::MAX) as u32
     }
 
     #[inline]
@@ -358,8 +358,8 @@ impl SubscribeBuilder {
 
     #[inline]
     /// Get size of the subscribe packet
-    pub fn size(&self) -> usize {
-        self.packet.encoded_size(9999999)
+    pub fn size(&self) -> u32 {
+        self.packet.encoded_size(u32::MAX) as u32
     }
 
     /// Send subscribe packet
@@ -434,8 +434,8 @@ impl UnsubscribeBuilder {
 
     #[inline]
     /// Get size of the unsubscribe packet
-    pub fn size(&self) -> usize {
-        self.packet.encoded_size(9999999)
+    pub fn size(&self) -> u32 {
+        self.packet.encoded_size(u32::MAX) as u32
     }
 
     /// Send unsubscribe packet

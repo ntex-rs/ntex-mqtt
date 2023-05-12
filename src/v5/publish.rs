@@ -9,7 +9,8 @@ use super::codec;
 
 /// Publish message
 pub struct Publish {
-    publish: codec::Publish,
+    pkt: codec::Publish,
+    pkt_size: u32,
     topic: Path<ByteString>,
 }
 
@@ -17,37 +18,37 @@ impl Publish {
     /// Create a new `Publish` message from a PUBLISH
     /// packet
     #[doc(hidden)]
-    pub fn new(publish: codec::Publish) -> Self {
-        Self { topic: Path::new(publish.topic.clone()), publish }
+    pub fn new(pkt: codec::Publish, pkt_size: u32) -> Self {
+        Self { topic: Path::new(pkt.topic.clone()), pkt, pkt_size }
     }
 
     #[inline]
     /// this might be re-delivery of an earlier attempt to send the Packet.
     pub fn dup(&self) -> bool {
-        self.publish.dup
+        self.pkt.dup
     }
 
     #[inline]
     pub fn retain(&self) -> bool {
-        self.publish.retain
+        self.pkt.retain
     }
 
     #[inline]
     /// the level of assurance for delivery of an Application Message.
     pub fn qos(&self) -> codec::QoS {
-        self.publish.qos
+        self.pkt.qos
     }
 
     #[inline]
     /// the information channel to which payload data is published.
     pub fn publish_topic(&self) -> &str {
-        &self.publish.topic
+        &self.pkt.topic
     }
 
     #[inline]
     /// only present in PUBLISH Packets where the QoS level is 1 or 2.
     pub fn id(&self) -> Option<NonZeroU16> {
-        self.publish.packet_id
+        self.pkt.packet_id
     }
 
     #[inline]
@@ -62,28 +63,34 @@ impl Publish {
 
     #[inline]
     pub fn packet(&self) -> &codec::Publish {
-        &self.publish
+        &self.pkt
     }
 
     #[inline]
     pub fn packet_mut(&mut self) -> &mut codec::Publish {
-        &mut self.publish
+        &mut self.pkt
+    }
+
+    #[inline]
+    /// Returns size of the packet
+    pub fn packet_size(&self) -> u32 {
+        self.pkt_size
     }
 
     #[inline]
     /// the Application Message that is being published.
     pub fn payload(&self) -> &Bytes {
-        &self.publish.payload
+        &self.pkt.payload
     }
 
     /// Replace packet'a payload with empty bytes, returns existing payload.
     pub fn take_payload(&mut self) -> Bytes {
-        mem::take(&mut self.publish.payload)
+        mem::take(&mut self.pkt.payload)
     }
 
     /// Loads and parse `application/json` encoded body.
     pub fn json<T: DeserializeOwned>(&mut self) -> Result<T, JsonError> {
-        serde_json::from_slice(&self.publish.payload)
+        serde_json::from_slice(&self.pkt.payload)
     }
 
     /// Create acknowledgement for this packet
@@ -96,13 +103,13 @@ impl Publish {
     }
 
     pub(crate) fn into_inner(self) -> codec::Publish {
-        self.publish
+        self.pkt
     }
 }
 
 impl std::fmt::Debug for Publish {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.publish.fmt(f)
+        self.pkt.fmt(f)
     }
 }
 

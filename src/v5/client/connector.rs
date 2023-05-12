@@ -229,7 +229,7 @@ where
 
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, pool));
         match packet {
-            codec::Packet::ConnectAck(pkt) => {
+            (codec::Packet::ConnectAck(pkt), _) => {
                 log::trace!("Connect ack response from server: {:#?}", pkt);
                 if pkt.reason_code == codec::ConnectAckReason::Success {
                     // set max outbound (encoder) packet size
@@ -253,7 +253,7 @@ where
                     Err(ClientError::Ack(pkt))
                 }
             }
-            p => Err(ProtocolError::unexpected_packet(
+            (p, _) => Err(ProtocolError::unexpected_packet(
                 p.packet_type(),
                 "CONNACK packet expected from server first [MQTT-3.2.0-1]",
             )
