@@ -1,10 +1,27 @@
-use ntex::util::{BufMut, BytesMut};
+use ntex::util::{BufMut, ByteString, BytesMut};
 
 use crate::error::EncodeError;
 use crate::types::{packet_type, ConnectFlags, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
 use crate::utils::{write_variable_length, Encode};
 
 use super::packet::*;
+
+pub(crate) fn get_encoded_publish_size(p: &Publish) -> usize {
+    // Topic + Packet Id + Payload
+    if p.qos == QoS::AtLeastOnce || p.qos == QoS::ExactlyOnce {
+        4 + p.topic.len() + p.payload.len()
+    } else {
+        2 + p.topic.len() + p.payload.len()
+    }
+}
+
+pub(crate) fn get_encoded_subscribe_size(topic_filters: &[(ByteString, QoS)]) -> usize {
+    2 + topic_filters.iter().fold(0, |acc, (filter, _)| acc + 2 + filter.len() + 1)
+}
+
+pub(crate) fn get_encoded_unsubscribe_size(topic_filters: &[ByteString]) -> usize {
+    2 + topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
+}
 
 pub(crate) fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {
@@ -33,30 +50,17 @@ pub(crate) fn get_encoded_size(packet: &Packet) -> usize {
             n
         }
 
-        Packet::Publish( Publish{ qos, ref topic, ref payload, .. }) => {
-            // Topic + Packet Id + Payload
-            if qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce {
-                4 + topic.len() + payload.len()
-            } else {
-                2 + topic.len() + payload.len()
-            }
-        }
-
+        Packet::Publish( ref publish ) => get_encoded_publish_size(publish),
         Packet::ConnectAck { .. } | // Flags + Return Code
         Packet::PublishAck { .. } | // Packet Id
         Packet::PublishReceived { .. } | // Packet Id
         Packet::PublishRelease { .. } | // Packet Id
         Packet::PublishComplete { .. } | // Packet Id
         Packet::UnsubscribeAck { .. } => 2, // Packet Id
-        Packet::Subscribe { ref topic_filters, .. } => {
-            2 + topic_filters.iter().fold(0, |acc, (filter, _)| acc + 2 + filter.len() + 1)
-        }
-
+        Packet::Subscribe { ref topic_filters, .. } => get_encoded_subscribe_size(topic_filters),
         Packet::SubscribeAck { ref status, .. } => 2 + status.len(),
 
-        Packet::Unsubscribe { ref topic_filters, .. } => {
-            2 + topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
-        }
+        Packet::Unsubscribe { ref topic_filters, .. } => get_encoded_unsubscribe_size(topic_filters),
 
         Packet::PingRequest | Packet::PingResponse | Packet::Disconnect => 0,
     }

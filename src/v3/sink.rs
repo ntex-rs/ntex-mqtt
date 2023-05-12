@@ -165,6 +165,12 @@ impl PublishBuilder {
     }
 
     #[inline]
+    /// Get size of the publish packet
+    pub fn size(&self) -> usize {
+        codec::encode::get_encoded_publish_size(&self.packet)
+    }
+
+    #[inline]
     /// Send publish packet with QoS 0
     pub fn send_at_most_once(mut self) -> Result<(), SendPacketError> {
         if !self.shared.is_closed() {
@@ -285,6 +291,12 @@ impl SubscribeBuilder {
         self
     }
 
+    #[inline]
+    /// Get size of the subscribe packet
+    pub fn size(&self) -> usize {
+        codec::encode::get_encoded_subscribe_size(&self.topic_filters)
+    }
+
     /// Send subscribe packet
     pub async fn send(self) -> Result<Vec<codec::SubscribeReturnCode>, SendPacketError> {
         let shared = self.shared;
@@ -347,6 +359,12 @@ impl UnsubscribeBuilder {
     pub fn topic_filter(mut self, filter: ByteString) -> Self {
         self.topic_filters.push(filter);
         self
+    }
+
+    #[inline]
+    /// Get size of the unsubscribe packet
+    pub fn size(&self) -> usize {
+        codec::encode::get_encoded_unsubscribe_size(&self.topic_filters)
     }
 
     /// Send unsubscribe packet
