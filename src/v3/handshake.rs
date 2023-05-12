@@ -13,20 +13,33 @@ const DEFAULT_OUTGOING_INFLIGHT: u16 = 16;
 pub struct Handshake {
     io: IoBoxed,
     pkt: Box<mqtt::Connect>,
+    pkt_size: u32,
     shared: Rc<MqttShared>,
 }
 
 impl Handshake {
-    pub(crate) fn new(pkt: Box<mqtt::Connect>, io: IoBoxed, shared: Rc<MqttShared>) -> Self {
-        Self { io, pkt, shared }
+    pub(crate) fn new(
+        pkt: Box<mqtt::Connect>,
+        pkt_size: u32,
+        io: IoBoxed,
+        shared: Rc<MqttShared>,
+    ) -> Self {
+        Self { io, pkt, pkt_size, shared }
     }
 
+    #[inline]
     pub fn packet(&self) -> &mqtt::Connect {
         &self.pkt
     }
 
+    #[inline]
     pub fn packet_mut(&mut self) -> &mut mqtt::Connect {
         &mut self.pkt
+    }
+
+    #[inline]
+    pub fn packet_size(&self) -> u32 {
+        self.pkt_size
     }
 
     #[inline]
@@ -41,7 +54,7 @@ impl Handshake {
 
     /// Ack handshake message and set state
     pub fn ack<St>(self, st: St, session_present: bool) -> HandshakeAck<St> {
-        let Handshake { io, shared, pkt } = self;
+        let Handshake { io, shared, pkt, .. } = self;
         // [MQTT-3.1.2-24].
         let keepalive = if pkt.keep_alive != 0 {
             Seconds((pkt.keep_alive >> 1).checked_add(pkt.keep_alive).unwrap_or(u16::MAX))

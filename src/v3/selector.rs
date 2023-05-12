@@ -256,7 +256,7 @@ where
             })
             .await;
 
-            let packet = match result {
+            let (packet, size) = match result {
                 Either::Left(_) => Err(MqttError::HandshakeTimeout),
                 Either::Right(item) => item,
             }?;
@@ -273,7 +273,7 @@ where
             };
 
             // call servers
-            let mut item = (Handshake::new(connect, io, shared), timeout);
+            let mut item = (Handshake::new(connect, size, io, shared), timeout);
             for srv in servers.iter() {
                 match srv.call(item).await? {
                     Either::Left(result) => {
@@ -329,7 +329,7 @@ where
             })
             .await;
 
-            let packet = match result {
+            let (packet, size) = match result {
                 Either::Left(_) => Err(MqttError::HandshakeTimeout),
                 Either::Right(item) => item,
             }?;
@@ -346,7 +346,7 @@ where
             };
 
             // call servers
-            let mut item = (Handshake::new(connect, io, shared), timeout);
+            let mut item = (Handshake::new(connect, size, io, shared), timeout);
             for srv in servers.iter() {
                 match srv.call(item).await? {
                     Either::Left(result) => {

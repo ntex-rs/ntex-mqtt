@@ -166,8 +166,8 @@ impl PublishBuilder {
 
     #[inline]
     /// Get size of the publish packet
-    pub fn size(&self) -> usize {
-        codec::encode::get_encoded_publish_size(&self.packet)
+    pub fn size(&self) -> u32 {
+        codec::encode::get_encoded_publish_size(&self.packet) as u32
     }
 
     #[inline]
@@ -293,8 +293,8 @@ impl SubscribeBuilder {
 
     #[inline]
     /// Get size of the subscribe packet
-    pub fn size(&self) -> usize {
-        codec::encode::get_encoded_subscribe_size(&self.topic_filters)
+    pub fn size(&self) -> u32 {
+        codec::encode::get_encoded_subscribe_size(&self.topic_filters) as u32
     }
 
     /// Send subscribe packet
@@ -363,8 +363,8 @@ impl UnsubscribeBuilder {
 
     #[inline]
     /// Get size of the unsubscribe packet
-    pub fn size(&self) -> usize {
-        codec::encode::get_encoded_unsubscribe_size(&self.topic_filters)
+    pub fn size(&self) -> u32 {
+        codec::encode::get_encoded_unsubscribe_size(&self.topic_filters) as u32
     }
 
     /// Send unsubscribe packet

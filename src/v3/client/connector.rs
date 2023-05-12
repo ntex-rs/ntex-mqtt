@@ -226,7 +226,7 @@ where
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, true, pool));
 
         match packet {
-            codec::Packet::ConnectAck(pkt) => {
+            (codec::Packet::ConnectAck(pkt), _) => {
                 log::trace!("Connect ack response from server: session: present: {:?}, return code: {:?}", pkt.session_present, pkt.return_code);
                 if pkt.return_code == codec::ConnectAckReason::ConnectionAccepted {
                     shared.set_cap(max_send);
@@ -242,7 +242,7 @@ where
                     Err(ClientError::Ack(pkt))
                 }
             }
-            p => Err(ProtocolError::unexpected_packet(
+            (p, _) => Err(ProtocolError::unexpected_packet(
                 p.packet_type(),
                 "Expected CONNACK packet",
             )

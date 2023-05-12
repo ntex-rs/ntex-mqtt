@@ -170,6 +170,7 @@ impl ProtocolError {
 #[derive(Debug)]
 pub struct Subscribe {
     packet_id: NonZeroU16,
+    packet_size: u32,
     topics: Vec<(ByteString, QoS)>,
     codes: Vec<codec::SubscribeReturnCode>,
 }
@@ -185,11 +186,20 @@ impl Subscribe {
     /// Create a new `Subscribe` control message from packet id and
     /// a list of topics.
     #[doc(hidden)]
-    pub fn new(packet_id: NonZeroU16, topics: Vec<(ByteString, QoS)>) -> Self {
+    pub fn new(
+        packet_id: NonZeroU16,
+        packet_size: u32,
+        topics: Vec<(ByteString, QoS)>,
+    ) -> Self {
         let mut codes = Vec::with_capacity(topics.len());
         (0..topics.len()).for_each(|_| codes.push(codec::SubscribeReturnCode::Failure));
 
-        Self { packet_id, topics, codes }
+        Self { packet_id, packet_size, topics, codes }
+    }
+
+    /// Returns size of the packet
+    pub fn packet_size(&self) -> u32 {
+        self.packet_size
     }
 
     #[inline]
@@ -298,6 +308,7 @@ impl<'a> Subscription<'a> {
 #[derive(Debug)]
 pub struct Unsubscribe {
     packet_id: NonZeroU16,
+    packet_size: u32,
     topics: Vec<ByteString>,
 }
 
@@ -311,8 +322,13 @@ impl Unsubscribe {
     /// Create a new `Unsubscribe` control message from packet id and
     /// a list of topics.
     #[doc(hidden)]
-    pub fn new(packet_id: NonZeroU16, topics: Vec<ByteString>) -> Self {
-        Self { packet_id, topics }
+    pub fn new(packet_id: NonZeroU16, packet_size: u32, topics: Vec<ByteString>) -> Self {
+        Self { packet_id, packet_size, topics }
+    }
+
+    /// Returns size of the packet
+    pub fn packet_size(&self) -> u32 {
+        self.packet_size
     }
 
     /// returns iterator over unsubscribe topics

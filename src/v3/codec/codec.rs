@@ -43,7 +43,7 @@ impl Default for Codec {
 }
 
 impl Decoder for Codec {
-    type Item = Packet;
+    type Item = (Packet, u32);
     type Error = DecodeError;
 
     fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
@@ -88,7 +88,7 @@ impl Decoder for Codec {
                     let packet = decode::decode_packet(packet_buf.freeze(), fixed.first_byte)?;
                     self.state.set(DecodeState::FrameHeader);
                     src.reserve(2);
-                    return Ok(Some(packet));
+                    return Ok(Some((packet, fixed.remaining_length)));
                 }
             }
         }
@@ -142,7 +142,7 @@ mod tests {
         };
         codec.encode(Packet::Publish(pkt.clone()), &mut buf).unwrap();
 
-        let pkt2 = if let Packet::Publish(v) = codec.decode(&mut buf).unwrap().unwrap() {
+        let pkt2 = if let (Packet::Publish(v), _) = codec.decode(&mut buf).unwrap().unwrap() {
             v
         } else {
             panic!()

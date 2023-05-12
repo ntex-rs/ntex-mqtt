@@ -334,7 +334,7 @@ impl Encoder for MqttShared {
 }
 
 impl Decoder for MqttShared {
-    type Item = codec::Packet;
+    type Item = (codec::Packet, u32);
     type Error = DecodeError;
 
     #[inline]
