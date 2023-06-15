@@ -2,7 +2,7 @@ use std::{cell::RefCell, num::NonZeroU16, rc::Rc, task::Context, task::Poll};
 
 use ntex::router::{IntoPattern, Path, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
-use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{Ctx, IntoServiceFactory, Service, ServiceCall, ServiceFactory};
 use ntex::util::{BoxFuture, ByteString, HashMap};
 
 use super::publish::{Publish, PublishAck};
@@ -124,7 +124,7 @@ pub struct RouterService<Err> {
 impl<Err: 'static> Service<Publish> for RouterService<Err> {
     type Response = PublishAck;
     type Error = Err;
-    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>>;
+    type Future<'f> = ServiceCall<'f, HandlerService<Err>, Publish>;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;
@@ -145,14 +145,14 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
         }
     }
 
-    fn call(&self, mut req: Publish) -> Self::Future<'_> {
+    fn call<'a>(&'a self, mut req: Publish, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
         if !req.publish_topic().is_empty() {
             if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
                 // save info for topic alias
                 if let Some(alias) = req.packet().properties.topic_alias {
                     self.aliases.borrow_mut().insert(alias, (*idx, req.topic().clone()));
                 }
-                return self.handlers[*idx].call(req);
+                return ctx.call(&self.handlers[*idx], req);
             }
         }
         // handle publish with topic alias
@@ -162,11 +162,11 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
                 let idx = item.0;
                 *req.topic_mut() = item.1.clone();
                 drop(aliases);
-                return self.handlers[idx].call(req);
+                return ctx.call(&self.handlers[idx], req);
             } else {
                 log::error!("Unknown topic alias: {:?}", alias);
             }
         }
-        self.default.call(req)
+        ctx.call(&self.default, req)
     }
 }

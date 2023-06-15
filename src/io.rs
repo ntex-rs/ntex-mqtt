@@ -4,7 +4,7 @@ use std::{cell::RefCell, collections::VecDeque, future::Future, mem, pin::Pin, r
 
 use ntex::codec::{Decoder, Encoder};
 use ntex::io::{DispatchItem, IoBoxed, IoRef, IoStatusUpdate, RecvError};
-use ntex::service::{IntoService, Service};
+use ntex::service::{Container, IntoService, Service, ServiceCall};
 use ntex::time::Seconds;
 use ntex::util::{ready, Pool};
 
@@ -21,11 +21,11 @@ pin_project_lite::pin_project! {
     U: 'static,
     {
         codec: U,
-        service: Rc<S>,
+        service: Container<S>,
         inner: DispatcherInner<S, U>,
         pool: Pool,
         #[pin]
-        response: Option<S::Future<'static>>,
+        response: Option<ServiceCall<'static, S, DispatchItem<U>>>,
         response_idx: usize,
     }
 }
@@ -118,7 +118,7 @@ where
         Dispatcher {
             codec,
             pool,
-            service: Rc::new(service.into_service()),
+            service: Container::new(service.into_service()),
             response: None,
             response_idx: 0,
             inner: DispatcherInner {
@@ -509,7 +509,7 @@ mod tests {
     use ntex::channel::condition::Condition;
     use ntex::time::{sleep, Millis};
     use ntex::util::{Bytes, Ready};
-    use ntex::{codec::BytesCodec, io as nio, testing::Io};
+    use ntex::{codec::BytesCodec, io as nio, service::Ctx, testing::Io};
 
     use super::*;
 
@@ -539,7 +539,7 @@ mod tests {
             (
                 Dispatcher {
                     codec,
-                    service: Rc::new(service.into_service()),
+                    service: Container::new(service.into_service()),
                     response: None,
                     response_idx: 0,
                     pool: io.memory_pool().pool(),
@@ -717,7 +717,11 @@ mod tests {
                 Poll::Ready(Err(()))
             }
 
-            fn call(&self, _: DispatchItem<BytesCodec>) -> Self::Future<'_> {
+            fn call<'a>(
+                &'a self,
+                _: DispatchItem<BytesCodec>,
+                _: Ctx<'a, Self>,
+            ) -> Self::Future<'a> {
                 Ready::Ok(None)
             }
         }

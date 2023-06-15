@@ -1,7 +1,7 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{cell::RefCell, future::Future, num::NonZeroU16, pin::Pin, rc::Rc, time::Duration};
 
-use ntex::service::{fn_service, Service, ServiceFactory};
+use ntex::service::{fn_service, Container, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{join_all, lazy, ByteString, Bytes, Ready};
 use ntex::{server, service::pipeline_factory};
@@ -437,7 +437,7 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
 
     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
     builder.set_verify(SslVerifyMode::NONE);
-    let con = ntex::connect::openssl::Connector::new(builder.build());
+    let con = Container::new(ntex::connect::openssl::Connector::new(builder.build()));
     let addr = format!("127.0.0.1:{}", srv.addr().port());
     let io = con.call(addr.into()).await.unwrap();
 

@@ -2,7 +2,7 @@ use std::{cell::RefCell, convert::TryFrom, fmt, marker, num::NonZeroU16, rc::Rc}
 
 use ntex::io::IoBoxed;
 use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
-use ntex::service::{boxed, into_service, IntoService, Service};
+use ntex::service::{boxed, into_service, Container, IntoService, Service};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{ByteString, Either, HashMap, Ready};
 
@@ -92,7 +92,7 @@ impl Client {
     {
         let mut builder = Router::build();
         builder.path(address, 0);
-        let handlers = vec![boxed::service(service.into_service())];
+        let handlers = vec![Container::new(boxed::service(service.into_service()))];
 
         ClientRouter {
             builder,
@@ -167,7 +167,7 @@ type Handler<E> = boxed::BoxService<Publish, PublishAck, E>;
 pub struct ClientRouter<Err, PErr> {
     io: IoBoxed,
     builder: RouterBuilder<usize>,
-    handlers: Vec<Handler<PErr>>,
+    handlers: Vec<Container<Handler<PErr>>>,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     disconnect_timeout: Seconds,
@@ -199,7 +199,7 @@ where
         S: Service<Publish, Response = PublishAck, Error = PErr> + 'static,
     {
         self.builder.path(address, self.handlers.len());
-        self.handlers.push(boxed::service(service.into_service()));
+        self.handlers.push(Container::new(boxed::service(service.into_service())));
         self
     }
 
@@ -257,7 +257,7 @@ where
 
 fn dispatch<Err, PErr>(
     router: Router<usize>,
-    handlers: Vec<Handler<PErr>>,
+    handlers: Vec<Container<Handler<PErr>>>,
 ) -> impl Service<Publish, Response = Either<Publish, PublishAck>, Error = Err>
 where
     PErr: 'static,
@@ -300,7 +300,10 @@ where
     })
 }
 
-async fn call<S, Err>(req: Publish, srv: &S) -> Result<Either<Publish, PublishAck>, Err>
+async fn call<S, Err>(
+    req: Publish,
+    srv: &Container<S>,
+) -> Result<Either<Publish, PublishAck>, Err>
 where
     S: Service<Publish, Response = PublishAck>,
     PublishAck: TryFrom<S::Error, Error = Err>,

@@ -2,7 +2,7 @@ use std::{rc::Rc, task::Context, task::Poll};
 
 use ntex::router::{IntoPattern, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
-use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{Ctx, IntoServiceFactory, Service, ServiceCall, ServiceFactory};
 use ntex::util::BoxFuture;
 
 use super::{publish::Publish, Session};
@@ -84,17 +84,19 @@ where
     type Future<'f> = BoxFuture<'f, Result<RouterService<Err>, Err>>;
 
     fn create(&self, session: Session<S>) -> Self::Future<'_> {
-        let fut: Vec<_> = self.handlers.iter().map(|h| h.create(session.clone())).collect();
-        let default_fut = self.default.create(session);
-        let router = self.router.clone();
-
         Box::pin(async move {
+            let fut: Vec<_> = self.handlers.iter().map(|h| h.create(session.clone())).collect();
+
             let mut handlers = Vec::new();
             for handler in fut {
                 handlers.push(handler.await?);
             }
 
-            Ok(RouterService { router, handlers, default: default_fut.await? })
+            Ok(RouterService {
+                handlers,
+                router: self.router.clone(),
+                default: self.default.create(session).await?,
+            })
         })
     }
 }
@@ -108,7 +110,7 @@ pub struct RouterService<Err> {
 impl<Err> Service<Publish> for RouterService<Err> {
     type Response = ();
     type Error = Err;
-    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>> where Self: 'f;
+    type Future<'f> = ServiceCall<'f, HandlerService<Err>, Publish> where Self: 'f;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;
@@ -129,11 +131,11 @@ impl<Err> Service<Publish> for RouterService<Err> {
         }
     }
 
-    fn call(&self, mut req: Publish) -> Self::Future<'_> {
+    fn call<'a>(&'a self, mut req: Publish, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
         if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
-            self.handlers[*idx].call(req)
+            ctx.call(&self.handlers[*idx], req)
         } else {
-            self.default.call(req)
+            ctx.call(&self.default, req)
         }
     }
 }

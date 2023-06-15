@@ -3,7 +3,9 @@ use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use ntex::io::DispatchItem;
-use ntex::service::{fn_factory_with_config, Service, ServiceFactory};
+use ntex::service::{
+    fn_factory_with_config, Container, Ctx, Service, ServiceCall, ServiceFactory,
+};
 use ntex::util::{
     buffer::BufferService, inflight::InFlightService, join, BoxFuture, Either, HashSet, Ready,
 };
@@ -54,7 +56,6 @@ where
 
             let control = BufferService::new(
                 16,
-                || MqttError::<E>::Disconnected(None),
                 // limit number of in-flight messages
                 InFlightService::new(1, control),
             );
@@ -123,7 +124,7 @@ where
     type Error = MqttError<E>;
     type Future<'f> = Either<
         PublishResponse<'f, T, C, E>,
-        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<'f, C, E>>,
+        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<'f, T, C, E>>,
     > where Self: 'f;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -143,7 +144,7 @@ where
             self.inner.sink.close();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = inner.control.call(ControlMessage::closed()).await;
+                let _ = Container::new(&inner.control).call(ControlMessage::closed()).await;
             }));
         }
 
@@ -157,7 +158,11 @@ where
         }
     }
 
-    fn call(&self, req: DispatchItem<Rc<MqttShared>>) -> Self::Future<'_> {
+    fn call<'a>(
+        &'a self,
+        req: DispatchItem<Rc<MqttShared>>,
+        ctx: Ctx<'a, Self>,
+    ) -> Self::Future<'a> {
         log::trace!("Dispatch v3 packet: {:#?}", req);
 
         match req {
@@ -170,6 +175,7 @@ where
                             )
                         ),
                         &self.inner,
+                        ctx,
                     )));
                 }
 
@@ -185,6 +191,7 @@ where
                                 ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]")
                             ),
                             &self.inner,
+                            ctx,
                         )));
                     }
                 }
@@ -205,14 +212,16 @@ where
                             },
                         )),
                         &self.inner,
+                        ctx,
                     )));
                 }
 
                 Either::Left(PublishResponse {
                     packet_id,
                     inner,
+                    ctx,
                     state: PublishResponseState::Publish {
-                        fut: self.publish.call(Publish::new(publish, size)),
+                        fut: ctx.call(&self.publish, Publish::new(publish, size)),
                     },
                 })
             }
@@ -221,13 +230,14 @@ where
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(e),
                         &self.inner,
+                        ctx,
                     )))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             DispatchItem::Item((codec::Packet::PingRequest, _)) => Either::Right(
-                Either::Right(ControlResponse::new(ControlMessage::ping(), &self.inner)),
+                Either::Right(ControlResponse::new(ControlMessage::ping(), &self.inner, ctx)),
             ),
             DispatchItem::Item((
                 codec::Packet::Subscribe { packet_id, topic_filters },
@@ -239,6 +249,7 @@ where
                             "Topic filter is malformed [MQTT-4.7.1-*]",
                         )),
                         &self.inner,
+                        ctx,
                     )));
                 }
 
@@ -252,6 +263,7 @@ where
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::subscribe(Subscribe::new(packet_id, size, topic_filters)),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::Item((
@@ -264,6 +276,7 @@ where
                             "Topic filter is malformed [MQTT-4.7.1-*]",
                         )),
                         &self.inner,
+                        ctx,
                     )));
                 }
 
@@ -281,32 +294,36 @@ where
                         topic_filters,
                     )),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::Item((codec::Packet::Disconnect, _)) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::remote_disconnect(), &self.inner),
+                ControlResponse::new(ControlMessage::remote_disconnect(), &self.inner, ctx),
             )),
             DispatchItem::Item(_) => Either::Right(Either::Left(Ready::Ok(None))),
             DispatchItem::EncoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Encode(err)),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::KeepAliveTimeout => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::DecoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Decode(err)),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::Disconnect(err) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner),
+                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner, ctx),
             )),
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
@@ -329,6 +346,7 @@ pin_project_lite::pin_project! {
         state: PublishResponseState<'f, T, C, E>,
         packet_id: Option<NonZeroU16>,
         inner: &'f Inner<C>,
+        ctx: Ctx<'f, Dispatcher<T, C, E>>,
     }
 }
 
@@ -337,8 +355,8 @@ pin_project_lite::pin_project! {
     enum PublishResponseState<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>
     where T: 'f, C: 'f, E: 'f
     {
-        Publish { #[pin] fut: T::Future<'f> },
-        Control { #[pin] fut: ControlResponse<'f, C, E> },
+        Publish { #[pin] fut: ServiceCall<'f, T, Publish> },
+        Control { #[pin] fut: ControlResponse<'f, T, C, E> },
     }
 }
 
@@ -369,7 +387,11 @@ where
                 }
                 Poll::Ready(Err(e)) => {
                     this.state.set(PublishResponseState::Control {
-                        fut: ControlResponse::new(ControlMessage::error(e.into()), this.inner),
+                        fut: ControlResponse::new(
+                            ControlMessage::error(e.into()),
+                            this.inner,
+                            *this.ctx,
+                        ),
                     });
                     self.poll(cx)
                 }
@@ -382,28 +404,33 @@ where
 
 pin_project_lite::pin_project! {
     /// Control service response future
-    pub(crate) struct ControlResponse<'f, C: Service<ControlMessage<E>>, E>
+    pub(crate) struct ControlResponse<'f, T, C: Service<ControlMessage<E>>, E>
     where C: 'f, E: 'f
     {
         #[pin]
-        fut: C::Future<'f>,
+        fut: ServiceCall<'f, C, ControlMessage<E>>,
         inner: &'f Inner<C>,
         error: bool,
-        _t: PhantomData<E>,
+        ctx: Ctx<'f, Dispatcher<T, C, E>>,
     }
 }
 
-impl<'f, C, E> ControlResponse<'f, C, E>
+impl<'f, T, C, E> ControlResponse<'f, T, C, E>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(pkt: ControlMessage<E>, inner: &'f Inner<C>) -> Self {
+    fn new(
+        pkt: ControlMessage<E>,
+        inner: &'f Inner<C>,
+        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+    ) -> Self {
         let error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
-        Self { error, inner, fut: inner.control.call(pkt), _t: PhantomData }
+        let fut = ctx.call(&inner.control, pkt);
+        Self { error, inner, ctx, fut }
     }
 }
 
-impl<'f, C, E> Future for ControlResponse<'f, C, E>
+impl<'f, T, C, E> Future for ControlResponse<'f, T, C, E>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
@@ -446,7 +473,8 @@ where
                     match err {
                         MqttError::Service(err) => {
                             *this.error = true;
-                            let fut = this.inner.control.call(ControlMessage::error(err));
+                            let fut =
+                                this.ctx.call(&this.inner.control, ControlMessage::error(err));
                             self.as_mut().project().fut.set(fut);
                             self.poll(cx)
                         }
@@ -477,7 +505,7 @@ mod tests {
         let err = Rc::new(RefCell::new(false));
         let err2 = err.clone();
 
-        let disp = Dispatcher::<_, _, ()>::new(
+        let disp = Container::new(Dispatcher::<_, _, ()>::new(
             shared.clone(),
             fn_service(|_| async {
                 sleep(Seconds(10)).await;
@@ -490,7 +518,7 @@ mod tests {
                 Ready::Ok(ControlResult { result: ControlResultKind::Nothing })
             }),
             QoS::AtLeastOnce,
-        );
+        ));
 
         let mut f = Box::pin(disp.call(DispatchItem::Item((
             codec::Packet::Publish(codec::Publish {
@@ -526,12 +554,12 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
 
-        let disp = Dispatcher::<_, _, ()>::new(
+        let disp = Container::new(Dispatcher::<_, _, ()>::new(
             shared.clone(),
             fn_service(|_| Ready::Ok(())),
             fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
             QoS::AtLeastOnce,
-        );
+        ));
 
         let sink = MqttSink::new(shared.clone());
         assert!(!sink.is_ready());

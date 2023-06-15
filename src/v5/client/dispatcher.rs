@@ -3,7 +3,7 @@ use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use ntex::io::DispatchItem;
-use ntex::service::Service;
+use ntex::service::{Container, Ctx, Service, ServiceCall};
 use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
@@ -96,7 +96,7 @@ where
     type Error = MqttError<E>;
     type Future<'f> = Either<
         PublishResponse<'f, T, C, E>,
-        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<'f, C, E>>,
+        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<'f, T, C, E>>,
     > where Self: 'f;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -116,7 +116,7 @@ where
             self.inner.sink.drop_sink();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = inner.control.call(ControlMessage::closed()).await;
+                let _ = Container::new(&inner.control).call(ControlMessage::closed()).await;
             }));
         }
 
@@ -130,7 +130,11 @@ where
         }
     }
 
-    fn call(&self, request: DispatchItem<Rc<MqttShared>>) -> Self::Future<'_> {
+    fn call<'a>(
+        &'a self,
+        request: DispatchItem<Rc<MqttShared>>,
+        ctx: Ctx<'a, Self>,
+    ) -> Self::Future<'a> {
         log::trace!("Dispatch packet: {:#?}", request);
 
         match request {
@@ -157,6 +161,7 @@ where
                                     )
                                 ),
                                 &self.inner,
+                                ctx,
                             )));
                         }
 
@@ -186,6 +191,7 @@ where
                                             "Unknown topic alias",
                                         )),
                                         &self.inner,
+                                        ctx,
                                     )));
                                 }
                             }
@@ -209,6 +215,7 @@ where
                                                     )
                                                 ),
                                                 &self.inner,
+                                                ctx
                                             ),
                                         ));
                                     }
@@ -226,8 +233,9 @@ where
                     packet_size: size,
                     inner: info,
                     state: PublishResponseState::Publish {
-                        fut: self.publish.call(Publish::new(publish, size)),
+                        fut: ctx.call(&self.publish, Publish::new(publish, size)),
                     },
+                    ctx,
                     _t: PhantomData,
                 })
             }
@@ -236,6 +244,7 @@ where
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(err),
                         &self.inner,
+                        ctx,
                     )))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
@@ -246,6 +255,7 @@ where
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(err),
                         &self.inner,
+                        ctx,
                     )))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
@@ -256,6 +266,7 @@ where
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(err),
                         &self.inner,
+                        ctx,
                     )))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
@@ -265,6 +276,7 @@ where
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::dis(pkt, size),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::Item((codec::Packet::Auth(_), _)) => {
@@ -274,6 +286,7 @@ where
                         "AUTH packet is not supported at this time",
                     )),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::Item((
@@ -299,21 +312,24 @@ where
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Encode(err)),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::DecoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Decode(err)),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::Disconnect(err) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner),
+                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner, ctx),
             )),
             DispatchItem::KeepAliveTimeout => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::WBackPressureEnabled => {
@@ -336,6 +352,7 @@ pin_project_lite::pin_project! {
         packet_id: u16,
         packet_size: u32,
         inner: &'f Inner<C>,
+        ctx: Ctx<'f, Dispatcher<T, C, E>>,
         _t: PhantomData<E>,
     }
 }
@@ -345,8 +362,8 @@ pin_project_lite::pin_project! {
     enum PublishResponseState<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>
     where T: 'f, C: 'f, E: 'f
     {
-        Publish { #[pin] fut: T::Future<'f> },
-        Control { #[pin] fut: ControlResponse<'f, C, E> },
+        Publish { #[pin] fut: ServiceCall<'f, T, Publish> },
+        Control { #[pin] fut: ControlResponse<'f, T, C, E> },
     }
 }
 
@@ -373,6 +390,7 @@ where
                                         *this.packet_size,
                                     ),
                                     this.inner,
+                                    *this.ctx,
                                 )
                                 .packet_id(*this.packet_id),
                             });
@@ -381,7 +399,11 @@ where
                     },
                     Poll::Ready(Err(e)) => {
                         this.state.set(PublishResponseState::Control {
-                            fut: ControlResponse::new(ControlMessage::error(e), this.inner),
+                            fut: ControlResponse::new(
+                                ControlMessage::error(e),
+                                this.inner,
+                                *this.ctx,
+                            ),
                         });
                         return self.poll(cx);
                     }
@@ -408,26 +430,32 @@ where
 
 pin_project_lite::pin_project! {
     /// Control service response future
-    pub(crate) struct ControlResponse<'f, C: Service<ControlMessage<E>>, E>
-    where C: 'f, E: 'f
+    pub(crate) struct ControlResponse<'f, T, C: Service<ControlMessage<E>>, E>
+    where T: 'f, C: 'f, E: 'f
     {
         #[pin]
-        fut: C::Future<'f>,
+        fut: ServiceCall<'f, C, ControlMessage<E>>,
         inner: &'f Inner<C>,
         error: bool,
         packet_id: u16,
+        ctx: Ctx<'f, Dispatcher<T, C, E>>,
         _t: PhantomData<E>,
     }
 }
 
-impl<'f, C, E> ControlResponse<'f, C, E>
+impl<'f, T, C, E> ControlResponse<'f, T, C, E>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(pkt: ControlMessage<E>, inner: &'f Inner<C>) -> Self {
+    fn new(
+        pkt: ControlMessage<E>,
+        inner: &'f Inner<C>,
+        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+    ) -> Self {
         let error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
+        let fut = ctx.call(&inner.control, pkt);
 
-        Self { error, inner, packet_id: 0, fut: inner.control.call(pkt), _t: PhantomData }
+        Self { error, inner, fut, ctx, packet_id: 0, _t: PhantomData }
     }
 
     fn packet_id(mut self, id: u16) -> Self {
@@ -436,7 +464,7 @@ where
     }
 }
 
-impl<'f, C, E> Future for ControlResponse<'f, C, E>
+impl<'f, T, C, E> Future for ControlResponse<'f, T, C, E>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
@@ -461,7 +489,8 @@ where
                     match err {
                         MqttError::Service(err) => {
                             *this.error = true;
-                            let fut = this.inner.control.call(ControlMessage::error(err));
+                            let fut =
+                                this.ctx.call(&this.inner.control, ControlMessage::error(err));
                             self.as_mut().project().fut.set(fut);
                             self.poll(cx)
                         }
@@ -507,7 +536,7 @@ mod tests {
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Default::default()));
         let sink = MqttSink::new(shared.clone());
 
-        let disp = Dispatcher::<_, _, _>::new(
+        let disp = Container::new(Dispatcher::<_, _, _>::new(
             sink.clone(),
             16,
             16,
@@ -518,7 +547,7 @@ mod tests {
                     disconnect: false,
                 })
             }),
-        );
+        ));
 
         assert!(!sink.is_ready());
         shared.set_cap(1);

@@ -1,5 +1,9 @@
 # Changes
 
+## [0.11.0] - 2023-06-xx
+
+* Migrate to ntex-0.7
+
 ## [0.10.4] - 2023-05-12
 
 * Expose size of prepared packet
