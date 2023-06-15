@@ -36,11 +36,11 @@ lto = "off" # cannot build tests with "thin"
 lto = "off" # cannot build tests with "thin"
 
 [patch.crates-io]
-ntex = { git = "https://github.com/ntex-rs/ntex.git", branch = "ntex-0.7" }
-ntex-service = { git = "https://github.com/ntex-rs/ntex.git", branch = "ntex-0.7" }
-ntex-util = { git = "https://github.com/ntex-rs/ntex.git", branch = "ntex-0.7" }
-ntex-tls = { git = "https://github.com/ntex-rs/ntex.git", branch = "ntex-0.7" }
-ntex-io = { git = "https://github.com/ntex-rs/ntex.git", branch = "ntex-0.7" }
-ntex-connect = { git = "https://github.com/ntex-rs/ntex.git", branch = "ntex-0.7" }
-ntex-tokio = { git = "https://github.com/ntex-rs/ntex.git", branch = "ntex-0.7" }
-ntex-h2 = { git = "https://github.com/ntex-rs/ntex-h2.git", branch = "0-3" }
+ntex = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-service = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-util = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-tls = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-connect = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-tokio = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-h2 = { git = "https://github.com/ntex-rs/ntex-h2.git" }
