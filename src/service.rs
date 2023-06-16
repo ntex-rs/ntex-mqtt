@@ -2,7 +2,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex::codec::{Decoder, Encoder};
 use ntex::io::{DispatchItem, Filter, Io, IoBoxed};
-use ntex::service::{Service, ServiceFactory};
+use ntex::service::{Ctx, Service, ServiceFactory};
 use ntex::time::{Deadline, Seconds};
 use ntex::util::{select, BoxFuture, Either};
 
@@ -145,19 +145,18 @@ where
     ntex::forward_poll_shutdown!(connect);
 
     #[inline]
-    fn call(&self, req: IoBoxed) -> Self::Future<'_> {
-        let handler = self.handler.clone();
-        let timeout = self.disconnect_timeout;
-        let handshake = self.connect.call(req);
-
+    fn call<'a>(&'a self, req: IoBoxed, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
         Box::pin(async move {
-            let (io, codec, session, keepalive) = handshake.await.map_err(|e| {
+            let timeout = self.disconnect_timeout;
+            let handshake = ctx.call(&self.connect, req).await;
+
+            let (io, codec, session, keepalive) = handshake.map_err(|e| {
                 log::trace!("Connection handshake failed: {:?}", e);
                 e
             })?;
             log::trace!("Connection handshake succeeded");
 
-            let handler = handler.create(session).await?;
+            let handler = self.handler.create(session).await?;
             log::trace!("Connection handler is created, starting dispatcher");
 
             Dispatcher::new(io, codec, handler)
@@ -191,8 +190,8 @@ where
     ntex::forward_poll_shutdown!(connect);
 
     #[inline]
-    fn call(&self, io: Io<F>) -> Self::Future<'_> {
-        Service::<IoBoxed>::call(self, IoBoxed::from(io))
+    fn call<'a>(&'a self, io: Io<F>, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+        Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx)
     }
 }
 
@@ -218,23 +217,26 @@ where
     ntex::forward_poll_shutdown!(connect);
 
     #[inline]
-    fn call(&self, (io, delay): (IoBoxed, Deadline)) -> Self::Future<'_> {
-        let handler = self.handler.clone();
-        let timeout = self.disconnect_timeout;
-        let handshake = self.connect.call(io);
-
+    fn call<'a>(
+        &'a self,
+        (io, delay): (IoBoxed, Deadline),
+        ctx: Ctx<'a, Self>,
+    ) -> Self::Future<'a> {
         Box::pin(async move {
+            let timeout = self.disconnect_timeout;
+
             let (io, codec, ka, handler) = {
                 let res = select(
                     delay,
                     Box::pin(async {
-                        let (io, codec, st, ka) = handshake.await.map_err(|e| {
-                            log::trace!("Connection handshake failed: {:?}", e);
-                            e
-                        })?;
+                        let (io, codec, st, ka) =
+                            ctx.call(&self.connect, io).await.map_err(|e| {
+                                log::trace!("Connection handshake failed: {:?}", e);
+                                e
+                            })?;
                         log::trace!("Connection handshake succeeded");
 
-                        let handler = handler.create(st).await?;
+                        let handler = self.handler.create(st).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 
                         Ok::<_, C::Error>((io, codec, ka, handler))

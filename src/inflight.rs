@@ -1,7 +1,7 @@
 //! Service that limits number of in-flight async requests.
 use std::{cell::Cell, future::Future, marker, pin::Pin, rc::Rc, task::Context, task::Poll};
 
-use ntex::{service::Service, task::LocalWaker};
+use ntex::{service::Ctx, service::Service, service::ServiceCall, task::LocalWaker};
 
 pub(crate) trait SizedRequest {
     fn size(&self) -> u32;
@@ -45,12 +45,12 @@ where
     }
 
     #[inline]
-    fn call(&self, req: R) -> Self::Future<'_> {
+    fn call<'a>(&'a self, req: R, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
         InFlightServiceResponse {
             _guard: self.count.get(size),
             _t: marker::PhantomData,
-            fut: self.service.call(req),
+            fut: ctx.call(&self.service, req),
         }
     }
 }
@@ -61,7 +61,7 @@ pin_project_lite::pin_project! {
     where T: 'f, R: 'f
     {
         #[pin]
-        fut: T::Future<'f>,
+        fut: ServiceCall<'f, T, R>,
         _guard: CounterGuard,
         _t: marker::PhantomData<R>
     }
@@ -155,10 +155,10 @@ impl CounterInner {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc, task::Poll, time::Duration};
+    use std::{cell::Cell, task::Poll, time::Duration};
 
     use ntex::util::{lazy, poll_fn, BoxFuture};
-    use ntex::{service::Service, time::sleep};
+    use ntex::{service::Container, service::Service, time::sleep};
 
     use super::*;
 
@@ -169,7 +169,7 @@ mod tests {
         type Error = ();
         type Future<'f> = BoxFuture<'f, Result<(), ()>>;
 
-        fn call(&self, _: ()) -> Self::Future<'_> {
+        fn call<'a>(&'a self, _: (), _: Ctx<'a, Self>) -> Self::Future<'a> {
             let fut = sleep(self.0);
             Box::pin(async move {
                 let _ = fut.await;
@@ -188,13 +188,17 @@ mod tests {
     async fn test_inflight() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = InFlightService::new(1, 0, SleepService(wait_time));
+        let srv = Container::new(InFlightService::new(1, 0, SleepService(wait_time)));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
-        let res = srv.call(());
+        let srv2 = srv.clone();
+        ntex::rt::spawn(async move {
+            let _ = srv2.call(()).await;
+        });
+        ntex::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
-        let _ = res.await;
+        ntex::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
         assert!(lazy(|cx| srv.poll_shutdown(cx)).await.is_ready());
     }
@@ -203,13 +207,17 @@ mod tests {
     async fn test_inflight2() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = InFlightService::new(0, 10, SleepService(wait_time));
+        let srv = Container::new(InFlightService::new(0, 10, SleepService(wait_time)));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
-        let res = srv.call(());
+        let srv2 = srv.clone();
+        ntex::rt::spawn(async move {
+            let _ = srv2.call(()).await;
+        });
+        ntex::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
-        let _ = res.await;
+        ntex::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
     }
 
@@ -231,7 +239,7 @@ mod tests {
             }
         }
 
-        fn call(&self, _: ()) -> Self::Future<'_> {
+        fn call<'a>(&'a self, _: (), _: Ctx<'a, Self>) -> Self::Future<'a> {
             let fut = sleep(self.dur);
             self.cnt.set(true);
 
@@ -250,14 +258,18 @@ mod tests {
     async fn test_inflight3() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Rc::new(InFlightService::new(
+        let srv = Container::new(InFlightService::new(
             1,
             10,
             Srv2 { dur: wait_time, cnt: Cell::new(false) },
         ));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
-        let res = srv.call(());
+        let srv2 = srv.clone();
+        ntex::rt::spawn(async move {
+            let _ = srv2.call(()).await;
+        });
+        ntex::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
         let srv2 = srv.clone();
@@ -267,7 +279,6 @@ mod tests {
             let _ = tx.send(());
         });
 
-        let _ = res.await;
         let _ = rx.await;
     }
 }

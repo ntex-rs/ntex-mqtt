@@ -1,7 +1,7 @@
 use std::{convert::TryFrom, fmt, future::Future, marker::PhantomData, rc::Rc};
 
 use ntex::io::{DispatchItem, IoBoxed};
-use ntex::service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
 use ntex::time::{timeout_checked, Millis, Seconds};
 use ntex::util::{select, BoxFuture, Either};
 
@@ -304,13 +304,13 @@ where
         Box::pin(async move {
             let service = fut.await?;
             Ok(HandshakeService {
+                service,
                 max_size,
                 max_receive,
                 max_topic_alias,
                 max_qos,
                 handshake_timeout,
                 pool,
-                service: Rc::new(service),
                 _t: PhantomData,
             })
         })
@@ -318,7 +318,7 @@ where
 }
 
 struct HandshakeService<St, H> {
-    service: Rc<H>,
+    service: H,
     max_size: u32,
     max_receive: u16,
     max_topic_alias: u16,
@@ -340,10 +340,9 @@ where
     ntex::forward_poll_ready!(service, MqttError::Service);
     ntex::forward_poll_shutdown!(service);
 
-    fn call(&self, io: IoBoxed) -> Self::Future<'_> {
+    fn call<'a>(&'a self, io: IoBoxed, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
         log::trace!("Starting mqtt v5 handshake");
 
-        let service = self.service.clone();
         let codec = mqtt::Codec::default();
         codec.set_max_inbound_size(self.max_size);
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
@@ -378,8 +377,8 @@ where
                         connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize;
 
                     // authenticate mqtt connection
-                    let mut ack = service
-                        .call(Handshake::new(connect, size, io, shared))
+                    let mut ack = ctx
+                        .call(&self.service, Handshake::new(connect, size, io, shared))
                         .await
                         .map_err(MqttError::Service)?;
 
@@ -506,7 +505,7 @@ where
                 max_qos,
                 max_topic_alias,
                 disconnect_timeout,
-                connect: Rc::new(fut.await?),
+                connect: fut.await?,
                 _t: PhantomData,
             })
         })
@@ -515,7 +514,7 @@ where
 
 pub(crate) struct ServerSelectorImpl<St, C, T, F, R> {
     check: Rc<F>,
-    connect: Rc<C>,
+    connect: C,
     handler: Rc<T>,
     max_size: u32,
     max_receive: u16,
@@ -548,23 +547,19 @@ where
     ntex::forward_poll_shutdown!(connect);
 
     #[inline]
-    fn call(&self, req: SelectItem) -> Self::Future<'_> {
-        log::trace!("Start connection handshake");
-
-        let check = self.check.clone();
-        let connect = self.connect.clone();
-        let handler = self.handler.clone();
-        let timeout = self.disconnect_timeout;
-
-        req.0.shared.codec.set_max_inbound_size(self.max_size);
-        req.0.shared.set_max_qos(self.max_qos);
-        req.0.shared.set_receive_max(self.max_receive);
-        req.0.shared.set_topic_alias_max(self.max_topic_alias);
-
+    fn call<'a>(&'a self, req: SelectItem, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
         Box::pin(async move {
+            log::trace!("Start connection handshake");
+
+            let timeout = self.disconnect_timeout;
+
+            req.0.shared.codec.set_max_inbound_size(self.max_size);
+            req.0.shared.set_max_qos(self.max_qos);
+            req.0.shared.set_receive_max(self.max_receive);
+            req.0.shared.set_topic_alias_max(self.max_topic_alias);
             let (hnd, mut delay) = req;
 
-            let result = match select((*check)(&hnd), &mut delay).await {
+            let result = match select((*self.check)(&hnd), &mut delay).await {
                 Either::Left(res) => res,
                 Either::Right(_) => return Err(MqttError::HandshakeTimeout),
             };
@@ -581,7 +576,7 @@ where
                     hnd.packet().receive_max.map(|v| v.get()).unwrap_or(16) as usize;
 
                 // authenticate mqtt connection
-                let mut ack = match select(connect.call(hnd), &mut delay).await {
+                let mut ack = match select(ctx.call(&self.connect, hnd), &mut delay).await {
                     Either::Left(res) => res.map_err(|e| {
                         log::trace!("Connection handshake failed: {:?}", e);
                         MqttError::Service(e)
@@ -615,7 +610,7 @@ where
                             .await?;
 
                         let session = Session::new(session, MqttSink::new(shared.clone()));
-                        let handler = handler.create(session).await?;
+                        let handler = self.handler.create(session).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 
                         Dispatcher::new(ack.io, shared, handler)

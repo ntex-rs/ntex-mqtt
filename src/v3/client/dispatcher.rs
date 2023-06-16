@@ -3,7 +3,7 @@ use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use ntex::io::DispatchItem;
-use ntex::service::Service;
+use ntex::service::{Container, Ctx, Service, ServiceCall};
 use ntex::util::{inflight::InFlightService, BoxFuture, Either, HashSet, Ready};
 
 use crate::v3::shared::{Ack, MqttShared};
@@ -90,7 +90,7 @@ where
             self.inner.sink.close();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = inner.control.call(ControlMessage::closed()).await;
+                let _ = Container::new(&inner.control).call(ControlMessage::closed()).await;
             }));
         }
 
@@ -104,7 +104,11 @@ where
         }
     }
 
-    fn call(&self, packet: DispatchItem<Rc<MqttShared>>) -> Self::Future<'_> {
+    fn call<'a>(
+        &'a self,
+        packet: DispatchItem<Rc<MqttShared>>,
+        ctx: Ctx<'a, Self>,
+    ) -> Self::Future<'a> {
         log::trace!("Dispatch packet: {:#?}", packet);
         match packet {
             DispatchItem::Item((codec::Packet::Publish(publish), size)) => {
@@ -121,11 +125,11 @@ where
                     }
                 }
                 Either::Left(PublishResponse {
+                    fut: ctx.call(&self.publish, Publish::new(publish, size)),
+                    fut_c: None,
                     packet_id,
                     inner,
-                    fut: self.publish.call(Publish::new(publish, size)),
-                    fut_c: None,
-                    _t: PhantomData,
+                    ctx,
                 })
             }
             DispatchItem::Item((codec::Packet::PublishAck { packet_id }, _)) => {
@@ -170,21 +174,24 @@ where
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Encode(err)),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::DecoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Decode(err)),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::Disconnect(err) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner),
+                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner, ctx),
             )),
             DispatchItem::KeepAliveTimeout => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::WBackPressureEnabled => {
@@ -205,12 +212,12 @@ pin_project_lite::pin_project! {
     where T: 'f
     {
         #[pin]
-        fut: T::Future<'f>,
+        fut: ServiceCall<'f, T, Publish>,
         #[pin]
         fut_c: Option<ControlResponse<'f, C, E>>,
         packet_id: Option<NonZeroU16>,
         inner: &'f Inner<C>,
-        _t: PhantomData<E>,
+        ctx: Ctx<'f, Dispatcher<T, C, E>>,
     }
 }
 
@@ -230,8 +237,11 @@ where
         let res = match this.fut.poll(cx) {
             Poll::Ready(Ok(item)) => item,
             Poll::Ready(Err(e)) => {
-                this.fut_c
-                    .set(Some(ControlResponse::new(ControlMessage::error(e), *this.inner)));
+                this.fut_c.set(Some(ControlResponse::new(
+                    ControlMessage::error(e),
+                    *this.inner,
+                    *this.ctx,
+                )));
                 return self.poll(cx);
             }
             Poll::Pending => return Poll::Pending,
@@ -252,6 +262,7 @@ where
                 this.fut_c.set(Some(ControlResponse::new(
                     ControlMessage::publish(pkt.into_inner()),
                     *this.inner,
+                    *this.ctx,
                 )));
                 self.poll(cx)
             }
@@ -265,9 +276,8 @@ pin_project_lite::pin_project! {
     where C: 'f, E: 'f
     {
         #[pin]
-        fut: C::Future<'f>,
+        fut: ServiceCall<'f, C, ControlMessage<E>>,
         inner: &'f Inner<C>,
-        _t: PhantomData<E>,
     }
 }
 
@@ -275,8 +285,12 @@ impl<'f, C, E> ControlResponse<'f, C, E>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(msg: ControlMessage<E>, inner: &'f Inner<C>) -> Self {
-        Self { fut: inner.control.call(msg), inner, _t: PhantomData }
+    fn new<T>(
+        msg: ControlMessage<E>,
+        inner: &'f Inner<C>,
+        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+    ) -> Self {
+        Self { fut: ctx.call(&inner.control, msg), inner }
     }
 }
 
@@ -327,14 +341,14 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
 
-        let disp = Dispatcher::<_, _, ()>::new(
+        let disp = Container::new(Dispatcher::<_, _, ()>::new(
             shared.clone(),
             fn_service(|_| async {
                 sleep(Seconds(10)).await;
                 Ok(Either::Left(()))
             }),
             fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
-        );
+        ));
 
         let mut f = Box::pin(disp.call(DispatchItem::Item((
             codec::Packet::Publish(codec::Publish {
@@ -375,11 +389,11 @@ mod tests {
         let codec = Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
 
-        let disp = Dispatcher::<_, _, ()>::new(
+        let disp = Container::new(Dispatcher::<_, _, ()>::new(
             shared.clone(),
             fn_service(|_| Ready::Ok(Either::Left(()))),
             fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
-        );
+        ));
 
         let sink = MqttSink::new(shared.clone());
         assert!(!sink.is_ready());

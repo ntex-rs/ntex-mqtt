@@ -2,7 +2,7 @@ use std::task::{Context, Poll};
 use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin};
 
 use ntex::io::{Filter, Io, IoBoxed, RecvError};
-use ntex::service::{Service, ServiceFactory};
+use ntex::service::{Ctx, Service, ServiceCall, ServiceFactory};
 use ntex::time::{Deadline, Millis, Seconds};
 use ntex::util::{join, ready, BoxFuture, Ready};
 
@@ -349,8 +349,9 @@ where
     }
 
     #[inline]
-    fn call(&self, req: IoBoxed) -> Self::Future<'_> {
+    fn call<'a>(&'a self, req: IoBoxed, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
         MqttServerImplResponse {
+            ctx,
             state: MqttServerImplState::Version {
                 item: Some((req, VersionCodec, Deadline::new(self.handshake_timeout))),
             },
@@ -380,8 +381,8 @@ where
     }
 
     #[inline]
-    fn call(&self, io: Io<F>) -> Self::Future<'_> {
-        Service::<IoBoxed>::call(self, IoBoxed::from(io))
+    fn call<'a>(&'a self, io: Io<F>, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+        Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx)
     }
 }
 
@@ -404,6 +405,7 @@ pin_project_lite::pin_project! {
         #[pin]
         state: MqttServerImplState<'f, V3, V5>,
         handlers: &'f (V3, V5),
+        ctx: Ctx<'f, MqttServerImpl<V3, V5, Err>>,
     }
 }
 
@@ -412,8 +414,8 @@ pin_project_lite::pin_project! {
         pub(crate) enum MqttServerImplState<'f, V3: Service<(IoBoxed, Deadline)>, V5: Service<(IoBoxed, Deadline)>>
         where V3: 'f, V5: 'f
     {
-        V3 { #[pin] fut: V3::Future<'f> },
-        V5 { #[pin] fut: V5::Future<'f> },
+        V3 { #[pin] fut: ServiceCall<'f, V3, (IoBoxed, Deadline)> },
+        V5 { #[pin] fut: ServiceCall<'f, V5, (IoBoxed, Deadline)> },
         Version { item: Option<(IoBoxed, VersionCodec, Deadline)> },
     }
 }
@@ -426,10 +428,10 @@ where
     type Output = Result<(), MqttError<Err>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        loop {
-            let mut this = self.as_mut().project();
+        let mut this = self.as_mut().project();
 
-            match this.state.project() {
+        loop {
+            match this.state.as_mut().project() {
                 MqttServerImplStateProject::V3 { fut } => return fut.poll(cx),
                 MqttServerImplStateProject::V5 { fut } => return fut.poll(cx),
                 MqttServerImplStateProject::Version { ref mut item } => {
@@ -442,19 +444,14 @@ where
                     return match ready!(st.0.poll_recv(&st.1, cx)) {
                         Ok(ver) => {
                             let (io, _, delay) = item.take().unwrap();
-                            this = self.as_mut().project();
-                            match ver {
-                                ProtocolVersion::MQTT3 => {
-                                    this.state.set(MqttServerImplState::V3 {
-                                        fut: this.handlers.0.call((io, delay)),
-                                    })
-                                }
-                                ProtocolVersion::MQTT5 => {
-                                    this.state.set(MqttServerImplState::V5 {
-                                        fut: this.handlers.1.call((io, delay)),
-                                    })
-                                }
-                            }
+                            this.state.set(match ver {
+                                ProtocolVersion::MQTT3 => MqttServerImplState::V3 {
+                                    fut: this.ctx.call(&this.handlers.0, (io, delay)),
+                                },
+                                ProtocolVersion::MQTT5 => MqttServerImplState::V5 {
+                                    fut: this.ctx.call(&this.handlers.1, (io, delay)),
+                                },
+                            });
                             continue;
                         }
                         Err(RecvError::KeepAlive | RecvError::Stop) => {
@@ -506,7 +503,7 @@ impl<Err, InitErr> Service<(IoBoxed, Deadline)> for DefaultProtocolServer<Err, I
     type Error = MqttError<Err>;
     type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
-    fn call(&self, _: (IoBoxed, Deadline)) -> Self::Future<'_> {
+    fn call<'a>(&'a self, _: (IoBoxed, Deadline), _: Ctx<'a, Self>) -> Self::Future<'a> {
         Ready::Err(MqttError::Disconnected(Some(io::Error::new(
             io::ErrorKind::Other,
             format!("Protocol is not supported: {:?}", self.ver),

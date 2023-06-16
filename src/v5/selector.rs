@@ -1,7 +1,7 @@
 use std::{convert::TryFrom, fmt, future::Future, marker, rc::Rc, task::Context, task::Poll};
 
 use ntex::io::{Filter, Io, IoBoxed};
-use ntex::service::{boxed, Service, ServiceFactory};
+use ntex::service::{boxed, Ctx, Service, ServiceFactory};
 use ntex::time::{Deadline, Millis, Seconds};
 use ntex::util::{select, BoxFuture, Either};
 
@@ -113,10 +113,10 @@ where
             servers.push(fut.await?);
         }
         Ok(SelectorService {
+            servers,
             max_size: self.max_size,
             handshake_timeout: self.handshake_timeout,
             pool: self.pool.clone(),
-            servers: Rc::new(servers),
         })
     }
 }
@@ -171,7 +171,7 @@ where
 }
 
 pub struct SelectorService<Err> {
-    servers: Rc<Vec<Server<Err>>>,
+    servers: Vec<Server<Err>>,
     max_size: u32,
     handshake_timeout: Millis,
     pool: Rc<MqttSinkPool>,
@@ -197,8 +197,8 @@ where
     }
 
     #[inline]
-    fn call(&self, io: Io<F>) -> Self::Future<'_> {
-        Service::<IoBoxed>::call(self, IoBoxed::from(io))
+    fn call<'a>(&'a self, io: Io<F>, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+        Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx)
     }
 }
 
@@ -237,14 +237,13 @@ where
     }
 
     #[inline]
-    fn call(&self, io: IoBoxed) -> Self::Future<'_> {
-        let servers = self.servers.clone();
-        let codec = mqtt::Codec::default();
-        codec.set_max_inbound_size(self.max_size);
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
-
-        let mut timeout = Deadline::new(self.handshake_timeout);
+    fn call<'a>(&'a self, io: IoBoxed, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
         Box::pin(async move {
+            let codec = mqtt::Codec::default();
+            codec.set_max_inbound_size(self.max_size);
+            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
+            let mut timeout = Deadline::new(self.handshake_timeout);
+
             // read first packet
             let result = select(&mut timeout, async {
                 io.recv(&shared.codec)
@@ -278,8 +277,8 @@ where
 
             // call servers
             let mut item = (Handshake::new(connect, size, io, shared), timeout);
-            for srv in servers.iter() {
-                match srv.call(item).await? {
+            for srv in self.servers.iter() {
+                match ctx.call(&srv, item).await? {
                     Either::Left(result) => {
                         item = result;
                     }
@@ -311,13 +310,16 @@ where
     }
 
     #[inline]
-    fn call(&self, (io, mut timeout): (IoBoxed, Deadline)) -> Self::Future<'_> {
-        let servers = self.servers.clone();
-        let codec = mqtt::Codec::default();
-        codec.set_max_inbound_size(self.max_size);
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
-
+    fn call<'a>(
+        &'a self,
+        (io, mut timeout): (IoBoxed, Deadline),
+        ctx: Ctx<'a, Self>,
+    ) -> Self::Future<'a> {
         Box::pin(async move {
+            let codec = mqtt::Codec::default();
+            codec.set_max_inbound_size(self.max_size);
+            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
+
             // read first packet
             let result = select(&mut timeout, async {
                 io.recv(&shared.codec)
@@ -351,8 +353,8 @@ where
 
             // call servers
             let mut item = (Handshake::new(connect, size, io, shared), timeout);
-            for srv in servers.iter() {
-                match srv.call(item).await? {
+            for srv in self.servers.iter() {
+                match ctx.call(srv, item).await? {
                     Either::Left(result) => {
                         item = result;
                     }
