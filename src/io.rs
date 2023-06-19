@@ -509,7 +509,7 @@ mod tests {
     use ntex::channel::condition::Condition;
     use ntex::time::{sleep, Millis};
     use ntex::util::{Bytes, Ready};
-    use ntex::{codec::BytesCodec, io as nio, service::Ctx, testing::Io};
+    use ntex::{codec::BytesCodec, io as nio, service::ServiceCtx, testing::Io};
 
     use super::*;
 
@@ -720,7 +720,7 @@ mod tests {
             fn call<'a>(
                 &'a self,
                 _: DispatchItem<BytesCodec>,
-                _: Ctx<'a, Self>,
+                _: ServiceCtx<'a, Self>,
             ) -> Self::Future<'a> {
                 Ready::Ok(None)
             }

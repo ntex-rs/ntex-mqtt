@@ -2,7 +2,7 @@ use std::{cell::RefCell, num::NonZeroU16, rc::Rc, task::Context, task::Poll};
 
 use ntex::router::{IntoPattern, Path, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
-use ntex::service::{Ctx, IntoServiceFactory, Service, ServiceCall, ServiceFactory};
+use ntex::service::{IntoServiceFactory, Service, ServiceCall, ServiceCtx, ServiceFactory};
 use ntex::util::{BoxFuture, ByteString, HashMap};
 
 use super::publish::{Publish, PublishAck};
@@ -145,7 +145,7 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
         }
     }
 
-    fn call<'a>(&'a self, mut req: Publish, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, mut req: Publish, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         if !req.publish_topic().is_empty() {
             if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
                 // save info for topic alias

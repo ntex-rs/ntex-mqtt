@@ -3,7 +3,7 @@ use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use ntex::io::DispatchItem;
-use ntex::service::{Container, Ctx, Service, ServiceCall};
+use ntex::service::{Container, Service, ServiceCall, ServiceCtx};
 use ntex::util::{inflight::InFlightService, BoxFuture, Either, HashSet, Ready};
 
 use crate::v3::shared::{Ack, MqttShared};
@@ -107,7 +107,7 @@ where
     fn call<'a>(
         &'a self,
         packet: DispatchItem<Rc<MqttShared>>,
-        ctx: Ctx<'a, Self>,
+        ctx: ServiceCtx<'a, Self>,
     ) -> Self::Future<'a> {
         log::trace!("Dispatch packet: {:#?}", packet);
         match packet {
@@ -217,7 +217,7 @@ pin_project_lite::pin_project! {
         fut_c: Option<ControlResponse<'f, C, E>>,
         packet_id: Option<NonZeroU16>,
         inner: &'f Inner<C>,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     }
 }
 
@@ -288,7 +288,7 @@ where
     fn new<T>(
         msg: ControlMessage<E>,
         inner: &'f Inner<C>,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     ) -> Self {
         Self { fut: ctx.call(&inner.control, msg), inner }
     }

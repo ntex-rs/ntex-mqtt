@@ -3,7 +3,7 @@ use std::{cell::RefCell, convert::TryFrom, future::Future, marker, num, pin::Pin
 
 use ntex::io::DispatchItem;
 use ntex::service::{
-    fn_factory_with_config, Container, Ctx, Service, ServiceCall, ServiceFactory,
+    fn_factory_with_config, Container, Service, ServiceCall, ServiceCtx, ServiceFactory,
 };
 use ntex::util::{buffer::BufferService, inflight::InFlightService, join};
 use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
@@ -166,7 +166,7 @@ where
     fn call<'a>(
         &'a self,
         request: DispatchItem<Rc<MqttShared>>,
-        ctx: Ctx<'a, Self>,
+        ctx: ServiceCtx<'a, Self>,
     ) -> Self::Future<'a> {
         log::trace!("Dispatch v5 packet: {:#?}", request);
 
@@ -474,7 +474,7 @@ pin_project_lite::pin_project! {
         state: PublishResponseState<'f, T, C, E>,
         packet_id: u16,
         inner: &'f Inner<C>,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     }
 }
 
@@ -560,7 +560,7 @@ pin_project_lite::pin_project! {
         inner: &'f Inner<C>,
         error: bool,
         packet_id: u16,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
         _t: marker::PhantomData<E>,
     }
 }
@@ -572,7 +572,7 @@ where
     fn new(
         pkt: ControlMessage<E>,
         inner: &'f Inner<C>,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     ) -> Self {
         let error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
         let fut = ctx.call(&inner.control, pkt);

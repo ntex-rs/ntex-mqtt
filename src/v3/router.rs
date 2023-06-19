@@ -2,7 +2,7 @@ use std::{rc::Rc, task::Context, task::Poll};
 
 use ntex::router::{IntoPattern, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
-use ntex::service::{Ctx, IntoServiceFactory, Service, ServiceCall, ServiceFactory};
+use ntex::service::{IntoServiceFactory, Service, ServiceCall, ServiceCtx, ServiceFactory};
 use ntex::util::BoxFuture;
 
 use super::{publish::Publish, Session};
@@ -131,7 +131,7 @@ impl<Err> Service<Publish> for RouterService<Err> {
         }
     }
 
-    fn call<'a>(&'a self, mut req: Publish, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, mut req: Publish, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
             ctx.call(&self.handlers[*idx], req)
         } else {

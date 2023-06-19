@@ -3,7 +3,7 @@ use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use ntex::io::DispatchItem;
-use ntex::service::{Container, Ctx, Service, ServiceCall};
+use ntex::service::{Container, Service, ServiceCall, ServiceCtx};
 use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
@@ -133,7 +133,7 @@ where
     fn call<'a>(
         &'a self,
         request: DispatchItem<Rc<MqttShared>>,
-        ctx: Ctx<'a, Self>,
+        ctx: ServiceCtx<'a, Self>,
     ) -> Self::Future<'a> {
         log::trace!("Dispatch packet: {:#?}", request);
 
@@ -352,7 +352,7 @@ pin_project_lite::pin_project! {
         packet_id: u16,
         packet_size: u32,
         inner: &'f Inner<C>,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
         _t: PhantomData<E>,
     }
 }
@@ -438,7 +438,7 @@ pin_project_lite::pin_project! {
         inner: &'f Inner<C>,
         error: bool,
         packet_id: u16,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
         _t: PhantomData<E>,
     }
 }
@@ -450,7 +450,7 @@ where
     fn new(
         pkt: ControlMessage<E>,
         inner: &'f Inner<C>,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     ) -> Self {
         let error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
         let fut = ctx.call(&inner.control, pkt);

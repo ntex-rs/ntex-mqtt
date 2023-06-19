@@ -4,7 +4,7 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 
 use ntex::io::DispatchItem;
 use ntex::service::{
-    fn_factory_with_config, Container, Ctx, Service, ServiceCall, ServiceFactory,
+    fn_factory_with_config, Container, Service, ServiceCall, ServiceCtx, ServiceFactory,
 };
 use ntex::util::{
     buffer::BufferService, inflight::InFlightService, join, BoxFuture, Either, HashSet, Ready,
@@ -161,7 +161,7 @@ where
     fn call<'a>(
         &'a self,
         req: DispatchItem<Rc<MqttShared>>,
-        ctx: Ctx<'a, Self>,
+        ctx: ServiceCtx<'a, Self>,
     ) -> Self::Future<'a> {
         log::trace!("Dispatch v3 packet: {:#?}", req);
 
@@ -346,7 +346,7 @@ pin_project_lite::pin_project! {
         state: PublishResponseState<'f, T, C, E>,
         packet_id: Option<NonZeroU16>,
         inner: &'f Inner<C>,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     }
 }
 
@@ -411,7 +411,7 @@ pin_project_lite::pin_project! {
         fut: ServiceCall<'f, C, ControlMessage<E>>,
         inner: &'f Inner<C>,
         error: bool,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     }
 }
 
@@ -422,7 +422,7 @@ where
     fn new(
         pkt: ControlMessage<E>,
         inner: &'f Inner<C>,
-        ctx: Ctx<'f, Dispatcher<T, C, E>>,
+        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     ) -> Self {
         let error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
         let fut = ctx.call(&inner.control, pkt);

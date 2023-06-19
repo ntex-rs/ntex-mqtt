@@ -1,7 +1,7 @@
 use std::{convert::TryFrom, fmt, future::Future, marker, rc::Rc, task::Context, task::Poll};
 
 use ntex::io::{Filter, Io, IoBoxed};
-use ntex::service::{boxed, Ctx, Service, ServiceFactory};
+use ntex::service::{boxed, Service, ServiceCtx, ServiceFactory};
 use ntex::time::{Deadline, Millis, Seconds};
 use ntex::util::{select, BoxFuture, Either};
 
@@ -197,7 +197,7 @@ where
     }
 
     #[inline]
-    fn call<'a>(&'a self, io: Io<F>, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, io: Io<F>, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx)
     }
 }
@@ -237,7 +237,7 @@ where
     }
 
     #[inline]
-    fn call<'a>(&'a self, io: IoBoxed, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, io: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Box::pin(async move {
             let codec = mqtt::Codec::default();
             codec.set_max_inbound_size(self.max_size);
@@ -313,7 +313,7 @@ where
     fn call<'a>(
         &'a self,
         (io, mut timeout): (IoBoxed, Deadline),
-        ctx: Ctx<'a, Self>,
+        ctx: ServiceCtx<'a, Self>,
     ) -> Self::Future<'a> {
         Box::pin(async move {
             let codec = mqtt::Codec::default();

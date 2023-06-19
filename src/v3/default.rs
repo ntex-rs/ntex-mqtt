@@ -1,6 +1,6 @@
 use std::{fmt, marker::PhantomData};
 
-use ntex::service::{Ctx, Service, ServiceFactory};
+use ntex::service::{Service, ServiceCtx, ServiceFactory};
 use ntex::util::Ready;
 
 use super::control::{ControlMessage, ControlResult, ControlResultKind};
@@ -35,7 +35,7 @@ impl<St, Err> Service<Publish> for DefaultPublishService<St, Err> {
     type Error = Err;
     type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
-    fn call<'a>(&'a self, _: Publish, _: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, _: Publish, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         log::warn!("Publish service is disabled");
         Ready::Ok(())
     }
@@ -70,7 +70,7 @@ impl<S, E: fmt::Debug> Service<ControlMessage<E>> for DefaultControlService<S, E
     type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
     #[inline]
-    fn call<'a>(&'a self, pkt: ControlMessage<E>, _: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, pkt: ControlMessage<E>, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         log::warn!("MQTT3 Subscribe is not supported");
 
         Ready::Ok(match pkt {

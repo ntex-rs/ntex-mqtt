@@ -1,7 +1,8 @@
 //! Service that limits number of in-flight async requests.
 use std::{cell::Cell, future::Future, marker, pin::Pin, rc::Rc, task::Context, task::Poll};
 
-use ntex::{service::Ctx, service::Service, service::ServiceCall, task::LocalWaker};
+use ntex::service::{Service, ServiceCall, ServiceCtx};
+use ntex::task::LocalWaker;
 
 pub(crate) trait SizedRequest {
     fn size(&self) -> u32;
@@ -45,7 +46,7 @@ where
     }
 
     #[inline]
-    fn call<'a>(&'a self, req: R, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, req: R, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
         InFlightServiceResponse {
             _guard: self.count.get(size),
@@ -169,7 +170,7 @@ mod tests {
         type Error = ();
         type Future<'f> = BoxFuture<'f, Result<(), ()>>;
 
-        fn call<'a>(&'a self, _: (), _: Ctx<'a, Self>) -> Self::Future<'a> {
+        fn call<'a>(&'a self, _: (), _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
             let fut = sleep(self.0);
             Box::pin(async move {
                 let _ = fut.await;
@@ -239,7 +240,7 @@ mod tests {
             }
         }
 
-        fn call<'a>(&'a self, _: (), _: Ctx<'a, Self>) -> Self::Future<'a> {
+        fn call<'a>(&'a self, _: (), _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
             let fut = sleep(self.dur);
             self.cnt.set(true);
 

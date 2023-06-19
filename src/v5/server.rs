@@ -1,7 +1,7 @@
 use std::{convert::TryFrom, fmt, future::Future, marker::PhantomData, rc::Rc};
 
 use ntex::io::{DispatchItem, IoBoxed};
-use ntex::service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
+use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex::time::{timeout_checked, Millis, Seconds};
 use ntex::util::{select, BoxFuture, Either};
 
@@ -340,7 +340,7 @@ where
     ntex::forward_poll_ready!(service, MqttError::Service);
     ntex::forward_poll_shutdown!(service);
 
-    fn call<'a>(&'a self, io: IoBoxed, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, io: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         log::trace!("Starting mqtt v5 handshake");
 
         let codec = mqtt::Codec::default();
@@ -547,7 +547,7 @@ where
     ntex::forward_poll_shutdown!(connect);
 
     #[inline]
-    fn call<'a>(&'a self, req: SelectItem, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, req: SelectItem, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Box::pin(async move {
             log::trace!("Start connection handshake");
 

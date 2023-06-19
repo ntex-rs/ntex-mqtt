@@ -2,7 +2,7 @@ use std::task::{Context, Poll};
 use std::{convert::TryFrom, fmt, future::Future, io, marker, pin::Pin};
 
 use ntex::io::{Filter, Io, IoBoxed, RecvError};
-use ntex::service::{Ctx, Service, ServiceCall, ServiceFactory};
+use ntex::service::{Service, ServiceCall, ServiceCtx, ServiceFactory};
 use ntex::time::{Deadline, Millis, Seconds};
 use ntex::util::{join, ready, BoxFuture, Ready};
 
@@ -349,7 +349,7 @@ where
     }
 
     #[inline]
-    fn call<'a>(&'a self, req: IoBoxed, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, req: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         MqttServerImplResponse {
             ctx,
             state: MqttServerImplState::Version {
@@ -381,7 +381,7 @@ where
     }
 
     #[inline]
-    fn call<'a>(&'a self, io: Io<F>, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, io: Io<F>, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx)
     }
 }
@@ -405,7 +405,7 @@ pin_project_lite::pin_project! {
         #[pin]
         state: MqttServerImplState<'f, V3, V5>,
         handlers: &'f (V3, V5),
-        ctx: Ctx<'f, MqttServerImpl<V3, V5, Err>>,
+        ctx: ServiceCtx<'f, MqttServerImpl<V3, V5, Err>>,
     }
 }
 
@@ -503,7 +503,7 @@ impl<Err, InitErr> Service<(IoBoxed, Deadline)> for DefaultProtocolServer<Err, I
     type Error = MqttError<Err>;
     type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
-    fn call<'a>(&'a self, _: (IoBoxed, Deadline), _: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, _: (IoBoxed, Deadline), _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Ready::Err(MqttError::Disconnected(Some(io::Error::new(
             io::ErrorKind::Other,
             format!("Protocol is not supported: {:?}", self.ver),

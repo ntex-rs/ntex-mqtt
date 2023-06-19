@@ -2,7 +2,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex::codec::{Decoder, Encoder};
 use ntex::io::{DispatchItem, Filter, Io, IoBoxed};
-use ntex::service::{Ctx, Service, ServiceFactory};
+use ntex::service::{Service, ServiceCtx, ServiceFactory};
 use ntex::time::{Deadline, Seconds};
 use ntex::util::{select, BoxFuture, Either};
 
@@ -145,7 +145,7 @@ where
     ntex::forward_poll_shutdown!(connect);
 
     #[inline]
-    fn call<'a>(&'a self, req: IoBoxed, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, req: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Box::pin(async move {
             let timeout = self.disconnect_timeout;
             let handshake = ctx.call(&self.connect, req).await;
@@ -190,7 +190,7 @@ where
     ntex::forward_poll_shutdown!(connect);
 
     #[inline]
-    fn call<'a>(&'a self, io: Io<F>, ctx: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, io: Io<F>, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx)
     }
 }
@@ -220,7 +220,7 @@ where
     fn call<'a>(
         &'a self,
         (io, delay): (IoBoxed, Deadline),
-        ctx: Ctx<'a, Self>,
+        ctx: ServiceCtx<'a, Self>,
     ) -> Self::Future<'a> {
         Box::pin(async move {
             let timeout = self.disconnect_timeout;
