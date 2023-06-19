@@ -440,7 +440,7 @@ where
     U: Decoder + Encoder + Clone + 'static,
     <U as Encoder>::Item: 'static,
 {
-    fn poll_service(&mut self, srv: &S, cx: &mut Context<'_>) -> Poll<PollService<U>> {
+    fn poll_service(&mut self, srv: &Container<S>, cx: &mut Context<'_>) -> Poll<PollService<U>> {
         match srv.poll_ready(cx) {
             Poll::Ready(Ok(_)) => {
                 // check for errors
