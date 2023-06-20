@@ -1,10 +1,10 @@
 //! Framed transport dispatcher
 use std::task::{Context, Poll};
-use std::{cell::RefCell, collections::VecDeque, future::Future, mem, pin::Pin, rc::Rc, time};
+use std::{cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time};
 
 use ntex::codec::{Decoder, Encoder};
 use ntex::io::{DispatchItem, IoBoxed, IoRef, IoStatusUpdate, RecvError};
-use ntex::service::{Container, IntoService, Service, ServiceCall};
+use ntex::service::{Container, ContainerCall, IntoService, Service};
 use ntex::time::Seconds;
 use ntex::util::{ready, Pool};
 
@@ -25,7 +25,7 @@ pin_project_lite::pin_project! {
         inner: DispatcherInner<S, U>,
         pool: Pool,
         #[pin]
-        response: Option<ServiceCall<'static, S, DispatchItem<U>>>,
+        response: Option<ContainerCall<'static, S, DispatchItem<U>>>,
         response_idx: usize,
     }
 }
@@ -321,9 +321,8 @@ where
                     if let Some(item) = item {
                         // optimize first call
                         if this.response.is_none() {
-                            let fut = this.service.call(item);
-                            this.response.set(Some(unsafe { mem::transmute_copy(&fut) }));
-                            mem::forget(fut);
+                            this.response
+                                .set(Some(this.service.container_call(item).into_static()));
                             let res = this.response.as_mut().as_pin_mut().unwrap().poll(cx);
 
                             let mut state = inner.state.borrow_mut();
@@ -362,9 +361,9 @@ where
                             let st = inner.io.get_ref();
                             let codec = this.codec.clone();
                             let state = inner.state.clone();
-                            let service = this.service.clone();
+                            let fut = this.service.container_call(item).into_static();
                             ntex::rt::spawn(async move {
-                                let item = service.call(item).await;
+                                let item = fut.await;
                                 state.borrow_mut().handle_result(
                                     item,
                                     response_idx,
@@ -440,7 +439,11 @@ where
     U: Decoder + Encoder + Clone + 'static,
     <U as Encoder>::Item: 'static,
 {
-    fn poll_service(&mut self, srv: &Container<S>, cx: &mut Context<'_>) -> Poll<PollService<U>> {
+    fn poll_service(
+        &mut self,
+        srv: &Container<S>,
+        cx: &mut Context<'_>,
+    ) -> Poll<PollService<U>> {
         match srv.poll_ready(cx) {
             Poll::Ready(Ok(_)) => {
                 // check for errors
