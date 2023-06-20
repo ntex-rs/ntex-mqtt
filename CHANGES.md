@@ -1,5 +1,9 @@
 # Changes
 
+## [0.11.0-beta.3] - 2023-06-21
+
+* Use ContainerCall, remove unsafe
+
 ## [0.11.0-beta.2] - 2023-06-19
 
 * Fix Dispatcher impl, poll Container<S> instead of S
