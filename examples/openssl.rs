@@ -1,4 +1,4 @@
-use ntex::service::pipeline_factory;
+use ntex::service::chain_factory;
 use ntex_mqtt::{v3, v5, MqttError, MqttServer};
 use ntex_tls::openssl::Acceptor;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
@@ -62,7 +62,7 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::Server::build()
         .bind("mqtt", "127.0.0.1:8883", move |_| {
-            pipeline_factory(Acceptor::new(acceptor.clone()))
+            chain_factory(Acceptor::new(acceptor.clone()))
                 .map_err(|_err| MqttError::Service(ServerError {}))
                 .and_then(
                     MqttServer::new()

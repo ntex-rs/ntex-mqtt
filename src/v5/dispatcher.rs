@@ -3,7 +3,7 @@ use std::{cell::RefCell, convert::TryFrom, future::Future, marker, num, pin::Pin
 
 use ntex::io::DispatchItem;
 use ntex::service::{
-    fn_factory_with_config, Container, Service, ServiceCall, ServiceCtx, ServiceFactory,
+    fn_factory_with_config, Pipeline, Service, ServiceCall, ServiceCtx, ServiceFactory,
 };
 use ntex::util::{buffer::BufferService, inflight::InFlightService, join};
 use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
@@ -149,7 +149,7 @@ where
             self.inner.sink.drop_sink();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = Container::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
             }));
         }
 
@@ -665,7 +665,7 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Default::default()));
 
-        let disp = Container::new(Dispatcher::<_, _, _>::new(
+        let disp = Pipeline::new(Dispatcher::<_, _, _>::new(
             shared.clone(),
             fn_service(|p: Publish| Ready::Ok::<_, TestError>(p.ack())),
             fn_service(|_| {

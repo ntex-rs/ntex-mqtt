@@ -1,5 +1,9 @@
 # Changes
 
+## [0.11.0] - 2023-06-22
+
+* Release v0.11.0
+
 ## [0.11.0-beta.3] - 2023-06-21
 
 * Use ContainerCall, remove unsafe

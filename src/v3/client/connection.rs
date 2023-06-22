@@ -2,7 +2,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex::io::IoBoxed;
 use ntex::router::{IntoPattern, Router, RouterBuilder};
-use ntex::service::{boxed, into_service, Container, IntoService, Service};
+use ntex::service::{boxed, into_service, IntoService, Pipeline, Service};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{Either, Ready};
 
@@ -76,7 +76,7 @@ impl Client {
     {
         let mut builder = Router::build();
         builder.path(address, 0);
-        let handlers = vec![Container::new(boxed::service(service.into_service()))];
+        let handlers = vec![Pipeline::new(boxed::service(service.into_service()))];
 
         ClientRouter {
             builder,
@@ -146,7 +146,7 @@ type Handler<E> = boxed::BoxService<Publish, (), E>;
 /// Mqtt client with routing capabilities
 pub struct ClientRouter<Err, PErr> {
     builder: RouterBuilder<usize>,
-    handlers: Vec<Container<Handler<PErr>>>,
+    handlers: Vec<Pipeline<Handler<PErr>>>,
     io: IoBoxed,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
@@ -178,7 +178,7 @@ where
         S: Service<Publish, Response = (), Error = PErr> + 'static,
     {
         self.builder.path(address, self.handlers.len());
-        self.handlers.push(Container::new(boxed::service(service.into_service())));
+        self.handlers.push(Pipeline::new(boxed::service(service.into_service())));
         self
     }
 
@@ -227,7 +227,7 @@ where
 
 fn dispatch<Err, PErr>(
     router: Router<usize>,
-    handlers: Vec<Container<Handler<PErr>>>,
+    handlers: Vec<Pipeline<Handler<PErr>>>,
 ) -> impl Service<Publish, Response = Either<(), Publish>, Error = Err>
 where
     PErr: 'static,
@@ -240,22 +240,19 @@ where
             // exec handler
             let idx = *idx;
             let handlers = handlers.clone();
-            Either::Left(async move { call(req, &handlers[idx]).await })
+            Either::Left(async move { call(req, handlers[idx].clone()).await })
         } else {
             Either::Right(Ready::<_, Err>::Ok(Either::Right(req)))
         }
     })
 }
 
-async fn call<S, Err, PErr>(
-    req: Publish,
-    srv: &Container<S>,
-) -> Result<Either<(), Publish>, Err>
+async fn call<S, Err, PErr>(req: Publish, srv: Pipeline<S>) -> Result<Either<(), Publish>, Err>
 where
     S: Service<Publish, Response = (), Error = PErr>,
     Err: From<PErr>,
 {
-    match srv.call(req).await {
+    match srv.service_call(req).await {
         Ok(_) => Ok(Either::Left(())),
         Err(err) => Err(err.into()),
     }
