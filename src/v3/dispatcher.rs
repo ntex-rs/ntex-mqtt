@@ -4,7 +4,7 @@ use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc
 
 use ntex::io::DispatchItem;
 use ntex::service::{
-    fn_factory_with_config, Container, Service, ServiceCall, ServiceCtx, ServiceFactory,
+    fn_factory_with_config, Pipeline, Service, ServiceCall, ServiceCtx, ServiceFactory,
 };
 use ntex::util::{
     buffer::BufferService, inflight::InFlightService, join, BoxFuture, Either, HashSet, Ready,
@@ -144,7 +144,7 @@ where
             self.inner.sink.close();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = Container::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
             }));
         }
 
@@ -505,7 +505,7 @@ mod tests {
         let err = Rc::new(RefCell::new(false));
         let err2 = err.clone();
 
-        let disp = Container::new(Dispatcher::<_, _, ()>::new(
+        let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
             shared.clone(),
             fn_service(|_| async {
                 sleep(Seconds(10)).await;
@@ -554,7 +554,7 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
 
-        let disp = Container::new(Dispatcher::<_, _, ()>::new(
+        let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
             shared.clone(),
             fn_service(|_| Ready::Ok(())),
             fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),

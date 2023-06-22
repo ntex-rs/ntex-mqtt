@@ -159,7 +159,7 @@ mod tests {
     use std::{cell::Cell, task::Poll, time::Duration};
 
     use ntex::util::{lazy, poll_fn, BoxFuture};
-    use ntex::{service::Container, service::Service, time::sleep};
+    use ntex::{service::Pipeline, service::Service, time::sleep};
 
     use super::*;
 
@@ -189,7 +189,7 @@ mod tests {
     async fn test_inflight() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Container::new(InFlightService::new(1, 0, SleepService(wait_time)));
+        let srv = Pipeline::new(InFlightService::new(1, 0, SleepService(wait_time)));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
@@ -208,7 +208,7 @@ mod tests {
     async fn test_inflight2() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Container::new(InFlightService::new(0, 10, SleepService(wait_time)));
+        let srv = Pipeline::new(InFlightService::new(0, 10, SleepService(wait_time)));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
@@ -259,7 +259,7 @@ mod tests {
     async fn test_inflight3() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Container::new(InFlightService::new(
+        let srv = Pipeline::new(InFlightService::new(
             1,
             10,
             Srv2 { dur: wait_time, cnt: Cell::new(false) },

@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use ntex::connect::{self, Address, Connect, Connector};
 use ntex::io::IoBoxed;
-use ntex::service::{Container, IntoService, Service};
+use ntex::service::{IntoService, Pipeline, Service};
 use ntex::time::{timeout_checked, Seconds};
 use ntex::util::{ByteString, Bytes, PoolId};
 
@@ -12,7 +12,7 @@ use crate::v3::shared::{MqttShared, MqttSinkPool};
 /// Mqtt client connector
 pub struct MqttConnector<A, T> {
     address: A,
-    connector: Container<T>,
+    connector: Pipeline<T>,
     pkt: codec::Connect,
     max_send: usize,
     max_receive: usize,
@@ -32,7 +32,7 @@ where
         MqttConnector {
             address,
             pkt: codec::Connect::default(),
-            connector: Container::new(Connector::default()),
+            connector: Pipeline::new(Connector::default()),
             max_send: 16,
             max_receive: 16,
             max_packet_size: 64 * 1024,
@@ -177,7 +177,7 @@ where
         IoBoxed: From<U::Response>,
     {
         MqttConnector {
-            connector: Container::new(connector.into_service()),
+            connector: Pipeline::new(connector.into_service()),
             pkt: self.pkt,
             address: self.address,
             max_send: self.max_send,

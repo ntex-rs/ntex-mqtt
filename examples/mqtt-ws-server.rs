@@ -3,7 +3,7 @@ use std::io;
 
 use ntex::http::{body, h1, HttpService, Request, Response, ResponseError};
 use ntex::io::{Filter, Io};
-use ntex::service::{pipeline_factory, ServiceFactory};
+use ntex::service::{chain_factory, ServiceFactory};
 use ntex::util::{variant, Ready};
 use ntex::ws;
 use ntex_mqtt::{v3, v5, MqttError, MqttServer};
@@ -77,7 +77,7 @@ async fn main() -> std::io::Result<()> {
     ntex::server::Server::build()
         .bind("mqtt", "127.0.0.1:8883", move |_| {
             // first switch to ssl stream
-            pipeline_factory(Acceptor::new(acceptor.clone()))
+            chain_factory(Acceptor::new(acceptor.clone()))
                 .map_err(|_err| MqttError::Service(ServerError {}))
                 // we need to read first 4 bytes and detect protocol GET or MQTT
                 .and_then(|io: Io<_>| async move {

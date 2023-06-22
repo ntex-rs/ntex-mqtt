@@ -3,7 +3,7 @@ use std::task::{Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use ntex::io::DispatchItem;
-use ntex::service::{Container, Service, ServiceCall, ServiceCtx};
+use ntex::service::{Pipeline, Service, ServiceCall, ServiceCtx};
 use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
 use crate::error::{MqttError, ProtocolError};
@@ -116,7 +116,7 @@ where
             self.inner.sink.drop_sink();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = Container::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
             }));
         }
 
@@ -536,7 +536,7 @@ mod tests {
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Default::default()));
         let sink = MqttSink::new(shared.clone());
 
-        let disp = Container::new(Dispatcher::<_, _, _>::new(
+        let disp = Pipeline::new(Dispatcher::<_, _, _>::new(
             sink.clone(),
             16,
             16,
