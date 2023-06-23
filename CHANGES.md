@@ -1,5 +1,9 @@
 # Changes
 
+## [0.11.2] - 2023-06-23
+
+* Fix client connector usage, fixes lifetime constraint
+
 ## [0.11.1] - 2023-06-23
 
 * `PipelineCall` is static

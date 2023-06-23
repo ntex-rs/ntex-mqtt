@@ -205,8 +205,12 @@ where
     }
 
     async fn _connect(&self) -> Result<Client, ClientError<codec::ConnectAck>> {
-        let fut = self.connector.call(Connect::new(self.address.clone()));
-        let io = IoBoxed::from(fut.await?);
+        let io: IoBoxed = self
+            .connector
+            .clone()
+            .service_call(Connect::new(self.address.clone()))
+            .await?
+            .into();
         let pkt = self.pkt.clone();
         let max_send = self.max_send;
         let max_receive = self.max_receive;
