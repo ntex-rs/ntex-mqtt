@@ -25,7 +25,7 @@ pin_project_lite::pin_project! {
         inner: DispatcherInner<S, U>,
         pool: Pool,
         #[pin]
-        response: Option<PipelineCall<'static, S, DispatchItem<U>>>,
+        response: Option<PipelineCall<S, DispatchItem<U>>>,
         response_idx: usize,
     }
 }
@@ -321,7 +321,7 @@ where
                     if let Some(item) = item {
                         // optimize first call
                         if this.response.is_none() {
-                            this.response.set(Some(this.service.call(item).into_static()));
+                            this.response.set(Some(this.service.call(item)));
                             let res = this.response.as_mut().as_pin_mut().unwrap().poll(cx);
 
                             let mut state = inner.state.borrow_mut();
@@ -360,7 +360,7 @@ where
                             let st = inner.io.get_ref();
                             let codec = this.codec.clone();
                             let state = inner.state.clone();
-                            let fut = this.service.call(item).into_static();
+                            let fut = this.service.call(item);
                             ntex::rt::spawn(async move {
                                 let item = fut.await;
                                 state.borrow_mut().handle_result(

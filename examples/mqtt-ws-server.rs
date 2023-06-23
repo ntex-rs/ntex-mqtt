@@ -124,7 +124,7 @@ async fn main() -> std::io::Result<()> {
                             // and then switch to websokets streaming
                             .upgrade(
                                 // validate ws request and init ws transport
-                                pipeline_factory(
+                                chain_factory(
                                     |(req, io, codec): (Request, Io<_>, h1::Codec)| {
                                         async move {
                                             match ws::handshake(req.head()) {

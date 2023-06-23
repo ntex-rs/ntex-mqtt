@@ -149,7 +149,8 @@ where
             self.inner.sink.drop_sink();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ =
+                    Pipeline::new(&inner.control).service_call(ControlMessage::closed()).await;
             }));
         }
 
