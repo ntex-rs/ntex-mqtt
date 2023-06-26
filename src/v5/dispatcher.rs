@@ -2,11 +2,10 @@ use std::task::{Context, Poll};
 use std::{cell::RefCell, convert::TryFrom, future::Future, marker, num, pin::Pin, rc::Rc};
 
 use ntex::io::DispatchItem;
-use ntex::service::{
-    fn_factory_with_config, Pipeline, Service, ServiceCall, ServiceCtx, ServiceFactory,
-};
-use ntex::util::{buffer::BufferService, inflight::InFlightService, join};
-use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
+use ntex::util::inflight::InFlightService;
+use ntex::util::{buffer::BufferService, buffer::BufferServiceError};
+use ntex::util::{join, BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
+use ntex::{service, Pipeline, Service, ServiceCall, ServiceCtx, ServiceFactory};
 
 use crate::error::{MqttError, ProtocolError};
 
@@ -36,7 +35,7 @@ where
 {
     let factories = Rc::new((publish, control));
 
-    fn_factory_with_config(move |ses: Session<St>| {
+    service::fn_factory_with_config(move |ses: Session<St>| {
         let factories = factories.clone();
 
         async move {
@@ -46,15 +45,19 @@ where
                 join(factories.0.create(ses.clone()), factories.1.create(ses)).await;
 
             let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
-            let control = control
-                .map_err(|e| MqttError::Service(e.into()))?
-                .map_err(|e| MqttError::Service(E::from(e)));
+            let control = control.map_err(|e| MqttError::Service(e.into()))?;
 
             let control = BufferService::new(
                 16,
                 // limit number of in-flight messages
                 InFlightService::new(1, control),
-            );
+            )
+            .map_err(|err| match err {
+                BufferServiceError::Service(e) => MqttError::Service(E::from(e)),
+                BufferServiceError::RequestCanceled => {
+                    MqttError::ServerError("Request handling has been canceled")
+                }
+            });
 
             Ok(crate::inflight::InFlightService::new(
                 0,
