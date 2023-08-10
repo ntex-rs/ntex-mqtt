@@ -207,8 +207,7 @@ where
     async fn _connect(&self) -> Result<Client, ClientError<codec::ConnectAck>> {
         let io: IoBoxed = self
             .connector
-            .clone()
-            .service_call(Connect::new(self.address.clone()))
+            .call(Connect::new(self.address.clone()))
             .await?
             .into();
         let pkt = self.pkt.clone();

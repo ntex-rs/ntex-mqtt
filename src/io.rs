@@ -321,7 +321,7 @@ where
                     if let Some(item) = item {
                         // optimize first call
                         if this.response.is_none() {
-                            this.response.set(Some(this.service.call(item)));
+                            this.response.set(Some(this.service.call_static(item)));
                             let res = this.response.as_mut().as_pin_mut().unwrap().poll(cx);
 
                             let mut state = inner.state.borrow_mut();
@@ -360,7 +360,7 @@ where
                             let st = inner.io.get_ref();
                             let codec = this.codec.clone();
                             let state = inner.state.clone();
-                            let fut = this.service.call(item);
+                            let fut = this.service.call_static(item);
                             ntex::rt::spawn(async move {
                                 let item = fut.await;
                                 state.borrow_mut().handle_result(

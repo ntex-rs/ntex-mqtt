@@ -1,5 +1,9 @@
 # Changes
 
+## [0.11.4] - 2023-08-10
+
+* Update ntex deps
+
 ## [0.11.3] - 2023-06-26
 
 * Update BufferService usage
