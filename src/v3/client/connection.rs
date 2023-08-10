@@ -252,7 +252,7 @@ where
     S: Service<Publish, Response = (), Error = PErr>,
     Err: From<PErr>,
 {
-    match srv.service_call(req).await {
+    match srv.call(req).await {
         Ok(_) => Ok(Either::Left(())),
         Err(err) => Err(err.into()),
     }

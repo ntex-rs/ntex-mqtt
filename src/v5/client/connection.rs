@@ -308,7 +308,7 @@ where
     S: Service<Publish, Response = PublishAck>,
     PublishAck: TryFrom<S::Error, Error = Err>,
 {
-    match srv.service_call(req).await {
+    match srv.call(req).await {
         Ok(ack) => Ok(Either::Right(ack)),
         Err(err) => match PublishAck::try_from(err) {
             Ok(ack) => Ok(Either::Right(ack)),
