@@ -339,7 +339,7 @@ mod tests {
         is_valid(topic_filter)
     }
 
-    pub fn lvl_normal<T: AsRef<str>>(s: T) -> TopicFilterLevel {
+    fn lvl_normal<T: AsRef<str>>(s: T) -> TopicFilterLevel {
         if s.as_ref().contains(|c| c == '+' || c == '#') {
             panic!("invalid normal level `{}` contains +|#", s.as_ref());
         }
@@ -347,7 +347,7 @@ mod tests {
         TopicFilterLevel::Normal(s.as_ref().into())
     }
 
-    pub fn lvl_sys<T: AsRef<str>>(s: T) -> TopicFilterLevel {
+    fn lvl_sys<T: AsRef<str>>(s: T) -> TopicFilterLevel {
         if s.as_ref().contains(|c| c == '+' || c == '#') {
             panic!("invalid normal level `{}` contains +|#", s.as_ref());
         }
@@ -359,7 +359,7 @@ mod tests {
         TopicFilterLevel::System(s.as_ref().into())
     }
 
-    pub fn topic(topic: &'static str) -> TopicFilter {
+    fn topic(topic: &'static str) -> TopicFilter {
         TopicFilter::try_from(ByteString::from_static(topic)).unwrap()
     }
 

@@ -7,16 +7,13 @@ use serde_json::Error as JsonError;
 
 use crate::v3::codec;
 
+#[derive(Clone)]
 /// Publish message
 pub struct Publish {
     pkt: codec::Publish,
     pkt_size: u32,
     topic: Path<ByteString>,
 }
-
-#[derive(Debug)]
-/// Publish ack
-pub struct PublishAck;
 
 impl Publish {
     /// Create a new `Publish` message from a PUBLISH

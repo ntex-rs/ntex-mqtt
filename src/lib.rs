@@ -1,4 +1,4 @@
-#![deny(rust_2018_idioms)]
+#![deny(rust_2018_idioms, warnings, unreachable_pub)]
 #![allow(clippy::type_complexity)]
 
 //! MQTT Client/Server framework
