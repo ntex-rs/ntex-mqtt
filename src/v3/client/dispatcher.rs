@@ -6,9 +6,9 @@ use ntex::io::DispatchItem;
 use ntex::service::{Pipeline, Service, ServiceCall, ServiceCtx};
 use ntex::util::{inflight::InFlightService, BoxFuture, Either, HashSet, Ready};
 
+use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::v3::shared::{Ack, MqttShared};
 use crate::v3::{codec, control::ControlResultKind, publish::Publish};
-use crate::{error::MqttError, error::ProtocolError};
 
 use super::control::{ControlMessage, ControlResult};
 
@@ -90,8 +90,7 @@ where
             self.inner.sink.close();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ =
-                    Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
             }));
         }
 
@@ -120,9 +119,9 @@ where
                 if let Some(pid) = packet_id {
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
-                        return Either::Right(Either::Left(Ready::Err(
-                            MqttError::ServerError("Duplicated packet id for publish packet"),
-                        )));
+                        return Either::Right(Either::Left(Ready::Err(MqttError::Handshake(
+                            HandshakeError::Server("Duplicated packet id for publish packet"),
+                        ))));
                     }
                 }
                 Either::Left(PublishResponse {
@@ -135,21 +134,27 @@ where
             }
             DispatchItem::Item((codec::Packet::PublishAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
-                    Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
+                    Either::Right(Either::Left(Ready::Err(MqttError::Handshake(
+                        HandshakeError::Protocol(e),
+                    ))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             DispatchItem::Item((codec::Packet::SubscribeAck { packet_id, status }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Subscribe { packet_id, status }) {
-                    Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
+                    Either::Right(Either::Left(Ready::Err(MqttError::Handshake(
+                        HandshakeError::Protocol(e),
+                    ))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             }
             DispatchItem::Item((codec::Packet::UnsubscribeAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet_id)) {
-                    Either::Right(Either::Left(Ready::Err(MqttError::Protocol(e))))
+                    Either::Right(Either::Left(Ready::Err(MqttError::Handshake(
+                        HandshakeError::Protocol(e),
+                    ))))
                 } else {
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
@@ -161,10 +166,10 @@ where
                 | codec::Packet::Unsubscribe { .. }),
                 _,
             )) => Either::Right(Either::Left(Ready::Err(
-                ProtocolError::unexpected_packet(
+                HandshakeError::Protocol(ProtocolError::unexpected_packet(
                     pkt.packet_type(),
                     "Packet of the type is not expected from server",
-                )
+                ))
                 .into(),
             ))),
             DispatchItem::Item((pkt, _)) => {
@@ -377,7 +382,7 @@ mod tests {
         ))));
         let err = f.await.err().unwrap();
         match err {
-            MqttError::ServerError(msg) => {
+            MqttError::Handshake(HandshakeError::Server(msg)) => {
                 assert!(msg == "Duplicated packet id for publish packet")
             }
             _ => panic!(),

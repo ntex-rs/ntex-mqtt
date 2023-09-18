@@ -209,11 +209,7 @@ where
     }
 
     async fn _connect(&self) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
-        let io: IoBoxed = self
-            .connector
-            .call(Connect::new(self.address.clone()))
-            .await?
-            .into();
+        let io: IoBoxed = self.connector.call(Connect::new(self.address.clone())).await?.into();
         let pkt = self.pkt.clone();
         let keep_alive = pkt.keep_alive;
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);

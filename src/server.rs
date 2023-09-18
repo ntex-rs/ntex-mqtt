@@ -7,7 +7,7 @@ use ntex::time::{Deadline, Millis, Seconds};
 use ntex::util::{join, ready, BoxFuture, Ready};
 
 use crate::version::{ProtocolVersion, VersionCodec};
-use crate::{error::MqttError, v3, v5};
+use crate::{error::HandshakeError, error::MqttError, v3, v5};
 
 /// Mqtt Server
 pub struct MqttServer<V3, V5, Err, InitErr> {
@@ -437,7 +437,11 @@ where
                 MqttServerImplStateProject::Version { ref mut item } => {
                     match item.as_mut().unwrap().2.poll_elapsed(cx) {
                         Poll::Pending => (),
-                        Poll::Ready(_) => return Poll::Ready(Err(MqttError::HandshakeTimeout)),
+                        Poll::Ready(_) => {
+                            return Poll::Ready(Err(MqttError::Handshake(
+                                HandshakeError::Timeout,
+                            )))
+                        }
                     }
 
                     let st = item.as_mut().unwrap();
@@ -458,16 +462,17 @@ where
                             unreachable!()
                         }
                         Err(RecvError::WriteBackpressure) => {
-                            ready!(st.0.poll_flush(cx, false))
-                                .map_err(|e| MqttError::Disconnected(Some(e)))?;
+                            ready!(st.0.poll_flush(cx, false)).map_err(|e| {
+                                MqttError::Handshake(HandshakeError::Disconnected(Some(e)))
+                            })?;
                             continue;
                         }
-                        Err(RecvError::Decoder(err)) => {
-                            Poll::Ready(Err(MqttError::Protocol(err.into())))
-                        }
-                        Err(RecvError::PeerGone(err)) => {
-                            Poll::Ready(Err(MqttError::Disconnected(err)))
-                        }
+                        Err(RecvError::Decoder(err)) => Poll::Ready(Err(MqttError::Handshake(
+                            HandshakeError::Protocol(err.into()),
+                        ))),
+                        Err(RecvError::PeerGone(err)) => Poll::Ready(Err(
+                            MqttError::Handshake(HandshakeError::Disconnected(err)),
+                        )),
                     };
                 }
             }
@@ -504,9 +509,9 @@ impl<Err, InitErr> Service<(IoBoxed, Deadline)> for DefaultProtocolServer<Err, I
     type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
     fn call<'a>(&'a self, _: (IoBoxed, Deadline), _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
-        Ready::Err(MqttError::Disconnected(Some(io::Error::new(
+        Ready::Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::new(
             io::ErrorKind::Other,
             format!("Protocol is not supported: {:?}", self.ver),
-        ))))
+        )))))
     }
 }

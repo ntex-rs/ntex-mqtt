@@ -32,6 +32,7 @@ prim_enum! {
 }
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ConnectFlags: u8 {
         const USERNAME    = 0b1000_0000;
         const PASSWORD    = 0b0100_0000;
@@ -43,6 +44,7 @@ bitflags::bitflags! {
 }
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ConnectAckFlags: u8 {
         const SESSION_PRESENT = 0b0000_0001;
     }

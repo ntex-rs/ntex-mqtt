@@ -5,7 +5,7 @@ use ntex::service::{boxed, Service, ServiceCtx, ServiceFactory};
 use ntex::time::{Deadline, Millis, Seconds};
 use ntex::util::{select, BoxFuture, Either};
 
-use crate::error::{MqttError, ProtocolError};
+use crate::error::{HandshakeError, MqttError, ProtocolError};
 
 use super::control::{ControlMessage, ControlResult};
 use super::handshake::{Handshake, HandshakeAck};
@@ -246,17 +246,17 @@ where
                     .await
                     .map_err(|err| {
                         log::trace!("Error is received during mqtt handshake: {:?}", err);
-                        MqttError::from(err)
+                        MqttError::Handshake(HandshakeError::from(err))
                     })?
                     .ok_or_else(|| {
                         log::trace!("Server mqtt is disconnected during handshake");
-                        MqttError::Disconnected(None)
+                        MqttError::Handshake(HandshakeError::Disconnected(None))
                     })
             })
             .await;
 
             let (packet, size) = match result {
-                Either::Left(_) => Err(MqttError::HandshakeTimeout),
+                Either::Left(_) => Err(MqttError::Handshake(HandshakeError::Timeout)),
                 Either::Right(item) => item,
             }?;
 
@@ -264,9 +264,11 @@ where
                 mqtt::Packet::Connect(connect) => connect,
                 packet => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
-                    return Err(MqttError::Protocol(ProtocolError::unexpected_packet(
-                        packet.packet_type(),
-                        "Expected CONNECT packet [MQTT-3.1.0-1]",
+                    return Err(MqttError::Handshake(HandshakeError::Protocol(
+                        ProtocolError::unexpected_packet(
+                            packet.packet_type(),
+                            "Expected CONNECT packet [MQTT-3.1.0-1]",
+                        ),
                     )));
                 }
             };
@@ -282,7 +284,7 @@ where
                 }
             }
             log::error!("Cannot handle CONNECT packet {:?}", item.0);
-            Err(MqttError::ServerError("Cannot handle CONNECT packet"))
+            Err(MqttError::Handshake(HandshakeError::Server("Cannot handle CONNECT packet")))
         })
     }
 }
@@ -323,17 +325,17 @@ where
                     .await
                     .map_err(|err| {
                         log::trace!("Error is received during mqtt handshake: {:?}", err);
-                        MqttError::from(err)
+                        MqttError::Handshake(HandshakeError::from(err))
                     })?
                     .ok_or_else(|| {
                         log::trace!("Server mqtt is disconnected during handshake");
-                        MqttError::Disconnected(None)
+                        MqttError::Handshake(HandshakeError::Disconnected(None))
                     })
             })
             .await;
 
             let (packet, size) = match result {
-                Either::Left(_) => Err(MqttError::HandshakeTimeout),
+                Either::Left(_) => Err(MqttError::Handshake(HandshakeError::Timeout)),
                 Either::Right(item) => item,
             }?;
 
@@ -341,9 +343,11 @@ where
                 mqtt::Packet::Connect(connect) => connect,
                 packet => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
-                    return Err(MqttError::Protocol(ProtocolError::unexpected_packet(
-                        packet.packet_type(),
-                        "MQTT-3.1.0-1: Expected CONNECT packet",
+                    return Err(MqttError::Handshake(HandshakeError::Protocol(
+                        ProtocolError::unexpected_packet(
+                            packet.packet_type(),
+                            "MQTT-3.1.0-1: Expected CONNECT packet",
+                        ),
                     )));
                 }
             };
@@ -359,7 +363,7 @@ where
                 }
             }
             log::error!("Cannot handle CONNECT packet {:?}", item.0.packet());
-            Err(MqttError::ServerError("Cannot handle CONNECT packet"))
+            Err(MqttError::Handshake(HandshakeError::Server("Cannot handle CONNECT packet")))
         })
     }
 }

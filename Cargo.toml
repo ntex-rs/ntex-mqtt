@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "0.11.4"
+version = "0.12.0"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -9,12 +9,12 @@ categories = ["network-programming"]
 keywords = ["MQTT", "IoT", "messaging"]
 license = "MIT"
 exclude = [".gitignore", ".travis.yml", ".cargo/config"]
-edition = "2018"
+edition = "2021"
 
 [dependencies]
-ntex = "0.7.3"
-ntex-util = "0.3.1"
-bitflags = "1.3"
+ntex = "0.7.4"
+ntex-util = "0.3.2"
+bitflags = "2.4"
 log = "0.4"
 pin-project-lite = "0.2"
 serde = { version = "1.0", features = ["derive"] }
@@ -23,12 +23,12 @@ thiserror = "1.0"
 
 [dev-dependencies]
 env_logger = "0.10"
-ntex-tls = "0.3.0"
+ntex-tls = "0.3.1"
 rustls = "0.21"
 rustls-pemfile = "1.0"
 openssl = "0.10"
-ntex = { version = "0.7.3", features = ["tokio", "rustls", "openssl"] }
-test-case = "3"
+ntex = { version = "0.7.4", features = ["tokio", "rustls", "openssl"] }
+test-case = "3.2"
 
 [profile.dev]
 lto = "off" # cannot build tests with "thin"

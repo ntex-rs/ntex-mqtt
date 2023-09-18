@@ -38,6 +38,7 @@ impl Default for MqttSinkPool {
 }
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct Flags: u8 {
         const CLIENT         = 0b1000_0000;
         const WRB_ENABLED    = 0b0100_0000; // write-backpressure

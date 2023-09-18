@@ -6,7 +6,7 @@ use ntex::io::DispatchItem;
 use ntex::service::{Pipeline, Service, ServiceCall, ServiceCtx};
 use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 
-use crate::error::{MqttError, ProtocolError};
+use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::types::packet_type;
 use crate::v5::codec::DisconnectReasonCode;
 use crate::v5::shared::{Ack, MqttShared};
@@ -116,8 +116,7 @@ where
             self.inner.sink.drop_sink();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ =
-                    Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
             }));
         }
 
@@ -296,10 +295,10 @@ where
                 | codec::Packet::Unsubscribe(_)),
                 _,
             )) => Either::Right(Either::Left(Ready::Err(
-                ProtocolError::unexpected_packet(
+                HandshakeError::Protocol(ProtocolError::unexpected_packet(
                     pkt.packet_type(),
                     "Packet of the type is not expected from server",
-                )
+                ))
                 .into(),
             ))),
             DispatchItem::Item((codec::Packet::PingResponse, _)) => {

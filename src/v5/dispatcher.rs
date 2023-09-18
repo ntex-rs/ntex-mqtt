@@ -7,7 +7,7 @@ use ntex::util::{buffer::BufferService, buffer::BufferServiceError};
 use ntex::util::{join, BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 use ntex::{service, Pipeline, Service, ServiceCall, ServiceCtx, ServiceFactory};
 
-use crate::error::{MqttError, ProtocolError};
+use crate::error::{HandshakeError, MqttError, ProtocolError};
 
 use super::control::{ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
@@ -44,8 +44,10 @@ where
             let (publish, control) =
                 join(factories.0.create(ses.clone()), factories.1.create(ses)).await;
 
-            let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
-            let control = control.map_err(|e| MqttError::Service(e.into()))?;
+            let publish =
+                publish.map_err(|e| MqttError::Handshake(HandshakeError::Service(e.into())))?;
+            let control =
+                control.map_err(|e| MqttError::Handshake(HandshakeError::Service(e.into())))?;
 
             let control = BufferService::new(
                 16,
@@ -53,10 +55,12 @@ where
                 InFlightService::new(1, control),
             )
             .map_err(|err| match err {
-                BufferServiceError::Service(e) => MqttError::Service(E::from(e)),
-                BufferServiceError::RequestCanceled => {
-                    MqttError::ServerError("Request handling has been canceled")
+                BufferServiceError::Service(e) => {
+                    MqttError::Handshake(HandshakeError::Service(E::from(e)))
                 }
+                BufferServiceError::RequestCanceled => MqttError::Handshake(
+                    HandshakeError::Server("Request handling has been canceled"),
+                ),
             });
 
             Ok(crate::inflight::InFlightService::new(
@@ -152,8 +156,7 @@ where
             self.inner.sink.drop_sink();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ =
-                    Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
             }));
         }
 

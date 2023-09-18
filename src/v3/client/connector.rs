@@ -205,11 +205,7 @@ where
     }
 
     async fn _connect(&self) -> Result<Client, ClientError<codec::ConnectAck>> {
-        let io: IoBoxed = self
-            .connector
-            .call(Connect::new(self.address.clone()))
-            .await?
-            .into();
+        let io: IoBoxed = self.connector.call(Connect::new(self.address.clone())).await?.into();
         let pkt = self.pkt.clone();
         let max_send = self.max_send;
         let max_receive = self.max_receive;
