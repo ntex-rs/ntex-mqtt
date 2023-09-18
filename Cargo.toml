@@ -27,11 +27,5 @@ ntex-tls = "0.3.1"
 rustls = "0.21"
 rustls-pemfile = "1.0"
 openssl = "0.10"
-ntex = { version = "0.7.4", features = ["tokio", "rustls", "openssl"] }
 test-case = "3.2"
-
-[profile.dev]
-lto = "off" # cannot build tests with "thin"
-
-[profile.test]
-lto = "off" # cannot build tests with "thin"
+ntex = { version = "0.7.4", features = ["tokio", "rustls", "openssl"] }
