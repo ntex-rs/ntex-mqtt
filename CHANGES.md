@@ -2,7 +2,7 @@
 
 ## [0.12.0] - 2023-09-18
 
-* Refactor MqttError
+* Refactor MqttError type
 
 ## [0.11.4] - 2023-08-10
 
