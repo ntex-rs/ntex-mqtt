@@ -1,4 +1,4 @@
-#![deny(rust_2018_idioms)]
+#![deny(rust_2018_idioms, warnings, unreachable_pub)]
 #![allow(clippy::type_complexity)]
 
 //! MQTT Client/Server framework
@@ -19,7 +19,7 @@ mod session;
 mod types;
 mod version;
 
-pub use self::error::MqttError;
+pub use self::error::{HandshakeError, MqttError};
 pub use self::server::MqttServer;
 pub use self::session::Session;
 pub use self::topic::{TopicFilter, TopicFilterError, TopicFilterLevel};

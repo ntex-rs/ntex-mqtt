@@ -1,10 +1,10 @@
-pub const MQTT: &[u8] = b"MQTT";
-pub const MQTT_LEVEL_3: u8 = 4;
-pub const MQTT_LEVEL_5: u8 = 5;
-pub const WILL_QOS_SHIFT: u8 = 3;
+pub(crate) const MQTT: &[u8] = b"MQTT";
+pub(crate) const MQTT_LEVEL_3: u8 = 4;
+pub(crate) const MQTT_LEVEL_5: u8 = 5;
+pub(crate) const WILL_QOS_SHIFT: u8 = 3;
 
 /// Max possible packet size
-pub const MAX_PACKET_SIZE: u32 = 0xF_FF_FF_FF;
+pub(crate) const MAX_PACKET_SIZE: u32 = 0xF_FF_FF_FF;
 
 prim_enum! {
     /// Quality of Service
@@ -32,6 +32,7 @@ prim_enum! {
 }
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ConnectFlags: u8 {
         const USERNAME    = 0b1000_0000;
         const PASSWORD    = 0b0100_0000;
@@ -43,6 +44,7 @@ bitflags::bitflags! {
 }
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ConnectAckFlags: u8 {
         const SESSION_PRESENT = 0b0000_0001;
     }

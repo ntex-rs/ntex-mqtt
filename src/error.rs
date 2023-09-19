@@ -10,18 +10,29 @@ pub enum MqttError<E> {
     /// Publish handler service error
     #[error("Service error")]
     Service(E),
+    /// Handshake error
+    #[error("Mqtt handshake error: {}", _0)]
+    Handshake(#[from] HandshakeError<E>),
+}
+
+/// Errors which can occur during mqtt connection handshake.
+#[derive(Debug, thiserror::Error)]
+pub enum HandshakeError<E> {
+    /// Handshake service error
+    #[error("Handshake service error")]
+    Service(E),
     /// Protocol error
     #[error("Mqtt protocol error: {}", _0)]
     Protocol(#[from] ProtocolError),
     /// Handshake timeout
     #[error("Handshake timeout")]
-    HandshakeTimeout,
+    Timeout,
     /// Peer disconnect
     #[error("Peer is disconnected, error: {:?}", _0)]
     Disconnected(Option<io::Error>),
     /// Server error
     #[error("Server error: {}", _0)]
-    ServerError(&'static str),
+    Server(&'static str),
 }
 
 /// Protocol level errors
@@ -54,6 +65,7 @@ enum ViolationInner {
     #[error("{message}; received packet with type `{packet_type:b}`")]
     UnexpectedPacket { packet_type: u8, message: &'static str },
 }
+
 impl ProtocolViolationError {
     pub(crate) fn reason(&self) -> DisconnectReasonCode {
         match self.inner {
@@ -87,21 +99,21 @@ impl ProtocolError {
 
 impl<E> From<io::Error> for MqttError<E> {
     fn from(err: io::Error) -> Self {
-        MqttError::Disconnected(Some(err))
+        MqttError::Handshake(HandshakeError::Disconnected(Some(err)))
     }
 }
 
 impl<E> From<Either<io::Error, io::Error>> for MqttError<E> {
     fn from(err: Either<io::Error, io::Error>) -> Self {
-        MqttError::Disconnected(Some(err.into_inner()))
+        MqttError::Handshake(HandshakeError::Disconnected(Some(err.into_inner())))
     }
 }
 
-impl<E> From<Either<DecodeError, io::Error>> for MqttError<E> {
+impl<E> From<Either<DecodeError, io::Error>> for HandshakeError<E> {
     fn from(err: Either<DecodeError, io::Error>) -> Self {
         match err {
-            Either::Left(err) => MqttError::Protocol(ProtocolError::Decode(err)),
-            Either::Right(err) => MqttError::Disconnected(Some(err)),
+            Either::Left(err) => HandshakeError::Protocol(ProtocolError::Decode(err)),
+            Either::Right(err) => HandshakeError::Disconnected(Some(err)),
         }
     }
 }
@@ -109,8 +121,10 @@ impl<E> From<Either<DecodeError, io::Error>> for MqttError<E> {
 impl<E> From<Either<EncodeError, io::Error>> for MqttError<E> {
     fn from(err: Either<EncodeError, io::Error>) -> Self {
         match err {
-            Either::Left(err) => MqttError::Protocol(ProtocolError::Encode(err)),
-            Either::Right(err) => MqttError::Disconnected(Some(err)),
+            Either::Left(err) => {
+                MqttError::Handshake(HandshakeError::Protocol(ProtocolError::Encode(err)))
+            }
+            Either::Right(err) => MqttError::Handshake(HandshakeError::Disconnected(Some(err))),
         }
     }
 }

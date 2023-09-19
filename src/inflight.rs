@@ -14,7 +14,7 @@ pub(crate) struct InFlightService<S> {
 }
 
 impl<S> InFlightService<S> {
-    pub fn new(max_cap: u16, max_size: usize, service: S) -> Self {
+    pub(crate) fn new(max_cap: u16, max_size: usize, service: S) -> Self {
         Self { service, count: Counter::new(max_cap, max_size) }
     }
 }
@@ -101,7 +101,7 @@ impl Counter {
         CounterGuard::new(size, self.0.clone())
     }
 
-    fn available(&self, cx: &mut Context<'_>) -> bool {
+    fn available(&self, cx: &Context<'_>) -> bool {
         self.0.available(cx)
     }
 }
@@ -142,7 +142,7 @@ impl CounterInner {
         }
     }
 
-    fn available(&self, cx: &mut Context<'_>) -> bool {
+    fn available(&self, cx: &Context<'_>) -> bool {
         if (self.max_cap == 0 || self.cur_cap.get() < self.max_cap)
             && (self.max_size == 0 || self.cur_size.get() <= self.max_size)
         {

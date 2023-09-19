@@ -7,6 +7,7 @@ use ntex::{channel::pool, io::IoRef};
 use crate::{error, error::SendPacketError, types::packet_type, v5::codec, QoS};
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct Flags: u8 {
         const WRB_ENABLED    = 0b0100_0000; // write-backpressure
         const ON_PUBLISH_ACK = 0b0010_0000; // on-publish-ack callback

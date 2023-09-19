@@ -5,7 +5,7 @@ use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex::time::{timeout_checked, Millis, Seconds};
 use ntex::util::{select, BoxFuture, Either};
 
-use crate::error::{MqttError, ProtocolError};
+use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::{io::Dispatcher, service, types::QoS};
 
 use super::control::{ControlMessage, ControlResult};
@@ -359,11 +359,11 @@ where
                 .await
                 .map_err(|err| {
                     log::trace!("Error is received during mqtt handshake: {:?}", err);
-                    MqttError::from(err)
+                    MqttError::Handshake(HandshakeError::from(err))
                 })?
                 .ok_or_else(|| {
                     log::trace!("Server mqtt is disconnected during handshake");
-                    MqttError::Disconnected(None)
+                    MqttError::Handshake(HandshakeError::Disconnected(None))
                 })?;
 
             match packet {
@@ -380,7 +380,7 @@ where
                     let mut ack = ctx
                         .call(&self.service, Handshake::new(connect, size, io, shared))
                         .await
-                        .map_err(MqttError::Service)?;
+                        .map_err(|e| MqttError::Handshake(HandshakeError::Service(e)))?;
 
                     match ack.session {
                         Some(session) => {
@@ -428,15 +428,17 @@ where
                                 )
                                 .await?;
                             let _ = ack.io.shutdown().await;
-                            Err(MqttError::Disconnected(None))
+                            Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
                         }
                     }
                 }
                 (packet, _) => {
                     log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {}", 1);
-                    Err(MqttError::Protocol(ProtocolError::unexpected_packet(
-                        packet.packet_type(),
-                        "Expected CONNECT packet [MQTT-3.1.0-1]",
+                    Err(MqttError::Handshake(HandshakeError::Protocol(
+                        ProtocolError::unexpected_packet(
+                            packet.packet_type(),
+                            "Expected CONNECT packet [MQTT-3.1.0-1]",
+                        ),
                     )))
                 }
             }
@@ -446,7 +448,7 @@ where
             if let Ok(val) = timeout_checked(handshake_timeout, f).await {
                 val
             } else {
-                Err(MqttError::HandshakeTimeout)
+                Err(MqttError::Handshake(HandshakeError::Timeout))
             }
         })
     }
@@ -561,10 +563,10 @@ where
 
             let result = match select((*self.check)(&hnd), &mut delay).await {
                 Either::Left(res) => res,
-                Either::Right(_) => return Err(MqttError::HandshakeTimeout),
+                Either::Right(_) => return Err(MqttError::Handshake(HandshakeError::Timeout)),
             };
 
-            if !result.map_err(MqttError::Service)? {
+            if !result.map_err(|e| MqttError::Handshake(HandshakeError::Service(e)))? {
                 Ok(Either::Left((hnd, delay)))
             } else {
                 // set max outbound (encoder) packet size
@@ -579,9 +581,11 @@ where
                 let mut ack = match select(ctx.call(&self.connect, hnd), &mut delay).await {
                     Either::Left(res) => res.map_err(|e| {
                         log::trace!("Connection handshake failed: {:?}", e);
-                        MqttError::Service(e)
+                        MqttError::Handshake(HandshakeError::Service(e))
                     })?,
-                    Either::Right(_) => return Err(MqttError::HandshakeTimeout),
+                    Either::Right(_) => {
+                        return Err(MqttError::Handshake(HandshakeError::Timeout))
+                    }
                 };
 
                 match ack.session {
@@ -629,7 +633,7 @@ where
                             )
                             .await?;
                         let _ = ack.io.shutdown().await;
-                        Err(MqttError::Disconnected(None))
+                        Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
                     }
                 }
             }

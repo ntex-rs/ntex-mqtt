@@ -29,4 +29,4 @@ pub use crate::error;
 pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;
 
-pub(self) const RECEIVE_MAX_DEFAULT: NonZeroU16 = unsafe { NonZeroU16::new_unchecked(65_535) };
+const RECEIVE_MAX_DEFAULT: NonZeroU16 = unsafe { NonZeroU16::new_unchecked(65_535) };
