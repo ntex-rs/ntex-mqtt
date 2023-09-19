@@ -262,7 +262,7 @@ where
                     log::trace!("Duplicated packet id for subscribe packet: {:?}", packet_id);
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
-                            "Duplicated packet id for subscribe packet",
+                            "SUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
                         )),
                         &self.inner,
                         ctx,
@@ -293,7 +293,7 @@ where
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
-                            "Duplicated packet id for unsubscribe packet",
+                            "UNSUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
                         )),
                         &self.inner,
                         ctx,
