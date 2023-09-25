@@ -30,9 +30,6 @@ pub enum HandshakeError<E> {
     /// Peer disconnect
     #[error("Peer is disconnected, error: {:?}", _0)]
     Disconnected(Option<io::Error>),
-    /// Server error
-    #[error("Server error: {}", _0)]
-    Server(&'static str),
 }
 
 /// Protocol level errors
@@ -81,7 +78,7 @@ impl ProtocolError {
             inner: ViolationInner::Common { reason, message },
         })
     }
-    pub(crate) fn generic_violation(message: &'static str) -> Self {
+    pub fn generic_violation(message: &'static str) -> Self {
         Self::violation(DisconnectReasonCode::ProtocolError, message)
     }
 

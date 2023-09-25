@@ -120,7 +120,8 @@ where
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
                         return Either::Right(Either::Left(Ready::Err(MqttError::Handshake(
-                            HandshakeError::Server("Duplicated packet id for publish packet"),
+                            HandshakeError::Protocol(
+                                ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]"))
                         ))));
                     }
                 }
@@ -382,8 +383,9 @@ mod tests {
         ))));
         let err = f.await.err().unwrap();
         match err {
-            MqttError::Handshake(HandshakeError::Server(msg)) => {
-                assert!(msg == "Duplicated packet id for publish packet")
+            MqttError::Handshake(HandshakeError::Protocol(msg)) => {
+                assert!(format!("{}", msg)
+                    .contains("PUBLISH received with packet id that is already in use"))
             }
             _ => panic!(),
         }

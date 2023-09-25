@@ -60,9 +60,9 @@ where
                 BufferServiceError::Service(e) => {
                     MqttError::Handshake(HandshakeError::Service(E::from(e)))
                 }
-                BufferServiceError::RequestCanceled => MqttError::Handshake(
-                    HandshakeError::Server("Request handling has been canceled"),
-                ),
+                BufferServiceError::RequestCanceled => {
+                    MqttError::Handshake(HandshakeError::Disconnected(None))
+                }
             });
 
             Ok(

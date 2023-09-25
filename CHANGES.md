@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.2] - 2023-09-25
+
+* Drop unneeded HandshakeError::Server
+
 ## [0.12.1] - 2023-09-25
 
 * Change handshake timeout behavior (renamed to connect timeout).

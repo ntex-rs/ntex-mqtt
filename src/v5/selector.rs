@@ -1,4 +1,6 @@
-use std::{convert::TryFrom, fmt, future::Future, marker, rc::Rc, task::Context, task::Poll};
+use std::{
+    convert::TryFrom, fmt, future::Future, io, marker, rc::Rc, task::Context, task::Poll,
+};
 
 use ntex::io::{Filter, Io, IoBoxed};
 use ntex::service::{boxed, Service, ServiceCtx, ServiceFactory};
@@ -328,7 +330,10 @@ where
                 }
             }
             log::error!("Cannot handle CONNECT packet {:?}", item);
-            Err(MqttError::Handshake(HandshakeError::Server("Cannot handle CONNECT packet")))
+            Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::new(
+                io::ErrorKind::Other,
+                "Cannot handle CONNECT packet",
+            )))))
         })
     }
 }

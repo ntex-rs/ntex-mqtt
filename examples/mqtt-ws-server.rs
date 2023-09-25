@@ -6,7 +6,7 @@ use ntex::io::{Filter, Io};
 use ntex::service::{chain_factory, ServiceFactory};
 use ntex::util::{variant, Ready};
 use ntex::ws;
-use ntex_mqtt::{v3, v5, HandshakeError, MqttError, MqttServer};
+use ntex_mqtt::{v3, v5, HandshakeError, MqttError, MqttServer, ProtocolError};
 use ntex_tls::openssl::Acceptor;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 
@@ -101,9 +101,11 @@ async fn main() -> std::io::Result<()> {
                         return match result {
                             Some(Protocol::Mqtt) => Ok(variant::Variant2::V1(io)),
                             Some(Protocol::Http) => Ok(variant::Variant2::V2(io)),
-                            Some(Protocol::Unknown) => Err(MqttError::Handshake(
-                                HandshakeError::Server("Unsupported protocol"),
-                            )),
+                            Some(Protocol::Unknown) => {
+                                Err(MqttError::Handshake(HandshakeError::Protocol(
+                                    ProtocolError::generic_violation("Unsupported protocol"),
+                                )))
+                            }
                             None => {
                                 // need to read more data
                                 io.read_ready().await?;
@@ -140,8 +142,10 @@ async fn main() -> std::io::Result<()> {
                                                     )
                                                     .await?;
                                                     return Err(MqttError::Handshake(
-                                                        HandshakeError::Server(
-                                                            "WebSockets handshake error",
+                                                        HandshakeError::Protocol(
+                                                            ProtocolError::generic_violation(
+                                                                "WebSockets handshake error",
+                                                            ),
                                                         ),
                                                     ));
                                                 }
@@ -178,8 +182,8 @@ async fn main() -> std::io::Result<()> {
                             // adapt service error to mqtt error
                             .map_err(|e| {
                                 log::info!("Http server error: {:?}", e);
-                                MqttError::Handshake(HandshakeError::Server(
-                                    "Http server error",
+                                MqttError::Handshake(HandshakeError::Protocol(
+                                    ProtocolError::generic_violation("Http server error"),
                                 ))
                             })),
                 )
