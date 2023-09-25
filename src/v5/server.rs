@@ -3,7 +3,7 @@ use std::{convert::TryFrom, fmt, future::Future, marker::PhantomData, rc::Rc};
 use ntex::io::{DispatchItem, IoBoxed};
 use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex::time::{timeout_checked, Millis, Seconds};
-use ntex::util::{select, BoxFuture, Either};
+use ntex::util::{BoxFuture, Either};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::{io::Dispatcher, service, types::QoS};
@@ -12,7 +12,6 @@ use super::control::{ControlMessage, ControlResult};
 use super::default::{DefaultControlService, DefaultPublishService};
 use super::handshake::{Handshake, HandshakeAck};
 use super::publish::{Publish, PublishAck};
-use super::selector::SelectItem;
 use super::shared::{MqttShared, MqttSinkPool};
 use super::{codec as mqtt, dispatcher::factory, MqttSink, Session};
 
@@ -25,7 +24,7 @@ pub struct MqttServer<St, C, Cn, P> {
     max_receive: u16,
     max_qos: QoS,
     max_inflight_size: usize,
-    handshake_timeout: Seconds,
+    connect_timeout: Seconds,
     disconnect_timeout: Seconds,
     max_topic_alias: u16,
     pub(super) pool: Rc<MqttSinkPool>,
@@ -51,7 +50,7 @@ where
             max_receive: 15,
             max_qos: QoS::AtLeastOnce,
             max_inflight_size: 65535,
-            handshake_timeout: Seconds::ZERO,
+            connect_timeout: Seconds::ZERO,
             disconnect_timeout: Seconds(3),
             max_topic_alias: 32,
             pool: Rc::new(MqttSinkPool::default()),
@@ -69,12 +68,23 @@ where
         + 'static,
     P: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
 {
-    /// Set handshake timeout.
+    /// Set client timeout for first `Connect` frame.
     ///
-    /// Handshake includes `connect` packet and response `connect-ack`.
-    /// By default handshake timeuot is disabled.
+    /// Defines a timeout for reading `Connect` frame. If a client does not transmit
+    /// the entire frame within this time, the connection is terminated with
+    /// Mqtt::Handshake(HandshakeError::Timeout) error.
+    ///
+    /// By default, connect timeout is disabled.
+    pub fn conenct_timeout(mut self, timeout: Seconds) -> Self {
+        self.connect_timeout = timeout;
+        self
+    }
+
+    #[deprecated(since = "0.12.1")]
+    #[doc(hidden)]
+    /// Set handshake timeout.
     pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
-        self.handshake_timeout = timeout;
+        self.connect_timeout = timeout;
         self
     }
 
@@ -153,7 +163,7 @@ where
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
             max_inflight_size: self.max_inflight_size,
-            handshake_timeout: self.handshake_timeout,
+            connect_timeout: self.connect_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
             _t: PhantomData,
@@ -178,7 +188,7 @@ where
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
             max_inflight_size: self.max_inflight_size,
-            handshake_timeout: self.handshake_timeout,
+            connect_timeout: self.connect_timeout,
             disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
             _t: PhantomData,
@@ -228,7 +238,7 @@ where
                 max_receive: self.max_receive,
                 max_topic_alias: self.max_topic_alias,
                 max_qos: self.max_qos,
-                handshake_timeout: self.handshake_timeout.into(),
+                connect_timeout: self.connect_timeout.into(),
                 pool: self.pool,
                 _t: PhantomData,
             },
@@ -242,8 +252,8 @@ where
         self,
         check: F,
     ) -> impl ServiceFactory<
-        SelectItem,
-        Response = Either<SelectItem, ()>,
+        Handshake,
+        Response = Either<Handshake, ()>,
         Error = MqttError<C::Error>,
         InitError = C::InitError,
     >
@@ -275,7 +285,7 @@ struct HandshakeFactory<St, H> {
     max_receive: u16,
     max_topic_alias: u16,
     max_qos: QoS,
-    handshake_timeout: Millis,
+    connect_timeout: Millis,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
 }
@@ -299,7 +309,7 @@ where
         let max_topic_alias = self.max_topic_alias;
         let max_qos = self.max_qos;
         let pool = self.pool.clone();
-        let handshake_timeout = self.handshake_timeout;
+        let connect_timeout = self.connect_timeout;
 
         Box::pin(async move {
             let service = fut.await?;
@@ -309,7 +319,7 @@ where
                 max_receive,
                 max_topic_alias,
                 max_qos,
-                handshake_timeout,
+                connect_timeout,
                 pool,
                 _t: PhantomData,
             })
@@ -323,7 +333,7 @@ struct HandshakeService<St, H> {
     max_receive: u16,
     max_topic_alias: u16,
     max_qos: QoS,
-    handshake_timeout: Millis,
+    connect_timeout: Millis,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
 }
@@ -350,13 +360,11 @@ where
         shared.set_receive_max(self.max_receive);
         shared.set_topic_alias_max(self.max_topic_alias);
 
-        let handshake_timeout = self.handshake_timeout;
-
-        let f = async move {
+        Box::pin(async move {
             // read first packet
-            let packet = io
-                .recv(&shared.codec)
+            let packet = timeout_checked(self.connect_timeout, io.recv(&shared.codec))
                 .await
+                .map_err(|_| MqttError::Handshake(HandshakeError::Timeout))?
                 .map_err(|err| {
                     log::trace!("Error is received during mqtt handshake: {:?}", err);
                     MqttError::Handshake(HandshakeError::from(err))
@@ -442,14 +450,6 @@ where
                     )))
                 }
             }
-        };
-
-        Box::pin(async move {
-            if let Ok(val) = timeout_checked(handshake_timeout, f).await {
-                val
-            } else {
-                Err(MqttError::Handshake(HandshakeError::Timeout))
-            }
         })
     }
 }
@@ -466,7 +466,7 @@ pub(crate) struct ServerSelector<St, C, T, F, R> {
     _t: PhantomData<(St, R)>,
 }
 
-impl<St, C, T, F, R> ServiceFactory<SelectItem> for ServerSelector<St, C, T, F, R>
+impl<St, C, T, F, R> ServiceFactory<Handshake> for ServerSelector<St, C, T, F, R>
 where
     St: 'static,
     F: Fn(&Handshake) -> R + 'static,
@@ -481,7 +481,7 @@ where
             InitError = MqttError<C::Error>,
         > + 'static,
 {
-    type Response = Either<SelectItem, ()>;
+    type Response = Either<Handshake, ()>;
     type Error = MqttError<C::Error>;
     type InitError = C::InitError;
     type Service = ServerSelectorImpl<St, C::Service, T, F, R>;
@@ -526,7 +526,7 @@ pub(crate) struct ServerSelectorImpl<St, C, T, F, R> {
     _t: PhantomData<(St, R)>,
 }
 
-impl<St, C, T, F, R> Service<SelectItem> for ServerSelectorImpl<St, C, T, F, R>
+impl<St, C, T, F, R> Service<Handshake> for ServerSelectorImpl<St, C, T, F, R>
 where
     St: 'static,
     F: Fn(&Handshake) -> R + 'static,
@@ -541,34 +541,27 @@ where
             InitError = MqttError<C::Error>,
         > + 'static,
 {
-    type Response = Either<SelectItem, ()>;
+    type Response = Either<Handshake, ()>;
     type Error = MqttError<C::Error>;
     type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>> where Self: 'f;
 
     ntex::forward_poll_ready!(connect, MqttError::Service);
     ntex::forward_poll_shutdown!(connect);
 
-    #[inline]
-    fn call<'a>(&'a self, req: SelectItem, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, hnd: Handshake, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Box::pin(async move {
             log::trace!("Start connection handshake");
 
-            let timeout = self.disconnect_timeout;
-
-            req.0.shared.codec.set_max_inbound_size(self.max_size);
-            req.0.shared.set_max_qos(self.max_qos);
-            req.0.shared.set_receive_max(self.max_receive);
-            req.0.shared.set_topic_alias_max(self.max_topic_alias);
-            let (hnd, mut delay) = req;
-
-            let result = match select((*self.check)(&hnd), &mut delay).await {
-                Either::Left(res) => res,
-                Either::Right(_) => return Err(MqttError::Handshake(HandshakeError::Timeout)),
-            };
-
+            let result = (*self.check)(&hnd).await;
             if !result.map_err(|e| MqttError::Handshake(HandshakeError::Service(e)))? {
-                Ok(Either::Left((hnd, delay)))
+                Ok(Either::Left(hnd))
             } else {
+                // decoder config
+                hnd.shared.codec.set_max_inbound_size(self.max_size);
+                hnd.shared.set_max_qos(self.max_qos);
+                hnd.shared.set_receive_max(self.max_receive);
+                hnd.shared.set_topic_alias_max(self.max_topic_alias);
+
                 // set max outbound (encoder) packet size
                 if let Some(size) = hnd.packet().max_packet_size {
                     hnd.shared.codec.set_max_outbound_size(size.get());
@@ -578,15 +571,10 @@ where
                     hnd.packet().receive_max.map(|v| v.get()).unwrap_or(16) as usize;
 
                 // authenticate mqtt connection
-                let mut ack = match select(ctx.call(&self.connect, hnd), &mut delay).await {
-                    Either::Left(res) => res.map_err(|e| {
-                        log::trace!("Connection handshake failed: {:?}", e);
-                        MqttError::Handshake(HandshakeError::Service(e))
-                    })?,
-                    Either::Right(_) => {
-                        return Err(MqttError::Handshake(HandshakeError::Timeout))
-                    }
-                };
+                let mut ack = ctx.call(&self.connect, hnd).await.map_err(|e| {
+                    log::trace!("Connection handshake failed: {:?}", e);
+                    MqttError::Handshake(HandshakeError::Service(e))
+                })?;
 
                 match ack.session {
                     Some(session) => {
@@ -619,7 +607,7 @@ where
 
                         Dispatcher::new(ack.io, shared, handler)
                             .keepalive_timeout(Seconds(ack.keepalive))
-                            .disconnect_timeout(timeout)
+                            .disconnect_timeout(self.disconnect_timeout)
                             .await?;
                         Ok(Either::Right(()))
                     }

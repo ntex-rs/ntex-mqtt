@@ -13,12 +13,10 @@ use super::publish::{Publish, PublishAck};
 use super::shared::{MqttShared, MqttSinkPool};
 use super::{codec as mqtt, MqttServer, Session};
 
-pub(crate) type SelectItem = (Handshake, Deadline);
-
 type ServerFactory<Err, InitErr> =
-    boxed::BoxServiceFactory<(), SelectItem, Either<SelectItem, ()>, MqttError<Err>, InitErr>;
+    boxed::BoxServiceFactory<(), Handshake, Either<Handshake, ()>, MqttError<Err>, InitErr>;
 
-type Server<Err> = boxed::BoxService<SelectItem, Either<SelectItem, ()>, MqttError<Err>>;
+type Server<Err> = boxed::BoxService<Handshake, Either<Handshake, ()>, MqttError<Err>>;
 
 /// Mqtt server selector
 ///
@@ -27,7 +25,7 @@ type Server<Err> = boxed::BoxService<SelectItem, Either<SelectItem, ()>, MqttErr
 pub struct Selector<Err, InitErr> {
     servers: Vec<ServerFactory<Err, InitErr>>,
     max_size: u32,
-    handshake_timeout: Millis,
+    connect_timeout: Millis,
     pool: Rc<MqttSinkPool>,
     _t: marker::PhantomData<(Err, InitErr)>,
 }
@@ -38,7 +36,7 @@ impl<Err, InitErr> Selector<Err, InitErr> {
         Selector {
             servers: Vec::new(),
             max_size: 0,
-            handshake_timeout: Millis(10000),
+            connect_timeout: Millis(10000),
             pool: Default::default(),
             _t: marker::PhantomData,
         }
@@ -50,12 +48,23 @@ where
     Err: 'static,
     InitErr: 'static,
 {
-    /// Set handshake timeout.
+    /// Set client timeout for first `Connect` frame.
     ///
-    /// Handshake includes `connect` packet and response `connect-ack`.
-    /// By default handshake timeuot is 10 seconds.
+    /// Defines a timeout for reading `Connect` frame. If a client does not transmit
+    /// the entire frame within this time, the connection is terminated with
+    /// Mqtt::Handshake(HandshakeError::Timeout) error.
+    ///
+    /// By default, connect timeout is disabled.
+    pub fn conenct_timeout(mut self, timeout: Seconds) -> Self {
+        self.connect_timeout = timeout.into();
+        self
+    }
+
+    #[deprecated(since = "0.12.1")]
+    #[doc(hidden)]
+    /// Set handshake timeout.
     pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
-        self.handshake_timeout = timeout.into();
+        self.connect_timeout = timeout.into();
         self
     }
 
@@ -115,7 +124,7 @@ where
         Ok(SelectorService {
             servers,
             max_size: self.max_size,
-            handshake_timeout: self.handshake_timeout,
+            connect_timeout: self.connect_timeout,
             pool: self.pool.clone(),
         })
     }
@@ -173,7 +182,7 @@ where
 pub struct SelectorService<Err> {
     servers: Vec<Server<Err>>,
     max_size: u32,
-    handshake_timeout: Millis,
+    connect_timeout: Millis,
     pool: Rc<MqttSinkPool>,
 }
 
@@ -238,58 +247,11 @@ where
 
     #[inline]
     fn call<'a>(&'a self, io: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
-        Box::pin(async move {
-            let codec = mqtt::Codec::default();
-            codec.set_max_inbound_size(self.max_size);
-            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
-            let mut timeout = Deadline::new(self.handshake_timeout);
-
-            // read first packet
-            let result = select(&mut timeout, async {
-                io.recv(&shared.codec)
-                    .await
-                    .map_err(|err| {
-                        log::trace!("Error is received during mqtt handshake: {:?}", err);
-                        MqttError::Handshake(HandshakeError::from(err))
-                    })?
-                    .ok_or_else(|| {
-                        log::trace!("Server mqtt is disconnected during handshake");
-                        MqttError::Handshake(HandshakeError::Disconnected(None))
-                    })
-            })
-            .await;
-
-            let (packet, size) = match result {
-                Either::Left(_) => Err(MqttError::Handshake(HandshakeError::Timeout)),
-                Either::Right(item) => item,
-            }?;
-
-            let connect = match packet {
-                mqtt::Packet::Connect(connect) => connect,
-                packet => {
-                    log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {}", 1);
-                    return Err(MqttError::Handshake(HandshakeError::Protocol(
-                        ProtocolError::unexpected_packet(
-                            packet.packet_type(),
-                            "MQTT-3.1.0-1: Expected CONNECT packet",
-                        ),
-                    )));
-                }
-            };
-
-            // call servers
-            let mut item = (Handshake::new(connect, size, io, shared), timeout);
-            for srv in self.servers.iter() {
-                match ctx.call(&srv, item).await? {
-                    Either::Left(result) => {
-                        item = result;
-                    }
-                    Either::Right(_) => return Ok(()),
-                }
-            }
-            log::error!("Cannot handle CONNECT packet {:?}", item.0);
-            Err(MqttError::Handshake(HandshakeError::Server("Cannot handle CONNECT packet")))
-        })
+        Service::<(IoBoxed, Deadline)>::call(
+            self,
+            (io, Deadline::new(self.connect_timeout)),
+            ctx,
+        )
     }
 }
 
@@ -356,7 +318,7 @@ where
             };
 
             // call servers
-            let mut item = (Handshake::new(connect, size, io, shared), timeout);
+            let mut item = Handshake::new(connect, size, io, shared);
             for srv in self.servers.iter() {
                 match ctx.call(srv, item).await? {
                     Either::Left(result) => {
@@ -365,7 +327,7 @@ where
                     Either::Right(_) => return Ok(()),
                 }
             }
-            log::error!("Cannot handle CONNECT packet {:?}", item.0);
+            log::error!("Cannot handle CONNECT packet {:?}", item);
             Err(MqttError::Handshake(HandshakeError::Server("Cannot handle CONNECT packet")))
         })
     }
