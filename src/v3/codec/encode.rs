@@ -262,7 +262,7 @@ mod tests {
         let mut v = BytesMut::with_capacity(1024);
         encode(packet, &mut v, get_encoded_size(packet) as u32).unwrap();
         assert_eq!(expected.len(), v.len());
-        assert_eq!(&expected[..], &v[..]);
+        assert_eq!(expected, &v[..]);
     }
 
     #[test]

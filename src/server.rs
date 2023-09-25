@@ -502,7 +502,7 @@ impl<Err, InitErr> DefaultProtocolServer<Err, InitErr> {
     }
 }
 
-impl<Err, InitErr> ServiceFactory<IoBoxed> for DefaultProtocolServer<Err, InitErr> {
+impl<Err, InitErr> ServiceFactory<(IoBoxed, Deadline)> for DefaultProtocolServer<Err, InitErr> {
     type Response = ();
     type Error = MqttError<Err>;
     type Service = DefaultProtocolServer<Err, InitErr>;
@@ -514,12 +514,12 @@ impl<Err, InitErr> ServiceFactory<IoBoxed> for DefaultProtocolServer<Err, InitEr
     }
 }
 
-impl<Err, InitErr> Service<IoBoxed> for DefaultProtocolServer<Err, InitErr> {
+impl<Err, InitErr> Service<(IoBoxed, Deadline)> for DefaultProtocolServer<Err, InitErr> {
     type Response = ();
     type Error = MqttError<Err>;
     type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
-    fn call<'a>(&'a self, _: IoBoxed, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, _: (IoBoxed, Deadline), _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Ready::Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::new(
             io::ErrorKind::Other,
             format!("Protocol is not supported: {:?}", self.ver),
