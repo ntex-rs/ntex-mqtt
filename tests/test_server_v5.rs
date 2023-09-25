@@ -919,11 +919,8 @@ async fn test_max_qos() -> std::io::Result<()> {
                 let violated = violated.clone();
                 match msg {
                     ControlMessage::ProtocolError(msg) => {
-                        match msg.get_ref() {
-                            error::ProtocolError::ProtocolViolation(_) => {
-                                violated.store(true, Relaxed);
-                            }
-                            _ => (),
+                        if let error::ProtocolError::ProtocolViolation(_) = msg.get_ref() {
+                            violated.store(true, Relaxed);
                         }
                         Ready::Ok::<_, TestError>(msg.ack())
                     }

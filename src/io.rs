@@ -730,7 +730,7 @@ mod tests {
 
         let (disp, io) =
             Dispatcher::new_debug(nio::Io::new(server), BytesCodec, Srv(counter.clone()));
-        io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &mut BytesCodec).unwrap();
+        io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec).unwrap();
         ntex::rt::spawn(async move {
             let _ = disp.await;
         });

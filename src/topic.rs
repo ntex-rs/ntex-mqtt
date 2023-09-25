@@ -376,8 +376,7 @@ mod tests {
     #[test_case("/finance" => Ok(vec![TopicFilterLevel::Blank, lvl_normal("finance")]) ; "12")]
     #[test_case("finance/" => Ok(vec![lvl_normal("finance"), TopicFilterLevel::Blank]) ; "13")]
     fn parsing(input: &str) -> Result<Vec<TopicFilterLevel>, TopicFilterError> {
-        TopicFilter::try_from(ByteString::from(input))
-            .map(|t| t.levels().iter().cloned().collect())
+        TopicFilter::try_from(ByteString::from(input)).map(|t| t.levels().to_vec())
     }
 
     #[test_case(vec![lvl_normal("sport"), lvl_normal("tennis"), lvl_normal("player1")] => true; "1")]

@@ -1,5 +1,10 @@
 # Changes
 
+## [0.12.1] - 2023-09-25
+
+* Change handshake timeout behavior (renamed to connect timeout).
+  Timeout handles slow client's Control frame.
+
 ## [0.12.0] - 2023-09-18
 
 * Refactor MqttError type

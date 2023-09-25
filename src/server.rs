@@ -13,7 +13,7 @@ use crate::{error::HandshakeError, error::MqttError, v3, v5};
 pub struct MqttServer<V3, V5, Err, InitErr> {
     v3: V3,
     v5: V5,
-    handshake_timeout: Millis,
+    connect_timeout: Millis,
     _t: marker::PhantomData<(Err, InitErr)>,
 }
 
@@ -30,7 +30,7 @@ impl<Err, InitErr>
         MqttServer {
             v3: DefaultProtocolServer::new(ProtocolVersion::MQTT3),
             v5: DefaultProtocolServer::new(ProtocolVersion::MQTT5),
-            handshake_timeout: Millis(10000),
+            connect_timeout: Millis(10000),
             _t: marker::PhantomData,
         }
     }
@@ -50,12 +50,23 @@ impl<Err, InitErr> Default
 }
 
 impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr> {
-    /// Set handshake timeout.
+    /// Set client timeout for first `Connect` frame.
     ///
-    /// Handshake includes `connect` packet.
-    /// By default handshake timeuot is 10 seconds.
+    /// Defines a timeout for reading `Connect` frame. If a client does not transmit
+    /// the entire frame within this time, the connection is terminated with
+    /// Mqtt::Handshake(HandshakeError::Timeout) error.
+    ///
+    /// By default, connect timeuot is 10 seconds.
+    pub fn conenct_timeout(mut self, timeout: Seconds) -> Self {
+        self.connect_timeout = timeout.into();
+        self
+    }
+
+    #[deprecated(since = "0.12.1")]
+    #[doc(hidden)]
+    /// Set handshake timeout.
     pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
-        self.handshake_timeout = timeout.into();
+        self.connect_timeout = timeout.into();
         self
     }
 }
@@ -113,7 +124,7 @@ where
         MqttServer {
             v3: service.finish(),
             v5: self.v5,
-            handshake_timeout: self.handshake_timeout,
+            connect_timeout: self.connect_timeout,
             _t: marker::PhantomData,
         }
     }
@@ -140,7 +151,7 @@ where
         MqttServer {
             v3: service,
             v5: self.v5,
-            handshake_timeout: self.handshake_timeout,
+            connect_timeout: self.connect_timeout,
             _t: marker::PhantomData,
         }
     }
@@ -185,7 +196,7 @@ where
         MqttServer {
             v3: self.v3,
             v5: service.finish(),
-            handshake_timeout: self.handshake_timeout,
+            connect_timeout: self.connect_timeout,
             _t: marker::PhantomData,
         }
     }
@@ -212,7 +223,7 @@ where
         MqttServer {
             v3: self.v3,
             v5: service,
-            handshake_timeout: self.handshake_timeout,
+            connect_timeout: self.connect_timeout,
             _t: marker::PhantomData,
         }
     }
@@ -241,7 +252,7 @@ where
         let v5 = v5?;
         Ok(MqttServerImpl {
             handlers: (v3, v5),
-            handshake_timeout: self.handshake_timeout,
+            connect_timeout: self.connect_timeout,
             _t: marker::PhantomData,
         })
     }
@@ -311,7 +322,7 @@ where
 /// Mqtt Server
 pub struct MqttServerImpl<V3, V5, Err> {
     handlers: (V3, V5),
-    handshake_timeout: Millis,
+    connect_timeout: Millis,
     _t: marker::PhantomData<Err>,
 }
 
@@ -353,7 +364,7 @@ where
         MqttServerImplResponse {
             ctx,
             state: MqttServerImplState::Version {
-                item: Some((req, VersionCodec, Deadline::new(self.handshake_timeout))),
+                item: Some((req, VersionCodec, Deadline::new(self.connect_timeout))),
             },
             handlers: &self.handlers,
         }
