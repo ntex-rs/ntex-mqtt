@@ -44,10 +44,8 @@ where
             let (publish, control) =
                 join(factories.0.create(ses.clone()), factories.1.create(ses)).await;
 
-            let publish =
-                publish.map_err(|e| MqttError::Handshake(HandshakeError::Service(e.into())))?;
-            let control =
-                control.map_err(|e| MqttError::Handshake(HandshakeError::Service(e.into())))?;
+            let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
+            let control = control.map_err(|e| MqttError::Service(e.into()))?;
 
             let control = BufferService::new(
                 16,
@@ -55,9 +53,7 @@ where
                 InFlightService::new(1, control),
             )
             .map_err(|err| match err {
-                BufferServiceError::Service(e) => {
-                    MqttError::Handshake(HandshakeError::Service(E::from(e)))
-                }
+                BufferServiceError::Service(e) => MqttError::Service(E::from(e)),
                 BufferServiceError::RequestCanceled => {
                     MqttError::Handshake(HandshakeError::Disconnected(None))
                 }

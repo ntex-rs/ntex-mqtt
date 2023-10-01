@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.3] - 2023-10-01
+
+* Fix Publish and Control error type
+
 ## [0.12.2] - 2023-09-25
 
 * Drop unneeded HandshakeError::Server
