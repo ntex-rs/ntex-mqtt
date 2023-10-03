@@ -382,6 +382,31 @@ async fn test_handle_incoming() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_nested_errors() -> std::io::Result<()> {
+    let srv = server::test_server(move || {
+        MqttServer::new(handshake)
+            .publish(|_| Ready::Ok(()))
+            .control(move |msg| match msg {
+                ControlMessage::Disconnect(_) => Ready::Err(()),
+                ControlMessage::Error(_) => Ready::Err(()),
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(codec::Connect::default().client_id("user").into(), &codec).await.unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    // disconnect
+    io.send(codec::Packet::Disconnect, &codec).await.unwrap();
+    assert!(io.recv(&codec).await.unwrap().is_none());
+
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_large_publish() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         MqttServer::new(handshake).publish(|_| Ready::Ok(())).finish()
