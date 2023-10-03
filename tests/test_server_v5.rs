@@ -117,7 +117,6 @@ async fn test_disconnect() -> std::io::Result<()> {
         client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
 
     let sink = client.sink();
-
     ntex::rt::spawn(client.start_default());
 
     let res =
@@ -152,12 +151,68 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
         client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
 
     let sink = client.sink();
-
     ntex::rt::spawn(client.start_default());
 
     let res =
         sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_err());
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_nested_errors_handling() -> std::io::Result<()> {
+    let srv = server::test_server(|| {
+        MqttServer::new(handshake)
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .control(move |msg| match msg {
+                ControlMessage::Disconnect(_) => Ready::Err(TestError),
+                ControlMessage::Error(_) => Ready::Err(TestError),
+                ControlMessage::Closed(m) => Ready::Ok(m.ack()),
+                _ => panic!("{:?}", msg),
+            })
+            .finish()
+    });
+
+    // connect to server
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(codec::Connect::default().client_id("user").into(), &codec).await.unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    // disconnect
+    io.send(codec::Disconnect::default().into(), &codec).await.unwrap();
+    assert!(io.recv(&codec).await.unwrap().is_none());
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_disconnect_on_error() -> std::io::Result<()> {
+    let srv = server::test_server(|| {
+        MqttServer::new(handshake)
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .control(move |msg| match msg {
+                ControlMessage::Disconnect(_) => Ready::Err(TestError),
+                ControlMessage::Error(m) => {
+                    Ready::Ok(m.ack(codec::DisconnectReasonCode::ImplementationSpecificError))
+                }
+                ControlMessage::Closed(m) => Ready::Ok(m.ack()),
+                _ => panic!("{:?}", msg),
+            })
+            .finish()
+    });
+
+    // connect to server
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(codec::Connect::default().client_id("user").into(), &codec).await.unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    // disconnect
+    io.send(codec::Disconnect::default().into(), &codec).await.unwrap();
+    let res = io.recv(&codec).await.unwrap().unwrap();
+    assert!(matches!(res.0, codec::Packet::Disconnect(_)));
 
     Ok(())
 }
@@ -207,10 +262,7 @@ async fn test_disconnect_after_control_error() -> std::io::Result<()> {
     .unwrap();
 
     let result = io.recv(&codec).await.unwrap().unwrap();
-    if let codec::Packet::Disconnect(_) = result.0 {
-    } else {
-        panic!();
-    }
+    assert!(matches!(result.0, codec::Packet::Disconnect(_)));
     Ok(())
 }
 
@@ -238,12 +290,7 @@ async fn test_ping() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::new();
-    io.send(
-        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
-        &codec,
-    )
-    .await
-    .unwrap();
+    io.send(codec::Connect::default().client_id("user").into(), &codec).await.unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(codec::Packet::PingRequest, &codec).await.unwrap();
@@ -278,12 +325,7 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(
-        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
-        &codec,
-    )
-    .await
-    .unwrap();
+    io.send(codec::Connect::default().client_id("user").into(), &codec).await.unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
@@ -351,14 +393,9 @@ async fn test_dups() {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(
-        codec::Packet::Connect(Box::new(
-            codec::Connect::default().client_id("user").receive_max(2),
-        )),
-        &codec,
-    )
-    .await
-    .unwrap();
+    io.send(codec::Connect::default().client_id("user").receive_max(2).into(), &codec)
+        .await
+        .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(

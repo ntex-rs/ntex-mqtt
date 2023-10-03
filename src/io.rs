@@ -268,9 +268,10 @@ where
         }
 
         loop {
+            // println!("IO-DISP state :{:?}: {:?}", inner.io.flags(), inner.st);
+
             match inner.st {
                 IoDispatcherState::Processing => {
-                    // println!("IO-DISP state :{:?}:", io.flags());
                     let item = match ready!(inner.poll_service(this.service, cx,)) {
                         PollService::Ready => {
                             // decode incoming bytes stream
@@ -449,17 +450,16 @@ where
                 let mut state = self.state.borrow_mut();
                 Poll::Ready(if let Some(err) = state.error.take() {
                     log::trace!("error occured, stopping dispatcher");
+                    self.st = IoDispatcherState::Stop;
                     match err {
                         IoDispatcherError::Encoder(err) => {
-                            self.st = IoDispatcherState::Stop;
                             PollService::Item(DispatchItem::EncoderError(err))
                         }
                         IoDispatcherError::Service(err) => {
                             state.error = Some(IoDispatcherError::Service(err));
-                            PollService::Ready
+                            PollService::Continue
                         }
                         IoDispatcherError::KeepAlive => {
-                            self.st = IoDispatcherState::Stop;
                             PollService::Item(DispatchItem::KeepAliveTimeout)
                         }
                     }
@@ -692,7 +692,7 @@ mod tests {
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
 
         // write side must be closed, dispatcher waiting for read side to close
-        assert!(!client.is_closed());
+        assert!(client.is_closed());
 
         // close read side
         client.close().await;

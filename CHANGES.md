@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.4] - 2023-10-03
+
+* Fix nested error handling for control service
+
 ## [0.12.3] - 2023-10-01
 
 * Fix Publish and Control error type
