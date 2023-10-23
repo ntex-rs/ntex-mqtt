@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.5] - 2023-10-23
+
+* Fix typo
+
 ## [0.12.4] - 2023-10-03
 
 * Fix nested error handling for control service
