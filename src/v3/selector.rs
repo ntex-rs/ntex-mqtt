@@ -54,6 +54,13 @@ where
     /// Mqtt::Handshake(HandshakeError::Timeout) error.
     ///
     /// By default, connect timeuot is 10 seconds.
+    pub fn connect_timeout(mut self, timeout: Seconds) -> Self {
+        self.connect_timeout = timeout.into();
+        self
+    }
+
+    #[deprecated(since = "0.12.5")]
+    #[doc(hidden)]
     pub fn conenct_timeout(mut self, timeout: Seconds) -> Self {
         self.connect_timeout = timeout.into();
         self
