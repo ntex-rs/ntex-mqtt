@@ -94,6 +94,18 @@ impl ProtocolError {
     }
 }
 
+impl<E> From<io::Error> for MqttError<E> {
+    fn from(err: io::Error) -> Self {
+        MqttError::Handshake(HandshakeError::Disconnected(Some(err)))
+    }
+}
+
+impl<E> From<Either<io::Error, io::Error>> for MqttError<E> {
+    fn from(err: Either<io::Error, io::Error>) -> Self {
+        MqttError::Handshake(HandshakeError::Disconnected(Some(err.into_inner())))
+    }
+}
+
 impl<E> From<EncodeError> for MqttError<E> {
     fn from(err: EncodeError) -> Self {
         MqttError::Handshake(HandshakeError::Protocol(ProtocolError::Encode(err)))
