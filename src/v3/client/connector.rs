@@ -215,7 +215,7 @@ where
         let codec = codec::Codec::new();
         codec.set_max_size(self.max_packet_size);
 
-        io.send(pkt.into(), &codec).await?;
+        io.encode(pkt.into(), &codec)?;
 
         let packet = io.recv(&codec).await.map_err(ClientError::from)?.ok_or_else(|| {
             log::trace!("Mqtt server is disconnected during handshake");

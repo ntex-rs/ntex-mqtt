@@ -378,7 +378,7 @@ where
                             log::trace!("Sending success handshake ack: {:#?}", pkt);
 
                             ack.shared.set_cap(ack.inflight as usize);
-                            ack.io.send(pkt, &ack.shared.codec).await?;
+                            ack.io.encode(pkt, &ack.shared.codec)?;
                             Ok((
                                 ack.io,
                                 ack.shared.clone(),
@@ -393,7 +393,7 @@ where
                             });
 
                             log::trace!("Sending failed handshake ack: {:#?}", pkt);
-                            ack.io.send(pkt, &ack.shared.codec).await?;
+                            ack.io.encode(pkt, &ack.shared.codec)?;
                             let _ = ack.io.shutdown().await;
 
                             Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
@@ -518,7 +518,7 @@ where
 
                         ack.shared.set_cap(ack.inflight as usize);
                         ack.shared.codec.set_max_size(self.max_size);
-                        ack.io.send(pkt, &ack.shared.codec).await.map_err(MqttError::from)?;
+                        ack.io.encode(pkt, &ack.shared.codec)?;
 
                         let session = Session::new(session, MqttSink::new(ack.shared.clone()));
                         let handler = self.handler.create(session).await?;
@@ -537,7 +537,7 @@ where
                         });
 
                         log::trace!("Sending failed handshake ack: {:#?}", pkt);
-                        ack.io.send(pkt, &ack.shared.codec).await?;
+                        ack.io.encode(pkt, &ack.shared.codec)?;
                         let _ = ack.io.shutdown().await;
 
                         Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
