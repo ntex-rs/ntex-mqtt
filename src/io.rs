@@ -272,7 +272,7 @@ where
 
             match inner.st {
                 IoDispatcherState::Processing => {
-                    let item = match ready!(inner.poll_service(this.service, cx,)) {
+                    let item = match ready!(inner.poll_service(this.service, cx)) {
                         PollService::Ready => {
                             // decode incoming bytes stream
                             match ready!(inner.io.poll_recv(this.codec, cx)) {
@@ -326,7 +326,6 @@ where
                             let res = this.response.as_mut().as_pin_mut().unwrap().poll(cx);
 
                             let mut state = inner.state.borrow_mut();
-                            let response_idx = state.base.wrapping_add(state.queue.len());
 
                             if let Poll::Ready(res) = res {
                                 // check if current result is only response
@@ -345,12 +344,13 @@ where
                                         Ok(None) => (),
                                     }
                                 } else {
-                                    *this.response_idx = response_idx;
+                                    *this.response_idx =
+                                        state.base.wrapping_add(state.queue.len());
                                     state.queue.push_back(ServiceResult::Ready(res));
                                 }
                                 this.response.set(None);
                             } else {
-                                *this.response_idx = response_idx;
+                                *this.response_idx = state.base.wrapping_add(state.queue.len());
                                 state.queue.push_back(ServiceResult::Pending);
                             }
                         } else {

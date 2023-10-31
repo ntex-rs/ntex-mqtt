@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.6] - 2023-10-31
+
+* Send server ConnectAck without io flushing
+
 ## [0.12.5] - 2023-10-23
 
 * Fix typo

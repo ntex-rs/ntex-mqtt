@@ -106,22 +106,17 @@ impl<E> From<Either<io::Error, io::Error>> for MqttError<E> {
     }
 }
 
+impl<E> From<EncodeError> for MqttError<E> {
+    fn from(err: EncodeError) -> Self {
+        MqttError::Handshake(HandshakeError::Protocol(ProtocolError::Encode(err)))
+    }
+}
+
 impl<E> From<Either<DecodeError, io::Error>> for HandshakeError<E> {
     fn from(err: Either<DecodeError, io::Error>) -> Self {
         match err {
             Either::Left(err) => HandshakeError::Protocol(ProtocolError::Decode(err)),
             Either::Right(err) => HandshakeError::Disconnected(Some(err)),
-        }
-    }
-}
-
-impl<E> From<Either<EncodeError, io::Error>> for MqttError<E> {
-    fn from(err: Either<EncodeError, io::Error>) -> Self {
-        match err {
-            Either::Left(err) => {
-                MqttError::Handshake(HandshakeError::Protocol(ProtocolError::Encode(err)))
-            }
-            Either::Right(err) => MqttError::Handshake(HandshakeError::Disconnected(Some(err))),
         }
     }
 }
@@ -200,12 +195,9 @@ pub enum ClientError<T: fmt::Debug> {
     Connect(#[from] ntex::connect::ConnectError),
 }
 
-impl<T: fmt::Debug> From<Either<EncodeError, std::io::Error>> for ClientError<T> {
-    fn from(err: Either<EncodeError, std::io::Error>) -> Self {
-        match err {
-            Either::Left(err) => ClientError::Protocol(ProtocolError::Encode(err)),
-            Either::Right(err) => ClientError::Disconnected(Some(err)),
-        }
+impl<T: fmt::Debug> From<EncodeError> for ClientError<T> {
+    fn from(err: EncodeError) -> Self {
+        ClientError::Protocol(ProtocolError::Encode(err))
     }
 }
 

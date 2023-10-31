@@ -419,12 +419,10 @@ where
                             }
                             shared.set_cap(peer_receive_max);
 
-                            ack.io
-                                .send(
-                                    mqtt::Packet::ConnectAck(Box::new(ack.packet)),
-                                    &shared.codec,
-                                )
-                                .await?;
+                            ack.io.encode(
+                                mqtt::Packet::ConnectAck(Box::new(ack.packet)),
+                                &shared.codec,
+                            )?;
 
                             Ok((
                                 ack.io,
@@ -436,12 +434,10 @@ where
                         None => {
                             log::trace!("Failed to complete handshake: {:#?}", ack.packet);
 
-                            ack.io
-                                .send(
-                                    mqtt::Packet::ConnectAck(Box::new(ack.packet)),
-                                    &ack.shared.codec,
-                                )
-                                .await?;
+                            ack.io.encode(
+                                mqtt::Packet::ConnectAck(Box::new(ack.packet)),
+                                &ack.shared.codec,
+                            )?;
                             let _ = ack.io.shutdown().await;
                             Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
                         }
@@ -604,9 +600,10 @@ where
                             ack.packet.server_keepalive_sec = Some(ack.keepalive);
                         }
                         shared.set_cap(peer_receive_max);
-                        ack.io
-                            .send(mqtt::Packet::ConnectAck(Box::new(ack.packet)), &shared.codec)
-                            .await?;
+                        ack.io.encode(
+                            mqtt::Packet::ConnectAck(Box::new(ack.packet)),
+                            &shared.codec,
+                        )?;
 
                         let session = Session::new(session, MqttSink::new(shared.clone()));
                         let handler = self.handler.create(session).await?;
@@ -621,12 +618,10 @@ where
                     None => {
                         log::trace!("Failed to complete handshake: {:#?}", ack.packet);
 
-                        ack.io
-                            .send(
-                                mqtt::Packet::ConnectAck(Box::new(ack.packet)),
-                                &ack.shared.codec,
-                            )
-                            .await?;
+                        ack.io.encode(
+                            mqtt::Packet::ConnectAck(Box::new(ack.packet)),
+                            &ack.shared.codec,
+                        )?;
                         let _ = ack.io.shutdown().await;
                         Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
                     }
