@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.7] - 2023-11-04
+
+* Fix v5::Subscribe packet encoding
+
 ## [0.12.6] - 2023-10-31
 
 * Send server ConnectAck without io flushing

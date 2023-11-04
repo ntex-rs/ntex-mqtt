@@ -334,6 +334,7 @@ mod tests {
         let size = pkt.encoded_size(99999);
         let mut buf = BytesMut::with_capacity(size);
         pkt.encode(&mut buf, size as u32).unwrap();
+        assert_eq!(buf.len(), size);
         assert_eq!(pkt, Subscribe::decode(&mut buf.freeze()).unwrap());
     }
 
