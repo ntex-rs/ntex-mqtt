@@ -317,6 +317,9 @@ impl EncodeLtd for UnsubscribeAck {
 
 #[cfg(test)]
 mod tests {
+    use ntex::codec::{Decoder, Encoder};
+
+    use super::super::super::{Codec, Packet};
     use super::*;
 
     #[test]
@@ -332,6 +335,22 @@ mod tests {
         let mut buf = BytesMut::with_capacity(size);
         pkt.encode(&mut buf, size as u32).unwrap();
         assert_eq!(pkt, Subscribe::decode(&mut buf.freeze()).unwrap());
+    }
+
+    #[test]
+    fn test_sub_pkt() {
+        let pkt = Packet::Subscribe(Subscribe {
+            packet_id: 12.try_into().unwrap(),
+            id: None,
+            user_properties: vec![("a".into(), "1".into())],
+            topic_filters: vec![("test".into(), SubscriptionOptions::default())],
+        });
+        let codec = Codec::new();
+
+        let mut buf = BytesMut::new();
+        codec.encode(pkt.clone(), &mut buf).unwrap();
+
+        assert_eq!(pkt, codec.decode(&mut buf).unwrap().unwrap().0);
     }
 
     #[test]
