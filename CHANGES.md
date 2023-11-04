@@ -2,7 +2,7 @@
 
 ## [0.12.7] - 2023-11-04
 
-* Fix v5::Subscribe packet encoding
+* Fix v5::Subscribe/Unsubscribe packet properties encoding
 
 ## [0.12.6] - 2023-10-31
 

@@ -199,6 +199,7 @@ impl EncodeLtd for Subscribe {
     fn encode(&self, buf: &mut BytesMut, _: u32) -> Result<(), EncodeError> {
         self.packet_id.encode(buf)?;
 
+        // encode properties
         let prop_len = self.id.map_or(0, |v| 1 + var_int_len(v.get() as usize))
             + self.user_properties.encoded_size() as u32; // safe: size was already checked against maximum
         utils::write_variable_length(prop_len, buf);
@@ -208,6 +209,9 @@ impl EncodeLtd for Subscribe {
             write_variable_length(id.get(), buf);
         }
 
+        self.user_properties.encode(buf)?;
+
+        // payload
         for (filter, opts) in self.topic_filters.iter() {
             filter.encode(buf)?;
             opts.encode(buf)?;
@@ -282,8 +286,13 @@ impl EncodeLtd for Unsubscribe {
 
     fn encode(&self, buf: &mut BytesMut, _size: u32) -> Result<(), EncodeError> {
         self.packet_id.encode(buf)?;
+
+        // properties
         let prop_len = self.user_properties.encoded_size();
         utils::write_variable_length(prop_len as u32, buf); // safe: max size check is done already
+        self.user_properties.encode(buf)?;
+
+        // payload
         for filter in self.topic_filters.iter() {
             filter.encode(buf)?;
         }
@@ -326,7 +335,7 @@ mod tests {
     fn test_sub() {
         let pkt = Subscribe {
             packet_id: 12.try_into().unwrap(),
-            id: None,
+            id: Some(10.try_into().unwrap()),
             user_properties: vec![("a".into(), "1".into())],
             topic_filters: vec![("test".into(), SubscriptionOptions::default())],
         };
@@ -336,6 +345,18 @@ mod tests {
         pkt.encode(&mut buf, size as u32).unwrap();
         assert_eq!(buf.len(), size);
         assert_eq!(pkt, Subscribe::decode(&mut buf.freeze()).unwrap());
+
+        let pkt = Unsubscribe {
+            packet_id: 12.try_into().unwrap(),
+            user_properties: vec![("a".into(), "1".into())],
+            topic_filters: vec!["test".into()],
+        };
+
+        let size = pkt.encoded_size(99999);
+        let mut buf = BytesMut::with_capacity(size);
+        pkt.encode(&mut buf, size as u32).unwrap();
+        assert_eq!(buf.len(), size);
+        assert_eq!(pkt, Unsubscribe::decode(&mut buf.freeze()).unwrap());
     }
 
     #[test]
