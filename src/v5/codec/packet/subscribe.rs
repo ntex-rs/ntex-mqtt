@@ -320,6 +320,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_sub() {
+        let pkt = Subscribe {
+            packet_id: 12.try_into().unwrap(),
+            id: None,
+            user_properties: vec![("a".into(), "1".into())],
+            topic_filters: vec![("test".into(), SubscriptionOptions::default())],
+        };
+
+        let size = pkt.encoded_size(99999);
+        let mut buf = BytesMut::with_capacity(size);
+        pkt.encode(&mut buf, size as u32).unwrap();
+        assert_eq!(pkt, Subscribe::decode(&mut buf.freeze()).unwrap());
+    }
+
+    #[test]
     fn test_sub_ack() {
         let ack = SubscribeAck {
             packet_id: NonZeroU16::new(1).unwrap(),
