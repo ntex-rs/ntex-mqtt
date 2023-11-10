@@ -3,12 +3,16 @@ use std::task::{Context, Poll};
 use std::{cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time};
 
 use ntex::codec::{Decoder, Encoder};
-use ntex::io::{DispatchItem, IoBoxed, IoRef, IoStatusUpdate, RecvError};
+use ntex::io::{
+    Decoded, DispatchItem, DispatcherConfig, IoBoxed, IoRef, IoStatusUpdate, RecvError,
+};
 use ntex::service::{IntoService, Pipeline, PipelineCall, Service};
-use ntex::time::Seconds;
+use ntex::time::{now, Seconds};
 use ntex::util::{ready, Pool};
 
 type Response<U> = <U as Encoder>::Item;
+
+const ONE_SEC: time::Duration = time::Duration::from_secs(1);
 
 pin_project_lite::pin_project! {
     /// Dispatcher for mqtt protocol
@@ -17,8 +21,8 @@ pin_project_lite::pin_project! {
         S: Service<DispatchItem<U>, Response = Option<Response<U>>>,
         S: 'static,
         U: Encoder,
-    U: Decoder,
-    U: 'static,
+        U: Decoder,
+        U: 'static,
     {
         codec: U,
         service: Pipeline<S>,
@@ -31,9 +35,11 @@ pin_project_lite::pin_project! {
 }
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Eq, PartialEq)]
     struct Flags: u8  {
-        const READY_ERR  = 0b0001;
-        const IO_ERR     = 0b0010;
+        const READY_ERR    = 0b0001;
+        const IO_ERR       = 0b0010;
+        const READ_TIMEOUT = 0b0100;
     }
 }
 
@@ -42,6 +48,9 @@ struct DispatcherInner<S: Service<DispatchItem<U>>, U: Encoder + Decoder> {
     flags: Flags,
     st: IoDispatcherState,
     state: Rc<RefCell<DispatcherState<S, U>>>,
+    config: DispatcherConfig,
+    read_bytes: u32,
+    read_max_timeout: time::Instant,
     keepalive_timeout: time::Duration,
 }
 
@@ -102,11 +111,11 @@ where
         io: IoBoxed,
         codec: U,
         service: F,
+        config: &DispatcherConfig,
     ) -> Self {
-        let keepalive_timeout = Seconds(30).into();
-
         // register keepalive timer
-        io.start_keepalive_timer(keepalive_timeout);
+        io.start_timer(Seconds(30).into());
+        io.set_disconnect_timeout(config.disconnect_timeout());
 
         let state = Rc::new(RefCell::new(DispatcherState {
             error: None,
@@ -124,9 +133,12 @@ where
             inner: DispatcherInner {
                 io,
                 state,
-                keepalive_timeout,
+                config: config.clone(),
                 flags: Flags::empty(),
                 st: IoDispatcherState::Processing,
+                read_bytes: 0,
+                read_max_timeout: now(),
+                keepalive_timeout: time::Duration::from_secs(30),
             },
         }
     }
@@ -137,41 +149,9 @@ where
     ///
     /// By default keep-alive timeout is set to 30 seconds.
     pub(crate) fn keepalive_timeout(mut self, timeout: Seconds) -> Self {
-        let timeout = timeout.into();
-        self.inner.io.start_keepalive_timer(timeout);
-        self.inner.keepalive_timeout = timeout;
+        self.inner.io.start_timer(timeout.into());
+        self.inner.keepalive_timeout = timeout.into();
         self
-    }
-
-    /// Set connection disconnect timeout.
-    ///
-    /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
-    /// within this time, the connection get dropped.
-    ///
-    /// To disable timeout set value to 0.
-    ///
-    /// By default disconnect timeout is set to 1 seconds.
-    pub(crate) fn disconnect_timeout(self, val: Seconds) -> Self {
-        self.inner.io.set_disconnect_timeout(val.into());
-        self
-    }
-}
-
-impl<S, U> DispatcherInner<S, U>
-where
-    S: Service<DispatchItem<U>, Response = Option<Response<U>>> + 'static,
-    U: Decoder + Encoder + Clone + 'static,
-    <U as Encoder>::Item: 'static,
-{
-    fn update_keepalive(&self) {
-        // update keep-alive timer
-        self.io.start_keepalive_timer(self.keepalive_timeout);
-    }
-
-    fn unregister_keepalive(&mut self) {
-        // unregister keep-alive timer
-        self.io.stop_keepalive_timer();
-        self.keepalive_timeout = time::Duration::ZERO;
     }
 }
 
@@ -275,11 +255,15 @@ where
                     let item = match ready!(inner.poll_service(this.service, cx)) {
                         PollService::Ready => {
                             // decode incoming bytes stream
-                            match ready!(inner.io.poll_recv(this.codec, cx)) {
-                                Ok(el) => {
+                            match inner.io.poll_recv_decode(this.codec, cx) {
+                                Ok(decoded) => {
                                     // update keep-alive timer
-                                    inner.update_keepalive();
-                                    Some(DispatchItem::Item(el))
+                                    inner.update_timer(&decoded);
+                                    if let Some(el) = decoded.item {
+                                        Some(DispatchItem::Item(el))
+                                    } else {
+                                        return Poll::Pending;
+                                    }
                                 }
                                 Err(RecvError::Stop) => {
                                     log::trace!("dispatcher is instructed to stop");
@@ -377,7 +361,7 @@ where
                 }
                 // drain service responses and shutdown io
                 IoDispatcherState::Stop => {
-                    inner.unregister_keepalive();
+                    inner.io.stop_timer();
 
                     // service may relay on poll_ready for response results
                     if !inner.flags.contains(Flags::READY_ERR) {
@@ -502,6 +486,52 @@ where
             }
         }
     }
+
+    fn update_timer(&mut self, decoded: &Decoded<<U as Decoder>::Item>) {
+        // we got parsed frame
+        if decoded.item.is_some() {
+            // remove all timers
+            if self.flags.contains(Flags::READ_TIMEOUT) {
+                self.flags.remove(Flags::READ_TIMEOUT);
+            }
+            self.io.stop_timer();
+        } else if self.flags.contains(Flags::READ_TIMEOUT) {
+            // update read timer
+            if let Some((_, max, rate)) = self.config.frame_read_rate() {
+                let bytes = decoded.remains as u32;
+
+                let delta = (bytes - self.read_bytes).try_into().unwrap_or(u16::MAX);
+
+                if delta >= rate {
+                    let n = now();
+                    let next = self.io.timer_deadline() + ONE_SEC;
+                    let new_timeout = if n >= next { ONE_SEC } else { next - n };
+
+                    // max timeout
+                    if max.is_zero() || (n + new_timeout) <= self.read_max_timeout {
+                        self.read_bytes = bytes;
+                        self.io.stop_timer();
+                        self.io.start_timer(new_timeout);
+                    }
+                }
+            }
+        } else {
+            // no new data then start keep-alive timer
+            if decoded.remains == 0 {
+                self.io.start_timer(self.keepalive_timeout);
+            } else if let Some((period, max, _)) = self.config.frame_read_rate() {
+                // we got new data but not enough to parse single frame
+                // start read timer
+                self.flags.insert(Flags::READ_TIMEOUT);
+
+                self.io.start_timer(period);
+                self.read_bytes = decoded.remains as u32;
+                if !max.is_zero() {
+                    self.read_max_timeout = now() + max;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -529,8 +559,10 @@ mod tests {
             service: F,
         ) -> (Self, nio::IoRef) {
             let keepalive_timeout = Seconds(30).into();
-            io.start_keepalive_timer(keepalive_timeout);
+            io.start_timer(keepalive_timeout);
             let rio = io.get_ref();
+
+            let config = DispatcherConfig::default();
 
             let state = Rc::new(RefCell::new(DispatcherState {
                 error: None,
@@ -547,10 +579,13 @@ mod tests {
                     pool: io.memory_pool().pool(),
                     inner: DispatcherInner {
                         state,
+                        config,
                         keepalive_timeout,
                         io: IoBoxed::from(io),
                         st: IoDispatcherState::Processing,
                         flags: Flags::empty(),
+                        read_bytes: 0,
+                        read_max_timeout: now(),
                     },
                 },
                 rio,
@@ -652,7 +687,7 @@ mod tests {
             }),
         );
         ntex::rt::spawn(async move {
-            let _ = disp.disconnect_timeout(Seconds(1)).await;
+            let _ = disp.await;
         });
 
         let buf = client.read().await.unwrap();

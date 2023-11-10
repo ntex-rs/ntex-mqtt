@@ -1,6 +1,6 @@
 use std::{cell::RefCell, convert::TryFrom, fmt, marker, num::NonZeroU16, rc::Rc};
 
-use ntex::io::IoBoxed;
+use ntex::io::{DispatcherConfig, IoBoxed};
 use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex::service::{boxed, into_service, IntoService, Pipeline, Service};
 use ntex::time::{sleep, Millis, Seconds};
@@ -19,8 +19,8 @@ pub struct Client {
     io: IoBoxed,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
-    disconnect_timeout: Seconds,
     max_receive: usize,
+    config: DispatcherConfig,
     pkt: Box<codec::ConnectAck>,
 }
 
@@ -28,9 +28,9 @@ impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("v5::Client")
             .field("keepalive", &self.keepalive)
-            .field("disconnect_timeout", &self.disconnect_timeout)
             .field("max_receive", &self.max_receive)
             .field("connect", &self.pkt)
+            .field("config", &self.config)
             .finish()
     }
 }
@@ -43,16 +43,9 @@ impl Client {
         pkt: Box<codec::ConnectAck>,
         max_receive: u16,
         keepalive: Seconds,
-        disconnect_timeout: Seconds,
+        config: DispatcherConfig,
     ) -> Self {
-        Client {
-            io,
-            pkt,
-            shared,
-            keepalive,
-            disconnect_timeout,
-            max_receive: max_receive as usize,
-        }
+        Client { io, pkt, shared, keepalive, config, max_receive: max_receive as usize }
     }
 }
 
@@ -100,7 +93,7 @@ impl Client {
             io: self.io,
             shared: self.shared,
             keepalive: self.keepalive,
-            disconnect_timeout: self.disconnect_timeout,
+            config: self.config,
             max_receive: self.max_receive,
             _t: marker::PhantomData,
         }
@@ -124,10 +117,7 @@ impl Client {
             }),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher)
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.disconnect_timeout)
-            .await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, &self.config).await;
     }
 
     /// Run client with provided control messages handler
@@ -149,10 +139,7 @@ impl Client {
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared, dispatcher)
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.disconnect_timeout)
-            .await
+        Dispatcher::new(self.io, self.shared, dispatcher, &self.config).await
     }
 
     /// Get negotiated io stream and codec
@@ -170,7 +157,7 @@ pub struct ClientRouter<Err, PErr> {
     handlers: Vec<Pipeline<Handler<PErr>>>,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
-    disconnect_timeout: Seconds,
+    config: DispatcherConfig,
     max_receive: usize,
     _t: marker::PhantomData<Err>,
 }
@@ -179,7 +166,7 @@ impl<Err, PErr> fmt::Debug for ClientRouter<Err, PErr> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("v5::ClientRouter")
             .field("keepalive", &self.keepalive)
-            .field("disconnect_timeout", &self.disconnect_timeout)
+            .field("config", &self.config)
             .field("max_receive", &self.max_receive)
             .finish()
     }
@@ -219,10 +206,7 @@ where
             }),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher)
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.disconnect_timeout)
-            .await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, &self.config).await;
     }
 
     /// Run client and handle control messages
@@ -243,10 +227,7 @@ where
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared, dispatcher)
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.disconnect_timeout)
-            .await
+        Dispatcher::new(self.io, self.shared, dispatcher, &self.config).await
     }
 
     /// Get negotiated io stream and codec

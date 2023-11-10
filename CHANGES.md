@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.8] - 2023-11-11
+
+* Use new ntex-io apis
+
 ## [0.12.7] - 2023-11-04
 
 * Fix v5::Subscribe/Unsubscribe packet properties encoding

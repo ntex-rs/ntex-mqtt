@@ -1,6 +1,6 @@
 use std::{convert::TryFrom, fmt, future::Future, marker::PhantomData, rc::Rc};
 
-use ntex::io::{DispatchItem, IoBoxed};
+use ntex::io::{DispatchItem, DispatcherConfig, IoBoxed};
 use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex::time::{timeout_checked, Millis, Seconds};
 use ntex::util::{BoxFuture, Either};
@@ -24,9 +24,9 @@ pub struct MqttServer<St, C, Cn, P> {
     max_receive: u16,
     max_qos: QoS,
     max_inflight_size: usize,
-    connect_timeout: Seconds,
-    disconnect_timeout: Seconds,
     max_topic_alias: u16,
+    connect_timeout: Seconds,
+    config: DispatcherConfig,
     pub(super) pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
 }
@@ -42,7 +42,11 @@ where
     where
         F: IntoServiceFactory<C, Handshake>,
     {
+        let config = DispatcherConfig::default();
+        config.set_disconnect_timeout(Seconds(3));
+
         MqttServer {
+            config,
             handshake: handshake.into_factory(),
             srv_control: DefaultControlService::default(),
             srv_publish: DefaultPublishService::default(),
@@ -50,9 +54,8 @@ where
             max_receive: 15,
             max_qos: QoS::AtLeastOnce,
             max_inflight_size: 65535,
-            connect_timeout: Seconds::ZERO,
-            disconnect_timeout: Seconds(3),
             max_topic_alias: 32,
+            connect_timeout: Seconds::ZERO,
             pool: Rc::new(MqttSinkPool::default()),
             _t: PhantomData,
         }
@@ -103,8 +106,8 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(mut self, val: Seconds) -> Self {
-        self.disconnect_timeout = val;
+    pub fn disconnect_timeout(self, val: Seconds) -> Self {
+        self.config.set_disconnect_timeout(val);
         self
     }
 
@@ -162,6 +165,7 @@ where
         C::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         MqttServer {
+            config: self.config,
             handshake: self.handshake,
             srv_publish: self.srv_publish,
             srv_control: service.into_factory(),
@@ -171,7 +175,6 @@ where
             max_qos: self.max_qos,
             max_inflight_size: self.max_inflight_size,
             connect_timeout: self.connect_timeout,
-            disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
             _t: PhantomData,
         }
@@ -187,6 +190,7 @@ where
         PublishAck: TryFrom<Srv::Error, Error = C::Error>,
     {
         MqttServer {
+            config: self.config,
             handshake: self.handshake,
             srv_publish: publish.into_factory(),
             srv_control: self.srv_control,
@@ -196,7 +200,6 @@ where
             max_qos: self.max_qos,
             max_inflight_size: self.max_inflight_size,
             connect_timeout: self.connect_timeout,
-            disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
             _t: PhantomData,
         }
@@ -250,7 +253,7 @@ where
                 _t: PhantomData,
             },
             factory(self.srv_publish, self.srv_control, self.max_inflight_size),
-            self.disconnect_timeout,
+            self.config,
         )
     }
 
@@ -280,7 +283,7 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            disconnect_timeout: self.disconnect_timeout,
+            config: self.config,
             _t: PhantomData,
         }
     }
@@ -464,8 +467,8 @@ pub(crate) struct ServerSelector<St, C, T, F, R> {
     max_size: u32,
     max_receive: u16,
     max_qos: QoS,
-    disconnect_timeout: Seconds,
     max_topic_alias: u16,
+    config: DispatcherConfig,
     _t: PhantomData<(St, R)>,
 }
 
@@ -494,22 +497,22 @@ where
         let fut = self.connect.create(());
         let handler = self.handler.clone();
         let check = self.check.clone();
+        let config = self.config.clone();
         let max_size = self.max_size;
         let max_receive = self.max_receive;
         let max_qos = self.max_qos;
         let max_topic_alias = self.max_topic_alias;
-        let disconnect_timeout = self.disconnect_timeout;
 
         // create connect service and then create service impl
         Box::pin(async move {
             Ok(ServerSelectorImpl {
                 handler,
                 check,
+                config,
                 max_size,
                 max_receive,
                 max_qos,
                 max_topic_alias,
-                disconnect_timeout,
                 connect: fut.await?,
                 _t: PhantomData,
             })
@@ -524,8 +527,8 @@ pub(crate) struct ServerSelectorImpl<St, C, T, F, R> {
     max_size: u32,
     max_receive: u16,
     max_qos: QoS,
-    disconnect_timeout: Seconds,
     max_topic_alias: u16,
+    config: DispatcherConfig,
     _t: PhantomData<(St, R)>,
 }
 
@@ -609,9 +612,8 @@ where
                         let handler = self.handler.create(session).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 
-                        Dispatcher::new(ack.io, shared, handler)
+                        Dispatcher::new(ack.io, shared, handler, &self.config)
                             .keepalive_timeout(Seconds(ack.keepalive))
-                            .disconnect_timeout(self.disconnect_timeout)
                             .await?;
                         Ok(Either::Right(()))
                     }

@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "0.12.7"
+version = "0.12.8"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -11,9 +11,12 @@ license = "MIT"
 exclude = [".gitignore", ".travis.yml", ".cargo/config"]
 edition = "2021"
 
+[package.metadata.docs.rs]
+features = ["ntex/tokio"]
+
 [dependencies]
-ntex = "0.7.4"
-ntex-util = "0.3.2"
+ntex = "0.7.9"
+ntex-bytes = "0.1.21"
 bitflags = "2.4"
 log = "0.4"
 pin-project-lite = "0.2"
@@ -28,4 +31,4 @@ rustls = "0.21"
 rustls-pemfile = "1.0"
 openssl = "0.10"
 test-case = "3.2"
-ntex = { version = "0.7.4", features = ["tokio", "rustls", "openssl"] }
+ntex = { version = "0.7", features = ["tokio", "rustls", "openssl"] }

@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use ntex::connect::{self, Address, Connect, Connector};
-use ntex::io::IoBoxed;
+use ntex::io::{DispatcherConfig, IoBoxed};
 use ntex::service::{IntoService, Pipeline, Service};
 use ntex::time::{timeout_checked, Seconds};
 use ntex::util::{ByteString, Bytes, PoolId};
@@ -18,7 +18,7 @@ pub struct MqttConnector<A, T> {
     max_receive: usize,
     max_packet_size: u32,
     handshake_timeout: Seconds,
-    disconnect_timeout: Seconds,
+    config: DispatcherConfig,
     pool: Rc<MqttSinkPool>,
 }
 
@@ -29,15 +29,18 @@ where
     #[allow(clippy::new_ret_no_self)]
     /// Create new mqtt connector
     pub fn new(address: A) -> MqttConnector<A, Connector<A>> {
+        let config = DispatcherConfig::default();
+        config.set_disconnect_timeout(Seconds(3)).set_keepalive_timeout(Seconds(0));
+
         MqttConnector {
             address,
+            config,
             pkt: codec::Connect::default(),
             connector: Pipeline::new(Connector::default()),
             max_send: 16,
             max_receive: 16,
             max_packet_size: 64 * 1024,
             handshake_timeout: Seconds::ZERO,
-            disconnect_timeout: Seconds(3),
             pool: Rc::new(MqttSinkPool::default()),
         }
     }
@@ -155,8 +158,8 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(mut self, timeout: Seconds) -> Self {
-        self.disconnect_timeout = timeout;
+    pub fn disconnect_timeout(self, timeout: Seconds) -> Self {
+        self.config.set_disconnect_timeout(timeout);
         self
     }
 
@@ -180,11 +183,11 @@ where
             connector: Pipeline::new(connector.into_service()),
             pkt: self.pkt,
             address: self.address,
+            config: self.config,
             max_send: self.max_send,
             max_receive: self.max_receive,
             max_packet_size: self.max_packet_size,
             handshake_timeout: self.handshake_timeout,
-            disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
         }
     }
@@ -210,7 +213,7 @@ where
         let max_send = self.max_send;
         let max_receive = self.max_receive;
         let keepalive_timeout = pkt.keep_alive;
-        let disconnect_timeout = self.disconnect_timeout;
+        let config = self.config.clone();
         let pool = self.pool.clone();
         let codec = codec::Codec::new();
         codec.set_max_size(self.max_packet_size);
@@ -234,8 +237,8 @@ where
                         shared,
                         pkt.session_present,
                         Seconds(keepalive_timeout),
-                        disconnect_timeout,
                         max_receive,
+                        config,
                     ))
                 } else {
                     Err(ClientError::Ack(pkt))

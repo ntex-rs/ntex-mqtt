@@ -446,6 +446,11 @@ where
                     ctx,
                 )))
             }
+            DispatchItem::ReadTimeout => Either::Right(Either::Right(ControlResponse::new(
+                ControlMessage::proto_error(ProtocolError::ReadTimeout),
+                &self.inner,
+                ctx,
+            ))),
             DispatchItem::DecoderError(err) => {
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ProtocolError::Decode(err)),

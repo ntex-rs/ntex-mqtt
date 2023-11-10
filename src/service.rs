@@ -1,7 +1,7 @@
 use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex::codec::{Decoder, Encoder};
-use ntex::io::{DispatchItem, Filter, Io, IoBoxed};
+use ntex::io::{DispatchItem, DispatcherConfig, Filter, Io, IoBoxed};
 use ntex::service::{Service, ServiceCtx, ServiceFactory};
 use ntex::time::{Deadline, Seconds};
 use ntex::util::{select, BoxFuture, Either};
@@ -13,13 +13,13 @@ type ResponseItem<U> = Option<<U as Encoder>::Item>;
 pub struct MqttServer<St, C, T, Codec> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: Seconds,
+    config: DispatcherConfig,
     _t: PhantomData<(St, Codec)>,
 }
 
 impl<St, C, T, Codec> MqttServer<St, C, T, Codec> {
-    pub(crate) fn new(connect: C, service: T, disconnect_timeout: Seconds) -> Self {
-        MqttServer { connect, disconnect_timeout, handler: Rc::new(service), _t: PhantomData }
+    pub(crate) fn new(connect: C, service: T, config: DispatcherConfig) -> Self {
+        MqttServer { connect, config, handler: Rc::new(service), _t: PhantomData }
     }
 }
 
@@ -32,8 +32,8 @@ where
     ) -> Result<MqttHandler<St, C::Service, T, Codec>, C::InitError> {
         // create connect service and then create service impl
         Ok(MqttHandler {
+            config: self.config.clone(),
             handler: self.handler.clone(),
-            disconnect_timeout: self.disconnect_timeout,
             connect: self.connect.create(()).await?,
             _t: PhantomData,
         })
@@ -119,7 +119,7 @@ where
 pub struct MqttHandler<St, C, T, Codec> {
     connect: C,
     handler: Rc<T>,
-    disconnect_timeout: Seconds,
+    config: DispatcherConfig,
     _t: PhantomData<(St, Codec)>,
 }
 
@@ -147,7 +147,6 @@ where
     #[inline]
     fn call<'a>(&'a self, req: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Box::pin(async move {
-            let timeout = self.disconnect_timeout;
             let handshake = ctx.call(&self.connect, req).await;
 
             let (io, codec, session, keepalive) = handshake.map_err(|e| {
@@ -159,10 +158,7 @@ where
             let handler = self.handler.create(session).await?;
             log::trace!("Connection handler is created, starting dispatcher");
 
-            Dispatcher::new(io, codec, handler)
-                .keepalive_timeout(keepalive)
-                .disconnect_timeout(timeout)
-                .await
+            Dispatcher::new(io, codec, handler, &self.config).keepalive_timeout(keepalive).await
         })
     }
 }
@@ -223,8 +219,6 @@ where
         ctx: ServiceCtx<'a, Self>,
     ) -> Self::Future<'a> {
         Box::pin(async move {
-            let timeout = self.disconnect_timeout;
-
             let (io, codec, ka, handler) = {
                 let res = select(
                     delay,
@@ -253,10 +247,7 @@ where
                 }
             };
 
-            Dispatcher::new(io, codec, handler)
-                .keepalive_timeout(ka)
-                .disconnect_timeout(timeout)
-                .await
+            Dispatcher::new(io, codec, handler, &self.config).keepalive_timeout(ka).await
         })
     }
 }

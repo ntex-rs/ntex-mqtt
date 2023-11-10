@@ -1,7 +1,7 @@
 use std::{num::NonZeroU16, num::NonZeroU32, rc::Rc};
 
 use ntex::connect::{self, Address, Connect, Connector};
-use ntex::io::IoBoxed;
+use ntex::io::{DispatcherConfig, IoBoxed};
 use ntex::service::{IntoService, Pipeline, Service};
 use ntex::time::{timeout_checked, Seconds};
 use ntex::util::{ByteString, Bytes, PoolId};
@@ -15,7 +15,7 @@ pub struct MqttConnector<A, T> {
     connector: Pipeline<T>,
     pkt: codec::Connect,
     handshake_timeout: Seconds,
-    disconnect_timeout: Seconds,
+    config: DispatcherConfig,
     pool: Rc<MqttSinkPool>,
 }
 
@@ -26,12 +26,14 @@ where
     #[allow(clippy::new_ret_no_self)]
     /// Create new mqtt connector
     pub fn new(address: A) -> MqttConnector<A, Connector<A>> {
+        let config = DispatcherConfig::default();
+        config.set_disconnect_timeout(Seconds(3)).set_keepalive_timeout(Seconds(0));
         MqttConnector {
             address,
+            config,
             pkt: codec::Connect::default(),
             connector: Pipeline::new(Connector::default()),
             handshake_timeout: Seconds::ZERO,
-            disconnect_timeout: Seconds(3),
             pool: Rc::new(MqttSinkPool::default()),
         }
     }
@@ -162,8 +164,8 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(mut self, timeout: Seconds) -> Self {
-        self.disconnect_timeout = timeout;
+    pub fn disconnect_timeout(self, timeout: Seconds) -> Self {
+        self.config.set_disconnect_timeout(timeout);
         self
     }
 
@@ -187,8 +189,8 @@ where
             connector: Pipeline::new(connector.into_service()),
             pkt: self.pkt,
             address: self.address,
+            config: self.config,
             handshake_timeout: self.handshake_timeout,
-            disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
         }
     }
@@ -214,10 +216,10 @@ where
         let keep_alive = pkt.keep_alive;
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(65535);
-        let disconnect_timeout = self.disconnect_timeout;
         let codec = codec::Codec::new();
         codec.set_max_inbound_size(max_packet_size);
         let pool = self.pool.clone();
+        let config = self.config.clone();
 
         io.encode(codec::Packet::Connect(Box::new(pkt)), &codec)?;
 
@@ -240,14 +242,7 @@ where
 
                     shared.set_cap(pkt.receive_max.get() as usize);
 
-                    Ok(Client::new(
-                        io,
-                        shared,
-                        pkt,
-                        max_receive,
-                        Seconds(keep_alive),
-                        disconnect_timeout,
-                    ))
+                    Ok(Client::new(io, shared, pkt, max_receive, Seconds(keep_alive), config))
                 } else {
                     Err(ClientError::Ack(pkt))
                 }

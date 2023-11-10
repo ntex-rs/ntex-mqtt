@@ -332,6 +332,11 @@ where
                     ctx,
                 )))
             }
+            DispatchItem::ReadTimeout => Either::Right(Either::Right(ControlResponse::new(
+                ControlMessage::proto_error(ProtocolError::ReadTimeout),
+                &self.inner,
+                ctx,
+            ))),
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
                 Either::Right(Either::Left(Ready::Ok(None)))

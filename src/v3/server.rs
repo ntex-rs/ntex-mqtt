@@ -1,6 +1,6 @@
 use std::{fmt, future::Future, marker::PhantomData, rc::Rc};
 
-use ntex::io::{DispatchItem, IoBoxed};
+use ntex::io::{DispatchItem, DispatcherConfig, IoBoxed};
 use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex::time::{timeout_checked, Millis, Seconds};
 use ntex::util::{BoxFuture, Either};
@@ -50,7 +50,7 @@ pub struct MqttServer<St, H, C, P> {
     max_inflight: u16,
     max_inflight_size: usize,
     connect_timeout: Seconds,
-    disconnect_timeout: Seconds,
+    config: DispatcherConfig,
     pub(super) pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
 }
@@ -67,7 +67,11 @@ where
     where
         F: IntoServiceFactory<H, Handshake>,
     {
+        let config = DispatcherConfig::default();
+        config.set_disconnect_timeout(Seconds(3));
+
         MqttServer {
+            config,
             handshake: handshake.into_factory(),
             control: DefaultControlService::default(),
             publish: DefaultPublishService::default(),
@@ -76,7 +80,6 @@ where
             max_inflight: 16,
             max_inflight_size: 65535,
             connect_timeout: Seconds::ZERO,
-            disconnect_timeout: Seconds(3),
             pool: Default::default(),
             _t: PhantomData,
         }
@@ -128,8 +131,8 @@ where
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(mut self, val: Seconds) -> Self {
-        self.disconnect_timeout = val;
+    pub fn disconnect_timeout(self, val: Seconds) -> Self {
+        self.config.set_disconnect_timeout(val);
         self
     }
 
@@ -182,12 +185,12 @@ where
             handshake: self.handshake,
             publish: self.publish,
             control: service.into_factory(),
+            config: self.config,
             max_qos: self.max_qos,
             max_size: self.max_size,
             max_inflight: self.max_inflight,
             max_inflight_size: self.max_inflight_size,
             connect_timeout: self.connect_timeout,
-            disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
             _t: PhantomData,
         }
@@ -204,12 +207,12 @@ where
             handshake: self.handshake,
             publish: publish.into_factory(),
             control: self.control,
+            config: self.config,
             max_qos: self.max_qos,
             max_size: self.max_size,
             max_inflight: self.max_inflight,
             max_inflight_size: self.max_inflight_size,
             connect_timeout: self.connect_timeout,
-            disconnect_timeout: self.disconnect_timeout,
             pool: self.pool,
             _t: PhantomData,
         }
@@ -250,7 +253,7 @@ where
                 self.max_inflight_size,
                 self.max_qos,
             ),
-            self.disconnect_timeout,
+            self.config,
         )
     }
 
@@ -279,7 +282,7 @@ where
                 self.max_qos,
             )),
             max_size: self.max_size,
-            disconnect_timeout: self.disconnect_timeout,
+            config: self.config,
             _t: PhantomData,
         }
     }
@@ -417,8 +420,8 @@ where
 pub(crate) struct ServerSelector<St, H, T, F, R> {
     handshake: H,
     handler: Rc<T>,
-    disconnect_timeout: Seconds,
     check: Rc<F>,
+    config: DispatcherConfig,
     max_size: u32,
     _t: PhantomData<(St, R)>,
 }
@@ -449,8 +452,8 @@ where
         Box::pin(async move {
             Ok(ServerSelectorImpl {
                 handler: self.handler.clone(),
-                disconnect_timeout: self.disconnect_timeout,
                 check: self.check.clone(),
+                config: self.config.clone(),
                 max_size: self.max_size,
                 handshake: self.handshake.create(()).await?,
                 _t: PhantomData,
@@ -463,8 +466,8 @@ pub(crate) struct ServerSelectorImpl<St, H, T, F, R> {
     check: Rc<F>,
     handshake: H,
     handler: Rc<T>,
-    disconnect_timeout: Seconds,
     max_size: u32,
+    config: DispatcherConfig,
     _t: PhantomData<(St, R)>,
 }
 
@@ -524,9 +527,8 @@ where
                         let handler = self.handler.create(session).await?;
                         log::trace!("Connection handler is created, starting dispatcher");
 
-                        Dispatcher::new(ack.io, ack.shared, handler)
+                        Dispatcher::new(ack.io, ack.shared, handler, &self.config)
                             .keepalive_timeout(ack.keepalive)
-                            .disconnect_timeout(self.disconnect_timeout)
                             .await?;
                         Ok(Either::Right(()))
                     }

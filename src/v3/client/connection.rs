@@ -1,6 +1,6 @@
 use std::{fmt, marker::PhantomData, rc::Rc};
 
-use ntex::io::IoBoxed;
+use ntex::io::{DispatcherConfig, IoBoxed};
 use ntex::router::{IntoPattern, Router, RouterBuilder};
 use ntex::service::{boxed, into_service, IntoService, Pipeline, Service};
 use ntex::time::{sleep, Millis, Seconds};
@@ -17,18 +17,18 @@ pub struct Client {
     io: IoBoxed,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
-    disconnect_timeout: Seconds,
     session_present: bool,
     max_receive: usize,
+    config: DispatcherConfig,
 }
 
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("v3::Client")
             .field("keepalive", &self.keepalive)
-            .field("disconnect_timeout", &self.disconnect_timeout)
             .field("session_present", &self.session_present)
             .field("max_receive", &self.max_receive)
+            .field("config", &self.config)
             .finish()
     }
 }
@@ -40,15 +40,15 @@ impl Client {
         shared: Rc<MqttShared>,
         session_present: bool,
         keepalive_timeout: Seconds,
-        disconnect_timeout: Seconds,
         max_receive: usize,
+        config: DispatcherConfig,
     ) -> Self {
         Client {
             io,
             shared,
             session_present,
-            disconnect_timeout,
             max_receive,
+            config,
             keepalive: keepalive_timeout,
         }
     }
@@ -84,7 +84,7 @@ impl Client {
             io: self.io,
             shared: self.shared,
             keepalive: self.keepalive,
-            disconnect_timeout: self.disconnect_timeout,
+            config: self.config,
             max_receive: self.max_receive,
             _t: PhantomData,
         }
@@ -105,10 +105,7 @@ impl Client {
             into_service(|msg: ControlMessage<()>| Ready::<_, ()>::Ok(msg.disconnect())),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher)
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.disconnect_timeout)
-            .await;
+        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher, &self.config).await;
     }
 
     /// Run client with provided control messages handler
@@ -129,10 +126,7 @@ impl Client {
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared.clone(), dispatcher)
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.disconnect_timeout)
-            .await
+        Dispatcher::new(self.io, self.shared.clone(), dispatcher, &self.config).await
     }
 
     /// Get negotiated io stream and codec
@@ -150,8 +144,8 @@ pub struct ClientRouter<Err, PErr> {
     io: IoBoxed,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
-    disconnect_timeout: Seconds,
     max_receive: usize,
+    config: DispatcherConfig,
     _t: PhantomData<Err>,
 }
 
@@ -159,8 +153,8 @@ impl<Err, PErr> fmt::Debug for ClientRouter<Err, PErr> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("v3::ClientRouter")
             .field("keepalive", &self.keepalive)
-            .field("disconnect_timeout", &self.disconnect_timeout)
             .field("max_receive", &self.max_receive)
+            .field("config", &self.config)
             .finish()
     }
 }
@@ -195,10 +189,7 @@ where
             into_service(|msg: ControlMessage<Err>| Ready::<_, Err>::Ok(msg.disconnect())),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher)
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.disconnect_timeout)
-            .await;
+        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher, &self.config).await;
     }
 
     /// Run client and handle control messages
@@ -218,10 +209,7 @@ where
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared.clone(), dispatcher)
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.disconnect_timeout)
-            .await
+        Dispatcher::new(self.io, self.shared.clone(), dispatcher, &self.config).await
     }
 }
 

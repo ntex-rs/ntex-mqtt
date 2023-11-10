@@ -47,6 +47,9 @@ pub enum ProtocolError {
     /// Keep alive timeout
     #[error("Keep Alive timeout")]
     KeepAliveTimeout,
+    /// Read frame timeout
+    #[error("Read frame timeout")]
+    ReadTimeout,
 }
 
 #[derive(Debug, thiserror::Error)]
