@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
 
 use ntex::io::DispatchItem;
@@ -386,8 +386,8 @@ where
         let mut this = self.as_mut().project();
 
         match this.state.as_mut().project() {
-            PublishResponseStateProject::Publish { fut } => match fut.poll(cx) {
-                Poll::Ready(Ok(_)) => {
+            PublishResponseStateProject::Publish { fut } => match ready!(fut.poll(cx)) {
+                Ok(_) => {
                     log::trace!("Publish result for packet {:?} is ready", this.packet_id);
 
                     if let Some(packet_id) = this.packet_id {
@@ -399,7 +399,7 @@ where
                         Poll::Ready(Ok(None))
                     }
                 }
-                Poll::Ready(Err(e)) => {
+                Err(e) => {
                     this.state.set(PublishResponseState::Control {
                         fut: ControlResponse::new(
                             ControlMessage::error(e.into()),
@@ -409,7 +409,6 @@ where
                     });
                     self.poll(cx)
                 }
-                Poll::Pending => Poll::Pending,
             },
             PublishResponseStateProject::Control { fut } => fut.poll(cx),
         }
@@ -453,8 +452,8 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().project();
 
-        match this.fut.poll(cx) {
-            Poll::Ready(Ok(item)) => {
+        match ready!(this.fut.poll(cx)) {
+            Ok(item) => {
                 let packet = match item.result {
                     ControlResultKind::Ping => Some(codec::Packet::PingResponse),
                     ControlResultKind::Subscribe(res) => {
@@ -478,7 +477,7 @@ where
                 };
                 Poll::Ready(Ok(packet))
             }
-            Poll::Ready(Err(err)) => {
+            Err(err) => {
                 // do not handle nested error
                 if *this.error {
                     Poll::Ready(Err(err))
@@ -496,7 +495,6 @@ where
                     }
                 }
             }
-            Poll::Pending => Poll::Pending,
         }
     }
 }
