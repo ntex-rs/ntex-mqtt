@@ -83,7 +83,6 @@ enum IoDispatcherState {
 }
 
 pub(crate) enum IoDispatcherError<S, U> {
-    KeepAlive,
     Encoder(U),
     Service(S),
 }
@@ -257,10 +256,9 @@ where
                             // decode incoming bytes stream
                             match inner.io.poll_recv_decode(this.codec, cx) {
                                 Ok(decoded) => {
-                                    // update keep-alive timer
                                     inner.update_timer(&decoded);
                                     if let Some(el) = decoded.item {
-                                        Some(DispatchItem::Item(el))
+                                        DispatchItem::Item(el)
                                     } else {
                                         return Poll::Pending;
                                     }
@@ -268,95 +266,88 @@ where
                                 Err(RecvError::Stop) => {
                                     log::trace!("dispatcher is instructed to stop");
                                     inner.st = IoDispatcherState::Stop;
-                                    None
+                                    continue;
                                 }
                                 Err(RecvError::KeepAlive) => {
-                                    // check keepalive timeout
-                                    log::trace!("keepalive timeout");
+                                    log::trace!("keep-alive error, stopping dispatcher");
                                     inner.st = IoDispatcherState::Stop;
-                                    let mut state = inner.state.borrow_mut();
-                                    if state.error.is_none() {
-                                        state.error = Some(IoDispatcherError::KeepAlive);
+                                    if inner.flags.contains(Flags::READ_TIMEOUT) {
+                                        DispatchItem::ReadTimeout
+                                    } else {
+                                        DispatchItem::KeepAliveTimeout
                                     }
-                                    Some(DispatchItem::KeepAliveTimeout)
                                 }
                                 Err(RecvError::WriteBackpressure) => {
                                     if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
                                         inner.st = IoDispatcherState::Stop;
-                                        Some(DispatchItem::Disconnect(Some(err)))
+                                        DispatchItem::Disconnect(Some(err))
                                     } else {
                                         continue;
                                     }
                                 }
                                 Err(RecvError::Decoder(err)) => {
                                     inner.st = IoDispatcherState::Stop;
-                                    Some(DispatchItem::DecoderError(err))
+                                    DispatchItem::DecoderError(err)
                                 }
                                 Err(RecvError::PeerGone(err)) => {
                                     inner.st = IoDispatcherState::Stop;
-                                    Some(DispatchItem::Disconnect(err))
+                                    DispatchItem::Disconnect(err)
                                 }
                             }
                         }
-                        PollService::Item(item) => Some(item),
+                        PollService::Item(item) => item,
                         PollService::Continue => continue,
                     };
 
-                    // call service
-                    if let Some(item) = item {
-                        // optimize first call
-                        if this.response.is_none() {
-                            this.response.set(Some(this.service.call_static(item)));
-                            let res = this.response.as_mut().as_pin_mut().unwrap().poll(cx);
+                    // optimize first call
+                    if this.response.is_none() {
+                        this.response.set(Some(this.service.call_static(item)));
 
-                            let mut state = inner.state.borrow_mut();
+                        let res = this.response.as_mut().as_pin_mut().unwrap().poll(cx);
+                        let mut state = inner.state.borrow_mut();
 
-                            if let Poll::Ready(res) = res {
-                                // check if current result is only response
-                                if state.queue.is_empty() {
-                                    match res {
-                                        Err(err) => {
-                                            state.error = Some(err.into());
-                                        }
-                                        Ok(Some(item)) => {
-                                            if let Err(err) = inner.io.encode(item, this.codec)
-                                            {
-                                                state.error =
-                                                    Some(IoDispatcherError::Encoder(err));
-                                            }
-                                        }
-                                        Ok(None) => (),
+                        if let Poll::Ready(res) = res {
+                            // check if current result is only response
+                            if state.queue.is_empty() {
+                                match res {
+                                    Err(err) => {
+                                        state.error = Some(err.into());
                                     }
-                                } else {
-                                    *this.response_idx =
-                                        state.base.wrapping_add(state.queue.len());
-                                    state.queue.push_back(ServiceResult::Ready(res));
+                                    Ok(Some(item)) => {
+                                        if let Err(err) = inner.io.encode(item, this.codec) {
+                                            state.error = Some(IoDispatcherError::Encoder(err));
+                                        }
+                                    }
+                                    Ok(None) => (),
                                 }
-                                this.response.set(None);
                             } else {
                                 *this.response_idx = state.base.wrapping_add(state.queue.len());
-                                state.queue.push_back(ServiceResult::Pending);
+                                state.queue.push_back(ServiceResult::Ready(res));
                             }
+                            this.response.set(None);
                         } else {
-                            let mut state = inner.state.borrow_mut();
-                            let response_idx = state.base.wrapping_add(state.queue.len());
+                            *this.response_idx = state.base.wrapping_add(state.queue.len());
                             state.queue.push_back(ServiceResult::Pending);
-
-                            let st = inner.io.get_ref();
-                            let codec = this.codec.clone();
-                            let state = inner.state.clone();
-                            let fut = this.service.call_static(item);
-                            ntex::rt::spawn(async move {
-                                let item = fut.await;
-                                state.borrow_mut().handle_result(
-                                    item,
-                                    response_idx,
-                                    &st,
-                                    &codec,
-                                    true,
-                                );
-                            });
                         }
+                    } else {
+                        let mut state = inner.state.borrow_mut();
+                        let response_idx = state.base.wrapping_add(state.queue.len());
+                        state.queue.push_back(ServiceResult::Pending);
+
+                        let st = inner.io.get_ref();
+                        let codec = this.codec.clone();
+                        let state = inner.state.clone();
+                        let fut = this.service.call_static(item);
+                        ntex::rt::spawn(async move {
+                            let item = fut.await;
+                            state.borrow_mut().handle_result(
+                                item,
+                                response_idx,
+                                &st,
+                                &codec,
+                                true,
+                            );
+                        });
                     }
                 }
                 // drain service responses and shutdown io
@@ -442,9 +433,6 @@ where
                         IoDispatcherError::Service(err) => {
                             state.error = Some(IoDispatcherError::Service(err));
                             PollService::Continue
-                        }
-                        IoDispatcherError::KeepAlive => {
-                            PollService::Item(DispatchItem::KeepAliveTimeout)
                         }
                     }
                 } else {

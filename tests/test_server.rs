@@ -3,8 +3,8 @@ use std::{cell::RefCell, future::Future, num::NonZeroU16, pin::Pin, rc::Rc, time
 
 use ntex::service::{fn_service, Pipeline, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
-use ntex::util::{join_all, lazy, ByteString, Bytes, Ready};
-use ntex::{server, service::chain_factory};
+use ntex::util::{join_all, lazy, ByteString, Bytes, BytesMut, Ready};
+use ntex::{codec::Encoder, server, service::chain_factory};
 
 use ntex_mqtt::v3::{
     client, codec, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish, Session,
@@ -447,7 +447,6 @@ fn ssl_acceptor() -> openssl::ssl::SslAcceptor {
 #[ntex::test]
 async fn test_large_publish_openssl() -> std::io::Result<()> {
     use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
-    env_logger::init();
 
     let srv = server::test_server(move || {
         chain_factory(server::openssl::Acceptor::new(ssl_acceptor()).map_err(|_| ())).and_then(
@@ -611,5 +610,72 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
     assert_eq!(*results.borrow(), &[NonZeroU16::new(1).unwrap(), NonZeroU16::new(2).unwrap()]);
 
     sink.close();
+    Ok(())
+}
+
+// Slow frame rate
+#[ntex::test]
+async fn test_frame_read_rate() -> std::io::Result<()> {
+    let _ = env_logger::try_init();
+    let check = Arc::new(AtomicBool::new(false));
+    let check2 = check.clone();
+
+    let srv = server::test_server(move || {
+        let check = check2.clone();
+
+        MqttServer::new(handshake)
+            .frame_read_rate(Seconds(1), Seconds(2), 10)
+            .publish(|_| Ready::Ok(()))
+            .control(move |msg| {
+                let check = check.clone();
+                match msg {
+                    ControlMessage::ProtocolError(msg) => {
+                        if msg.get_ref() == &ProtocolError::ReadTimeout {
+                            check.store(true, Relaxed);
+                        }
+                        Ready::Ok(msg.ack())
+                    }
+                    _ => Ready::Ok(msg.disconnect()),
+                }
+            })
+            .finish()
+            .map_err(|_| ())
+            .map_init_err(|_| ())
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
+    io.recv(&codec).await.unwrap();
+
+    let p = codec::Publish {
+        dup: false,
+        retain: false,
+        qos: codec::QoS::AtLeastOnce,
+        topic: ByteString::from("test"),
+        packet_id: Some(NonZeroU16::new(3).unwrap()),
+        payload: Bytes::from(vec![b'*'; 270 * 1024]),
+    }
+    .into();
+
+    let mut buf = BytesMut::new();
+    codec.encode(p, &mut buf).unwrap();
+
+    io.write(&buf[..5]).unwrap();
+    buf.split_to(5);
+    sleep(Millis(100)).await;
+    io.write(&buf[..10]).unwrap();
+    buf.split_to(10);
+    sleep(Millis(500)).await;
+    assert!(!check.load(Relaxed));
+
+    io.write(&buf[..12]).unwrap();
+    buf.split_to(12);
+    sleep(Millis(500)).await;
+    assert!(!check.load(Relaxed));
+
+    sleep(Millis(1200)).await;
+    assert!(check.load(Relaxed));
+
     Ok(())
 }

@@ -2,8 +2,9 @@ use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{cell::RefCell, rc::Rc};
 use std::{convert::TryFrom, future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 
-use ntex::util::{lazy, ByteString, Bytes, Ready};
-use ntex::{server, service::fn_service, time::sleep};
+use ntex::time::{sleep, Millis, Seconds};
+use ntex::util::{lazy, ByteString, Bytes, BytesMut, Ready};
+use ntex::{codec::Encoder, server, service::fn_service};
 
 use ntex_mqtt::v5::{
     client, codec, error, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish,
@@ -219,7 +220,6 @@ async fn test_disconnect_on_error() -> std::io::Result<()> {
 
 #[ntex::test]
 async fn test_disconnect_after_control_error() -> std::io::Result<()> {
-    env_logger::init();
     let srv = server::test_server(|| {
         MqttServer::new(handshake)
             .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
@@ -727,7 +727,6 @@ async fn test_sink_success_after_encoder_error_qos1() {
     let success = Arc::new(AtomicBool::new(false));
     let success2 = success.clone();
 
-    let _ = env_logger::try_init();
     let srv = server::test_server(move || {
         let success = success2.clone();
         MqttServer::new(move |con: Handshake| {
@@ -1078,5 +1077,71 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
     assert_eq!(*results.borrow(), &[NonZeroU16::new(1).unwrap(), NonZeroU16::new(2).unwrap()]);
 
     sink.close();
+    Ok(())
+}
+
+// Slow frame rate
+#[ntex::test]
+async fn test_frame_read_rate() -> std::io::Result<()> {
+    let _ = env_logger::try_init();
+    let check = Arc::new(AtomicBool::new(false));
+    let check2 = check.clone();
+
+    let srv = server::test_server(move || {
+        let check = check2.clone();
+
+        MqttServer::new(handshake)
+            .frame_read_rate(Seconds(1), Seconds(2), 10)
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .control(move |msg| {
+                let check = check.clone();
+                match msg {
+                    ControlMessage::ProtocolError(msg) => {
+                        if msg.get_ref() == &error::ProtocolError::ReadTimeout {
+                            check.store(true, Relaxed);
+                        }
+                        Ready::Ok::<_, TestError>(msg.ack())
+                    }
+                    _ => Ready::Ok(msg.disconnect()),
+                }
+            })
+            .finish()
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
+    io.recv(&codec).await.unwrap();
+
+    let p = codec::Publish {
+        dup: false,
+        retain: false,
+        qos: codec::QoS::AtLeastOnce,
+        topic: ByteString::from("test"),
+        packet_id: Some(NonZeroU16::new(3).unwrap()),
+        payload: Bytes::from(vec![b'*'; 270 * 1024]),
+        ..pkt_publish()
+    }
+    .into();
+
+    let mut buf = BytesMut::new();
+    codec.encode(p, &mut buf).unwrap();
+
+    io.write(&buf[..5]).unwrap();
+    buf.split_to(5);
+    sleep(Millis(100)).await;
+    io.write(&buf[..10]).unwrap();
+    buf.split_to(10);
+    sleep(Millis(500)).await;
+    assert!(!check.load(Relaxed));
+
+    io.write(&buf[..12]).unwrap();
+    buf.split_to(12);
+    sleep(Millis(500)).await;
+    assert!(!check.load(Relaxed));
+
+    sleep(Millis(1200)).await;
+    assert!(check.load(Relaxed));
+
     Ok(())
 }

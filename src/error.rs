@@ -33,7 +33,7 @@ pub enum HandshakeError<E> {
 }
 
 /// Protocol level errors
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProtocolError {
     /// MQTT decoding error
     #[error("Decoding error: {0:?}")]
@@ -52,13 +52,13 @@ pub enum ProtocolError {
     ReadTimeout,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(transparent)]
 pub struct ProtocolViolationError {
     inner: ViolationInner,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 enum ViolationInner {
     #[error("{message}")]
     Common { reason: DisconnectReasonCode, message: &'static str },
