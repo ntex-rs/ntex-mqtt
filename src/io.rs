@@ -253,6 +253,12 @@ where
                 IoDispatcherState::Processing => {
                     let item = match ready!(inner.poll_service(this.service, cx)) {
                         PollService::Ready => {
+                            if inner.io.is_closed() {
+                                log::trace!("io has been closed, stop dispatcher");
+                                inner.st = IoDispatcherState::Stop;
+                                continue;
+                            }
+
                             // decode incoming bytes stream
                             match inner.io.poll_recv_decode(this.codec, cx) {
                                 Ok(decoded) => {

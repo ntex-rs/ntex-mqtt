@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.9] - 2023-11-17
+
+* Do not process data in read buffer after disconnect
+
 ## [0.12.8] - 2023-11-12
 
 * Use new ntex-io apis
