@@ -253,45 +253,58 @@ where
                 IoDispatcherState::Processing => {
                     let item = match ready!(inner.poll_service(this.service, cx)) {
                         PollService::Ready => {
-                            // decode incoming bytes stream
-                            match inner.io.poll_recv_decode(this.codec, cx) {
-                                Ok(decoded) => {
-                                    inner.update_timer(&decoded);
-                                    if let Some(el) = decoded.item {
-                                        DispatchItem::Item(el)
-                                    } else {
-                                        return Poll::Pending;
+                            if inner.io.is_closed() {
+                                log::trace!("io has been closed, stop dispatcher");
+                                inner.st = IoDispatcherState::Stop;
+                                if let Poll::Ready(IoStatusUpdate::PeerGone(err)) =
+                                    inner.io.poll_status_update(cx)
+                                {
+                                    DispatchItem::Disconnect(err)
+                                } else {
+                                    DispatchItem::Disconnect(None)
+                                }
+                            } else {
+                                // decode incoming bytes stream
+                                match inner.io.poll_recv_decode(this.codec, cx) {
+                                    Ok(decoded) => {
+                                        inner.update_timer(&decoded);
+                                        if let Some(el) = decoded.item {
+                                            DispatchItem::Item(el)
+                                        } else {
+                                            return Poll::Pending;
+                                        }
                                     }
-                                }
-                                Err(RecvError::Stop) => {
-                                    log::trace!("dispatcher is instructed to stop");
-                                    inner.st = IoDispatcherState::Stop;
-                                    continue;
-                                }
-                                Err(RecvError::KeepAlive) => {
-                                    log::trace!("keep-alive error, stopping dispatcher");
-                                    inner.st = IoDispatcherState::Stop;
-                                    if inner.flags.contains(Flags::READ_TIMEOUT) {
-                                        DispatchItem::ReadTimeout
-                                    } else {
-                                        DispatchItem::KeepAliveTimeout
-                                    }
-                                }
-                                Err(RecvError::WriteBackpressure) => {
-                                    if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
+                                    Err(RecvError::Stop) => {
+                                        log::trace!("dispatcher is instructed to stop");
                                         inner.st = IoDispatcherState::Stop;
-                                        DispatchItem::Disconnect(Some(err))
-                                    } else {
                                         continue;
                                     }
-                                }
-                                Err(RecvError::Decoder(err)) => {
-                                    inner.st = IoDispatcherState::Stop;
-                                    DispatchItem::DecoderError(err)
-                                }
-                                Err(RecvError::PeerGone(err)) => {
-                                    inner.st = IoDispatcherState::Stop;
-                                    DispatchItem::Disconnect(err)
+                                    Err(RecvError::KeepAlive) => {
+                                        log::trace!("keep-alive error, stopping dispatcher");
+                                        inner.st = IoDispatcherState::Stop;
+                                        if inner.flags.contains(Flags::READ_TIMEOUT) {
+                                            DispatchItem::ReadTimeout
+                                        } else {
+                                            DispatchItem::KeepAliveTimeout
+                                        }
+                                    }
+                                    Err(RecvError::WriteBackpressure) => {
+                                        if let Err(err) = ready!(inner.io.poll_flush(cx, false))
+                                        {
+                                            inner.st = IoDispatcherState::Stop;
+                                            DispatchItem::Disconnect(Some(err))
+                                        } else {
+                                            continue;
+                                        }
+                                    }
+                                    Err(RecvError::Decoder(err)) => {
+                                        inner.st = IoDispatcherState::Stop;
+                                        DispatchItem::DecoderError(err)
+                                    }
+                                    Err(RecvError::PeerGone(err)) => {
+                                        inner.st = IoDispatcherState::Stop;
+                                        DispatchItem::Disconnect(err)
+                                    }
                                 }
                             }
                         }

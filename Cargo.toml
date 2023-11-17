@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "0.12.8"
+version = "0.12.9"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -26,7 +26,7 @@ thiserror = "1.0"
 
 [dev-dependencies]
 env_logger = "0.10"
-ntex-tls = "0.3.1"
+ntex-tls = "0.3"
 rustls = "0.21"
 rustls-pemfile = "1.0"
 openssl = "0.10"
