@@ -459,8 +459,8 @@ where
                 // remove all timers
                 if self.flags.contains(Flags::READ_TIMEOUT) {
                     self.flags.remove(Flags::READ_TIMEOUT);
-                    self.io.stop_timer();
                 }
+                self.io.stop_timer();
 
                 match ready!(self.io.poll_read_pause(cx)) {
                     IoStatusUpdate::KeepAlive => {
