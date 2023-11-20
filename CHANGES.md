@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.10] - 2023-11-21
+
+* Remove slow frame timer if service is not ready
+
 ## [0.12.9] - 2023-11-17
 
 * Do not process data in read buffer after disconnect
