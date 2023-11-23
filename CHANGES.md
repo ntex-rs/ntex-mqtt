@@ -1,6 +1,6 @@
 # Changes
 
-## [0.12.11] - 2023-11-21
+## [0.12.11] - 2023-11-23
 
 * Refactor slow frame timeout handling
 
