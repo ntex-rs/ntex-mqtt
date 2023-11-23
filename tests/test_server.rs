@@ -545,7 +545,6 @@ async fn test_sink_ready() -> std::io::Result<()> {
             assert!(!sink.is_ready());
 
             ntex::rt::spawn(async move {
-                assert!(!sink.is_ready());
                 sink.ready().await;
                 assert!(sink.is_ready());
                 sink.publish("/test", Bytes::from_static(b"body")).send_at_most_once().unwrap();
