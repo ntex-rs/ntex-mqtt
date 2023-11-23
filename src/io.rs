@@ -12,8 +12,6 @@ use ntex::util::{ready, Pool};
 
 type Response<U> = <U as Encoder>::Item;
 
-const ONE_SEC: time::Duration = time::Duration::from_secs(1);
-
 pin_project_lite::pin_project! {
     /// Dispatcher for mqtt protocol
     pub(crate) struct Dispatcher<S, U>
@@ -49,7 +47,8 @@ struct DispatcherInner<S: Service<DispatchItem<U>>, U: Encoder + Decoder> {
     st: IoDispatcherState,
     state: Rc<RefCell<DispatcherState<S, U>>>,
     config: DispatcherConfig,
-    read_bytes: u32,
+    read_remains: u32,
+    read_remains_prev: u32,
     read_max_timeout: time::Instant,
     keepalive_timeout: time::Duration,
 }
@@ -135,7 +134,8 @@ where
                 config: config.clone(),
                 flags: Flags::empty(),
                 st: IoDispatcherState::Processing,
-                read_bytes: 0,
+                read_remains: 0,
+                read_remains_prev: 0,
                 read_max_timeout: now(),
                 keepalive_timeout: time::Duration::from_secs(30),
             },
@@ -253,58 +253,44 @@ where
                 IoDispatcherState::Processing => {
                     let item = match ready!(inner.poll_service(this.service, cx)) {
                         PollService::Ready => {
-                            if inner.io.is_closed() {
-                                log::trace!("io has been closed, stop dispatcher");
-                                inner.st = IoDispatcherState::Stop;
-                                if let Poll::Ready(IoStatusUpdate::PeerGone(err)) =
-                                    inner.io.poll_status_update(cx)
-                                {
-                                    DispatchItem::Disconnect(err)
-                                } else {
-                                    DispatchItem::Disconnect(None)
-                                }
-                            } else {
-                                // decode incoming bytes stream
-                                match inner.io.poll_recv_decode(this.codec, cx) {
-                                    Ok(decoded) => {
-                                        inner.update_timer(&decoded);
-                                        if let Some(el) = decoded.item {
-                                            DispatchItem::Item(el)
-                                        } else {
-                                            return Poll::Pending;
-                                        }
+                            // decode incoming bytes stream
+                            match inner.io.poll_recv_decode(this.codec, cx) {
+                                Ok(decoded) => {
+                                    inner.update_timer(&decoded);
+                                    if let Some(el) = decoded.item {
+                                        DispatchItem::Item(el)
+                                    } else {
+                                        return Poll::Pending;
                                     }
-                                    Err(RecvError::Stop) => {
-                                        log::trace!("dispatcher is instructed to stop");
+                                }
+                                Err(RecvError::Stop) => {
+                                    log::trace!("dispatcher is instructed to stop");
+                                    inner.st = IoDispatcherState::Stop;
+                                    continue;
+                                }
+                                Err(RecvError::KeepAlive) => {
+                                    if let Err(err) = inner.handle_timeout() {
                                         inner.st = IoDispatcherState::Stop;
+                                        err
+                                    } else {
                                         continue;
                                     }
-                                    Err(RecvError::KeepAlive) => {
-                                        log::trace!("keep-alive error, stopping dispatcher");
+                                }
+                                Err(RecvError::WriteBackpressure) => {
+                                    if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
                                         inner.st = IoDispatcherState::Stop;
-                                        if inner.flags.contains(Flags::READ_TIMEOUT) {
-                                            DispatchItem::ReadTimeout
-                                        } else {
-                                            DispatchItem::KeepAliveTimeout
-                                        }
+                                        DispatchItem::Disconnect(Some(err))
+                                    } else {
+                                        continue;
                                     }
-                                    Err(RecvError::WriteBackpressure) => {
-                                        if let Err(err) = ready!(inner.io.poll_flush(cx, false))
-                                        {
-                                            inner.st = IoDispatcherState::Stop;
-                                            DispatchItem::Disconnect(Some(err))
-                                        } else {
-                                            continue;
-                                        }
-                                    }
-                                    Err(RecvError::Decoder(err)) => {
-                                        inner.st = IoDispatcherState::Stop;
-                                        DispatchItem::DecoderError(err)
-                                    }
-                                    Err(RecvError::PeerGone(err)) => {
-                                        inner.st = IoDispatcherState::Stop;
-                                        DispatchItem::Disconnect(err)
-                                    }
+                                }
+                                Err(RecvError::Decoder(err)) => {
+                                    inner.st = IoDispatcherState::Stop;
+                                    DispatchItem::DecoderError(err)
+                                }
+                                Err(RecvError::PeerGone(err)) => {
+                                    inner.st = IoDispatcherState::Stop;
+                                    DispatchItem::Disconnect(err)
                                 }
                             }
                         }
@@ -456,10 +442,8 @@ where
             Poll::Pending => {
                 log::trace!("service is not ready, pause read task");
 
-                // remove all timers
-                if self.flags.contains(Flags::READ_TIMEOUT) {
-                    self.flags.remove(Flags::READ_TIMEOUT);
-                }
+                // remove timers
+                self.flags.remove(Flags::READ_TIMEOUT);
                 self.io.stop_timer();
 
                 match ready!(self.io.poll_read_pause(cx)) {
@@ -496,55 +480,55 @@ where
     }
 
     fn update_timer(&mut self, decoded: &Decoded<<U as Decoder>::Item>) {
-        // we got parsed frame
+        // got parsed frame
         if decoded.item.is_some() {
-            // remove all timers
-            if self.flags.contains(Flags::READ_TIMEOUT) {
-                self.flags.remove(Flags::READ_TIMEOUT);
-            }
-            self.io.stop_timer();
-        } else if self.flags.contains(Flags::READ_TIMEOUT) {
-            // update read timer
-            if let Some((_, max, rate)) = self.config.frame_read_rate() {
-                let bytes = decoded.remains as u32;
-                let delta = if bytes > self.read_bytes {
-                    (bytes - self.read_bytes).try_into().unwrap_or(u16::MAX)
-                } else {
-                    bytes.try_into().unwrap_or(u16::MAX)
-                };
-
-                // read rate higher than min rate
-                if delta >= rate {
-                    let n = now();
-                    let next = self.io.timer_deadline() + ONE_SEC;
-                    let new_timeout = if n >= next { ONE_SEC } else { next - n };
-
-                    // extend timeout
-                    if max.is_zero() || (n + new_timeout) <= self.read_max_timeout {
-                        self.io.stop_timer();
-                        self.io.start_timer(new_timeout);
-
-                        // store current buf size for future rate calculation
-                        self.read_bytes = bytes;
-                    }
-                }
-            }
-        } else {
-            // no new data then start keep-alive timer
+            self.flags.remove(Flags::READ_TIMEOUT);
+            // no new data, start keep-alive timer
             if decoded.remains == 0 {
                 self.io.start_timer(self.keepalive_timeout);
-            } else if let Some((period, max, _)) = self.config.frame_read_rate() {
-                // we got new data but not enough to parse single frame
-                // start read timer
-                self.flags.insert(Flags::READ_TIMEOUT);
+            }
+        } else if self.flags.contains(Flags::READ_TIMEOUT) {
+            // received new data but not enough for parsing complete frame
+            self.read_remains = decoded.remains as u32;
+        } else if let Some((timeout, max, _)) = self.config.frame_read_rate() {
+            // we got new data but not enough to parse single frame
+            // start read timer
+            self.flags.insert(Flags::READ_TIMEOUT);
 
-                self.io.start_timer(period);
-                self.read_bytes = decoded.remains as u32;
-                if !max.is_zero() {
-                    self.read_max_timeout = now() + max;
+            self.read_remains = decoded.remains as u32;
+            self.read_remains_prev = 0;
+            if !max.is_zero() {
+                self.read_max_timeout = now() + max;
+            }
+            self.io.start_timer(timeout);
+        }
+    }
+
+    fn handle_timeout(&mut self) -> Result<(), DispatchItem<U>> {
+        // check read timer
+        if self.flags.contains(Flags::READ_TIMEOUT) {
+            if let Some((timeout, max, rate)) = self.config.frame_read_rate() {
+                let total =
+                    (self.read_remains - self.read_remains_prev).try_into().unwrap_or(u16::MAX);
+
+                // read rate, start timer for next period
+                if total > rate {
+                    self.read_remains_prev = self.read_remains;
+                    self.read_remains = 0;
+
+                    if max.is_zero() || (!max.is_zero() && now() < self.read_max_timeout) {
+                        log::trace!("Frame read rate {:?}, extend timer", total);
+                        self.io.start_timer(timeout);
+                        return Ok(());
+                    }
+                    log::trace!("Max payload timeout has been reached");
                 }
+                return Err(DispatchItem::ReadTimeout);
             }
         }
+
+        log::trace!("Keep-alive error, stopping dispatcher");
+        Err(DispatchItem::KeepAliveTimeout)
     }
 }
 
@@ -598,7 +582,8 @@ mod tests {
                         io: IoBoxed::from(io),
                         st: IoDispatcherState::Processing,
                         flags: Flags::empty(),
-                        read_bytes: 0,
+                        read_remains: 0,
+                        read_remains_prev: 0,
                         read_max_timeout: now(),
                     },
                 },

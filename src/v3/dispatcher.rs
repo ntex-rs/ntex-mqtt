@@ -217,6 +217,10 @@ where
                     )));
                 }
 
+                if inner.sink.is_closed() {
+                    return Either::Right(Either::Left(Ready::Ok(None)));
+                }
+
                 Either::Left(PublishResponse {
                     packet_id,
                     inner,
@@ -244,6 +248,10 @@ where
                 codec::Packet::Subscribe { packet_id, topic_filters },
                 size,
             )) => {
+                if self.inner.sink.is_closed() {
+                    return Either::Right(Either::Left(Ready::Ok(None)));
+                }
+
                 if topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
@@ -275,6 +283,10 @@ where
                 codec::Packet::Unsubscribe { packet_id, topic_filters },
                 size,
             )) => {
+                if self.inner.sink.is_closed() {
+                    return Either::Right(Either::Left(Ready::Ok(None)));
+                }
+
                 if topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::generic_violation(

@@ -304,6 +304,10 @@ where
                             }
                         }
                     }
+
+                    if state.is_closed() {
+                        return Either::Right(Either::Left(Ready::Ok(None)));
+                    }
                 }
 
                 Either::Left(PublishResponse {
@@ -327,6 +331,10 @@ where
                 }
             }
             DispatchItem::Item((codec::Packet::Auth(pkt), size)) => {
+                if self.inner.sink.is_closed() {
+                    return Either::Right(Either::Left(Ready::Ok(None)));
+                }
+
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::auth(pkt, size),
                     &self.inner,
@@ -344,6 +352,10 @@ where
                 )))
             }
             DispatchItem::Item((codec::Packet::Subscribe(pkt), size)) => {
+                if self.inner.sink.is_closed() {
+                    return Either::Right(Either::Left(Ready::Ok(None)));
+                }
+
                 if pkt.topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
@@ -394,6 +406,10 @@ where
                 ))
             }
             DispatchItem::Item((codec::Packet::Unsubscribe(pkt), size)) => {
+                if self.inner.sink.is_closed() {
+                    return Either::Right(Either::Left(Ready::Ok(None)));
+                }
+
                 if pkt.topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
                     return Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::proto_error(ProtocolError::generic_violation(

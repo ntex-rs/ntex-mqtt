@@ -90,14 +90,6 @@ where
         self
     }
 
-    #[deprecated(since = "0.12.1")]
-    #[doc(hidden)]
-    /// Set handshake timeout.
-    pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
-        self.connect_timeout = timeout;
-        self
-    }
-
     /// Set server connection disconnect timeout.
     ///
     /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
@@ -113,11 +105,11 @@ where
 
     /// Set read rate parameters for single frame.
     ///
-    /// Set max timeout for reading single frame. If the client
-    /// sends `rate` amount of data, increase the timeout by 1 second for every.
+    /// Set read timeout, max timeout and rate for reading payload. If the client
+    /// sends `rate` amount of data within `timeout` period of time, extend timeout by `timeout` seconds.
     /// But no more than `max_timeout` timeout.
     ///
-    /// By default frame read rate is disabled.
+    /// By default payload read rate is disabled.
     pub fn frame_read_rate(self, timeout: Seconds, max_timeout: Seconds, rate: u16) -> Self {
         self.config.set_frame_read_rate(timeout, max_timeout, rate);
         self

@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.11] - 2023-11-21
+
+* Refactor slow frame timeout handling
+
 ## [0.12.10] - 2023-11-21
 
 * Remove slow frame timer if service is not ready
