@@ -134,7 +134,7 @@ where
     /// sends `rate` amount of data within `timeout` period of time, extend timeout by `timeout` seconds.
     /// But no more than `max_timeout` timeout.
     ///
-    /// By default payload read rate is disabled.
+    /// By default frame read rate is disabled.
     pub fn frame_read_rate(self, timeout: Seconds, max_timeout: Seconds, rate: u16) -> Self {
         self.config.set_frame_read_rate(timeout, max_timeout, rate);
         self

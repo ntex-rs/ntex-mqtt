@@ -630,6 +630,53 @@ async fn test_keepalive2() {
 }
 
 #[ntex::test]
+async fn test_keepalive3() {
+    let ka = Arc::new(AtomicBool::new(false));
+    let ka2 = ka.clone();
+
+    let srv = server::test_server(move || {
+        let ka = ka2.clone();
+
+        MqttServer::new(|con: Handshake| async move { Ok(con.ack(St).keep_alive(1)) })
+            .frame_read_rate(Seconds(1), Seconds(5), 256)
+            .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
+            .control(move |msg| match msg {
+                ControlMessage::ProtocolError(msg) => {
+                    if let &error::ProtocolError::ReadTimeout = msg.get_ref() {
+                        ka.store(true, Relaxed);
+                    }
+                    Ready::Ok::<_, TestError>(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    // connect to server
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(codec::Connect::default().client_id("user").into(), &codec).await.unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    io.send(
+        codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }.into(),
+        &codec,
+    )
+    .await
+    .unwrap();
+    sleep(Duration::from_millis(500)).await;
+
+    let mut buf = BytesMut::new();
+    let pkt =
+        codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() }.into();
+    codec.encode(pkt, &mut buf).unwrap();
+    io.write(&buf[..5]).unwrap();
+    sleep(Duration::from_millis(2000)).await;
+
+    assert!(ka.load(Relaxed));
+}
+
+#[ntex::test]
 async fn test_sink_encoder_error_pub_qos1() {
     let srv = server::test_server(move || {
         MqttServer::new(|con: Handshake| async move {
