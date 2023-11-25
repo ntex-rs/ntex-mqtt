@@ -33,11 +33,12 @@ pin_project_lite::pin_project! {
 }
 
 bitflags::bitflags! {
-    #[derive(Copy, Clone, Eq, PartialEq)]
+    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
     struct Flags: u8  {
         const READY_ERR    = 0b0001;
         const IO_ERR       = 0b0010;
-        const READ_TIMEOUT = 0b0100;
+        const KA_TIMEOUT   = 0b0100;
+        const READ_TIMEOUT = 0b1000;
     }
 }
 
@@ -112,7 +113,6 @@ where
         config: &DispatcherConfig,
     ) -> Self {
         // register keepalive timer
-        io.start_timer(Seconds(30).into());
         io.set_disconnect_timeout(config.disconnect_timeout());
 
         let state = Rc::new(RefCell::new(DispatcherState {
@@ -148,7 +148,6 @@ where
     ///
     /// By default keep-alive timeout is set to 30 seconds.
     pub(crate) fn keepalive_timeout(mut self, timeout: Seconds) -> Self {
-        self.inner.io.start_timer(timeout.into());
         self.inner.keepalive_timeout = timeout.into();
         self
     }
@@ -480,11 +479,23 @@ where
     }
 
     fn update_timer(&mut self, decoded: &Decoded<<U as Decoder>::Item>) {
+        log::debug!(
+            "update timer, item: {:?}, remains: {:?}, consumed: {:?}, flags: {:?}",
+            decoded.item.is_some(),
+            decoded.remains,
+            decoded.consumed,
+            self.flags
+        );
+
         // got parsed frame
         if decoded.item.is_some() {
-            self.flags.remove(Flags::READ_TIMEOUT);
+            self.read_remains = 0;
+            self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
+        } else if self.read_remains == 0 && decoded.remains == 0 {
             // no new data, start keep-alive timer
-            if decoded.remains == 0 {
+            if !self.flags.contains(Flags::KA_TIMEOUT) {
+                log::debug!("Start keep-alive timer {:?}", self.keepalive_timeout);
+                self.flags.insert(Flags::KA_TIMEOUT);
                 self.io.start_timer(self.keepalive_timeout);
             }
         } else if self.flags.contains(Flags::READ_TIMEOUT) {
@@ -493,6 +504,7 @@ where
         } else if let Some((timeout, max, _)) = self.config.frame_read_rate() {
             // we got new data but not enough to parse single frame
             // start read timer
+            self.flags.remove(Flags::KA_TIMEOUT);
             self.flags.insert(Flags::READ_TIMEOUT);
 
             self.read_remains = decoded.remains as u32;
@@ -505,6 +517,8 @@ where
     }
 
     fn handle_timeout(&mut self) -> Result<(), DispatchItem<U>> {
+        log::debug!("handle timeout, flags: {:?}", self.flags);
+
         // check read timer
         if self.flags.contains(Flags::READ_TIMEOUT) {
             if let Some((timeout, max, rate)) = self.config.frame_read_rate() {
@@ -557,9 +571,7 @@ mod tests {
             service: F,
         ) -> (Self, nio::IoRef) {
             let keepalive_timeout = Seconds(30).into();
-            io.start_timer(keepalive_timeout);
             let rio = io.get_ref();
-
             let config = DispatcherConfig::default();
 
             let state = Rc::new(RefCell::new(DispatcherState {

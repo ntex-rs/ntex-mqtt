@@ -69,14 +69,6 @@ where
         self
     }
 
-    #[deprecated(since = "0.12.1")]
-    #[doc(hidden)]
-    /// Set handshake timeout.
-    pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
-        self.connect_timeout = timeout.into();
-        self
-    }
-
     /// Set max inbound frame size.
     ///
     /// If max size is set to `0`, size is unlimited.
