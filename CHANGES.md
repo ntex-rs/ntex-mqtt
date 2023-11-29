@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.13] - 2023-11-29
+
+* Refactor io timers
+
 ## [0.12.12] - 2023-11-25
 
 * Fix keep-alive timeout handling
