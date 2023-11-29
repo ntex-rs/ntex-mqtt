@@ -1,14 +1,13 @@
 //! Framed transport dispatcher
 use std::task::{Context, Poll};
-use std::{cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc, time};
+use std::{cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc};
 
 use ntex::codec::{Decoder, Encoder};
 use ntex::io::{
     Decoded, DispatchItem, DispatcherConfig, IoBoxed, IoRef, IoStatusUpdate, RecvError,
 };
 use ntex::service::{IntoService, Pipeline, PipelineCall, Service};
-use ntex::time::{now, Seconds};
-use ntex::util::{ready, Pool};
+use ntex::{time::Seconds, util::ready, util::Pool};
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -50,8 +49,8 @@ struct DispatcherInner<S: Service<DispatchItem<U>>, U: Encoder + Decoder> {
     config: DispatcherConfig,
     read_remains: u32,
     read_remains_prev: u32,
-    read_max_timeout: time::Instant,
-    keepalive_timeout: time::Duration,
+    read_max_timeout: Seconds,
+    keepalive_timeout: Seconds,
 }
 
 struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder> {
@@ -136,8 +135,8 @@ where
                 st: IoDispatcherState::Processing,
                 read_remains: 0,
                 read_remains_prev: 0,
-                read_max_timeout: now(),
-                keepalive_timeout: time::Duration::from_secs(30),
+                read_max_timeout: Seconds::ZERO,
+                keepalive_timeout: Seconds(30),
             },
         }
     }
@@ -148,7 +147,7 @@ where
     ///
     /// By default keep-alive timeout is set to 30 seconds.
     pub(crate) fn keepalive_timeout(mut self, timeout: Seconds) -> Self {
-        self.inner.keepalive_timeout = timeout.into();
+        self.inner.keepalive_timeout = timeout;
         self
     }
 }
@@ -223,8 +222,6 @@ where
         let mut this = self.as_mut().project();
         let inner = &mut this.inner;
 
-        // println!("IO-DISP poll :{:?}:", this.st);
-
         // handle service response future
         if let Some(fut) = this.response.as_mut().as_pin_mut() {
             if let Poll::Ready(item) = fut.poll(cx) {
@@ -246,8 +243,6 @@ where
         }
 
         loop {
-            // println!("IO-DISP state :{:?}: {:?}", inner.io.flags(), inner.st);
-
             match inner.st {
                 IoDispatcherState::Processing => {
                     let item = match ready!(inner.poll_service(this.service, cx)) {
@@ -263,7 +258,7 @@ where
                                     }
                                 }
                                 Err(RecvError::Stop) => {
-                                    log::trace!("dispatcher is instructed to stop");
+                                    log::trace!("Dispatcher is instructed to stop");
                                     inner.st = IoDispatcherState::Stop;
                                     continue;
                                 }
@@ -359,7 +354,7 @@ where
 
                     if inner.state.borrow().queue.is_empty() {
                         if inner.io.poll_shutdown(cx).is_ready() {
-                            log::trace!("io shutdown completed");
+                            log::trace!("IO shutdown completed");
                             inner.st = IoDispatcherState::Shutdown;
                             continue;
                         }
@@ -386,7 +381,7 @@ where
                 // shutdown service
                 IoDispatcherState::Shutdown => {
                     return if this.service.poll_shutdown(cx).is_ready() {
-                        log::trace!("service shutdown is completed, stop");
+                        log::trace!("Service shutdown is completed, stop");
 
                         Poll::Ready(
                             if let Some(IoDispatcherError::Service(err)) =
@@ -422,7 +417,7 @@ where
                 // check for errors
                 let mut state = self.state.borrow_mut();
                 Poll::Ready(if let Some(err) = state.error.take() {
-                    log::trace!("error occured, stopping dispatcher");
+                    log::trace!("Error occured, stopping dispatcher");
                     self.st = IoDispatcherState::Stop;
                     match err {
                         IoDispatcherError::Encoder(err) => {
@@ -439,7 +434,7 @@ where
             }
             // pause io read task
             Poll::Pending => {
-                log::trace!("service is not ready, pause read task");
+                log::trace!("Service is not ready, pause read task");
 
                 // remove timers
                 self.flags.remove(Flags::READ_TIMEOUT);
@@ -447,18 +442,18 @@ where
 
                 match ready!(self.io.poll_read_pause(cx)) {
                     IoStatusUpdate::KeepAlive => {
-                        log::trace!("keep-alive error, stopping dispatcher during pause");
+                        log::trace!("Keep-alive error, stopping dispatcher during pause");
                         self.st = IoDispatcherState::Stop;
                         Poll::Ready(PollService::Item(DispatchItem::KeepAliveTimeout))
                     }
                     IoStatusUpdate::Stop => {
-                        log::trace!("dispatcher is instructed to stop during pause");
+                        log::trace!("Dispatcher is instructed to stop during pause");
                         self.st = IoDispatcherState::Stop;
                         Poll::Ready(PollService::Continue)
                     }
                     IoStatusUpdate::PeerGone(err) => {
                         log::trace!(
-                            "peer is gone during pause, stopping dispatcher: {:?}",
+                            "Peer is gone during pause, stopping dispatcher: {:?}",
                             err
                         );
                         self.st = IoDispatcherState::Stop;
@@ -469,7 +464,7 @@ where
             }
             // handle service readiness error
             Poll::Ready(Err(err)) => {
-                log::trace!("service readiness check failed, stopping");
+                log::trace!("Service readiness check failed, stopping");
                 self.st = IoDispatcherState::Stop;
                 self.state.borrow_mut().error = Some(IoDispatcherError::Service(err));
                 self.flags.insert(Flags::READY_ERR);
@@ -480,7 +475,7 @@ where
 
     fn update_timer(&mut self, decoded: &Decoded<<U as Decoder>::Item>) {
         log::debug!(
-            "update timer, item: {:?}, remains: {:?}, consumed: {:?}, flags: {:?}",
+            "Update timer, item: {:?}, remains: {:?}, consumed: {:?}, flags: {:?}",
             decoded.item.is_some(),
             decoded.remains,
             decoded.consumed,
@@ -491,17 +486,17 @@ where
         if decoded.item.is_some() {
             self.read_remains = 0;
             self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
+        } else if self.flags.contains(Flags::READ_TIMEOUT) {
+            // received new data but not enough for parsing complete frame
+            self.read_remains = decoded.remains as u32;
         } else if self.read_remains == 0 && decoded.remains == 0 {
             // no new data, start keep-alive timer
             if !self.flags.contains(Flags::KA_TIMEOUT) {
                 log::debug!("Start keep-alive timer {:?}", self.keepalive_timeout);
                 self.flags.insert(Flags::KA_TIMEOUT);
-                self.io.start_timer(self.keepalive_timeout);
+                self.io.start_timer_secs(self.keepalive_timeout);
             }
-        } else if self.flags.contains(Flags::READ_TIMEOUT) {
-            // received new data but not enough for parsing complete frame
-            self.read_remains = decoded.remains as u32;
-        } else if let Some((timeout, max, _)) = self.config.frame_read_rate() {
+        } else if let Some((timeout, max, _)) = self.config.frame_read_rate_params() {
             // we got new data but not enough to parse single frame
             // start read timer
             self.flags.remove(Flags::KA_TIMEOUT);
@@ -509,19 +504,19 @@ where
 
             self.read_remains = decoded.remains as u32;
             self.read_remains_prev = 0;
-            if !max.is_zero() {
-                self.read_max_timeout = now() + max;
-            }
-            self.io.start_timer(timeout);
+            self.read_max_timeout = max;
+            self.io.start_timer_secs(timeout);
+
+            log::debug!("Start frame read timer {:?}", timeout);
         }
     }
 
     fn handle_timeout(&mut self) -> Result<(), DispatchItem<U>> {
-        log::debug!("handle timeout, flags: {:?}", self.flags);
+        log::debug!("Handle timeout, flags: {:?}", self.flags);
 
         // check read timer
         if self.flags.contains(Flags::READ_TIMEOUT) {
-            if let Some((timeout, max, rate)) = self.config.frame_read_rate() {
+            if let Some((timeout, max, rate)) = self.config.frame_read_rate_params() {
                 let total =
                     (self.read_remains - self.read_remains_prev).try_into().unwrap_or(u16::MAX);
 
@@ -530,9 +525,14 @@ where
                     self.read_remains_prev = self.read_remains;
                     self.read_remains = 0;
 
-                    if max.is_zero() || (!max.is_zero() && now() < self.read_max_timeout) {
+                    if !max.is_zero() {
+                        self.read_max_timeout =
+                            Seconds(self.read_max_timeout.0.saturating_sub(timeout.0));
+                    }
+
+                    if max.is_zero() || !self.read_max_timeout.is_zero() {
                         log::trace!("Frame read rate {:?}, extend timer", total);
-                        self.io.start_timer(timeout);
+                        self.io.start_timer_secs(timeout);
                         return Ok(());
                     }
                     log::trace!("Max payload timeout has been reached");
@@ -596,7 +596,7 @@ mod tests {
                         flags: Flags::empty(),
                         read_remains: 0,
                         read_remains_prev: 0,
-                        read_max_timeout: now(),
+                        read_max_timeout: Seconds::ZERO,
                     },
                 },
                 rio,
