@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.14] - 2023-12-03
+
+* Optimize KEEP-ALIVE timer
+
 ## [0.12.13] - 2023-11-29
 
 * Refactor io timers
