@@ -616,10 +616,19 @@ async fn test_keepalive2() {
     ntex::rt::spawn(client.start_default());
 
     assert!(sink.is_open());
+
     let res =
         sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
-    sleep(Duration::from_millis(500)).await;
+    sleep(Duration::from_millis(750)).await;
+    assert!(!ka.load(Relaxed));
+
+    let res =
+        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
+    assert!(res.is_ok());
+    sleep(Duration::from_millis(750)).await;
+    assert!(!ka.load(Relaxed));
+
     let res =
         sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
     assert!(res.is_ok());
