@@ -108,13 +108,6 @@ where
         self
     }
 
-    #[deprecated(since = "0.12.5")]
-    #[doc(hidden)]
-    pub fn conenct_timeout(mut self, timeout: Seconds) -> Self {
-        self.connect_timeout = timeout;
-        self
-    }
-
     /// Set server connection disconnect timeout.
     ///
     /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete

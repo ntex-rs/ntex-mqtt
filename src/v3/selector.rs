@@ -59,13 +59,6 @@ where
         self
     }
 
-    #[deprecated(since = "0.12.5")]
-    #[doc(hidden)]
-    pub fn conenct_timeout(mut self, timeout: Seconds) -> Self {
-        self.connect_timeout = timeout.into();
-        self
-    }
-
     /// Set max inbound frame size.
     ///
     /// If max size is set to `0`, size is unlimited.

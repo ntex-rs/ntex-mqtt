@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.15] - 2023-12-10
+
+* Fix KEEP-ALIVE timer handling
+
 ## [0.12.14] - 2023-12-03
 
 * Optimize KEEP-ALIVE timer
