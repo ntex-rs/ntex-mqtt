@@ -61,13 +61,6 @@ impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr> {
         self.connect_timeout = timeout.into();
         self
     }
-
-    #[deprecated(since = "0.12.5")]
-    #[doc(hidden)]
-    pub fn conenct_timeout(mut self, timeout: Seconds) -> Self {
-        self.connect_timeout = timeout.into();
-        self
-    }
 }
 
 impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr>

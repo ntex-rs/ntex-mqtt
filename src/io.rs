@@ -37,7 +37,7 @@ bitflags::bitflags! {
         const READY_ERR     = 0b00001;
         const IO_ERR        = 0b00010;
         const KA_ENABLED    = 0b00100;
-        const NO_KA_TIMEOUT = 0b01000;
+        const KA_TIMEOUT    = 0b01000;
         const READ_TIMEOUT  = 0b10000;
     }
 }
@@ -122,12 +122,6 @@ where
         }));
         let pool = io.memory_pool().pool();
 
-        let flags = if config.keepalive_timeout_secs().is_zero() {
-            Flags::NO_KA_TIMEOUT
-        } else {
-            Flags::KA_ENABLED | Flags::NO_KA_TIMEOUT
-        };
-
         Dispatcher {
             codec,
             pool,
@@ -137,7 +131,7 @@ where
             inner: DispatcherInner {
                 io,
                 state,
-                flags,
+                flags: Flags::empty(),
                 config: config.clone(),
                 st: IoDispatcherState::Processing,
                 read_remains: 0,
@@ -157,9 +151,8 @@ where
         self.inner.keepalive_timeout = timeout;
         if timeout.is_zero() {
             self.inner.flags.remove(Flags::KA_ENABLED);
-            self.inner.flags.insert(Flags::NO_KA_TIMEOUT);
         } else {
-            self.inner.flags.insert(Flags::KA_ENABLED | Flags::NO_KA_TIMEOUT);
+            self.inner.flags.insert(Flags::KA_ENABLED);
         }
         self
     }
@@ -490,21 +483,22 @@ where
         // got parsed frame
         if decoded.item.is_some() {
             self.read_remains = 0;
-            self.flags.remove(Flags::READ_TIMEOUT);
+            self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
         } else if self.flags.contains(Flags::READ_TIMEOUT) {
             // received new data but not enough for parsing complete frame
             self.read_remains = decoded.remains as u32;
         } else if self.read_remains == 0 && decoded.remains == 0 {
             // no new data, start keep-alive timer
-            if self.flags.contains(Flags::NO_KA_TIMEOUT | Flags::KA_ENABLED) {
+            if self.flags.contains(Flags::KA_ENABLED) && !self.flags.contains(Flags::KA_TIMEOUT)
+            {
                 log::debug!("Start keep-alive timer {:?}", self.keepalive_timeout);
-                self.flags.remove(Flags::NO_KA_TIMEOUT);
+                self.flags.insert(Flags::KA_TIMEOUT);
                 self.io.start_timer_secs(self.keepalive_timeout);
             }
         } else if let Some((timeout, max, _)) = self.config.frame_read_rate_params() {
             // we got new data but not enough to parse single frame
             // start read timer
-            self.flags.insert(Flags::READ_TIMEOUT | Flags::NO_KA_TIMEOUT);
+            self.flags.insert(Flags::READ_TIMEOUT);
 
             self.read_remains = decoded.remains as u32;
             self.read_remains_prev = 0;
@@ -550,7 +544,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc};
+    use std::{cell::Cell, rc::Rc, sync::Arc, sync::Mutex};
 
     use ntex::channel::condition::Condition;
     use ntex::time::{sleep, Millis};
@@ -595,7 +589,7 @@ mod tests {
                         keepalive_timeout,
                         io: IoBoxed::from(io),
                         st: IoDispatcherState::Processing,
-                        flags: Flags::KA_ENABLED | Flags::NO_KA_TIMEOUT,
+                        flags: Flags::KA_ENABLED,
                         read_remains: 0,
                         read_remains_prev: 0,
                         read_max_timeout: Seconds::ZERO,
@@ -853,5 +847,57 @@ mod tests {
         // close read side
         client.close().await;
         let _ = rx.recv().await;
+    }
+
+    /// Update keep-alive timer after receiving frame
+    #[ntex::test]
+    async fn test_keepalive() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let data = Arc::new(Mutex::new(RefCell::new(Vec::new())));
+        let data2 = data.clone();
+
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server),
+            BytesCodec,
+            ntex::service::fn_service(move |msg: DispatchItem<BytesCodec>| {
+                let data = data2.clone();
+                async move {
+                    match msg {
+                        DispatchItem::Item(bytes) => {
+                            data.lock().unwrap().borrow_mut().push(0);
+                            return Ok::<_, ()>(Some(bytes.freeze()));
+                        }
+                        DispatchItem::KeepAliveTimeout => {
+                            data.lock().unwrap().borrow_mut().push(1);
+                        }
+                        _ => (),
+                    }
+                    Ok(None)
+                }
+            }),
+        );
+        ntex::rt::spawn(async move {
+            let _ = disp.keepalive_timeout(Seconds(2)).await;
+        });
+
+        client.write("1");
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"1"));
+        sleep(Millis(750)).await;
+
+        client.write("2");
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"2"));
+
+        sleep(Millis(750)).await;
+        client.write("3");
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"3"));
+
+        sleep(Millis(750)).await;
+        assert!(!client.is_closed());
+        assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 0, 0]);
     }
 }
