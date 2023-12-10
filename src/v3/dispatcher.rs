@@ -22,6 +22,7 @@ pub(super) fn factory<St, T, C, E>(
     inflight: u16,
     inflight_size: usize,
     max_qos: QoS,
+    handle_qos_after_disconnect: bool,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
     Session<St>,
@@ -66,7 +67,7 @@ where
                 crate::inflight::InFlightService::new(
                     inflight,
                     inflight_size,
-                    Dispatcher::<_, _, E>::new(sink, publish, control, max_qos),
+                    Dispatcher::<_, _, E>::new(sink, publish, control, max_qos, handle_qos_after_disconnect),
                 ),
             )
         }
@@ -87,6 +88,7 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     publish: T,
     max_qos: QoS,
+    handle_qos_after_disconnect: bool,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<(E,)>,
@@ -104,10 +106,17 @@ where
     T: Service<Publish, Response = ()>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    pub(crate) fn new(sink: Rc<MqttShared>, publish: T, control: C, max_qos: QoS) -> Self {
+    pub(crate) fn new(
+        sink: Rc<MqttShared>,
+        publish: T,
+        control: C,
+        max_qos: QoS,
+        handle_qos_after_disconnect: bool,
+    ) -> Self {
         Self {
             publish,
             max_qos,
+            handle_qos_after_disconnect,
             shutdown: RefCell::new(None),
             inner: Rc::new(Inner { sink, control, inflight: RefCell::new(HashSet::default()) }),
             _t: PhantomData,
@@ -217,7 +226,7 @@ where
                     )));
                 }
 
-                if inner.sink.is_closed() && publish.qos > QoS::AtMostOnce {
+                if inner.sink.is_closed() && (publish.qos > QoS::AtMostOnce || !self.handle_qos_after_disconnect) {
                     return Either::Right(Either::Left(Ready::Ok(None)));
                 }
 
@@ -542,6 +551,7 @@ mod tests {
                 Ready::Ok(ControlResult { result: ControlResultKind::Nothing })
             }),
             QoS::AtLeastOnce,
+            false,
         ));
 
         let mut f = Box::pin(disp.call(DispatchItem::Item((
@@ -583,6 +593,7 @@ mod tests {
             fn_service(|_| Ready::Ok(())),
             fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
             QoS::AtLeastOnce,
+            false,
         ));
 
         let sink = MqttSink::new(shared.clone());

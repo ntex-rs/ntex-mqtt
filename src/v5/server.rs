@@ -25,6 +25,7 @@ pub struct MqttServer<St, C, Cn, P> {
     max_qos: QoS,
     max_inflight_size: usize,
     max_topic_alias: u16,
+    handle_qos_after_disconnect: bool,
     connect_timeout: Seconds,
     config: DispatcherConfig,
     pub(super) pool: Rc<MqttSinkPool>,
@@ -55,6 +56,7 @@ where
             max_qos: QoS::AtLeastOnce,
             max_inflight_size: 65535,
             max_topic_alias: 32,
+            handle_qos_after_disconnect: false,
             connect_timeout: Seconds::ZERO,
             pool: Rc::new(MqttSinkPool::default()),
             _t: PhantomData,
@@ -150,6 +152,20 @@ where
         self
     }
 
+    /// Handle received QoS 0 messages after client disconnect.
+    ///
+    /// By default, messages received before dispatched to the publish service will be dropped if
+    /// the client disconnect immediately.
+    ///
+    /// If this option is set to `true`, the QoS 0 messages received will always be handled by the
+    /// server's publish service no matter if the client is disconnected or not.
+    ///
+    /// By default handle-qos-after-disconnect is set to `false`
+    pub fn handle_qos_after_disconnect(mut self, val: bool) -> Self {
+        self.handle_qos_after_disconnect = val;
+        self
+    }
+
     /// Service to handle control packets
     ///
     /// All control packets are processed sequentially, max number of buffered
@@ -171,6 +187,7 @@ where
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
             max_inflight_size: self.max_inflight_size,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
             _t: PhantomData,
@@ -196,6 +213,7 @@ where
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
             max_inflight_size: self.max_inflight_size,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
             _t: PhantomData,
@@ -249,7 +267,7 @@ where
                 pool: self.pool,
                 _t: PhantomData,
             },
-            factory(self.srv_publish, self.srv_control, self.max_inflight_size),
+            factory(self.srv_publish, self.srv_control, self.max_inflight_size, self.handle_qos_after_disconnect),
             self.config,
         )
     }
@@ -275,6 +293,7 @@ where
                 self.srv_publish,
                 self.srv_control,
                 self.max_inflight_size,
+                self.handle_qos_after_disconnect,
             )),
             max_size: self.max_size,
             max_receive: self.max_receive,

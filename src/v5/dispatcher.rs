@@ -19,6 +19,7 @@ pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
     max_inflight_size: usize,
+    handle_qos_after_disconnect: bool,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
     Session<St>,
@@ -62,7 +63,7 @@ where
             Ok(crate::inflight::InFlightService::new(
                 0,
                 max_inflight_size,
-                Dispatcher::<_, _, E>::new(sink, publish, control),
+                Dispatcher::<_, _, E>::new(sink, publish, control, handle_qos_after_disconnect),
             ))
         }
     })
@@ -81,6 +82,7 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 /// Mqtt protocol dispatcher
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     publish: T,
+    handle_qos_after_disconnect: bool,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
     _t: marker::PhantomData<E>,
@@ -104,9 +106,10 @@ where
     PublishAck: TryFrom<T::Error, Error = E>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(sink: Rc<MqttShared>, publish: T, control: C) -> Self {
+    fn new(sink: Rc<MqttShared>, publish: T, control: C, handle_qos_after_disconnect: bool) -> Self {
         Self {
             publish,
+            handle_qos_after_disconnect,
             shutdown: RefCell::new(None),
             inner: Rc::new(Inner {
                 sink,
@@ -305,7 +308,7 @@ where
                         }
                     }
 
-                    if state.is_closed() && publish.qos > codec::QoS::AtMostOnce {
+                    if state.is_closed() && (publish.qos > crate::types::QoS::AtMostOnce || !self.handle_qos_after_disconnect) {
                         return Either::Right(Either::Left(Ready::Ok(None)));
                     }
                 }
@@ -698,6 +701,7 @@ mod tests {
                     disconnect: false,
                 })
             }),
+            false,
         ));
 
         let sink = MqttSink::new(shared.clone());

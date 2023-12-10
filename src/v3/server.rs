@@ -49,6 +49,7 @@ pub struct MqttServer<St, H, C, P> {
     max_size: u32,
     max_inflight: u16,
     max_inflight_size: usize,
+    handle_qos_after_disconnect: bool,
     connect_timeout: Seconds,
     config: DispatcherConfig,
     pub(super) pool: Rc<MqttSinkPool>,
@@ -79,6 +80,7 @@ where
             max_size: 0,
             max_inflight: 16,
             max_inflight_size: 65535,
+            handle_qos_after_disconnect: false,
             connect_timeout: Seconds::ZERO,
             pool: Default::default(),
             _t: PhantomData,
@@ -167,6 +169,20 @@ where
         self
     }
 
+    /// Handle received QoS 0 messages after client disconnect.
+    ///
+    /// By default, messages received before dispatched to the publish service will be dropped if
+    /// the client disconnect immediately.
+    ///
+    /// If this option is set to `true`, the QoS 0 messages received will always be handled by the
+    /// server's publish service no matter if the client is disconnected or not.
+    ///
+    /// By default handle-qos-after-disconnect is set to `false`
+    pub fn handle_qos_after_disconnect(mut self, val: bool) -> Self {
+        self.handle_qos_after_disconnect = val;
+        self
+    }
+
     /// Service to handle control packets
     ///
     /// All control packets are processed sequentially, max number of buffered
@@ -187,6 +203,7 @@ where
             max_size: self.max_size,
             max_inflight: self.max_inflight,
             max_inflight_size: self.max_inflight_size,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
             _t: PhantomData,
@@ -210,6 +227,7 @@ where
             max_inflight: self.max_inflight,
             max_inflight_size: self.max_inflight_size,
             connect_timeout: self.connect_timeout,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             pool: self.pool,
             _t: PhantomData,
         }
@@ -249,6 +267,7 @@ where
                 self.max_inflight,
                 self.max_inflight_size,
                 self.max_qos,
+                self.handle_qos_after_disconnect,
             ),
             self.config,
         )
@@ -277,6 +296,7 @@ where
                 self.max_inflight,
                 self.max_inflight_size,
                 self.max_qos,
+                self.handle_qos_after_disconnect,
             )),
             max_size: self.max_size,
             config: self.config,

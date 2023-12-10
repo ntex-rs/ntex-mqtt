@@ -392,6 +392,7 @@ async fn test_handle_incoming_qos0() -> std::io::Result<()> {
         let publish = publish2.clone();
         let disconnect = disconnect2.clone();
         MqttServer::new(handshake)
+            .handle_qos_after_disconnect(true)
             .publish(move |_| {
                 publish.store(true, Relaxed);
                 async {
