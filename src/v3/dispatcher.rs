@@ -217,7 +217,7 @@ where
                     )));
                 }
 
-                if inner.sink.is_closed() {
+                if inner.sink.is_closed() && publish.qos > QoS::AtMostOnce {
                     return Either::Right(Either::Left(Ready::Ok(None)));
                 }
 

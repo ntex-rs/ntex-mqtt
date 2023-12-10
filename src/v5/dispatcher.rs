@@ -305,7 +305,7 @@ where
                         }
                     }
 
-                    if state.is_closed() {
+                    if state.is_closed() && publish.qos > codec::QoS::AtMostOnce {
                         return Either::Right(Either::Left(Ready::Ok(None)));
                     }
                 }

@@ -382,6 +382,62 @@ async fn test_handle_incoming() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_handle_incoming_qos0() -> std::io::Result<()> {
+    let publish = Arc::new(AtomicBool::new(false));
+    let publish2 = publish.clone();
+    let disconnect = Arc::new(AtomicBool::new(false));
+    let disconnect2 = disconnect.clone();
+
+    let srv = server::test_server(move || {
+        let publish = publish2.clone();
+        let disconnect = disconnect2.clone();
+        MqttServer::new(handshake)
+            .publish(move |_| {
+                publish.store(true, Relaxed);
+                async {
+                    sleep(Duration::from_millis(100)).await;
+                    Ok(())
+                }
+            })
+            .control(move |msg| match msg {
+                ControlMessage::Disconnect(msg) => {
+                    disconnect.store(true, Relaxed);
+                    Ready::Ok(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
+    io.encode(
+        codec::Publish {
+            dup: false,
+            retain: false,
+            qos: codec::QoS::AtMostOnce,
+            topic: ByteString::from("test"),
+            packet_id: None,
+            payload: Bytes::new(),
+        }
+        .into(),
+        &codec,
+    )
+    .unwrap();
+    io.encode(codec::Packet::Disconnect, &codec).unwrap();
+    io.flush(true).await.unwrap();
+    drop(io);
+
+    sleep(Millis(50)).await;
+
+    assert!(publish.load(Relaxed));
+    assert!(disconnect.load(Relaxed));
+
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_nested_errors() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         MqttServer::new(handshake)

@@ -42,6 +42,18 @@ fn pkt_publish() -> codec::Publish {
     }
 }
 
+fn pkt_publish_qos0() -> codec::Publish {
+    codec::Publish {
+        dup: false,
+        retain: false,
+        qos: codec::QoS::AtMostOnce,
+        topic: ByteString::from("test"),
+        packet_id: None,
+        payload: Bytes::new(),
+        properties: Default::default(),
+    }
+}
+
 async fn handshake(packet: Handshake) -> Result<HandshakeAck<St>, TestError> {
     Ok(packet.ack(St))
 }
@@ -980,6 +992,61 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     io.flush(true).await.unwrap();
     sleep(Duration::from_millis(50)).await;
     drop(io);
+    sleep(Duration::from_millis(50)).await;
+
+    assert!(publish.load(Relaxed));
+    assert!(disconnect.load(Relaxed));
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_handle_incoming_qos0() -> std::io::Result<()> {
+    let publish = Arc::new(AtomicBool::new(false));
+    let publish2 = publish.clone();
+    let disconnect = Arc::new(AtomicBool::new(false));
+    let disconnect2 = disconnect.clone();
+
+    let srv = server::test_server(move || {
+        let publish = publish2.clone();
+        let disconnect = disconnect2.clone();
+        MqttServer::new(handshake)
+            .publish(move |p: Publish| {
+                publish.store(true, Relaxed);
+                Ready::Ok::<_, TestError>(p.ack())
+            })
+            .control(move |msg| match msg {
+                ControlMessage::Disconnect(msg) => {
+                    disconnect.store(true, Relaxed);
+                    Ready::Ok::<_, TestError>(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode(
+        codec::Packet::Connect(Box::new(codec::Connect::default().client_id("user"))),
+        &codec,
+    )
+    .unwrap();
+    io.encode(pkt_publish_qos0().into(), &codec).unwrap();
+    io.encode(
+        codec::Packet::Disconnect(codec::Disconnect {
+            reason_code: codec::DisconnectReasonCode::ReceiveMaximumExceeded,
+            session_expiry_interval_secs: None,
+            server_reference: None,
+            reason_string: None,
+            user_properties: Default::default(),
+        }),
+        &codec,
+    )
+    .unwrap();
+    io.flush(true).await.unwrap();
+    drop(io);
+
     sleep(Duration::from_millis(50)).await;
 
     assert!(publish.load(Relaxed));
