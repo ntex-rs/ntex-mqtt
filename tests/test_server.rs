@@ -381,8 +381,22 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     Ok(())
 }
 
-#[ntex::test]
-async fn test_handle_incoming_qos0() -> std::io::Result<()> {
+fn make_handle_or_drop_test(
+    max_qos: QoS,
+    handle_qos_after_disconnect: Option<QoS>,
+) -> impl Fn(QoS) -> Pin<Box<dyn Future<Output = bool>>> {
+    move |publish_qos| Box::pin(handle_or_drop_publish_after_disconnect(
+        publish_qos,
+        max_qos,
+        handle_qos_after_disconnect,
+    ))
+}
+
+async fn handle_or_drop_publish_after_disconnect(
+    publish_qos: QoS,
+    max_qos: QoS,
+    handle_qos_after_disconnect: Option<QoS>,
+) -> bool {
     let publish = Arc::new(AtomicBool::new(false));
     let publish2 = publish.clone();
     let disconnect = Arc::new(AtomicBool::new(false));
@@ -392,7 +406,8 @@ async fn test_handle_incoming_qos0() -> std::io::Result<()> {
         let publish = publish2.clone();
         let disconnect = disconnect2.clone();
         MqttServer::new(handshake)
-            .handle_qos_after_disconnect(true)
+            .max_qos(max_qos)
+            .handle_qos_after_disconnect(handle_qos_after_disconnect)
             .publish(move |_| {
                 publish.store(true, Relaxed);
                 async {
@@ -410,6 +425,10 @@ async fn test_handle_incoming_qos0() -> std::io::Result<()> {
             .finish()
     });
 
+    let packet_id = match publish_qos {
+        QoS::AtMostOnce => None,
+        _ => Some(NonZeroU16::new(1).unwrap()),
+    };
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
@@ -417,9 +436,9 @@ async fn test_handle_incoming_qos0() -> std::io::Result<()> {
         codec::Publish {
             dup: false,
             retain: false,
-            qos: codec::QoS::AtMostOnce,
+            qos: publish_qos,
             topic: ByteString::from("test"),
-            packet_id: None,
+            packet_id,
             payload: Bytes::new(),
         }
         .into(),
@@ -432,8 +451,27 @@ async fn test_handle_incoming_qos0() -> std::io::Result<()> {
 
     sleep(Millis(50)).await;
 
-    assert!(publish.load(Relaxed));
     assert!(disconnect.load(Relaxed));
+
+    publish.load(Relaxed)
+}
+
+#[ntex::test]
+async fn test_handle_incoming_after_disconnect() -> std::io::Result<()> {
+    let handle_publish = make_handle_or_drop_test(QoS::AtMostOnce, Some(QoS::AtMostOnce));
+    assert!(handle_publish(QoS::AtMostOnce).await);
+
+    let handle_publish = make_handle_or_drop_test(QoS::AtLeastOnce, Some(QoS::AtMostOnce));
+    assert!(handle_publish(QoS::AtMostOnce).await);
+
+    let handle_publish = make_handle_or_drop_test(QoS::AtLeastOnce, Some(QoS::AtLeastOnce));
+    assert!(handle_publish(QoS::AtMostOnce).await);
+    assert!(handle_publish(QoS::AtLeastOnce).await);
+
+    let handle_publish = make_handle_or_drop_test(QoS::ExactlyOnce, Some(QoS::ExactlyOnce));
+    assert!(handle_publish(QoS::AtMostOnce).await);
+    assert!(handle_publish(QoS::AtLeastOnce).await);
+    assert!(handle_publish(QoS::ExactlyOnce).await);
 
     Ok(())
 }

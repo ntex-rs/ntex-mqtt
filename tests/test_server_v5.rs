@@ -42,18 +42,6 @@ fn pkt_publish() -> codec::Publish {
     }
 }
 
-fn pkt_publish_qos0() -> codec::Publish {
-    codec::Publish {
-        dup: false,
-        retain: false,
-        qos: codec::QoS::AtMostOnce,
-        topic: ByteString::from("test"),
-        packet_id: None,
-        payload: Bytes::new(),
-        properties: Default::default(),
-    }
-}
-
 async fn handshake(packet: Handshake) -> Result<HandshakeAck<St>, TestError> {
     Ok(packet.ack(St))
 }
@@ -1000,8 +988,22 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     Ok(())
 }
 
-#[ntex::test]
-async fn test_handle_incoming_qos0() -> std::io::Result<()> {
+fn make_handle_or_drop_test(
+    max_qos: QoS,
+    handle_qos_after_disconnect: Option<QoS>,
+) -> impl Fn(QoS) -> Pin<Box<dyn Future<Output = bool>>> {
+    move |publish_qos| Box::pin(handle_or_drop_publish_after_disconnect(
+        publish_qos,
+        max_qos,
+        handle_qos_after_disconnect,
+    ))
+}
+
+async fn handle_or_drop_publish_after_disconnect(
+    publish_qos: QoS,
+    max_qos: QoS,
+    handle_qos_after_disconnect: Option<QoS>,
+) -> bool {
     let publish = Arc::new(AtomicBool::new(false));
     let publish2 = publish.clone();
     let disconnect = Arc::new(AtomicBool::new(false));
@@ -1011,7 +1013,8 @@ async fn test_handle_incoming_qos0() -> std::io::Result<()> {
         let publish = publish2.clone();
         let disconnect = disconnect2.clone();
         MqttServer::new(handshake)
-            .handle_qos_after_disconnect(true)
+            .max_qos(max_qos)
+            .handle_qos_after_disconnect(handle_qos_after_disconnect)
             .publish(move |p: Publish| {
                 publish.store(true, Relaxed);
                 Ready::Ok::<_, TestError>(p.ack())
@@ -1026,6 +1029,10 @@ async fn test_handle_incoming_qos0() -> std::io::Result<()> {
             .finish()
     });
 
+    let packet_id = match publish_qos {
+        QoS::AtMostOnce => None,
+        _ => Some(NonZeroU16::new(1).unwrap()),
+    };
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.encode(
@@ -1033,7 +1040,20 @@ async fn test_handle_incoming_qos0() -> std::io::Result<()> {
         &codec,
     )
     .unwrap();
-    io.encode(pkt_publish_qos0().into(), &codec).unwrap();
+
+    io.encode(
+        codec::Publish {
+            dup: false,
+            retain: false,
+            qos: publish_qos,
+            topic: ByteString::from("test"),
+            packet_id,
+            payload: Bytes::new(),
+            properties: Default::default(),
+        }.into(),
+        &codec)
+    .unwrap();
+
     io.encode(
         codec::Packet::Disconnect(codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::ReceiveMaximumExceeded,
@@ -1048,10 +1068,29 @@ async fn test_handle_incoming_qos0() -> std::io::Result<()> {
     io.flush(true).await.unwrap();
     drop(io);
 
-    sleep(Duration::from_millis(50)).await;
+    sleep(Millis(50)).await;
 
-    assert!(publish.load(Relaxed));
     assert!(disconnect.load(Relaxed));
+
+    publish.load(Relaxed)
+}
+
+#[ntex::test]
+async fn test_handle_incoming_after_disconnect() -> std::io::Result<()> {
+    let handle_publish = make_handle_or_drop_test(QoS::AtMostOnce, Some(QoS::AtMostOnce));
+    assert!(handle_publish(QoS::AtMostOnce).await);
+
+    let handle_publish = make_handle_or_drop_test(QoS::AtLeastOnce, Some(QoS::AtMostOnce));
+    assert!(handle_publish(QoS::AtMostOnce).await);
+
+    let handle_publish = make_handle_or_drop_test(QoS::AtLeastOnce, Some(QoS::AtLeastOnce));
+    assert!(handle_publish(QoS::AtMostOnce).await);
+    assert!(handle_publish(QoS::AtLeastOnce).await);
+
+    let handle_publish = make_handle_or_drop_test(QoS::ExactlyOnce, Some(QoS::ExactlyOnce));
+    assert!(handle_publish(QoS::AtMostOnce).await);
+    assert!(handle_publish(QoS::AtLeastOnce).await);
+    assert!(handle_publish(QoS::ExactlyOnce).await);
 
     Ok(())
 }

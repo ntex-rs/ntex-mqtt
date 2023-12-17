@@ -49,7 +49,7 @@ pub struct MqttServer<St, H, C, P> {
     max_size: u32,
     max_inflight: u16,
     max_inflight_size: usize,
-    handle_qos_after_disconnect: bool,
+    handle_qos_after_disconnect: Option<QoS>,
     connect_timeout: Seconds,
     config: DispatcherConfig,
     pub(super) pool: Rc<MqttSinkPool>,
@@ -80,7 +80,7 @@ where
             max_size: 0,
             max_inflight: 16,
             max_inflight_size: 65535,
-            handle_qos_after_disconnect: false,
+            handle_qos_after_disconnect: None,
             connect_timeout: Seconds::ZERO,
             pool: Default::default(),
             _t: PhantomData,
@@ -169,17 +169,29 @@ where
         self
     }
 
-    /// Handle received QoS 0 messages after client disconnect.
+    /// Handle max received QoS messages after client disconnect.
     ///
     /// By default, messages received before dispatched to the publish service will be dropped if
-    /// the client disconnect immediately.
+    /// the client disconnect is detected on the server.
     ///
-    /// If this option is set to `true`, the QoS 0 messages received will always be handled by the
-    /// server's publish service no matter if the client is disconnected or not.
+    /// If this option is set to `Some(QoS::AtMostOnce)`, only the received QoS 0 messages will
+    /// always be handled by the server's publish service no matter if the client is disconnected
+    /// or not.
     ///
-    /// By default handle-qos-after-disconnect is set to `false`
-    pub fn handle_qos_after_disconnect(mut self, val: bool) -> Self {
-        self.handle_qos_after_disconnect = val;
+    /// If this option is set to `Some(QoS::AtLeastOnce)`, the received QoS 0 and QoS 1 messages
+    /// will always be handled by the server's publish service no matter if the client
+    /// is disconnected or not. The QoS 2 messages will be dropped if the client disconnecting is
+    /// detected before the server dispatches them to the publish service.
+    ///
+    /// If this option is set to `Some(QoS::ExactlyOnce)`, all the messages received will always
+    /// be handled by the server's publish service no matter if the client is disconnected or not.
+    ///
+    /// The received messages which QoS larger than the `max_handle_qos` will not be guaranteed to
+    /// be handled or not after the client disconnect. It depends on the network condition.
+    ///
+    /// By default handle-qos-after-disconnect is set to `None`
+    pub fn handle_qos_after_disconnect(mut self, max_handle_qos: Option<QoS>) -> Self {
+        self.handle_qos_after_disconnect = max_handle_qos;
         self
     }
 

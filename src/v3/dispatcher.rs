@@ -22,7 +22,7 @@ pub(super) fn factory<St, T, C, E>(
     inflight: u16,
     inflight_size: usize,
     max_qos: QoS,
-    handle_qos_after_disconnect: bool,
+    handle_qos_after_disconnect: Option<QoS>,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
     Session<St>,
@@ -88,7 +88,7 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     publish: T,
     max_qos: QoS,
-    handle_qos_after_disconnect: bool,
+    handle_qos_after_disconnect: Option<QoS>,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<(E,)>,
@@ -111,7 +111,7 @@ where
         publish: T,
         control: C,
         max_qos: QoS,
-        handle_qos_after_disconnect: bool,
+        handle_qos_after_disconnect: Option<QoS>,
     ) -> Self {
         Self {
             publish,
@@ -226,7 +226,7 @@ where
                     )));
                 }
 
-                if inner.sink.is_closed() && (publish.qos > QoS::AtMostOnce || !self.handle_qos_after_disconnect) {
+                if inner.sink.is_closed() && !self.handle_qos_after_disconnect.map(|max_qos| publish.qos <= max_qos).unwrap_or_default() {
                     return Either::Right(Either::Left(Ready::Ok(None)));
                 }
 
@@ -551,7 +551,7 @@ mod tests {
                 Ready::Ok(ControlResult { result: ControlResultKind::Nothing })
             }),
             QoS::AtLeastOnce,
-            false,
+            None,
         ));
 
         let mut f = Box::pin(disp.call(DispatchItem::Item((
@@ -593,7 +593,7 @@ mod tests {
             fn_service(|_| Ready::Ok(())),
             fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
             QoS::AtLeastOnce,
-            false,
+            None,
         ));
 
         let sink = MqttSink::new(shared.clone());
