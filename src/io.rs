@@ -266,7 +266,10 @@ where
                                     }
                                 }
                                 Err(RecvError::Stop) => {
-                                    log::trace!("{}: Dispatcher is instructed to stop", inner.io.tag());
+                                    log::trace!(
+                                        "{}: Dispatcher is instructed to stop",
+                                        inner.io.tag()
+                                    );
                                     inner.st = IoDispatcherState::Stop;
                                     continue;
                                 }
@@ -450,12 +453,18 @@ where
 
                 match ready!(self.io.poll_read_pause(cx)) {
                     IoStatusUpdate::KeepAlive => {
-                        log::trace!("{}: Keep-alive error, stopping dispatcher during pause", self.io.tag());
+                        log::trace!(
+                            "{}: Keep-alive error, stopping dispatcher during pause",
+                            self.io.tag()
+                        );
                         self.st = IoDispatcherState::Stop;
                         Poll::Ready(PollService::Item(DispatchItem::KeepAliveTimeout))
                     }
                     IoStatusUpdate::Stop => {
-                        log::trace!("{}: Dispatcher is instructed to stop during pause", self.io.tag());
+                        log::trace!(
+                            "{}: Dispatcher is instructed to stop during pause",
+                            self.io.tag()
+                        );
                         self.st = IoDispatcherState::Stop;
                         Poll::Ready(PollService::Continue)
                     }
@@ -494,7 +503,11 @@ where
             // no new data, start keep-alive timer
             if self.flags.contains(Flags::KA_ENABLED) && !self.flags.contains(Flags::KA_TIMEOUT)
             {
-                log::debug!("{}: Start keep-alive timer {:?}", self.io.tag(), self.keepalive_timeout);
+                log::debug!(
+                    "{}: Start keep-alive timer {:?}",
+                    self.io.tag(),
+                    self.keepalive_timeout
+                );
                 self.flags.insert(Flags::KA_TIMEOUT);
                 self.io.start_timer_secs(self.keepalive_timeout);
             }
@@ -530,7 +543,11 @@ where
                     }
 
                     if max.is_zero() || !self.read_max_timeout.is_zero() {
-                        log::trace!("{}: Frame read rate {:?}, extend timer", self.io.tag(), total);
+                        log::trace!(
+                            "{}: Frame read rate {:?}, extend timer",
+                            self.io.tag(),
+                            total
+                        );
                         self.io.start_timer_secs(timeout);
                         return Ok(());
                     }

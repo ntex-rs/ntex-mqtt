@@ -67,7 +67,13 @@ where
                 crate::inflight::InFlightService::new(
                     inflight,
                     inflight_size,
-                    Dispatcher::<_, _, E>::new(sink, publish, control, max_qos, handle_qos_after_disconnect),
+                    Dispatcher::<_, _, E>::new(
+                        sink,
+                        publish,
+                        control,
+                        max_qos,
+                        handle_qos_after_disconnect,
+                    ),
                 ),
             )
         }
@@ -226,7 +232,12 @@ where
                     )));
                 }
 
-                if inner.sink.is_closed() && !self.handle_qos_after_disconnect.map(|max_qos| publish.qos <= max_qos).unwrap_or_default() {
+                if inner.sink.is_closed()
+                    && !self
+                        .handle_qos_after_disconnect
+                        .map(|max_qos| publish.qos <= max_qos)
+                        .unwrap_or_default()
+                {
                     return Either::Right(Either::Left(Ready::Ok(None)));
                 }
 

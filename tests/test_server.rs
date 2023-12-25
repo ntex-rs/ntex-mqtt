@@ -385,11 +385,13 @@ fn make_handle_or_drop_test(
     max_qos: QoS,
     handle_qos_after_disconnect: Option<QoS>,
 ) -> impl Fn(QoS) -> Pin<Box<dyn Future<Output = bool>>> {
-    move |publish_qos| Box::pin(handle_or_drop_publish_after_disconnect(
-        publish_qos,
-        max_qos,
-        handle_qos_after_disconnect,
-    ))
+    move |publish_qos| {
+        Box::pin(handle_or_drop_publish_after_disconnect(
+            publish_qos,
+            max_qos,
+            handle_qos_after_disconnect,
+        ))
+    }
 }
 
 async fn handle_or_drop_publish_after_disconnect(

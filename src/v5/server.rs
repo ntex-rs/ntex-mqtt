@@ -276,7 +276,12 @@ where
                 pool: self.pool,
                 _t: PhantomData,
             },
-            factory(self.srv_publish, self.srv_control, self.max_inflight_size, self.handle_qos_after_disconnect),
+            factory(
+                self.srv_publish,
+                self.srv_control,
+                self.max_inflight_size,
+                self.handle_qos_after_disconnect,
+            ),
             self.config,
         )
     }

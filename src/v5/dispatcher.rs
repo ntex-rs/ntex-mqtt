@@ -107,7 +107,12 @@ where
     PublishAck: TryFrom<T::Error, Error = E>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(sink: Rc<MqttShared>, publish: T, control: C, handle_qos_after_disconnect: Option<QoS>) -> Self {
+    fn new(
+        sink: Rc<MqttShared>,
+        publish: T,
+        control: C,
+        handle_qos_after_disconnect: Option<QoS>,
+    ) -> Self {
         Self {
             publish,
             handle_qos_after_disconnect,
@@ -309,7 +314,12 @@ where
                         }
                     }
 
-                    if state.is_closed() && !self.handle_qos_after_disconnect.map(|max_qos| publish.qos <= max_qos).unwrap_or_default() {
+                    if state.is_closed()
+                        && !self
+                            .handle_qos_after_disconnect
+                            .map(|max_qos| publish.qos <= max_qos)
+                            .unwrap_or_default()
+                    {
                         return Either::Right(Either::Left(Ready::Ok(None)));
                     }
                 }
