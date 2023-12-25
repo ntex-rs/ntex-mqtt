@@ -147,16 +147,17 @@ where
     #[inline]
     fn call<'a>(&'a self, req: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         Box::pin(async move {
+            let tag = req.tag();
             let handshake = ctx.call(&self.connect, req).await;
 
             let (io, codec, session, keepalive) = handshake.map_err(|e| {
-                log::trace!("Connection handshake failed: {:?}", e);
+                log::trace!("{}: Connection handshake failed: {:?}", tag, e);
                 e
             })?;
-            log::trace!("Connection handshake succeeded");
+            log::trace!("{}: Connection handshake succeeded", tag);
 
             let handler = self.handler.create(session).await?;
-            log::trace!("Connection handler is created, starting dispatcher");
+            log::trace!("{}: Connection handler is created, starting dispatcher", tag);
 
             Dispatcher::new(io, codec, handler, &self.config).keepalive_timeout(keepalive).await
         })
@@ -219,19 +220,23 @@ where
         ctx: ServiceCtx<'a, Self>,
     ) -> Self::Future<'a> {
         Box::pin(async move {
+            let tag = io.tag();
             let (io, codec, ka, handler) = {
                 let res = select(
                     delay,
                     Box::pin(async {
                         let (io, codec, st, ka) =
                             ctx.call(&self.connect, io).await.map_err(|e| {
-                                log::trace!("Connection handshake failed: {:?}", e);
+                                log::trace!("{}: Connection handshake failed: {:?}", tag, e);
                                 e
                             })?;
-                        log::trace!("Connection handshake succeeded");
+                        log::trace!("{}: Connection handshake succeeded", tag);
 
                         let handler = self.handler.create(st).await?;
-                        log::trace!("Connection handler is created, starting dispatcher");
+                        log::trace!(
+                            "{}: Connection handler is created, starting dispatcher",
+                            tag
+                        );
 
                         Ok::<_, C::Error>((io, codec, ka, handler))
                     }),
@@ -240,7 +245,7 @@ where
 
                 match res {
                     Either::Left(_) => {
-                        log::warn!("Handshake timed out");
+                        log::warn!("{}: Handshake timed out", tag);
                         return Ok(());
                     }
                     Either::Right(item) => item?,
