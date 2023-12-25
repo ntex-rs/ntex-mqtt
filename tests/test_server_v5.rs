@@ -1237,7 +1237,6 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
 // Slow frame rate
 #[ntex::test]
 async fn test_frame_read_rate() -> std::io::Result<()> {
-    let _ = env_logger::try_init();
     let check = Arc::new(AtomicBool::new(false));
     let check2 = check.clone();
 

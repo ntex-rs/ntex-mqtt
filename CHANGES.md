@@ -1,5 +1,9 @@
 # Changes
 
+## [0.12.16] - 2023-12-25
+
+* Use io tags
+
 ## [0.12.15] - 2023-12-10
 
 * Fix KEEP-ALIVE timer handling

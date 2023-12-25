@@ -244,6 +244,8 @@ where
 
         // handle memory pool pressure
         if this.pool.poll_ready(cx).is_pending() {
+            inner.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
+            inner.io.stop_timer();
             inner.io.pause();
             return Poll::Pending;
         }
@@ -264,7 +266,7 @@ where
                                     }
                                 }
                                 Err(RecvError::Stop) => {
-                                    log::trace!("Dispatcher is instructed to stop");
+                                    log::trace!("{}: Dispatcher is instructed to stop", inner.io.tag());
                                     inner.st = IoDispatcherState::Stop;
                                     continue;
                                 }
@@ -360,7 +362,7 @@ where
 
                     if inner.state.borrow().queue.is_empty() {
                         if inner.io.poll_shutdown(cx).is_ready() {
-                            log::trace!("IO shutdown completed");
+                            log::trace!("{}: io shutdown completed", inner.io.tag());
                             inner.st = IoDispatcherState::Shutdown;
                             continue;
                         }
@@ -387,7 +389,7 @@ where
                 // shutdown service
                 IoDispatcherState::Shutdown => {
                     return if this.service.poll_shutdown(cx).is_ready() {
-                        log::trace!("Service shutdown is completed, stop");
+                        log::trace!("{}: Service shutdown is completed, stop", inner.io.tag());
 
                         Poll::Ready(
                             if let Some(IoDispatcherError::Service(err)) =
@@ -423,7 +425,7 @@ where
                 // check for errors
                 let mut state = self.state.borrow_mut();
                 Poll::Ready(if let Some(err) = state.error.take() {
-                    log::trace!("Error occured, stopping dispatcher");
+                    log::trace!("{}: Error occured, stopping dispatcher", self.io.tag());
                     self.st = IoDispatcherState::Stop;
                     match err {
                         IoDispatcherError::Encoder(err) => {
@@ -440,26 +442,27 @@ where
             }
             // pause io read task
             Poll::Pending => {
-                log::trace!("Service is not ready, pause read task");
+                log::trace!("{}: Service is not ready, pause read task", self.io.tag());
 
                 // remove timers
-                self.flags.remove(Flags::READ_TIMEOUT);
+                self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
                 self.io.stop_timer();
 
                 match ready!(self.io.poll_read_pause(cx)) {
                     IoStatusUpdate::KeepAlive => {
-                        log::trace!("Keep-alive error, stopping dispatcher during pause");
+                        log::trace!("{}: Keep-alive error, stopping dispatcher during pause", self.io.tag());
                         self.st = IoDispatcherState::Stop;
                         Poll::Ready(PollService::Item(DispatchItem::KeepAliveTimeout))
                     }
                     IoStatusUpdate::Stop => {
-                        log::trace!("Dispatcher is instructed to stop during pause");
+                        log::trace!("{}: Dispatcher is instructed to stop during pause", self.io.tag());
                         self.st = IoDispatcherState::Stop;
                         Poll::Ready(PollService::Continue)
                     }
                     IoStatusUpdate::PeerGone(err) => {
                         log::trace!(
-                            "Peer is gone during pause, stopping dispatcher: {:?}",
+                            "{}: Peer is gone during pause, stopping dispatcher: {:?}",
+                            self.io.tag(),
                             err
                         );
                         self.st = IoDispatcherState::Stop;
@@ -470,7 +473,7 @@ where
             }
             // handle service readiness error
             Poll::Ready(Err(err)) => {
-                log::trace!("Service readiness check failed, stopping");
+                log::trace!("{}: Service readiness check failed, stopping", self.io.tag());
                 self.st = IoDispatcherState::Stop;
                 self.state.borrow_mut().error = Some(IoDispatcherError::Service(err));
                 self.flags.insert(Flags::READY_ERR);
@@ -491,7 +494,7 @@ where
             // no new data, start keep-alive timer
             if self.flags.contains(Flags::KA_ENABLED) && !self.flags.contains(Flags::KA_TIMEOUT)
             {
-                log::debug!("Start keep-alive timer {:?}", self.keepalive_timeout);
+                log::debug!("{}: Start keep-alive timer {:?}", self.io.tag(), self.keepalive_timeout);
                 self.flags.insert(Flags::KA_TIMEOUT);
                 self.io.start_timer_secs(self.keepalive_timeout);
             }
@@ -505,7 +508,7 @@ where
             self.read_max_timeout = max;
             self.io.start_timer_secs(timeout);
 
-            log::debug!("Start frame read timer {:?}", timeout);
+            log::debug!("{}: Start frame read timer {:?}", self.io.tag(), timeout);
         }
     }
 
@@ -527,17 +530,17 @@ where
                     }
 
                     if max.is_zero() || !self.read_max_timeout.is_zero() {
-                        log::trace!("Frame read rate {:?}, extend timer", total);
+                        log::trace!("{}: Frame read rate {:?}, extend timer", self.io.tag(), total);
                         self.io.start_timer_secs(timeout);
                         return Ok(());
                     }
-                    log::trace!("Max payload timeout has been reached");
+                    log::trace!("{}: Max payload timeout has been reached", self.io.tag());
                 }
                 return Err(DispatchItem::ReadTimeout);
             }
         }
 
-        log::trace!("Keep-alive error, stopping dispatcher");
+        log::trace!("{}: Keep-alive error, stopping dispatcher", self.io.tag());
         Err(DispatchItem::KeepAliveTimeout)
     }
 }
