@@ -8,6 +8,7 @@ use ntex::util::{join, BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
 use ntex::{service, Pipeline, Service, ServiceCall, ServiceCtx, ServiceFactory};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
+use crate::types::QoS;
 
 use super::control::{ControlMessage, ControlResult};
 use super::publish::{Publish, PublishAck};
@@ -19,6 +20,7 @@ pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
     max_inflight_size: usize,
+    handle_qos_after_disconnect: Option<QoS>,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
     Session<St>,
@@ -62,7 +64,7 @@ where
             Ok(crate::inflight::InFlightService::new(
                 0,
                 max_inflight_size,
-                Dispatcher::<_, _, E>::new(sink, publish, control),
+                Dispatcher::<_, _, E>::new(sink, publish, control, handle_qos_after_disconnect),
             ))
         }
     })
@@ -81,6 +83,7 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 /// Mqtt protocol dispatcher
 pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
     publish: T,
+    handle_qos_after_disconnect: Option<QoS>,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
     _t: marker::PhantomData<E>,
@@ -104,9 +107,10 @@ where
     PublishAck: TryFrom<T::Error, Error = E>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(sink: Rc<MqttShared>, publish: T, control: C) -> Self {
+    fn new(sink: Rc<MqttShared>, publish: T, control: C, handle_qos_after_disconnect: Option<QoS>) -> Self {
         Self {
             publish,
+            handle_qos_after_disconnect,
             shutdown: RefCell::new(None),
             inner: Rc::new(Inner {
                 sink,
@@ -305,7 +309,7 @@ where
                         }
                     }
 
-                    if state.is_closed() {
+                    if state.is_closed() && !self.handle_qos_after_disconnect.map(|max_qos| publish.qos <= max_qos).unwrap_or_default() {
                         return Either::Right(Either::Left(Ready::Ok(None)));
                     }
                 }
@@ -698,6 +702,7 @@ mod tests {
                     disconnect: false,
                 })
             }),
+            None,
         ));
 
         let sink = MqttSink::new(shared.clone());

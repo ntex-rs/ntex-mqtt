@@ -25,6 +25,7 @@ pub struct MqttServer<St, C, Cn, P> {
     max_qos: QoS,
     max_inflight_size: usize,
     max_topic_alias: u16,
+    handle_qos_after_disconnect: Option<QoS>,
     connect_timeout: Seconds,
     config: DispatcherConfig,
     pub(super) pool: Rc<MqttSinkPool>,
@@ -55,6 +56,7 @@ where
             max_qos: QoS::AtLeastOnce,
             max_inflight_size: 65535,
             max_topic_alias: 32,
+            handle_qos_after_disconnect: None,
             connect_timeout: Seconds::ZERO,
             pool: Rc::new(MqttSinkPool::default()),
             _t: PhantomData,
@@ -150,6 +152,29 @@ where
         self
     }
 
+    /// Handle max received QoS messages after client disconnect.
+    ///
+    /// By default, messages received before dispatched to the publish service will be dropped if
+    /// the client disconnect immediately.
+    ///
+    /// If this option is set to `Some(QoS::AtMostOnce)`, only the QoS 0 messages received will
+    /// always be handled by the server's publish service no matter if the client is disconnected
+    /// or not.
+    ///
+    /// If this option is set to `Some(QoS::AtLeastOnce)`, only the QoS 0 and QoS 1 messages
+    /// received will always be handled by the server's publish service no matter if the client
+    /// is disconnected or not. The QoS 2 messages will be dropped if the client is disconnected
+    /// before the server dispatches them to the publish service.
+    ///
+    /// If this option is set to `Some(QoS::ExactlyOnce)`, all the messages received will always
+    /// be handled by the server's publish service no matter if the client is disconnected or not.
+    ///
+    /// By default handle-qos-after-disconnect is set to `None`
+    pub fn handle_qos_after_disconnect(mut self, max_qos: Option<QoS>) -> Self {
+        self.handle_qos_after_disconnect = max_qos;
+        self
+    }
+
     /// Service to handle control packets
     ///
     /// All control packets are processed sequentially, max number of buffered
@@ -171,6 +196,7 @@ where
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
             max_inflight_size: self.max_inflight_size,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
             _t: PhantomData,
@@ -196,6 +222,7 @@ where
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
             max_inflight_size: self.max_inflight_size,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
             _t: PhantomData,
@@ -249,7 +276,7 @@ where
                 pool: self.pool,
                 _t: PhantomData,
             },
-            factory(self.srv_publish, self.srv_control, self.max_inflight_size),
+            factory(self.srv_publish, self.srv_control, self.max_inflight_size, self.handle_qos_after_disconnect),
             self.config,
         )
     }
@@ -275,6 +302,7 @@ where
                 self.srv_publish,
                 self.srv_control,
                 self.max_inflight_size,
+                self.handle_qos_after_disconnect,
             )),
             max_size: self.max_size,
             max_receive: self.max_receive,

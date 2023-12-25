@@ -49,6 +49,7 @@ pub struct MqttServer<St, H, C, P> {
     max_size: u32,
     max_inflight: u16,
     max_inflight_size: usize,
+    handle_qos_after_disconnect: Option<QoS>,
     connect_timeout: Seconds,
     config: DispatcherConfig,
     pub(super) pool: Rc<MqttSinkPool>,
@@ -79,6 +80,7 @@ where
             max_size: 0,
             max_inflight: 16,
             max_inflight_size: 65535,
+            handle_qos_after_disconnect: None,
             connect_timeout: Seconds::ZERO,
             pool: Default::default(),
             _t: PhantomData,
@@ -167,6 +169,32 @@ where
         self
     }
 
+    /// Handle max received QoS messages after client disconnect.
+    ///
+    /// By default, messages received before dispatched to the publish service will be dropped if
+    /// the client disconnect is detected on the server.
+    ///
+    /// If this option is set to `Some(QoS::AtMostOnce)`, only the received QoS 0 messages will
+    /// always be handled by the server's publish service no matter if the client is disconnected
+    /// or not.
+    ///
+    /// If this option is set to `Some(QoS::AtLeastOnce)`, the received QoS 0 and QoS 1 messages
+    /// will always be handled by the server's publish service no matter if the client
+    /// is disconnected or not. The QoS 2 messages will be dropped if the client disconnecting is
+    /// detected before the server dispatches them to the publish service.
+    ///
+    /// If this option is set to `Some(QoS::ExactlyOnce)`, all the messages received will always
+    /// be handled by the server's publish service no matter if the client is disconnected or not.
+    ///
+    /// The received messages which QoS larger than the `max_handle_qos` will not be guaranteed to
+    /// be handled or not after the client disconnect. It depends on the network condition.
+    ///
+    /// By default handle-qos-after-disconnect is set to `None`
+    pub fn handle_qos_after_disconnect(mut self, max_handle_qos: Option<QoS>) -> Self {
+        self.handle_qos_after_disconnect = max_handle_qos;
+        self
+    }
+
     /// Service to handle control packets
     ///
     /// All control packets are processed sequentially, max number of buffered
@@ -187,6 +215,7 @@ where
             max_size: self.max_size,
             max_inflight: self.max_inflight,
             max_inflight_size: self.max_inflight_size,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
             _t: PhantomData,
@@ -210,6 +239,7 @@ where
             max_inflight: self.max_inflight,
             max_inflight_size: self.max_inflight_size,
             connect_timeout: self.connect_timeout,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             pool: self.pool,
             _t: PhantomData,
         }
@@ -249,6 +279,7 @@ where
                 self.max_inflight,
                 self.max_inflight_size,
                 self.max_qos,
+                self.handle_qos_after_disconnect,
             ),
             self.config,
         )
@@ -277,6 +308,7 @@ where
                 self.max_inflight,
                 self.max_inflight_size,
                 self.max_qos,
+                self.handle_qos_after_disconnect,
             )),
             max_size: self.max_size,
             config: self.config,
