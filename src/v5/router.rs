@@ -2,8 +2,8 @@ use std::{cell::RefCell, num::NonZeroU16, rc::Rc, task::Context, task::Poll};
 
 use ntex::router::{IntoPattern, Path, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
-use ntex::service::{IntoServiceFactory, Service, ServiceCall, ServiceCtx, ServiceFactory};
-use ntex::util::{BoxFuture, ByteString, HashMap};
+use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex::util::{ByteString, HashMap};
 
 use super::publish::{Publish, PublishAck};
 use super::Session;
@@ -93,23 +93,20 @@ where
     type Error = Err;
     type InitError = Err;
     type Service = RouterService<Err>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Err>>;
 
-    fn create(&self, session: Session<S>) -> Self::Future<'_> {
-        Box::pin(async move {
-            let default = self.default.create(session.clone()).await?;
+    async fn create(&self, session: Session<S>) -> Result<Self::Service, Err> {
+        let default = self.default.create(session.clone()).await?;
 
-            let mut handlers = Vec::with_capacity(self.handlers.len());
-            for f in self.handlers.as_ref() {
-                handlers.push(f.create(session.clone()).await?);
-            }
+        let mut handlers = Vec::with_capacity(self.handlers.len());
+        for f in self.handlers.as_ref() {
+            handlers.push(f.create(session.clone()).await?);
+        }
 
-            Ok(RouterService {
-                default,
-                handlers,
-                router: self.router.clone(),
-                aliases: RefCell::new(HashMap::default()),
-            })
+        Ok(RouterService {
+            default,
+            handlers,
+            router: self.router.clone(),
+            aliases: RefCell::new(HashMap::default()),
         })
     }
 }
@@ -124,7 +121,6 @@ pub struct RouterService<Err> {
 impl<Err: 'static> Service<Publish> for RouterService<Err> {
     type Response = PublishAck;
     type Error = Err;
-    type Future<'f> = ServiceCall<'f, HandlerService<Err>, Publish>;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;
@@ -145,14 +141,19 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
         }
     }
 
-    fn call<'a>(&'a self, mut req: Publish, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    #[allow(clippy::await_holding_refcell_ref)]
+    async fn call(
+        &self,
+        mut req: Publish,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         if !req.publish_topic().is_empty() {
             if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
                 // save info for topic alias
                 if let Some(alias) = req.packet().properties.topic_alias {
                     self.aliases.borrow_mut().insert(alias, (*idx, req.topic().clone()));
                 }
-                return ctx.call(&self.handlers[*idx], req);
+                return ctx.call(&self.handlers[*idx], req).await;
             }
         }
         // handle publish with topic alias
@@ -162,11 +163,11 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
                 let idx = item.0;
                 *req.topic_mut() = item.1.clone();
                 drop(aliases);
-                return ctx.call(&self.handlers[idx], req);
+                return ctx.call(&self.handlers[idx], req).await;
             } else {
                 log::error!("Unknown topic alias: {:?}", alias);
             }
         }
-        ctx.call(&self.default, req)
+        ctx.call(&self.default, req).await
     }
 }

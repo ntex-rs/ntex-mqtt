@@ -2,8 +2,7 @@ use std::{rc::Rc, task::Context, task::Poll};
 
 use ntex::router::{IntoPattern, RouterBuilder};
 use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
-use ntex::service::{IntoServiceFactory, Service, ServiceCall, ServiceCtx, ServiceFactory};
-use ntex::util::BoxFuture;
+use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 
 use super::{publish::Publish, Session};
 
@@ -81,22 +80,19 @@ where
     type Error = Err;
     type InitError = Err;
     type Service = RouterService<Err>;
-    type Future<'f> = BoxFuture<'f, Result<RouterService<Err>, Err>>;
 
-    fn create(&self, session: Session<S>) -> Self::Future<'_> {
-        Box::pin(async move {
-            let fut: Vec<_> = self.handlers.iter().map(|h| h.create(session.clone())).collect();
+    async fn create(&self, session: Session<S>) -> Result<Self::Service, Self::Error> {
+        let fut: Vec<_> = self.handlers.iter().map(|h| h.create(session.clone())).collect();
 
-            let mut handlers = Vec::new();
-            for handler in fut {
-                handlers.push(handler.await?);
-            }
+        let mut handlers = Vec::new();
+        for handler in fut {
+            handlers.push(handler.await?);
+        }
 
-            Ok(RouterService {
-                handlers,
-                router: self.router.clone(),
-                default: self.default.create(session).await?,
-            })
+        Ok(RouterService {
+            handlers,
+            router: self.router.clone(),
+            default: self.default.create(session).await?,
         })
     }
 }
@@ -110,7 +106,6 @@ pub struct RouterService<Err> {
 impl<Err> Service<Publish> for RouterService<Err> {
     type Response = ();
     type Error = Err;
-    type Future<'f> = ServiceCall<'f, HandlerService<Err>, Publish> where Self: 'f;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut not_ready = false;
@@ -131,11 +126,15 @@ impl<Err> Service<Publish> for RouterService<Err> {
         }
     }
 
-    fn call<'a>(&'a self, mut req: Publish, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    async fn call(
+        &self,
+        mut req: Publish,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
-            ctx.call(&self.handlers[*idx], req)
+            ctx.call(&self.handlers[*idx], req).await
         } else {
-            ctx.call(&self.default, req)
+            ctx.call(&self.default, req).await
         }
     }
 }

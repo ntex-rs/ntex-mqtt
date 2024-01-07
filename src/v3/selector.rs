@@ -3,7 +3,7 @@ use std::{fmt, future::Future, io, marker, rc::Rc, task::Context, task::Poll};
 use ntex::io::{Filter, Io, IoBoxed};
 use ntex::service::{boxed, Service, ServiceCtx, ServiceFactory};
 use ntex::time::{Deadline, Millis, Seconds};
-use ntex::util::{select, BoxFuture, Either};
+use ntex::util::{select, Either};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 
@@ -128,10 +128,9 @@ where
     type Error = MqttError<Err>;
     type InitError = InitErr;
     type Service = SelectorService<Err>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        Box::pin(self.create_service())
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        self.create_service().await
     }
 }
 
@@ -144,10 +143,9 @@ where
     type Error = MqttError<Err>;
     type InitError = InitErr;
     type Service = SelectorService<Err>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        Box::pin(self.create_service())
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        self.create_service().await
     }
 }
 
@@ -160,10 +158,9 @@ where
     type Error = MqttError<Err>;
     type InitError = InitErr;
     type Service = SelectorService<Err>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        Box::pin(self.create_service())
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        self.create_service().await
     }
 }
 
@@ -181,7 +178,6 @@ where
 {
     type Response = ();
     type Error = MqttError<Err>;
-    type Future<'f> = BoxFuture<'f, Result<(), MqttError<Err>>>;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -194,8 +190,8 @@ where
     }
 
     #[inline]
-    fn call<'a>(&'a self, io: Io<F>, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
-        Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx)
+    async fn call(&self, io: Io<F>, ctx: ServiceCtx<'_, Self>) -> Result<(), MqttError<Err>> {
+        Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx).await
     }
 }
 
@@ -205,9 +201,7 @@ where
 {
     type Response = ();
     type Error = MqttError<Err>;
-    type Future<'f> = BoxFuture<'f, Result<(), MqttError<Err>>>;
 
-    #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut ready = true;
         for srv in self.servers.iter() {
@@ -220,7 +214,6 @@ where
         }
     }
 
-    #[inline]
     fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
         let mut ready = true;
         for srv in self.servers.iter() {
@@ -233,13 +226,13 @@ where
         }
     }
 
-    #[inline]
-    fn call<'a>(&'a self, io: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    async fn call(&self, io: IoBoxed, ctx: ServiceCtx<'_, Self>) -> Result<(), MqttError<Err>> {
         Service::<(IoBoxed, Deadline)>::call(
             self,
             (io, Deadline::new(self.connect_timeout)),
             ctx,
         )
+        .await
     }
 }
 
@@ -249,7 +242,6 @@ where
 {
     type Response = ();
     type Error = MqttError<Err>;
-    type Future<'f> = BoxFuture<'f, Result<(), MqttError<Err>>>;
 
     #[inline]
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -261,66 +253,62 @@ where
         Service::<IoBoxed>::poll_shutdown(self, cx)
     }
 
-    #[inline]
-    fn call<'a>(
-        &'a self,
+    async fn call(
+        &self,
         (io, mut timeout): (IoBoxed, Deadline),
-        ctx: ServiceCtx<'a, Self>,
-    ) -> Self::Future<'a> {
-        Box::pin(async move {
-            let codec = mqtt::Codec::default();
-            codec.set_max_size(self.max_size);
-            let shared =
-                Rc::new(MqttShared::new(io.get_ref(), codec, false, self.pool.clone()));
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<(), MqttError<Err>> {
+        let codec = mqtt::Codec::default();
+        codec.set_max_size(self.max_size);
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, self.pool.clone()));
 
-            // read first packet
-            let result = select(&mut timeout, async {
-                io.recv(&shared.codec)
-                    .await
-                    .map_err(|err| {
-                        log::trace!("Error is received during mqtt handshake: {:?}", err);
-                        MqttError::Handshake(HandshakeError::from(err))
-                    })?
-                    .ok_or_else(|| {
-                        log::trace!("Server mqtt is disconnected during handshake");
-                        MqttError::Handshake(HandshakeError::Disconnected(None))
-                    })
-            })
-            .await;
-
-            let (packet, size) = match result {
-                Either::Left(_) => Err(MqttError::Handshake(HandshakeError::Timeout)),
-                Either::Right(item) => item,
-            }?;
-
-            let connect = match packet {
-                mqtt::Packet::Connect(connect) => connect,
-                packet => {
-                    log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
-                    return Err(MqttError::Handshake(HandshakeError::Protocol(
-                        ProtocolError::unexpected_packet(
-                            packet.packet_type(),
-                            "MQTT-3.1.0-1: Expected CONNECT packet",
-                        ),
-                    )));
-                }
-            };
-
-            // call servers
-            let mut item = Handshake::new(connect, size, io, shared);
-            for srv in &self.servers {
-                match ctx.call(srv, item).await? {
-                    Either::Left(result) => {
-                        item = result;
-                    }
-                    Either::Right(_) => return Ok(()),
-                }
-            }
-            log::error!("Cannot handle CONNECT packet {:?}", item.packet());
-            Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::new(
-                io::ErrorKind::Other,
-                "Cannot handle CONNECT packet",
-            )))))
+        // read first packet
+        let result = select(&mut timeout, async {
+            io.recv(&shared.codec)
+                .await
+                .map_err(|err| {
+                    log::trace!("Error is received during mqtt handshake: {:?}", err);
+                    MqttError::Handshake(HandshakeError::from(err))
+                })?
+                .ok_or_else(|| {
+                    log::trace!("Server mqtt is disconnected during handshake");
+                    MqttError::Handshake(HandshakeError::Disconnected(None))
+                })
         })
+        .await;
+
+        let (packet, size) = match result {
+            Either::Left(_) => Err(MqttError::Handshake(HandshakeError::Timeout)),
+            Either::Right(item) => item,
+        }?;
+
+        let connect = match packet {
+            mqtt::Packet::Connect(connect) => connect,
+            packet => {
+                log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
+                return Err(MqttError::Handshake(HandshakeError::Protocol(
+                    ProtocolError::unexpected_packet(
+                        packet.packet_type(),
+                        "MQTT-3.1.0-1: Expected CONNECT packet",
+                    ),
+                )));
+            }
+        };
+
+        // call servers
+        let mut item = Handshake::new(connect, size, io, shared);
+        for srv in &self.servers {
+            match ctx.call(srv, item).await? {
+                Either::Left(result) => {
+                    item = result;
+                }
+                Either::Right(_) => return Ok(()),
+            }
+        }
+        log::error!("Cannot handle CONNECT packet {:?}", item.packet());
+        Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::new(
+            io::ErrorKind::Other,
+            "Cannot handle CONNECT packet",
+        )))))
     }
 }

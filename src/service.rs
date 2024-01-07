@@ -4,7 +4,7 @@ use ntex::codec::{Decoder, Encoder};
 use ntex::io::{DispatchItem, DispatcherConfig, Filter, Io, IoBoxed};
 use ntex::service::{Service, ServiceCtx, ServiceFactory};
 use ntex::time::{Deadline, Seconds};
-use ntex::util::{select, BoxFuture, Either};
+use ntex::util::{select, Either};
 
 use crate::io::Dispatcher;
 
@@ -58,10 +58,9 @@ where
     type Error = C::Error;
     type InitError = C::InitError;
     type Service = MqttHandler<St, C::Service, T, Codec>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        Box::pin(self.create_service())
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        self.create_service().await
     }
 }
 
@@ -84,10 +83,9 @@ where
     type Error = C::Error;
     type InitError = C::InitError;
     type Service = MqttHandler<St, C::Service, T, Codec>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        Box::pin(self.create_service())
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        self.create_service().await
     }
 }
 
@@ -109,10 +107,9 @@ where
     type Error = C::Error;
     type InitError = C::InitError;
     type Service = MqttHandler<St, C::Service, T, Codec>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>>;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        Box::pin(self.create_service())
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        self.create_service().await
     }
 }
 
@@ -139,28 +136,24 @@ where
 {
     type Response = ();
     type Error = C::Error;
-    type Future<'f> = BoxFuture<'f, Result<(), Self::Error>>;
 
     ntex::forward_poll_ready!(connect);
     ntex::forward_poll_shutdown!(connect);
 
-    #[inline]
-    fn call<'a>(&'a self, req: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
-        Box::pin(async move {
-            let tag = req.tag();
-            let handshake = ctx.call(&self.connect, req).await;
+    async fn call(&self, req: IoBoxed, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        let tag = req.tag();
+        let handshake = ctx.call(&self.connect, req).await;
 
-            let (io, codec, session, keepalive) = handshake.map_err(|e| {
-                log::trace!("{}: Connection handshake failed: {:?}", tag, e);
-                e
-            })?;
-            log::trace!("{}: Connection handshake succeeded", tag);
+        let (io, codec, session, keepalive) = handshake.map_err(|e| {
+            log::trace!("{}: Connection handshake failed: {:?}", tag, e);
+            e
+        })?;
+        log::trace!("{}: Connection handshake succeeded", tag);
 
-            let handler = self.handler.create(session).await?;
-            log::trace!("{}: Connection handler is created, starting dispatcher", tag);
+        let handler = self.handler.create(session).await?;
+        log::trace!("{}: Connection handler is created, starting dispatcher", tag);
 
-            Dispatcher::new(io, codec, handler, &self.config).keepalive_timeout(keepalive).await
-        })
+        Dispatcher::new(io, codec, handler, &self.config).keepalive_timeout(keepalive).await
     }
 }
 
@@ -181,14 +174,13 @@ where
 {
     type Response = ();
     type Error = C::Error;
-    type Future<'f> = BoxFuture<'f, Result<(), Self::Error>>;
 
     ntex::forward_poll_ready!(connect);
     ntex::forward_poll_shutdown!(connect);
 
     #[inline]
-    fn call<'a>(&'a self, io: Io<F>, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
-        Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx)
+    async fn call(&self, io: Io<F>, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx).await
     }
 }
 
@@ -208,51 +200,44 @@ where
 {
     type Response = ();
     type Error = C::Error;
-    type Future<'f> = BoxFuture<'f, Result<(), Self::Error>>;
 
     ntex::forward_poll_ready!(connect);
     ntex::forward_poll_shutdown!(connect);
 
-    #[inline]
-    fn call<'a>(
-        &'a self,
+    async fn call(
+        &self,
         (io, delay): (IoBoxed, Deadline),
-        ctx: ServiceCtx<'a, Self>,
-    ) -> Self::Future<'a> {
-        Box::pin(async move {
-            let tag = io.tag();
-            let (io, codec, ka, handler) = {
-                let res = select(
-                    delay,
-                    Box::pin(async {
-                        let (io, codec, st, ka) =
-                            ctx.call(&self.connect, io).await.map_err(|e| {
-                                log::trace!("{}: Connection handshake failed: {:?}", tag, e);
-                                e
-                            })?;
-                        log::trace!("{}: Connection handshake succeeded", tag);
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<(), Self::Error> {
+        let tag = io.tag();
+        let (io, codec, ka, handler) = {
+            let res = select(
+                delay,
+                Box::pin(async {
+                    let (io, codec, st, ka) =
+                        ctx.call(&self.connect, io).await.map_err(|e| {
+                            log::trace!("{}: Connection handshake failed: {:?}", tag, e);
+                            e
+                        })?;
+                    log::trace!("{}: Connection handshake succeeded", tag);
 
-                        let handler = self.handler.create(st).await?;
-                        log::trace!(
-                            "{}: Connection handler is created, starting dispatcher",
-                            tag
-                        );
+                    let handler = self.handler.create(st).await?;
+                    log::trace!("{}: Connection handler is created, starting dispatcher", tag);
 
-                        Ok::<_, C::Error>((io, codec, ka, handler))
-                    }),
-                )
-                .await;
+                    Ok::<_, C::Error>((io, codec, ka, handler))
+                }),
+            )
+            .await;
 
-                match res {
-                    Either::Left(_) => {
-                        log::warn!("{}: Handshake timed out", tag);
-                        return Ok(());
-                    }
-                    Either::Right(item) => item?,
+            match res {
+                Either::Left(_) => {
+                    log::warn!("{}: Handshake timed out", tag);
+                    return Ok(());
                 }
-            };
+                Either::Right(item) => item?,
+            }
+        };
 
-            Dispatcher::new(io, codec, handler, &self.config).keepalive_timeout(ka).await
-        })
+        Dispatcher::new(io, codec, handler, &self.config).keepalive_timeout(ka).await
     }
 }

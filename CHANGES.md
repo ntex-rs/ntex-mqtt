@@ -1,5 +1,9 @@
 # Changes
 
+## [1.0.0-b.0] - 2024-01-07
+
+* Use "async fn" in trait for Service definition
+
 ## [0.12.16] - 2023-12-25
 
 * Handle QoS 0 messages when the client disconnect #164

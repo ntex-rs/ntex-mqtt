@@ -3,7 +3,7 @@ use std::{fmt, future::Future, marker::PhantomData, rc::Rc};
 use ntex::io::{DispatchItem, DispatcherConfig, IoBoxed};
 use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex::time::{timeout_checked, Millis, Seconds};
-use ntex::util::{BoxFuture, Either};
+use ntex::util::Either;
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::{io::Dispatcher, service, types::QoS};
@@ -335,17 +335,14 @@ where
 
     type Service = HandshakeService<St, H::Service>;
     type InitError = H::InitError;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>> where Self: 'f;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        Box::pin(async move {
-            Ok(HandshakeService {
-                max_size: self.max_size,
-                pool: self.pool.clone(),
-                service: self.factory.create(()).await?,
-                connect_timeout: self.connect_timeout.into(),
-                _t: PhantomData,
-            })
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        Ok(HandshakeService {
+            max_size: self.max_size,
+            pool: self.pool.clone(),
+            service: self.factory.create(()).await?,
+            connect_timeout: self.connect_timeout.into(),
+            _t: PhantomData,
         })
     }
 }
@@ -365,84 +362,84 @@ where
 {
     type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>> where Self: 'f;
 
     ntex::forward_poll_ready!(service, MqttError::Service);
     ntex::forward_poll_shutdown!(service);
 
-    fn call<'a>(&'a self, io: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    async fn call(
+        &self,
+        io: IoBoxed,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         log::trace!("Starting mqtt v3 handshake");
 
-        Box::pin(async move {
-            let codec = mqtt::Codec::default();
-            codec.set_max_size(self.max_size);
-            let shared =
-                Rc::new(MqttShared::new(io.get_ref(), codec, false, self.pool.clone()));
+        let codec = mqtt::Codec::default();
+        codec.set_max_size(self.max_size);
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, self.pool.clone()));
 
-            // read first packet
-            let packet = timeout_checked(self.connect_timeout, io.recv(&shared.codec))
-                .await
-                .map_err(|_| MqttError::Handshake(HandshakeError::Timeout))?
-                .map_err(|err| {
-                    log::trace!("Error is received during mqtt handshake: {:?}", err);
-                    MqttError::Handshake(HandshakeError::from(err))
-                })?
-                .ok_or_else(|| {
-                    log::trace!("Server mqtt is disconnected during handshake");
-                    MqttError::Handshake(HandshakeError::Disconnected(None))
-                })?;
+        // read first packet
+        let packet = timeout_checked(self.connect_timeout, io.recv(&shared.codec))
+            .await
+            .map_err(|_| MqttError::Handshake(HandshakeError::Timeout))?
+            .map_err(|err| {
+                log::trace!("Error is received during mqtt handshake: {:?}", err);
+                MqttError::Handshake(HandshakeError::from(err))
+            })?
+            .ok_or_else(|| {
+                log::trace!("Server mqtt is disconnected during handshake");
+                MqttError::Handshake(HandshakeError::Disconnected(None))
+            })?;
 
-            match packet {
-                (mqtt::Packet::Connect(connect), size) => {
-                    // authenticate mqtt connection
-                    let ack = ctx
-                        .call(&self.service, Handshake::new(connect, size, io, shared))
-                        .await
-                        .map_err(MqttError::Service)?;
+        match packet {
+            (mqtt::Packet::Connect(connect), size) => {
+                // authenticate mqtt connection
+                let ack = ctx
+                    .call(&self.service, Handshake::new(connect, size, io, shared))
+                    .await
+                    .map_err(MqttError::Service)?;
 
-                    match ack.session {
-                        Some(session) => {
-                            let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
-                                session_present: ack.session_present,
-                                return_code: mqtt::ConnectAckReason::ConnectionAccepted,
-                            });
+                match ack.session {
+                    Some(session) => {
+                        let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
+                            session_present: ack.session_present,
+                            return_code: mqtt::ConnectAckReason::ConnectionAccepted,
+                        });
 
-                            log::trace!("Sending success handshake ack: {:#?}", pkt);
+                        log::trace!("Sending success handshake ack: {:#?}", pkt);
 
-                            ack.shared.set_cap(ack.inflight as usize);
-                            ack.io.encode(pkt, &ack.shared.codec)?;
-                            Ok((
-                                ack.io,
-                                ack.shared.clone(),
-                                Session::new(session, MqttSink::new(ack.shared)),
-                                ack.keepalive,
-                            ))
-                        }
-                        None => {
-                            let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
-                                session_present: false,
-                                return_code: ack.return_code,
-                            });
+                        ack.shared.set_cap(ack.inflight as usize);
+                        ack.io.encode(pkt, &ack.shared.codec)?;
+                        Ok((
+                            ack.io,
+                            ack.shared.clone(),
+                            Session::new(session, MqttSink::new(ack.shared)),
+                            ack.keepalive,
+                        ))
+                    }
+                    None => {
+                        let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
+                            session_present: false,
+                            return_code: ack.return_code,
+                        });
 
-                            log::trace!("Sending failed handshake ack: {:#?}", pkt);
-                            ack.io.encode(pkt, &ack.shared.codec)?;
-                            let _ = ack.io.shutdown().await;
+                        log::trace!("Sending failed handshake ack: {:#?}", pkt);
+                        ack.io.encode(pkt, &ack.shared.codec)?;
+                        let _ = ack.io.shutdown().await;
 
-                            Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
-                        }
+                        Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
                     }
                 }
-                (packet, _) => {
-                    log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
-                    Err(MqttError::Handshake(HandshakeError::Protocol(
-                        ProtocolError::unexpected_packet(
-                            packet.packet_type(),
-                            "MQTT-3.1.0-1: Expected CONNECT packet",
-                        ),
-                    )))
-                }
             }
-        })
+            (packet, _) => {
+                log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
+                Err(MqttError::Handshake(HandshakeError::Protocol(
+                    ProtocolError::unexpected_packet(
+                        packet.packet_type(),
+                        "MQTT-3.1.0-1: Expected CONNECT packet",
+                    ),
+                )))
+            }
+        }
     }
 }
 
@@ -474,19 +471,16 @@ where
     type Error = MqttError<H::Error>;
     type InitError = H::InitError;
     type Service = ServerSelectorImpl<St, H::Service, T, F, R>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>> where Self: 'f;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
         // create handshake service and then create service impl
-        Box::pin(async move {
-            Ok(ServerSelectorImpl {
-                handler: self.handler.clone(),
-                check: self.check.clone(),
-                config: self.config.clone(),
-                max_size: self.max_size,
-                handshake: self.handshake.create(()).await?,
-                _t: PhantomData,
-            })
+        Ok(ServerSelectorImpl {
+            handler: self.handler.clone(),
+            check: self.check.clone(),
+            config: self.config.clone(),
+            max_size: self.max_size,
+            handshake: self.handshake.create(()).await?,
+            _t: PhantomData,
         })
     }
 }
@@ -517,64 +511,64 @@ where
 {
     type Response = Either<Handshake, ()>;
     type Error = MqttError<H::Error>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>> where Self: 'f;
 
     ntex::forward_poll_ready!(handshake, MqttError::Service);
     ntex::forward_poll_shutdown!(handshake);
 
-    #[inline]
-    fn call<'a>(&'a self, hnd: Handshake, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
-        Box::pin(async move {
-            log::trace!("Start connection handshake");
+    async fn call(
+        &self,
+        hnd: Handshake,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
+        log::trace!("Start connection handshake");
 
-            let result = (*self.check)(&hnd).await;
-            if !result.map_err(|e| MqttError::Handshake(HandshakeError::Service(e)))? {
-                Ok(Either::Left(hnd))
-            } else {
-                // authenticate mqtt connection
-                let ack = ctx.call(&self.handshake, hnd).await.map_err(|e| {
-                    log::trace!("Connection handshake failed: {:?}", e);
-                    MqttError::Handshake(HandshakeError::Service(e))
-                })?;
+        let result = (*self.check)(&hnd).await;
+        if !result.map_err(|e| MqttError::Handshake(HandshakeError::Service(e)))? {
+            Ok(Either::Left(hnd))
+        } else {
+            // authenticate mqtt connection
+            let ack = ctx.call(&self.handshake, hnd).await.map_err(|e| {
+                log::trace!("Connection handshake failed: {:?}", e);
+                MqttError::Handshake(HandshakeError::Service(e))
+            })?;
 
-                match ack.session {
-                    Some(session) => {
-                        let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
-                            session_present: ack.session_present,
-                            return_code: mqtt::ConnectAckReason::ConnectionAccepted,
-                        });
-                        log::trace!(
-                            "Connection handshake succeeded, sending handshake ack: {:#?}",
-                            pkt
-                        );
+            match ack.session {
+                Some(session) => {
+                    let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
+                        session_present: ack.session_present,
+                        return_code: mqtt::ConnectAckReason::ConnectionAccepted,
+                    });
+                    log::trace!(
+                        "Connection handshake succeeded, sending handshake ack: {:#?}",
+                        pkt
+                    );
 
-                        ack.shared.set_cap(ack.inflight as usize);
-                        ack.shared.codec.set_max_size(self.max_size);
-                        ack.io.encode(pkt, &ack.shared.codec)?;
+                    ack.shared.set_cap(ack.inflight as usize);
+                    ack.shared.codec.set_max_size(self.max_size);
+                    ack.io.encode(pkt, &ack.shared.codec)?;
 
-                        let session = Session::new(session, MqttSink::new(ack.shared.clone()));
-                        let handler = self.handler.create(session).await?;
-                        log::trace!("Connection handler is created, starting dispatcher");
+                    let session = Session::new(session, MqttSink::new(ack.shared.clone()));
+                    let handler = self.handler.create(session).await?;
+                    log::trace!("Connection handler is created, starting dispatcher");
 
-                        Dispatcher::new(ack.io, ack.shared, handler, &self.config)
-                            .keepalive_timeout(ack.keepalive)
-                            .await?;
-                        Ok(Either::Right(()))
-                    }
-                    None => {
-                        let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
-                            session_present: false,
-                            return_code: ack.return_code,
-                        });
+                    Dispatcher::new(ack.io, ack.shared, handler, &self.config)
+                        .keepalive_timeout(ack.keepalive)
+                        .await?;
+                    Ok(Either::Right(()))
+                }
+                None => {
+                    let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
+                        session_present: false,
+                        return_code: ack.return_code,
+                    });
 
-                        log::trace!("Sending failed handshake ack: {:#?}", pkt);
-                        ack.io.encode(pkt, &ack.shared.codec)?;
-                        let _ = ack.io.shutdown().await;
+                    log::trace!("Sending failed handshake ack: {:#?}", pkt);
+                    ack.io.encode(pkt, &ack.shared.codec)?;
+                    let _ = ack.io.shutdown().await;
 
-                        Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
-                    }
+                    Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
                 }
             }
-        })
+        }
     }
 }

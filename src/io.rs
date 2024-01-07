@@ -137,7 +137,7 @@ where
                 read_remains: 0,
                 read_remains_prev: 0,
                 read_max_timeout: Seconds::ZERO,
-                keepalive_timeout: config.keepalive_timeout_secs(),
+                keepalive_timeout: config.keepalive_timeout(),
             },
         }
     }
@@ -509,9 +509,9 @@ where
                     self.keepalive_timeout
                 );
                 self.flags.insert(Flags::KA_TIMEOUT);
-                self.io.start_timer_secs(self.keepalive_timeout);
+                self.io.start_timer(self.keepalive_timeout);
             }
-        } else if let Some((timeout, max, _)) = self.config.frame_read_rate_params() {
+        } else if let Some((timeout, max, _)) = self.config.frame_read_rate() {
             // we got new data but not enough to parse single frame
             // start read timer
             self.flags.insert(Flags::READ_TIMEOUT);
@@ -519,7 +519,7 @@ where
             self.read_remains = decoded.remains as u32;
             self.read_remains_prev = 0;
             self.read_max_timeout = max;
-            self.io.start_timer_secs(timeout);
+            self.io.start_timer(timeout);
 
             log::debug!("{}: Start frame read timer {:?}", self.io.tag(), timeout);
         }
@@ -528,7 +528,7 @@ where
     fn handle_timeout(&mut self) -> Result<(), DispatchItem<U>> {
         // check read timer
         if self.flags.contains(Flags::READ_TIMEOUT) {
-            if let Some((timeout, max, rate)) = self.config.frame_read_rate_params() {
+            if let Some((timeout, max, rate)) = self.config.frame_read_rate() {
                 let total =
                     (self.read_remains - self.read_remains_prev).try_into().unwrap_or(u16::MAX);
 
@@ -548,7 +548,7 @@ where
                             self.io.tag(),
                             total
                         );
-                        self.io.start_timer_secs(timeout);
+                        self.io.start_timer(timeout);
                         return Ok(());
                     }
                     log::trace!("{}: Max payload timeout has been reached", self.io.tag());
@@ -568,7 +568,7 @@ mod tests {
 
     use ntex::channel::condition::Condition;
     use ntex::time::{sleep, Millis};
-    use ntex::util::{Bytes, Ready};
+    use ntex::util::Bytes;
     use ntex::{codec::BytesCodec, io as nio, service::ServiceCtx, testing::Io};
 
     use super::*;
@@ -774,19 +774,18 @@ mod tests {
         impl Service<DispatchItem<BytesCodec>> for Srv {
             type Response = Option<Response<BytesCodec>>;
             type Error = ();
-            type Future<'f> = Ready<Option<Response<BytesCodec>>, ()>;
 
             fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
                 self.0.set(self.0.get() + 1);
                 Poll::Ready(Err(()))
             }
 
-            fn call<'a>(
-                &'a self,
+            async fn call(
+                &self,
                 _: DispatchItem<BytesCodec>,
-                _: ServiceCtx<'a, Self>,
-            ) -> Self::Future<'a> {
-                Ready::Ok(None)
+                _: ServiceCtx<'_, Self>,
+            ) -> Result<Option<Response<BytesCodec>>, ()> {
+                Ok(None)
             }
         }
 

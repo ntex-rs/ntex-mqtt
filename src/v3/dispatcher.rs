@@ -1,11 +1,10 @@
-use std::cell::RefCell;
-use std::task::{ready, Context, Poll};
-use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
+use std::task::{Context, Poll};
+use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
 use ntex::io::DispatchItem;
-use ntex::service::{self, Pipeline, Service, ServiceCall, ServiceCtx, ServiceFactory};
+use ntex::service::{self, Pipeline, Service, ServiceCtx, ServiceFactory};
 use ntex::util::buffer::{BufferService, BufferServiceError};
-use ntex::util::{inflight::InFlightService, join, BoxFuture, Either, HashSet, Ready};
+use ntex::util::{inflight::InFlightService, join, BoxFuture, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::types::QoS;
@@ -138,10 +137,6 @@ where
 {
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
-    type Future<'f> = Either<
-        PublishResponse<'f, T, C, E>,
-        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<'f, T, C, E>>,
-    > where Self: 'f;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx).map_err(|e| MqttError::Service(e.into()))?;
@@ -174,17 +169,17 @@ where
         }
     }
 
-    fn call<'a>(
-        &'a self,
+    async fn call(
+        &self,
         req: DispatchItem<Rc<MqttShared>>,
-        ctx: ServiceCtx<'a, Self>,
-    ) -> Self::Future<'a> {
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         log::trace!("Dispatch v3 packet: {:#?}", req);
 
         match req {
             DispatchItem::Item((codec::Packet::Publish(publish), size)) => {
                 if publish.topic.contains(['#', '+']) {
-                    return Either::Right(Either::Right(ControlResponse::new(
+                    return control(
                         ControlMessage::proto_error(
                             ProtocolError::generic_violation(
                                 "PUBLISH packet's topic name contains wildcard character [MQTT-3.3.2-2]"
@@ -192,7 +187,7 @@ where
                         ),
                         &self.inner,
                         ctx,
-                    )));
+                    ).await;
                 }
 
                 let inner = self.inner.as_ref();
@@ -202,13 +197,13 @@ where
                 if let Some(pid) = packet_id {
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
-                        return Either::Right(Either::Right(ControlResponse::new(
+                        return control(
                             ControlMessage::proto_error(
                                 ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]")
                             ),
                             &self.inner,
                             ctx,
-                        )));
+                        ).await;
                     }
                 }
 
@@ -219,7 +214,7 @@ where
                         self.max_qos,
                         publish.qos
                     );
-                    return Either::Right(Either::Right(ControlResponse::new(
+                    return control(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
                             match publish.qos {
                                 QoS::AtLeastOnce => "PUBLISH with QoS 1 is not supported",
@@ -229,7 +224,8 @@ where
                         )),
                         &self.inner,
                         ctx,
-                    )));
+                    )
+                    .await;
                 }
 
                 if inner.sink.is_closed()
@@ -238,97 +234,90 @@ where
                         .map(|max_qos| publish.qos <= max_qos)
                         .unwrap_or_default()
                 {
-                    return Either::Right(Either::Left(Ready::Ok(None)));
+                    return Ok(None);
                 }
 
-                Either::Left(PublishResponse {
-                    packet_id,
-                    inner,
-                    ctx,
-                    state: PublishResponseState::Publish {
-                        fut: ctx.call(&self.publish, Publish::new(publish, size)),
-                    },
-                })
+                publish_fn(&self.publish, Publish::new(publish, size), packet_id, inner, ctx)
+                    .await
             }
             DispatchItem::Item((codec::Packet::PublishAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
-                    Either::Right(Either::Right(ControlResponse::new(
-                        ControlMessage::proto_error(e),
-                        &self.inner,
-                        ctx,
-                    )))
+                    control(ControlMessage::proto_error(e), &self.inner, ctx).await
                 } else {
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    Ok(None)
                 }
             }
-            DispatchItem::Item((codec::Packet::PingRequest, _)) => Either::Right(
-                Either::Right(ControlResponse::new(ControlMessage::ping(), &self.inner, ctx)),
-            ),
+            DispatchItem::Item((codec::Packet::PingRequest, _)) => {
+                control(ControlMessage::ping(), &self.inner, ctx).await
+            }
             DispatchItem::Item((
                 codec::Packet::Subscribe { packet_id, topic_filters },
                 size,
             )) => {
                 if self.inner.sink.is_closed() {
-                    return Either::Right(Either::Left(Ready::Ok(None)));
+                    return Ok(None);
                 }
 
                 if topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
-                    return Either::Right(Either::Right(ControlResponse::new(
+                    return control(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
                             "Topic filter is malformed [MQTT-4.7.1-*]",
                         )),
                         &self.inner,
                         ctx,
-                    )));
+                    )
+                    .await;
                 }
 
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for subscribe packet: {:?}", packet_id);
-                    return Either::Right(Either::Right(ControlResponse::new(
+                    return control(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
                             "SUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
                         )),
                         &self.inner,
                         ctx,
-                    )));
+                    ).await;
                 }
 
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::subscribe(Subscribe::new(packet_id, size, topic_filters)),
                     &self.inner,
                     ctx,
-                )))
+                )
+                .await
             }
             DispatchItem::Item((
                 codec::Packet::Unsubscribe { packet_id, topic_filters },
                 size,
             )) => {
                 if self.inner.sink.is_closed() {
-                    return Either::Right(Either::Left(Ready::Ok(None)));
+                    return Ok(None);
                 }
 
                 if topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
-                    return Either::Right(Either::Right(ControlResponse::new(
+                    return control(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
                             "Topic filter is malformed [MQTT-4.7.1-*]",
                         )),
                         &self.inner,
                         ctx,
-                    )));
+                    )
+                    .await;
                 }
 
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
-                    return Either::Right(Either::Right(ControlResponse::new(
+                    return control(
                         ControlMessage::proto_error(ProtocolError::generic_violation(
                             "UNSUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
                         )),
                         &self.inner,
                         ctx,
-                    )));
+                    ).await;
                 }
 
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::unsubscribe(Unsubscribe::new(
                         packet_id,
                         size,
@@ -336,196 +325,139 @@ where
                     )),
                     &self.inner,
                     ctx,
-                )))
+                )
+                .await
             }
-            DispatchItem::Item((codec::Packet::Disconnect, _)) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::remote_disconnect(), &self.inner, ctx),
-            )),
-            DispatchItem::Item(_) => Either::Right(Either::Left(Ready::Ok(None))),
+            DispatchItem::Item((codec::Packet::Disconnect, _)) => {
+                control(ControlMessage::remote_disconnect(), &self.inner, ctx).await
+            }
+            DispatchItem::Item(_) => Ok(None),
             DispatchItem::EncoderError(err) => {
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::proto_error(ProtocolError::Encode(err)),
                     &self.inner,
                     ctx,
-                )))
+                )
+                .await
             }
             DispatchItem::KeepAliveTimeout => {
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
                     ctx,
-                )))
+                )
+                .await
             }
-            DispatchItem::ReadTimeout => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(ProtocolError::ReadTimeout),
-                &self.inner,
-                ctx,
-            ))),
+            DispatchItem::ReadTimeout => {
+                control(
+                    ControlMessage::proto_error(ProtocolError::ReadTimeout),
+                    &self.inner,
+                    ctx,
+                )
+                .await
+            }
             DispatchItem::DecoderError(err) => {
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::proto_error(ProtocolError::Decode(err)),
                     &self.inner,
                     ctx,
-                )))
+                )
+                .await
             }
-            DispatchItem::Disconnect(err) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner, ctx),
-            )),
+            DispatchItem::Disconnect(err) => {
+                control(ControlMessage::peer_gone(err), &self.inner, ctx).await
+            }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
-                Either::Right(Either::Left(Ready::Ok(None)))
+                Ok(None)
             }
             DispatchItem::WBackPressureDisabled => {
                 self.inner.sink.disable_wr_backpressure();
-                Either::Right(Either::Left(Ready::Ok(None)))
+                Ok(None)
             }
         }
     }
 }
 
-pin_project_lite::pin_project! {
-    /// Publish service response future
-    pub(crate) struct PublishResponse<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>
-    where T: 'f, C: 'f, E: 'f
-    {
-        #[pin]
-        state: PublishResponseState<'f, T, C, E>,
-        packet_id: Option<NonZeroU16>,
-        inner: &'f Inner<C>,
-        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-    }
-}
-
-pin_project_lite::pin_project! {
-    #[project = PublishResponseStateProject]
-    enum PublishResponseState<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>
-    where T: 'f, C: 'f, E: 'f
-    {
-        Publish { #[pin] fut: ServiceCall<'f, T, Publish> },
-        Control { #[pin] fut: ControlResponse<'f, T, C, E> },
-    }
-}
-
-impl<'f, T, C, E> Future for PublishResponse<'f, T, C, E>
+/// Publish service response future
+async fn publish_fn<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>(
+    svc: &'f T,
+    pkt: Publish,
+    packet_id: Option<NonZeroU16>,
+    inner: &'f Inner<C>,
+    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+) -> Result<Option<codec::Packet>, MqttError<E>>
 where
     E: From<T::Error>,
     T: Service<Publish, Response = ()>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    type Output = Result<Option<codec::Packet>, MqttError<E>>;
+    match ctx.call(svc, pkt).await {
+        Ok(_) => {
+            log::trace!("Publish result for packet {:?} is ready", packet_id);
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.as_mut().project();
-
-        match this.state.as_mut().project() {
-            PublishResponseStateProject::Publish { fut } => match ready!(fut.poll(cx)) {
-                Ok(_) => {
-                    log::trace!("Publish result for packet {:?} is ready", this.packet_id);
-
-                    if let Some(packet_id) = this.packet_id {
-                        this.inner.inflight.borrow_mut().remove(packet_id);
-                        Poll::Ready(Ok(Some(codec::Packet::PublishAck {
-                            packet_id: *packet_id,
-                        })))
-                    } else {
-                        Poll::Ready(Ok(None))
-                    }
-                }
-                Err(e) => {
-                    this.state.set(PublishResponseState::Control {
-                        fut: ControlResponse::new(
-                            ControlMessage::error(e.into()),
-                            this.inner,
-                            *this.ctx,
-                        ),
-                    });
-                    self.poll(cx)
-                }
-            },
-            PublishResponseStateProject::Control { fut } => fut.poll(cx),
+            if let Some(packet_id) = packet_id {
+                inner.inflight.borrow_mut().remove(&packet_id);
+                Ok(Some(codec::Packet::PublishAck { packet_id }))
+            } else {
+                Ok(None)
+            }
         }
+        Err(e) => control(ControlMessage::error(e.into()), inner, ctx).await,
     }
 }
 
-pin_project_lite::pin_project! {
-    /// Control service response future
-    pub(crate) struct ControlResponse<'f, T, C: Service<ControlMessage<E>>, E>
-    where C: 'f, E: 'f
-    {
-        #[pin]
-        fut: ServiceCall<'f, C, ControlMessage<E>>,
-        inner: &'f Inner<C>,
-        error: bool,
-        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-    }
-}
-
-impl<'f, T, C, E> ControlResponse<'f, T, C, E>
+async fn control<'f, T, C: Service<ControlMessage<E>>, E>(
+    mut pkt: ControlMessage<E>,
+    inner: &'f Inner<C>,
+    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+) -> Result<Option<codec::Packet>, MqttError<E>>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(
-        pkt: ControlMessage<E>,
-        inner: &'f Inner<C>,
-        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-    ) -> Self {
-        let error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
-        let fut = ctx.call(&inner.control, pkt);
-        Self { error, inner, ctx, fut }
-    }
-}
+    let mut error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
 
-impl<'f, T, C, E> Future for ControlResponse<'f, T, C, E>
-where
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
-{
-    type Output = Result<Option<codec::Packet>, MqttError<E>>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.as_mut().project();
-
-        match ready!(this.fut.poll(cx)) {
+    loop {
+        match ctx.call(&inner.control, pkt).await {
             Ok(item) => {
                 let packet = match item.result {
                     ControlResultKind::Ping => Some(codec::Packet::PingResponse),
                     ControlResultKind::Subscribe(res) => {
-                        this.inner.inflight.borrow_mut().remove(&res.packet_id);
+                        inner.inflight.borrow_mut().remove(&res.packet_id);
                         Some(codec::Packet::SubscribeAck {
                             status: res.codes,
                             packet_id: res.packet_id,
                         })
                     }
                     ControlResultKind::Unsubscribe(res) => {
-                        this.inner.inflight.borrow_mut().remove(&res.packet_id);
+                        inner.inflight.borrow_mut().remove(&res.packet_id);
                         Some(codec::Packet::UnsubscribeAck { packet_id: res.packet_id })
                     }
                     ControlResultKind::Disconnect
                     | ControlResultKind::Closed
                     | ControlResultKind::Nothing => {
-                        this.inner.sink.close();
+                        inner.sink.close();
                         None
                     }
                     ControlResultKind::PublishAck(_) => unreachable!(),
                 };
-                Poll::Ready(Ok(packet))
+                return Ok(packet);
             }
             Err(err) => {
                 // do not handle nested error
-                if *this.error {
-                    Poll::Ready(Err(err))
+                return if error {
+                    Err(err)
                 } else {
                     // handle error from control service
                     match err {
                         MqttError::Service(err) => {
-                            *this.error = true;
-                            let fut =
-                                this.ctx.call(&this.inner.control, ControlMessage::error(err));
-                            self.as_mut().project().fut.set(fut);
-                            self.poll(cx)
+                            error = true;
+                            pkt = ControlMessage::error(err);
+                            continue;
                         }
-                        _ => Poll::Ready(Err(err)),
+                        _ => Err(err),
                     }
-                }
+                };
             }
         }
     }
@@ -534,9 +466,9 @@ where
 #[cfg(test)]
 mod tests {
     use ntex::time::{sleep, Seconds};
-    use ntex::util::{lazy, ByteString, Bytes};
+    use ntex::util::{lazy, ByteString, Bytes, Ready};
     use ntex::{io::Io, service::fn_service, testing::IoTest};
-    use std::rc::Rc;
+    use std::{future::Future, pin::Pin, rc::Rc};
 
     use super::*;
     use crate::v3::{codec, MqttSink};
@@ -565,17 +497,18 @@ mod tests {
             None,
         ));
 
-        let mut f = Box::pin(disp.call(DispatchItem::Item((
-            codec::Packet::Publish(codec::Publish {
-                dup: false,
-                retain: false,
-                qos: QoS::AtLeastOnce,
-                topic: ByteString::new(),
-                packet_id: NonZeroU16::new(1),
-                payload: Bytes::new(),
-            }),
-            999,
-        ))));
+        let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
+            Box::pin(disp.call(DispatchItem::Item((
+                codec::Packet::Publish(codec::Publish {
+                    dup: false,
+                    retain: false,
+                    qos: QoS::AtLeastOnce,
+                    topic: ByteString::new(),
+                    packet_id: NonZeroU16::new(1),
+                    payload: Bytes::new(),
+                }),
+                999,
+            ))));
         let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
 
         let f = Box::pin(disp.call(DispatchItem::Item((

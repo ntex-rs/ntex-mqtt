@@ -1,7 +1,6 @@
 use std::{fmt, marker::PhantomData};
 
 use ntex::service::{Service, ServiceCtx, ServiceFactory};
-use ntex::util::Ready;
 
 use super::control::{ControlMessage, ControlResult, ControlResultKind};
 use super::publish::Publish;
@@ -23,21 +22,23 @@ impl<St, Err> ServiceFactory<Publish, Session<St>> for DefaultPublishService<St,
     type Error = Err;
     type Service = DefaultPublishService<St, Err>;
     type InitError = Err;
-    type Future<'f> = Ready<Self::Service, Self::InitError> where Self: 'f;
 
-    fn create(&self, _: Session<St>) -> Self::Future<'_> {
-        Ready::Ok(DefaultPublishService { _t: PhantomData })
+    async fn create(&self, _: Session<St>) -> Result<Self::Service, Self::InitError> {
+        Ok(DefaultPublishService { _t: PhantomData })
     }
 }
 
 impl<St, Err> Service<Publish> for DefaultPublishService<St, Err> {
     type Response = ();
     type Error = Err;
-    type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
-    fn call<'a>(&'a self, _: Publish, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    async fn call(
+        &self,
+        _: Publish,
+        _: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         log::warn!("Publish service is disabled");
-        Ready::Ok(())
+        Ok(())
     }
 }
 
@@ -57,23 +58,24 @@ impl<S, E: fmt::Debug> ServiceFactory<ControlMessage<E>, Session<S>>
     type Error = E;
     type InitError = E;
     type Service = DefaultControlService<S, E>;
-    type Future<'f> = Ready<Self::Service, Self::InitError> where Self: 'f;
 
-    fn create(&self, _: Session<S>) -> Self::Future<'_> {
-        Ready::Ok(DefaultControlService(PhantomData))
+    async fn create(&self, _: Session<S>) -> Result<Self::Service, Self::InitError> {
+        Ok(DefaultControlService(PhantomData))
     }
 }
 
 impl<S, E: fmt::Debug> Service<ControlMessage<E>> for DefaultControlService<S, E> {
     type Response = ControlResult;
     type Error = E;
-    type Future<'f> = Ready<Self::Response, Self::Error> where Self: 'f;
 
-    #[inline]
-    fn call<'a>(&'a self, pkt: ControlMessage<E>, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    async fn call(
+        &self,
+        pkt: ControlMessage<E>,
+        _: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         log::warn!("MQTT3 Subscribe is not supported");
 
-        Ready::Ok(match pkt {
+        Ok(match pkt {
             ControlMessage::Ping(ping) => ping.ack(),
             ControlMessage::Disconnect(disc) => disc.ack(),
             ControlMessage::Closed(msg) => msg.ack(),

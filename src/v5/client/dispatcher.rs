@@ -1,10 +1,9 @@
-use std::cell::RefCell;
 use std::task::{Context, Poll};
-use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
 use ntex::io::DispatchItem;
-use ntex::service::{Pipeline, Service, ServiceCall, ServiceCtx};
-use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet, Ready};
+use ntex::service::{Pipeline, Service, ServiceCtx};
+use ntex::util::{BoxFuture, ByteString, Either, HashMap, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::types::packet_type;
@@ -94,10 +93,6 @@ where
 {
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
-    type Future<'f> = Either<
-        PublishResponse<'f, T, C, E>,
-        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<'f, T, C, E>>,
-    > where Self: 'f;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service)?;
@@ -130,11 +125,12 @@ where
         }
     }
 
-    fn call<'a>(
-        &'a self,
+    #[allow(clippy::await_holding_refcell_ref)]
+    async fn call(
+        &self,
         request: DispatchItem<Rc<MqttShared>>,
-        ctx: ServiceCtx<'a, Self>,
-    ) -> Self::Future<'a> {
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         log::trace!("Dispatch packet: {:#?}", request);
 
         match request {
@@ -153,7 +149,8 @@ where
                                 self.max_receive,
                                 inner.inflight.len()
                             );
-                            return Either::Right(Either::Right(ControlResponse::new(
+                            drop(inner);
+                            return control(
                                 ControlMessage::proto_error(
                                     ProtocolError::violation(
                                         codec::DisconnectReasonCode::ReceiveMaximumExceeded,
@@ -162,7 +159,8 @@ where
                                 ),
                                 &self.inner,
                                 ctx,
-                            )));
+                                0,
+                            ).await;
                         }
 
                         // check for duplicated packet id
@@ -174,7 +172,7 @@ where
                                     ..Default::default()
                                 },
                             ));
-                            return Either::Right(Either::Left(Ready::Ok(None)));
+                            return Ok(None);
                         }
                     }
 
@@ -185,14 +183,17 @@ where
                             match inner.aliases.get(&alias) {
                                 Some(aliased_topic) => publish.topic = aliased_topic.clone(),
                                 None => {
-                                    return Either::Right(Either::Right(ControlResponse::new(
+                                    drop(inner);
+                                    return control(
                                         ControlMessage::proto_error(ProtocolError::violation(
                                             DisconnectReasonCode::TopicAliasInvalid,
                                             "Unknown topic alias",
                                         )),
                                         &self.inner,
                                         ctx,
-                                    )));
+                                        0,
+                                    )
+                                    .await;
                                 }
                             }
                         } else {
@@ -207,17 +208,18 @@ where
                                 }
                                 std::collections::hash_map::Entry::Vacant(entry) => {
                                     if alias.get() > self.max_topic_alias {
-                                        return Either::Right(Either::Right(
-                                            ControlResponse::new(
+                                        drop(inner);
+                                        return control(
                                                 ControlMessage::proto_error(
                                                     ProtocolError::generic_violation(
                                                         "Topic alias is greater than max allowed [MQTT-3.1.2-26]",
                                                     )
                                                 ),
-                                                &self.inner,
-                                                ctx
-                                            ),
-                                        ));
+                                            &self.inner,
+                                            ctx,
+                                            0
+                                            ).await
+                                        ;
                                     }
                                     let mut topic = publish.topic.clone();
                                     topic.trimdown();
@@ -228,304 +230,219 @@ where
                     }
                 }
 
-                Either::Left(PublishResponse {
-                    packet_id: packet_id.map(|v| v.get()).unwrap_or(0),
-                    packet_size: size,
-                    inner: info,
-                    state: PublishResponseState::Publish {
-                        fut: ctx.call(&self.publish, Publish::new(publish, size)),
-                    },
+                publish_fn(
+                    &self.publish,
+                    Publish::new(publish, size),
+                    packet_id.map(|v| v.get()).unwrap_or(0),
+                    size,
+                    info,
                     ctx,
-                    _t: PhantomData,
-                })
+                )
+                .await
             }
             DispatchItem::Item((codec::Packet::PublishAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
-                    Either::Right(Either::Right(ControlResponse::new(
-                        ControlMessage::proto_error(err),
-                        &self.inner,
-                        ctx,
-                    )))
+                    control(ControlMessage::proto_error(err), &self.inner, ctx, 0).await
                 } else {
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    Ok(None)
                 }
             }
             DispatchItem::Item((codec::Packet::SubscribeAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Subscribe(packet)) {
-                    Either::Right(Either::Right(ControlResponse::new(
-                        ControlMessage::proto_error(err),
-                        &self.inner,
-                        ctx,
-                    )))
+                    control(ControlMessage::proto_error(err), &self.inner, ctx, 0).await
                 } else {
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    Ok(None)
                 }
             }
             DispatchItem::Item((codec::Packet::UnsubscribeAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet)) {
-                    Either::Right(Either::Right(ControlResponse::new(
-                        ControlMessage::proto_error(err),
-                        &self.inner,
-                        ctx,
-                    )))
+                    control(ControlMessage::proto_error(err), &self.inner, ctx, 0).await
                 } else {
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    Ok(None)
                 }
             }
             DispatchItem::Item((codec::Packet::Disconnect(pkt), size)) => {
-                Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::dis(pkt, size),
-                    &self.inner,
-                    ctx,
-                )))
+                control(ControlMessage::dis(pkt, size), &self.inner, ctx, 0).await
             }
             DispatchItem::Item((codec::Packet::Auth(_), _)) => {
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::proto_error(ProtocolError::unexpected_packet(
                         packet_type::AUTH,
                         "AUTH packet is not supported at this time",
                     )),
                     &self.inner,
                     ctx,
-                )))
+                    0,
+                )
+                .await
             }
             DispatchItem::Item((
                 pkt @ (codec::Packet::PingRequest
                 | codec::Packet::Subscribe(_)
                 | codec::Packet::Unsubscribe(_)),
                 _,
-            )) => Either::Right(Either::Left(Ready::Err(
-                HandshakeError::Protocol(ProtocolError::unexpected_packet(
-                    pkt.packet_type(),
-                    "Packet of the type is not expected from server",
-                ))
-                .into(),
-            ))),
-            DispatchItem::Item((codec::Packet::PingResponse, _)) => {
-                Either::Right(Either::Left(Ready::Ok(None)))
-            }
+            )) => Err(HandshakeError::Protocol(ProtocolError::unexpected_packet(
+                pkt.packet_type(),
+                "Packet of the type is not expected from server",
+            ))
+            .into()),
+            DispatchItem::Item((codec::Packet::PingResponse, _)) => Ok(None),
             DispatchItem::Item((pkt, _)) => {
                 log::debug!("Unsupported packet: {:?}", pkt);
-                Either::Right(Either::Left(Ready::Ok(None)))
+                Ok(None)
             }
             DispatchItem::EncoderError(err) => {
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::proto_error(ProtocolError::Encode(err)),
                     &self.inner,
                     ctx,
-                )))
+                    0,
+                )
+                .await
             }
             DispatchItem::DecoderError(err) => {
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::proto_error(ProtocolError::Decode(err)),
                     &self.inner,
                     ctx,
-                )))
+                    0,
+                )
+                .await
             }
-            DispatchItem::Disconnect(err) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner, ctx),
-            )),
+            DispatchItem::Disconnect(err) => {
+                control(ControlMessage::peer_gone(err), &self.inner, ctx, 0).await
+            }
             DispatchItem::KeepAliveTimeout => {
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
                     ctx,
-                )))
+                    0,
+                )
+                .await
             }
-            DispatchItem::ReadTimeout => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(ProtocolError::ReadTimeout),
-                &self.inner,
-                ctx,
-            ))),
+            DispatchItem::ReadTimeout => {
+                control(
+                    ControlMessage::proto_error(ProtocolError::ReadTimeout),
+                    &self.inner,
+                    ctx,
+                    0,
+                )
+                .await
+            }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
-                Either::Right(Either::Left(Ready::Ok(None)))
+                Ok(None)
             }
             DispatchItem::WBackPressureDisabled => {
                 self.inner.sink.disable_wr_backpressure();
-                Either::Right(Either::Left(Ready::Ok(None)))
+                Ok(None)
             }
         }
     }
 }
 
-pin_project_lite::pin_project! {
-    /// Publish service response future
-    pub(crate) struct PublishResponse<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E> {
-        #[pin]
-        state: PublishResponseState<'f, T, C, E>,
-        packet_id: u16,
-        packet_size: u32,
-        inner: &'f Inner<C>,
-        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-        _t: PhantomData<E>,
-    }
-}
-
-pin_project_lite::pin_project! {
-    #[project = PublishResponseStateProject]
-    enum PublishResponseState<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>
-    where T: 'f, C: 'f, E: 'f
-    {
-        Publish { #[pin] fut: ServiceCall<'f, T, Publish> },
-        Control { #[pin] fut: ControlResponse<'f, T, C, E> },
-    }
-}
-
-impl<'f, T, C, E> Future for PublishResponse<'f, T, C, E>
+/// Publish service response future
+async fn publish_fn<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>(
+    svc: &'f T,
+    pkt: Publish,
+    packet_id: u16,
+    packet_size: u32,
+    inner: &'f Inner<C>,
+    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+) -> Result<Option<codec::Packet>, MqttError<E>>
 where
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    type Output = Result<Option<codec::Packet>, MqttError<E>>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.as_mut().project();
-
-        match this.state.as_mut().project() {
-            PublishResponseStateProject::Publish { fut } => {
-                let ack = match fut.poll(cx) {
-                    Poll::Ready(Ok(res)) => match res {
-                        Either::Right(ack) => ack,
-                        Either::Left(pkt) => {
-                            this.state.set(PublishResponseState::Control {
-                                fut: ControlResponse::new(
-                                    ControlMessage::publish(
-                                        pkt.into_inner(),
-                                        *this.packet_size,
-                                    ),
-                                    this.inner,
-                                    *this.ctx,
-                                )
-                                .packet_id(*this.packet_id),
-                            });
-                            return self.poll(cx);
-                        }
-                    },
-                    Poll::Ready(Err(e)) => {
-                        this.state.set(PublishResponseState::Control {
-                            fut: ControlResponse::new(
-                                ControlMessage::error(e),
-                                this.inner,
-                                *this.ctx,
-                            ),
-                        });
-                        return self.poll(cx);
-                    }
-                    Poll::Pending => return Poll::Pending,
-                };
-                if let Some(id) = NonZeroU16::new(*this.packet_id) {
-                    log::trace!("Sending publish ack for {} id", this.packet_id);
-                    this.inner.info.borrow_mut().inflight.remove(&id);
-                    let ack = codec::PublishAck {
-                        packet_id: id,
-                        reason_code: ack.reason_code,
-                        reason_string: ack.reason_string,
-                        properties: ack.properties,
-                    };
-                    Poll::Ready(Ok(Some(codec::Packet::PublishAck(ack))))
-                } else {
-                    Poll::Ready(Ok(None))
-                }
+    let ack = match ctx.call(svc, pkt).await {
+        Ok(res) => match res {
+            Either::Right(ack) => ack,
+            Either::Left(pkt) => {
+                return control(
+                    ControlMessage::publish(pkt.into_inner(), packet_size),
+                    inner,
+                    ctx,
+                    packet_id,
+                )
+                .await
             }
-            PublishResponseStateProject::Control { fut } => fut.poll(cx),
-        }
+        },
+        Err(e) => return control(ControlMessage::error(e), inner, ctx, 0).await,
+    };
+
+    if let Some(id) = NonZeroU16::new(packet_id) {
+        log::trace!("Sending publish ack for {} id", packet_id);
+        inner.info.borrow_mut().inflight.remove(&id);
+        let ack = codec::PublishAck {
+            packet_id: id,
+            reason_code: ack.reason_code,
+            reason_string: ack.reason_string,
+            properties: ack.properties,
+        };
+        Ok(Some(codec::Packet::PublishAck(ack)))
+    } else {
+        Ok(None)
     }
 }
 
-pin_project_lite::pin_project! {
-    /// Control service response future
-    pub(crate) struct ControlResponse<'f, T, C: Service<ControlMessage<E>>, E>
-    where T: 'f, C: 'f, E: 'f
-    {
-        #[pin]
-        fut: ServiceCall<'f, C, ControlMessage<E>>,
-        inner: &'f Inner<C>,
-        error: bool,
-        packet_id: u16,
-        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-        _t: PhantomData<E>,
-    }
-}
-
-impl<'f, T, C, E> ControlResponse<'f, T, C, E>
+async fn control<'f, T, C, E>(
+    mut pkt: ControlMessage<E>,
+    inner: &'f Inner<C>,
+    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+    packet_id: u16,
+) -> Result<Option<codec::Packet>, MqttError<E>>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new(
-        pkt: ControlMessage<E>,
-        inner: &'f Inner<C>,
-        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-    ) -> Self {
-        let error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
-        let fut = ctx.call(&inner.control, pkt);
+    let mut error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
 
-        Self { error, inner, fut, ctx, packet_id: 0, _t: PhantomData }
-    }
-
-    fn packet_id(mut self, id: u16) -> Self {
-        self.packet_id = id;
-        self
-    }
-}
-
-impl<'f, T, C, E> Future for ControlResponse<'f, T, C, E>
-where
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
-{
-    type Output = Result<Option<codec::Packet>, MqttError<E>>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.as_mut().project();
-
-        let result = match this.fut.poll(cx) {
-            Poll::Ready(Ok(result)) => {
-                if let Some(id) = NonZeroU16::new(self.packet_id) {
-                    self.inner.info.borrow_mut().inflight.remove(&id);
+    loop {
+        let result = match ctx.call(&inner.control, pkt).await {
+            Ok(result) => {
+                if let Some(id) = NonZeroU16::new(packet_id) {
+                    inner.info.borrow_mut().inflight.remove(&id);
                 }
                 result
             }
-            Poll::Ready(Err(err)) => {
+            Err(err) => {
                 // do not handle nested error
-                return if *this.error {
-                    Poll::Ready(Err(err))
+                return if error {
+                    Err(err)
                 } else {
                     // handle error from control service
                     match err {
                         MqttError::Service(err) => {
-                            *this.error = true;
-                            let fut =
-                                this.ctx.call(&this.inner.control, ControlMessage::error(err));
-                            self.as_mut().project().fut.set(fut);
-                            self.poll(cx)
+                            error = true;
+                            pkt = ControlMessage::error(err);
+                            continue;
                         }
-                        _ => Poll::Ready(Err(err)),
+                        _ => Err(err),
                     }
                 };
             }
-            Poll::Pending => return Poll::Pending,
         };
 
-        if self.error {
+        return if error {
             if let Some(pkt) = result.packet {
-                let _ = self.inner.sink.encode_packet(pkt);
+                let _ = inner.sink.encode_packet(pkt);
             }
             if result.disconnect {
-                self.inner.sink.drop_sink();
+                inner.sink.drop_sink();
             }
-            Poll::Ready(Ok(None))
+            Ok(None)
         } else {
             if result.disconnect {
-                self.inner.sink.drop_sink();
+                inner.sink.drop_sink();
             }
-            Poll::Ready(Ok(result.packet))
-        }
+            Ok(result.packet)
+        };
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use ntex::{io::Io, service::fn_service, testing::IoTest, util::lazy};
+    use ntex::{io::Io, service::fn_service, testing::IoTest, util::lazy, util::Ready};
     use std::rc::Rc;
 
     use super::*;
