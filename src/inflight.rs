@@ -1,7 +1,7 @@
 //! Service that limits number of in-flight async requests.
-use std::{cell::Cell, future::Future, marker, pin::Pin, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, rc::Rc, task::Context, task::Poll};
 
-use ntex::service::{Service, ServiceCall, ServiceCtx};
+use ntex::service::{Service, ServiceCtx};
 use ntex::task::LocalWaker;
 
 pub(crate) trait SizedRequest {
@@ -26,7 +26,6 @@ where
 {
     type Response = T::Response;
     type Error = T::Error;
-    type Future<'f> = InFlightServiceResponse<'f, T, R> where Self: 'f;
 
     ntex::forward_poll_shutdown!(service);
 
@@ -46,33 +45,10 @@ where
     }
 
     #[inline]
-    fn call<'a>(&'a self, req: R, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    async fn call(&self, req: R, ctx: ServiceCtx<'_, Self>) -> Result<T::Response, T::Error> {
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
-        InFlightServiceResponse {
-            _guard: self.count.get(size),
-            _t: marker::PhantomData,
-            fut: ctx.call(&self.service, req),
-        }
-    }
-}
-
-pin_project_lite::pin_project! {
-    #[doc(hidden)]
-    pub struct InFlightServiceResponse<'f, T: Service<R>, R>
-    where T: 'f, R: 'f
-    {
-        #[pin]
-        fut: ServiceCall<'f, T, R>,
-        _guard: CounterGuard,
-        _t: marker::PhantomData<R>
-    }
-}
-
-impl<'f, T: Service<R>, R> Future for InFlightServiceResponse<'f, T, R> {
-    type Output = Result<T::Response, T::Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.project().fut.poll(cx)
+        let _task_guard = self.count.get(size);
+        ctx.call(&self.service, req).await
     }
 }
 
@@ -156,10 +132,9 @@ impl CounterInner {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, task::Poll, time::Duration};
+    use std::{cell::Cell, future::poll_fn, task::Poll, time::Duration};
 
-    use ntex::util::{lazy, poll_fn, BoxFuture};
-    use ntex::{service::Pipeline, service::Service, time::sleep};
+    use ntex::{service::Pipeline, service::Service, time::sleep, util::lazy};
 
     use super::*;
 
@@ -168,14 +143,11 @@ mod tests {
     impl Service<()> for SleepService {
         type Response = ();
         type Error = ();
-        type Future<'f> = BoxFuture<'f, Result<(), ()>>;
 
-        fn call<'a>(&'a self, _: (), _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+        async fn call(&self, _: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
             let fut = sleep(self.0);
-            Box::pin(async move {
-                let _ = fut.await;
-                Ok::<_, ()>(())
-            })
+            let _ = fut.await;
+            Ok::<_, ()>(())
         }
     }
 
@@ -230,7 +202,6 @@ mod tests {
     impl Service<()> for Srv2 {
         type Response = ();
         type Error = ();
-        type Future<'f> = BoxFuture<'f, Result<(), ()>>;
 
         fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
             if !self.cnt.get() {
@@ -240,15 +211,13 @@ mod tests {
             }
         }
 
-        fn call<'a>(&'a self, _: (), _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+        async fn call(&self, _: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
             let fut = sleep(self.dur);
             self.cnt.set(true);
 
-            Box::pin(async move {
-                let _ = fut.await;
-                self.cnt.set(false);
-                Ok::<_, ()>(())
-            })
+            let _ = fut.await;
+            self.cnt.set(false);
+            Ok::<_, ()>(())
         }
     }
 

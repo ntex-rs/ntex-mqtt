@@ -3,7 +3,7 @@ use std::{convert::TryFrom, fmt, future::Future, marker::PhantomData, rc::Rc};
 use ntex::io::{DispatchItem, DispatcherConfig, IoBoxed};
 use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex::time::{timeout_checked, Millis, Seconds};
-use ntex::util::{BoxFuture, Either};
+use ntex::util::Either;
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::{io::Dispatcher, service, types::QoS};
@@ -340,29 +340,17 @@ where
 
     type Service = HandshakeService<St, H::Service>;
     type InitError = H::InitError;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>> where Self: 'f;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        let fut = self.factory.create(());
-        let max_size = self.max_size;
-        let max_receive = self.max_receive;
-        let max_topic_alias = self.max_topic_alias;
-        let max_qos = self.max_qos;
-        let pool = self.pool.clone();
-        let connect_timeout = self.connect_timeout;
-
-        Box::pin(async move {
-            let service = fut.await?;
-            Ok(HandshakeService {
-                service,
-                max_size,
-                max_receive,
-                max_topic_alias,
-                max_qos,
-                connect_timeout,
-                pool,
-                _t: PhantomData,
-            })
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        Ok(HandshakeService {
+            service: self.factory.create(()).await?,
+            max_size: self.max_size,
+            max_receive: self.max_receive,
+            max_topic_alias: self.max_topic_alias,
+            max_qos: self.max_qos,
+            pool: self.pool.clone(),
+            connect_timeout: self.connect_timeout,
+            _t: PhantomData,
         })
     }
 }
@@ -385,12 +373,15 @@ where
 {
     type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>> where Self: 'f;
 
     ntex::forward_poll_ready!(service, MqttError::Service);
     ntex::forward_poll_shutdown!(service);
 
-    fn call<'a>(&'a self, io: IoBoxed, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    async fn call(
+        &self,
+        io: IoBoxed,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         log::trace!("Starting mqtt v5 handshake");
 
         let codec = mqtt::Codec::default();
@@ -400,93 +391,91 @@ where
         shared.set_receive_max(self.max_receive);
         shared.set_topic_alias_max(self.max_topic_alias);
 
-        Box::pin(async move {
-            // read first packet
-            let packet = timeout_checked(self.connect_timeout, io.recv(&shared.codec))
-                .await
-                .map_err(|_| MqttError::Handshake(HandshakeError::Timeout))?
-                .map_err(|err| {
-                    log::trace!("Error is received during mqtt handshake: {:?}", err);
-                    MqttError::Handshake(HandshakeError::from(err))
-                })?
-                .ok_or_else(|| {
-                    log::trace!("Server mqtt is disconnected during handshake");
-                    MqttError::Handshake(HandshakeError::Disconnected(None))
-                })?;
+        // read first packet
+        let packet = timeout_checked(self.connect_timeout, io.recv(&shared.codec))
+            .await
+            .map_err(|_| MqttError::Handshake(HandshakeError::Timeout))?
+            .map_err(|err| {
+                log::trace!("Error is received during mqtt handshake: {:?}", err);
+                MqttError::Handshake(HandshakeError::from(err))
+            })?
+            .ok_or_else(|| {
+                log::trace!("Server mqtt is disconnected during handshake");
+                MqttError::Handshake(HandshakeError::Disconnected(None))
+            })?;
 
-            match packet {
-                (mqtt::Packet::Connect(connect), size) => {
-                    // set max outbound (encoder) packet size
-                    if let Some(size) = connect.max_packet_size {
-                        shared.codec.set_max_outbound_size(size.get());
-                    }
-                    let keep_alive = connect.keep_alive;
-                    let peer_receive_max =
-                        connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize;
-
-                    // authenticate mqtt connection
-                    let mut ack = ctx
-                        .call(&self.service, Handshake::new(connect, size, io, shared))
-                        .await
-                        .map_err(|e| MqttError::Handshake(HandshakeError::Service(e)))?;
-
-                    match ack.session {
-                        Some(session) => {
-                            log::trace!("Sending: {:#?}", ack.packet);
-                            let shared = ack.shared;
-
-                            shared.set_max_qos(ack.packet.max_qos);
-                            shared.set_receive_max(ack.packet.receive_max.get());
-                            shared.set_topic_alias_max(ack.packet.topic_alias_max);
-                            shared
-                                .codec
-                                .set_max_inbound_size(ack.packet.max_packet_size.unwrap_or(0));
-                            shared.codec.set_retain_available(ack.packet.retain_available);
-                            shared.codec.set_sub_ids_available(
-                                ack.packet.subscription_identifiers_available,
-                            );
-                            if ack.packet.server_keepalive_sec.is_none()
-                                && (keep_alive > ack.keepalive)
-                            {
-                                ack.packet.server_keepalive_sec = Some(ack.keepalive);
-                            }
-                            shared.set_cap(peer_receive_max);
-
-                            ack.io.encode(
-                                mqtt::Packet::ConnectAck(Box::new(ack.packet)),
-                                &shared.codec,
-                            )?;
-
-                            Ok((
-                                ack.io,
-                                shared.clone(),
-                                Session::new(session, MqttSink::new(shared)),
-                                Seconds(ack.keepalive),
-                            ))
-                        }
-                        None => {
-                            log::trace!("Failed to complete handshake: {:#?}", ack.packet);
-
-                            ack.io.encode(
-                                mqtt::Packet::ConnectAck(Box::new(ack.packet)),
-                                &ack.shared.codec,
-                            )?;
-                            let _ = ack.io.shutdown().await;
-                            Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
-                        }
-                    }
+        match packet {
+            (mqtt::Packet::Connect(connect), size) => {
+                // set max outbound (encoder) packet size
+                if let Some(size) = connect.max_packet_size {
+                    shared.codec.set_max_outbound_size(size.get());
                 }
-                (packet, _) => {
-                    log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {}", 1);
-                    Err(MqttError::Handshake(HandshakeError::Protocol(
-                        ProtocolError::unexpected_packet(
-                            packet.packet_type(),
-                            "Expected CONNECT packet [MQTT-3.1.0-1]",
-                        ),
-                    )))
+                let keep_alive = connect.keep_alive;
+                let peer_receive_max =
+                    connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize;
+
+                // authenticate mqtt connection
+                let mut ack = ctx
+                    .call(&self.service, Handshake::new(connect, size, io, shared))
+                    .await
+                    .map_err(|e| MqttError::Handshake(HandshakeError::Service(e)))?;
+
+                match ack.session {
+                    Some(session) => {
+                        log::trace!("Sending: {:#?}", ack.packet);
+                        let shared = ack.shared;
+
+                        shared.set_max_qos(ack.packet.max_qos);
+                        shared.set_receive_max(ack.packet.receive_max.get());
+                        shared.set_topic_alias_max(ack.packet.topic_alias_max);
+                        shared
+                            .codec
+                            .set_max_inbound_size(ack.packet.max_packet_size.unwrap_or(0));
+                        shared.codec.set_retain_available(ack.packet.retain_available);
+                        shared.codec.set_sub_ids_available(
+                            ack.packet.subscription_identifiers_available,
+                        );
+                        if ack.packet.server_keepalive_sec.is_none()
+                            && (keep_alive > ack.keepalive)
+                        {
+                            ack.packet.server_keepalive_sec = Some(ack.keepalive);
+                        }
+                        shared.set_cap(peer_receive_max);
+
+                        ack.io.encode(
+                            mqtt::Packet::ConnectAck(Box::new(ack.packet)),
+                            &shared.codec,
+                        )?;
+
+                        Ok((
+                            ack.io,
+                            shared.clone(),
+                            Session::new(session, MqttSink::new(shared)),
+                            Seconds(ack.keepalive),
+                        ))
+                    }
+                    None => {
+                        log::trace!("Failed to complete handshake: {:#?}", ack.packet);
+
+                        ack.io.encode(
+                            mqtt::Packet::ConnectAck(Box::new(ack.packet)),
+                            &ack.shared.codec,
+                        )?;
+                        let _ = ack.io.shutdown().await;
+                        Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
+                    }
                 }
             }
-        })
+            (packet, _) => {
+                log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {}", 1);
+                Err(MqttError::Handshake(HandshakeError::Protocol(
+                    ProtocolError::unexpected_packet(
+                        packet.packet_type(),
+                        "Expected CONNECT packet [MQTT-3.1.0-1]",
+                    ),
+                )))
+            }
+        }
     }
 }
 
@@ -521,9 +510,8 @@ where
     type Error = MqttError<C::Error>;
     type InitError = C::InitError;
     type Service = ServerSelectorImpl<St, C::Service, T, F, R>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Service, Self::InitError>> where Self: 'f;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
         let fut = self.connect.create(());
         let handler = self.handler.clone();
         let check = self.check.clone();
@@ -534,18 +522,16 @@ where
         let max_topic_alias = self.max_topic_alias;
 
         // create connect service and then create service impl
-        Box::pin(async move {
-            Ok(ServerSelectorImpl {
-                handler,
-                check,
-                config,
-                max_size,
-                max_receive,
-                max_qos,
-                max_topic_alias,
-                connect: fut.await?,
-                _t: PhantomData,
-            })
+        Ok(ServerSelectorImpl {
+            handler,
+            check,
+            config,
+            max_size,
+            max_receive,
+            max_qos,
+            max_topic_alias,
+            connect: fut.await?,
+            _t: PhantomData,
         })
     }
 }
@@ -579,86 +565,84 @@ where
 {
     type Response = Either<Handshake, ()>;
     type Error = MqttError<C::Error>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>> where Self: 'f;
 
     ntex::forward_poll_ready!(connect, MqttError::Service);
     ntex::forward_poll_shutdown!(connect);
 
-    fn call<'a>(&'a self, hnd: Handshake, ctx: ServiceCtx<'a, Self>) -> Self::Future<'a> {
-        Box::pin(async move {
-            log::trace!("Start connection handshake");
+    async fn call(
+        &self,
+        hnd: Handshake,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
+        log::trace!("Start connection handshake");
 
-            let result = (*self.check)(&hnd).await;
-            if !result.map_err(|e| MqttError::Handshake(HandshakeError::Service(e)))? {
-                Ok(Either::Left(hnd))
-            } else {
-                // decoder config
-                hnd.shared.codec.set_max_inbound_size(self.max_size);
-                hnd.shared.set_max_qos(self.max_qos);
-                hnd.shared.set_receive_max(self.max_receive);
-                hnd.shared.set_topic_alias_max(self.max_topic_alias);
+        let result = (*self.check)(&hnd).await;
+        if !result.map_err(|e| MqttError::Handshake(HandshakeError::Service(e)))? {
+            Ok(Either::Left(hnd))
+        } else {
+            // decoder config
+            hnd.shared.codec.set_max_inbound_size(self.max_size);
+            hnd.shared.set_max_qos(self.max_qos);
+            hnd.shared.set_receive_max(self.max_receive);
+            hnd.shared.set_topic_alias_max(self.max_topic_alias);
 
-                // set max outbound (encoder) packet size
-                if let Some(size) = hnd.packet().max_packet_size {
-                    hnd.shared.codec.set_max_outbound_size(size.get());
+            // set max outbound (encoder) packet size
+            if let Some(size) = hnd.packet().max_packet_size {
+                hnd.shared.codec.set_max_outbound_size(size.get());
+            }
+            let keep_alive = hnd.packet().keep_alive;
+            let peer_receive_max =
+                hnd.packet().receive_max.map(|v| v.get()).unwrap_or(16) as usize;
+
+            // authenticate mqtt connection
+            let mut ack = ctx.call(&self.connect, hnd).await.map_err(|e| {
+                log::trace!("Connection handshake failed: {:?}", e);
+                MqttError::Handshake(HandshakeError::Service(e))
+            })?;
+
+            match ack.session {
+                Some(session) => {
+                    log::trace!("Sending: {:#?}", ack.packet);
+                    let shared = ack.shared;
+
+                    shared.set_max_qos(ack.packet.max_qos);
+                    shared.set_receive_max(ack.packet.receive_max.get());
+                    shared.set_topic_alias_max(ack.packet.topic_alias_max);
+                    shared.codec.set_max_inbound_size(ack.packet.max_packet_size.unwrap_or(0));
+                    shared.codec.set_retain_available(ack.packet.retain_available);
+                    shared
+                        .codec
+                        .set_sub_ids_available(ack.packet.subscription_identifiers_available);
+                    if ack.packet.server_keepalive_sec.is_none() && (keep_alive > ack.keepalive)
+                    {
+                        ack.packet.server_keepalive_sec = Some(ack.keepalive);
+                    }
+                    shared.set_cap(peer_receive_max);
+                    ack.io.encode(
+                        mqtt::Packet::ConnectAck(Box::new(ack.packet)),
+                        &shared.codec,
+                    )?;
+
+                    let session = Session::new(session, MqttSink::new(shared.clone()));
+                    let handler = self.handler.create(session).await?;
+                    log::trace!("Connection handler is created, starting dispatcher");
+
+                    Dispatcher::new(ack.io, shared, handler, &self.config)
+                        .keepalive_timeout(Seconds(ack.keepalive))
+                        .await?;
+                    Ok(Either::Right(()))
                 }
-                let keep_alive = hnd.packet().keep_alive;
-                let peer_receive_max =
-                    hnd.packet().receive_max.map(|v| v.get()).unwrap_or(16) as usize;
+                None => {
+                    log::trace!("Failed to complete handshake: {:#?}", ack.packet);
 
-                // authenticate mqtt connection
-                let mut ack = ctx.call(&self.connect, hnd).await.map_err(|e| {
-                    log::trace!("Connection handshake failed: {:?}", e);
-                    MqttError::Handshake(HandshakeError::Service(e))
-                })?;
-
-                match ack.session {
-                    Some(session) => {
-                        log::trace!("Sending: {:#?}", ack.packet);
-                        let shared = ack.shared;
-
-                        shared.set_max_qos(ack.packet.max_qos);
-                        shared.set_receive_max(ack.packet.receive_max.get());
-                        shared.set_topic_alias_max(ack.packet.topic_alias_max);
-                        shared
-                            .codec
-                            .set_max_inbound_size(ack.packet.max_packet_size.unwrap_or(0));
-                        shared.codec.set_retain_available(ack.packet.retain_available);
-                        shared.codec.set_sub_ids_available(
-                            ack.packet.subscription_identifiers_available,
-                        );
-                        if ack.packet.server_keepalive_sec.is_none()
-                            && (keep_alive > ack.keepalive)
-                        {
-                            ack.packet.server_keepalive_sec = Some(ack.keepalive);
-                        }
-                        shared.set_cap(peer_receive_max);
-                        ack.io.encode(
-                            mqtt::Packet::ConnectAck(Box::new(ack.packet)),
-                            &shared.codec,
-                        )?;
-
-                        let session = Session::new(session, MqttSink::new(shared.clone()));
-                        let handler = self.handler.create(session).await?;
-                        log::trace!("Connection handler is created, starting dispatcher");
-
-                        Dispatcher::new(ack.io, shared, handler, &self.config)
-                            .keepalive_timeout(Seconds(ack.keepalive))
-                            .await?;
-                        Ok(Either::Right(()))
-                    }
-                    None => {
-                        log::trace!("Failed to complete handshake: {:#?}", ack.packet);
-
-                        ack.io.encode(
-                            mqtt::Packet::ConnectAck(Box::new(ack.packet)),
-                            &ack.shared.codec,
-                        )?;
-                        let _ = ack.io.shutdown().await;
-                        Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
-                    }
+                    ack.io.encode(
+                        mqtt::Packet::ConnectAck(Box::new(ack.packet)),
+                        &ack.shared.codec,
+                    )?;
+                    let _ = ack.io.shutdown().await;
+                    Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
                 }
             }
-        })
+        }
     }
 }

@@ -1,10 +1,9 @@
-use std::cell::RefCell;
 use std::task::{Context, Poll};
-use std::{future::Future, marker::PhantomData, num::NonZeroU16, pin::Pin, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
 use ntex::io::DispatchItem;
-use ntex::service::{Pipeline, Service, ServiceCall, ServiceCtx};
-use ntex::util::{inflight::InFlightService, BoxFuture, Either, HashSet, Ready};
+use ntex::service::{Pipeline, Service, ServiceCtx};
+use ntex::util::{inflight::InFlightService, BoxFuture, Either, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::v3::shared::{Ack, MqttShared};
@@ -68,10 +67,6 @@ where
 {
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
-    type Future<'f> = Either<
-        PublishResponse<'f, T, C, E>,
-        Either<Ready<Self::Response, MqttError<E>>, ControlResponse<'f, C, E>>,
-    > where Self: 'f;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let res1 = self.publish.poll_ready(cx).map_err(MqttError::Service)?;
@@ -104,11 +99,11 @@ where
         }
     }
 
-    fn call<'a>(
-        &'a self,
+    async fn call(
+        &self,
         packet: DispatchItem<Rc<MqttShared>>,
-        ctx: ServiceCtx<'a, Self>,
-    ) -> Self::Future<'a> {
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         log::trace!("Dispatch packet: {:#?}", packet);
         match packet {
             DispatchItem::Item((codec::Packet::Publish(publish), size)) => {
@@ -119,45 +114,34 @@ where
                 if let Some(pid) = packet_id {
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
-                        return Either::Right(Either::Left(Ready::Err(MqttError::Handshake(
+                        return Err(MqttError::Handshake(
                             HandshakeError::Protocol(
                                 ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]"))
-                        ))));
+                        ));
                     }
                 }
-                Either::Left(PublishResponse {
-                    fut: ctx.call(&self.publish, Publish::new(publish, size)),
-                    fut_c: None,
-                    packet_id,
-                    inner,
-                    ctx,
-                })
+                publish_fn(&self.publish, Publish::new(publish, size), packet_id, inner, ctx)
+                    .await
             }
             DispatchItem::Item((codec::Packet::PublishAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
-                    Either::Right(Either::Left(Ready::Err(MqttError::Handshake(
-                        HandshakeError::Protocol(e),
-                    ))))
+                    Err(MqttError::Handshake(HandshakeError::Protocol(e)))
                 } else {
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    Ok(None)
                 }
             }
             DispatchItem::Item((codec::Packet::SubscribeAck { packet_id, status }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Subscribe { packet_id, status }) {
-                    Either::Right(Either::Left(Ready::Err(MqttError::Handshake(
-                        HandshakeError::Protocol(e),
-                    ))))
+                    Err(MqttError::Handshake(HandshakeError::Protocol(e)))
                 } else {
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    Ok(None)
                 }
             }
             DispatchItem::Item((codec::Packet::UnsubscribeAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet_id)) {
-                    Either::Right(Either::Left(Ready::Err(MqttError::Handshake(
-                        HandshakeError::Protocol(e),
-                    ))))
+                    Err(MqttError::Handshake(HandshakeError::Protocol(e)))
                 } else {
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    Ok(None)
                 }
             }
             DispatchItem::Item((
@@ -166,183 +150,129 @@ where
                 | codec::Packet::Subscribe { .. }
                 | codec::Packet::Unsubscribe { .. }),
                 _,
-            )) => Either::Right(Either::Left(Ready::Err(
-                HandshakeError::Protocol(ProtocolError::unexpected_packet(
-                    pkt.packet_type(),
-                    "Packet of the type is not expected from server",
-                ))
-                .into(),
-            ))),
+            )) => Err(HandshakeError::Protocol(ProtocolError::unexpected_packet(
+                pkt.packet_type(),
+                "Packet of the type is not expected from server",
+            ))
+            .into()),
             DispatchItem::Item((pkt, _)) => {
                 log::debug!("Unsupported packet: {:?}", pkt);
-                Either::Right(Either::Left(Ready::Ok(None)))
+                Ok(None)
             }
             DispatchItem::EncoderError(err) => {
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::proto_error(ProtocolError::Encode(err)),
                     &self.inner,
                     ctx,
-                )))
+                )
+                .await
             }
             DispatchItem::DecoderError(err) => {
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::proto_error(ProtocolError::Decode(err)),
                     &self.inner,
                     ctx,
-                )))
+                )
+                .await
             }
-            DispatchItem::Disconnect(err) => Either::Right(Either::Right(
-                ControlResponse::new(ControlMessage::peer_gone(err), &self.inner, ctx),
-            )),
+            DispatchItem::Disconnect(err) => {
+                control(ControlMessage::peer_gone(err), &self.inner, ctx).await
+            }
             DispatchItem::KeepAliveTimeout => {
-                Either::Right(Either::Right(ControlResponse::new(
+                control(
                     ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
                     ctx,
-                )))
+                )
+                .await
             }
-            DispatchItem::ReadTimeout => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(ProtocolError::ReadTimeout),
-                &self.inner,
-                ctx,
-            ))),
+            DispatchItem::ReadTimeout => {
+                control(
+                    ControlMessage::proto_error(ProtocolError::ReadTimeout),
+                    &self.inner,
+                    ctx,
+                )
+                .await
+            }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
-                Either::Right(Either::Left(Ready::Ok(None)))
+                Ok(None)
             }
             DispatchItem::WBackPressureDisabled => {
                 self.inner.sink.disable_wr_backpressure();
-                Either::Right(Either::Left(Ready::Ok(None)))
+                Ok(None)
             }
         }
     }
 }
 
-pin_project_lite::pin_project! {
-    /// Publish service response future
-    pub(crate) struct PublishResponse<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>
-    where T: 'f
-    {
-        #[pin]
-        fut: ServiceCall<'f, T, Publish>,
-        #[pin]
-        fut_c: Option<ControlResponse<'f, C, E>>,
-        packet_id: Option<NonZeroU16>,
-        inner: &'f Inner<C>,
-        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-    }
-}
-
-impl<'f, T, C, E> Future for PublishResponse<'f, T, C, E>
+async fn publish_fn<'f, T, C, E>(
+    svc: &'f T,
+    pkt: Publish,
+    packet_id: Option<NonZeroU16>,
+    inner: &'f Inner<C>,
+    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+) -> Result<Option<codec::Packet>, MqttError<E>>
 where
     T: Service<Publish, Response = Either<(), Publish>, Error = E>,
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    type Output = Result<Option<codec::Packet>, MqttError<E>>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(fut) = self.as_mut().project().fut_c.as_pin_mut() {
-            return fut.poll(cx);
+    let res = match ctx.call(svc, pkt).await {
+        Ok(item) => item,
+        Err(e) => {
+            return control(ControlMessage::error(e), inner, ctx).await;
         }
+    };
 
-        let mut this = self.as_mut().project();
-        let res = match this.fut.poll(cx) {
-            Poll::Ready(Ok(item)) => item,
-            Poll::Ready(Err(e)) => {
-                this.fut_c.set(Some(ControlResponse::new(
-                    ControlMessage::error(e),
-                    *this.inner,
-                    *this.ctx,
-                )));
-                return self.poll(cx);
-            }
-            Poll::Pending => return Poll::Pending,
-        };
+    match res {
+        Either::Left(_) => {
+            log::trace!("Publish result for packet {:?} is ready", packet_id);
 
-        match res {
-            Either::Left(_) => {
-                log::trace!("Publish result for packet {:?} is ready", this.packet_id);
-
-                if let Some(packet_id) = this.packet_id {
-                    this.inner.inflight.borrow_mut().remove(packet_id);
-                    Poll::Ready(Ok(Some(codec::Packet::PublishAck { packet_id: *packet_id })))
-                } else {
-                    Poll::Ready(Ok(None))
-                }
+            if let Some(packet_id) = packet_id {
+                inner.inflight.borrow_mut().remove(&packet_id);
+                Ok(Some(codec::Packet::PublishAck { packet_id }))
+            } else {
+                Ok(None)
             }
-            Either::Right(pkt) => {
-                this.fut_c.set(Some(ControlResponse::new(
-                    ControlMessage::publish(pkt.into_inner()),
-                    *this.inner,
-                    *this.ctx,
-                )));
-                self.poll(cx)
-            }
+        }
+        Either::Right(pkt) => {
+            control(ControlMessage::publish(pkt.into_inner()), inner, ctx).await
         }
     }
 }
 
-pin_project_lite::pin_project! {
-    /// Control service response future
-    pub(crate) struct ControlResponse<'f, C: Service<ControlMessage<E>>, E>
-    where C: 'f, E: 'f
-    {
-        #[pin]
-        fut: ServiceCall<'f, C, ControlMessage<E>>,
-        inner: &'f Inner<C>,
-    }
-}
-
-impl<'f, C, E> ControlResponse<'f, C, E>
+async fn control<'f, T, C, E>(
+    msg: ControlMessage<E>,
+    inner: &'f Inner<C>,
+    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+) -> Result<Option<codec::Packet>, MqttError<E>>
 where
     C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
 {
-    fn new<T>(
-        msg: ControlMessage<E>,
-        inner: &'f Inner<C>,
-        ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-    ) -> Self {
-        Self { fut: ctx.call(&inner.control, msg), inner }
-    }
-}
+    let packet = match ctx.call(&inner.control, msg).await?.result {
+        ControlResultKind::Ping => Some(codec::Packet::PingResponse),
+        ControlResultKind::PublishAck(id) => {
+            inner.inflight.borrow_mut().remove(&id);
+            Some(codec::Packet::PublishAck { packet_id: id })
+        }
+        ControlResultKind::Subscribe(_) => unreachable!(),
+        ControlResultKind::Unsubscribe(_) => unreachable!(),
+        ControlResultKind::Disconnect => {
+            inner.sink.close();
+            None
+        }
+        ControlResultKind::Closed | ControlResultKind::Nothing => None,
+    };
 
-impl<'f, C, E> Future for ControlResponse<'f, C, E>
-where
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
-{
-    type Output = Result<Option<codec::Packet>, MqttError<E>>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-
-        let packet = match this.fut.poll(cx)? {
-            Poll::Ready(item) => match item.result {
-                ControlResultKind::Ping => Some(codec::Packet::PingResponse),
-                ControlResultKind::PublishAck(id) => {
-                    this.inner.inflight.borrow_mut().remove(&id);
-                    Some(codec::Packet::PublishAck { packet_id: id })
-                }
-                ControlResultKind::Subscribe(_) => unreachable!(),
-                ControlResultKind::Unsubscribe(_) => unreachable!(),
-                ControlResultKind::Disconnect => {
-                    this.inner.sink.close();
-                    None
-                }
-                ControlResultKind::Closed | ControlResultKind::Nothing => None,
-            },
-            Poll::Pending => return Poll::Pending,
-        };
-
-        Poll::Ready(Ok(packet))
-    }
+    Ok(packet)
 }
 
 #[cfg(test)]
 mod tests {
     use ntex::time::{sleep, Seconds};
-    use ntex::util::{lazy, ByteString, Bytes};
+    use ntex::util::{lazy, ByteString, Bytes, Ready};
     use ntex::{io::Io, service::fn_service, testing::IoTest};
-    use std::rc::Rc;
+    use std::{future::Future, pin::Pin, rc::Rc};
 
     use super::*;
     use crate::v3::{codec::Codec, MqttSink, QoS};
@@ -362,17 +292,18 @@ mod tests {
             fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
         ));
 
-        let mut f = Box::pin(disp.call(DispatchItem::Item((
-            codec::Packet::Publish(codec::Publish {
-                dup: false,
-                retain: false,
-                qos: QoS::AtLeastOnce,
-                topic: ByteString::new(),
-                packet_id: NonZeroU16::new(1),
-                payload: Bytes::new(),
-            }),
-            999,
-        ))));
+        let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
+            Box::pin(disp.call(DispatchItem::Item((
+                codec::Packet::Publish(codec::Publish {
+                    dup: false,
+                    retain: false,
+                    qos: QoS::AtLeastOnce,
+                    topic: ByteString::new(),
+                    packet_id: NonZeroU16::new(1),
+                    payload: Bytes::new(),
+                }),
+                999,
+            ))));
         let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
 
         let f = Box::pin(disp.call(DispatchItem::Item((
