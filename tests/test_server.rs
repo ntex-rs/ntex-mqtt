@@ -546,13 +546,14 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
     use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 
     let srv = server::test_server(move || {
-        chain_factory(server::openssl::Acceptor::new(ssl_acceptor()).map_err(|_| ())).and_then(
-            MqttServer::new(handshake)
-                .publish(|_| Ready::Ok(()))
-                .finish()
-                .map_err(|_| ())
-                .map_init_err(|_| ()),
-        )
+        chain_factory(server::openssl::SslAcceptor::new(ssl_acceptor()).map_err(|_| ()))
+            .and_then(
+                MqttServer::new(handshake)
+                    .publish(|_| Ready::Ok(()))
+                    .finish()
+                    .map_err(|_| ())
+                    .map_init_err(|_| ()),
+            )
     });
 
     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();

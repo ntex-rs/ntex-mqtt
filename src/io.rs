@@ -586,7 +586,7 @@ mod tests {
             codec: U,
             service: F,
         ) -> (Self, nio::IoRef) {
-            let keepalive_timeout = Seconds(30).into();
+            let keepalive_timeout = Seconds(30);
             let rio = io.get_ref();
             let config = DispatcherConfig::default();
 

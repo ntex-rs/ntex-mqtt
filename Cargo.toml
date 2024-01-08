@@ -15,7 +15,7 @@ edition = "2021"
 features = ["ntex/tokio"]
 
 [dependencies]
-ntex = "1.0.0-b.0"
+ntex = "1.0.0-b.1"
 bitflags = "2.4"
 log = "0.4"
 pin-project-lite = "0.2"
@@ -25,9 +25,9 @@ thiserror = "1.0"
 
 [dev-dependencies]
 env_logger = "0.10"
-ntex-tls = "1.0.0-b.0"
+ntex-tls = "1.0.0-b.1"
 rustls = "0.21"
 rustls-pemfile = "1.0"
 openssl = "0.10"
 test-case = "3.2"
-ntex = { version = "1.0.0-b.0", features = ["tokio", "rustls", "openssl"] }
+ntex = { version = "1.0.0-b.1", features = ["tokio", "rustls", "openssl"] }

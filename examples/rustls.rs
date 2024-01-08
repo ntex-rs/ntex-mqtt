@@ -2,7 +2,7 @@ use std::{fs::File, io::BufReader, sync::Arc};
 
 use ntex::service::chain_factory;
 use ntex_mqtt::{v3, v5, MqttError, MqttServer};
-use ntex_tls::rustls::Acceptor;
+use ntex_tls::rustls::TlsAcceptor;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, rsa_private_keys};
 
@@ -74,7 +74,7 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::Server::build()
         .bind("mqtt", "127.0.0.1:8883", move |_| {
-            chain_factory(Acceptor::new(tls_acceptor.clone()))
+            chain_factory(TlsAcceptor::new(tls_acceptor.clone()))
                 .map_err(|_err| MqttError::Service(ServerError {}))
                 .and_then(
                     MqttServer::new()

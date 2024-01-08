@@ -7,8 +7,8 @@ use ntex::service::{chain_factory, ServiceFactory};
 use ntex::util::{variant, Ready};
 use ntex::ws;
 use ntex_mqtt::{v3, v5, HandshakeError, MqttError, MqttServer, ProtocolError};
-use ntex_tls::openssl::Acceptor;
-use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+use ntex_tls::openssl::SslAcceptor;
+use openssl::ssl::{self, SslFiletype, SslMethod};
 
 #[derive(Clone)]
 struct Session;
@@ -69,7 +69,7 @@ async fn main() -> std::io::Result<()> {
     // create self-signed certificates using:
     //   openssl req -x509 -nodes -subj '/CN=localhost' -newkey rsa:4096 -keyout examples/key8.pem -out examples/cert.pem -days 365 -keyform PEM
     //   openssl rsa -in examples/key8.pem -out examples/key.pem
-    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+    let mut builder = ssl::SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
     builder.set_private_key_file("./tests/key.pem", SslFiletype::PEM).unwrap();
     builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
     let acceptor = builder.build();
@@ -77,7 +77,7 @@ async fn main() -> std::io::Result<()> {
     ntex::server::Server::build()
         .bind("mqtt", "127.0.0.1:8883", move |_| {
             // first switch to ssl stream
-            chain_factory(Acceptor::new(acceptor.clone()))
+            chain_factory(SslAcceptor::new(acceptor.clone()))
                 .map_err(|_err| MqttError::Service(ServerError {}))
                 // we need to read first 4 bytes and detect protocol GET or MQTT
                 .and_then(|io: Io<_>| async move {
