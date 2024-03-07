@@ -343,7 +343,7 @@ where
 }
 
 /// Publish service response future
-async fn publish_fn<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>(
+async fn publish_fn<'f, T, C, E>(
     svc: &'f T,
     pkt: Publish,
     packet_id: u16,

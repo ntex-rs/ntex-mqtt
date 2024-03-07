@@ -5,7 +5,7 @@ use ntex::util::ByteString;
 use super::codec::{self, DisconnectReasonCode, QoS, UserProperties};
 use crate::error;
 
-/// Control plain messages
+/// Control messages
 #[derive(Debug)]
 pub enum ControlMessage<E> {
     /// Auth packet from a client

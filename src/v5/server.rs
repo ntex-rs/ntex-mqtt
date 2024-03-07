@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, fmt, future::Future, marker::PhantomData, rc::Rc};
+use std::{fmt, future::Future, marker::PhantomData, rc::Rc};
 
 use ntex::io::{DispatchItem, DispatcherConfig, IoBoxed};
 use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};

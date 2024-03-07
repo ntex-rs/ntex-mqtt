@@ -1,4 +1,4 @@
-use std::{cell::RefCell, convert::TryFrom, fmt, marker, num::NonZeroU16, rc::Rc};
+use std::{cell::RefCell, fmt, marker, num::NonZeroU16, rc::Rc};
 
 use ntex::io::{DispatcherConfig, IoBoxed};
 use ntex::router::{IntoPattern, Path, Router, RouterBuilder};

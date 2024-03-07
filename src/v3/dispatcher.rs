@@ -380,7 +380,7 @@ where
 }
 
 /// Publish service response future
-async fn publish_fn<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>(
+async fn publish_fn<'f, T, C, E>(
     svc: &'f T,
     pkt: Publish,
     packet_id: Option<NonZeroU16>,
@@ -407,7 +407,7 @@ where
     }
 }
 
-async fn control<'f, T, C: Service<ControlMessage<E>>, E>(
+async fn control<'f, T, C, E>(
     mut pkt: ControlMessage<E>,
     inner: &'f Inner<C>,
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,

@@ -1,5 +1,9 @@
 # Changes
 
+## [1.1.0] - 2024-03-07
+
+* Use MqttService::connect_timeout() only for reading protocol version
+
 ## [1.0.0] - 2024-01-09
 
 * Release

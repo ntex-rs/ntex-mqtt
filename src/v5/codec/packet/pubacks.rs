@@ -1,5 +1,6 @@
+use std::num::NonZeroU16;
+
 use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
-use std::{convert::TryInto, num::NonZeroU16};
 
 use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
