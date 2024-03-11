@@ -1,5 +1,3 @@
-use std::convert::TryFrom;
-
 use ntex::server;
 use ntex::util::{ByteString, Bytes, Ready};
 

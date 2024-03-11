@@ -224,7 +224,7 @@ fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeErr
 
 #[cfg(test)]
 mod tests {
-    use ntex::util::{ByteString, Bytes};
+    use ntex::util::Bytes;
     use std::num::NonZeroU16;
 
     use super::*;

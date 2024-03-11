@@ -275,7 +275,7 @@ mod tests {
     use std::num::{NonZeroU16, NonZeroU32};
 
     use super::*;
-    use crate::types::{QoS, MAX_PACKET_SIZE};
+    use crate::types::MAX_PACKET_SIZE;
 
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()

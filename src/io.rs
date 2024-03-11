@@ -564,7 +564,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc, sync::Arc, sync::Mutex};
+    use std::{cell::Cell, sync::Arc, sync::Mutex};
 
     use ntex::channel::condition::Condition;
     use ntex::time::{sleep, Millis};

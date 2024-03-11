@@ -272,7 +272,7 @@ mod tests {
     use ntex::time::{sleep, Seconds};
     use ntex::util::{lazy, ByteString, Bytes, Ready};
     use ntex::{io::Io, service::fn_service, testing::IoTest};
-    use std::{future::Future, pin::Pin, rc::Rc};
+    use std::{future::Future, pin::Pin};
 
     use super::*;
     use crate::v3::{codec::Codec, MqttSink, QoS};
