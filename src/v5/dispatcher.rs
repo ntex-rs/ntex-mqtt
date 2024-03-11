@@ -1,5 +1,4 @@
-use std::task::{Context, Poll};
-use std::{cell::RefCell, convert::TryFrom, marker, num, rc::Rc};
+use std::{cell::RefCell, marker, num, rc::Rc, task::Context, task::Poll};
 
 use ntex::io::DispatchItem;
 use ntex::util::inflight::InFlightService;
@@ -504,7 +503,7 @@ where
 }
 
 /// Publish service response future
-async fn publish_fn<'f, T: Service<Publish>, C: Service<ControlMessage<E>>, E>(
+async fn publish_fn<'f, T, C, E>(
     publish: &T,
     pkt: Publish,
     packet_id: u16,

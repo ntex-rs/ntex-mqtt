@@ -1,5 +1,4 @@
 use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
-use std::convert::TryInto;
 
 use crate::error::{DecodeError, EncodeError};
 use crate::utils::{self, Decode, Property};

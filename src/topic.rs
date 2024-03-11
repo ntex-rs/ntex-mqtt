@@ -1,5 +1,4 @@
-use std::fmt::{self, Write};
-use std::{convert::TryFrom, io};
+use std::{fmt, fmt::Write, io};
 
 use ntex::util::ByteString;
 
@@ -269,6 +268,7 @@ impl fmt::Display for TopicFilter {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) trait WriteTopicExt: io::Write {
     fn write_level(&mut self, level: &TopicFilterLevel) -> io::Result<usize> {
         match *level {

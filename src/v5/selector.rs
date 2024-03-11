@@ -1,6 +1,4 @@
-use std::{
-    convert::TryFrom, fmt, future::Future, io, marker, rc::Rc, task::Context, task::Poll,
-};
+use std::{fmt, future::Future, io, marker, rc::Rc, task::Context, task::Poll};
 
 use ntex::io::{Filter, Io, IoBoxed};
 use ntex::service::{boxed, Service, ServiceCtx, ServiceFactory};

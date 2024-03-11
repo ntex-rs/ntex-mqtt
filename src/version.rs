@@ -1,5 +1,3 @@
-use std::convert::TryInto;
-
 use ntex::codec::{Decoder, Encoder};
 use ntex::util::BytesMut;
 
