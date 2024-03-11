@@ -1,6 +1,6 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
 use std::{cell::RefCell, rc::Rc};
-use std::{convert::TryFrom, future::Future, num::NonZeroU16, pin::Pin, time::Duration};
+use std::{future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{lazy, ByteString, Bytes, BytesMut, Ready};

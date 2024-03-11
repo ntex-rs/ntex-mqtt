@@ -132,9 +132,9 @@ impl CounterInner {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, future::poll_fn, task::Poll, time::Duration};
+    use std::{future::poll_fn, time::Duration};
 
-    use ntex::{service::Pipeline, service::Service, time::sleep, util::lazy};
+    use ntex::{service::Pipeline, time::sleep, util::lazy};
 
     use super::*;
 

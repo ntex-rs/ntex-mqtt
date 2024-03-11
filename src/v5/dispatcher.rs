@@ -597,10 +597,9 @@ where
 #[cfg(test)]
 mod tests {
     use ntex::{io::Io, service::fn_service, testing::IoTest, util::lazy, util::Ready};
-    use std::rc::Rc;
 
     use super::*;
-    use crate::v5::{codec, MqttSink};
+    use crate::v5::MqttSink;
 
     #[derive(Debug)]
     struct TestError;
