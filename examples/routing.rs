@@ -18,7 +18,7 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,routing=trace");
     env_logger::init();
 
-    ntex::server::Server::build()
+    ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", |_| {
             v3::MqttServer::new(|handshake: v3::Handshake| async move {
                 log::info!("new mqtt v3 connection: {:?}", handshake);

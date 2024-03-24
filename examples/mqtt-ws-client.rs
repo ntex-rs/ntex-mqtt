@@ -58,11 +58,7 @@ async fn main() -> std::io::Result<()> {
     });
     ntex::rt::spawn(router.start_default());
 
-    let _ack = sink
-        .publish("test-topic", Bytes::from_static(b"data"))
-        .send_at_least_once()
-        .await
-        .unwrap();
+    sink.publish("test-topic", Bytes::from_static(b"data")).send_at_least_once().await.unwrap();
     println!("ack is received");
 
     sleep(Millis(10_000)).await;

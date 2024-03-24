@@ -60,7 +60,7 @@ async fn main() -> std::io::Result<()> {
     builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
     let acceptor = builder.build();
 
-    ntex::server::Server::build()
+    ntex::server::build()
         .bind("mqtt", "127.0.0.1:8883", move |_| {
             chain_factory(SslAcceptor::new(acceptor.clone()))
                 .map_err(|_err| MqttError::Service(ServerError {}))

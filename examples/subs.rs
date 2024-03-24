@@ -106,7 +106,7 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,subs=trace");
     env_logger::init();
 
-    ntex::server::Server::build()
+    ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", |_| {
             MqttServer::new(handshake)
                 .control(control_service_factory())
