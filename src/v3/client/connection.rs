@@ -1,3 +1,4 @@
+#![allow(clippy::let_underscore_future)]
 use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex::io::{DispatcherConfig, IoBoxed};
@@ -95,7 +96,8 @@ impl Client {
     /// Default handler closes connection on any control message.
     pub async fn start_default(self) {
         if self.keepalive.non_zero() {
-            ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            let _ =
+                ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
@@ -116,7 +118,8 @@ impl Client {
         S: Service<ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
     {
         if self.keepalive.non_zero() {
-            ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            let _ =
+                ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
@@ -179,7 +182,8 @@ where
     /// Run client with default control messages handler
     pub async fn start_default(self) {
         if self.keepalive.non_zero() {
-            ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            let _ =
+                ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
@@ -199,7 +203,8 @@ where
         S: Service<ControlMessage<Err>, Response = ControlResult, Error = Err> + 'static,
     {
         if self.keepalive.non_zero() {
-            ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            let _ =
+                ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(

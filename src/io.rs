@@ -342,7 +342,8 @@ where
                         let codec = this.codec.clone();
                         let state = inner.state.clone();
                         let fut = this.service.call_static(item);
-                        ntex::rt::spawn(async move {
+                        #[allow(clippy::let_underscore_future)]
+                        let _ = ntex::rt::spawn(async move {
                             let item = fut.await;
                             state.borrow_mut().handle_result(
                                 item,

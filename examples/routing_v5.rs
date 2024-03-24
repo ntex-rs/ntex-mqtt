@@ -28,7 +28,7 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,routing_v5=trace");
     env_logger::init();
 
-    ntex::server::Server::build()
+    ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", |_| {
             v5::MqttServer::new(
                 fn_service(|handshake: v5::Handshake| async move {
