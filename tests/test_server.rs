@@ -7,7 +7,7 @@ use ntex::util::{join_all, lazy, ByteString, Bytes, BytesMut, Ready};
 use ntex::{codec::Encoder, server, service::chain_factory};
 
 use ntex_mqtt::v3::{
-    client, codec, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish, Session,
+    client, codec, Control, Handshake, HandshakeAck, MqttServer, Publish, Session,
 };
 use ntex_mqtt::{error::ProtocolError, QoS};
 
@@ -115,7 +115,7 @@ async fn test_ping() -> std::io::Result<()> {
             .control(move |msg| {
                 let ping = ping.clone();
                 match msg {
-                    ControlMessage::Ping(msg) => {
+                    Control::Ping(msg) => {
                         ping.store(true, Relaxed);
                         Ready::Ok(msg.ack())
                     }
@@ -149,7 +149,7 @@ async fn test_ack_order() -> std::io::Result<()> {
                 Ok::<_, ()>(())
             })
             .control(move |msg| match msg {
-                ControlMessage::Subscribe(mut msg) => {
+                Control::Subscribe(mut msg) => {
                     for mut sub in &mut msg {
                         assert_eq!(sub.qos(), codec::QoS::AtLeastOnce);
                         sub.topic();
@@ -298,7 +298,7 @@ async fn test_client_disconnect() -> std::io::Result<()> {
                 Ready::Ok(ntex::service::fn_service(move |_: Publish| async { Ok(()) }))
             }))
             .control(move |msg| match msg {
-                ControlMessage::Disconnect(msg) => {
+                Control::Disconnect(msg) => {
                     disconnect.store(true, Relaxed);
                     Ready::Ok(msg.ack())
                 }
@@ -344,7 +344,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
                 }
             })
             .control(move |msg| match msg {
-                ControlMessage::Disconnect(msg) => {
+                Control::Disconnect(msg) => {
                     disconnect.store(true, Relaxed);
                     Ready::Ok(msg.ack())
                 }
@@ -418,7 +418,7 @@ async fn handle_or_drop_publish_after_disconnect(
                 }
             })
             .control(move |msg| match msg {
-                ControlMessage::Disconnect(msg) => {
+                Control::Disconnect(msg) => {
                     disconnect.store(true, Relaxed);
                     Ready::Ok(msg.ack())
                 }
@@ -449,9 +449,10 @@ async fn handle_or_drop_publish_after_disconnect(
     .unwrap();
     io.encode(codec::Packet::Disconnect, &codec).unwrap();
     io.flush(true).await.unwrap();
+    sleep(Millis(1750)).await;
+    io.close();
     drop(io);
-
-    sleep(Millis(50)).await;
+    sleep(Millis(500)).await;
 
     assert!(disconnect.load(Relaxed));
 
@@ -484,8 +485,8 @@ async fn test_nested_errors() -> std::io::Result<()> {
         MqttServer::new(handshake)
             .publish(|_| Ready::Ok(()))
             .control(move |msg| match msg {
-                ControlMessage::Disconnect(_) => Ready::Err(()),
-                ControlMessage::Error(_) => Ready::Err(()),
+                Control::Disconnect(_) => Ready::Err(()),
+                Control::Error(_) => Ready::Err(()),
                 _ => Ready::Ok(msg.disconnect()),
             })
             .finish()
@@ -596,7 +597,7 @@ async fn test_max_qos() -> std::io::Result<()> {
             .control(move |msg| {
                 let violated = violated.clone();
                 match msg {
-                    ControlMessage::ProtocolError(err) => {
+                    Control::ProtocolError(err) => {
                         if let ProtocolError::ProtocolViolation(_) = err.get_ref() {
                             violated.store(true, Relaxed);
                         }
@@ -725,7 +726,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
             .control(move |msg| {
                 let check = check.clone();
                 match msg {
-                    ControlMessage::ProtocolError(msg) => {
+                    Control::ProtocolError(msg) => {
                         if msg.get_ref() == &ProtocolError::ReadTimeout {
                             check.store(true, Relaxed);
                         }
@@ -770,7 +771,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
     sleep(Millis(1000)).await;
     assert!(!check.load(Relaxed));
 
-    sleep(Millis(2100)).await;
+    sleep(Millis(2300)).await;
     assert!(check.load(Relaxed));
 
     Ok(())

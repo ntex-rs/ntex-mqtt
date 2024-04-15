@@ -7,13 +7,11 @@ use ntex::service::{boxed, into_service, IntoService, Pipeline, Service};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{ByteString, Either, HashMap, Ready};
 
-use crate::error::MqttError;
-use crate::io::Dispatcher;
 use crate::v5::publish::{Publish, PublishAck};
-use crate::v5::{codec, shared::MqttShared, sink::MqttSink, ControlResult};
+use crate::v5::{codec, shared::MqttShared, sink::MqttSink, ControlAck};
+use crate::{error::MqttError, io::Dispatcher};
 
-use super::control::ControlMessage;
-use super::dispatcher::create_dispatcher;
+use super::{control::Control, dispatcher::create_dispatcher};
 
 /// Mqtt client
 pub struct Client {
@@ -114,7 +112,7 @@ impl Client {
             self.max_receive,
             16,
             into_service(|pkt| Ready::Ok(Either::Left(pkt))),
-            into_service(|msg: ControlMessage<()>| {
+            into_service(|msg: Control<()>| {
                 Ready::Ok(msg.disconnect(codec::Disconnect::default()))
             }),
         );
@@ -126,8 +124,8 @@ impl Client {
     pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
     where
         E: 'static,
-        F: IntoService<S, ControlMessage<E>> + 'static,
-        S: Service<ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
+        F: IntoService<S, Control<E>> + 'static,
+        S: Service<Control<E>, Response = ControlAck, Error = E> + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =
@@ -205,7 +203,7 @@ where
             self.max_receive,
             16,
             dispatch(self.builder.finish(), self.handlers),
-            into_service(|msg: ControlMessage<Err>| {
+            into_service(|msg: Control<Err>| {
                 Ready::Ok(msg.disconnect(codec::Disconnect::default()))
             }),
         );
@@ -216,8 +214,8 @@ where
     /// Run client and handle control messages
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
-        F: IntoService<S, ControlMessage<Err>>,
-        S: Service<ControlMessage<Err>, Response = ControlResult, Error = Err> + 'static,
+        F: IntoService<S, Control<Err>>,
+        S: Service<Control<Err>, Response = ControlAck, Error = Err> + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =

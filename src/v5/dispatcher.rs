@@ -9,7 +9,7 @@ use ntex::{service, Pipeline, Service, ServiceCtx, ServiceFactory};
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::types::QoS;
 
-use super::control::{ControlMessage, ControlResult};
+use super::control::{Control, ControlAck};
 use super::publish::{Publish, PublishAck};
 use super::shared::{Ack, MqttShared};
 use super::{codec, codec::DisconnectReasonCode, Session};
@@ -31,7 +31,7 @@ where
     St: 'static,
     E: From<T::Error> + From<T::InitError> + From<C::Error> + From<C::InitError> + 'static,
     T: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
-    C: ServiceFactory<ControlMessage<E>, Session<St>, Response = ControlResult> + 'static,
+    C: ServiceFactory<Control<E>, Session<St>, Response = ControlAck> + 'static,
     PublishAck: TryFrom<T::Error, Error = E>,
 {
     let factories = Rc::new((publish, control));
@@ -80,7 +80,7 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
+pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     handle_qos_after_disconnect: Option<QoS>,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
@@ -104,7 +104,7 @@ where
     E: From<T::Error>,
     T: Service<Publish, Response = PublishAck>,
     PublishAck: TryFrom<T::Error, Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     fn new(
         sink: Rc<MqttShared>,
@@ -134,7 +134,7 @@ where
     E: From<T::Error>,
     T: Service<Publish, Response = PublishAck>,
     PublishAck: TryFrom<T::Error, Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>> + 'static,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
 {
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
@@ -156,7 +156,7 @@ where
             self.inner.sink.drop_sink();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ = Pipeline::new(&inner.control).call(Control::closed()).await;
             }));
         }
 
@@ -185,7 +185,7 @@ where
 
                 if publish.topic.contains(['#', '+']) {
                     return control(
-                        ControlMessage::proto_error(
+                        Control::proto_error(
                             ProtocolError::generic_violation(
                                 "PUBLISH packet's topic name contains wildcard character [MQTT-3.3.2-2]"
                             )
@@ -211,7 +211,7 @@ where
                             );
                             drop(inner);
                             return control(
-                                ControlMessage::proto_error(
+                                Control::proto_error(
                                     ProtocolError::violation(
                                         DisconnectReasonCode::ReceiveMaximumExceeded,
                                         "Number of in-flight messages exceeds set maximum [MQTT-3.3.4-7]"
@@ -232,7 +232,7 @@ where
                             );
                             drop(inner);
                             return control(
-                                ControlMessage::proto_error(ProtocolError::violation(
+                                Control::proto_error(ProtocolError::violation(
                                     DisconnectReasonCode::QosNotSupported,
                                     "PUBLISH QoS is higher than supported [MQTT-3.2.2-11]",
                                 )),
@@ -246,7 +246,7 @@ where
                             log::trace!("Retain is not available but is set");
                             drop(inner);
                             return control(
-                                ControlMessage::proto_error(ProtocolError::violation(
+                                Control::proto_error(ProtocolError::violation(
                                     DisconnectReasonCode::RetainNotSupported,
                                     "RETAIN is not supported [MQTT-3.2.2-14]",
                                 )),
@@ -279,7 +279,7 @@ where
                                 None => {
                                     drop(inner);
                                     return control(
-                                        ControlMessage::proto_error(ProtocolError::violation(
+                                        Control::proto_error(ProtocolError::violation(
                                             DisconnectReasonCode::TopicAliasInvalid,
                                             "Unknown topic alias",
                                         )),
@@ -304,7 +304,7 @@ where
                                     if alias.get() > state.topic_alias_max() {
                                         drop(inner);
                                         return control(
-                                                ControlMessage::proto_error(
+                                                Control::proto_error(
                                                     ProtocolError::generic_violation(
                                                         "Topic alias is greater than max allowed [MQTT-3.2.2-17]",
                                                     )
@@ -343,7 +343,7 @@ where
             }
             DispatchItem::Item((codec::Packet::PublishAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
-                    control(ControlMessage::proto_error(err), &self.inner, ctx, 0).await
+                    control(Control::proto_error(err), &self.inner, ctx, 0).await
                 } else {
                     Ok(None)
                 }
@@ -353,13 +353,13 @@ where
                     return Ok(None);
                 }
 
-                control(ControlMessage::auth(pkt, size), &self.inner, ctx, 0).await
+                control(Control::auth(pkt, size), &self.inner, ctx, 0).await
             }
             DispatchItem::Item((codec::Packet::PingRequest, _)) => {
-                control(ControlMessage::ping(), &self.inner, ctx, 0).await
+                control(Control::ping(), &self.inner, ctx, 0).await
             }
             DispatchItem::Item((codec::Packet::Disconnect(pkt), size)) => {
-                control(ControlMessage::remote_disconnect(pkt, size), &self.inner, ctx, 0).await
+                control(Control::remote_disconnect(pkt, size), &self.inner, ctx, 0).await
             }
             DispatchItem::Item((codec::Packet::Subscribe(pkt), size)) => {
                 if self.inner.sink.is_closed() {
@@ -368,7 +368,7 @@ where
 
                 if pkt.topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
                     return control(
-                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                        Control::proto_error(ProtocolError::generic_violation(
                             "Topic filter is malformed [MQTT-4.7.1-*]",
                         )),
                         &self.inner,
@@ -381,7 +381,7 @@ where
                 if pkt.id.is_some() && !self.inner.sink.codec.sub_ids_available() {
                     log::trace!("Subscription Identifiers are not supported but was set");
                     return control(
-                        ControlMessage::proto_error(ProtocolError::violation(
+                        Control::proto_error(ProtocolError::violation(
                             DisconnectReasonCode::SubscriptionIdentifiersNotSupported,
                             "Subscription Identifiers are not supported",
                         )),
@@ -410,7 +410,7 @@ where
                     return Ok(None);
                 }
                 let id = pkt.packet_id;
-                control(ControlMessage::subscribe(pkt, size), &self.inner, ctx, id.get()).await
+                control(Control::subscribe(pkt, size), &self.inner, ctx, id.get()).await
             }
             DispatchItem::Item((codec::Packet::Unsubscribe(pkt), size)) => {
                 if self.inner.sink.is_closed() {
@@ -419,7 +419,7 @@ where
 
                 if pkt.topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
                     return control(
-                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                        Control::proto_error(ProtocolError::generic_violation(
                             "Topic filter is malformed [MQTT-4.7.1-*]",
                         )),
                         &self.inner,
@@ -447,22 +447,16 @@ where
                     return Ok(None);
                 }
                 let id = pkt.packet_id;
-                control(ControlMessage::unsubscribe(pkt, size), &self.inner, ctx, id.get())
-                    .await
+                control(Control::unsubscribe(pkt, size), &self.inner, ctx, id.get()).await
             }
             DispatchItem::Item((_, _)) => Ok(None),
             DispatchItem::EncoderError(err) => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::Encode(err)),
-                    &self.inner,
-                    ctx,
-                    0,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::Encode(err)), &self.inner, ctx, 0)
+                    .await
             }
             DispatchItem::KeepAliveTimeout => {
                 control(
-                    ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
+                    Control::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
                     ctx,
                     0,
@@ -470,25 +464,15 @@ where
                 .await
             }
             DispatchItem::ReadTimeout => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::ReadTimeout),
-                    &self.inner,
-                    ctx,
-                    0,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx, 0)
+                    .await
             }
             DispatchItem::DecoderError(err) => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::Decode(err)),
-                    &self.inner,
-                    ctx,
-                    0,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::Decode(err)), &self.inner, ctx, 0)
+                    .await
             }
             DispatchItem::Disconnect(err) => {
-                control(ControlMessage::peer_gone(err), &self.inner, ctx, 0).await
+                control(Control::peer_gone(err), &self.inner, ctx, 0).await
             }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
@@ -514,7 +498,7 @@ where
     E: From<T::Error>,
     T: Service<Publish, Response = PublishAck>,
     PublishAck: TryFrom<T::Error, Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     let ack = match ctx.call(publish, pkt).await {
         Ok(ack) => ack,
@@ -522,10 +506,10 @@ where
             if packet_id != 0 {
                 match PublishAck::try_from(e) {
                     Ok(ack) => ack,
-                    Err(e) => return control(ControlMessage::error(e), inner, ctx, 0).await,
+                    Err(e) => return control(Control::error(e), inner, ctx, 0).await,
                 }
             } else {
-                return control(ControlMessage::error(e.into()), inner, ctx, 0).await;
+                return control(Control::error(e.into()), inner, ctx, 0).await;
             }
         }
     };
@@ -544,15 +528,15 @@ where
 }
 
 async fn control<'f, T, C, E>(
-    pkt: ControlMessage<E>,
+    pkt: Control<E>,
     inner: &'f Inner<C>,
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     packet_id: u16,
 ) -> Result<Option<codec::Packet>, MqttError<E>>
 where
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    let mut error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
+    let mut error = matches!(pkt, Control::Error(_) | Control::ProtocolError(_));
 
     let result = match ctx.call(&inner.control, pkt).await {
         Ok(result) => {
@@ -570,7 +554,7 @@ where
                 match err {
                     MqttError::Service(err) => {
                         error = true;
-                        ctx.call(&inner.control, ControlMessage::error(err)).await?
+                        ctx.call(&inner.control, Control::error(err)).await?
                     }
                     _ => return Err(err),
                 }
@@ -622,7 +606,7 @@ mod tests {
             shared.clone(),
             fn_service(|p: Publish| Ready::Ok::<_, TestError>(p.ack())),
             fn_service(|_| {
-                Ready::Ok::<_, MqttError<TestError>>(ControlResult {
+                Ready::Ok::<_, MqttError<TestError>>(ControlAck {
                     packet: None,
                     disconnect: false,
                 })

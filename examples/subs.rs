@@ -2,9 +2,7 @@ use std::cell::RefCell;
 
 use ntex::service::{fn_factory_with_config, fn_service, ServiceFactory};
 use ntex::util::{ByteString, Ready};
-use ntex_mqtt::v5::{
-    self, ControlMessage, ControlResult, MqttServer, Publish, PublishAck, Session,
-};
+use ntex_mqtt::v5::{self, Control, ControlAck, MqttServer, Publish, PublishAck, Session};
 
 #[derive(Clone, Debug)]
 struct MySession {
@@ -70,22 +68,22 @@ async fn publish(
 }
 
 fn control_service_factory() -> impl ServiceFactory<
-    ControlMessage<MyServerError>,
+    Control<MyServerError>,
     Session<MySession>,
-    Response = ControlResult,
+    Response = ControlAck,
     Error = MyServerError,
     InitError = MyServerError,
 > {
     fn_factory_with_config(|session: Session<MySession>| {
         Ready::Ok(fn_service(move |control| match control {
-            v5::ControlMessage::Auth(a) => Ready::Ok(a.ack(v5::codec::Auth::default())),
-            v5::ControlMessage::Error(e) => {
+            v5::Control::Auth(a) => Ready::Ok(a.ack(v5::codec::Auth::default())),
+            v5::Control::Error(e) => {
                 Ready::Ok(e.ack(v5::codec::DisconnectReasonCode::UnspecifiedError))
             }
-            v5::ControlMessage::ProtocolError(e) => Ready::Ok(e.ack()),
-            v5::ControlMessage::Ping(p) => Ready::Ok(p.ack()),
-            v5::ControlMessage::Disconnect(d) => Ready::Ok(d.ack()),
-            v5::ControlMessage::Subscribe(mut s) => {
+            v5::Control::ProtocolError(e) => Ready::Ok(e.ack()),
+            v5::Control::Ping(p) => Ready::Ok(p.ack()),
+            v5::Control::Disconnect(d) => Ready::Ok(d.ack()),
+            v5::Control::Subscribe(mut s) => {
                 // store subscribed topics in session, publish service uses this list for echos
                 s.iter_mut().for_each(|mut s| {
                     session.subscriptions.borrow_mut().push(s.topic().clone());
@@ -94,9 +92,10 @@ fn control_service_factory() -> impl ServiceFactory<
 
                 Ready::Ok(s.ack())
             }
-            v5::ControlMessage::Unsubscribe(s) => Ready::Ok(s.ack()),
-            v5::ControlMessage::Closed(c) => Ready::Ok(c.ack()),
-            v5::ControlMessage::PeerGone(c) => Ready::Ok(c.ack()),
+            v5::Control::Unsubscribe(s) => Ready::Ok(s.ack()),
+            v5::Control::Closed(c) => Ready::Ok(c.ack()),
+            v5::Control::PeerGone(c) => Ready::Ok(c.ack()),
+            _ => Ready::Ok(control.ack()),
         }))
     })
 }

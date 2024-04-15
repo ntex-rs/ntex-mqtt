@@ -11,7 +11,7 @@ use crate::v5::codec::DisconnectReasonCode;
 use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{codec, publish::Publish, publish::PublishAck, sink::MqttSink};
 
-use super::control::{ControlMessage, ControlResult};
+use super::control::{Control, ControlAck};
 
 /// mqtt5 protocol dispatcher
 pub(super) fn create_dispatcher<T, C, E>(
@@ -24,7 +24,7 @@ pub(super) fn create_dispatcher<T, C, E>(
 where
     E: From<T::Error> + 'static,
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E> + 'static,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
+    C: Service<Control<E>, Response = ControlAck, Error = E> + 'static,
 {
     Dispatcher::<_, _, E>::new(
         sink,
@@ -36,7 +36,7 @@ where
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
+pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     max_receive: usize,
@@ -59,7 +59,7 @@ struct PublishInfo {
 impl<T, C, E> Dispatcher<T, C, E>
 where
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     fn new(
         sink: MqttSink,
@@ -89,7 +89,7 @@ where
 impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
 where
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>> + 'static,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
 {
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
@@ -111,7 +111,7 @@ where
             self.inner.sink.drop_sink();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ = Pipeline::new(&inner.control).call(Control::closed()).await;
             }));
         }
 
@@ -151,7 +151,7 @@ where
                             );
                             drop(inner);
                             return control(
-                                ControlMessage::proto_error(
+                                Control::proto_error(
                                     ProtocolError::violation(
                                         codec::DisconnectReasonCode::ReceiveMaximumExceeded,
                                         "Number of in-flight messages exceeds set maximum, [MQTT-3.3.4-9]"
@@ -185,7 +185,7 @@ where
                                 None => {
                                     drop(inner);
                                     return control(
-                                        ControlMessage::proto_error(ProtocolError::violation(
+                                        Control::proto_error(ProtocolError::violation(
                                             DisconnectReasonCode::TopicAliasInvalid,
                                             "Unknown topic alias",
                                         )),
@@ -210,7 +210,7 @@ where
                                     if alias.get() > self.max_topic_alias {
                                         drop(inner);
                                         return control(
-                                                ControlMessage::proto_error(
+                                                Control::proto_error(
                                                     ProtocolError::generic_violation(
                                                         "Topic alias is greater than max allowed [MQTT-3.1.2-26]",
                                                     )
@@ -242,31 +242,31 @@ where
             }
             DispatchItem::Item((codec::Packet::PublishAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
-                    control(ControlMessage::proto_error(err), &self.inner, ctx, 0).await
+                    control(Control::proto_error(err), &self.inner, ctx, 0).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item((codec::Packet::SubscribeAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Subscribe(packet)) {
-                    control(ControlMessage::proto_error(err), &self.inner, ctx, 0).await
+                    control(Control::proto_error(err), &self.inner, ctx, 0).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item((codec::Packet::UnsubscribeAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet)) {
-                    control(ControlMessage::proto_error(err), &self.inner, ctx, 0).await
+                    control(Control::proto_error(err), &self.inner, ctx, 0).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item((codec::Packet::Disconnect(pkt), size)) => {
-                control(ControlMessage::dis(pkt, size), &self.inner, ctx, 0).await
+                control(Control::dis(pkt, size), &self.inner, ctx, 0).await
             }
             DispatchItem::Item((codec::Packet::Auth(_), _)) => {
                 control(
-                    ControlMessage::proto_error(ProtocolError::unexpected_packet(
+                    Control::proto_error(ProtocolError::unexpected_packet(
                         packet_type::AUTH,
                         "AUTH packet is not supported at this time",
                     )),
@@ -292,29 +292,19 @@ where
                 Ok(None)
             }
             DispatchItem::EncoderError(err) => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::Encode(err)),
-                    &self.inner,
-                    ctx,
-                    0,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::Encode(err)), &self.inner, ctx, 0)
+                    .await
             }
             DispatchItem::DecoderError(err) => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::Decode(err)),
-                    &self.inner,
-                    ctx,
-                    0,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::Decode(err)), &self.inner, ctx, 0)
+                    .await
             }
             DispatchItem::Disconnect(err) => {
-                control(ControlMessage::peer_gone(err), &self.inner, ctx, 0).await
+                control(Control::peer_gone(err), &self.inner, ctx, 0).await
             }
             DispatchItem::KeepAliveTimeout => {
                 control(
-                    ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
+                    Control::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
                     ctx,
                     0,
@@ -322,13 +312,8 @@ where
                 .await
             }
             DispatchItem::ReadTimeout => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::ReadTimeout),
-                    &self.inner,
-                    ctx,
-                    0,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx, 0)
+                    .await
             }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
@@ -353,14 +338,14 @@ async fn publish_fn<'f, T, C, E>(
 ) -> Result<Option<codec::Packet>, MqttError<E>>
 where
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     let ack = match ctx.call(svc, pkt).await {
         Ok(res) => match res {
             Either::Right(ack) => ack,
             Either::Left(pkt) => {
                 return control(
-                    ControlMessage::publish(pkt.into_inner(), packet_size),
+                    Control::publish(pkt.into_inner(), packet_size),
                     inner,
                     ctx,
                     packet_id,
@@ -368,7 +353,7 @@ where
                 .await
             }
         },
-        Err(e) => return control(ControlMessage::error(e), inner, ctx, 0).await,
+        Err(e) => return control(Control::error(e), inner, ctx, 0).await,
     };
 
     if let Some(id) = NonZeroU16::new(packet_id) {
@@ -387,15 +372,15 @@ where
 }
 
 async fn control<'f, T, C, E>(
-    mut pkt: ControlMessage<E>,
+    mut pkt: Control<E>,
     inner: &'f Inner<C>,
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     packet_id: u16,
 ) -> Result<Option<codec::Packet>, MqttError<E>>
 where
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    let mut error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
+    let mut error = matches!(pkt, Control::Error(_) | Control::ProtocolError(_));
 
     loop {
         let result = match ctx.call(&inner.control, pkt).await {
@@ -414,7 +399,7 @@ where
                     match err {
                         MqttError::Service(err) => {
                             error = true;
-                            pkt = ControlMessage::error(err);
+                            pkt = Control::error(err);
                             continue;
                         }
                         _ => Err(err),
@@ -462,7 +447,7 @@ mod tests {
             16,
             fn_service(|p: Publish| Ready::Ok::<_, TestError>(Either::Right(p.ack()))),
             fn_service(|_| {
-                Ready::Ok::<_, MqttError<TestError>>(ControlResult {
+                Ready::Ok::<_, MqttError<TestError>>(ControlAck {
                     packet: None,
                     disconnect: false,
                 })

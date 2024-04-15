@@ -254,8 +254,8 @@ impl Encode for SubscriptionOptions {
 impl EncodeLtd for SubscribeAck {
     fn encoded_size(&self, limit: u32) -> usize {
         let len = self.status.len();
-        if len > (u32::max_value() - 2) as usize {
-            return usize::max_value(); // bail to avoid overflow
+        if len > (u32::MAX - 2) as usize {
+            return usize::MAX; // bail to avoid overflow
         }
 
         2 + ack_props::encoded_size(

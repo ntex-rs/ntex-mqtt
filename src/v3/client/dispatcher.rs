@@ -7,9 +7,9 @@ use ntex::util::{inflight::InFlightService, BoxFuture, Either, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::v3::shared::{Ack, MqttShared};
-use crate::v3::{codec, control::ControlResultKind, publish::Publish};
+use crate::v3::{codec, control::ControlAckKind, publish::Publish};
 
-use super::control::{ControlMessage, ControlResult};
+use super::control::{Control, ControlAck};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn create_dispatcher<T, C, E>(
@@ -21,7 +21,7 @@ pub(super) fn create_dispatcher<T, C, E>(
 where
     E: 'static,
     T: Service<Publish, Response = Either<(), Publish>, Error = E> + 'static,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
+    C: Service<Control<E>, Response = ControlAck, Error = E> + 'static,
 {
     // limit number of in-flight messages
     InFlightService::new(
@@ -31,7 +31,7 @@ where
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
+pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
@@ -47,7 +47,7 @@ struct Inner<C> {
 impl<T, C, E> Dispatcher<T, C, E>
 where
     T: Service<Publish, Response = Either<(), Publish>, Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     pub(crate) fn new(sink: Rc<MqttShared>, publish: T, control: C) -> Self {
         Self {
@@ -62,7 +62,7 @@ where
 impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
 where
     T: Service<Publish, Response = Either<(), Publish>, Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>> + 'static,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
     E: 'static,
 {
     type Response = Option<codec::Packet>;
@@ -85,7 +85,7 @@ where
             self.inner.sink.close();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ = Pipeline::new(&inner.control).call(Control::closed()).await;
             }));
         }
 
@@ -160,39 +160,23 @@ where
                 Ok(None)
             }
             DispatchItem::EncoderError(err) => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::Encode(err)),
-                    &self.inner,
-                    ctx,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::Encode(err)), &self.inner, ctx)
+                    .await
             }
             DispatchItem::DecoderError(err) => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::Decode(err)),
-                    &self.inner,
-                    ctx,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::Decode(err)), &self.inner, ctx)
+                    .await
             }
             DispatchItem::Disconnect(err) => {
-                control(ControlMessage::peer_gone(err), &self.inner, ctx).await
+                control(Control::peer_gone(err), &self.inner, ctx).await
             }
             DispatchItem::KeepAliveTimeout => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
-                    &self.inner,
-                    ctx,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::KeepAliveTimeout), &self.inner, ctx)
+                    .await
             }
             DispatchItem::ReadTimeout => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::ReadTimeout),
-                    &self.inner,
-                    ctx,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx)
+                    .await
             }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
@@ -215,12 +199,12 @@ async fn publish_fn<'f, T, C, E>(
 ) -> Result<Option<codec::Packet>, MqttError<E>>
 where
     T: Service<Publish, Response = Either<(), Publish>, Error = E>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     let res = match ctx.call(svc, pkt).await {
         Ok(item) => item,
         Err(e) => {
-            return control(ControlMessage::error(e), inner, ctx).await;
+            return control(Control::error(e), inner, ctx).await;
         }
     };
 
@@ -235,33 +219,31 @@ where
                 Ok(None)
             }
         }
-        Either::Right(pkt) => {
-            control(ControlMessage::publish(pkt.into_inner()), inner, ctx).await
-        }
+        Either::Right(pkt) => control(Control::publish(pkt.into_inner()), inner, ctx).await,
     }
 }
 
 async fn control<'f, T, C, E>(
-    msg: ControlMessage<E>,
+    msg: Control<E>,
     inner: &'f Inner<C>,
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
 ) -> Result<Option<codec::Packet>, MqttError<E>>
 where
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     let packet = match ctx.call(&inner.control, msg).await?.result {
-        ControlResultKind::Ping => Some(codec::Packet::PingResponse),
-        ControlResultKind::PublishAck(id) => {
+        ControlAckKind::Ping => Some(codec::Packet::PingResponse),
+        ControlAckKind::PublishAck(id) => {
             inner.inflight.borrow_mut().remove(&id);
             Some(codec::Packet::PublishAck { packet_id: id })
         }
-        ControlResultKind::Subscribe(_) => unreachable!(),
-        ControlResultKind::Unsubscribe(_) => unreachable!(),
-        ControlResultKind::Disconnect => {
+        ControlAckKind::Subscribe(_) => unreachable!(),
+        ControlAckKind::Unsubscribe(_) => unreachable!(),
+        ControlAckKind::Disconnect => {
             inner.sink.close();
             None
         }
-        ControlResultKind::Closed | ControlResultKind::Nothing => None,
+        ControlAckKind::Closed | ControlAckKind::Nothing => None,
     };
 
     Ok(packet)
@@ -289,7 +271,7 @@ mod tests {
                 sleep(Seconds(10)).await;
                 Ok(Either::Left(()))
             }),
-            fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
+            fn_service(|_| Ready::Ok(ControlAck { result: ControlAckKind::Nothing })),
         ));
 
         let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
@@ -336,7 +318,7 @@ mod tests {
         let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
             shared.clone(),
             fn_service(|_| Ready::Ok(Either::Left(()))),
-            fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
+            fn_service(|_| Ready::Ok(ControlAck { result: ControlAckKind::Nothing })),
         ));
 
         let sink = MqttSink::new(shared.clone());

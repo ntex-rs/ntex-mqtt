@@ -5,9 +5,10 @@ use ntex::util::ByteString;
 use super::codec::{self, DisconnectReasonCode, QoS, UserProperties};
 use crate::error;
 
-/// Control messages
+/// Server control messages
+#[non_exhaustive]
 #[derive(Debug)]
-pub enum ControlMessage<E> {
+pub enum Control<E> {
     /// Auth packet from a client
     Auth(Auth),
     /// Ping packet from a client
@@ -30,61 +31,61 @@ pub enum ControlMessage<E> {
 
 /// Control message handling result
 #[derive(Debug)]
-pub struct ControlResult {
+pub struct ControlAck {
     pub(crate) packet: Option<codec::Packet>,
     pub(crate) disconnect: bool,
 }
 
-impl<E> ControlMessage<E> {
-    /// Create a new `ControlMessage` from AUTH packet.
+impl<E> Control<E> {
+    /// Create a new `Control` from AUTH packet.
     #[doc(hidden)]
     pub fn auth(pkt: codec::Auth, size: u32) -> Self {
-        ControlMessage::Auth(Auth { pkt, size })
+        Control::Auth(Auth { pkt, size })
     }
 
-    /// Create a new `ControlMessage` from SUBSCRIBE packet.
+    /// Create a new `Control` from SUBSCRIBE packet.
     #[doc(hidden)]
     pub fn subscribe(pkt: codec::Subscribe, size: u32) -> Self {
-        ControlMessage::Subscribe(Subscribe::new(pkt, size))
+        Control::Subscribe(Subscribe::new(pkt, size))
     }
 
-    /// Create a new `ControlMessage` from UNSUBSCRIBE packet.
+    /// Create a new `Control` from UNSUBSCRIBE packet.
     #[doc(hidden)]
     pub fn unsubscribe(pkt: codec::Unsubscribe, size: u32) -> Self {
-        ControlMessage::Unsubscribe(Unsubscribe::new(pkt, size))
+        Control::Unsubscribe(Unsubscribe::new(pkt, size))
     }
 
-    /// Create a new PING `ControlMessage`.
+    /// Create a new PING `Control`.
     #[doc(hidden)]
     pub fn ping() -> Self {
-        ControlMessage::Ping(Ping)
+        Control::Ping(Ping)
     }
 
-    /// Create a new `ControlMessage` from DISCONNECT packet.
+    /// Create a new `Control` from DISCONNECT packet.
     #[doc(hidden)]
     pub fn remote_disconnect(pkt: codec::Disconnect, size: u32) -> Self {
-        ControlMessage::Disconnect(Disconnect(pkt, size))
+        Control::Disconnect(Disconnect(pkt, size))
     }
 
     pub(super) const fn closed() -> Self {
-        ControlMessage::Closed(Closed)
+        Control::Closed(Closed)
     }
 
     pub(super) fn error(err: E) -> Self {
-        ControlMessage::Error(Error::new(err))
+        Control::Error(Error::new(err))
     }
 
     pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        ControlMessage::PeerGone(PeerGone(err))
+        Control::PeerGone(PeerGone(err))
     }
 
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        ControlMessage::ProtocolError(ProtocolError::new(err))
+        Control::ProtocolError(ProtocolError::new(err))
     }
 
     /// Disconnects the client by sending DISCONNECT packet
     /// with `NormalDisconnection` reason code.
-    pub fn disconnect(&self) -> ControlResult {
+    pub fn disconnect(&self) -> ControlAck {
         let pkt = codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::NormalDisconnection,
             session_expiry_interval_secs: None,
@@ -92,13 +93,28 @@ impl<E> ControlMessage<E> {
             reason_string: None,
             user_properties: Default::default(),
         };
-        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+        ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
 
     /// Disconnects the client by sending DISCONNECT packet
     /// with provided reason code.
-    pub fn disconnect_with(&self, pkt: codec::Disconnect) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    pub fn disconnect_with(&self, pkt: codec::Disconnect) -> ControlAck {
+        ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    }
+
+    /// Ack control message
+    pub fn ack(self) -> ControlAck {
+        match self {
+            Control::Auth(_) => super::disconnect("Auth control message is not supported"),
+            Control::Ping(msg) => msg.ack(),
+            Control::Disconnect(msg) => msg.ack(),
+            Control::Subscribe(msg) => msg.ack(),
+            Control::Unsubscribe(msg) => msg.ack(),
+            Control::Closed(msg) => msg.ack(),
+            Control::Error(_) => super::disconnect("Error control message is not supported"),
+            Control::ProtocolError(msg) => msg.ack(),
+            Control::PeerGone(msg) => msg.ack(),
+        }
     }
 }
 
@@ -119,8 +135,8 @@ impl Auth {
         self.size
     }
 
-    pub fn ack(self, response: codec::Auth) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::Auth(response)), disconnect: false }
+    pub fn ack(self, response: codec::Auth) -> ControlAck {
+        ControlAck { packet: Some(codec::Packet::Auth(response)), disconnect: false }
     }
 }
 
@@ -128,8 +144,8 @@ impl Auth {
 pub struct Ping;
 
 impl Ping {
-    pub fn ack(self) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::PingResponse), disconnect: false }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { packet: Some(codec::Packet::PingResponse), disconnect: false }
     }
 }
 
@@ -148,8 +164,8 @@ impl Disconnect {
     }
 
     /// Ack disconnect message
-    pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None, disconnect: true }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { packet: None, disconnect: true }
     }
 }
 
@@ -204,11 +220,8 @@ impl Subscribe {
 
     #[inline]
     /// Ack Subscribe packet
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
-            packet: Some(codec::Packet::SubscribeAck(self.result)),
-            disconnect: false,
-        }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { packet: Some(codec::Packet::SubscribeAck(self.result)), disconnect: false }
     }
 
     /// Returns reference to subscribe packet
@@ -371,8 +384,8 @@ impl Unsubscribe {
 
     #[inline]
     /// convert packet to a result
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
+    pub fn ack(self) -> ControlAck {
+        ControlAck {
             packet: Some(codec::Packet::UnsubscribeAck(self.result)),
             disconnect: false,
         }
@@ -465,8 +478,8 @@ pub struct Closed;
 impl Closed {
     #[inline]
     /// convert packet to a result
-    pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None, disconnect: false }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { packet: None, disconnect: false }
     }
 }
 
@@ -523,19 +536,19 @@ impl<E> Error<E> {
 
     #[inline]
     /// Ack service error, return disconnect packet and close connection.
-    pub fn ack(mut self, reason: DisconnectReasonCode) -> ControlResult {
+    pub fn ack(mut self, reason: DisconnectReasonCode) -> ControlAck {
         self.pkt.reason_code = reason;
-        ControlResult { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true }
+        ControlAck { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true }
     }
 
     #[inline]
     /// Ack service error, return disconnect packet and close connection.
-    pub fn ack_with<F>(self, f: F) -> ControlResult
+    pub fn ack_with<F>(self, f: F) -> ControlAck
     where
         F: FnOnce(E, codec::Disconnect) -> codec::Disconnect,
     {
         let pkt = f(self.err, self.pkt);
-        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+        ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
 }
 
@@ -614,18 +627,15 @@ impl ProtocolError {
 
     #[inline]
     /// Ack protocol error, return disconnect packet and close connection.
-    pub fn ack(self) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true }
     }
 
     #[inline]
     /// Ack protocol error, return disconnect packet and close connection.
-    pub fn ack_and_error(self) -> (ControlResult, error::ProtocolError) {
+    pub fn ack_and_error(self) -> (ControlAck, error::ProtocolError) {
         (
-            ControlResult {
-                packet: Some(codec::Packet::Disconnect(self.pkt)),
-                disconnect: true,
-            },
+            ControlAck { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true },
             self.err,
         )
     }
@@ -646,7 +656,7 @@ impl PeerGone {
     }
 
     /// Ack PeerGone message
-    pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None, disconnect: true }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { packet: None, disconnect: true }
     }
 }

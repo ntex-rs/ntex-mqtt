@@ -24,7 +24,7 @@ impl<Err, InitErr>
         InitErr,
     >
 {
-    /// Create mqtt protocol selector server
+    /// Create mqtt server
     pub fn new() -> Self {
         MqttServer {
             v3: DefaultProtocolServer::new(ProtocolVersion::MQTT3),
@@ -85,11 +85,8 @@ where
                 Error = Err,
                 InitError = InitErr,
             > + 'static,
-        Cn: ServiceFactory<
-                v3::ControlMessage<Err>,
-                v3::Session<St>,
-                Response = v3::ControlResult,
-            > + 'static,
+        Cn: ServiceFactory<v3::Control<Err>, v3::Session<St>, Response = v3::ControlAck>
+            + 'static,
         P: ServiceFactory<v3::Publish, v3::Session<St>, Response = ()> + 'static,
         C::Error: From<Cn::Error>
             + From<Cn::InitError>
@@ -99,28 +96,6 @@ where
     {
         MqttServer {
             v3: service.finish(),
-            v5: self.v5,
-            connect_timeout: self.connect_timeout,
-            _t: marker::PhantomData,
-        }
-    }
-
-    /// Service to handle v3 protocol
-    pub fn v3_variants(
-        self,
-        service: v3::Selector<Err, InitErr>,
-    ) -> MqttServer<
-        impl ServiceFactory<IoBoxed, Response = (), Error = MqttError<Err>, InitError = InitErr>,
-        V5,
-        Err,
-        InitErr,
-    >
-    where
-        Err: 'static,
-        InitErr: 'static,
-    {
-        MqttServer {
-            v3: service,
             v5: self.v5,
             connect_timeout: self.connect_timeout,
             _t: marker::PhantomData,
@@ -145,11 +120,8 @@ where
                 Error = Err,
                 InitError = InitErr,
             > + 'static,
-        Cn: ServiceFactory<
-                v5::ControlMessage<Err>,
-                v5::Session<St>,
-                Response = v5::ControlResult,
-            > + 'static,
+        Cn: ServiceFactory<v5::Control<Err>, v5::Session<St>, Response = v5::ControlAck>
+            + 'static,
         P: ServiceFactory<v5::Publish, v5::Session<St>, Response = v5::PublishAck> + 'static,
         P::Error: fmt::Debug,
         C::Error: From<Cn::Error>
@@ -162,28 +134,6 @@ where
         MqttServer {
             v3: self.v3,
             v5: service.finish(),
-            connect_timeout: self.connect_timeout,
-            _t: marker::PhantomData,
-        }
-    }
-
-    /// Service to handle v5 protocol
-    pub fn v5_variants<St, C, Cn, P>(
-        self,
-        service: v5::Selector<Err, InitErr>,
-    ) -> MqttServer<
-        V3,
-        impl ServiceFactory<IoBoxed, Response = (), Error = MqttError<Err>, InitError = InitErr>,
-        Err,
-        InitErr,
-    >
-    where
-        Err: 'static,
-        InitErr: 'static,
-    {
-        MqttServer {
-            v3: self.v3,
-            v5: service,
             connect_timeout: self.connect_timeout,
             _t: marker::PhantomData,
         }

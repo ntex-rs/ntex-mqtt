@@ -2,7 +2,7 @@ use std::{fmt, marker::PhantomData};
 
 use ntex::service::{Service, ServiceCtx, ServiceFactory};
 
-use super::control::{ControlMessage, ControlResult};
+use super::control::{Control, ControlAck};
 use super::publish::{Publish, PublishAck};
 use super::Session;
 
@@ -51,10 +51,8 @@ impl<S, E: fmt::Debug> Default for DefaultControlService<S, E> {
     }
 }
 
-impl<S, E: fmt::Debug> ServiceFactory<ControlMessage<E>, Session<S>>
-    for DefaultControlService<S, E>
-{
-    type Response = ControlResult;
+impl<S, E: fmt::Debug> ServiceFactory<Control<E>, Session<S>> for DefaultControlService<S, E> {
+    type Response = ControlAck;
     type Error = E;
     type InitError = E;
     type Service = DefaultControlService<S, E>;
@@ -64,18 +62,18 @@ impl<S, E: fmt::Debug> ServiceFactory<ControlMessage<E>, Session<S>>
     }
 }
 
-impl<S, E: fmt::Debug> Service<ControlMessage<E>> for DefaultControlService<S, E> {
-    type Response = ControlResult;
+impl<S, E: fmt::Debug> Service<Control<E>> for DefaultControlService<S, E> {
+    type Response = ControlAck;
     type Error = E;
 
     async fn call(
         &self,
-        pkt: ControlMessage<E>,
+        pkt: Control<E>,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         match pkt {
-            ControlMessage::Ping(pkt) => Ok(pkt.ack()),
-            ControlMessage::Disconnect(pkt) => Ok(pkt.ack()),
+            Control::Ping(pkt) => Ok(pkt.ack()),
+            Control::Disconnect(pkt) => Ok(pkt.ack()),
             _ => {
                 log::warn!("MQTT5 Control service is not configured, pkt: {:?}", pkt);
                 Ok(pkt.disconnect_with(super::codec::Disconnect::new(

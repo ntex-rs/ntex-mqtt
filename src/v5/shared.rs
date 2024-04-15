@@ -123,9 +123,9 @@ impl MqttShared {
     pub(super) fn next_id(&self) -> NonZeroU16 {
         let idx = self.inflight_idx.get() + 1;
         self.inflight_idx.set(idx);
-        let idx = if idx == u16::max_value() {
+        let idx = if idx == u16::MAX {
             self.inflight_idx.set(0);
-            u16::max_value()
+            u16::MAX
         } else {
             self.inflight_idx.set(idx);
             idx
