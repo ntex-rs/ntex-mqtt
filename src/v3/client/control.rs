@@ -1,12 +1,10 @@
 use std::io;
 
-pub use crate::v3::control::{
-    Closed, ControlResult, Disconnect, Error, PeerGone, ProtocolError,
-};
-use crate::v3::{codec, control::ControlResultKind, error};
+pub use crate::v3::control::{Closed, ControlAck, Disconnect, Error, PeerGone, ProtocolError};
+use crate::v3::{codec, control::ControlAckKind, error};
 
 #[derive(Debug)]
-pub enum ControlMessage<E> {
+pub enum Control<E> {
     /// Unhandled publish packet
     Publish(Publish),
     /// Connection closed
@@ -19,30 +17,30 @@ pub enum ControlMessage<E> {
     PeerGone(PeerGone),
 }
 
-impl<E> ControlMessage<E> {
+impl<E> Control<E> {
     pub(super) fn publish(pkt: codec::Publish) -> Self {
-        ControlMessage::Publish(Publish(pkt))
+        Control::Publish(Publish(pkt))
     }
 
     pub(super) fn closed() -> Self {
-        ControlMessage::Closed(Closed)
+        Control::Closed(Closed)
     }
 
     pub(super) fn error(err: E) -> Self {
-        ControlMessage::Error(Error::new(err))
+        Control::Error(Error::new(err))
     }
 
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        ControlMessage::ProtocolError(ProtocolError::new(err))
+        Control::ProtocolError(ProtocolError::new(err))
     }
 
     pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        ControlMessage::PeerGone(PeerGone(err))
+        Control::PeerGone(PeerGone(err))
     }
 
     /// Initiate clean disconnect
-    pub fn disconnect(&self) -> ControlResult {
-        ControlResult { result: ControlResultKind::Disconnect }
+    pub fn disconnect(&self) -> ControlAck {
+        ControlAck { result: ControlAckKind::Disconnect }
     }
 }
 
@@ -60,19 +58,19 @@ impl Publish {
         &mut self.0
     }
 
-    pub fn ack(self) -> ControlResult {
+    pub fn ack(self) -> ControlAck {
         if let Some(id) = self.0.packet_id {
-            ControlResult { result: ControlResultKind::PublishAck(id) }
+            ControlAck { result: ControlAckKind::PublishAck(id) }
         } else {
-            ControlResult { result: ControlResultKind::Nothing }
+            ControlAck { result: ControlAckKind::Nothing }
         }
     }
 
-    pub fn into_inner(self) -> (ControlResult, codec::Publish) {
+    pub fn into_inner(self) -> (ControlAck, codec::Publish) {
         if let Some(id) = self.0.packet_id {
-            (ControlResult { result: ControlResultKind::PublishAck(id) }, self.0)
+            (ControlAck { result: ControlAckKind::PublishAck(id) }, self.0)
         } else {
-            (ControlResult { result: ControlResultKind::Nothing }, self.0)
+            (ControlAck { result: ControlAckKind::Nothing }, self.0)
         }
     }
 }

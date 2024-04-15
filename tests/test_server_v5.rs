@@ -7,7 +7,7 @@ use ntex::util::{lazy, ByteString, Bytes, BytesMut, Ready};
 use ntex::{codec::Encoder, server, service::fn_service};
 
 use ntex_mqtt::v5::{
-    client, codec, error, ControlMessage, Handshake, HandshakeAck, MqttServer, Publish,
+    client, codec, error, Control, Handshake, HandshakeAck, MqttServer, Publish,
     PublishAck, QoS, Session,
 };
 
@@ -167,9 +167,9 @@ async fn test_nested_errors_handling() -> std::io::Result<()> {
         MqttServer::new(handshake)
             .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
             .control(move |msg| match msg {
-                ControlMessage::Disconnect(_) => Ready::Err(TestError),
-                ControlMessage::Error(_) => Ready::Err(TestError),
-                ControlMessage::Closed(m) => Ready::Ok(m.ack()),
+                Control::Disconnect(_) => Ready::Err(TestError),
+                Control::Error(_) => Ready::Err(TestError),
+                Control::Closed(m) => Ready::Ok(m.ack()),
                 _ => panic!("{:?}", msg),
             })
             .finish()
@@ -194,11 +194,11 @@ async fn test_disconnect_on_error() -> std::io::Result<()> {
         MqttServer::new(handshake)
             .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
             .control(move |msg| match msg {
-                ControlMessage::Disconnect(_) => Ready::Err(TestError),
-                ControlMessage::Error(m) => {
+                Control::Disconnect(_) => Ready::Err(TestError),
+                Control::Error(m) => {
                     Ready::Ok(m.ack(codec::DisconnectReasonCode::ImplementationSpecificError))
                 }
-                ControlMessage::Closed(m) => Ready::Ok(m.ack()),
+                Control::Closed(m) => Ready::Ok(m.ack()),
                 _ => panic!("{:?}", msg),
             })
             .finish()
@@ -224,7 +224,7 @@ async fn test_disconnect_after_control_error() -> std::io::Result<()> {
         MqttServer::new(handshake)
             .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
             .control(move |msg| match msg {
-                ControlMessage::Subscribe(_) => Ready::Err(TestError),
+                Control::Subscribe(_) => Ready::Err(TestError),
                 _ => Ready::Ok(msg.disconnect()),
             })
             .finish()
@@ -278,7 +278,7 @@ async fn test_ping() -> std::io::Result<()> {
             .control(move |msg| {
                 let ping = ping.clone();
                 match msg {
-                    ControlMessage::Ping(msg) => {
+                    Control::Ping(msg) => {
                         ping.store(true, Relaxed);
                         Ready::Ok::<_, TestError>(msg.ack())
                     }
@@ -310,7 +310,7 @@ async fn test_ack_order() -> std::io::Result<()> {
                 Ok::<_, TestError>(p.ack())
             })
             .control(move |msg| match msg {
-                ControlMessage::Subscribe(mut msg) => {
+                Control::Subscribe(mut msg) => {
                     for mut sub in &mut msg {
                         sub.topic();
                         sub.options();
@@ -498,7 +498,7 @@ async fn test_max_receive() {
                 Ok::<_, TestError>(p.ack())
             })
             .control(move |msg| match msg {
-                ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+                Control::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
                 _ => Ready::Ok(msg.disconnect()),
             })
             .finish()
@@ -560,7 +560,7 @@ async fn test_keepalive() {
         MqttServer::new(|con: Handshake| async move { Ok(con.ack(St).keep_alive(1)) })
             .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
             .control(move |msg| match msg {
-                ControlMessage::ProtocolError(msg) => {
+                Control::ProtocolError(msg) => {
                     if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
                         ka.store(true, Relaxed);
                     }
@@ -596,7 +596,7 @@ async fn test_keepalive2() {
         MqttServer::new(|con: Handshake| async move { Ok(con.ack(St).keep_alive(1)) })
             .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
             .control(move |msg| match msg {
-                ControlMessage::ProtocolError(msg) => {
+                Control::ProtocolError(msg) => {
                     if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
                         ka.store(true, Relaxed);
                     }
@@ -641,7 +641,7 @@ async fn test_keepalive3() {
             .frame_read_rate(Seconds(1), Seconds(5), 256)
             .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
             .control(move |msg| match msg {
-                ControlMessage::ProtocolError(msg) => {
+                Control::ProtocolError(msg) => {
                     if let &error::ProtocolError::ReadTimeout = msg.get_ref() {
                         ka.store(true, Relaxed);
                     }
@@ -700,7 +700,7 @@ async fn test_sink_encoder_error_pub_qos1() {
             Ok::<_, TestError>(p.ack())
         })
         .control(move |msg| match msg {
-            ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+            Control::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
             _ => Ready::Ok(msg.disconnect()),
         })
         .finish()
@@ -745,7 +745,7 @@ async fn test_sink_encoder_error_pub_qos0() {
             Ok::<_, TestError>(p.ack())
         })
         .control(move |msg| match msg {
-            ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+            Control::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
             _ => Ready::Ok(msg.disconnect()),
         })
         .finish()
@@ -804,7 +804,7 @@ async fn test_sink_success_after_encoder_error_qos1() {
             Ok::<_, TestError>(p.ack())
         })
         .control(move |msg| match msg {
-            ControlMessage::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
+            Control::ProtocolError(msg) => Ready::Ok::<_, TestError>(msg.ack()),
             _ => Ready::Ok(msg.disconnect()),
         })
         .finish()
@@ -879,7 +879,7 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
     let srv = server::test_server(move || {
         MqttServer::new(handshake)
             .control(move |msg| match msg {
-                ControlMessage::Subscribe(mut msg) => {
+                Control::Subscribe(mut msg) => {
                     msg.iter_mut().for_each(|mut s| {
                         s.fail(codec::SubscribeAckReason::ImplementationSpecificError)
                     });
@@ -949,7 +949,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
                 Ready::Ok::<_, TestError>(p.ack())
             })
             .control(move |msg| match msg {
-                ControlMessage::Disconnect(msg) => {
+                Control::Disconnect(msg) => {
                     disconnect.store(true, Relaxed);
                     Ready::Ok::<_, TestError>(msg.ack())
                 }
@@ -1022,7 +1022,7 @@ async fn handle_or_drop_publish_after_disconnect(
                 Ready::Ok::<_, TestError>(p.ack())
             })
             .control(move |msg| match msg {
-                ControlMessage::Disconnect(msg) => {
+                Control::Disconnect(msg) => {
                     disconnect.store(true, Relaxed);
                     Ready::Ok::<_, TestError>(msg.ack())
                 }
@@ -1112,7 +1112,7 @@ async fn test_max_qos() -> std::io::Result<()> {
             .control(move |msg| {
                 let violated = violated.clone();
                 match msg {
-                    ControlMessage::ProtocolError(msg) => {
+                    Control::ProtocolError(msg) => {
                         if let error::ProtocolError::ProtocolViolation(_) = msg.get_ref() {
                             violated.store(true, Relaxed);
                         }
@@ -1253,7 +1253,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
             .control(move |msg| {
                 let check = check.clone();
                 match msg {
-                    ControlMessage::ProtocolError(msg) => {
+                    Control::ProtocolError(msg) => {
                         if msg.get_ref() == &error::ProtocolError::ReadTimeout {
                             check.store(true, Relaxed);
                         }

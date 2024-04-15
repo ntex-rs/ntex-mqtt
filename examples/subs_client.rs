@@ -29,9 +29,9 @@ async fn main() -> std::io::Result<()> {
     let sink = client.sink();
 
     // handle incoming publishes
-    ntex::rt::spawn(client.start(fn_service(|control: v5::client::ControlMessage<Error>| {
+    ntex::rt::spawn(client.start(fn_service(|control: v5::client::Control<Error>| {
         match control {
-            v5::client::ControlMessage::Publish(publish) => {
+            v5::client::Control::Publish(publish) => {
                 log::info!(
                     "incoming publish: {:?} -> {:?} payload {:?}",
                     publish.packet().packet_id,
@@ -40,23 +40,23 @@ async fn main() -> std::io::Result<()> {
                 );
                 Ready::Ok(publish.ack(v5::codec::PublishAckReason::Success))
             }
-            v5::client::ControlMessage::Disconnect(msg) => {
+            v5::client::Control::Disconnect(msg) => {
                 log::warn!("Server disconnecting: {:?}", msg);
                 Ready::Ok(msg.ack())
             }
-            v5::client::ControlMessage::Error(msg) => {
+            v5::client::Control::Error(msg) => {
                 log::error!("Codec error: {:?}", msg);
                 Ready::Ok(msg.ack(v5::codec::DisconnectReasonCode::UnspecifiedError))
             }
-            v5::client::ControlMessage::ProtocolError(msg) => {
+            v5::client::Control::ProtocolError(msg) => {
                 log::error!("Protocol error: {:?}", msg);
                 Ready::Ok(msg.ack())
             }
-            v5::client::ControlMessage::PeerGone(msg) => {
+            v5::client::Control::PeerGone(msg) => {
                 log::warn!("Peer closed connection: {:?}", msg.error());
                 Ready::Ok(msg.ack())
             }
-            v5::client::ControlMessage::Closed(msg) => {
+            v5::client::Control::Closed(msg) => {
                 log::warn!("Server closed connection: {:?}", msg);
                 Ready::Ok(msg.ack())
             }

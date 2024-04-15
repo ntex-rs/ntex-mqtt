@@ -1,5 +1,11 @@
 # Changes
 
+## [2.0.0] - 2024-04-1x
+
+* Rename `ControlMessage` to `Control`
+
+* Remove protocol variant services
+
 ## [1.1.0] - 2024-03-07
 
 * Use MqttService::connect_timeout() only for reading protocol version

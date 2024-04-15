@@ -7,11 +7,10 @@ use ntex::service::{boxed, into_service, IntoService, Pipeline, Service};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{Either, Ready};
 
-use crate::error::MqttError;
-use crate::io::Dispatcher;
-use crate::v3::{codec, shared::MqttShared, sink::MqttSink, ControlResult, Publish};
+use crate::v3::{codec, shared::MqttShared, sink::MqttSink, ControlAck, Publish};
+use crate::{error::MqttError, io::Dispatcher};
 
-use super::{control::ControlMessage, dispatcher::create_dispatcher};
+use super::{control::Control, dispatcher::create_dispatcher};
 
 /// Mqtt client
 pub struct Client {
@@ -104,7 +103,7 @@ impl Client {
             self.shared.clone(),
             self.max_receive,
             into_service(|pkt| Ready::Ok(Either::Right(pkt))),
-            into_service(|msg: ControlMessage<()>| Ready::<_, ()>::Ok(msg.disconnect())),
+            into_service(|msg: Control<()>| Ready::<_, ()>::Ok(msg.disconnect())),
         );
 
         let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher, &self.config).await;
@@ -114,8 +113,8 @@ impl Client {
     pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
     where
         E: 'static,
-        F: IntoService<S, ControlMessage<E>> + 'static,
-        S: Service<ControlMessage<E>, Response = ControlResult, Error = E> + 'static,
+        F: IntoService<S, Control<E>> + 'static,
+        S: Service<Control<E>, Response = ControlAck, Error = E> + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =
@@ -190,7 +189,7 @@ where
             self.shared.clone(),
             self.max_receive,
             dispatch(self.builder.finish(), self.handlers),
-            into_service(|msg: ControlMessage<Err>| Ready::<_, Err>::Ok(msg.disconnect())),
+            into_service(|msg: Control<Err>| Ready::<_, Err>::Ok(msg.disconnect())),
         );
 
         let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher, &self.config).await;
@@ -199,8 +198,8 @@ where
     /// Run client and handle control messages
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
-        F: IntoService<S, ControlMessage<Err>>,
-        S: Service<ControlMessage<Err>, Response = ControlResult, Error = Err> + 'static,
+        F: IntoService<S, Control<Err>>,
+        S: Service<Control<Err>, Response = ControlAck, Error = Err> + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =

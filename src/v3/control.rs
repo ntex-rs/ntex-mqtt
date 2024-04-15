@@ -5,7 +5,7 @@ use super::codec;
 use crate::{error, types::QoS};
 
 #[derive(Debug)]
-pub enum ControlMessage<E> {
+pub enum Control<E> {
     /// Ping packet
     Ping(Ping),
     /// Disconnect packet
@@ -25,12 +25,12 @@ pub enum ControlMessage<E> {
 }
 
 #[derive(Debug)]
-pub struct ControlResult {
-    pub(crate) result: ControlResultKind,
+pub struct ControlAck {
+    pub(crate) result: ControlAckKind,
 }
 
 #[derive(Debug)]
-pub(crate) enum ControlResultKind {
+pub(crate) enum ControlAckKind {
     Nothing,
     PublishAck(NonZeroU16),
     Ping,
@@ -40,51 +40,51 @@ pub(crate) enum ControlResultKind {
     Closed,
 }
 
-impl<E> ControlMessage<E> {
-    /// Create a new PING `ControlMessage`.
+impl<E> Control<E> {
+    /// Create a new PING `Control` message.
     #[doc(hidden)]
     pub fn ping() -> Self {
-        ControlMessage::Ping(Ping)
+        Control::Ping(Ping)
     }
 
-    /// Create a new `ControlMessage` from SUBSCRIBE packet.
+    /// Create a new `Control` message from SUBSCRIBE packet.
     #[doc(hidden)]
     pub fn subscribe(pkt: Subscribe) -> Self {
-        ControlMessage::Subscribe(pkt)
+        Control::Subscribe(pkt)
     }
 
-    /// Create a new `ControlMessage` from UNSUBSCRIBE packet.
+    /// Create a new `Control` message from UNSUBSCRIBE packet.
     #[doc(hidden)]
     pub fn unsubscribe(pkt: Unsubscribe) -> Self {
-        ControlMessage::Unsubscribe(pkt)
+        Control::Unsubscribe(pkt)
     }
 
-    /// Create a new `ControlMessage` from DISCONNECT packet.
+    /// Create a new `Control` message from DISCONNECT packet.
     #[doc(hidden)]
     pub fn remote_disconnect() -> Self {
-        ControlMessage::Disconnect(Disconnect)
+        Control::Disconnect(Disconnect)
     }
 
     pub(super) fn closed() -> Self {
-        ControlMessage::Closed(Closed)
+        Control::Closed(Closed)
     }
 
     pub(super) fn error(err: E) -> Self {
-        ControlMessage::Error(Error::new(err))
+        Control::Error(Error::new(err))
     }
 
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        ControlMessage::ProtocolError(ProtocolError::new(err))
+        Control::ProtocolError(ProtocolError::new(err))
     }
 
-    /// Create a new `ControlMessage` from DISCONNECT packet.
+    /// Create a new `Control` message from DISCONNECT packet.
     pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        ControlMessage::PeerGone(PeerGone(err))
+        Control::PeerGone(PeerGone(err))
     }
 
     /// Disconnects the client by sending DISCONNECT packet.
-    pub fn disconnect(&self) -> ControlResult {
-        ControlResult { result: ControlResultKind::Disconnect }
+    pub fn disconnect(&self) -> ControlAck {
+        ControlAck { result: ControlAckKind::Disconnect }
     }
 }
 
@@ -92,8 +92,8 @@ impl<E> ControlMessage<E> {
 pub struct Ping;
 
 impl Ping {
-    pub fn ack(self) -> ControlResult {
-        ControlResult { result: ControlResultKind::Ping }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { result: ControlAckKind::Ping }
     }
 }
 
@@ -101,8 +101,8 @@ impl Ping {
 pub struct Disconnect;
 
 impl Disconnect {
-    pub fn ack(self) -> ControlResult {
-        ControlResult { result: ControlResultKind::Disconnect }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { result: ControlAckKind::Disconnect }
     }
 }
 
@@ -125,14 +125,14 @@ impl<E> Error<E> {
 
     #[inline]
     /// Ack service error, return disconnect packet and close connection.
-    pub fn ack(self) -> ControlResult {
-        ControlResult { result: ControlResultKind::Disconnect }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { result: ControlAckKind::Disconnect }
     }
 
     #[inline]
     /// Ack service error, return disconnect packet and close connection.
-    pub fn ack_and_error(self) -> (ControlResult, E) {
-        (ControlResult { result: ControlResultKind::Disconnect }, self.err)
+    pub fn ack_and_error(self) -> (ControlAck, E) {
+        (ControlAck { result: ControlAckKind::Disconnect }, self.err)
     }
 }
 
@@ -155,14 +155,14 @@ impl ProtocolError {
 
     #[inline]
     /// Ack protocol error, return disconnect packet and close connection.
-    pub fn ack(self) -> ControlResult {
-        ControlResult { result: ControlResultKind::Disconnect }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { result: ControlAckKind::Disconnect }
     }
 
     #[inline]
     /// Ack protocol error, return disconnect packet and close connection.
-    pub fn ack_and_error(self) -> (ControlResult, error::ProtocolError) {
-        (ControlResult { result: ControlResultKind::Disconnect }, self.err)
+    pub fn ack_and_error(self) -> (ControlAck, error::ProtocolError) {
+        (ControlAck { result: ControlAckKind::Disconnect }, self.err)
     }
 }
 
@@ -210,9 +210,9 @@ impl Subscribe {
 
     #[inline]
     /// convert subscription to a result
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
-            result: ControlResultKind::Subscribe(SubscribeResult {
+    pub fn ack(self) -> ControlAck {
+        ControlAck {
+            result: ControlAckKind::Subscribe(SubscribeResult {
                 codes: self.codes,
                 packet_id: self.packet_id,
             }),
@@ -338,9 +338,9 @@ impl Unsubscribe {
 
     #[inline]
     /// convert packet to a result
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
-            result: ControlResultKind::Unsubscribe(UnsubscribeResult {
+    pub fn ack(self) -> ControlAck {
+        ControlAck {
+            result: ControlAckKind::Unsubscribe(UnsubscribeResult {
                 packet_id: self.packet_id,
             }),
         }
@@ -354,8 +354,8 @@ pub struct Closed;
 impl Closed {
     #[inline]
     /// convert packet to a result
-    pub fn ack(self) -> ControlResult {
-        ControlResult { result: ControlResultKind::Closed }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { result: ControlAckKind::Closed }
     }
 }
 
@@ -373,7 +373,7 @@ impl PeerGone {
         self.0.take()
     }
 
-    pub fn ack(self) -> ControlResult {
-        ControlResult { result: ControlResultKind::Nothing }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { result: ControlAckKind::Nothing }
     }
 }

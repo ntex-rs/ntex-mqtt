@@ -9,9 +9,7 @@ use ntex::util::{inflight::InFlightService, join, BoxFuture, HashSet};
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::types::QoS;
 
-use super::control::{
-    ControlMessage, ControlResult, ControlResultKind, Subscribe, Unsubscribe,
-};
+use super::control::{Control, ControlAck, ControlAckKind, Subscribe, Unsubscribe};
 use super::{codec, publish::Publish, shared::Ack, shared::MqttShared, Session};
 
 /// mqtt3 protocol dispatcher
@@ -32,7 +30,7 @@ pub(super) fn factory<St, T, C, E>(
 where
     St: 'static,
     T: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
-    C: ServiceFactory<ControlMessage<E>, Session<St>, Response = ControlResult> + 'static,
+    C: ServiceFactory<Control<E>, Session<St>, Response = ControlAck> + 'static,
     E: From<C::Error> + From<C::InitError> + From<T::Error> + From<T::InitError> + 'static,
 {
     let factories = Rc::new((publish, control));
@@ -90,7 +88,7 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C: Service<ControlMessage<E>>, E> {
+pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     max_qos: QoS,
     handle_qos_after_disconnect: Option<QoS>,
@@ -109,7 +107,7 @@ impl<T, C, E> Dispatcher<T, C, E>
 where
     E: From<T::Error>,
     T: Service<Publish, Response = ()>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     pub(crate) fn new(
         sink: Rc<MqttShared>,
@@ -133,7 +131,7 @@ impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
 where
     E: From<T::Error> + 'static,
     T: Service<Publish, Response = ()>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>> + 'static,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
 {
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
@@ -155,7 +153,7 @@ where
             self.inner.sink.close();
             let inner = self.inner.clone();
             *shutdown = Some(Box::pin(async move {
-                let _ = Pipeline::new(&inner.control).call(ControlMessage::closed()).await;
+                let _ = Pipeline::new(&inner.control).call(Control::closed()).await;
             }));
         }
 
@@ -180,7 +178,7 @@ where
             DispatchItem::Item((codec::Packet::Publish(publish), size)) => {
                 if publish.topic.contains(['#', '+']) {
                     return control(
-                        ControlMessage::proto_error(
+                        Control::proto_error(
                             ProtocolError::generic_violation(
                                 "PUBLISH packet's topic name contains wildcard character [MQTT-3.3.2-2]"
                             )
@@ -198,7 +196,7 @@ where
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
                         return control(
-                            ControlMessage::proto_error(
+                            Control::proto_error(
                                 ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]")
                             ),
                             &self.inner,
@@ -215,7 +213,7 @@ where
                         publish.qos
                     );
                     return control(
-                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                        Control::proto_error(ProtocolError::generic_violation(
                             match publish.qos {
                                 QoS::AtLeastOnce => "PUBLISH with QoS 1 is not supported",
                                 QoS::ExactlyOnce => "PUBLISH with QoS 2 is not supported",
@@ -242,13 +240,13 @@ where
             }
             DispatchItem::Item((codec::Packet::PublishAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
-                    control(ControlMessage::proto_error(e), &self.inner, ctx).await
+                    control(Control::proto_error(e), &self.inner, ctx).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item((codec::Packet::PingRequest, _)) => {
-                control(ControlMessage::ping(), &self.inner, ctx).await
+                control(Control::ping(), &self.inner, ctx).await
             }
             DispatchItem::Item((
                 codec::Packet::Subscribe { packet_id, topic_filters },
@@ -260,7 +258,7 @@ where
 
                 if topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
                     return control(
-                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                        Control::proto_error(ProtocolError::generic_violation(
                             "Topic filter is malformed [MQTT-4.7.1-*]",
                         )),
                         &self.inner,
@@ -272,7 +270,7 @@ where
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for subscribe packet: {:?}", packet_id);
                     return control(
-                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                        Control::proto_error(ProtocolError::generic_violation(
                             "SUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
                         )),
                         &self.inner,
@@ -281,7 +279,7 @@ where
                 }
 
                 control(
-                    ControlMessage::subscribe(Subscribe::new(packet_id, size, topic_filters)),
+                    Control::subscribe(Subscribe::new(packet_id, size, topic_filters)),
                     &self.inner,
                     ctx,
                 )
@@ -297,7 +295,7 @@ where
 
                 if topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
                     return control(
-                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                        Control::proto_error(ProtocolError::generic_violation(
                             "Topic filter is malformed [MQTT-4.7.1-*]",
                         )),
                         &self.inner,
@@ -309,7 +307,7 @@ where
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
                     return control(
-                        ControlMessage::proto_error(ProtocolError::generic_violation(
+                        Control::proto_error(ProtocolError::generic_violation(
                             "UNSUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
                         )),
                         &self.inner,
@@ -318,54 +316,34 @@ where
                 }
 
                 control(
-                    ControlMessage::unsubscribe(Unsubscribe::new(
-                        packet_id,
-                        size,
-                        topic_filters,
-                    )),
+                    Control::unsubscribe(Unsubscribe::new(packet_id, size, topic_filters)),
                     &self.inner,
                     ctx,
                 )
                 .await
             }
             DispatchItem::Item((codec::Packet::Disconnect, _)) => {
-                control(ControlMessage::remote_disconnect(), &self.inner, ctx).await
+                control(Control::remote_disconnect(), &self.inner, ctx).await
             }
             DispatchItem::Item(_) => Ok(None),
             DispatchItem::EncoderError(err) => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::Encode(err)),
-                    &self.inner,
-                    ctx,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::Encode(err)), &self.inner, ctx)
+                    .await
             }
             DispatchItem::KeepAliveTimeout => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::KeepAliveTimeout),
-                    &self.inner,
-                    ctx,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::KeepAliveTimeout), &self.inner, ctx)
+                    .await
             }
             DispatchItem::ReadTimeout => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::ReadTimeout),
-                    &self.inner,
-                    ctx,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx)
+                    .await
             }
             DispatchItem::DecoderError(err) => {
-                control(
-                    ControlMessage::proto_error(ProtocolError::Decode(err)),
-                    &self.inner,
-                    ctx,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::Decode(err)), &self.inner, ctx)
+                    .await
             }
             DispatchItem::Disconnect(err) => {
-                control(ControlMessage::peer_gone(err), &self.inner, ctx).await
+                control(Control::peer_gone(err), &self.inner, ctx).await
             }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
@@ -390,7 +368,7 @@ async fn publish_fn<'f, T, C, E>(
 where
     E: From<T::Error>,
     T: Service<Publish, Response = ()>,
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     match ctx.call(svc, pkt).await {
         Ok(_) => {
@@ -403,43 +381,43 @@ where
                 Ok(None)
             }
         }
-        Err(e) => control(ControlMessage::error(e.into()), inner, ctx).await,
+        Err(e) => control(Control::error(e.into()), inner, ctx).await,
     }
 }
 
 async fn control<'f, T, C, E>(
-    mut pkt: ControlMessage<E>,
+    mut pkt: Control<E>,
     inner: &'f Inner<C>,
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
 ) -> Result<Option<codec::Packet>, MqttError<E>>
 where
-    C: Service<ControlMessage<E>, Response = ControlResult, Error = MqttError<E>>,
+    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    let mut error = matches!(pkt, ControlMessage::Error(_) | ControlMessage::ProtocolError(_));
+    let mut error = matches!(pkt, Control::Error(_) | Control::ProtocolError(_));
 
     loop {
         match ctx.call(&inner.control, pkt).await {
             Ok(item) => {
                 let packet = match item.result {
-                    ControlResultKind::Ping => Some(codec::Packet::PingResponse),
-                    ControlResultKind::Subscribe(res) => {
+                    ControlAckKind::Ping => Some(codec::Packet::PingResponse),
+                    ControlAckKind::Subscribe(res) => {
                         inner.inflight.borrow_mut().remove(&res.packet_id);
                         Some(codec::Packet::SubscribeAck {
                             status: res.codes,
                             packet_id: res.packet_id,
                         })
                     }
-                    ControlResultKind::Unsubscribe(res) => {
+                    ControlAckKind::Unsubscribe(res) => {
                         inner.inflight.borrow_mut().remove(&res.packet_id);
                         Some(codec::Packet::UnsubscribeAck { packet_id: res.packet_id })
                     }
-                    ControlResultKind::Disconnect
-                    | ControlResultKind::Closed
-                    | ControlResultKind::Nothing => {
+                    ControlAckKind::Disconnect
+                    | ControlAckKind::Closed
+                    | ControlAckKind::Nothing => {
                         inner.sink.close();
                         None
                     }
-                    ControlResultKind::PublishAck(_) => unreachable!(),
+                    ControlAckKind::PublishAck(_) => unreachable!(),
                 };
                 return Ok(packet);
             }
@@ -452,7 +430,7 @@ where
                     match err {
                         MqttError::Service(err) => {
                             error = true;
-                            pkt = ControlMessage::error(err);
+                            pkt = Control::error(err);
                             continue;
                         }
                         _ => Err(err),
@@ -488,10 +466,10 @@ mod tests {
                 Ok(())
             }),
             fn_service(move |ctrl| {
-                if let ControlMessage::ProtocolError(_) = ctrl {
+                if let Control::ProtocolError(_) = ctrl {
                     *err2.borrow_mut() = true;
                 }
-                Ready::Ok(ControlResult { result: ControlResultKind::Nothing })
+                Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
             }),
             QoS::AtLeastOnce,
             None,
@@ -535,7 +513,7 @@ mod tests {
         let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
             shared.clone(),
             fn_service(|_| Ready::Ok(())),
-            fn_service(|_| Ready::Ok(ControlResult { result: ControlResultKind::Nothing })),
+            fn_service(|_| Ready::Ok(ControlAck { result: ControlAckKind::Nothing })),
             QoS::AtLeastOnce,
             None,
         ));

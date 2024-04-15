@@ -4,10 +4,10 @@ use ntex::util::ByteString;
 
 use crate::{error, v5::codec};
 
-pub use crate::v5::control::{Closed, ControlResult, Disconnect, Error, ProtocolError};
+pub use crate::v5::control::{Closed, ControlAck, Disconnect, Error, ProtocolError};
 
 #[derive(Debug)]
-pub enum ControlMessage<E> {
+pub enum Control<E> {
     /// Unhandled publish packet
     Publish(Publish),
     /// Disconnect packet
@@ -22,33 +22,33 @@ pub enum ControlMessage<E> {
     PeerGone(PeerGone),
 }
 
-impl<E> ControlMessage<E> {
+impl<E> Control<E> {
     pub(super) fn publish(pkt: codec::Publish, size: u32) -> Self {
-        ControlMessage::Publish(Publish(pkt, size))
+        Control::Publish(Publish(pkt, size))
     }
 
     pub(super) fn dis(pkt: codec::Disconnect, size: u32) -> Self {
-        ControlMessage::Disconnect(Disconnect(pkt, size))
+        Control::Disconnect(Disconnect(pkt, size))
     }
 
     pub(super) const fn closed() -> Self {
-        ControlMessage::Closed(Closed)
+        Control::Closed(Closed)
     }
 
     pub(super) fn error(err: E) -> Self {
-        ControlMessage::Error(Error::new(err))
+        Control::Error(Error::new(err))
     }
 
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        ControlMessage::ProtocolError(ProtocolError::new(err))
+        Control::ProtocolError(ProtocolError::new(err))
     }
 
     pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        ControlMessage::PeerGone(PeerGone(err))
+        Control::PeerGone(PeerGone(err))
     }
 
-    pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlResult {
-        ControlResult { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlAck {
+        ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
 }
 
@@ -71,12 +71,12 @@ impl Publish {
         self.1
     }
 
-    pub fn ack_qos0(self) -> ControlResult {
-        ControlResult { packet: None, disconnect: false }
+    pub fn ack_qos0(self) -> ControlAck {
+        ControlAck { packet: None, disconnect: false }
     }
 
-    pub fn ack(self, reason_code: codec::PublishAckReason) -> ControlResult {
-        ControlResult {
+    pub fn ack(self, reason_code: codec::PublishAckReason) -> ControlAck {
+        ControlAck {
             packet: self.0.packet_id.map(|packet_id| {
                 codec::Packet::PublishAck(codec::PublishAck {
                     packet_id,
@@ -94,8 +94,8 @@ impl Publish {
         reason_code: codec::PublishAckReason,
         properties: codec::UserProperties,
         reason_string: Option<ByteString>,
-    ) -> ControlResult {
-        ControlResult {
+    ) -> ControlAck {
+        ControlAck {
             packet: self.0.packet_id.map(|packet_id| {
                 codec::Packet::PublishAck(codec::PublishAck {
                     packet_id,
@@ -111,9 +111,9 @@ impl Publish {
     pub fn into_inner(
         self,
         reason_code: codec::PublishAckReason,
-    ) -> (ControlResult, codec::Publish) {
+    ) -> (ControlAck, codec::Publish) {
         (
-            ControlResult {
+            ControlAck {
                 packet: self.0.packet_id.map(|packet_id| {
                     codec::Packet::PublishAck(codec::PublishAck {
                         packet_id,
@@ -139,7 +139,7 @@ impl PeerGone {
     }
 
     /// Ack PeerGone message
-    pub fn ack(self) -> ControlResult {
-        ControlResult { packet: None, disconnect: true }
+    pub fn ack(self) -> ControlAck {
+        ControlAck { packet: None, disconnect: true }
     }
 }
