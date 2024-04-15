@@ -28,3 +28,15 @@ pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;
 
 const RECEIVE_MAX_DEFAULT: NonZeroU16 = unsafe { NonZeroU16::new_unchecked(65_535) };
+
+fn disconnect(msg: &'static str) -> ControlAck {
+    log::error!("{}", msg);
+
+    ControlAck {
+        packet: Some(
+            codec::Disconnect::new(codec::DisconnectReasonCode::ImplementationSpecificError)
+                .into(),
+        ),
+        disconnect: true,
+    }
+}

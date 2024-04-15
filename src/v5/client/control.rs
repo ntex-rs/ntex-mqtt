@@ -6,6 +6,8 @@ use crate::{error, v5::codec};
 
 pub use crate::v5::control::{Closed, ControlAck, Disconnect, Error, ProtocolError};
 
+/// Client control messages
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum Control<E> {
     /// Unhandled publish packet
@@ -49,6 +51,22 @@ impl<E> Control<E> {
 
     pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlAck {
         ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    }
+
+    /// Ack control message
+    pub fn ack(self) -> ControlAck {
+        match self {
+            Control::Publish(_) => {
+                crate::v5::disconnect("Publish control message is not supported")
+            }
+            Control::Disconnect(msg) => msg.ack(),
+            Control::Closed(msg) => msg.ack(),
+            Control::Error(_) => {
+                crate::v5::disconnect("Error control message is not supported")
+            }
+            Control::ProtocolError(msg) => msg.ack(),
+            Control::PeerGone(msg) => msg.ack(),
+        }
     }
 }
 

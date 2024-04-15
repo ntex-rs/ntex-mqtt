@@ -29,8 +29,8 @@ async fn main() -> std::io::Result<()> {
     let sink = client.sink();
 
     // handle incoming publishes
-    ntex::rt::spawn(client.start(fn_service(|control: v5::client::Control<Error>| {
-        match control {
+    ntex::rt::spawn(client.start(fn_service(
+        |control: v5::client::Control<Error>| match control {
             v5::client::Control::Publish(publish) => {
                 log::info!(
                     "incoming publish: {:?} -> {:?} payload {:?}",
@@ -60,8 +60,9 @@ async fn main() -> std::io::Result<()> {
                 log::warn!("Server closed connection: {:?}", msg);
                 Ready::Ok(msg.ack())
             }
-        }
-    })));
+            _ => Ready::Ok(control.ack()),
+        },
+    )));
 
     // subscribe to topic
     sink.subscribe(None)

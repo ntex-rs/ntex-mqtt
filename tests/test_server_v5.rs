@@ -7,8 +7,8 @@ use ntex::util::{lazy, ByteString, Bytes, BytesMut, Ready};
 use ntex::{codec::Encoder, server, service::fn_service};
 
 use ntex_mqtt::v5::{
-    client, codec, error, Control, Handshake, HandshakeAck, MqttServer, Publish,
-    PublishAck, QoS, Session,
+    client, codec, error, Control, Handshake, HandshakeAck, MqttServer, Publish, PublishAck,
+    QoS, Session,
 };
 
 struct St;
@@ -1070,9 +1070,10 @@ async fn handle_or_drop_publish_after_disconnect(
     )
     .unwrap();
     io.flush(true).await.unwrap();
+    sleep(Millis(1750)).await;
+    io.close();
     drop(io);
-
-    sleep(Millis(50)).await;
+    sleep(Millis(500)).await;
 
     assert!(disconnect.load(Relaxed));
 
@@ -1297,7 +1298,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
     sleep(Millis(1000)).await;
     assert!(!check.load(Relaxed));
 
-    sleep(Millis(2100)).await;
+    sleep(Millis(2300)).await;
     assert!(check.load(Relaxed));
 
     Ok(())

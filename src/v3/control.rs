@@ -4,6 +4,8 @@ use std::{io, marker::PhantomData, num::NonZeroU16};
 use super::codec;
 use crate::{error, types::QoS};
 
+/// Server control messages
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum Control<E> {
     /// Ping packet
@@ -85,6 +87,26 @@ impl<E> Control<E> {
     /// Disconnects the client by sending DISCONNECT packet.
     pub fn disconnect(&self) -> ControlAck {
         ControlAck { result: ControlAckKind::Disconnect }
+    }
+
+    /// Ack control message
+    pub fn ack(self) -> ControlAck {
+        match self {
+            Control::Ping(msg) => msg.ack(),
+            Control::Disconnect(msg) => msg.ack(),
+            Control::Subscribe(_) => {
+                log::warn!("Subscribe is not supported");
+                ControlAck { result: ControlAckKind::Disconnect }
+            }
+            Control::Unsubscribe(_) => {
+                log::warn!("Unsubscribe is not supported");
+                ControlAck { result: ControlAckKind::Disconnect }
+            }
+            Control::Closed(msg) => msg.ack(),
+            Control::Error(msg) => msg.ack(),
+            Control::ProtocolError(msg) => msg.ack(),
+            Control::PeerGone(msg) => msg.ack(),
+        }
     }
 }
 

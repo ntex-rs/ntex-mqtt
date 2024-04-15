@@ -3,6 +3,8 @@ use std::io;
 pub use crate::v3::control::{Closed, ControlAck, Disconnect, Error, PeerGone, ProtocolError};
 use crate::v3::{codec, control::ControlAckKind, error};
 
+/// Client control messages
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum Control<E> {
     /// Unhandled publish packet
@@ -41,6 +43,17 @@ impl<E> Control<E> {
     /// Initiate clean disconnect
     pub fn disconnect(&self) -> ControlAck {
         ControlAck { result: ControlAckKind::Disconnect }
+    }
+
+    /// Ack control message
+    pub fn ack(self) -> ControlAck {
+        match self {
+            Control::Publish(msg) => msg.ack(),
+            Control::Closed(msg) => msg.ack(),
+            Control::Error(msg) => msg.ack(),
+            Control::ProtocolError(msg) => msg.ack(),
+            Control::PeerGone(msg) => msg.ack(),
+        }
     }
 }
 

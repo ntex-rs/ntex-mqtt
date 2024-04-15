@@ -5,7 +5,8 @@ use ntex::util::ByteString;
 use super::codec::{self, DisconnectReasonCode, QoS, UserProperties};
 use crate::error;
 
-/// Control messages
+/// Server control messages
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum Control<E> {
     /// Auth packet from a client
@@ -99,6 +100,21 @@ impl<E> Control<E> {
     /// with provided reason code.
     pub fn disconnect_with(&self, pkt: codec::Disconnect) -> ControlAck {
         ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+    }
+
+    /// Ack control message
+    pub fn ack(self) -> ControlAck {
+        match self {
+            Control::Auth(_) => super::disconnect("Auth control message is not supported"),
+            Control::Ping(msg) => msg.ack(),
+            Control::Disconnect(msg) => msg.ack(),
+            Control::Subscribe(msg) => msg.ack(),
+            Control::Unsubscribe(msg) => msg.ack(),
+            Control::Closed(msg) => msg.ack(),
+            Control::Error(_) => super::disconnect("Error control message is not supported"),
+            Control::ProtocolError(msg) => msg.ack(),
+            Control::PeerGone(msg) => msg.ack(),
+        }
     }
 }
 

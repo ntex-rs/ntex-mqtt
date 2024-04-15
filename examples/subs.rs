@@ -2,9 +2,7 @@ use std::cell::RefCell;
 
 use ntex::service::{fn_factory_with_config, fn_service, ServiceFactory};
 use ntex::util::{ByteString, Ready};
-use ntex_mqtt::v5::{
-    self, Control, ControlAck, MqttServer, Publish, PublishAck, Session,
-};
+use ntex_mqtt::v5::{self, Control, ControlAck, MqttServer, Publish, PublishAck, Session};
 
 #[derive(Clone, Debug)]
 struct MySession {
@@ -97,6 +95,7 @@ fn control_service_factory() -> impl ServiceFactory<
             v5::Control::Unsubscribe(s) => Ready::Ok(s.ack()),
             v5::Control::Closed(c) => Ready::Ok(c.ack()),
             v5::Control::PeerGone(c) => Ready::Ok(c.ack()),
+            _ => Ready::Ok(control.ack()),
         }))
     })
 }
