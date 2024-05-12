@@ -107,13 +107,6 @@ impl MqttSink {
         PublishBuilder { packet, shared: self.0.clone() }
     }
 
-    #[doc(hidden)]
-    #[deprecated(since = "0.10.3")]
-    /// Create publish builder with publish packet
-    pub fn publish_packet(&self, packet: codec::Publish) -> PublishBuilder {
-        PublishBuilder { packet, shared: self.0.clone() }
-    }
-
     /// Set publish ack callback
     ///
     /// Use non-blocking send, PublishBuilder::send_at_least_once_no_block()
