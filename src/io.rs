@@ -1014,4 +1014,63 @@ mod tests {
 
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0]);
     }
+
+    #[ntex::test]
+    async fn test_read_timeout() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let data = Arc::new(Mutex::new(RefCell::new(Vec::new())));
+        let data2 = data.clone();
+
+        let config = DispatcherConfig::default();
+        config.set_keepalive_timeout(Seconds::ZERO).set_frame_read_rate(
+            Seconds(1),
+            Seconds(2),
+            2,
+        );
+
+        let (disp, state) = Dispatcher::new_debug_cfg(
+            nio::Io::new(server),
+            BytesLenCodec(8),
+            config,
+            ntex::service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
+                let data = data2.clone();
+                async move {
+                    match msg {
+                        DispatchItem::Item(bytes) => {
+                            data.lock().unwrap().borrow_mut().push(0);
+                            return Ok::<_, ()>(Some(bytes.freeze()));
+                        }
+                        DispatchItem::ReadTimeout => {
+                            data.lock().unwrap().borrow_mut().push(1);
+                        }
+                        _ => (),
+                    }
+                    Ok(None)
+                }
+            }),
+        );
+        ntex::rt::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("12345678");
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"12345678"));
+
+        client.write("1");
+        sleep(Millis(1000)).await;
+        assert!(!state.flags().contains(nio::Flags::IO_STOPPING));
+        client.write("23");
+        sleep(Millis(1000)).await;
+        assert!(!state.flags().contains(nio::Flags::IO_STOPPING));
+        client.write("4");
+        sleep(Millis(2000)).await;
+
+        // write side must be closed, dispatcher should fail with keep-alive
+        assert!(state.flags().contains(nio::Flags::IO_STOPPING));
+        assert!(client.is_closed());
+        assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 1]);
+    }
 }
