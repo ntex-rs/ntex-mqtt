@@ -8,7 +8,9 @@
 
 * Remove protocol variant services
 
-* Disable keep-alive timer is not configured
+* Disable keep-alive timer if not configured
+
+* Add write back-pressure to io dispatcher
 
 ## [1.1.0] - 2024-03-07
 

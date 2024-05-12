@@ -1051,7 +1051,6 @@ mod tests {
     /// Do not use keep-alive timer if not configured
     #[ntex::test]
     async fn test_no_keepalive_err_after_frame_timeout() {
-        env_logger::init();
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
 
