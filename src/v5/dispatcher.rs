@@ -548,6 +548,7 @@ where
         Err(err) => {
             // do not handle nested error
             if error {
+                inner.sink.drop_sink();
                 return Err(err);
             } else {
                 // handle error from control service
@@ -562,20 +563,19 @@ where
         }
     };
 
-    if error {
+    let response = if error {
         if let Some(pkt) = result.packet {
             let _ = inner.sink.encode_packet(pkt);
         }
-        if result.disconnect {
-            inner.sink.drop_sink();
-        }
         Ok(None)
     } else {
-        if result.disconnect {
-            inner.sink.drop_sink();
-        }
         Ok(result.packet)
+    };
+
+    if result.disconnect {
+        inner.sink.drop_sink();
     }
+    response
 }
 
 #[cfg(test)]

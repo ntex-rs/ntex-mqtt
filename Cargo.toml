@@ -16,6 +16,7 @@ features = ["ntex/tokio"]
 
 [dependencies]
 ntex = "1.2"
+ntex-io = "1.2"
 bitflags = "2"
 log = "0.4"
 pin-project-lite = "0.2"

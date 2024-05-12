@@ -1,12 +1,14 @@
 # Changes
 
-## [2.0.0] - 2024-04-1x
+## [2.0.0] - 2024-05-1x
 
 * Mark `Control` type as `non exhaustive`
 
 * Rename `ControlMessage` to `Control`
 
 * Remove protocol variant services
+
+* Disable keep-alive timer is not configured
 
 ## [1.1.0] - 2024-03-07
 

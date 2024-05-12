@@ -121,6 +121,7 @@ where
             queue: VecDeque::new(),
         }));
         let pool = io.memory_pool().pool();
+        let keepalive_timeout = config.keepalive_timeout();
 
         Dispatcher {
             codec,
@@ -131,13 +132,17 @@ where
             inner: DispatcherInner {
                 io,
                 state,
-                flags: Flags::empty(),
+                keepalive_timeout,
+                flags: if keepalive_timeout.is_zero() {
+                    Flags::KA_ENABLED
+                } else {
+                    Flags::empty()
+                },
                 config: config.clone(),
                 st: IoDispatcherState::Processing,
                 read_remains: 0,
                 read_remains_prev: 0,
                 read_max_timeout: Seconds::ZERO,
-                keepalive_timeout: config.keepalive_timeout(),
             },
         }
     }
@@ -552,24 +557,25 @@ where
                         self.io.start_timer(timeout);
                         return Ok(());
                     }
-                    log::trace!("{}: Max payload timeout has been reached", self.io.tag());
                 }
+                log::trace!("{}: Max payload timeout has been reached", self.io.tag());
                 return Err(DispatchItem::ReadTimeout);
             }
+        } else if self.flags.contains(Flags::KA_TIMEOUT) {
+            log::trace!("{}: Keep-alive error, stopping dispatcher", self.io.tag());
+            return Err(DispatchItem::KeepAliveTimeout);
         }
-
-        log::trace!("{}: Keep-alive error, stopping dispatcher", self.io.tag());
-        Err(DispatchItem::KeepAliveTimeout)
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, sync::Arc, sync::Mutex};
+    use std::{cell::Cell, io, sync::Arc, sync::Mutex};
 
     use ntex::channel::condition::Condition;
     use ntex::time::{sleep, Millis};
-    use ntex::util::Bytes;
+    use ntex::util::{Bytes, BytesMut};
     use ntex::{codec::BytesCodec, io as nio, service::ServiceCtx, testing::Io};
 
     use super::*;
@@ -587,9 +593,18 @@ mod tests {
             codec: U,
             service: F,
         ) -> (Self, nio::IoRef) {
-            let keepalive_timeout = Seconds(30);
+            Self::new_debug_cfg(io, codec, DispatcherConfig::default(), service)
+        }
+
+        /// Construct new `Dispatcher` instance
+        pub(crate) fn new_debug_cfg<F: IntoService<S, DispatchItem<U>>>(
+            io: nio::Io,
+            codec: U,
+            config: DispatcherConfig,
+            service: F,
+        ) -> (Self, nio::IoRef) {
+            let keepalive_timeout = config.keepalive_timeout();
             let rio = io.get_ref();
-            let config = DispatcherConfig::default();
 
             let state = Rc::new(RefCell::new(DispatcherState {
                 error: None,
@@ -610,7 +625,11 @@ mod tests {
                         keepalive_timeout,
                         io: IoBoxed::from(io),
                         st: IoDispatcherState::Processing,
-                        flags: Flags::KA_ENABLED,
+                        flags: if keepalive_timeout.is_zero() {
+                            Flags::empty()
+                        } else {
+                            Flags::KA_ENABLED
+                        },
                         read_remains: 0,
                         read_remains_prev: 0,
                         read_max_timeout: Seconds::ZERO,
@@ -919,5 +938,139 @@ mod tests {
         sleep(Millis(750)).await;
         assert!(!client.is_closed());
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 0, 0]);
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    struct BytesLenCodec(usize);
+
+    impl Encoder for BytesLenCodec {
+        type Item = Bytes;
+        type Error = io::Error;
+
+        #[inline]
+        fn encode(&self, item: Bytes, dst: &mut BytesMut) -> Result<(), Self::Error> {
+            dst.extend_from_slice(&item[..]);
+            Ok(())
+        }
+    }
+
+    impl Decoder for BytesLenCodec {
+        type Item = BytesMut;
+        type Error = io::Error;
+
+        fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+            if src.len() >= self.0 {
+                Ok(Some(src.split_to(self.0)))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    /// Do not use keep-alive timer if not configured
+    #[ntex::test]
+    async fn test_no_keepalive_err_after_frame_timeout() {
+        env_logger::init();
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let data = Arc::new(Mutex::new(RefCell::new(Vec::new())));
+        let data2 = data.clone();
+
+        let config = DispatcherConfig::default();
+        config.set_keepalive_timeout(Seconds(0)).set_frame_read_rate(Seconds(1), Seconds(2), 2);
+
+        let (disp, _) = Dispatcher::new_debug_cfg(
+            nio::Io::new(server),
+            BytesLenCodec(2),
+            config,
+            ntex::service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
+                let data = data2.clone();
+                async move {
+                    match msg {
+                        DispatchItem::Item(bytes) => {
+                            data.lock().unwrap().borrow_mut().push(0);
+                            return Ok::<_, ()>(Some(bytes.freeze()));
+                        }
+                        DispatchItem::KeepAliveTimeout => {
+                            data.lock().unwrap().borrow_mut().push(1);
+                        }
+                        _ => (),
+                    }
+                    Ok(None)
+                }
+            }),
+        );
+        ntex::rt::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("1");
+        sleep(Millis(250)).await;
+        client.write("2");
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"12"));
+        sleep(Millis(2000)).await;
+
+        assert_eq!(&data.lock().unwrap().borrow()[..], &[0]);
+    }
+
+    #[ntex::test]
+    async fn test_read_timeout() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let data = Arc::new(Mutex::new(RefCell::new(Vec::new())));
+        let data2 = data.clone();
+
+        let config = DispatcherConfig::default();
+        config.set_keepalive_timeout(Seconds::ZERO).set_frame_read_rate(
+            Seconds(1),
+            Seconds(2),
+            2,
+        );
+
+        let (disp, state) = Dispatcher::new_debug_cfg(
+            nio::Io::new(server),
+            BytesLenCodec(8),
+            config,
+            ntex::service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
+                let data = data2.clone();
+                async move {
+                    match msg {
+                        DispatchItem::Item(bytes) => {
+                            data.lock().unwrap().borrow_mut().push(0);
+                            return Ok::<_, ()>(Some(bytes.freeze()));
+                        }
+                        DispatchItem::ReadTimeout => {
+                            data.lock().unwrap().borrow_mut().push(1);
+                        }
+                        _ => (),
+                    }
+                    Ok(None)
+                }
+            }),
+        );
+        ntex::rt::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("12345678");
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"12345678"));
+
+        client.write("1");
+        sleep(Millis(1000)).await;
+        assert!(!state.flags().contains(nio::Flags::IO_STOPPING));
+        client.write("23");
+        sleep(Millis(1000)).await;
+        assert!(!state.flags().contains(nio::Flags::IO_STOPPING));
+        client.write("4");
+        sleep(Millis(2000)).await;
+
+        // write side must be closed, dispatcher should fail with keep-alive
+        assert!(state.flags().contains(nio::Flags::IO_STOPPING));
+        assert!(client.is_closed());
+        assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 1]);
     }
 }
