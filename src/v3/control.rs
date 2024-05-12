@@ -16,6 +16,8 @@ pub enum Control<E> {
     Subscribe(Subscribe),
     /// Unsubscribe packet
     Unsubscribe(Unsubscribe),
+    /// Write back-pressure is enabled/disabled
+    WrBackpressure(WrBackpressure),
     /// Connection dropped
     Closed(Closed),
     /// Service level error
@@ -67,8 +69,12 @@ impl<E> Control<E> {
         Control::Disconnect(Disconnect)
     }
 
-    pub(super) fn closed() -> Self {
+    pub(super) const fn closed() -> Self {
         Control::Closed(Closed)
+    }
+
+    pub(super) const fn wr_backpressure(enabled: bool) -> Self {
+        Control::WrBackpressure(WrBackpressure(enabled))
     }
 
     pub(super) fn error(err: E) -> Self {
@@ -102,6 +108,7 @@ impl<E> Control<E> {
                 log::warn!("Unsubscribe is not supported");
                 ControlAck { result: ControlAckKind::Disconnect }
             }
+            Control::WrBackpressure(msg) => msg.ack(),
             Control::Closed(msg) => msg.ack(),
             Control::Error(msg) => msg.ack(),
             Control::ProtocolError(msg) => msg.ack(),
@@ -366,6 +373,24 @@ impl Unsubscribe {
                 packet_id: self.packet_id,
             }),
         }
+    }
+}
+
+/// Write back-pressure message
+#[derive(Debug)]
+pub struct WrBackpressure(bool);
+
+impl WrBackpressure {
+    #[inline]
+    /// Is write back-pressure enabled
+    pub fn enabled(&self) -> bool {
+        self.0
+    }
+
+    #[inline]
+    /// convert packet to a result
+    pub fn ack(self) -> ControlAck {
+        ControlAck { result: ControlAckKind::Nothing }
     }
 }
 
