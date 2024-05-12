@@ -51,12 +51,12 @@ impl<Err, InitErr> Default
 impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr> {
     /// Set client timeout reading protocol version.
     ///
-    /// Defines a timeout for reading `Connect` frame. If a client does not transmit
+    /// Defines a timeout for reading protocol version. If a client does not transmit
     /// version of the protocol within this time, the connection is terminated with
     /// Mqtt::Handshake(HandshakeError::Timeout) error.
     ///
-    /// By default, connect timeuot is 5 seconds.
-    pub fn connect_timeout(mut self, timeout: Seconds) -> Self {
+    /// By default, timeuot is 5 seconds.
+    pub fn protocol_version_timeout(mut self, timeout: Seconds) -> Self {
         self.connect_timeout = timeout.into();
         self
     }

@@ -7,7 +7,6 @@ use super::shared::MqttShared;
 use super::sink::MqttSink;
 
 const DEFAULT_KEEPALIVE: Seconds = Seconds(30);
-const DEFAULT_OUTGOING_INFLIGHT: u16 = 16;
 
 /// Connect message
 pub struct Handshake {
@@ -67,7 +66,7 @@ impl Handshake {
             keepalive,
             session_present,
             session: Some(st),
-            inflight: DEFAULT_OUTGOING_INFLIGHT,
+            outgoing: None,
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
         }
     }
@@ -80,7 +79,7 @@ impl Handshake {
             session: None,
             session_present: false,
             keepalive: DEFAULT_KEEPALIVE,
-            inflight: DEFAULT_OUTGOING_INFLIGHT,
+            outgoing: None,
             return_code: mqtt::ConnectAckReason::IdentifierRejected,
         }
     }
@@ -92,8 +91,8 @@ impl Handshake {
             shared: self.shared,
             session: None,
             session_present: false,
+            outgoing: None,
             keepalive: DEFAULT_KEEPALIVE,
-            inflight: DEFAULT_OUTGOING_INFLIGHT,
             return_code: mqtt::ConnectAckReason::BadUserNameOrPassword,
         }
     }
@@ -105,8 +104,8 @@ impl Handshake {
             shared: self.shared,
             session: None,
             session_present: false,
+            outgoing: None,
             keepalive: DEFAULT_KEEPALIVE,
-            inflight: DEFAULT_OUTGOING_INFLIGHT,
             return_code: mqtt::ConnectAckReason::NotAuthorized,
         }
     }
@@ -118,8 +117,8 @@ impl Handshake {
             shared: self.shared,
             session: None,
             session_present: false,
+            outgoing: None,
             keepalive: DEFAULT_KEEPALIVE,
-            inflight: DEFAULT_OUTGOING_INFLIGHT,
             return_code: mqtt::ConnectAckReason::ServiceUnavailable,
         }
     }
@@ -139,7 +138,7 @@ pub struct HandshakeAck<St> {
     pub(crate) return_code: mqtt::ConnectAckReason,
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) keepalive: Seconds,
-    pub(crate) inflight: u16,
+    pub(crate) outgoing: Option<u16>,
 }
 
 impl<St> HandshakeAck<St> {
@@ -151,11 +150,11 @@ impl<St> HandshakeAck<St> {
         self
     }
 
-    /// Number of outgoing in-flight concurrent messages.
+    /// Number of outgoing concurrent messages.
     ///
-    /// By default in-flight is set to 16 messages
-    pub fn inflight(mut self, val: u16) -> Self {
-        self.inflight = val;
+    /// By default outgoing is set to 16 messages
+    pub fn max_outgoing(mut self, val: u16) -> Self {
+        self.outgoing = Some(val);
         self
     }
 }
