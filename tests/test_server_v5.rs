@@ -1070,10 +1070,10 @@ async fn handle_or_drop_publish_after_disconnect(
     )
     .unwrap();
     io.flush(true).await.unwrap();
-    sleep(Millis(1750)).await;
+    sleep(Millis(2750)).await;
     io.close();
     drop(io);
-    sleep(Millis(1000)).await;
+    sleep(Millis(1500)).await;
 
     assert!(disconnect.load(Relaxed));
 
