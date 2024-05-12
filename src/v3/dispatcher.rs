@@ -347,11 +347,11 @@ where
             }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
-                Ok(None)
+                control(Control::wr_backpressure(true), &self.inner, ctx).await
             }
             DispatchItem::WBackPressureDisabled => {
                 self.inner.sink.disable_wr_backpressure();
-                Ok(None)
+                control(Control::wr_backpressure(false), &self.inner, ctx).await
             }
         }
     }
@@ -411,12 +411,11 @@ where
                         inner.inflight.borrow_mut().remove(&res.packet_id);
                         Some(codec::Packet::UnsubscribeAck { packet_id: res.packet_id })
                     }
-                    ControlAckKind::Disconnect
-                    | ControlAckKind::Closed
-                    | ControlAckKind::Nothing => {
+                    ControlAckKind::Disconnect => {
                         inner.sink.close();
                         None
                     }
+                    ControlAckKind::Closed | ControlAckKind::Nothing => None,
                     ControlAckKind::PublishAck(_) => unreachable!(),
                 };
                 return Ok(packet);

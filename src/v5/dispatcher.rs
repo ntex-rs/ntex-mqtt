@@ -476,11 +476,11 @@ where
             }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
-                Ok(None)
+                control(Control::wr_backpressure(true), &self.inner, ctx, 0).await
             }
             DispatchItem::WBackPressureDisabled => {
                 self.inner.sink.disable_wr_backpressure();
-                Ok(None)
+                control(Control::wr_backpressure(false), &self.inner, ctx, 0).await
             }
         }
     }
