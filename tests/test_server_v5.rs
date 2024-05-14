@@ -491,7 +491,7 @@ async fn test_dups() {
 async fn test_max_receive() {
     let srv = server::test_server(move || {
         MqttServer::new(handshake)
-            .receive_max(1)
+            .max_receive(1)
             .max_qos(codec::QoS::AtLeastOnce)
             .publish(|p: Publish| async move {
                 sleep(Duration::from_millis(10000)).await;

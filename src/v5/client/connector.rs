@@ -118,13 +118,19 @@ where
     ///
     /// Number of in-flight incoming publish packets. By default receive max is set to 16 packets.
     /// To disable in-flight limit set value to 0.
-    pub fn receive_max(mut self, val: u16) -> Self {
+    pub fn max_receive(mut self, val: u16) -> Self {
         if let Some(val) = NonZeroU16::new(val) {
             self.pkt.receive_max = Some(val);
         } else {
             self.pkt.receive_max = None;
         }
         self
+    }
+
+    #[deprecated]
+    #[doc(hidden)]
+    pub fn receive_max(self, val: u16) -> Self {
+        self.max_receive(val)
     }
 
     #[inline]

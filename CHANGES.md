@@ -1,5 +1,9 @@
 # Changes
 
+## [2.0.1] - 2024-05-14
+
+* Better naming
+
 ## [2.0.0] - 2024-05-1x
 
 * Mark `Control` type as `non exhaustive`

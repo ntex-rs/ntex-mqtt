@@ -16,8 +16,8 @@ use super::{codec, publish::Publish, shared::Ack, shared::MqttShared, Session};
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
-    inflight: u16,
-    inflight_size: usize,
+    inbound: u16,
+    inbound_size: usize,
     max_qos: QoS,
     handle_qos_after_disconnect: Option<QoS>,
 ) -> impl ServiceFactory<
@@ -62,8 +62,8 @@ where
             Ok(
                 // limit number of in-flight messages
                 crate::inflight::InFlightService::new(
-                    inflight,
-                    inflight_size,
+                    inbound,
+                    inbound_size,
                     Dispatcher::<_, _, E>::new(
                         sink,
                         publish,

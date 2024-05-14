@@ -66,7 +66,7 @@ impl Handshake {
             keepalive,
             session_present,
             session: Some(st),
-            outgoing: None,
+            max_send: None,
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
         }
     }
@@ -79,7 +79,7 @@ impl Handshake {
             session: None,
             session_present: false,
             keepalive: DEFAULT_KEEPALIVE,
-            outgoing: None,
+            max_send: None,
             return_code: mqtt::ConnectAckReason::IdentifierRejected,
         }
     }
@@ -91,7 +91,7 @@ impl Handshake {
             shared: self.shared,
             session: None,
             session_present: false,
-            outgoing: None,
+            max_send: None,
             keepalive: DEFAULT_KEEPALIVE,
             return_code: mqtt::ConnectAckReason::BadUserNameOrPassword,
         }
@@ -104,7 +104,7 @@ impl Handshake {
             shared: self.shared,
             session: None,
             session_present: false,
-            outgoing: None,
+            max_send: None,
             keepalive: DEFAULT_KEEPALIVE,
             return_code: mqtt::ConnectAckReason::NotAuthorized,
         }
@@ -117,7 +117,7 @@ impl Handshake {
             shared: self.shared,
             session: None,
             session_present: false,
-            outgoing: None,
+            max_send: None,
             keepalive: DEFAULT_KEEPALIVE,
             return_code: mqtt::ConnectAckReason::ServiceUnavailable,
         }
@@ -138,7 +138,7 @@ pub struct HandshakeAck<St> {
     pub(crate) return_code: mqtt::ConnectAckReason,
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) keepalive: Seconds,
-    pub(crate) outgoing: Option<u16>,
+    pub(crate) max_send: Option<u16>,
 }
 
 impl<St> HandshakeAck<St> {
@@ -153,8 +153,15 @@ impl<St> HandshakeAck<St> {
     /// Number of outgoing concurrent messages.
     ///
     /// By default outgoing is set to 16 messages
+    pub fn max_send(mut self, val: u16) -> Self {
+        self.max_send = Some(val);
+        self
+    }
+
+    #[deprecated]
+    #[doc(hidden)]
     pub fn max_outgoing(mut self, val: u16) -> Self {
-        self.outgoing = Some(val);
+        self.max_send = Some(val);
         self
     }
 }

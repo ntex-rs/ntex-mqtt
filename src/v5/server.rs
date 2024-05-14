@@ -19,10 +19,10 @@ pub struct MqttServer<St, C, Cn, P> {
     handshake: C,
     srv_control: Cn,
     srv_publish: P,
+    max_qos: QoS,
     max_size: u32,
     max_receive: u16,
-    max_qos: QoS,
-    max_inflight_size: usize,
+    max_receive_size: usize,
     max_topic_alias: u16,
     handle_qos_after_disconnect: Option<QoS>,
     connect_timeout: Seconds,
@@ -50,10 +50,10 @@ where
             handshake: handshake.into_factory(),
             srv_control: DefaultControlService::default(),
             srv_publish: DefaultPublishService::default(),
+            max_qos: QoS::AtLeastOnce,
             max_size: 0,
             max_receive: 15,
-            max_qos: QoS::AtLeastOnce,
-            max_inflight_size: 65535,
+            max_receive_size: 65535,
             max_topic_alias: 32,
             handle_qos_after_disconnect: None,
             connect_timeout: Seconds::ZERO,
@@ -121,6 +121,21 @@ where
     ///
     /// Number of in-flight publish packets. By default receive max is set to 15 packets.
     /// To disable timeout set value to 0.
+    pub fn max_receive(mut self, val: u16) -> Self {
+        self.max_receive = val;
+        self
+    }
+
+    /// Total size of received in-flight messages.
+    ///
+    /// By default total in-flight size is set to 64Kb
+    pub fn max_receive_size(mut self, val: usize) -> Self {
+        self.max_receive_size = val;
+        self
+    }
+
+    #[deprecated]
+    #[doc(hidden)]
     pub fn receive_max(mut self, val: u16) -> Self {
         self.max_receive = val;
         self
@@ -142,11 +157,10 @@ where
         self
     }
 
-    /// Total size of in-flight messages.
-    ///
-    /// By default total in-flight size is set to 64Kb
+    #[deprecated]
+    #[doc(hidden)]
     pub fn max_inflight_size(mut self, val: usize) -> Self {
-        self.max_inflight_size = val;
+        self.max_receive_size = val;
         self
     }
 
@@ -192,7 +206,7 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_inflight_size: self.max_inflight_size,
+            max_receive_size: self.max_receive_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -218,7 +232,7 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_inflight_size: self.max_inflight_size,
+            max_receive_size: self.max_receive_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -275,7 +289,7 @@ where
             factory(
                 self.srv_publish,
                 self.srv_control,
-                self.max_inflight_size,
+                self.max_receive_size,
                 self.handle_qos_after_disconnect,
             ),
             self.config,

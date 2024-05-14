@@ -46,10 +46,10 @@ pub struct MqttServer<St, H, C, P> {
     publish: P,
     max_qos: QoS,
     max_size: u32,
-    max_inflight: u16,
-    max_inflight_size: usize,
-    max_outgoing: u16,
-    max_outgoing_size: (u32, u32),
+    max_receive: u16,
+    max_receive_size: usize,
+    max_send: u16,
+    max_send_size: (u32, u32),
     handle_qos_after_disconnect: Option<QoS>,
     connect_timeout: Seconds,
     config: DispatcherConfig,
@@ -79,10 +79,10 @@ where
             publish: DefaultPublishService::default(),
             max_qos: QoS::AtLeastOnce,
             max_size: 0,
-            max_inflight: 16,
-            max_inflight_size: 65535,
-            max_outgoing: 16,
-            max_outgoing_size: (65535, 512),
+            max_receive: 16,
+            max_receive_size: 65535,
+            max_send: 16,
+            max_send_size: (65535, 512),
             handle_qos_after_disconnect: None,
             connect_timeout: Seconds::ZERO,
             pool: Default::default(),
@@ -155,35 +155,49 @@ where
         self
     }
 
-    /// Number of in-flight concurrent messages.
+    /// Number of inbound in-flight concurrent messages.
     ///
-    /// By default in-flight is set to 16 messages
-    pub fn max_inflight(mut self, val: u16) -> Self {
-        self.max_inflight = val;
+    /// By default inbound is set to 16 messages
+    pub fn max_receive(mut self, val: u16) -> Self {
+        self.max_receive = val;
         self
     }
 
-    /// Total size of in-flight messages.
+    #[deprecated]
+    #[doc(hidden)]
+    pub fn max_inflight(mut self, val: u16) -> Self {
+        self.max_receive = val;
+        self
+    }
+
+    /// Total size of inbound in-flight messages.
     ///
-    /// By default total in-flight size is set to 64Kb
+    /// By default total inbound in-flight size is set to 64Kb
+    pub fn max_receive_size(mut self, val: usize) -> Self {
+        self.max_receive_size = val;
+        self
+    }
+
+    #[deprecated]
+    #[doc(hidden)]
     pub fn max_inflight_size(mut self, val: usize) -> Self {
-        self.max_inflight_size = val;
+        self.max_receive_size = val;
         self
     }
 
     /// Number of outgoing concurrent messages.
     ///
     /// By default outgoing is set to 16 messages
-    pub fn max_outgoing(mut self, val: u16) -> Self {
-        self.max_outgoing = val;
+    pub fn max_send(mut self, val: u16) -> Self {
+        self.max_send = val;
         self
     }
 
     /// Total size of outgoing messages.
     ///
     /// By default total outgoing size is set to 64Kb
-    pub fn max_outgoing_size(mut self, val: u32) -> Self {
-        self.max_outgoing_size = (val, val / 10);
+    pub fn max_send_size(mut self, val: u32) -> Self {
+        self.max_send_size = (val, val / 10);
         self
     }
 
@@ -230,10 +244,10 @@ where
             config: self.config,
             max_qos: self.max_qos,
             max_size: self.max_size,
-            max_inflight: self.max_inflight,
-            max_inflight_size: self.max_inflight_size,
-            max_outgoing: self.max_outgoing,
-            max_outgoing_size: self.max_outgoing_size,
+            max_receive: self.max_receive,
+            max_receive_size: self.max_receive_size,
+            max_send: self.max_send,
+            max_send_size: self.max_send_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -255,10 +269,10 @@ where
             config: self.config,
             max_qos: self.max_qos,
             max_size: self.max_size,
-            max_inflight: self.max_inflight,
-            max_inflight_size: self.max_inflight_size,
-            max_outgoing: self.max_outgoing,
-            max_outgoing_size: self.max_outgoing_size,
+            max_receive: self.max_receive,
+            max_receive_size: self.max_receive_size,
+            max_send: self.max_send,
+            max_send_size: self.max_send_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -290,8 +304,8 @@ where
             HandshakeFactory {
                 factory: self.handshake,
                 max_size: self.max_size,
-                max_outgoing: self.max_outgoing,
-                max_outgoing_size: self.max_outgoing_size,
+                max_send: self.max_send,
+                max_send_size: self.max_send_size,
                 connect_timeout: self.connect_timeout,
                 pool: self.pool.clone(),
                 _t: PhantomData,
@@ -299,8 +313,8 @@ where
             factory(
                 self.publish,
                 self.control,
-                self.max_inflight,
-                self.max_inflight_size,
+                self.max_receive,
+                self.max_receive_size,
                 self.max_qos,
                 self.handle_qos_after_disconnect,
             ),
@@ -312,8 +326,8 @@ where
 struct HandshakeFactory<St, H> {
     factory: H,
     max_size: u32,
-    max_outgoing: u16,
-    max_outgoing_size: (u32, u32),
+    max_send: u16,
+    max_send_size: (u32, u32),
     connect_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
@@ -333,8 +347,8 @@ where
     async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
         Ok(HandshakeService {
             max_size: self.max_size,
-            max_outgoing: self.max_outgoing,
-            max_outgoing_size: self.max_outgoing_size,
+            max_send: self.max_send,
+            max_send_size: self.max_send_size,
             pool: self.pool.clone(),
             service: self.factory.create(()).await?,
             connect_timeout: self.connect_timeout.into(),
@@ -346,8 +360,8 @@ where
 struct HandshakeService<St, H> {
     service: H,
     max_size: u32,
-    max_outgoing: u16,
-    max_outgoing_size: (u32, u32),
+    max_send: u16,
+    max_send_size: (u32, u32),
     pool: Rc<MqttSinkPool>,
     connect_timeout: Millis,
     _t: PhantomData<St>,
@@ -371,7 +385,7 @@ where
     ) -> Result<Self::Response, Self::Error> {
         log::trace!("Starting mqtt v3 handshake");
 
-        let (h, l) = self.max_outgoing_size;
+        let (h, l) = self.max_send_size;
         io.memory_pool().set_write_params(h, l);
 
         let codec = mqtt::Codec::default();
@@ -408,7 +422,7 @@ where
 
                         log::trace!("Sending success handshake ack: {:#?}", pkt);
 
-                        ack.shared.set_cap(ack.outgoing.unwrap_or(self.max_outgoing) as usize);
+                        ack.shared.set_cap(ack.max_send.unwrap_or(self.max_send) as usize);
                         ack.io.encode(pkt, &ack.shared.codec)?;
                         Ok((
                             ack.io,

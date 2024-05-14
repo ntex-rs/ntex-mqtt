@@ -14,9 +14,9 @@ pub struct MqttConnector<A, T> {
     address: A,
     connector: Pipeline<T>,
     pkt: codec::Connect,
+    max_size: u32,
     max_send: usize,
     max_receive: usize,
-    max_packet_size: u32,
     handshake_timeout: Seconds,
     config: DispatcherConfig,
     pool: Rc<MqttSinkPool>,
@@ -37,9 +37,9 @@ where
             config,
             pkt: codec::Connect::default(),
             connector: Pipeline::new(Connector::default()),
+            max_size: 64 * 1024,
             max_send: 16,
             max_receive: 16,
-            max_packet_size: 64 * 1024,
             handshake_timeout: Seconds::ZERO,
             pool: Rc::new(MqttSinkPool::default()),
         }
@@ -103,9 +103,18 @@ where
     }
 
     #[inline]
+    /// Max incoming packet size.
+    ///
+    /// To disable max size limit set value to 0.
+    pub fn max_size(mut self, val: u32) -> Self {
+        self.max_size = val;
+        self
+    }
+
+    #[inline]
     /// Set max send packets number
     ///
-    /// Number of in-flight outgoing publish packets. By default receive max is set to 16 packets.
+    /// Number of in-flight outgoing publish packets. By default send max is set to 16 packets.
     /// To disable in-flight limit set value to 0.
     pub fn max_send(mut self, val: u16) -> Self {
         self.max_send = val as usize;
@@ -113,21 +122,18 @@ where
     }
 
     #[inline]
-    /// Set max receive packets number
+    /// Number of inbound in-flight concurrent messages.
     ///
-    /// Number of in-flight incoming publish packets. By default receive max is set to 16 packets.
-    /// To disable in-flight limit set value to 0.
+    /// By default inbound is set to 16 messages To disable in-flight limit set value to 0.
     pub fn max_receive(mut self, val: u16) -> Self {
         self.max_receive = val as usize;
         self
     }
 
-    #[inline]
-    /// Max incoming packet size.
-    ///
-    /// To disable max size limit set value to 0.
+    #[deprecated]
+    #[doc(hidden)]
     pub fn max_packet_size(mut self, val: u32) -> Self {
-        self.max_packet_size = val;
+        self.max_size = val;
         self
     }
 
@@ -184,9 +190,9 @@ where
             pkt: self.pkt,
             address: self.address,
             config: self.config,
+            max_size: self.max_size,
             max_send: self.max_send,
             max_receive: self.max_receive,
-            max_packet_size: self.max_packet_size,
             handshake_timeout: self.handshake_timeout,
             pool: self.pool,
         }
@@ -216,7 +222,7 @@ where
         let config = self.config.clone();
         let pool = self.pool.clone();
         let codec = codec::Codec::new();
-        codec.set_max_size(self.max_packet_size);
+        codec.set_max_size(self.max_size);
 
         io.encode(pkt.into(), &codec)?;
 
