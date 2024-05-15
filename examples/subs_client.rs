@@ -60,7 +60,6 @@ async fn main() -> std::io::Result<()> {
                 log::warn!("Server closed connection: {:?}", msg);
                 Ready::Ok(msg.ack())
             }
-            _ => Ready::Ok(control.ack()),
         },
     )));
 
