@@ -1,5 +1,9 @@
 # Changes
 
+## [2.0.2] - 2024-05-15
+
+* Remove non_exhaustive marker
+
 ## [2.0.1] - 2024-05-14
 
 * Better naming

@@ -4,7 +4,6 @@ pub use crate::v3::control::{Closed, ControlAck, Disconnect, Error, PeerGone, Pr
 use crate::v3::{codec, control::ControlAckKind, error};
 
 /// Client control messages
-#[non_exhaustive]
 #[derive(Debug)]
 pub enum Control<E> {
     /// Unhandled publish packet

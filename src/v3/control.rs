@@ -5,7 +5,6 @@ use super::codec;
 use crate::{error, types::QoS};
 
 /// Server control messages
-#[non_exhaustive]
 #[derive(Debug)]
 pub enum Control<E> {
     /// Ping packet

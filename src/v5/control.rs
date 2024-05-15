@@ -6,7 +6,6 @@ use super::codec::{self, DisconnectReasonCode, QoS, UserProperties};
 use crate::error;
 
 /// Server control messages
-#[non_exhaustive]
 #[derive(Debug)]
 pub enum Control<E> {
     /// Auth packet from a client
