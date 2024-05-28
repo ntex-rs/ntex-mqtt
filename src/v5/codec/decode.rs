@@ -1,4 +1,4 @@
-use ntex::util::{ByteString, Bytes};
+use ntex_bytes::{ByteString, Bytes};
 
 use super::{packet::*, UserProperty};
 use crate::error::DecodeError;
@@ -38,7 +38,7 @@ impl Decode for UserProperty {
 
 #[cfg(test)]
 mod tests {
-    use ntex::util::BytesMut;
+    use ntex_bytes::BytesMut;
     use std::num::{NonZeroU16, NonZeroU32};
 
     use super::*;
@@ -55,7 +55,7 @@ mod tests {
         let (_len, consumed) = decode_variable_length(&bytes[1..]).unwrap().unwrap();
         let cur = Bytes::copy_from_slice(&bytes[consumed + 1..]);
         let mut tmp = BytesMut::with_capacity(4096);
-        ntex::codec::Encoder::encode(&crate::v5::codec::Codec::new(), res.clone(), &mut tmp)
+        ntex_codec::Encoder::encode(&crate::v5::codec::Codec::new(), res.clone(), &mut tmp)
             .unwrap();
         let decoded = decode_packet(cur, fixed);
         let res = Ok(res);

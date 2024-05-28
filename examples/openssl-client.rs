@@ -1,4 +1,4 @@
-use ntex::connect::openssl::Connector;
+use ntex::connect::openssl::SslConnector;
 use ntex::time::{sleep, Millis, Seconds};
 use ntex_mqtt::v5;
 use openssl::ssl;
@@ -35,7 +35,7 @@ async fn main() -> std::io::Result<()> {
 
     // connect to server
     let client = v5::client::MqttConnector::new("127.0.0.1:8883")
-        .connector(Connector::new(builder.build()))
+        .connector(SslConnector::new(builder.build()))
         .client_id("user")
         .keep_alive(Seconds::ONE)
         .max_packet_size(30)

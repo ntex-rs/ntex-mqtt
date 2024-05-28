@@ -1,6 +1,6 @@
 use std::{fmt, num::NonZeroU16};
 
-use ntex::util::{ByteString, Bytes};
+use ntex_bytes::{ByteString, Bytes};
 
 use crate::types::{packet_type, QoS};
 

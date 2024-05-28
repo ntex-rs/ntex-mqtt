@@ -1,4 +1,4 @@
-use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};
 

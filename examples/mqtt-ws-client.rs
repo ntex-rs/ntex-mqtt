@@ -1,7 +1,7 @@
 //! Mqtt-over-WS client
 use std::{io, rc::Rc};
 
-use ntex::connect::{openssl::Connector, Connect, ConnectError};
+use ntex::connect::{openssl::SslConnector, Connect, ConnectError};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::{util::Bytes, ws};
 use ntex_mqtt::v3;
@@ -21,9 +21,12 @@ async fn main() -> std::io::Result<()> {
 
     // we need custom connector that would open ws connection and enable ws transport
     let ws_client = Rc::new(
-        ws::WsClient::with_connector("https://127.0.0.1:8883", Connector::new(builder.build()))
-            .finish()
-            .unwrap(),
+        ws::WsClient::with_connector(
+            "https://127.0.0.1:8883",
+            SslConnector::new(builder.build()),
+        )
+        .finish()
+        .unwrap(),
     );
 
     // connect to server

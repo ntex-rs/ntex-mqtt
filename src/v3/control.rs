@@ -1,4 +1,4 @@
-use ntex::util::ByteString;
+use ntex_bytes::ByteString;
 use std::{io, marker::PhantomData, num::NonZeroU16};
 
 use super::codec;

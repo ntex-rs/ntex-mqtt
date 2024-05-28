@@ -1,8 +1,8 @@
-use std::{rc::Rc, task::Context, task::Poll};
+use std::rc::Rc;
 
-use ntex::router::{IntoPattern, RouterBuilder};
-use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
-use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex_router::{IntoPattern, RouterBuilder};
+use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
+use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 
 use super::{publish::Publish, Session};
 
@@ -32,7 +32,7 @@ where
             + 'static,
     {
         Router {
-            router: ntex::router::Router::build(),
+            router: ntex_router::Router::build(),
             handlers: Vec::new(),
             default: boxed::factory(default_service.into_factory()),
         }
@@ -67,7 +67,7 @@ where
 }
 
 pub struct RouterFactory<S, Err> {
-    router: Rc<ntex::router::Router<usize>>,
+    router: Rc<ntex_router::Router<usize>>,
     handlers: Vec<Handler<S, Err>>,
     default: Handler<S, Err>,
 }
@@ -99,7 +99,7 @@ where
 }
 
 pub struct RouterService<Err> {
-    router: Rc<ntex::router::Router<usize>>,
+    router: Rc<ntex_router::Router<usize>>,
     handlers: Vec<HandlerService<Err>>,
     default: HandlerService<Err>,
 }
@@ -108,23 +108,12 @@ impl<Err> Service<Publish> for RouterService<Err> {
     type Response = ();
     type Error = Err;
 
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut not_ready = false;
+    #[inline]
+    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         for hnd in &self.handlers {
-            if hnd.poll_ready(cx)?.is_pending() {
-                not_ready = true;
-            }
+            ctx.ready(hnd).await?;
         }
-
-        if self.default.poll_ready(cx)?.is_pending() {
-            not_ready = true;
-        }
-
-        if not_ready {
-            Poll::Pending
-        } else {
-            Poll::Ready(Ok(()))
-        }
+        ctx.ready(&self.default).await
     }
 
     async fn call(

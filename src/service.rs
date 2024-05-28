@@ -1,9 +1,9 @@
 use std::{fmt, marker::PhantomData, rc::Rc};
 
-use ntex::codec::{Decoder, Encoder};
-use ntex::io::{DispatchItem, DispatcherConfig, Filter, Io, IoBoxed};
-use ntex::service::{Service, ServiceCtx, ServiceFactory};
-use ntex::time::Seconds;
+use ntex_codec::{Decoder, Encoder};
+use ntex_io::{DispatchItem, DispatcherConfig, Filter, Io, IoBoxed};
+use ntex_service::{Service, ServiceCtx, ServiceFactory};
+use ntex_util::time::Seconds;
 
 use crate::io::Dispatcher;
 
@@ -112,8 +112,8 @@ where
     type Response = ();
     type Error = C::Error;
 
-    ntex::forward_poll_ready!(connect);
-    ntex::forward_poll_shutdown!(connect);
+    ntex_service::forward_ready!(connect);
+    ntex_service::forward_shutdown!(connect);
 
     async fn call(&self, req: IoBoxed, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let tag = req.tag();
@@ -150,8 +150,8 @@ where
     type Response = ();
     type Error = C::Error;
 
-    ntex::forward_poll_ready!(connect);
-    ntex::forward_poll_shutdown!(connect);
+    ntex_service::forward_ready!(connect);
+    ntex_service::forward_shutdown!(connect);
 
     #[inline]
     async fn call(&self, io: Io<F>, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {

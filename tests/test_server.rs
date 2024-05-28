@@ -559,7 +559,7 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
 
     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
     builder.set_verify(SslVerifyMode::NONE);
-    let con = Pipeline::new(ntex::connect::openssl::Connector::new(builder.build()));
+    let con = Pipeline::new(ntex::connect::openssl::SslConnector::new(builder.build()));
     let addr = format!("127.0.0.1:{}", srv.addr().port());
     let io = con.call(addr.into()).await.unwrap();
 

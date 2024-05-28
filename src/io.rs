@@ -1,13 +1,14 @@
 //! Framed transport dispatcher
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 use std::{cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc};
 
-use ntex::codec::{Decoder, Encoder};
-use ntex::io::{
+use ntex_bytes::Pool;
+use ntex_codec::{Decoder, Encoder};
+use ntex_io::{
     Decoded, DispatchItem, DispatcherConfig, IoBoxed, IoRef, IoStatusUpdate, RecvError,
 };
-use ntex::service::{IntoService, Pipeline, PipelineCall, Service};
-use ntex::{time::Seconds, util::ready, util::Pool};
+use ntex_service::{IntoService, Pipeline, PipelineBinding, PipelineCall, Service};
+use ntex_util::time::Seconds;
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -41,7 +42,7 @@ struct DispatcherInner<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'stat
     io: IoBoxed,
     flags: Flags,
     codec: U,
-    service: Pipeline<S>,
+    service: PipelineBinding<S, DispatchItem<U>>,
     st: IoDispatcherState,
     state: Rc<RefCell<DispatcherState<S, U>>>,
     config: DispatcherConfig,
@@ -136,7 +137,7 @@ where
                 } else {
                     Flags::empty()
                 },
-                service: Pipeline::new(service.into_service()),
+                service: Pipeline::new(service.into_service()).bind(),
                 config: config.clone(),
                 st: IoDispatcherState::Processing,
                 response: None,
@@ -393,7 +394,7 @@ where
 {
     fn call_service(&mut self, cx: &mut Context<'_>, item: DispatchItem<U>) {
         let mut state = self.state.borrow_mut();
-        let mut fut = self.service.call_static(item);
+        let mut fut = self.service.call(item);
 
         // optimize first call
         if self.response.is_none() {
@@ -429,7 +430,7 @@ where
             let state = self.state.clone();
 
             #[allow(clippy::let_underscore_future)]
-            let _ = ntex::rt::spawn(async move {
+            let _ = ntex_util::spawn(async move {
                 let item = fut.await;
                 state.borrow_mut().handle_result(item, response_idx, &st, &codec, true);
             });
@@ -584,10 +585,12 @@ where
 mod tests {
     use std::{cell::Cell, io, sync::Arc, sync::Mutex};
 
-    use ntex::channel::condition::Condition;
-    use ntex::time::{sleep, Millis};
-    use ntex::util::{Bytes, BytesMut};
-    use ntex::{codec::BytesCodec, io as nio, service::ServiceCtx, testing::Io};
+    use ntex_bytes::{Bytes, BytesMut};
+    use ntex_codec::BytesCodec;
+    use ntex_io::{self as nio, testing::IoTest as Io};
+    use ntex_service::ServiceCtx;
+    use ntex_util::channel::condition::Condition;
+    use ntex_util::time::{sleep, Millis};
     use rand::Rng;
 
     use super::*;
@@ -632,7 +635,7 @@ mod tests {
                         state,
                         config,
                         keepalive_timeout,
-                        service: Pipeline::new(service.into_service()),
+                        service: Pipeline::new(service.into_service()).bind(),
                         response: None,
                         response_idx: 0,
                         io: IoBoxed::from(io),
@@ -652,7 +655,7 @@ mod tests {
         }
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_basic() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -661,7 +664,7 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server),
             BytesCodec,
-            ntex::service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
+            ntex_service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 sleep(Millis(50)).await;
                 if let DispatchItem::Item(msg) = msg {
                     Ok::<_, ()>(Some(msg.freeze()))
@@ -670,7 +673,7 @@ mod tests {
                 }
             }),
         );
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = disp.await;
         });
         sleep(Millis(25)).await;
@@ -686,7 +689,7 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_ordering() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -698,7 +701,7 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server),
             BytesCodec,
-            ntex::service::fn_service(move |msg: DispatchItem<BytesCodec>| {
+            ntex_service::fn_service(move |msg: DispatchItem<BytesCodec>| {
                 let waiter = waiter.clone();
                 async move {
                     waiter.await;
@@ -710,7 +713,7 @@ mod tests {
                 }
             }),
         );
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = disp.await;
         });
         sleep(Millis(50)).await;
@@ -728,7 +731,7 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_sink() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -737,7 +740,7 @@ mod tests {
         let (disp, io) = Dispatcher::new_debug(
             nio::Io::new(server),
             BytesCodec,
-            ntex::service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
+            ntex_service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 if let DispatchItem::Item(msg) = msg {
                     Ok::<_, ()>(Some(msg.freeze()))
                 } else {
@@ -745,7 +748,7 @@ mod tests {
                 }
             }),
         );
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = disp.await;
         });
 
@@ -761,7 +764,7 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_err_in_service() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(0);
@@ -770,11 +773,11 @@ mod tests {
         let (disp, io) = Dispatcher::new_debug(
             nio::Io::new(server),
             BytesCodec,
-            ntex::service::fn_service(|_: DispatchItem<BytesCodec>| async move {
+            ntex_service::fn_service(|_: DispatchItem<BytesCodec>| async move {
                 Err::<Option<Bytes>, _>(())
             }),
         );
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = disp.await;
         });
 
@@ -793,7 +796,7 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_err_in_service_ready() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(0);
@@ -807,9 +810,9 @@ mod tests {
             type Response = Option<Response<BytesCodec>>;
             type Error = ();
 
-            fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
                 self.0.set(self.0.get() + 1);
-                Poll::Ready(Err(()))
+                Err(())
             }
 
             async fn call(
@@ -824,7 +827,7 @@ mod tests {
         let (disp, io) =
             Dispatcher::new_debug(nio::Io::new(server), BytesCodec, Srv(counter.clone()));
         io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec).unwrap();
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = disp.await;
         });
 
@@ -844,7 +847,7 @@ mod tests {
         assert_eq!(counter.get(), 1);
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_write_backpressure() {
         let (client, server) = Io::create();
         // do not allow to write to socket
@@ -857,7 +860,7 @@ mod tests {
         let (disp, io) = Dispatcher::new_debug(
             nio::Io::new(server),
             BytesCodec,
-            ntex::service::fn_service(move |msg: DispatchItem<BytesCodec>| {
+            ntex_service::fn_service(move |msg: DispatchItem<BytesCodec>| {
                 let data = data2.clone();
                 async move {
                     match msg {
@@ -886,7 +889,7 @@ mod tests {
         pool.set_read_params(8 * 1024, 1024);
         pool.set_write_params(16 * 1024, 1024);
 
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = disp.await;
         });
 
@@ -913,7 +916,7 @@ mod tests {
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 1, 2]);
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_shutdown_dispatcher_waker() {
         let (client, server) = Io::create();
         let server = nio::Io::new(server);
@@ -926,7 +929,7 @@ mod tests {
         let (disp, _io) = Dispatcher::new_debug(
             server,
             BytesCodec,
-            ntex::service::fn_service(move |item: DispatchItem<BytesCodec>| {
+            ntex_service::fn_service(move |item: DispatchItem<BytesCodec>| {
                 let first = flag2.get();
                 flag2.set(false);
                 let io = server_ref.clone();
@@ -946,8 +949,8 @@ mod tests {
                 }
             }),
         );
-        let (tx, rx) = ntex::channel::oneshot::channel();
-        ntex::rt::spawn(async move {
+        let (tx, rx) = ntex_util::channel::oneshot::channel();
+        ntex_util::spawn(async move {
             let _ = disp.await;
             let _ = tx.send(());
         });
@@ -970,7 +973,7 @@ mod tests {
     }
 
     /// Update keep-alive timer after receiving frame
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_keepalive() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -981,7 +984,7 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server),
             BytesCodec,
-            ntex::service::fn_service(move |msg: DispatchItem<BytesCodec>| {
+            ntex_service::fn_service(move |msg: DispatchItem<BytesCodec>| {
                 let data = data2.clone();
                 async move {
                     match msg {
@@ -998,7 +1001,7 @@ mod tests {
                 }
             }),
         );
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = disp.keepalive_timeout(Seconds(2)).await;
         });
 
@@ -1049,7 +1052,7 @@ mod tests {
     }
 
     /// Do not use keep-alive timer if not configured
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_no_keepalive_err_after_frame_timeout() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -1064,7 +1067,7 @@ mod tests {
             nio::Io::new(server),
             BytesLenCodec(2),
             config,
-            ntex::service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
+            ntex_service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
                 let data = data2.clone();
                 async move {
                     match msg {
@@ -1081,7 +1084,7 @@ mod tests {
                 }
             }),
         );
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = disp.await;
         });
 
@@ -1095,7 +1098,7 @@ mod tests {
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0]);
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_read_timeout() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -1114,7 +1117,7 @@ mod tests {
             nio::Io::new(server),
             BytesLenCodec(8),
             config,
-            ntex::service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
+            ntex_service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
                 let data = data2.clone();
                 async move {
                     match msg {
@@ -1131,7 +1134,7 @@ mod tests {
                 }
             }),
         );
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = disp.await;
         });
 

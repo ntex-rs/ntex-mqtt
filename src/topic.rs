@@ -1,6 +1,6 @@
 use std::{fmt, fmt::Write, io};
 
-use ntex::util::ByteString;
+use ntex_bytes::ByteString;
 
 pub(crate) fn is_valid(topic: &str) -> bool {
     if topic.is_empty() {

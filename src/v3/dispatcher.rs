@@ -1,10 +1,10 @@
-use std::task::{Context, Poll};
 use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
-use ntex::io::DispatchItem;
-use ntex::service::{self, Pipeline, Service, ServiceCtx, ServiceFactory};
-use ntex::util::buffer::{BufferService, BufferServiceError};
-use ntex::util::{inflight::InFlightService, join, BoxFuture, HashSet};
+use ntex_io::DispatchItem;
+use ntex_service::{Pipeline, Service, ServiceCtx, ServiceFactory};
+use ntex_util::services::buffer::{BufferService, BufferServiceError};
+use ntex_util::services::inflight::InFlightService;
+use ntex_util::{future::join, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::types::QoS;
@@ -35,7 +35,7 @@ where
 {
     let factories = Rc::new((publish, control));
 
-    service::fn_factory_with_config(move |session: Session<St>| {
+    ntex_service::fn_factory_with_config(move |session: Session<St>| {
         let factories = factories.clone();
 
         async move {
@@ -92,7 +92,6 @@ pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     max_qos: QoS,
     handle_qos_after_disconnect: Option<QoS>,
-    shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<(E,)>,
 }
@@ -120,7 +119,6 @@ where
             publish,
             max_qos,
             handle_qos_after_disconnect,
-            shutdown: RefCell::new(None),
             inner: Rc::new(Inner { sink, control, inflight: RefCell::new(HashSet::default()) }),
             _t: PhantomData,
         }
@@ -136,35 +134,19 @@ where
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
 
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let res1 = self.publish.poll_ready(cx).map_err(|e| MqttError::Service(e.into()))?;
-        let res2 = self.inner.control.poll_ready(cx)?;
-
-        if res1.is_pending() || res2.is_pending() {
-            Poll::Pending
-        } else {
-            Poll::Ready(Ok(()))
-        }
+    #[inline]
+    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
+        res1.map_err(|e| MqttError::Service(e.into()))?;
+        res2
     }
 
-    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
-        let mut shutdown = self.shutdown.borrow_mut();
-        if !shutdown.is_some() {
-            self.inner.sink.close();
-            let inner = self.inner.clone();
-            *shutdown = Some(Box::pin(async move {
-                let _ = Pipeline::new(&inner.control).call(Control::closed()).await;
-            }));
-        }
+    async fn shutdown(&self) {
+        self.inner.sink.close();
+        let _ = Pipeline::new(&self.inner.control).call(Control::closed()).await;
 
-        let res0 = shutdown.as_mut().expect("guard above").as_mut().poll(cx);
-        let res1 = self.publish.poll_shutdown(cx);
-        let res2 = self.inner.control.poll_shutdown(cx);
-        if res0.is_pending() || res1.is_pending() || res2.is_pending() {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        }
+        self.publish.shutdown().await;
+        self.inner.control.shutdown().await;
     }
 
     async fn call(
@@ -442,15 +424,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use ntex::time::{sleep, Seconds};
-    use ntex::util::{lazy, ByteString, Bytes, Ready};
-    use ntex::{io::Io, service::fn_service, testing::IoTest};
     use std::{future::Future, pin::Pin};
+
+    use ntex_bytes::{ByteString, Bytes};
+    use ntex_io::{testing::IoTest, Io};
+    use ntex_service::fn_service;
+    use ntex_util::future::{lazy, Ready};
+    use ntex_util::time::{sleep, Seconds};
 
     use super::*;
     use crate::v3::MqttSink;
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_dup_packet_id() {
         let io = Io::new(IoTest::create().0);
         let codec = codec::Codec::default();
@@ -503,7 +488,7 @@ mod tests {
         assert!(*err.borrow());
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_wr_backpressure() {
         let io = Io::new(IoTest::create().0);
         let codec = codec::Codec::default();

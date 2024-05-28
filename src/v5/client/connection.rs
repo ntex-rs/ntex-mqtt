@@ -1,11 +1,12 @@
 #![allow(clippy::let_underscore_future)]
 use std::{cell::RefCell, fmt, marker, num::NonZeroU16, rc::Rc};
 
-use ntex::io::{DispatcherConfig, IoBoxed};
-use ntex::router::{IntoPattern, Path, Router, RouterBuilder};
-use ntex::service::{boxed, into_service, IntoService, Pipeline, Service};
-use ntex::time::{sleep, Millis, Seconds};
-use ntex::util::{ByteString, Either, HashMap, Ready};
+use ntex_bytes::ByteString;
+use ntex_io::{DispatcherConfig, IoBoxed};
+use ntex_router::{IntoPattern, Path, Router, RouterBuilder};
+use ntex_service::{boxed, fn_service, IntoService, Pipeline, Service};
+use ntex_util::time::{sleep, Millis, Seconds};
+use ntex_util::{future::Either, future::Ready, HashMap};
 
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{codec, shared::MqttShared, sink::MqttSink, ControlAck};
@@ -104,15 +105,15 @@ impl Client {
     pub async fn start_default(self) {
         if self.keepalive.non_zero() {
             let _ =
-                ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+                ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
             MqttSink::new(self.shared.clone()),
             self.max_receive,
             16,
-            into_service(|pkt| Ready::Ok(Either::Left(pkt))),
-            into_service(|msg: Control<()>| {
+            fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
+            fn_service(|msg: Control<()>| {
                 Ready::Ok(msg.disconnect(codec::Disconnect::default()))
             }),
         );
@@ -129,14 +130,14 @@ impl Client {
     {
         if self.keepalive.non_zero() {
             let _ =
-                ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+                ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
             MqttSink::new(self.shared.clone()),
             self.max_receive,
             16,
-            into_service(|pkt| Ready::Ok(Either::Left(pkt))),
+            fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
             service.into_service(),
         );
 
@@ -195,7 +196,7 @@ where
     pub async fn start_default(self) {
         if self.keepalive.non_zero() {
             let _ =
-                ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+                ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
@@ -203,7 +204,7 @@ where
             self.max_receive,
             16,
             dispatch(self.builder.finish(), self.handlers),
-            into_service(|msg: Control<Err>| {
+            fn_service(|msg: Control<Err>| {
                 Ready::Ok(msg.disconnect(codec::Disconnect::default()))
             }),
         );
@@ -219,7 +220,7 @@ where
     {
         if self.keepalive.non_zero() {
             let _ =
-                ntex::rt::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+                ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
@@ -252,7 +253,7 @@ where
         RefCell::new(HashMap::default());
     let handlers = Rc::new(handlers);
 
-    into_service(move |mut req: Publish| {
+    fn_service(move |mut req: Publish| {
         let idx = if !req.publish_topic().is_empty() {
             if let Some((idx, _info)) = router.recognize(req.topic_mut()) {
                 // save info for topic alias

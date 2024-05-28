@@ -1,7 +1,7 @@
 use std::cell::Cell;
 
-use ntex::codec::{Decoder, Encoder};
-use ntex::util::{Buf, BytesMut};
+use ntex_bytes::{Buf, BytesMut};
+use ntex_codec::{Decoder, Encoder};
 
 use super::{decode::decode_packet, encode::EncodeLtd, Packet};
 use crate::error::{DecodeError, EncodeError};

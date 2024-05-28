@@ -1,8 +1,9 @@
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, num::NonZeroU16, rc::Rc};
 
-use ntex::codec::{Decoder, Encoder};
-use ntex::util::{BytesMut, HashSet, PoolId, PoolRef};
-use ntex::{channel::pool, io::IoRef};
+use ntex_bytes::{BytesMut, PoolId, PoolRef};
+use ntex_codec::{Decoder, Encoder};
+use ntex_io::IoRef;
+use ntex_util::{channel::pool, HashSet};
 
 use crate::{error, error::SendPacketError, types::packet_type, v5::codec, QoS};
 

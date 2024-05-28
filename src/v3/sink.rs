@@ -1,6 +1,7 @@
 use std::{fmt, future::ready, future::Future, num::NonZeroU16, rc::Rc};
 
-use ntex::util::{ByteString, Bytes, Either, Ready};
+use ntex_bytes::{ByteString, Bytes};
+use ntex_util::future::{Either, Ready};
 
 use super::{codec, error::SendPacketError, shared::AckType, shared::MqttShared};
 

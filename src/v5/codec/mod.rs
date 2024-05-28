@@ -1,6 +1,6 @@
 //! MQTT v5 Protocol codec
 
-use ntex::util::ByteString;
+use ntex_bytes::ByteString;
 
 #[allow(clippy::module_inception)]
 mod codec;

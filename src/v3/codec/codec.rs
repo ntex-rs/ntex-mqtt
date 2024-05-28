@@ -1,7 +1,7 @@
 use std::cell::Cell;
 
-use ntex::codec::{Decoder, Encoder};
-use ntex::util::{Buf, BytesMut};
+use ntex_bytes::{Buf, BytesMut};
+use ntex_codec::{Decoder, Encoder};
 
 use super::{decode, encode, Packet, Publish};
 use crate::error::{DecodeError, EncodeError};
@@ -115,7 +115,7 @@ impl Encoder for Codec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ntex::util::{ByteString, Bytes};
+    use ntex_bytes::{ByteString, Bytes};
 
     #[test]
     fn test_max_size() {

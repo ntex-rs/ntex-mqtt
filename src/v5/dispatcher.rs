@@ -1,10 +1,11 @@
-use std::{cell::RefCell, marker, num, rc::Rc, task::Context, task::Poll};
+use std::{cell::RefCell, marker, num, rc::Rc};
 
-use ntex::io::DispatchItem;
-use ntex::util::inflight::InFlightService;
-use ntex::util::{buffer::BufferService, buffer::BufferServiceError};
-use ntex::util::{join, BoxFuture, ByteString, HashMap, HashSet};
-use ntex::{service, Pipeline, Service, ServiceCtx, ServiceFactory};
+use ntex_bytes::ByteString;
+use ntex_io::DispatchItem;
+use ntex_service::{self as service, Pipeline, Service, ServiceCtx, ServiceFactory};
+use ntex_util::services::inflight::InFlightService;
+use ntex_util::services::{buffer::BufferService, buffer::BufferServiceError};
+use ntex_util::{future::join, HashMap, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::types::QoS;
@@ -83,7 +84,6 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     handle_qos_after_disconnect: Option<QoS>,
-    shutdown: RefCell<Option<BoxFuture<'static, ()>>>,
     inner: Rc<Inner<C>>,
     _t: marker::PhantomData<E>,
 }
@@ -115,7 +115,6 @@ where
         Self {
             publish,
             handle_qos_after_disconnect,
-            shutdown: RefCell::new(None),
             inner: Rc::new(Inner {
                 sink,
                 control,
@@ -139,35 +138,19 @@ where
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
 
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let res1 = self.publish.poll_ready(cx).map_err(|e| MqttError::Service(e.into()))?;
-        let res2 = self.inner.control.poll_ready(cx)?;
-
-        if res1.is_pending() || res2.is_pending() {
-            Poll::Pending
-        } else {
-            Poll::Ready(Ok(()))
-        }
+    #[inline]
+    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
+        res1.map_err(|e| MqttError::Service(e.into()))?;
+        res2
     }
 
-    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
-        let mut shutdown = self.shutdown.borrow_mut();
-        if !shutdown.is_some() {
-            self.inner.sink.drop_sink();
-            let inner = self.inner.clone();
-            *shutdown = Some(Box::pin(async move {
-                let _ = Pipeline::new(&inner.control).call(Control::closed()).await;
-            }));
-        }
+    async fn shutdown(&self) {
+        self.inner.sink.drop_sink();
+        let _ = Pipeline::new(&self.inner.control).call(Control::closed()).await;
 
-        let res0 = shutdown.as_mut().expect("guard above").as_mut().poll(cx);
-        let res1 = self.publish.poll_shutdown(cx);
-        let res2 = self.inner.control.poll_shutdown(cx);
-        if res0.is_pending() || res1.is_pending() || res2.is_pending() {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        }
+        self.publish.shutdown().await;
+        self.inner.control.shutdown().await;
     }
 
     #[allow(clippy::await_holding_refcell_ref)]
@@ -580,7 +563,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use ntex::{io::Io, service::fn_service, testing::IoTest, util::lazy, util::Ready};
+    use ntex_io::{testing::IoTest, Io};
+    use ntex_service::fn_service;
+    use ntex_util::future::{lazy, Ready};
 
     use super::*;
     use crate::v5::MqttSink;
@@ -596,7 +581,7 @@ mod tests {
         }
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_wr_backpressure() {
         let io = Io::new(IoTest::create().0);
         let codec = codec::Codec::default();

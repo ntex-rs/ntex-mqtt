@@ -1,4 +1,4 @@
-use ntex::util::{BufMut, ByteString, BytesMut};
+use ntex_bytes::{BufMut, ByteString, BytesMut};
 
 use super::packet::{property_type as pt, *};
 use super::{UserProperties, UserProperty};
@@ -271,7 +271,7 @@ pub(super) fn reduce_limit(limit: u32, reduction: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use ntex::util::Bytes;
+    use ntex_bytes::Bytes;
     use std::num::{NonZeroU16, NonZeroU32};
 
     use super::*;
