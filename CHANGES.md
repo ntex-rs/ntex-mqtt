@@ -1,5 +1,11 @@
 # Changes
 
+## [3.0.0] - 2024-05-28
+
+* Switch to individual ntex_* crates
+
+* Use ntex-service 3.0
+
 ## [2.0.2] - 2024-05-15
 
 * Remove non_exhaustive marker

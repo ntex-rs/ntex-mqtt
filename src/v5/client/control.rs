@@ -1,6 +1,6 @@
 use std::io;
 
-use ntex::util::ByteString;
+use ntex_bytes::ByteString;
 
 use crate::{error, v5::codec};
 

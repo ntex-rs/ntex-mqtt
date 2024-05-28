@@ -1,6 +1,6 @@
 use std::{io::Cursor, num::NonZeroU16, num::NonZeroU32};
 
-use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 use crate::error::{DecodeError, EncodeError};
 

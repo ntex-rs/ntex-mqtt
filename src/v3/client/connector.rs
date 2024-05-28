@@ -1,10 +1,10 @@
 use std::rc::Rc;
 
-use ntex::connect::{self, Address, Connect, Connector};
-use ntex::io::{DispatcherConfig, IoBoxed};
-use ntex::service::{IntoService, Pipeline, Service};
-use ntex::time::{timeout_checked, Seconds};
-use ntex::util::{ByteString, Bytes, PoolId};
+use ntex_bytes::{ByteString, Bytes, PoolId};
+use ntex_io::{DispatcherConfig, IoBoxed};
+use ntex_net::connect::{self, Address, Connect, Connector};
+use ntex_service::{IntoService, Pipeline, Service};
+use ntex_util::time::{timeout_checked, Seconds};
 
 use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
 use crate::v3::shared::{MqttShared, MqttSinkPool};

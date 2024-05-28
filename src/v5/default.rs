@@ -1,6 +1,6 @@
 use std::{fmt, marker::PhantomData};
 
-use ntex::service::{Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Service, ServiceCtx, ServiceFactory};
 
 use super::control::{Control, ControlAck};
 use super::publish::{Publish, PublishAck};

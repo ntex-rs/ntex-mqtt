@@ -1,6 +1,6 @@
 use std::num::NonZeroU16;
 
-use ntex::util::{Buf, ByteString, Bytes};
+use ntex_bytes::{Buf, ByteString, Bytes};
 
 use crate::error::DecodeError;
 use crate::types::{packet_type, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};

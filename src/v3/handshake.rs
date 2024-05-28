@@ -1,10 +1,9 @@
 use std::{fmt, rc::Rc};
 
-use ntex::{io::IoBoxed, time::Seconds};
+use ntex_io::IoBoxed;
+use ntex_util::time::Seconds;
 
-use super::codec as mqtt;
-use super::shared::MqttShared;
-use super::sink::MqttSink;
+use super::{codec as mqtt, shared::MqttShared, sink::MqttSink};
 
 const DEFAULT_KEEPALIVE: Seconds = Seconds(30);
 

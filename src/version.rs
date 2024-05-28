@@ -1,5 +1,5 @@
-use ntex::codec::{Decoder, Encoder};
-use ntex::util::BytesMut;
+use ntex_bytes::BytesMut;
+use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{packet_type, MQTT, MQTT_LEVEL_3, MQTT_LEVEL_5};

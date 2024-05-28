@@ -1,8 +1,8 @@
 use std::{fmt, marker::PhantomData, rc::Rc};
 
-use ntex::io::{DispatchItem, DispatcherConfig, IoBoxed};
-use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
-use ntex::time::{timeout_checked, Millis, Seconds};
+use ntex_io::{DispatchItem, DispatcherConfig, IoBoxed};
+use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex_util::time::{timeout_checked, Millis, Seconds};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::{service, types::QoS};
@@ -375,8 +375,8 @@ where
     type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;
 
-    ntex::forward_poll_ready!(service, MqttError::Service);
-    ntex::forward_poll_shutdown!(service);
+    ntex_service::forward_ready!(service, MqttError::Service);
+    ntex_service::forward_shutdown!(service);
 
     async fn call(
         &self,

@@ -1,6 +1,6 @@
 use std::{fmt, io, num::NonZeroU16};
 
-use ntex::util::Either;
+use ntex_util::future::Either;
 
 use crate::v5::codec::DisconnectReasonCode;
 
@@ -195,7 +195,7 @@ pub enum ClientError<T: fmt::Debug> {
     Disconnected(Option<std::io::Error>),
     /// Connect error
     #[error("Connect error: {}", _0)]
-    Connect(#[from] ntex::connect::ConnectError),
+    Connect(#[from] ntex_net::connect::ConnectError),
 }
 
 impl<T: fmt::Debug> From<EncodeError> for ClientError<T> {

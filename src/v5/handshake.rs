@@ -1,4 +1,4 @@
-use ntex::io::IoBoxed;
+use ntex_io::IoBoxed;
 use std::{fmt, num::NonZeroU16, rc::Rc};
 
 use super::{codec, shared::MqttShared, sink::MqttSink};

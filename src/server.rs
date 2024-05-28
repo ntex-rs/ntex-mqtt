@@ -1,9 +1,9 @@
-use std::{fmt, io, marker, task::Context, task::Poll};
+use std::{fmt, io, marker};
 
-use ntex::io::{Filter, Io, IoBoxed};
-use ntex::service::{Service, ServiceCtx, ServiceFactory};
-use ntex::time::{Deadline, Millis, Seconds};
-use ntex::util::{join, select, Either};
+use ntex_io::{Filter, Io, IoBoxed};
+use ntex_service::{Service, ServiceCtx, ServiceFactory};
+use ntex_util::future::{join, select, Either};
+use ntex_util::time::{Deadline, Millis, Seconds};
 
 use crate::version::{ProtocolVersion, VersionCodec};
 use crate::{error::HandshakeError, error::MqttError, v3, v5};
@@ -214,27 +214,17 @@ where
     type Error = MqttError<Err>;
 
     #[inline]
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let ready1 = self.handlers.0.poll_ready(cx)?.is_ready();
-        let ready2 = self.handlers.1.poll_ready(cx)?.is_ready();
-
-        if ready1 && ready2 {
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
-        }
+    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        let (ready1, ready2) =
+            join(ctx.ready(&self.handlers.0), ctx.ready(&self.handlers.1)).await;
+        ready1?;
+        ready2
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
-        let ready1 = self.handlers.0.poll_shutdown(cx).is_ready();
-        let ready2 = self.handlers.1.poll_shutdown(cx).is_ready();
-
-        if ready1 && ready2 {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
+    async fn shutdown(&self) {
+        self.handlers.0.shutdown().await;
+        self.handlers.1.shutdown().await;
     }
 
     #[inline]
@@ -290,13 +280,13 @@ where
     type Error = MqttError<Err>;
 
     #[inline]
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Service::<IoBoxed>::poll_ready(self, cx)
+    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        Service::<IoBoxed>::ready(self, ctx).await
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
-        Service::<IoBoxed>::poll_shutdown(self, cx)
+    async fn shutdown(&self) {
+        Service::<IoBoxed>::shutdown(self).await
     }
 
     #[inline]

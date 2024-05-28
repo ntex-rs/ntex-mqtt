@@ -1,6 +1,6 @@
 use std::num::{NonZeroU16, NonZeroU32};
 
-use ntex::util::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
@@ -326,7 +326,7 @@ impl EncodeLtd for UnsubscribeAck {
 
 #[cfg(test)]
 mod tests {
-    use ntex::codec::{Decoder, Encoder};
+    use ntex_codec::{Decoder, Encoder};
 
     use super::super::super::{Codec, Packet};
     use super::*;

@@ -1,12 +1,12 @@
-use std::{cell::RefCell, num::NonZeroU16, rc::Rc, task::Context, task::Poll};
+use std::{cell::RefCell, num::NonZeroU16, rc::Rc};
 
-use ntex::router::{IntoPattern, Path, RouterBuilder};
-use ntex::service::boxed::{self, BoxService, BoxServiceFactory};
-use ntex::service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
-use ntex::util::{ByteString, HashMap};
+use ntex_bytes::ByteString;
+use ntex_router::{IntoPattern, Path, RouterBuilder};
+use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
+use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex_util::HashMap;
 
-use super::publish::{Publish, PublishAck};
-use super::Session;
+use super::{publish::Publish, publish::PublishAck, Session};
 
 type Handler<S, E> = BoxServiceFactory<Session<S>, Publish, PublishAck, E, E>;
 type HandlerService<E> = BoxService<Publish, PublishAck, E>;
@@ -39,7 +39,7 @@ where
             > + 'static,
     {
         Router {
-            router: ntex::router::Router::build(),
+            router: ntex_router::Router::build(),
             handlers: Vec::new(),
             default: boxed::factory(default_service.into_factory()),
         }
@@ -79,7 +79,7 @@ where
 }
 
 pub struct RouterFactory<S, Err> {
-    router: ntex::router::Router<usize>,
+    router: ntex_router::Router<usize>,
     handlers: Rc<Vec<Handler<S, Err>>>,
     default: Handler<S, Err>,
 }
@@ -112,7 +112,7 @@ where
 }
 
 pub struct RouterService<Err> {
-    router: ntex::router::Router<usize>,
+    router: ntex_router::Router<usize>,
     default: HandlerService<Err>,
     handlers: Vec<HandlerService<Err>>,
     aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>>,
@@ -122,23 +122,12 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
     type Response = PublishAck;
     type Error = Err;
 
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut not_ready = false;
+    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         for hnd in self.handlers.iter() {
-            if hnd.poll_ready(cx)?.is_pending() {
-                not_ready = true;
-            }
+            ctx.ready(hnd).await?;
         }
 
-        if self.default.poll_ready(cx)?.is_pending() {
-            not_ready = true;
-        }
-
-        if not_ready {
-            Poll::Pending
-        } else {
-            Poll::Ready(Ok(()))
-        }
+        ctx.ready(&self.default).await
     }
 
     #[allow(clippy::await_holding_refcell_ref)]

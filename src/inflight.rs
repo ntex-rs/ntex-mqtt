@@ -1,8 +1,8 @@
 //! Service that limits number of in-flight async requests.
-use std::{cell::Cell, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
-use ntex::service::{Service, ServiceCtx};
-use ntex::task::LocalWaker;
+use ntex_service::{Service, ServiceCtx};
+use ntex_util::task::LocalWaker;
 
 pub(crate) trait SizedRequest {
     fn size(&self) -> u32;
@@ -27,21 +27,13 @@ where
     type Response = T::Response;
     type Error = T::Error;
 
-    ntex::forward_poll_shutdown!(service);
+    ntex_service::forward_shutdown!(service);
 
     #[inline]
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let p1 = self.service.poll_ready(cx)?.is_pending();
-        let p2 = !self.count.available(cx);
-        if p2 {
-            log::trace!("InFlight limit exceeded");
-        }
-
-        if p1 || p2 {
-            Poll::Pending
-        } else {
-            Poll::Ready(Ok(()))
-        }
+    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        ctx.ready(&self.service).await?;
+        self.count.available().await;
+        Ok(())
     }
 
     #[inline]
@@ -77,8 +69,8 @@ impl Counter {
         CounterGuard::new(size, self.0.clone())
     }
 
-    fn available(&self, cx: &Context<'_>) -> bool {
-        self.0.available(cx)
+    async fn available(&self) {
+        poll_fn(|cx| if self.0.available(cx) { Poll::Ready(()) } else { Poll::Pending }).await
     }
 }
 
@@ -134,7 +126,8 @@ impl CounterInner {
 mod tests {
     use std::{future::poll_fn, time::Duration};
 
-    use ntex::{service::Pipeline, time::sleep, util::lazy};
+    use ntex_service::Pipeline;
+    use ntex_util::{future::lazy, task::LocalWaker, time::sleep};
 
     use super::*;
 
@@ -157,63 +150,69 @@ mod tests {
         }
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_inflight() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightService::new(1, 0, SleepService(wait_time)));
+        let srv = Pipeline::new(InFlightService::new(1, 0, SleepService(wait_time))).bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = srv2.call(()).await;
         });
-        ntex::time::sleep(Duration::from_millis(25)).await;
+        ntex_util::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
-        ntex::time::sleep(Duration::from_millis(50)).await;
+        ntex_util::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
         assert!(lazy(|cx| srv.poll_shutdown(cx)).await.is_ready());
     }
 
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_inflight2() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightService::new(0, 10, SleepService(wait_time)));
+        let srv = Pipeline::new(InFlightService::new(0, 10, SleepService(wait_time))).bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = srv2.call(()).await;
         });
-        ntex::time::sleep(Duration::from_millis(25)).await;
+        ntex_util::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
-        ntex::time::sleep(Duration::from_millis(100)).await;
+        ntex_util::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
     }
 
     struct Srv2 {
         dur: Duration,
         cnt: Cell<bool>,
+        waker: LocalWaker,
     }
 
     impl Service<()> for Srv2 {
         type Response = ();
         type Error = ();
 
-        fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
-            if !self.cnt.get() {
-                Poll::Ready(Ok(()))
-            } else {
-                Poll::Pending
-            }
+        async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+            poll_fn(|cx| {
+                if !self.cnt.get() {
+                    Poll::Ready(Ok(()))
+                } else {
+                    self.waker.register(cx.waker());
+                    Poll::Pending
+                }
+            })
+            .await
         }
 
         async fn call(&self, _: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
             let fut = sleep(self.dur);
             self.cnt.set(true);
+            self.waker.wake();
 
             let _ = fut.await;
             self.cnt.set(false);
@@ -224,27 +223,28 @@ mod tests {
     /// InflightService::poll_ready() must always register waker,
     /// otherwise it can lose wake up if inner service's poll_ready
     /// does not wakes dispatcher.
-    #[ntex::test]
+    #[ntex_macros::rt_test]
     async fn test_inflight3() {
         let wait_time = Duration::from_millis(50);
 
         let srv = Pipeline::new(InFlightService::new(
             1,
             10,
-            Srv2 { dur: wait_time, cnt: Cell::new(false) },
-        ));
+            Srv2 { dur: wait_time, cnt: Cell::new(false), waker: LocalWaker::new() },
+        ))
+        .bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
-        ntex::rt::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = srv2.call(()).await;
         });
-        ntex::time::sleep(Duration::from_millis(25)).await;
+        ntex_util::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
         let srv2 = srv.clone();
-        let (tx, rx) = ntex::channel::oneshot::channel();
-        ntex::rt::spawn(async move {
+        let (tx, rx) = ntex_util::channel::oneshot::channel();
+        ntex_util::spawn(async move {
             let _ = poll_fn(|cx| srv2.poll_ready(cx)).await;
             let _ = tx.send(());
         });
