@@ -49,7 +49,7 @@ impl TopicFilterLevel {
     fn is_valid(&self) -> bool {
         match *self {
             TopicFilterLevel::Normal(ref s) | TopicFilterLevel::System(ref s) => {
-                !s.contains(|c| c == '+' || c == '#')
+                !s.contains(['+', '#'])
             }
             _ => true,
         }
@@ -208,7 +208,7 @@ impl TryFrom<ByteString> for TopicFilter {
                 "#" => Ok(TopicFilterLevel::MultiWildcard),
                 "" => Ok(TopicFilterLevel::Blank),
                 _ => {
-                    if level.contains(|c| c == '+' || c == '#') {
+                    if level.contains(['+', '#']) {
                         Err(TopicFilterError::InvalidLevel)
                     } else if idx == 0 && is_system(level) {
                         Ok(TopicFilterLevel::System(recover_bstr(&value, level)))

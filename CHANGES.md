@@ -1,5 +1,9 @@
 # Changes
 
+## [3.1.0] - 2024-08-23
+
+* Derive Hash for the QoS enum #175
+
 ## [3.0.0] - 2024-05-28
 
 * Switch to individual ntex_* crates
