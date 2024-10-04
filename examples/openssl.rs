@@ -66,8 +66,8 @@ async fn main() -> std::io::Result<()> {
                 .map_err(|_err| MqttError::Service(ServerError {}))
                 .and_then(
                     MqttServer::new()
-                        .v3(v3::MqttServer::new(handshake_v3).publish(publish_v3))
-                        .v5(v5::MqttServer::new(handshake_v5).publish(publish_v5)),
+                        .v3(v3::MqttServer::new(handshake_v3).publish(publish_v3).finish())
+                        .v5(v5::MqttServer::new(handshake_v5).publish(publish_v5).finish()),
                 )
         })?
         .workers(1)

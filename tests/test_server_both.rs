@@ -29,11 +29,13 @@ async fn test_simple() -> std::io::Result<()> {
             .v3(v3::MqttServer::new(|con: v3::Handshake| {
                 Ready::Ok::<_, TestError>(con.ack(St, false))
             })
-            .publish(|_| Ready::Ok::<_, TestError>(())))
+            .publish(|_| Ready::Ok::<_, TestError>(()))
+            .finish())
             .v5(v5::MqttServer::new(|con: v5::Handshake| {
                 Ready::Ok::<_, TestError>(con.ack(St))
             })
-            .publish(|p: v5::Publish| Ready::Ok::<_, TestError>(p.ack())))
+            .publish(|p: v5::Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .finish())
     });
 
     // connect to v5 server

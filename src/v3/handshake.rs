@@ -156,11 +156,4 @@ impl<St> HandshakeAck<St> {
         self.max_send = Some(val);
         self
     }
-
-    #[deprecated]
-    #[doc(hidden)]
-    pub fn max_outgoing(mut self, val: u16) -> Self {
-        self.max_send = Some(val);
-        self
-    }
 }

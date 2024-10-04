@@ -1,6 +1,6 @@
 # Changes
 
-## [3.2.0] - 2024-10-04
+## [4.0.0] - 2024-10-04
 
 * Support for mqtt server middlewares
 

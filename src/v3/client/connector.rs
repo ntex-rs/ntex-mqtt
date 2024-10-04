@@ -130,13 +130,6 @@ where
         self
     }
 
-    #[deprecated]
-    #[doc(hidden)]
-    pub fn max_packet_size(mut self, val: u32) -> Self {
-        self.max_size = val;
-        self
-    }
-
     #[inline]
     /// Update connect packet
     pub fn packet<F>(mut self, f: F) -> Self

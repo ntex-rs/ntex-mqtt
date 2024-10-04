@@ -270,6 +270,25 @@ where
         }
     }
 
+    /// Remove all middlewares
+    pub fn reset_middlewares(self) -> MqttServer<St, H, C, P, Identity> {
+        MqttServer {
+            middleware: Identity,
+            handshake: self.handshake,
+            publish: self.publish,
+            control: self.control,
+            config: self.config,
+            max_qos: self.max_qos,
+            max_size: self.max_size,
+            max_send: self.max_send,
+            max_send_size: self.max_send_size,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
+            connect_timeout: self.connect_timeout,
+            pool: self.pool,
+            _t: PhantomData,
+        }
+    }
+
     /// Registers middleware, in the form of a middleware component (type),
     /// that runs during inbound and/or outbound processing in the request
     /// lifecycle (request -> response), modifying request/response as

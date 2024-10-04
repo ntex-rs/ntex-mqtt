@@ -127,12 +127,6 @@ where
         self
     }
 
-    #[deprecated]
-    #[doc(hidden)]
-    pub fn receive_max(self, val: u16) -> Self {
-        self.max_receive(val)
-    }
-
     #[inline]
     /// Update connect user properties
     pub fn properties<F>(mut self, f: F) -> Self

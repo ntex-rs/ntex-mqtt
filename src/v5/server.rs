@@ -142,13 +142,6 @@ where
         self
     }
 
-    #[deprecated]
-    #[doc(hidden)]
-    pub fn receive_max(mut self, val: u16) -> Self {
-        self.max_receive = val;
-        self
-    }
-
     /// Number of topic aliases.
     ///
     /// By default value is set to 32
@@ -186,6 +179,25 @@ where
     pub fn handle_qos_after_disconnect(mut self, max_qos: Option<QoS>) -> Self {
         self.handle_qos_after_disconnect = max_qos;
         self
+    }
+
+    /// Remove all middlewares
+    pub fn reset_middlewares(self) -> MqttServer<St, C, Cn, P, Identity> {
+        MqttServer {
+            middleware: Identity,
+            config: self.config,
+            handshake: self.handshake,
+            srv_publish: self.srv_publish,
+            srv_control: self.srv_control,
+            max_size: self.max_size,
+            max_receive: self.max_receive,
+            max_topic_alias: self.max_topic_alias,
+            max_qos: self.max_qos,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
+            connect_timeout: self.connect_timeout,
+            pool: self.pool,
+            _t: PhantomData,
+        }
     }
 
     /// Registers middleware, in the form of a middleware component (type),
