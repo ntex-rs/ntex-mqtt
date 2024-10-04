@@ -24,3 +24,6 @@ pub use self::sink::{MqttSink, PublishBuilder, SubscribeBuilder, UnsubscribeBuil
 pub use crate::error::{self, MqttError};
 pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;
+
+#[doc(hidden)]
+pub use self::shared::MqttShared;

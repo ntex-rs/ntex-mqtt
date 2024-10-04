@@ -5,7 +5,7 @@ use ntex_service::{Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFac
 use ntex_util::time::{timeout_checked, Millis, Seconds};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{service, types::QoS};
+use crate::{service, types::QoS, InFlightService};
 
 use super::control::{Control, ControlAck};
 use super::default::{DefaultControlService, DefaultPublishService};
@@ -47,8 +47,6 @@ pub struct MqttServer<St, H, C, P, M = Identity> {
     middleware: M,
     max_qos: QoS,
     max_size: u32,
-    max_receive: u16,
-    max_receive_size: usize,
     max_send: u16,
     max_send_size: (u32, u32),
     handle_qos_after_disconnect: Option<QoS>,
@@ -59,7 +57,13 @@ pub struct MqttServer<St, H, C, P, M = Identity> {
 }
 
 impl<St, H>
-    MqttServer<St, H, DefaultControlService<St, H::Error>, DefaultPublishService<St, H::Error>>
+    MqttServer<
+        St,
+        H,
+        DefaultControlService<St, H::Error>,
+        DefaultPublishService<St, H::Error>,
+        InFlightService,
+    >
 where
     St: 'static,
     H: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
@@ -78,11 +82,9 @@ where
             handshake: handshake.into_factory(),
             control: DefaultControlService::default(),
             publish: DefaultPublishService::default(),
-            middleware: Identity,
+            middleware: InFlightService::new(16, 65535),
             max_qos: QoS::AtLeastOnce,
             max_size: 0,
-            max_receive: 16,
-            max_receive_size: 65535,
             max_send: 16,
             max_send_size: (65535, 512),
             handle_qos_after_disconnect: None,
@@ -90,6 +92,24 @@ where
             pool: Default::default(),
             _t: PhantomData,
         }
+    }
+}
+
+impl<St, H, C, P> MqttServer<St, H, C, P, InFlightService> {
+    /// Number of inbound in-flight concurrent messages.
+    ///
+    /// By default inbound is set to 16 messages
+    pub fn max_receive(mut self, val: u16) -> Self {
+        self.middleware = self.middleware.max_receive(val);
+        self
+    }
+
+    /// Total size of inbound in-flight messages.
+    ///
+    /// By default total inbound in-flight size is set to 64Kb
+    pub fn max_receive_size(mut self, val: usize) -> Self {
+        self.middleware = self.middleware.max_receive_size(val);
+        self
     }
 }
 
@@ -157,36 +177,6 @@ where
         self
     }
 
-    /// Number of inbound in-flight concurrent messages.
-    ///
-    /// By default inbound is set to 16 messages
-    pub fn max_receive(mut self, val: u16) -> Self {
-        self.max_receive = val;
-        self
-    }
-
-    #[deprecated]
-    #[doc(hidden)]
-    pub fn max_inflight(mut self, val: u16) -> Self {
-        self.max_receive = val;
-        self
-    }
-
-    /// Total size of inbound in-flight messages.
-    ///
-    /// By default total inbound in-flight size is set to 64Kb
-    pub fn max_receive_size(mut self, val: usize) -> Self {
-        self.max_receive_size = val;
-        self
-    }
-
-    #[deprecated]
-    #[doc(hidden)]
-    pub fn max_inflight_size(mut self, val: usize) -> Self {
-        self.max_receive_size = val;
-        self
-    }
-
     /// Number of outgoing concurrent messages.
     ///
     /// By default outgoing is set to 16 messages
@@ -247,8 +237,6 @@ where
             middleware: self.middleware,
             max_qos: self.max_qos,
             max_size: self.max_size,
-            max_receive: self.max_receive,
-            max_receive_size: self.max_receive_size,
             max_send: self.max_send,
             max_send_size: self.max_send_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
@@ -273,8 +261,6 @@ where
             middleware: self.middleware,
             max_qos: self.max_qos,
             max_size: self.max_size,
-            max_receive: self.max_receive,
-            max_receive_size: self.max_receive_size,
             max_send: self.max_send,
             max_send_size: self.max_send_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
@@ -300,8 +286,6 @@ where
             config: self.config,
             max_qos: self.max_qos,
             max_size: self.max_size,
-            max_receive: self.max_receive,
-            max_receive_size: self.max_receive_size,
             max_send: self.max_send,
             max_send_size: self.max_send_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,

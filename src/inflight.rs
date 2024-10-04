@@ -10,9 +10,42 @@ pub trait SizedRequest {
 }
 
 /// Service that can limit number of in-flight async requests.
+///
+/// Default is 16 in-flight messages and 64kb size
 pub struct InFlightService {
-    max_cap: u16,
-    max_size: usize,
+    max_receive: u16,
+    max_receive_size: usize,
+}
+
+impl Default for InFlightService {
+    fn default() -> Self {
+        Self { max_receive: 16, max_receive_size: 65535 }
+    }
+}
+
+impl InFlightService {
+    /// Create new `InFlightService` middleware
+    ///
+    /// By default max receive is 16 and max size is 64kb
+    pub fn new(max_receive: u16, max_receive_size: usize) -> Self {
+        Self { max_receive, max_receive_size }
+    }
+
+    /// Number of inbound in-flight concurrent messages.
+    ///
+    /// By default inbound is set to 16 messages
+    pub fn max_receive(mut self, val: u16) -> Self {
+        self.max_receive = val;
+        self
+    }
+
+    /// Total size of inbound in-flight messages.
+    ///
+    /// By default total inbound in-flight size is set to 64Kb
+    pub fn max_receive_size(mut self, val: usize) -> Self {
+        self.max_receive_size = val;
+        self
+    }
 }
 
 impl<S> Middleware<S> for InFlightService {
@@ -20,13 +53,10 @@ impl<S> Middleware<S> for InFlightService {
 
     #[inline]
     fn create(&self, service: S) -> Self::Service {
-        InFlightServiceImpl { service, count: Counter::new(self.max_cap, self.max_size) }
-    }
-}
-
-impl InFlightService {
-    pub fn new(max_cap: u16, max_size: usize) -> Self {
-        Self { max_cap, max_size }
+        InFlightServiceImpl {
+            service,
+            count: Counter::new(self.max_receive, self.max_receive_size),
+        }
     }
 }
 
@@ -170,7 +200,8 @@ mod tests {
     async fn test_inflight() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightService::new(1, 0, SleepService(wait_time))).bind();
+        let srv =
+            Pipeline::new(InFlightService::new(1, 0).create(SleepService(wait_time))).bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
@@ -189,7 +220,8 @@ mod tests {
     async fn test_inflight2() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightService::new(0, 10, SleepService(wait_time))).bind();
+        let srv =
+            Pipeline::new(InFlightService::new(0, 10).create(SleepService(wait_time))).bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
@@ -243,11 +275,11 @@ mod tests {
     async fn test_inflight3() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightService::new(
-            1,
-            10,
-            Srv2 { dur: wait_time, cnt: Cell::new(false), waker: LocalWaker::new() },
-        ))
+        let srv = Pipeline::new(InFlightService::new(1, 10).create(Srv2 {
+            dur: wait_time,
+            cnt: Cell::new(false),
+            waker: LocalWaker::new(),
+        }))
         .bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 

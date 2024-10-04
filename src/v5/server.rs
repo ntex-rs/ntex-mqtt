@@ -5,7 +5,7 @@ use ntex_service::{Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFac
 use ntex_util::time::{timeout_checked, Millis, Seconds};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{service, types::QoS};
+use crate::{service, types::QoS, InFlightService};
 
 use super::control::{Control, ControlAck};
 use super::default::{DefaultControlService, DefaultPublishService};
@@ -23,7 +23,6 @@ pub struct MqttServer<St, C, Cn, P, M = Identity> {
     max_qos: QoS,
     max_size: u32,
     max_receive: u16,
-    max_receive_size: usize,
     max_topic_alias: u16,
     handle_qos_after_disconnect: Option<QoS>,
     connect_timeout: Seconds,
@@ -33,7 +32,13 @@ pub struct MqttServer<St, C, Cn, P, M = Identity> {
 }
 
 impl<St, C>
-    MqttServer<St, C, DefaultControlService<St, C::Error>, DefaultPublishService<St, C::Error>>
+    MqttServer<
+        St,
+        C,
+        DefaultControlService<St, C::Error>,
+        DefaultPublishService<St, C::Error>,
+        InFlightService,
+    >
 where
     C: ServiceFactory<Handshake, Response = HandshakeAck<St>>,
     C::Error: fmt::Debug,
@@ -51,17 +56,26 @@ where
             handshake: handshake.into_factory(),
             srv_control: DefaultControlService::default(),
             srv_publish: DefaultPublishService::default(),
-            middleware: Identity,
+            middleware: InFlightService::new(0, 65535),
             max_qos: QoS::AtLeastOnce,
             max_size: 0,
             max_receive: 15,
-            max_receive_size: 65535,
             max_topic_alias: 32,
             handle_qos_after_disconnect: None,
             connect_timeout: Seconds::ZERO,
             pool: Rc::new(MqttSinkPool::default()),
             _t: PhantomData,
         }
+    }
+}
+
+impl<St, C, Cn, P> MqttServer<St, C, Cn, P, InFlightService> {
+    /// Total size of received in-flight messages.
+    ///
+    /// By default total in-flight size is set to 64Kb
+    pub fn max_receive_size(mut self, val: usize) -> Self {
+        self.middleware = self.middleware.max_receive_size(val);
+        self
     }
 }
 
@@ -128,14 +142,6 @@ where
         self
     }
 
-    /// Total size of received in-flight messages.
-    ///
-    /// By default total in-flight size is set to 64Kb
-    pub fn max_receive_size(mut self, val: usize) -> Self {
-        self.max_receive_size = val;
-        self
-    }
-
     #[deprecated]
     #[doc(hidden)]
     pub fn receive_max(mut self, val: u16) -> Self {
@@ -156,13 +162,6 @@ where
     /// By default max qos is not set.
     pub fn max_qos(mut self, qos: QoS) -> Self {
         self.max_qos = qos;
-        self
-    }
-
-    #[deprecated]
-    #[doc(hidden)]
-    pub fn max_inflight_size(mut self, val: usize) -> Self {
-        self.max_receive_size = val;
         self
     }
 
@@ -207,7 +206,6 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_receive_size: self.max_receive_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -235,7 +233,6 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_receive_size: self.max_receive_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -262,7 +259,6 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_receive_size: self.max_receive_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
