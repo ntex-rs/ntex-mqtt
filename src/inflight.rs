@@ -1,25 +1,41 @@
 //! Service that limits number of in-flight async requests.
 use std::{cell::Cell, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
-use ntex_service::{Service, ServiceCtx};
+use ntex_service::{Middleware, Service, ServiceCtx};
 use ntex_util::task::LocalWaker;
 
-pub(crate) trait SizedRequest {
+/// Trait for types that could be sized
+pub trait SizedRequest {
     fn size(&self) -> u32;
 }
 
-pub(crate) struct InFlightService<S> {
+/// Service that can limit number of in-flight async requests.
+pub struct InFlightService {
+    max_cap: u16,
+    max_size: usize,
+}
+
+impl<S> Middleware<S> for InFlightService {
+    type Service = InFlightServiceImpl<S>;
+
+    #[inline]
+    fn create(&self, service: S) -> Self::Service {
+        InFlightServiceImpl { service, count: Counter::new(self.max_cap, self.max_size) }
+    }
+}
+
+impl InFlightService {
+    pub fn new(max_cap: u16, max_size: usize) -> Self {
+        Self { max_cap, max_size }
+    }
+}
+
+pub struct InFlightServiceImpl<S> {
     count: Counter,
     service: S,
 }
 
-impl<S> InFlightService<S> {
-    pub(crate) fn new(max_cap: u16, max_size: usize, service: S) -> Self {
-        Self { service, count: Counter::new(max_cap, max_size) }
-    }
-}
-
-impl<T, R> Service<R> for InFlightService<T>
+impl<T, R> Service<R> for InFlightServiceImpl<T>
 where
     T: Service<R>,
     R: SizedRequest + 'static,

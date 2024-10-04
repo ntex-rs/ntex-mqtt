@@ -1,7 +1,7 @@
 use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_io::{DispatchItem, DispatcherConfig, IoBoxed};
-use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack};
 use ntex_util::time::{timeout_checked, Millis, Seconds};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
@@ -40,10 +40,11 @@ use super::{codec as mqtt, dispatcher::factory, MqttSink, Publish, Session};
 /// the client, in case of error connection get closed. Control service receives all
 /// other packets, like `Subscribe`, `Unsubscribe` etc. Also control service receives
 /// errors from publish service and connection disconnect.
-pub struct MqttServer<St, H, C, P> {
+pub struct MqttServer<St, H, C, P, M = Identity> {
     handshake: H,
     control: C,
     publish: P,
+    middleware: M,
     max_qos: QoS,
     max_size: u32,
     max_receive: u16,
@@ -77,6 +78,7 @@ where
             handshake: handshake.into_factory(),
             control: DefaultControlService::default(),
             publish: DefaultPublishService::default(),
+            middleware: Identity,
             max_qos: QoS::AtLeastOnce,
             max_size: 0,
             max_receive: 16,
@@ -91,7 +93,7 @@ where
     }
 }
 
-impl<St, H, C, P> MqttServer<St, H, C, P>
+impl<St, H, C, P, M> MqttServer<St, H, C, P, M>
 where
     St: 'static,
     H: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
@@ -231,7 +233,7 @@ where
     ///
     /// All control packets are processed sequentially, max number of buffered
     /// control packets is 16.
-    pub fn control<F, Srv>(self, service: F) -> MqttServer<St, H, Srv, P>
+    pub fn control<F, Srv>(self, service: F) -> MqttServer<St, H, Srv, P, M>
     where
         F: IntoServiceFactory<Srv, Control<H::Error>, Session<St>>,
         Srv: ServiceFactory<Control<H::Error>, Session<St>, Response = ControlAck> + 'static,
@@ -242,6 +244,7 @@ where
             publish: self.publish,
             control: service.into_factory(),
             config: self.config,
+            middleware: self.middleware,
             max_qos: self.max_qos,
             max_size: self.max_size,
             max_receive: self.max_receive,
@@ -256,7 +259,7 @@ where
     }
 
     /// Set service to handle publish packets and create mqtt server factory
-    pub fn publish<F, Srv>(self, publish: F) -> MqttServer<St, H, C, Srv>
+    pub fn publish<F, Srv>(self, publish: F) -> MqttServer<St, H, C, Srv, M>
     where
         F: IntoServiceFactory<Srv, Publish, Session<St>>,
         Srv: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
@@ -265,6 +268,34 @@ where
         MqttServer {
             handshake: self.handshake,
             publish: publish.into_factory(),
+            control: self.control,
+            config: self.config,
+            middleware: self.middleware,
+            max_qos: self.max_qos,
+            max_size: self.max_size,
+            max_receive: self.max_receive,
+            max_receive_size: self.max_receive_size,
+            max_send: self.max_send,
+            max_send_size: self.max_send_size,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
+            connect_timeout: self.connect_timeout,
+            pool: self.pool,
+            _t: PhantomData,
+        }
+    }
+
+    /// Registers middleware, in the form of a middleware component (type),
+    /// that runs during inbound and/or outbound processing in the request
+    /// lifecycle (request -> response), modifying request/response as
+    /// necessary, across all requests managed by the *Server*.
+    ///
+    /// Use middleware when you need to read or modify *every* request or
+    /// response in some way.
+    pub fn middleware<U>(self, mw: U) -> MqttServer<St, H, C, P, Stack<M, U>> {
+        MqttServer {
+            middleware: Stack::new(self.middleware, mw),
+            handshake: self.handshake,
+            publish: self.publish,
             control: self.control,
             config: self.config,
             max_qos: self.max_qos,
@@ -279,7 +310,17 @@ where
             _t: PhantomData,
         }
     }
+}
 
+impl<St, H, C, P, M> MqttServer<St, H, C, P, M>
+where
+    St: 'static,
+    H: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
+    C: ServiceFactory<Control<H::Error>, Session<St>, Response = ControlAck> + 'static,
+    P: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
+    H::Error:
+        From<C::Error> + From<C::InitError> + From<P::Error> + From<P::InitError> + fmt::Debug,
+{
     /// Finish server configuration and create mqtt server factory
     pub fn finish(
         self,
@@ -298,6 +339,7 @@ where
             Error = MqttError<H::Error>,
             InitError = MqttError<H::Error>,
         >,
+        M,
         Rc<MqttShared>,
     > {
         service::MqttServer::new(
@@ -310,14 +352,8 @@ where
                 pool: self.pool.clone(),
                 _t: PhantomData,
             },
-            factory(
-                self.publish,
-                self.control,
-                self.max_receive,
-                self.max_receive_size,
-                self.max_qos,
-                self.handle_qos_after_disconnect,
-            ),
+            factory(self.publish, self.control, self.max_qos, self.handle_qos_after_disconnect),
+            self.middleware,
             self.config,
         )
     }

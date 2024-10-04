@@ -19,7 +19,6 @@ use super::{codec, codec::DisconnectReasonCode, Session};
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
-    max_inflight_size: usize,
     handle_qos_after_disconnect: Option<QoS>,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
@@ -61,11 +60,7 @@ where
                 }
             });
 
-            Ok(crate::inflight::InFlightService::new(
-                0,
-                max_inflight_size,
-                Dispatcher::<_, _, E>::new(sink, publish, control, handle_qos_after_disconnect),
-            ))
+            Ok(Dispatcher::<_, _, E>::new(sink, publish, control, handle_qos_after_disconnect))
         }
     })
 }

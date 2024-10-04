@@ -1,5 +1,9 @@
 # Changes
 
+## [3.2.0] - 2024-10-04
+
+* Support for mqtt server middlewares
+
 ## [3.1.0] - 2024-08-23
 
 * Derive Hash for the QoS enum #175
