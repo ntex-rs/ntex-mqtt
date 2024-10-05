@@ -33,7 +33,7 @@ impl InFlightService {
 
     /// Number of inbound in-flight concurrent messages.
     ///
-    /// By default inbound is set to 16 messages
+    /// By default max receive number is set to 16 messages
     pub fn max_receive(mut self, val: u16) -> Self {
         self.max_receive = val;
         self
@@ -65,28 +65,32 @@ pub struct InFlightServiceImpl<S> {
     service: S,
 }
 
-impl<T, R> Service<R> for InFlightServiceImpl<T>
+impl<S, R> Service<R> for InFlightServiceImpl<S>
 where
-    T: Service<R>,
+    S: Service<R>,
     R: SizedRequest + 'static,
 {
-    type Response = T::Response;
-    type Error = T::Error;
+    type Response = S::Response;
+    type Error = S::Error;
 
     ntex_service::forward_shutdown!(service);
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), S::Error> {
         ctx.ready(&self.service).await?;
+
+        // check if we have capacity
         self.count.available().await;
         Ok(())
     }
 
     #[inline]
-    async fn call(&self, req: R, ctx: ServiceCtx<'_, Self>) -> Result<T::Response, T::Error> {
+    async fn call(&self, req: R, ctx: ServiceCtx<'_, Self>) -> Result<S::Response, S::Error> {
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
-        let _task_guard = self.count.get(size);
-        ctx.call(&self.service, req).await
+        let task_guard = self.count.get(size);
+        let result = ctx.call(&self.service, req).await;
+        drop(task_guard);
+        result
     }
 }
 

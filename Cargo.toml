@@ -36,4 +36,4 @@ ntex-tls = "2"
 ntex-macros = "0.1"
 openssl = "0.10"
 test-case = "3.2"
-ntex = { version = "2", features = ["tokio", "openssl"] }
+ntex = { version = "2", features = ["openssl"] }
