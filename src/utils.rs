@@ -257,7 +257,7 @@ impl Encode for (ByteString, ByteString) {
     }
 }
 
-impl<'a> Encode for &'a [u8] {
+impl Encode for &[u8] {
     fn encoded_size(&self) -> usize {
         2 + self.len()
     }

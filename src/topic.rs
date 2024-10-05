@@ -115,7 +115,7 @@ impl TopicFilter {
     }
 }
 
-impl<'a> TryFrom<&'a [TopicFilterLevel]> for TopicFilter {
+impl TryFrom<&[TopicFilterLevel]> for TopicFilter {
     type Error = TopicFilterError;
 
     fn try_from(s: &[TopicFilterLevel]) -> Result<Self, Self::Error> {
@@ -155,7 +155,7 @@ impl MatchLevel for TopicFilterLevel {
     }
 }
 
-impl<'a> MatchLevel for &'a TopicFilterLevel {
+impl MatchLevel for &TopicFilterLevel {
     fn match_level(&self, level: &TopicFilterLevel, index: usize) -> bool {
         match_level_impl(self, level, index)
     }
