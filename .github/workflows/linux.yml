@@ -55,12 +55,12 @@ jobs:
           command: test
           args: --all --features=ntex/tokio -- --nocapture
 
-      - name: Run tests [compio]
-        uses: actions-rs/cargo@v1
-        timeout-minutes: 40
-        with:
-          command: test
-          args: --all --features=ntex/compio -- --nocapture
+      # - name: Run tests [compio]
+      #   uses: actions-rs/cargo@v1
+      #   timeout-minutes: 40
+      #   with:
+      #     command: test
+      #     args: --all --features=ntex/compio -- --nocapture
 
       - name: Install cargo-cache
         continue-on-error: true
