@@ -1,17 +1,18 @@
 use std::{fmt, io, marker};
 
-use ntex_io::{Filter, Io, IoBoxed};
-use ntex_service::{Service, ServiceCtx, ServiceFactory};
+use ntex_codec::{Decoder, Encoder};
+use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
+use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
 use ntex_util::future::{join, select, Either};
 use ntex_util::time::{Deadline, Millis, Seconds};
 
 use crate::version::{ProtocolVersion, VersionCodec};
-use crate::{error::HandshakeError, error::MqttError, v3, v5};
+use crate::{error::HandshakeError, error::MqttError, service};
 
 /// Mqtt Server
 pub struct MqttServer<V3, V5, Err, InitErr> {
-    v3: V3,
-    v5: V5,
+    svc_v3: V3,
+    svc_v5: V5,
     connect_timeout: Millis,
     _t: marker::PhantomData<(Err, InitErr)>,
 }
@@ -27,8 +28,8 @@ impl<Err, InitErr>
     /// Create mqtt server
     pub fn new() -> Self {
         MqttServer {
-            v3: DefaultProtocolServer::new(ProtocolVersion::MQTT3),
-            v5: DefaultProtocolServer::new(ProtocolVersion::MQTT5),
+            svc_v3: DefaultProtocolServer::new(ProtocolVersion::MQTT3),
+            svc_v5: DefaultProtocolServer::new(ProtocolVersion::MQTT5),
             connect_timeout: Millis(5_000),
             _t: marker::PhantomData,
         }
@@ -64,13 +65,14 @@ impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr> {
 
 impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr>
 where
+    Err: fmt::Debug,
     V3: ServiceFactory<IoBoxed, Response = (), Error = MqttError<Err>, InitError = InitErr>,
     V5: ServiceFactory<IoBoxed, Response = (), Error = MqttError<Err>, InitError = InitErr>,
 {
     /// Service to handle v3 protocol
-    pub fn v3<St, C, Cn, P>(
+    pub fn v3<St, H, P, M, Codec>(
         self,
-        service: v3::MqttServer<St, C, Cn, P>,
+        service: service::MqttServer<St, H, P, M, Codec>,
     ) -> MqttServer<
         impl ServiceFactory<IoBoxed, Response = (), Error = MqttError<Err>, InitError = InitErr>,
         V5,
@@ -79,33 +81,39 @@ where
     >
     where
         St: 'static,
-        C: ServiceFactory<
-                v3::Handshake,
-                Response = v3::HandshakeAck<St>,
-                Error = Err,
+        H: ServiceFactory<
+                IoBoxed,
+                Response = (IoBoxed, Codec, St, Seconds),
+                Error = MqttError<Err>,
                 InitError = InitErr,
             > + 'static,
-        Cn: ServiceFactory<v3::Control<Err>, v3::Session<St>, Response = v3::ControlAck>
-            + 'static,
-        P: ServiceFactory<v3::Publish, v3::Session<St>, Response = ()> + 'static,
-        C::Error: From<Cn::Error>
-            + From<Cn::InitError>
-            + From<P::Error>
-            + From<P::InitError>
-            + fmt::Debug,
+        P: ServiceFactory<
+                DispatchItem<Codec>,
+                St,
+                Response = Option<<Codec as Encoder>::Item>,
+                Error = MqttError<Err>,
+                InitError = MqttError<Err>,
+            > + 'static,
+        M: Middleware<P::Service>,
+        M::Service: Service<
+                DispatchItem<Codec>,
+                Response = Option<<Codec as Encoder>::Item>,
+                Error = MqttError<Err>,
+            > + 'static,
+        Codec: Encoder + Decoder + Clone + 'static,
     {
         MqttServer {
-            v3: service.finish(),
-            v5: self.v5,
+            svc_v3: service,
+            svc_v5: self.svc_v5,
             connect_timeout: self.connect_timeout,
             _t: marker::PhantomData,
         }
     }
 
     /// Service to handle v5 protocol
-    pub fn v5<St, C, Cn, P>(
+    pub fn v5<St, H, P, M, Codec>(
         self,
-        service: v5::MqttServer<St, C, Cn, P>,
+        service: service::MqttServer<St, H, P, M, Codec>,
     ) -> MqttServer<
         V3,
         impl ServiceFactory<IoBoxed, Response = (), Error = MqttError<Err>, InitError = InitErr>,
@@ -114,26 +122,30 @@ where
     >
     where
         St: 'static,
-        C: ServiceFactory<
-                v5::Handshake,
-                Response = v5::HandshakeAck<St>,
-                Error = Err,
+        H: ServiceFactory<
+                IoBoxed,
+                Response = (IoBoxed, Codec, St, Seconds),
+                Error = MqttError<Err>,
                 InitError = InitErr,
             > + 'static,
-        Cn: ServiceFactory<v5::Control<Err>, v5::Session<St>, Response = v5::ControlAck>
-            + 'static,
-        P: ServiceFactory<v5::Publish, v5::Session<St>, Response = v5::PublishAck> + 'static,
-        P::Error: fmt::Debug,
-        C::Error: From<Cn::Error>
-            + From<Cn::InitError>
-            + From<P::Error>
-            + From<P::InitError>
-            + fmt::Debug,
-        v5::PublishAck: TryFrom<P::Error, Error = C::Error>,
+        P: ServiceFactory<
+                DispatchItem<Codec>,
+                St,
+                Response = Option<<Codec as Encoder>::Item>,
+                Error = MqttError<Err>,
+                InitError = MqttError<Err>,
+            > + 'static,
+        M: Middleware<P::Service>,
+        M::Service: Service<
+                DispatchItem<Codec>,
+                Response = Option<<Codec as Encoder>::Item>,
+                Error = MqttError<Err>,
+            > + 'static,
+        Codec: Encoder + Decoder + Clone + 'static,
     {
         MqttServer {
-            v3: self.v3,
-            v5: service.finish(),
+            svc_v3: self.svc_v3,
+            svc_v5: service,
             connect_timeout: self.connect_timeout,
             _t: marker::PhantomData,
         }
@@ -148,7 +160,7 @@ where
     async fn create_service(
         &self,
     ) -> Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr> {
-        let (v3, v5) = join(self.v3.create(()), self.v5.create(())).await;
+        let (v3, v5) = join(self.svc_v3.create(()), self.svc_v5.create(())).await;
         let v3 = v3?;
         let v5 = v5?;
         Ok(MqttServerImpl {

@@ -789,6 +789,7 @@ mod tests {
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
 
         // write side must be closed, dispatcher waiting for read side to close
+        sleep(Millis(50)).await;
         assert!(client.is_closed());
 
         // close read side
@@ -837,6 +838,7 @@ mod tests {
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
 
         // write side must be closed, dispatcher waiting for read side to close
+        sleep(Millis(50)).await;
         assert!(client.is_closed());
 
         // close read side

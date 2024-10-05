@@ -1,11 +1,11 @@
 use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_io::{DispatchItem, DispatcherConfig, IoBoxed};
-use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack};
 use ntex_util::time::{timeout_checked, Millis, Seconds};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{service, types::QoS};
+use crate::{service, types::QoS, InFlightService};
 
 use super::control::{Control, ControlAck};
 use super::default::{DefaultControlService, DefaultPublishService};
@@ -15,14 +15,14 @@ use super::shared::{MqttShared, MqttSinkPool};
 use super::{codec as mqtt, dispatcher::factory, MqttSink, Session};
 
 /// Mqtt Server
-pub struct MqttServer<St, C, Cn, P> {
+pub struct MqttServer<St, C, Cn, P, M = Identity> {
     handshake: C,
     srv_control: Cn,
     srv_publish: P,
+    middleware: M,
     max_qos: QoS,
     max_size: u32,
     max_receive: u16,
-    max_receive_size: usize,
     max_topic_alias: u16,
     handle_qos_after_disconnect: Option<QoS>,
     connect_timeout: Seconds,
@@ -32,7 +32,13 @@ pub struct MqttServer<St, C, Cn, P> {
 }
 
 impl<St, C>
-    MqttServer<St, C, DefaultControlService<St, C::Error>, DefaultPublishService<St, C::Error>>
+    MqttServer<
+        St,
+        C,
+        DefaultControlService<St, C::Error>,
+        DefaultPublishService<St, C::Error>,
+        InFlightService,
+    >
 where
     C: ServiceFactory<Handshake, Response = HandshakeAck<St>>,
     C::Error: fmt::Debug,
@@ -50,10 +56,10 @@ where
             handshake: handshake.into_factory(),
             srv_control: DefaultControlService::default(),
             srv_publish: DefaultPublishService::default(),
+            middleware: InFlightService::new(0, 65535),
             max_qos: QoS::AtLeastOnce,
             max_size: 0,
             max_receive: 15,
-            max_receive_size: 65535,
             max_topic_alias: 32,
             handle_qos_after_disconnect: None,
             connect_timeout: Seconds::ZERO,
@@ -63,7 +69,17 @@ where
     }
 }
 
-impl<St, C, Cn, P> MqttServer<St, C, Cn, P>
+impl<St, C, Cn, P> MqttServer<St, C, Cn, P, InFlightService> {
+    /// Total size of received in-flight messages.
+    ///
+    /// By default total in-flight size is set to 64Kb
+    pub fn max_receive_size(mut self, val: usize) -> Self {
+        self.middleware = self.middleware.max_receive_size(val);
+        self
+    }
+}
+
+impl<St, C, Cn, P, M> MqttServer<St, C, Cn, P, M>
 where
     St: 'static,
     C: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
@@ -126,21 +142,6 @@ where
         self
     }
 
-    /// Total size of received in-flight messages.
-    ///
-    /// By default total in-flight size is set to 64Kb
-    pub fn max_receive_size(mut self, val: usize) -> Self {
-        self.max_receive_size = val;
-        self
-    }
-
-    #[deprecated]
-    #[doc(hidden)]
-    pub fn receive_max(mut self, val: u16) -> Self {
-        self.max_receive = val;
-        self
-    }
-
     /// Number of topic aliases.
     ///
     /// By default value is set to 32
@@ -154,13 +155,6 @@ where
     /// By default max qos is not set.
     pub fn max_qos(mut self, qos: QoS) -> Self {
         self.max_qos = qos;
-        self
-    }
-
-    #[deprecated]
-    #[doc(hidden)]
-    pub fn max_inflight_size(mut self, val: usize) -> Self {
-        self.max_receive_size = val;
         self
     }
 
@@ -187,11 +181,55 @@ where
         self
     }
 
+    /// Remove all middlewares
+    pub fn reset_middlewares(self) -> MqttServer<St, C, Cn, P, Identity> {
+        MqttServer {
+            middleware: Identity,
+            config: self.config,
+            handshake: self.handshake,
+            srv_publish: self.srv_publish,
+            srv_control: self.srv_control,
+            max_size: self.max_size,
+            max_receive: self.max_receive,
+            max_topic_alias: self.max_topic_alias,
+            max_qos: self.max_qos,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
+            connect_timeout: self.connect_timeout,
+            pool: self.pool,
+            _t: PhantomData,
+        }
+    }
+
+    /// Registers middleware, in the form of a middleware component (type),
+    /// that runs during inbound and/or outbound processing in the request
+    /// lifecycle (request -> response), modifying request/response as
+    /// necessary, across all requests managed by the *Server*.
+    ///
+    /// Use middleware when you need to read or modify *every* request or
+    /// response in some way.
+    pub fn middleware<U>(self, mw: U) -> MqttServer<St, C, Cn, P, Stack<M, U>> {
+        MqttServer {
+            middleware: Stack::new(self.middleware, mw),
+            config: self.config,
+            handshake: self.handshake,
+            srv_publish: self.srv_publish,
+            srv_control: self.srv_control,
+            max_size: self.max_size,
+            max_receive: self.max_receive,
+            max_topic_alias: self.max_topic_alias,
+            max_qos: self.max_qos,
+            handle_qos_after_disconnect: self.handle_qos_after_disconnect,
+            connect_timeout: self.connect_timeout,
+            pool: self.pool,
+            _t: PhantomData,
+        }
+    }
+
     /// Service to handle control packets
     ///
     /// All control packets are processed sequentially, max number of buffered
     /// control packets is 16.
-    pub fn control<F, Srv>(self, service: F) -> MqttServer<St, C, Srv, P>
+    pub fn control<F, Srv>(self, service: F) -> MqttServer<St, C, Srv, P, M>
     where
         F: IntoServiceFactory<Srv, Control<C::Error>, Session<St>>,
         Srv: ServiceFactory<Control<C::Error>, Session<St>, Response = ControlAck> + 'static,
@@ -202,11 +240,11 @@ where
             handshake: self.handshake,
             srv_publish: self.srv_publish,
             srv_control: service.into_factory(),
+            middleware: self.middleware,
             max_size: self.max_size,
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_receive_size: self.max_receive_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -215,7 +253,7 @@ where
     }
 
     /// Set service to handle publish packets and create mqtt server factory
-    pub fn publish<F, Srv>(self, publish: F) -> MqttServer<St, C, Cn, Srv>
+    pub fn publish<F, Srv>(self, publish: F) -> MqttServer<St, C, Cn, Srv, M>
     where
         F: IntoServiceFactory<Srv, Publish, Session<St>>,
         C::Error: From<Srv::Error> + From<Srv::InitError>,
@@ -228,11 +266,11 @@ where
             handshake: self.handshake,
             srv_publish: publish.into_factory(),
             srv_control: self.srv_control,
+            middleware: self.middleware,
             max_size: self.max_size,
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_receive_size: self.max_receive_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -241,7 +279,7 @@ where
     }
 }
 
-impl<St, C, Cn, P> MqttServer<St, C, Cn, P>
+impl<St, C, Cn, P, M> MqttServer<St, C, Cn, P, M>
 where
     St: 'static,
     C: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
@@ -273,6 +311,7 @@ where
             Error = MqttError<C::Error>,
             InitError = MqttError<C::Error>,
         >,
+        M,
         Rc<MqttShared>,
     > {
         service::MqttServer::new(
@@ -286,12 +325,8 @@ where
                 pool: self.pool,
                 _t: PhantomData,
             },
-            factory(
-                self.srv_publish,
-                self.srv_control,
-                self.max_receive_size,
-                self.handle_qos_after_disconnect,
-            ),
+            factory(self.srv_publish, self.srv_control, self.handle_qos_after_disconnect),
+            self.middleware,
             self.config,
         )
     }
