@@ -1,5 +1,11 @@
 # Changes
 
+## [4.1.0] - 2024-10-10
+
+* Do not check readiness for call
+
+* Handle service readiness errors during shutdown
+
 ## [4.0.0] - 2024-10-05
 
 * Middlewares support for mqtt server
