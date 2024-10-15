@@ -452,7 +452,7 @@ async fn handle_or_drop_publish_after_disconnect(
     sleep(Millis(1750)).await;
     io.close();
     drop(io);
-    sleep(Millis(500)).await;
+    sleep(Millis(750)).await;
 
     assert!(disconnect.load(Relaxed));
 

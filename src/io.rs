@@ -489,11 +489,11 @@ where
             }
             // handle service readiness error
             Poll::Ready(Err(err)) => {
-                log::trace!("{}: Service readiness check failed, stopping", self.io.tag());
+                log::error!("{}: Service readiness check failed, stopping", self.io.tag());
                 self.st = IoDispatcherState::Stop;
                 self.flags.insert(Flags::READY_ERR);
                 self.state.borrow_mut().error = Some(IoDispatcherError::Service(err));
-                Poll::Ready(PollService::Continue)
+                Poll::Ready(PollService::Item(DispatchItem::Disconnect(None)))
             }
         }
     }
