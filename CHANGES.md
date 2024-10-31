@@ -1,5 +1,9 @@
 # Changes
 
+## [4.2.0] - 2024-10-31
+
+* Call control service on readiness error
+
 ## [4.1.1] - 2024-10-15
 
 * Disconnect on error from service readiness check
