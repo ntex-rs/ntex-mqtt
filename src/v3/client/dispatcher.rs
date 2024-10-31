@@ -71,9 +71,9 @@ where
         let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
         if let Err(e) = res1 {
             if res2.is_err() {
-                Err(MqttError::Readiness(Some(e.into())))
+                Err(MqttError::Readiness(Some(e)))
             } else {
-                match ctx.call_nowait(&self.inner.control, Control::error(e.into())).await {
+                match ctx.call_nowait(&self.inner.control, Control::error(e)).await {
                     Ok(_) => Err(MqttError::Readiness(None)),
                     Err(err) => Err(err),
                 }
