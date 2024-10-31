@@ -69,8 +69,18 @@ where
     #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
-        res1.map_err(MqttError::Service)?;
-        res2
+        if let Err(e) = res1 {
+            if res2.is_err() {
+                Err(MqttError::Readiness(Some(e.into())))
+            } else {
+                match ctx.call_nowait(&self.inner.control, Control::error(e.into())).await {
+                    Ok(_) => Err(MqttError::Readiness(None)),
+                    Err(err) => Err(err),
+                }
+            }
+        } else {
+            res2
+        }
     }
 
     async fn shutdown(&self) {
