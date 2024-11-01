@@ -10,9 +10,6 @@ pub enum MqttError<E> {
     /// Publish handler service error
     #[error("Service error")]
     Service(E),
-    /// Publish service readiness error
-    #[error("Service readiness error")]
-    Readiness(Option<E>),
     /// Handshake error
     #[error("Mqtt handshake error: {}", _0)]
     Handshake(#[from] HandshakeError<E>),

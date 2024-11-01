@@ -138,10 +138,15 @@ where
         let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
         if let Err(e) = res1 {
             if res2.is_err() {
-                Err(MqttError::Readiness(Some(e.into())))
+                Err(MqttError::Service(e.into()))
             } else {
                 match ctx.call_nowait(&self.inner.control, Control::error(e.into())).await {
-                    Ok(_) => Err(MqttError::Readiness(None)),
+                    Ok(res) => {
+                        if res.disconnect {
+                            self.inner.sink.drop_sink();
+                        }
+                        Ok(())
+                    }
                     Err(err) => Err(err),
                 }
             }

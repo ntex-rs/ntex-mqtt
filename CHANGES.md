@@ -1,5 +1,9 @@
 # Changes
 
+## [4.2.1] - 2024-11-01
+
+* Better rediness error handling
+
 ## [4.2.0] - 2024-10-31
 
 * Call control service on readiness error
