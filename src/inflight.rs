@@ -279,7 +279,7 @@ mod tests {
             .await
         }
 
-        async fn call(&self, _: (), ctx: ServiceCtx<'_, Self>) -> Result<(), ()> {
+        async fn call(&self, _: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
             let fut = sleep(self.dur);
             self.cnt.set(true);
             self.waker.wake();
