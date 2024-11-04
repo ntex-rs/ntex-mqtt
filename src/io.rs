@@ -646,6 +646,7 @@ mod tests {
                         service: Pipeline::new(service.into_service()).bind(),
                         response: None,
                         response_idx: 0,
+                        ready_count: 0,
                         io: IoBoxed::from(io),
                         st: IoDispatcherState::Processing,
                         flags: if keepalive_timeout.is_zero() {
