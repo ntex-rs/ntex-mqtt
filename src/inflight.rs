@@ -185,13 +185,8 @@ impl CounterInner {
 
     fn available(&self, cx: &Context<'_>) -> bool {
         self.task.register(cx.waker());
-        if (self.max_cap == 0 || self.cur_cap.get() < self.max_cap)
+        (self.max_cap == 0 || self.cur_cap.get() < self.max_cap)
             && (self.max_size == 0 || self.cur_size.get() <= self.max_size)
-        {
-            true
-        } else {
-            false
-        }
     }
 }
 
