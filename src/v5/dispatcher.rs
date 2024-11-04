@@ -5,7 +5,7 @@ use ntex_io::DispatchItem;
 use ntex_service::{self as service, Pipeline, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::inflight::InFlightService;
 use ntex_util::services::{buffer::BufferService, buffer::BufferServiceError};
-use ntex_util::{future::join, HashMap, HashSet};
+use ntex_util::{future::join, future::select, HashMap, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::types::QoS;
@@ -153,6 +153,11 @@ where
         } else {
             res2
         }
+    }
+
+    #[inline]
+    async fn not_ready(&self) {
+        select(self.publish.not_ready(), self.inner.control.not_ready()).await;
     }
 
     async fn shutdown(&self) {

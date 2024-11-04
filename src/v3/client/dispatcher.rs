@@ -2,7 +2,7 @@ use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
 use ntex_io::DispatchItem;
 use ntex_service::{Pipeline, Service, ServiceCtx};
-use ntex_util::future::{join, Either};
+use ntex_util::future::{join, select, Either};
 use ntex_util::{services::inflight::InFlightService, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
@@ -84,6 +84,11 @@ where
         } else {
             res2
         }
+    }
+
+    #[inline]
+    async fn not_ready(&self) {
+        select(self.publish.not_ready(), self.inner.control.not_ready()).await;
     }
 
     async fn shutdown(&self) {

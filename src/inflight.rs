@@ -2,7 +2,7 @@
 use std::{cell::Cell, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
 use ntex_service::{Middleware, Service, ServiceCtx};
-use ntex_util::task::LocalWaker;
+use ntex_util::{future::join, future::select, task::LocalWaker};
 
 /// Trait for types that could be sized
 pub trait SizedRequest {
@@ -73,15 +73,21 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    ntex_service::forward_shutdown!(service);
-
     #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), S::Error> {
-        ctx.ready(&self.service).await?;
+        if !self.count.is_available() {
+            let (_, res) = join(self.count.available(), ctx.ready(&self.service)).await;
+            res
+        } else {
+            ctx.ready(&self.service).await
+        }
+    }
 
-        // check if we have capacity
-        self.count.available().await;
-        Ok(())
+    #[inline]
+    async fn not_ready(&self) {
+        if self.count.is_available() {
+            select(self.count.unavailable(), self.service.not_ready()).await;
+        }
     }
 
     #[inline]
@@ -92,6 +98,8 @@ where
         drop(task_guard);
         result
     }
+
+    ntex_service::forward_shutdown!(service);
 }
 
 struct Counter(Rc<CounterInner>);
@@ -119,8 +127,17 @@ impl Counter {
         CounterGuard::new(size, self.0.clone())
     }
 
+    fn is_available(&self) -> bool {
+        (self.0.max_cap == 0 || self.0.cur_cap.get() < self.0.max_cap)
+            && (self.0.max_size == 0 || self.0.cur_size.get() <= self.0.max_size)
+    }
+
     async fn available(&self) {
         poll_fn(|cx| if self.0.available(cx) { Poll::Ready(()) } else { Poll::Pending }).await
+    }
+
+    async fn unavailable(&self) {
+        poll_fn(|cx| if self.0.available(cx) { Poll::Pending } else { Poll::Ready(()) }).await
     }
 }
 
@@ -143,8 +160,14 @@ impl Drop for CounterGuard {
 
 impl CounterInner {
     fn inc(&self, size: u32) {
-        self.cur_cap.set(self.cur_cap.get() + 1);
-        self.cur_size.set(self.cur_size.get() + size as usize);
+        let cur_cap = self.cur_cap.get() + 1;
+        self.cur_cap.set(cur_cap);
+        let cur_size = self.cur_size.get() + size as usize;
+        self.cur_size.set(cur_size);
+
+        if cur_cap == self.max_cap || cur_size >= self.max_size {
+            self.task.wake();
+        }
     }
 
     fn dec(&self, size: u32) {
@@ -161,14 +184,9 @@ impl CounterInner {
     }
 
     fn available(&self, cx: &Context<'_>) -> bool {
-        if (self.max_cap == 0 || self.cur_cap.get() < self.max_cap)
+        self.task.register(cx.waker());
+        (self.max_cap == 0 || self.cur_cap.get() < self.max_cap)
             && (self.max_size == 0 || self.cur_size.get() <= self.max_size)
-        {
-            true
-        } else {
-            self.task.register(cx.waker());
-            false
-        }
     }
 }
 
@@ -268,6 +286,7 @@ mod tests {
 
             let _ = fut.await;
             self.cnt.set(false);
+            self.waker.wake();
             Ok::<_, ()>(())
         }
     }
@@ -286,6 +305,7 @@ mod tests {
         }))
         .bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
+        assert_eq!(lazy(|cx| srv.poll_not_ready(cx)).await, Poll::Pending);
 
         let srv2 = srv.clone();
         ntex_util::spawn(async move {
@@ -300,6 +320,7 @@ mod tests {
             let _ = poll_fn(|cx| srv2.poll_ready(cx)).await;
             let _ = tx.send(());
         });
+        assert_eq!(poll_fn(|cx| srv.poll_ready(cx)).await, Ok(()));
 
         let _ = rx.await;
     }

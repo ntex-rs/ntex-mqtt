@@ -340,7 +340,7 @@ mod tests {
     }
 
     fn lvl_normal<T: AsRef<str>>(s: T) -> TopicFilterLevel {
-        if s.as_ref().contains(|c| c == '+' || c == '#') {
+        if s.as_ref().contains(['+', '#']) {
             panic!("invalid normal level `{}` contains +|#", s.as_ref());
         }
 
@@ -348,7 +348,7 @@ mod tests {
     }
 
     fn lvl_sys<T: AsRef<str>>(s: T) -> TopicFilterLevel {
-        if s.as_ref().contains(|c| c == '+' || c == '#') {
+        if s.as_ref().contains(['+', '#']) {
             panic!("invalid normal level `{}` contains +|#", s.as_ref());
         }
 
