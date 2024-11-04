@@ -1,5 +1,9 @@
 # Changes
 
+## [4.3.0] - 2024-11-04
+
+* Use updated Service trait
+
 ## [4.2.1] - 2024-11-01
 
 * Better rediness error handling

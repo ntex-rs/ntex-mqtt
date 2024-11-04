@@ -28,11 +28,12 @@ pin_project_lite::pin_project! {
 bitflags::bitflags! {
     #[derive(Copy, Clone, Eq, PartialEq, Debug)]
     struct Flags: u8  {
-        const READY_ERR     = 0b00001;
-        const IO_ERR        = 0b00010;
-        const KA_ENABLED    = 0b00100;
-        const KA_TIMEOUT    = 0b01000;
-        const READ_TIMEOUT  = 0b10000;
+        const READY_ERR     = 0b000001;
+        const IO_ERR        = 0b000010;
+        const KA_ENABLED    = 0b000100;
+        const KA_TIMEOUT    = 0b001000;
+        const READ_TIMEOUT  = 0b010000;
+        const READY         = 0b100000;
     }
 }
 
@@ -426,26 +427,39 @@ where
         }
     }
 
+    fn check_error(&mut self) -> PollService<U> {
+        // check for errors
+        let mut state = self.state.borrow_mut();
+        if let Some(err) = state.error.take() {
+            log::trace!("{}: Error occured, stopping dispatcher", self.io.tag());
+            self.st = IoDispatcherState::Stop;
+            match err {
+                IoDispatcherError::Encoder(err) => {
+                    PollService::Item(DispatchItem::EncoderError(err))
+                }
+                IoDispatcherError::Service(err) => {
+                    state.error = Some(IoDispatcherError::Service(err));
+                    PollService::Continue
+                }
+            }
+        } else {
+            PollService::Ready
+        }
+    }
+
     fn poll_service(&mut self, cx: &mut Context<'_>) -> Poll<PollService<U>> {
+        // check service readiness
+        if self.flags.contains(Flags::READY) {
+            if self.service.poll_not_ready(cx).is_pending() {
+                return Poll::Ready(self.check_error());
+            }
+            self.flags.remove(Flags::READY);
+        }
+
         match self.service.poll_ready(cx) {
             Poll::Ready(Ok(_)) => {
-                // check for errors
-                let mut state = self.state.borrow_mut();
-                Poll::Ready(if let Some(err) = state.error.take() {
-                    log::trace!("{}: Error occured, stopping dispatcher", self.io.tag());
-                    self.st = IoDispatcherState::Stop;
-                    match err {
-                        IoDispatcherError::Encoder(err) => {
-                            PollService::Item(DispatchItem::EncoderError(err))
-                        }
-                        IoDispatcherError::Service(err) => {
-                            state.error = Some(IoDispatcherError::Service(err));
-                            PollService::Continue
-                        }
-                    }
-                } else {
-                    PollService::Ready
-                })
+                self.flags.insert(Flags::READY);
+                Poll::Ready(self.check_error())
             }
             // pause io read task
             Poll::Pending => {

@@ -234,6 +234,11 @@ where
     }
 
     #[inline]
+    async fn not_ready(&self) {
+        select(self.handlers.0.not_ready(), self.handlers.1.not_ready()).await;
+    }
+
+    #[inline]
     async fn shutdown(&self) {
         self.handlers.0.shutdown().await;
         self.handlers.1.shutdown().await;
@@ -294,6 +299,11 @@ where
     #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         Service::<IoBoxed>::ready(self, ctx).await
+    }
+
+    #[inline]
+    async fn not_ready(&self) {
+        Service::<IoBoxed>::not_ready(self).await
     }
 
     #[inline]
