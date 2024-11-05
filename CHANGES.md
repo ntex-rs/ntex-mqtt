@@ -1,5 +1,9 @@
 # Changes
 
+## [4.3.1] - 2024-11-05
+
+* Do not rely on not_ready(), always check service readiness
+
 ## [4.3.0] - 2024-11-04
 
 * Use updated Service trait
