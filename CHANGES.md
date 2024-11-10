@@ -1,5 +1,11 @@
 # Changes
 
+## [4.4.0] - 2024-11-10
+
+* Check service readiness once per decoded item
+
+* Run un-readiness check in separate task
+
 ## [4.3.1] - 2024-11-05
 
 * Do not rely on not_ready(), always check service readiness

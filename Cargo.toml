@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "4.3.1"
+version = "4.4.0"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -18,10 +18,11 @@ features = ["ntex/tokio"]
 ntex-io = "2"
 ntex-net = "2"
 ntex-util = "2.5"
-ntex-service = "3.3"
+ntex-service = "3.3.3"
 ntex-bytes = "0.1"
 ntex-codec = "0.6"
 ntex-router = "0.5"
+ntex-rt = "0.4"
 bitflags = "2"
 log = "0.4"
 pin-project-lite = "0.2"
