@@ -659,11 +659,13 @@ mod tests {
             let keepalive_timeout = config.keepalive_timeout();
             let rio = io.get_ref();
 
-            let state = Rc::new(RefCell::new(DispatcherState {
-                error: None,
-                base: 0,
-                queue: VecDeque::new(),
-            }));
+            let state = Rc::new(DispatcherState {
+                error: Cell::new(None),
+                base: Cell::new(0),
+                ready: Cell::new(false),
+                waker: LocalWaker::default(),
+                queue: RefCell::new(VecDeque::new()),
+            });
 
             (
                 Dispatcher {
