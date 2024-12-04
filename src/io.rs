@@ -58,7 +58,6 @@ struct DispatcherInner<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'stat
 struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder> {
     error: Cell<Option<IoDispatcherError<S::Error, <U as Encoder>::Error>>>,
     base: Cell<usize>,
-    ready: Cell<bool>,
     queue: RefCell<VecDeque<ServiceResult<Result<S::Response, S::Error>>>>,
     waker: LocalWaker,
 }
@@ -122,7 +121,6 @@ where
         let state = Rc::new(DispatcherState {
             error: Cell::new(None),
             base: Cell::new(0),
-            ready: Cell::new(false),
             queue: RefCell::new(VecDeque::new()),
             waker: LocalWaker::default(),
         });
@@ -303,7 +301,6 @@ where
                         PollService::Continue => continue,
                     };
 
-                    inner.state.ready.set(false);
                     inner.call_service(cx, item);
                 }
                 // handle write back-pressure
@@ -456,15 +453,8 @@ where
     }
 
     fn poll_service(&mut self, cx: &mut Context<'_>) -> Poll<PollService<U>> {
-        if self.state.ready.get() {
-            return Poll::Ready(self.check_error());
-        }
-
         match self.service.poll_ready(cx) {
-            Poll::Ready(Ok(_)) => {
-                self.state.ready.set(true);
-                Poll::Ready(self.check_error())
-            }
+            Poll::Ready(Ok(_)) => Poll::Ready(self.check_error()),
             // pause io read task
             Poll::Pending => {
                 log::trace!("{}: Service is not ready, pause read task", self.io.tag());
@@ -631,7 +621,6 @@ mod tests {
             let state = Rc::new(DispatcherState {
                 error: Cell::new(None),
                 base: Cell::new(0),
-                ready: Cell::new(false),
                 waker: LocalWaker::default(),
                 queue: RefCell::new(VecDeque::new()),
             });
