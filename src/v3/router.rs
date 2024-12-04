@@ -1,4 +1,4 @@
-use std::{future::poll_fn, future::Future, pin::Pin, rc::Rc, task::Poll};
+use std::{rc::Rc, task::Context};
 
 use ntex_router::{IntoPattern, RouterBuilder};
 use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
@@ -117,24 +117,14 @@ impl<Err> Service<Publish> for RouterService<Err> {
     }
 
     #[inline]
-    async fn not_ready(&self) {
-        let mut futs = Vec::with_capacity(self.handlers.len() + 1);
+    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         for hnd in &self.handlers {
-            futs.push(Box::pin(hnd.not_ready()));
+            hnd.poll(cx)?;
         }
-        futs.push(Box::pin(self.default.not_ready()));
-
-        poll_fn(|cx| {
-            for hnd in &mut futs {
-                if Pin::new(hnd).poll(cx).is_ready() {
-                    return Poll::Ready(());
-                }
-            }
-            Poll::Pending
-        })
-        .await;
+        self.default.poll(cx)
     }
 
+    #[inline]
     async fn call(
         &self,
         mut req: Publish,

@@ -1,8 +1,8 @@
-use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_io::DispatchItem;
 use ntex_service::{Pipeline, Service, ServiceCtx};
-use ntex_util::future::{join, select, Either};
+use ntex_util::future::{join, Either};
 use ntex_util::{services::inflight::InFlightService, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
@@ -38,7 +38,7 @@ pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
 }
 
 struct Inner<C> {
-    control: C,
+    control: Pipeline<C>,
     sink: Rc<MqttShared>,
     inflight: RefCell<HashSet<NonZeroU16>>,
 }
@@ -51,7 +51,11 @@ where
     pub(crate) fn new(sink: Rc<MqttShared>, publish: T, control: C) -> Self {
         Self {
             publish,
-            inner: Rc::new(Inner { sink, control, inflight: RefCell::new(HashSet::default()) }),
+            inner: Rc::new(Inner {
+                sink,
+                control: Pipeline::new(control),
+                inflight: RefCell::new(HashSet::default()),
+            }),
             _t: PhantomData,
         }
     }
@@ -59,7 +63,7 @@ where
 
 impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
 where
-    T: Service<Publish, Response = Either<(), Publish>, Error = E>,
+    T: Service<Publish, Response = Either<(), Publish>, Error = E> + 'static,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
     E: 'static,
 {
@@ -68,12 +72,13 @@ where
 
     #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
+        let (res1, res2) =
+            join(ctx.ready(&self.publish), ctx.ready(self.inner.control.get_ref())).await;
         if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e))
             } else {
-                match ctx.call_nowait(&self.inner.control, Control::error(e)).await {
+                match ctx.call_nowait(self.inner.control.get_ref(), Control::error(e)).await {
                     Ok(_) => {
                         self.inner.sink.close();
                         Ok(())
@@ -86,14 +91,21 @@ where
         }
     }
 
-    #[inline]
-    async fn not_ready(&self) {
-        select(self.publish.not_ready(), self.inner.control.not_ready()).await;
+    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+        if let Err(e) = self.publish.poll(cx) {
+            let inner = self.inner.clone();
+            ntex_rt::spawn(async move {
+                if inner.control.call_nowait(Control::error(e.into())).await.is_ok() {
+                    inner.sink.close();
+                }
+            });
+        }
+        self.inner.control.poll(cx)
     }
 
     async fn shutdown(&self) {
         self.inner.sink.close();
-        let _ = Pipeline::new(&self.inner.control).call(Control::closed()).await;
+        let _ = self.inner.control.call(Control::closed()).await;
 
         self.publish.shutdown().await;
         self.inner.control.shutdown().await
@@ -231,7 +243,7 @@ async fn control<'f, T, C, E>(
 where
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    let packet = match ctx.call(&inner.control, msg).await?.result {
+    let packet = match ctx.call(inner.control.get_ref(), msg).await?.result {
         ControlAckKind::Ping => Some(codec::Packet::PingResponse),
         ControlAckKind::PublishAck(id) => {
             inner.inflight.borrow_mut().remove(&id);
