@@ -95,7 +95,7 @@ where
         if let Err(e) = self.publish.poll(cx) {
             let inner = self.inner.clone();
             ntex_rt::spawn(async move {
-                if inner.control.call_nowait(Control::error(e.into())).await.is_ok() {
+                if inner.control.call_nowait(Control::error(e)).await.is_ok() {
                     inner.sink.close();
                 }
             });

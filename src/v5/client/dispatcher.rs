@@ -121,13 +121,10 @@ where
         if let Err(e) = self.publish.poll(cx) {
             let inner = self.inner.clone();
             ntex_rt::spawn(async move {
-                match inner.control.call_nowait(Control::error(e.into())).await {
-                    Ok(res) => {
-                        if res.disconnect {
-                            inner.sink.drop_sink();
-                        }
+                if let Ok(res) = inner.control.call_nowait(Control::error(e)).await {
+                    if res.disconnect {
+                        inner.sink.drop_sink();
                     }
-                    Err(_) => (),
                 }
             });
         }
