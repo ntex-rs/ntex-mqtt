@@ -1,7 +1,6 @@
 //! Framed transport dispatcher
-use std::future::{poll_fn, Future};
 use std::task::{ready, Context, Poll};
-use std::{cell::Cell, cell::RefCell, collections::VecDeque, pin::Pin, rc::Rc};
+use std::{cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{
@@ -253,12 +252,6 @@ where
                 );
                 inner.response = None;
             }
-        }
-
-        // start ready task
-        if inner.flags.contains(Flags::READY_TASK) {
-            inner.flags.insert(Flags::READY_TASK);
-            ntex_rt::spawn(not_ready(inner.state.clone(), inner.service.clone()));
         }
 
         loop {
@@ -592,30 +585,6 @@ where
             return Err(DispatchItem::KeepAliveTimeout);
         }
         Ok(())
-    }
-}
-
-async fn not_ready<S, U>(
-    slf: Rc<DispatcherState<S, U>>,
-    pl: PipelineBinding<S, DispatchItem<U>>,
-) where
-    S: Service<DispatchItem<U>, Response = Option<Response<U>>> + 'static,
-    U: Encoder + Decoder + 'static,
-{
-    loop {
-        if !pl.is_shutdown() {
-            if let Err(err) = poll_fn(|cx| pl.poll_ready(cx)).await {
-                slf.error.set(Some(IoDispatcherError::Service(err)));
-                break;
-            }
-            if !pl.is_shutdown() {
-                poll_fn(|cx| pl.poll_not_ready(cx)).await;
-                slf.ready.set(false);
-                slf.waker.wake();
-                continue;
-            }
-        }
-        break;
     }
 }
 

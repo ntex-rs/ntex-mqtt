@@ -2,7 +2,7 @@
 use std::{cell::Cell, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
 use ntex_service::{Middleware, Service, ServiceCtx};
-use ntex_util::{future::join, future::select, task::LocalWaker};
+use ntex_util::{future::join, task::LocalWaker};
 
 /// Trait for types that could be sized
 pub trait SizedRequest {
@@ -84,13 +84,6 @@ where
     }
 
     #[inline]
-    async fn not_ready(&self) {
-        if self.count.is_available() {
-            select(self.count.unavailable(), self.service.not_ready()).await;
-        }
-    }
-
-    #[inline]
     async fn call(&self, req: R, ctx: ServiceCtx<'_, Self>) -> Result<S::Response, S::Error> {
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
         let task_guard = self.count.get(size);
@@ -99,6 +92,7 @@ where
         result
     }
 
+    ntex_service::forward_poll!(service);
     ntex_service::forward_shutdown!(service);
 }
 
@@ -134,10 +128,6 @@ impl Counter {
 
     async fn available(&self) {
         poll_fn(|cx| if self.0.available(cx) { Poll::Ready(()) } else { Poll::Pending }).await
-    }
-
-    async fn unavailable(&self) {
-        poll_fn(|cx| if self.0.available(cx) { Poll::Pending } else { Poll::Ready(()) }).await
     }
 }
 
@@ -305,7 +295,6 @@ mod tests {
         }))
         .bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
-        assert_eq!(lazy(|cx| srv.poll_not_ready(cx)).await, Poll::Pending);
 
         let srv2 = srv.clone();
         ntex_util::spawn(async move {

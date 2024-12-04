@@ -1,11 +1,11 @@
-use std::{cell::RefCell, marker, num, rc::Rc};
+use std::{cell::RefCell, marker, num, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_io::DispatchItem;
 use ntex_service::{self as service, Pipeline, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::inflight::InFlightService;
 use ntex_util::services::{buffer::BufferService, buffer::BufferServiceError};
-use ntex_util::{future::join, future::select, HashMap, HashSet};
+use ntex_util::{future::join, HashMap, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::types::QoS;
@@ -84,7 +84,7 @@ pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
 }
 
 struct Inner<C> {
-    control: C,
+    control: Pipeline<C>,
     sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
 }
@@ -112,7 +112,7 @@ where
             handle_qos_after_disconnect,
             inner: Rc::new(Inner {
                 sink,
-                control,
+                control: Pipeline::new(control),
                 info: RefCell::new(PublishInfo {
                     aliases: HashMap::default(),
                     inflight: HashSet::default(),
@@ -125,22 +125,25 @@ where
 
 impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
 where
-    E: From<T::Error>,
-    T: Service<Publish, Response = PublishAck>,
+    E: From<T::Error> + 'static,
+    T: Service<Publish, Response = PublishAck> + 'static,
     PublishAck: TryFrom<T::Error, Error = E>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
 {
     type Response = Option<codec::Packet>;
     type Error = MqttError<E>;
 
-    #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
+        let (res1, res2) =
+            join(ctx.ready(&self.publish), ctx.ready(self.inner.control.get_ref())).await;
         if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
             } else {
-                match ctx.call_nowait(&self.inner.control, Control::error(e.into())).await {
+                match ctx
+                    .call_nowait(self.inner.control.get_ref(), Control::error(e.into()))
+                    .await
+                {
                     Ok(res) => {
                         if res.disconnect {
                             self.inner.sink.drop_sink();
@@ -155,14 +158,23 @@ where
         }
     }
 
-    #[inline]
-    async fn not_ready(&self) {
-        select(self.publish.not_ready(), self.inner.control.not_ready()).await;
+    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+        if let Err(e) = self.publish.poll(cx) {
+            let inner = self.inner.clone();
+            ntex_rt::spawn(async move {
+                if let Ok(res) = inner.control.call_nowait(Control::error(e.into())).await {
+                    if res.disconnect {
+                        inner.sink.drop_sink();
+                    }
+                }
+            });
+        }
+        self.inner.control.poll(cx)
     }
 
     async fn shutdown(&self) {
         self.inner.sink.drop_sink();
-        let _ = Pipeline::new(&self.inner.control).call(Control::closed()).await;
+        let _ = self.inner.control.call(Control::closed()).await;
 
         self.publish.shutdown().await;
         self.inner.control.shutdown().await;
@@ -536,7 +548,7 @@ where
 {
     let mut error = matches!(pkt, Control::Error(_) | Control::ProtocolError(_));
 
-    let result = match ctx.call(&inner.control, pkt).await {
+    let result = match ctx.call(inner.control.get_ref(), pkt).await {
         Ok(result) => {
             if let Some(id) = num::NonZeroU16::new(packet_id) {
                 inner.info.borrow_mut().inflight.remove(&id);
@@ -553,7 +565,7 @@ where
                 match err {
                     MqttError::Service(err) => {
                         error = true;
-                        ctx.call(&inner.control, Control::error(err)).await?
+                        ctx.call(inner.control.get_ref(), Control::error(err)).await?
                     }
                     _ => return Err(err),
                 }

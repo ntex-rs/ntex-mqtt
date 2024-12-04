@@ -1,5 +1,4 @@
-use std::future::{poll_fn, Future};
-use std::{cell::RefCell, num::NonZeroU16, pin::Pin, rc::Rc, task::Poll};
+use std::{cell::RefCell, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_router::{IntoPattern, Path, RouterBuilder};
@@ -123,31 +122,20 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
     type Response = PublishAck;
     type Error = Err;
 
+    #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         for hnd in self.handlers.iter() {
             ctx.ready(hnd).await?;
         }
-
         ctx.ready(&self.default).await
     }
 
     #[inline]
-    async fn not_ready(&self) {
-        let mut futs = Vec::with_capacity(self.handlers.len() + 1);
+    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         for hnd in &self.handlers {
-            futs.push(Box::pin(hnd.not_ready()));
+            hnd.poll(cx)?;
         }
-        futs.push(Box::pin(self.default.not_ready()));
-
-        poll_fn(|cx| {
-            for hnd in &mut futs {
-                if Pin::new(hnd).poll(cx).is_ready() {
-                    return Poll::Ready(());
-                }
-            }
-            Poll::Pending
-        })
-        .await;
+        self.default.poll(cx)
     }
 
     #[allow(clippy::await_holding_refcell_ref)]

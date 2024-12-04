@@ -1,9 +1,9 @@
-use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_io::DispatchItem;
 use ntex_service::{Pipeline, Service, ServiceCtx};
-use ntex_util::{future::join, future::select, future::Either, HashMap, HashSet};
+use ntex_util::{future::join, future::Either, HashMap, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::types::packet_type;
@@ -45,7 +45,7 @@ pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
 }
 
 struct Inner<C> {
-    control: C,
+    control: Pipeline<C>,
     sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
 }
@@ -72,8 +72,8 @@ where
             max_receive,
             max_topic_alias,
             inner: Rc::new(Inner {
-                control,
                 sink: sink.shared(),
+                control: Pipeline::new(control),
                 info: RefCell::new(PublishInfo {
                     aliases: HashMap::default(),
                     inflight: HashSet::default(),
@@ -86,7 +86,8 @@ where
 
 impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
 where
-    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
+    E: 'static,
+    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E> + 'static,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
 {
     type Response = Option<codec::Packet>;
@@ -94,12 +95,13 @@ where
 
     #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
+        let (res1, res2) =
+            join(ctx.ready(&self.publish), ctx.ready(self.inner.control.get_ref())).await;
         if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e))
             } else {
-                match ctx.call_nowait(&self.inner.control, Control::error(e)).await {
+                match ctx.call_nowait(self.inner.control.get_ref(), Control::error(e)).await {
                     Ok(res) => {
                         if res.disconnect {
                             self.inner.sink.drop_sink();
@@ -115,13 +117,23 @@ where
     }
 
     #[inline]
-    async fn not_ready(&self) {
-        select(self.publish.not_ready(), self.inner.control.not_ready()).await;
+    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+        if let Err(e) = self.publish.poll(cx) {
+            let inner = self.inner.clone();
+            ntex_rt::spawn(async move {
+                if let Ok(res) = inner.control.call_nowait(Control::error(e)).await {
+                    if res.disconnect {
+                        inner.sink.drop_sink();
+                    }
+                }
+            });
+        }
+        self.inner.control.poll(cx)
     }
 
     async fn shutdown(&self) {
         self.inner.sink.drop_sink();
-        let _ = Pipeline::new(&self.inner.control).call(Control::closed()).await;
+        let _ = self.inner.control.call(Control::closed()).await;
 
         self.publish.shutdown().await;
         self.inner.control.shutdown().await;
@@ -385,7 +397,7 @@ where
     let mut error = matches!(pkt, Control::Error(_) | Control::ProtocolError(_));
 
     loop {
-        let result = match ctx.call(&inner.control, pkt).await {
+        let result = match ctx.call(inner.control.get_ref(), pkt).await {
             Ok(result) => {
                 if let Some(id) = NonZeroU16::new(packet_id) {
                     inner.info.borrow_mut().inflight.remove(&id);

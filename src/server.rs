@@ -1,4 +1,4 @@
-use std::{fmt, io, marker};
+use std::{fmt, io, marker, task::Context};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
@@ -234,8 +234,9 @@ where
     }
 
     #[inline]
-    async fn not_ready(&self) {
-        select(self.handlers.0.not_ready(), self.handlers.1.not_ready()).await;
+    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+        self.handlers.0.poll(cx)?;
+        self.handlers.1.poll(cx)
     }
 
     #[inline]
@@ -302,8 +303,8 @@ where
     }
 
     #[inline]
-    async fn not_ready(&self) {
-        Service::<IoBoxed>::not_ready(self).await
+    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+        Service::<IoBoxed>::poll(self, cx)
     }
 
     #[inline]
