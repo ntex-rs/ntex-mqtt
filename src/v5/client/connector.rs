@@ -204,10 +204,10 @@ where
 {
     /// Connect to mqtt server
     pub async fn connect(&self) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
-        match timeout_checked(self.handshake_timeout, self._connect()).await {
-            Ok(res) => res.map_err(From::from),
-            Err(_) => Err(ClientError::HandshakeTimeout),
-        }
+        timeout_checked(self.handshake_timeout, self._connect())
+            .await
+            .map_err(|_| ClientError::HandshakeTimeout)
+            .and_then(|res| res)
     }
 
     async fn _connect(&self) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
