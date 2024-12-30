@@ -243,9 +243,9 @@ impl Encode for SubscriptionOptions {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         buf.put_u8(
             u8::from(self.qos)
-                | (self.no_local as u8) << 2
-                | (self.retain_as_published as u8) << 3
-                | u8::from(self.retain_handling) << 4,
+                | ((self.no_local as u8) << 2)
+                | ((self.retain_as_published as u8) << 3)
+                | (u8::from(self.retain_handling) << 4),
         );
         Ok(())
     }
