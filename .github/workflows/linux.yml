@@ -58,6 +58,7 @@ jobs:
       - name: Run tests [compio]
         uses: actions-rs/cargo@v1
         timeout-minutes: 40
+        if: matrix.version != '1.75.0'
         with:
           command: test
           args: --all --features=ntex/compio -- --nocapture
