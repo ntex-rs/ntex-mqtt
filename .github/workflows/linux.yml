@@ -63,7 +63,7 @@ jobs:
       #     args: --all --features=ntex/compio -- --nocapture
 
       - name: Install cargo-cache
-        continue-on-error: true
+        #continue-on-error: true
         run: |
           cargo install cargo-cache --no-default-features --features ci-autoclean
 
