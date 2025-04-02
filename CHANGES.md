@@ -1,5 +1,9 @@
 # Changes
 
+## [4.6.0] - 2025-04-02
+
+* Remove "client-id" check for v5
+
 ## [4.5.1] - 2024-12-04
 
 * Check service readiness for every turn
