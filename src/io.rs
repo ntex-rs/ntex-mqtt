@@ -518,7 +518,7 @@ where
             // no new data, start keep-alive timer
             if self.flags.contains(Flags::KA_ENABLED) && !self.flags.contains(Flags::KA_TIMEOUT)
             {
-                log::debug!(
+                log::trace!(
                     "{}: Start keep-alive timer {:?}",
                     self.io.tag(),
                     self.keepalive_timeout
@@ -536,7 +536,7 @@ where
             self.read_max_timeout = max;
             self.io.start_timer(timeout);
 
-            log::debug!("{}: Start frame read timer {:?}", self.io.tag(), timeout);
+            log::trace!("{}: Start frame read timer {:?}", self.io.tag(), timeout);
         }
     }
 
@@ -704,6 +704,8 @@ mod tests {
                     waiter.await;
                     if let DispatchItem::Item(msg) = msg {
                         Ok::<_, ()>(Some(msg.freeze()))
+                    } else if matches!(msg, DispatchItem::Disconnect(_)) {
+                        Ok(None)
                     } else {
                         panic!()
                     }
