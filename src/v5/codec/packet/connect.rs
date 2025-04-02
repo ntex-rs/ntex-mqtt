@@ -142,12 +142,6 @@ impl Connect {
 
         let client_id = ByteString::decode(src)?;
 
-        ensure!(
-            // todo: [MQTT-3.1.3-8]?
-            !client_id.is_empty() || flags.contains(ConnectFlags::CLEAN_START),
-            DecodeError::InvalidClientId
-        );
-
         let last_will = if flags.contains(ConnectFlags::WILL) {
             Some(decode_last_will(src, flags)?)
         } else {
