@@ -704,6 +704,8 @@ mod tests {
                     waiter.await;
                     if let DispatchItem::Item(msg) = msg {
                         Ok::<_, ()>(Some(msg.freeze()))
+                    } else if matches!(msg, DispatchItem::Disconnect(_)) {
+                        Ok(None)
                     } else {
                         panic!()
                     }
