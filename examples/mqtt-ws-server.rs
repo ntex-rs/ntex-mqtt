@@ -122,9 +122,9 @@ async fn main() -> std::io::Result<()> {
                     loop {
                         // we can read incoming bytes stream without consuming it
                         let result = io.with_read_buf(|buf| {
-                            if buf.len() < 4 {
+                            if buf.len() < 8 {
                                 None
-                            } else if &buf[..4] == b"MQTT" {
+                            } else if &buf[4..8] == b"MQTT" {
                                 println!("MQTT protocol is selected");
                                 Some(Protocol::Mqtt)
                             } else if &buf[..4] == b"GET " {
