@@ -348,8 +348,7 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     io.send(
         EncodePacket::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
-                .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() },
             None,
         ),
         &codec,
@@ -427,8 +426,7 @@ async fn test_dups() {
 
     io.send(
         EncodePacket::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
-                .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() },
             None,
         ),
         &codec,
@@ -439,8 +437,7 @@ async fn test_dups() {
     // send packet_id dup
     io.send(
         EncodePacket::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
-                .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() },
             None,
         ),
         &codec,
@@ -565,8 +562,7 @@ async fn test_max_receive() {
 
     io.send(
         EncodePacket::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
-                .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() },
             None,
         ),
         &codec,
@@ -575,8 +571,7 @@ async fn test_max_receive() {
     .unwrap();
     io.send(
         EncodePacket::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() }
-                .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() },
             None,
         ),
         &codec,
@@ -709,8 +704,7 @@ async fn test_keepalive3() {
 
     io.send(
         EncodePacket::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() }
-                .into(),
+            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() },
             None,
         ),
         &codec,
@@ -721,8 +715,8 @@ async fn test_keepalive3() {
 
     let mut buf = BytesMut::new();
     let pkt = EncodePacket::Publish(
-        codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() }.into(),
-        Some(Bytes::new()),
+        codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() },
+        None,
     );
     codec.encode(pkt, &mut buf).unwrap();
     io.write(&buf[..5]).unwrap();
@@ -1021,7 +1015,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
         &codec,
     )
     .unwrap();
-    io.encode(EncodePacket::Publish(pkt_publish().into(), Some(Bytes::new())), &codec).unwrap();
+    io.encode(EncodePacket::Publish(pkt_publish(), Some(Bytes::new())), &codec).unwrap();
     io.encode(
         Packet::Disconnect(codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::ReceiveMaximumExceeded,
@@ -1110,8 +1104,7 @@ async fn handle_or_drop_publish_after_disconnect(
                 topic: ByteString::from("test"),
                 payload_size: 0,
                 properties: Default::default(),
-            }
-            .into(),
+            },
             None,
         ),
         &codec,
