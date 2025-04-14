@@ -1,11 +1,12 @@
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, num::NonZeroU16, rc::Rc};
 
-use ntex_bytes::{BytesMut, PoolId, PoolRef};
+use ntex_bytes::{Bytes, BytesMut, PoolId, PoolRef};
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
 use ntex_util::{channel::pool, HashSet};
 
-use crate::{error, error::SendPacketError, types::packet_type, v5::codec, QoS};
+use crate::v5::codec::{self, DecodedPacket, EncodePacket, Packet, Publish};
+use crate::{error, error::SendPacketError, payload, types::packet_type, QoS};
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -98,7 +99,7 @@ impl MqttShared {
 
     pub(super) fn close(&self, pkt: codec::Disconnect) {
         if !self.is_closed() {
-            let _ = self.io.encode(codec::Packet::Disconnect(pkt), &self.codec);
+            let _ = self.io.encode(EncodePacket::Packet(Packet::Disconnect(pkt)), &self.codec);
             self.io.close();
         }
         self.clear_queues();
@@ -157,7 +158,15 @@ impl MqttShared {
     }
 
     pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), error::EncodeError> {
-        self.io.encode(pkt, &self.codec)
+        self.io.encode(EncodePacket::Packet(pkt), &self.codec)
+    }
+
+    pub(super) fn encode_publish(
+        &self,
+        pkt: Publish,
+        payload: Bytes,
+    ) -> Result<(), error::EncodeError> {
+        self.io.encode(EncodePacket::Publish(pkt, Some(payload)), &self.codec)
     }
 
     /// Close mqtt connection, dont send disconnect message
@@ -287,17 +296,18 @@ impl MqttShared {
     }
 
     /// Register ack in response channel
-    pub(super) fn wait_packet_response(
+    pub(super) fn wait_publish_response(
         &self,
         id: NonZeroU16,
         ack: AckType,
-        pkt: codec::Packet,
+        pkt: Publish,
+        payload: Option<Bytes>,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
         let mut queues = self.queues.borrow_mut();
         if queues.inflight_ids.contains(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
-            match self.io.encode(pkt, &self.codec) {
+            match self.io.encode(EncodePacket::Publish(pkt, payload), &self.codec) {
                 Ok(_) => {
                     let (tx, rx) = self.pool.queue.channel();
                     queues.inflight.push_back((id, Some(tx), ack));
@@ -309,17 +319,20 @@ impl MqttShared {
         }
     }
 
-    pub(super) fn wait_packet_response_no_block(
+    pub(super) fn send_chunk(&self, chunk: Bytes) {}
+
+    pub(super) fn wait_publish_response_no_block(
         &self,
         id: NonZeroU16,
         ack: AckType,
-        pkt: codec::Packet,
+        pkt: Publish,
+        payload: Option<Bytes>,
     ) -> Result<(), SendPacketError> {
         let mut queues = self.queues.borrow_mut();
         if queues.inflight_ids.contains(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
-            match self.io.encode(pkt, &self.codec) {
+            match self.io.encode(EncodePacket::Publish(pkt, payload), &self.codec) {
                 Ok(_) => {
                     queues.inflight.push_back((id, None, ack));
                     queues.inflight_ids.insert(id);
@@ -346,7 +359,7 @@ impl MqttShared {
 }
 
 impl Encoder for MqttShared {
-    type Item = codec::Packet;
+    type Item = EncodePacket;
     type Error = error::EncodeError;
 
     #[inline]
@@ -356,7 +369,7 @@ impl Encoder for MqttShared {
 }
 
 impl Decoder for MqttShared {
-    type Item = (codec::Packet, u32);
+    type Item = DecodedPacket;
     type Error = error::DecodeError;
 
     #[inline]

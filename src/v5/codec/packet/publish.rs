@@ -3,7 +3,7 @@ use std::{fmt, num::NonZeroU16, num::NonZeroU32};
 use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::QoS;
+use crate::types::{packet_type, QoS};
 use crate::utils::{self, write_variable_length, Decode, Encode, Property};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties};
 
@@ -18,7 +18,7 @@ pub struct Publish {
     /// only present in PUBLISH Packets where the QoS level is 1 or 2.
     pub packet_id: Option<NonZeroU16>,
     pub topic: ByteString,
-    pub payload: Bytes,
+    pub payload_len: usize,
     pub properties: PublishProperties,
 }
 
@@ -32,6 +32,7 @@ impl fmt::Debug for Publish {
             .field("qos", &self.qos)
             .field("properties", &self.properties)
             .field("payload", &"<REDACTED>")
+            .field("payload_len", &self.payload_len)
             .finish()
     }
 }
@@ -49,27 +50,57 @@ pub struct PublishProperties {
 }
 
 impl Publish {
-    pub(crate) fn decode(mut src: Bytes, packet_flags: u8) -> Result<Self, DecodeError> {
-        let topic = ByteString::decode(&mut src)?;
+    pub(crate) fn decode(
+        src: &mut Bytes,
+        packet_flags: u8,
+        payload_len: usize,
+    ) -> Result<Self, DecodeError> {
+        let topic = ByteString::decode(src)?;
         let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
         let packet_id = if qos == QoS::AtMostOnce {
             None
         } else {
-            Some(NonZeroU16::decode(&mut src)?) // packet id = 0 encountered
+            Some(NonZeroU16::decode(src)?) // packet id = 0 encountered
         };
-
-        let properties = parse_publish_properties(&mut src)?;
-        let payload = src;
+        let properties = parse_publish_properties(src)?;
 
         Ok(Self {
-            dup: (packet_flags & 0b1000) == 0b1000,
             qos,
-            retain: (packet_flags & 0b0001) == 0b0001,
             topic,
             packet_id,
-            payload,
             properties,
+            payload_len,
+            dup: (packet_flags & 0b1000) == 0b1000,
+            retain: (packet_flags & 0b0001) == 0b0001,
         })
+    }
+
+    pub(crate) fn packet_header_size(
+        src: &BytesMut,
+        packet_flags: u8,
+    ) -> Result<Option<u32>, DecodeError> {
+        if src.remaining() < 2 {
+            return Ok(None);
+        }
+
+        // topic len
+        let mut len = u16::from_be_bytes([src[0], src[1]]) as u32 + 2;
+
+        // packet-id len
+        let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
+        if qos != QoS::AtMostOnce {
+            len += 2; // len of u16
+        }
+        if src.remaining() < len as usize {
+            return Ok(None);
+        }
+
+        // properties len
+        if let Some((prop_len, pos)) = utils::decode_variable_length(&src[len as usize..])? {
+            Ok(Some(len + prop_len + pos as u32))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -117,15 +148,15 @@ fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, Decode
 impl EncodeLtd for Publish {
     fn encoded_size(&self, _limit: u32) -> usize {
         let packet_id_size = if self.qos == QoS::AtMostOnce { 0 } else { 2 };
-        self.topic.encoded_size()
-            + packet_id_size
-            + self.properties.encoded_size(_limit)
-            + self.payload.len()
+        self.topic.encoded_size() + packet_id_size + self.properties.encoded_size(_limit)
     }
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
         let start_len = buf.len();
+
+        // publish headers
         self.topic.encode(buf)?;
+
         if self.qos == QoS::AtMostOnce {
             if self.packet_id.is_some() {
                 return Err(EncodeError::MalformedPacket); // packet id must not be set
@@ -133,9 +164,8 @@ impl EncodeLtd for Publish {
         } else {
             self.packet_id.ok_or(EncodeError::PacketIdRequired)?.encode(buf)?;
         }
-        self.properties
-            .encode(buf, size - (buf.len() - start_len + self.payload.len()) as u32)?;
-        buf.put(self.payload.as_ref());
+        self.properties.encode(buf, size - (buf.len() - start_len) as u32)?;
+
         Ok(())
     }
 }

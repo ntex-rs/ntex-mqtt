@@ -155,12 +155,18 @@ pub enum DecodeError {
 pub enum EncodeError {
     #[error("Packet is bigger than peer's Maximum Packet Size")]
     OverMaxPacketSize,
+    #[error("Streaming payload is bigger than Publish packet definition")]
+    OverPublishSize,
     #[error("Invalid length")]
     InvalidLength,
     #[error("Malformed packet")]
     MalformedPacket,
     #[error("Packet id is required")]
     PacketIdRequired,
+    #[error("Unexpected payload")]
+    UnexpectedPayload,
+    #[error("Publish packet is not completed, expect payload")]
+    ExpectPayload,
     #[error("Unsupported version")]
     UnsupportedVersion,
 }

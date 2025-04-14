@@ -6,7 +6,8 @@ use ntex_net::connect::{self, Address, Connect, Connector};
 use ntex_service::{IntoService, Pipeline, Service};
 use ntex_util::time::{timeout_checked, Seconds};
 
-use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
+use super::codec::{self, DecodedPacket, EncodePacket, Packet};
+use super::{connection::Client, error::ClientError, error::ProtocolError};
 use crate::v5::shared::{MqttShared, MqttSinkPool};
 
 /// Mqtt client connector
@@ -221,7 +222,7 @@ where
         let pool = self.pool.clone();
         let config = self.config.clone();
 
-        io.encode(codec::Packet::Connect(Box::new(pkt)), &codec)?;
+        io.encode(EncodePacket::Packet(Packet::Connect(Box::new(pkt))), &codec)?;
 
         let packet = io.recv(&codec).await.map_err(ClientError::from)?.ok_or_else(|| {
             log::trace!("Mqtt server is disconnected during handshake");
@@ -230,7 +231,7 @@ where
 
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, pool));
         match packet {
-            (codec::Packet::ConnectAck(pkt), _) => {
+            DecodedPacket::Packet(Packet::ConnectAck(pkt), ..) => {
                 log::trace!("Connect ack response from server: {:#?}", pkt);
                 if pkt.reason_code == codec::ConnectAckReason::Success {
                     // set max outbound (encoder) packet size
@@ -247,11 +248,17 @@ where
                     Err(ClientError::Ack(pkt))
                 }
             }
-            (p, _) => Err(ProtocolError::unexpected_packet(
-                p.packet_type(),
+            DecodedPacket::Packet(packet, ..) => Err(ProtocolError::unexpected_packet(
+                packet.packet_type(),
                 "CONNACK packet expected from server first [MQTT-3.2.0-1]",
             )
             .into()),
+            DecodedPacket::Publish(..) => Err(ProtocolError::unexpected_packet(
+                crate::types::packet_type::PUBLISH_START,
+                "CONNACK packet expected from server first [MQTT-3.2.0-1]",
+            )
+            .into()),
+            DecodedPacket::PayloadChunk(..) => unreachable!(),
         }
     }
 }

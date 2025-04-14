@@ -17,7 +17,6 @@ impl EncodeLtd for Packet {
         // limit -= 5; // fixed header = 1, var_len(remaining.max_value()) = 4
         match self {
             Packet::Connect(connect) => connect.encoded_size(limit),
-            Packet::Publish(publish) => publish.encoded_size(limit),
             Packet::ConnectAck(ack) => ack.encoded_size(limit),
             Packet::PublishAck(ack) | Packet::PublishReceived(ack) => ack.encoded_size(limit),
             Packet::PublishRelease(ack) | Packet::PublishComplete(ack) => {
@@ -44,16 +43,6 @@ impl EncodeLtd for Packet {
                 buf.put_u8(packet_type::CONNACK);
                 write_variable_length(check_size, buf);
                 ack.encode(buf, check_size)
-            }
-            Packet::Publish(publish) => {
-                buf.put_u8(
-                    packet_type::PUBLISH_START
-                        | (u8::from(publish.qos) << 1)
-                        | ((publish.dup as u8) << 3)
-                        | (publish.retain as u8),
-                );
-                write_variable_length(check_size, buf);
-                publish.encode(buf, check_size)
             }
             Packet::PublishAck(ack) => {
                 buf.put_u8(packet_type::PUBACK);

@@ -3,10 +3,9 @@ use std::{fmt, future::ready, future::Future, num::NonZeroU16, num::NonZeroU32, 
 use ntex_bytes::{ByteString, Bytes};
 use ntex_util::future::{Either, Ready};
 
-use super::{
-    codec, codec::EncodeLtd, error::SendPacketError, shared::AckType, shared::MqttShared,
-};
-use crate::types::QoS;
+use super::codec::{self, EncodeLtd};
+use super::{error::SendPacketError, shared::AckType, shared::MqttShared};
+use crate::{payload::PayloadSender, types::QoS};
 
 pub struct MqttSink(Rc<MqttShared>);
 
@@ -91,21 +90,55 @@ impl MqttSink {
     where
         ByteString: From<U>,
     {
-        self.publish_pkt(codec::Publish {
+        self.publish_pkt(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                topic: topic.into(),
+                qos: QoS::AtMostOnce,
+                packet_id: None,
+                payload_len: 0,
+                properties: codec::PublishProperties::default(),
+            },
             payload,
-            dup: false,
-            retain: false,
-            topic: topic.into(),
-            qos: QoS::AtMostOnce,
-            packet_id: None,
-            properties: codec::PublishProperties::default(),
-        })
+        )
+    }
+
+    #[inline]
+    /// Create publish packet builder
+    pub fn stream_publish<U>(&self, topic: U, len: u32) -> (PublishBuilder, PayloadSender)
+    where
+        ByteString: From<U>,
+    {
+        self.stream_publish_pkt(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                topic: topic.into(),
+                qos: QoS::AtMostOnce,
+                packet_id: None,
+                payload_len: 0,
+                properties: codec::PublishProperties::default(),
+            },
+            len,
+        )
     }
 
     #[inline]
     /// Create publish builder with publish packet
-    pub fn publish_pkt(&self, packet: codec::Publish) -> PublishBuilder {
-        PublishBuilder { packet, shared: self.0.clone() }
+    pub fn publish_pkt(&self, packet: codec::Publish, payload: Bytes) -> PublishBuilder {
+        PublishBuilder::new(self.0.clone(), packet, payload)
+    }
+
+    #[inline]
+    /// Create publish builder with publish packet
+    pub fn stream_publish_pkt(
+        &self,
+        packet: codec::Publish,
+        len: u32,
+    ) -> (PublishBuilder, PayloadSender) {
+        //PublishBuilder::new(self.0.clone(), packet, payload)
+        todo!()
     }
 
     /// Set publish ack callback
@@ -158,9 +191,15 @@ impl fmt::Debug for MqttSink {
 pub struct PublishBuilder {
     shared: Rc<MqttShared>,
     packet: codec::Publish,
+    payload: Bytes,
 }
 
 impl PublishBuilder {
+    fn new(shared: Rc<MqttShared>, mut packet: codec::Publish, payload: Bytes) -> Self {
+        packet.payload_len = payload.len();
+        Self { shared, packet, payload }
+    }
+
     #[inline]
     /// Set packet id.
     ///
@@ -221,7 +260,7 @@ impl PublishBuilder {
             log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
             self.packet.qos = QoS::AtMostOnce;
             self.shared
-                .encode_packet(codec::Packet::Publish(self.packet))
+                .encode_publish(self.packet, self.payload)
                 .map_err(SendPacketError::Encode)
                 .map(|_| ())
         } else {
@@ -245,10 +284,14 @@ impl PublishBuilder {
                     if rx.await.is_err() {
                         return Err(SendPacketError::Disconnected);
                     }
-                    Self::send_at_least_once_inner(packet, shared).await
+                    Self::send_at_least_once_inner(shared, packet, Some(self.payload)).await
                 }))
             } else {
-                Either::Left(Either::Right(Self::send_at_least_once_inner(packet, shared)))
+                Either::Left(Either::Right(Self::send_at_least_once_inner(
+                    shared,
+                    packet,
+                    Some(self.payload),
+                )))
             }
         } else {
             Either::Right(Ready::Err(SendPacketError::Disconnected))
@@ -279,10 +322,11 @@ impl PublishBuilder {
             };
             log::trace!("Publish (QoS1) to {:#?}", packet);
 
-            shared.wait_packet_response_no_block(
+            shared.wait_publish_response_no_block(
                 idx,
                 AckType::Publish,
-                codec::Packet::Publish(packet),
+                packet,
+                Some(self.payload),
             )
         } else {
             Err(SendPacketError::Disconnected)
@@ -290,8 +334,9 @@ impl PublishBuilder {
     }
 
     fn send_at_least_once_inner(
-        mut packet: codec::Publish,
         shared: Rc<MqttShared>,
+        mut packet: codec::Publish,
+        payload: Option<Bytes>,
     ) -> impl Future<Output = Result<codec::PublishAck, SendPacketError>> {
         // packet id
         let idx = if let Some(idx) = packet.packet_id {
@@ -305,8 +350,7 @@ impl PublishBuilder {
         // send publish to client
         log::trace!("Publish (QoS1) to {:#?}", packet);
 
-        let rx =
-            shared.wait_packet_response(idx, AckType::Publish, codec::Packet::Publish(packet));
+        let rx = shared.wait_publish_response(idx, AckType::Publish, packet, payload);
         async move { rx?.await.map(|pkt| pkt.publish()).map_err(|_| SendPacketError::Disconnected) }
     }
 }

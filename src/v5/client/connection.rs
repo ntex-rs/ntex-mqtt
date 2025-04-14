@@ -1,4 +1,3 @@
-#![allow(clippy::let_underscore_future)]
 use std::{cell::RefCell, fmt, marker, num::NonZeroU16, rc::Rc};
 
 use ntex_bytes::ByteString;

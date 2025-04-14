@@ -1,5 +1,9 @@
 # Changes
 
+## [5.0.0] - 2025-04-xx
+
+* Add publish packet streaming
+
 ## [4.6.0] - 2025-04-02
 
 * Remove "client-id" check for v5

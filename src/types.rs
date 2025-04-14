@@ -67,6 +67,10 @@ pub(super) mod packet_type {
     pub(crate) const PINGRESP: u8 = 0b1101_0000;
     pub(crate) const DISCONNECT: u8 = 0b1110_0000;
     pub(crate) const AUTH: u8 = 0b1111_0000;
+
+    pub(crate) const fn is_publish(packet_type: u8) -> bool {
+        matches!(packet_type, PUBLISH_START..=PUBLISH_END)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
