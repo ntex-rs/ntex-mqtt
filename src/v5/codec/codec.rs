@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt, num::NonZeroU32};
+use std::{cell::Cell, cmp::min, fmt, num::NonZeroU32};
 
 use ntex_bytes::{Buf, BufMut, BytesMut};
 use ntex_codec::{Decoder, Encoder};
@@ -211,7 +211,8 @@ impl Decoder for Codec {
                             )));
                         }
                     } else {
-                        let payload = src.split_to(payload_len as usize).freeze();
+                        let payload =
+                            src.split_to(min(src.len(), payload_len as usize)).freeze();
                         let remaining = payload_len - payload.len() as u32;
 
                         if remaining > 0 {
@@ -230,50 +231,52 @@ impl Decoder for Codec {
                 }
 
                 DecodeState::PublishFixed(pl_len, remaining_length) => {
-                    if src.len() < pl_len as usize {
-                        return Ok(None);
-                    }
-                    let publish = self.publish.take().unwrap();
-                    let payload = src.split_to(pl_len as usize).freeze();
-
-                    self.state.set(DecodeState::FrameHeader);
-                    src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
-
-                    return Ok(Some(DecodedPacket::Publish(
-                        publish,
-                        payload,
-                        remaining_length,
-                    )));
-                }
-                DecodeState::PublishVariable(remaining) => {
-                    let payload = src.split_to(remaining as usize).freeze();
-                    let remaining = remaining - payload.len() as u32;
-
-                    let eof = if remaining > 0 {
-                        self.state.set(DecodeState::PublishVariable(remaining));
-                        false
+                    return if src.len() < pl_len as usize {
+                        Ok(None)
                     } else {
+                        let publish = self.publish.take().unwrap();
+                        let payload = src.split_to(pl_len as usize).freeze();
+
                         self.state.set(DecodeState::FrameHeader);
                         src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
-                        true
+
+                        Ok(Some(DecodedPacket::Publish(publish, payload, remaining_length)))
                     };
-                    return Ok(Some(DecodedPacket::PayloadChunk(payload, eof)));
+                }
+                DecodeState::PublishVariable(remaining) => {
+                    return if src.is_empty() {
+                        Ok(None)
+                    } else {
+                        let payload = src.split_to(min(src.len(), remaining as usize)).freeze();
+                        let remaining = remaining - payload.len() as u32;
+
+                        let eof = if remaining > 0 {
+                            self.state.set(DecodeState::PublishVariable(remaining));
+                            false
+                        } else {
+                            self.state.set(DecodeState::FrameHeader);
+                            src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
+                            true
+                        };
+                        Ok(Some(DecodedPacket::PayloadChunk(payload, eof)))
+                    };
                 }
                 DecodeState::Frame(fixed) => {
-                    if src.len() < fixed.remaining_length as usize {
-                        return Ok(None);
-                    }
-                    let packet_buf = src.split_to(fixed.remaining_length as usize).freeze();
-                    let packet = decode_packet(packet_buf, fixed.first_byte)?;
-                    self.state.set(DecodeState::FrameHeader);
-                    src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
+                    return if src.len() < fixed.remaining_length as usize {
+                        Ok(None)
+                    } else {
+                        let packet_buf = src.split_to(fixed.remaining_length as usize).freeze();
+                        let packet = decode_packet(packet_buf, fixed.first_byte)?;
+                        self.state.set(DecodeState::FrameHeader);
+                        src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
 
-                    if let Packet::Connect(ref pkt) = packet {
-                        let mut flags = self.flags.get();
-                        flags.set(CodecFlags::NO_PROBLEM_INFO, !pkt.request_problem_info);
-                        self.flags.set(flags);
-                    }
-                    return Ok(Some(DecodedPacket::Packet(packet, fixed.remaining_length)));
+                        if let Packet::Connect(ref pkt) = packet {
+                            let mut flags = self.flags.get();
+                            flags.set(CodecFlags::NO_PROBLEM_INFO, !pkt.request_problem_info);
+                            self.flags.set(flags);
+                        }
+                        Ok(Some(DecodedPacket::Packet(packet, fixed.remaining_length)))
+                    };
                 }
             }
         }

@@ -117,7 +117,7 @@ impl MqttSink {
                 topic: topic.into(),
                 qos: QoS::AtMostOnce,
                 packet_id: None,
-                payload_size: 0,
+                payload_size: len,
                 properties: codec::PublishProperties::default(),
             },
             len,
