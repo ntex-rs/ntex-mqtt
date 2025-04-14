@@ -388,13 +388,14 @@ where
         Ok(res) => match res {
             Either::Right(ack) => ack,
             Either::Left(pkt) => {
+                let (pkt, payload) = pkt.into_inner();
                 return control(
-                    Control::publish(pkt.into_inner(), packet_size),
+                    Control::publish(pkt, payload, packet_size),
                     inner,
                     ctx,
                     packet_id,
                 )
-                .await
+                .await;
             }
         },
         Err(e) => return control(Control::error(e), inner, ctx, 0).await,

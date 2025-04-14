@@ -1,5 +1,5 @@
+use ntex::service::fn_service;
 use ntex::time::{sleep, Millis, Seconds};
-use ntex::{service::fn_service, util::Ready};
 use ntex_mqtt::v5;
 
 #[derive(Debug)]
@@ -30,35 +30,38 @@ async fn main() -> std::io::Result<()> {
 
     // handle incoming publishes
     ntex::rt::spawn(client.start(fn_service(
-        |control: v5::client::Control<Error>| match control {
-            v5::client::Control::Publish(publish) => {
-                log::info!(
-                    "incoming publish: {:?} -> {:?} payload {:?}",
-                    publish.packet().packet_id,
-                    publish.packet().topic,
-                    publish.packet().payload
-                );
-                Ready::Ok(publish.ack(v5::codec::PublishAckReason::Success))
-            }
-            v5::client::Control::Disconnect(msg) => {
-                log::warn!("Server disconnecting: {:?}", msg);
-                Ready::Ok(msg.ack())
-            }
-            v5::client::Control::Error(msg) => {
-                log::error!("Codec error: {:?}", msg);
-                Ready::Ok(msg.ack(v5::codec::DisconnectReasonCode::UnspecifiedError))
-            }
-            v5::client::Control::ProtocolError(msg) => {
-                log::error!("Protocol error: {:?}", msg);
-                Ready::Ok(msg.ack())
-            }
-            v5::client::Control::PeerGone(msg) => {
-                log::warn!("Peer closed connection: {:?}", msg.error());
-                Ready::Ok(msg.ack())
-            }
-            v5::client::Control::Closed(msg) => {
-                log::warn!("Server closed connection: {:?}", msg);
-                Ready::Ok(msg.ack())
+        |control: v5::client::Control<Error>| async move {
+            match control {
+                v5::client::Control::Publish(publish) => {
+                    let pl = publish.read_all().await;
+                    log::info!(
+                        "incoming publish: {:?} -> {:?}, payload: {:?}",
+                        publish.packet().packet_id,
+                        publish.packet().topic,
+                        pl,
+                    );
+                    Ok(publish.ack(v5::codec::PublishAckReason::Success))
+                }
+                v5::client::Control::Disconnect(msg) => {
+                    log::warn!("Server disconnecting: {:?}", msg);
+                    Ok(msg.ack())
+                }
+                v5::client::Control::Error(msg) => {
+                    log::error!("Codec error: {:?}", msg);
+                    Ok(msg.ack(v5::codec::DisconnectReasonCode::UnspecifiedError))
+                }
+                v5::client::Control::ProtocolError(msg) => {
+                    log::error!("Protocol error: {:?}", msg);
+                    Ok(msg.ack())
+                }
+                v5::client::Control::PeerGone(msg) => {
+                    log::warn!("Peer closed connection: {:?}", msg.error());
+                    Ok(msg.ack())
+                }
+                v5::client::Control::Closed(msg) => {
+                    log::warn!("Server closed connection: {:?}", msg);
+                    Ok(msg.ack())
+                }
             }
         },
     )));

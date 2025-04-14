@@ -51,7 +51,7 @@ fn mqtt_server<F: Filter>(
             Ok::<_, ServerError>(publish.ack())
         })
         .finish())
-        .map_err(|e| Box::<dyn Error>::from(e))
+        .map_err(Box::<dyn Error>::from)
 }
 
 /// WebSocket service
@@ -79,7 +79,7 @@ pub fn ws<F: Filter>() -> impl ServiceFactory<
                     &codec,
                 )
                 .await
-                .map_err(|e| Box::<dyn Error>::from(e))?;
+                .map_err(Box::<dyn Error>::from)?;
 
                 log::trace!("WebSocket handshake is completed");
 
@@ -151,7 +151,7 @@ async fn main() -> std::io::Result<()> {
                         };
                     }
                 })
-                .map_err(|e| Box::<dyn Error>::from(e))
+                .map_err(Box::<dyn Error>::from)
                 // start mqtt server.
                 //
                 // we need two different servers one for mqtt protocol

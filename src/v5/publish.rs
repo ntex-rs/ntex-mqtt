@@ -109,8 +109,8 @@ impl Publish {
         }
     }
 
-    pub(crate) fn into_inner(self) -> codec::Publish {
-        self.pkt
+    pub(crate) fn into_inner(self) -> (codec::Publish, Payload) {
+        (self.pkt, self.payload)
     }
 }
 

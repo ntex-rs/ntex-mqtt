@@ -1,8 +1,8 @@
 use std::io;
 
-use ntex_bytes::ByteString;
+use ntex_bytes::{ByteString, Bytes};
 
-use crate::{error, v5::codec};
+use crate::{error, payload::Payload, v5::codec};
 
 pub use crate::v5::control::{Closed, ControlAck, Disconnect, Error, ProtocolError};
 
@@ -24,8 +24,8 @@ pub enum Control<E> {
 }
 
 impl<E> Control<E> {
-    pub(super) fn publish(pkt: codec::Publish, size: u32) -> Self {
-        Control::Publish(Publish(pkt, size))
+    pub(super) fn publish(pkt: codec::Publish, pl: Payload, size: u32) -> Self {
+        Control::Publish(Publish(pkt, pl, size))
     }
 
     pub(super) fn dis(pkt: codec::Disconnect, size: u32) -> Self {
@@ -70,7 +70,7 @@ impl<E> Control<E> {
 }
 
 #[derive(Debug)]
-pub struct Publish(codec::Publish, u32);
+pub struct Publish(codec::Publish, Payload, u32);
 
 impl Publish {
     /// Returns reference to publish packet
@@ -85,7 +85,25 @@ impl Publish {
 
     /// Returns size of the packet
     pub fn packet_size(&self) -> u32 {
-        self.1
+        self.2
+    }
+
+    #[inline]
+    /// Returns size of the payload
+    pub fn payload_size(&self) -> usize {
+        self.0.payload_size as usize
+    }
+
+    #[inline]
+    /// Payload that is being published.
+    pub async fn read(&self) -> Option<Bytes> {
+        self.1.read().await
+    }
+
+    #[inline]
+    /// Payload that is being published.
+    pub async fn read_all(&self) -> Option<Bytes> {
+        self.1.read_all().await
     }
 
     pub fn ack_qos0(self) -> ControlAck {
