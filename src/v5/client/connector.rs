@@ -16,6 +16,7 @@ pub struct MqttConnector<A, T> {
     connector: Pipeline<T>,
     pkt: codec::Connect,
     handshake_timeout: Seconds,
+    max_fixed_payload: u32,
     config: DispatcherConfig,
     pool: Rc<MqttSinkPool>,
 }
@@ -35,6 +36,7 @@ where
             pkt: codec::Connect::default(),
             connector: Pipeline::new(Connector::default()),
             handshake_timeout: Seconds::ZERO,
+            max_fixed_payload: 32 * 1024,
             pool: Rc::new(MqttSinkPool::default()),
         }
     }
@@ -111,6 +113,15 @@ where
         } else {
             self.pkt.max_packet_size = None;
         }
+        self
+    }
+
+    /// Set max fixed payload size.
+    ///
+    /// If fized size is set to `0`, size is unlimited.
+    /// By default max fized size is set to 32kb
+    pub fn max_fixed_payload(mut self, val: u32) -> Self {
+        self.max_fixed_payload = val;
         self
     }
 
@@ -192,6 +203,7 @@ where
             address: self.address,
             config: self.config,
             handshake_timeout: self.handshake_timeout,
+            max_fixed_payload: self.max_fixed_payload,
             pool: self.pool,
         }
     }
@@ -219,6 +231,7 @@ where
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(65535);
         let codec = codec::Codec::new();
         codec.set_max_inbound_size(max_packet_size);
+        codec.set_max_fixed_payload(self.max_fixed_payload);
         let pool = self.pool.clone();
         let config = self.config.clone();
 
