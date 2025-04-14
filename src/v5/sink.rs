@@ -97,7 +97,7 @@ impl MqttSink {
                 topic: topic.into(),
                 qos: QoS::AtMostOnce,
                 packet_id: None,
-                payload_len: 0,
+                payload_size: 0,
                 properties: codec::PublishProperties::default(),
             },
             payload,
@@ -117,7 +117,7 @@ impl MqttSink {
                 topic: topic.into(),
                 qos: QoS::AtMostOnce,
                 packet_id: None,
-                payload_len: 0,
+                payload_size: 0,
                 properties: codec::PublishProperties::default(),
             },
             len,
@@ -196,7 +196,7 @@ pub struct PublishBuilder {
 
 impl PublishBuilder {
     fn new(shared: Rc<MqttShared>, mut packet: codec::Publish, payload: Bytes) -> Self {
-        packet.payload_len = payload.len();
+        packet.payload_size = payload.len() as u32;
         Self { shared, packet, payload }
     }
 

@@ -18,7 +18,7 @@ pub struct Publish {
     /// only present in PUBLISH Packets where the QoS level is 1 or 2.
     pub packet_id: Option<NonZeroU16>,
     pub topic: ByteString,
-    pub payload_len: usize,
+    pub payload_size: u32,
     pub properties: PublishProperties,
 }
 
@@ -31,8 +31,7 @@ impl fmt::Debug for Publish {
             .field("retain", &self.retain)
             .field("qos", &self.qos)
             .field("properties", &self.properties)
-            .field("payload", &"<REDACTED>")
-            .field("payload_len", &self.payload_len)
+            .field("payload_size", &self.payload_size)
             .finish()
     }
 }
@@ -53,7 +52,7 @@ impl Publish {
     pub(crate) fn decode(
         src: &mut Bytes,
         packet_flags: u8,
-        payload_len: usize,
+        payload_size: u32,
     ) -> Result<Self, DecodeError> {
         let topic = ByteString::decode(src)?;
         let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
@@ -69,7 +68,7 @@ impl Publish {
             topic,
             packet_id,
             properties,
-            payload_len,
+            payload_size,
             dup: (packet_flags & 0b1000) == 0b1000,
             retain: (packet_flags & 0b0001) == 0b0001,
         })
@@ -148,15 +147,26 @@ fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, Decode
 impl EncodeLtd for Publish {
     fn encoded_size(&self, _limit: u32) -> usize {
         let packet_id_size = if self.qos == QoS::AtMostOnce { 0 } else { 2 };
-        self.topic.encoded_size() + packet_id_size + self.properties.encoded_size(_limit)
+        self.topic.encoded_size()
+            + packet_id_size
+            + self.properties.encoded_size(_limit)
+            + self.payload_size as usize
     }
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
-        let start_len = buf.len();
+        // publish fixed headers
+        buf.put_u8(
+            packet_type::PUBLISH_START
+                | (u8::from(self.qos) << 1)
+                | ((self.dup as u8) << 3)
+                | (self.retain as u8),
+        );
+        utils::write_variable_length(size, buf);
 
         // publish headers
-        self.topic.encode(buf)?;
+        let start_len = buf.len();
 
+        self.topic.encode(buf)?;
         if self.qos == QoS::AtMostOnce {
             if self.packet_id.is_some() {
                 return Err(EncodeError::MalformedPacket); // packet id must not be set
@@ -164,7 +174,8 @@ impl EncodeLtd for Publish {
         } else {
             self.packet_id.ok_or(EncodeError::PacketIdRequired)?.encode(buf)?;
         }
-        self.properties.encode(buf, size - (buf.len() - start_len) as u32)?;
+        self.properties
+            .encode(buf, size - (buf.len() - start_len + self.payload_size as usize) as u32)?;
 
         Ok(())
     }

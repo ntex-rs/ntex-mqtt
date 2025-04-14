@@ -254,7 +254,7 @@ where
                     }
                 }
 
-                let payload = if publish.payload_len == payload.len() {
+                let payload = if publish.payload_size == payload.len() as u32 {
                     Payload::from_bytes(payload)
                 } else {
                     let (pl, sender) = Payload::from_stream(payload);

@@ -38,7 +38,7 @@ fn pkt_publish() -> codec::Publish {
         qos: codec::QoS::AtLeastOnce,
         topic: ByteString::from("test"),
         packet_id: Some(NonZeroU16::new(1).unwrap()),
-        payload_len: 0,
+        payload_size: 0,
         properties: Default::default(),
     }
 }
@@ -1108,7 +1108,7 @@ async fn handle_or_drop_publish_after_disconnect(
                 retain: false,
                 qos: publish_qos,
                 topic: ByteString::from("test"),
-                payload_len: 0,
+                payload_size: 0,
                 properties: Default::default(),
             }
             .into(),
@@ -1196,7 +1196,7 @@ async fn test_max_qos() -> std::io::Result<()> {
     .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
-    io.encode(EncodePacket::Publish(pkt_publish().into(), Some(Bytes::new())), &codec).unwrap();
+    io.encode(EncodePacket::Publish(pkt_publish(), None), &codec).unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         packet(pkt),
@@ -1343,7 +1343,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
             qos: codec::QoS::AtLeastOnce,
             topic: ByteString::from("test"),
             packet_id: Some(NonZeroU16::new(3).unwrap()),
-            payload_len: 270 * 1024,
+            payload_size: 270 * 1024,
             ..pkt_publish()
         },
         Some(Bytes::from(vec![b'*'; 270 * 1024])),

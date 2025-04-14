@@ -80,7 +80,7 @@ impl Publish {
     #[inline]
     /// Returns size of the payload
     pub fn payload_size(&self) -> usize {
-        self.pkt.payload_len
+        self.pkt.payload_size as usize
     }
 
     #[inline]

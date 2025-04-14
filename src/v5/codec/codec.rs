@@ -35,8 +35,8 @@ enum DecodeState {
     Frame(FixedHeader),
     PublishHeader(FixedHeader),
     PublishProperties(u32, FixedHeader),
-    PublishFixed(usize, u32),
-    PublishVariable(usize),
+    PublishFixed(u32, u32),
+    PublishVariable(u32),
 }
 
 impl Codec {
@@ -187,12 +187,11 @@ impl Decoder for Codec {
                     if src.len() < props_len as usize {
                         return Ok(None);
                     }
-                    let payload_len = (fixed.remaining_length - props_len) as usize;
+                    let payload_len = (fixed.remaining_length - props_len);
                     let mut buf = src.split_to(props_len as usize).freeze();
-                    let publish =
-                        Publish::decode(&mut buf, fixed.first_byte, payload_len as usize)?;
+                    let publish = Publish::decode(&mut buf, fixed.first_byte, payload_len)?;
 
-                    let fixed_size = self.max_fixed_payload.get() as usize;
+                    let fixed_size = self.max_fixed_payload.get();
                     if fixed_size == 0 || payload_len <= fixed_size {
                         if src.len() < payload_len as usize {
                             self.publish.set(Some(publish));
@@ -213,7 +212,7 @@ impl Decoder for Codec {
                         }
                     } else {
                         let payload = src.split_to(payload_len as usize).freeze();
-                        let remaining = payload_len - payload.len();
+                        let remaining = payload_len - payload.len() as u32;
 
                         if remaining > 0 {
                             self.state.set(DecodeState::PublishVariable(remaining));
@@ -231,11 +230,11 @@ impl Decoder for Codec {
                 }
 
                 DecodeState::PublishFixed(pl_len, remaining_length) => {
-                    if src.len() < pl_len {
+                    if src.len() < pl_len as usize {
                         return Ok(None);
                     }
                     let publish = self.publish.take().unwrap();
-                    let payload = src.split_to(pl_len).freeze();
+                    let payload = src.split_to(pl_len as usize).freeze();
 
                     self.state.set(DecodeState::FrameHeader);
                     src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
@@ -248,7 +247,7 @@ impl Decoder for Codec {
                 }
                 DecodeState::PublishVariable(remaining) => {
                     let payload = src.split_to(remaining as usize).freeze();
-                    let remaining = remaining - payload.len();
+                    let remaining = remaining - payload.len() as u32;
 
                     let eof = if remaining > 0 {
                         self.state.set(DecodeState::PublishVariable(remaining));
@@ -339,30 +338,21 @@ impl Encoder for Codec {
                 }
             }
             EncodePacket::Publish(pkt, buf) => {
-                let content_size = pkt.encoded_size(max_size);
-                let total_size = content_size + pkt.payload_len;
-                if total_size > max_size as usize {
+                let content_size = pkt.encoded_size(max_size) as u32;
+                if content_size > max_size {
                     return Err(EncodeError::OverMaxPacketSize);
                 }
 
-                dst.reserve(content_size + 5);
-
-                // publish prefix
-                dst.put_u8(
-                    packet_type::PUBLISH_START
-                        | (u8::from(pkt.qos) << 1)
-                        | ((pkt.dup as u8) << 3)
-                        | (pkt.retain as u8),
-                );
-                utils::write_variable_length(total_size as u32, dst);
-
-                pkt.encode(dst, content_size as u32)?; // safe: max_size <= u32 max value
+                let total_size = content_size - pkt.payload_size
+                    + buf.as_ref().map(|b| b.len() as u32).unwrap_or(0);
+                dst.reserve((total_size + 5) as usize);
+                pkt.encode(dst, content_size)?; // safe: max_size <= u32 max value
 
                 let remaining = if let Some(buf) = buf {
                     dst.extend_from_slice(&buf);
-                    pkt.payload_len - buf.len()
+                    pkt.payload_size - buf.len() as u32
                 } else {
-                    pkt.payload_len
+                    pkt.payload_size
                 };
                 self.encoding_payload.set(NonZeroU32::new(remaining as u32));
                 Ok(())
@@ -421,6 +411,6 @@ mod tests {
         codec.set_max_inbound_size(5);
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
-        assert_eq!(codec.decode(&mut buf), Err(DecodeError::MaxSizeExceeded));
+        assert_eq!(codec.decode(&mut buf).err(), Some(DecodeError::MaxSizeExceeded));
     }
 }
