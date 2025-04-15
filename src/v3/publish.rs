@@ -7,6 +7,7 @@ use serde_json::Error as JsonError;
 
 use crate::{payload::Payload, v3::codec};
 
+#[derive(Debug)]
 /// Publish message
 pub struct Publish {
     pkt: codec::Publish,
@@ -101,13 +102,7 @@ impl Publish {
         mem::take(&mut self.payload)
     }
 
-    pub(super) fn into_inner(self) -> codec::Publish {
-        self.pkt
-    }
-}
-
-impl std::fmt::Debug for Publish {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.pkt.fmt(f)
+    pub(super) fn into_inner(self) -> (codec::Publish, Payload, u32) {
+        (self.pkt, self.payload, self.pkt_size)
     }
 }

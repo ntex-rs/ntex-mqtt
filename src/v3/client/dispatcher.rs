@@ -275,7 +275,10 @@ where
                 Ok(None)
             }
         }
-        Either::Right(pkt) => control(Control::publish(pkt.into_inner()), inner, ctx).await,
+        Either::Right(pkt) => {
+            let (pkt, payload, size) = pkt.into_inner();
+            control(Control::publish(pkt, payload, size), inner, ctx).await
+        }
     }
 }
 

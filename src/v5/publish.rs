@@ -5,6 +5,7 @@ use ntex_router::Path;
 
 use crate::{payload::Payload, v5::codec};
 
+#[derive(Debug)]
 /// Publish message
 pub struct Publish {
     pkt: codec::Publish,
@@ -110,12 +111,6 @@ impl Publish {
 
     pub(crate) fn into_inner(self) -> (codec::Publish, Payload) {
         (self.pkt, self.payload)
-    }
-}
-
-impl std::fmt::Debug for Publish {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.pkt.fmt(f)
     }
 }
 
