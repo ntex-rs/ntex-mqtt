@@ -136,6 +136,57 @@ async fn test_simple_streaming() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_simple_streaming2() {
+    let chunks = Arc::new(Mutex::new(Vec::new()));
+    let chunks2 = chunks.clone();
+
+    let srv = server::test_server(move || {
+        let chunks = chunks2.clone();
+        MqttServer::new(handshake)
+            .min_chunk_size(4)
+            .publish(move |mut p: Publish| {
+                let chunks = chunks.clone();
+                async move {
+                    let pl = p.take_payload();
+                    assert!(format!("{:?}", pl).contains("StreamingPayload"));
+                    assert!(!p.dup());
+                    assert!(!p.retain());
+                    assert_eq!(p.qos(), QoS::AtLeastOnce);
+                    assert_eq!(p.publish_topic(), "test");
+                    assert_eq!(p.packet_size(), 18);
+                    assert_eq!(p.payload_size(), 10);
+                    let chunk = pl.read_all().await.unwrap().unwrap();
+                    chunks.lock().unwrap().push(chunk);
+                    Ok(())
+                }
+            })
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    // pkt 1
+    let (builder, payload) =
+        sink.publish(ByteString::from_static("test"), Bytes::new()).streaming(10);
+
+    ntex_rt::spawn(async move {
+        payload.send(Bytes::from_static(b"1111")).await.unwrap();
+        sleep(Millis(50)).await;
+        payload.send(Bytes::from_static(b"111111")).await.unwrap();
+    });
+
+    let res = builder.send_at_least_once().await;
+    assert!(res.is_ok());
+
+    assert_eq!(&chunks.lock().unwrap()[..], vec![Bytes::from_static(b"1111111111"),]);
+}
+
+#[ntex::test]
 async fn test_connect_fail() -> std::io::Result<()> {
     // bad user name or password
     let srv = server::test_server(|| {
