@@ -28,7 +28,7 @@ impl Payload {
     }
 
     pub(crate) fn from_stream(buf: Bytes) -> (Payload, PlSender) {
-        let (tx, rx) = bstream::channel(false);
+        let (tx, rx) = bstream::channel();
         if !buf.is_empty() {
             tx.feed_data(buf);
         }
