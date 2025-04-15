@@ -1,5 +1,8 @@
 use std::io;
 
+use ntex_bytes::Bytes;
+
+use crate::payload::Payload;
 pub use crate::v3::control::{Closed, ControlAck, Disconnect, Error, PeerGone, ProtocolError};
 use crate::v3::{codec, control::ControlAckKind, error};
 
@@ -19,8 +22,8 @@ pub enum Control<E> {
 }
 
 impl<E> Control<E> {
-    pub(super) fn publish(pkt: codec::Publish) -> Self {
-        Control::Publish(Publish(pkt))
+    pub(super) fn publish(pkt: codec::Publish, pl: Payload, size: u32) -> Self {
+        Control::Publish(Publish(pkt, pl, size))
     }
 
     pub(super) fn closed() -> Self {
@@ -57,7 +60,7 @@ impl<E> Control<E> {
 }
 
 #[derive(Debug)]
-pub struct Publish(codec::Publish);
+pub struct Publish(codec::Publish, Payload, u32);
 
 impl Publish {
     /// Returns reference to publish packet
@@ -68,6 +71,29 @@ impl Publish {
     /// Returns reference to publish packet
     pub fn packet_mut(&mut self) -> &mut codec::Publish {
         &mut self.0
+    }
+
+    /// Returns size of the packet
+    pub fn packet_size(&self) -> u32 {
+        self.2
+    }
+
+    #[inline]
+    /// Returns size of the payload
+    pub fn payload_size(&self) -> usize {
+        self.0.payload_size as usize
+    }
+
+    #[inline]
+    /// Payload that is being published.
+    pub async fn read(&self) -> Option<Result<Bytes, ()>> {
+        self.1.read().await
+    }
+
+    #[inline]
+    /// Payload that is being published.
+    pub async fn read_all(&self) -> Option<Result<Bytes, ()>> {
+        self.1.read_all().await
     }
 
     pub fn ack(self) -> ControlAck {

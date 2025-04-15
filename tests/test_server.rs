@@ -151,7 +151,10 @@ async fn test_simple_streaming2() {
                     assert!(format!("{:?}", pl).contains("StreamingPayload"));
                     assert!(!p.dup());
                     assert!(!p.retain());
+                    assert_eq!(p.id(), Some(NonZeroU16::new(1).unwrap()));
                     assert_eq!(p.qos(), QoS::AtLeastOnce);
+                    assert_eq!(p.topic().path(), "test");
+                    assert_eq!(p.topic_mut().path(), "test");
                     assert_eq!(p.publish_topic(), "test");
                     assert_eq!(p.packet_size(), 18);
                     assert_eq!(p.payload_size(), 10);
