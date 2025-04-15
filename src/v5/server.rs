@@ -7,7 +7,7 @@ use ntex_util::time::{timeout_checked, Millis, Seconds};
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::{service, types::QoS, InFlightService};
 
-use super::codec::{self as mqtt, DecodedPacket, EncodePacket, Packet};
+use super::codec::{self as mqtt, Decoded, Encoded, Packet};
 use super::control::{Control, ControlAck};
 use super::default::{DefaultControlService, DefaultPublishService};
 use super::handshake::{Handshake, HandshakeAck};
@@ -325,7 +325,7 @@ where
         impl ServiceFactory<
             DispatchItem<Rc<MqttShared>>,
             Session<St>,
-            Response = Option<mqtt::EncodePacket>,
+            Response = Option<mqtt::Encoded>,
             Error = MqttError<C::Error>,
             InitError = MqttError<C::Error>,
         >,
@@ -442,7 +442,7 @@ where
             })?;
 
         match packet {
-            DecodedPacket::Packet(Packet::Connect(connect), size) => {
+            Decoded::Packet(Packet::Connect(connect), size) => {
                 // set max outbound (encoder) packet size
                 if let Some(size) = connect.max_packet_size {
                     shared.codec.set_max_outbound_size(size.get());
@@ -480,7 +480,7 @@ where
                         shared.set_cap(peer_receive_max);
 
                         ack.io.encode(
-                            EncodePacket::Packet(Packet::ConnectAck(Box::new(ack.packet))),
+                            Encoded::Packet(Packet::ConnectAck(Box::new(ack.packet))),
                             &shared.codec,
                         )?;
 
@@ -495,7 +495,7 @@ where
                         log::trace!("Failed to complete handshake: {:#?}", ack.packet);
 
                         ack.io.encode(
-                            EncodePacket::Packet(Packet::ConnectAck(Box::new(ack.packet))),
+                            Encoded::Packet(Packet::ConnectAck(Box::new(ack.packet))),
                             &ack.shared.codec,
                         )?;
                         let _ = ack.io.shutdown().await;
@@ -503,7 +503,7 @@ where
                     }
                 }
             }
-            DecodedPacket::Packet(packet, _) => {
+            Decoded::Packet(packet, _) => {
                 log::info!(
                     "MQTT-3.1.0-1: Expected CONNECT packet, received {}",
                     packet.packet_type()
@@ -515,7 +515,7 @@ where
                     ),
                 )))
             }
-            DecodedPacket::Publish(..) => {
+            Decoded::Publish(..) => {
                 log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received PUBLISH");
                 Err(MqttError::Handshake(HandshakeError::Protocol(
                     ProtocolError::unexpected_packet(
@@ -524,7 +524,7 @@ where
                     ),
                 )))
             }
-            DecodedPacket::PayloadChunk(..) => unreachable!(),
+            Decoded::PayloadChunk(..) => unreachable!(),
         }
     }
 }

@@ -36,11 +36,17 @@ jobs:
           path: ~/.cargo/git
           key: ${{ matrix.version }}-aarch64-apple-darwin-cargo-index-trimmed-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run tests
+      - name: Run tests [tokio]
         uses: actions-rs/cargo@v1
         with:
           command: test
           args: --all --features=ntex/tokio -- --nocapture
+
+      - name: Run tests [neon]
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --all --features=ntex/neon -- --nocapture
 
       - name: Clear the cargo caches
         run: |

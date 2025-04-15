@@ -9,9 +9,9 @@ use super::packet::*;
 pub(crate) fn get_encoded_publish_size(p: &Publish) -> usize {
     // Topic + Packet Id + Payload
     if p.qos == QoS::AtLeastOnce || p.qos == QoS::ExactlyOnce {
-        4 + p.topic.len() + p.payload.len()
+        4 + p.topic.len() + p.payload_size as usize
     } else {
-        2 + p.topic.len() + p.payload.len()
+        2 + p.topic.len() + p.payload_size as usize
     }
 }
 
@@ -50,7 +50,7 @@ pub(crate) fn get_encoded_size(packet: &Packet) -> usize {
             n
         }
 
-        Packet::Publish( ref publish ) => get_encoded_publish_size(publish),
+        // Packet::Publish( ref publish ) => get_encoded_publish_size(publish),
         Packet::ConnectAck { .. } | // Flags + Return Code
         Packet::PublishAck { .. } | // Packet Id
         Packet::PublishReceived { .. } | // Packet Id
@@ -83,24 +83,6 @@ pub(crate) fn encode(
             let flags_byte = u8::from(ack.session_present);
             let code: u8 = From::from(ack.return_code);
             dst.put_slice(&[flags_byte, code]);
-        }
-        Packet::Publish(publish) => {
-            dst.put_u8(
-                packet_type::PUBLISH_START
-                    | (u8::from(publish.qos) << 1)
-                    | ((publish.dup as u8) << 3)
-                    | (publish.retain as u8),
-            );
-            write_variable_length(content_size, dst);
-            publish.topic.encode(dst)?;
-            if publish.qos == QoS::AtMostOnce {
-                if publish.packet_id.is_some() {
-                    return Err(EncodeError::MalformedPacket); // packet id must not be set
-                }
-            } else {
-                publish.packet_id.ok_or(EncodeError::PacketIdRequired)?.encode(dst)?;
-            }
-            dst.put(publish.payload.as_ref());
         }
 
         Packet::PublishAck { packet_id } => {
@@ -163,6 +145,29 @@ pub(crate) fn encode(
         Packet::Disconnect => dst.put_slice(&[packet_type::DISCONNECT, 0]),
     }
 
+    Ok(())
+}
+
+pub(super) fn encode_publish(
+    publish: &Publish,
+    dst: &mut BytesMut,
+    content_size: u32,
+) -> Result<(), EncodeError> {
+    dst.put_u8(
+        packet_type::PUBLISH_START
+            | (u8::from(publish.qos) << 1)
+            | ((publish.dup as u8) << 3)
+            | (publish.retain as u8),
+    );
+    write_variable_length(content_size, dst);
+    publish.topic.encode(dst)?;
+    if publish.qos == QoS::AtMostOnce {
+        if publish.packet_id.is_some() {
+            return Err(EncodeError::MalformedPacket); // packet id must not be set
+        }
+    } else {
+        publish.packet_id.ok_or(EncodeError::PacketIdRequired)?.encode(dst)?;
+    }
     Ok(())
 }
 
@@ -244,23 +249,31 @@ mod tests {
 
         v.clear();
 
-        let p = Packet::Publish(Publish {
+        let p = Publish {
             dup: true,
             retain: true,
             qos: QoS::ExactlyOnce,
             topic: ByteString::from_static("topic"),
             packet_id: Some(packet_id(0x4321)),
-            payload: (0..255).collect::<Vec<u8>>().into(),
-        });
+            payload_size: 255,
+        };
 
-        assert_eq!(get_encoded_size(&p), 264);
-        encode(&p, &mut v, 264).unwrap();
+        assert_eq!(get_encoded_publish_size(&p), 264);
+        encode_publish(&p, &mut v, 264).unwrap();
         assert_eq!(&v[0..3], b"\x3d\x88\x02".as_ref());
     }
 
     fn assert_encode_packet(packet: &Packet, expected: &[u8]) {
         let mut v = BytesMut::with_capacity(1024);
         encode(packet, &mut v, get_encoded_size(packet) as u32).unwrap();
+        assert_eq!(expected.len(), v.len());
+        assert_eq!(expected, &v[..]);
+    }
+
+    fn assert_encode_publish(packet: &Publish, pl: &[u8], expected: &[u8]) {
+        let mut v = BytesMut::with_capacity(1024);
+        encode_publish(packet, &mut v, get_encoded_publish_size(packet) as u32).unwrap();
+        v.extend_from_slice(pl);
         assert_eq!(expected.len(), v.len());
         assert_eq!(expected, &v[..]);
     }
@@ -303,27 +316,29 @@ mod tests {
 
     #[test]
     fn test_encode_publish_packets() {
-        assert_encode_packet(
-            &Packet::Publish(Publish {
+        assert_encode_publish(
+            &Publish {
                 dup: true,
                 retain: true,
                 qos: QoS::ExactlyOnce,
                 topic: ByteString::from_static("topic"),
                 packet_id: Some(packet_id(0x4321)),
-                payload: Bytes::from_static(b"data"),
-            }),
+                payload_size: 4,
+            },
+            b"data",
             b"\x3d\x0D\x00\x05topic\x43\x21data",
         );
 
-        assert_encode_packet(
-            &Packet::Publish(Publish {
+        assert_encode_publish(
+            &Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtMostOnce,
                 topic: ByteString::from_static("topic"),
                 packet_id: None,
-                payload: Bytes::from_static(b"data"),
-            }),
+                payload_size: 4,
+            },
+            b"data",
             b"\x30\x0b\x00\x05topicdata",
         );
     }

@@ -49,6 +49,7 @@ pub struct MqttServer<St, H, C, P, M = Identity> {
     max_size: u32,
     max_send: u16,
     max_send_size: (u32, u32),
+    min_chunk_size: u32,
     handle_qos_after_disconnect: Option<QoS>,
     connect_timeout: Seconds,
     config: DispatcherConfig,
@@ -87,6 +88,7 @@ where
             max_size: 0,
             max_send: 16,
             max_send_size: (65535, 512),
+            min_chunk_size: 32 * 1024,
             handle_qos_after_disconnect: None,
             connect_timeout: Seconds::ZERO,
             pool: Default::default(),
@@ -193,6 +195,17 @@ where
         self
     }
 
+    /// Set min payload chunk size.
+    ///
+    /// If the minimum size is set to `0`, incoming payload chunks
+    /// will be processed immediately. Otherwise, the codec will
+    /// accumulate chunks until the total size reaches the specified minimum.
+    /// By default min size is set to `0`
+    pub fn min_chunk_size(mut self, size: u32) -> Self {
+        self.min_chunk_size = size;
+        self
+    }
+
     /// Handle max received QoS messages after client disconnect.
     ///
     /// By default, messages received before dispatched to the publish service will be dropped if
@@ -239,6 +252,7 @@ where
             max_size: self.max_size,
             max_send: self.max_send,
             max_send_size: self.max_send_size,
+            min_chunk_size: self.min_chunk_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -263,6 +277,7 @@ where
             max_size: self.max_size,
             max_send: self.max_send,
             max_send_size: self.max_send_size,
+            min_chunk_size: self.min_chunk_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -282,6 +297,7 @@ where
             max_size: self.max_size,
             max_send: self.max_send,
             max_send_size: self.max_send_size,
+            min_chunk_size: self.min_chunk_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -307,6 +323,7 @@ where
             max_size: self.max_size,
             max_send: self.max_send,
             max_send_size: self.max_send_size,
+            min_chunk_size: self.min_chunk_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -338,7 +355,7 @@ where
         impl ServiceFactory<
             DispatchItem<Rc<MqttShared>>,
             Session<St>,
-            Response = Option<mqtt::Packet>,
+            Response = Option<mqtt::Encoded>,
             Error = MqttError<H::Error>,
             InitError = MqttError<H::Error>,
         >,
@@ -351,6 +368,7 @@ where
                 max_size: self.max_size,
                 max_send: self.max_send,
                 max_send_size: self.max_send_size,
+                min_chunk_size: self.min_chunk_size,
                 connect_timeout: self.connect_timeout,
                 pool: self.pool.clone(),
                 _t: PhantomData,
@@ -367,6 +385,7 @@ struct HandshakeFactory<St, H> {
     max_size: u32,
     max_send: u16,
     max_send_size: (u32, u32),
+    min_chunk_size: u32,
     connect_timeout: Seconds,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
@@ -388,6 +407,7 @@ where
             max_size: self.max_size,
             max_send: self.max_send,
             max_send_size: self.max_send_size,
+            min_chunk_size: self.min_chunk_size,
             pool: self.pool.clone(),
             service: self.factory.create(()).await?,
             connect_timeout: self.connect_timeout.into(),
@@ -401,6 +421,7 @@ struct HandshakeService<St, H> {
     max_size: u32,
     max_send: u16,
     max_send_size: (u32, u32),
+    min_chunk_size: u32,
     pool: Rc<MqttSinkPool>,
     connect_timeout: Millis,
     _t: PhantomData<St>,
@@ -429,6 +450,7 @@ where
 
         let codec = mqtt::Codec::default();
         codec.set_max_size(self.max_size);
+        codec.set_min_chunk_size(self.min_chunk_size);
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, self.pool.clone()));
 
         // read first packet
@@ -445,7 +467,7 @@ where
             })?;
 
         match packet {
-            (mqtt::Packet::Connect(connect), size) => {
+            mqtt::Decoded::Packet(mqtt::Packet::Connect(connect), size) => {
                 // authenticate mqtt connection
                 let ack = ctx
                     .call(&self.service, Handshake::new(connect, size, io, shared))
@@ -462,7 +484,7 @@ where
                         log::trace!("Sending success handshake ack: {:#?}", pkt);
 
                         ack.shared.set_cap(ack.max_send.unwrap_or(self.max_send) as usize);
-                        ack.io.encode(pkt, &ack.shared.codec)?;
+                        ack.io.encode(mqtt::Encoded::Packet(pkt.into()), &ack.shared.codec)?;
                         Ok((
                             ack.io,
                             ack.shared.clone(),
@@ -477,14 +499,14 @@ where
                         });
 
                         log::trace!("Sending failed handshake ack: {:#?}", pkt);
-                        ack.io.encode(pkt, &ack.shared.codec)?;
+                        ack.io.encode(mqtt::Encoded::Packet(pkt.into()), &ack.shared.codec)?;
                         let _ = ack.io.shutdown().await;
 
                         Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
                     }
                 }
             }
-            (packet, _) => {
+            mqtt::Decoded::Packet(packet, _) => {
                 log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received {:?}", packet);
                 Err(MqttError::Handshake(HandshakeError::Protocol(
                     ProtocolError::unexpected_packet(
@@ -493,6 +515,16 @@ where
                     ),
                 )))
             }
+            mqtt::Decoded::Publish(..) => {
+                log::info!("MQTT-3.1.0-1: Expected CONNECT packet, received PUBLISH");
+                Err(MqttError::Handshake(HandshakeError::Protocol(
+                    ProtocolError::unexpected_packet(
+                        crate::types::packet_type::PUBLISH_START,
+                        "Expected CONNECT packet [MQTT-3.1.0-1]",
+                    ),
+                )))
+            }
+            mqtt::Decoded::PayloadChunk(..) => unreachable!(),
         }
     }
 }

@@ -83,7 +83,7 @@ impl Connect {
     }
 }
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 /// Publish message
 pub struct Publish {
     /// this might be re-delivery of an earlier attempt to send the Packet.
@@ -95,21 +95,8 @@ pub struct Publish {
     pub topic: ByteString,
     /// only present in PUBLISH Packets where the QoS level is 1 or 2.
     pub packet_id: Option<NonZeroU16>,
-    /// the Application Message that is being published.
-    pub payload: Bytes,
-}
-
-impl fmt::Debug for Publish {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Publish")
-            .field("packet_id", &self.packet_id)
-            .field("topic", &self.topic)
-            .field("dup", &self.dup)
-            .field("retain", &self.retain)
-            .field("qos", &self.qos)
-            .field("payload", &"<REDACTED>")
-            .finish()
-    }
+    /// publish packet payload size
+    pub payload_size: u32,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -136,9 +123,6 @@ pub enum Packet {
 
     /// Connect acknowledgment
     ConnectAck(ConnectAck),
-
-    /// Publish message
-    Publish(Publish),
 
     /// Publish acknowledgment
     PublishAck {
@@ -202,18 +186,11 @@ impl From<Connect> for Packet {
     }
 }
 
-impl From<Publish> for Packet {
-    fn from(val: Publish) -> Packet {
-        Packet::Publish(val)
-    }
-}
-
 impl Packet {
     pub fn packet_type(&self) -> u8 {
         match self {
             Packet::Connect(_) => packet_type::CONNECT,
             Packet::ConnectAck { .. } => packet_type::CONNACK,
-            Packet::Publish(_) => packet_type::PUBLISH_START,
             Packet::PublishAck { .. } => packet_type::PUBACK,
             Packet::PublishReceived { .. } => packet_type::PUBREC,
             Packet::PublishRelease { .. } => packet_type::PUBREL,

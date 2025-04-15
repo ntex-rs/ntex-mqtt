@@ -3,8 +3,7 @@ use std::{mem, num::NonZeroU16};
 use ntex_bytes::{ByteString, Bytes};
 use ntex_router::Path;
 
-use super::codec;
-use crate::payload::Payload;
+use crate::{payload::Payload, v5::codec};
 
 /// Publish message
 pub struct Publish {

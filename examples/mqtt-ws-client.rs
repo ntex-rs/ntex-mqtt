@@ -51,11 +51,13 @@ async fn main() -> std::io::Result<()> {
 
     // publish handler
     let router = client.resource("response", |pkt: v3::Publish| async move {
+        let payload = pkt.read_all().await.unwrap().unwrap();
+
         log::info!(
             "incoming publish: {:?} -> {:?} payload {:?}",
             pkt.id(),
             pkt.topic(),
-            pkt.payload()
+            payload
         );
         Ok::<_, Error>(())
     });
