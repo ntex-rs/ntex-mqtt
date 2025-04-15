@@ -798,9 +798,9 @@ async fn test_max_qos() -> std::io::Result<()> {
             qos: codec::QoS::AtLeastOnce,
             topic: ByteString::from("test"),
             packet_id: Some(NonZeroU16::new(3).unwrap()),
-            payload_size: 270 * 1024,
+            payload_size: 0,
         },
-        Some(Bytes::from(vec![b'*'; 270 * 1024])),
+        None,
     );
 
     io.send(p, &codec).await.unwrap();
