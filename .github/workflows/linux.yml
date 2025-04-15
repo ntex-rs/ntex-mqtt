@@ -44,7 +44,7 @@ jobs:
         timeout-minutes: 40
         with:
           command: test
-          args: --all --features=ntex/tokio -- --nocapture
+          args: --all --features=ntex/tokio
 
       - name: Run tests [compio]
         uses: actions-rs/cargo@v1
@@ -52,4 +52,12 @@ jobs:
         if: matrix.version != '1.75.0'
         with:
           command: test
-          args: --all --features=ntex/compio -- --nocapture
+          args: --all --features=ntex/compio
+
+      - name: Run tests [neon]
+        uses: actions-rs/cargo@v1
+        timeout-minutes: 40
+        if: matrix.version != '1.75.0'
+        with:
+          command: test
+          args: --all --features=ntex/neon

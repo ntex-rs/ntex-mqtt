@@ -30,8 +30,6 @@ pub enum Packet {
     Connect(Box<Connect>),
     /// Connect acknowledgment
     ConnectAck(Box<ConnectAck>),
-    /// Publish message
-    Publish(Publish),
     /// Publish acknowledgment
     PublishAck(PublishAck),
     /// Publish received (assured delivery part 1)
@@ -63,7 +61,6 @@ impl Packet {
         match self {
             Packet::Connect(_) => packet_type::CONNECT,
             Packet::ConnectAck(_) => packet_type::CONNACK,
-            Packet::Publish(_) => packet_type::PUBLISH_START,
             Packet::PublishAck(_) => packet_type::PUBACK,
             Packet::PublishReceived(_) => packet_type::PUBREC,
             Packet::PublishRelease(_) => packet_type::PUBREL,
@@ -101,12 +98,6 @@ impl From<ConnectAck> for Packet {
 impl From<Box<ConnectAck>> for Packet {
     fn from(pkt: Box<ConnectAck>) -> Self {
         Self::ConnectAck(pkt)
-    }
-}
-
-impl From<Publish> for Packet {
-    fn from(pkt: Publish) -> Self {
-        Self::Publish(pkt)
     }
 }
 

@@ -328,8 +328,15 @@ impl EncodeLtd for UnsubscribeAck {
 mod tests {
     use ntex_codec::{Decoder, Encoder};
 
-    use super::super::super::{Codec, Packet};
+    use super::super::super::{Codec, DecodedPacket, Packet};
     use super::*;
+
+    fn packet(res: DecodedPacket) -> Packet {
+        match res {
+            DecodedPacket::Packet(pkt, _) => pkt,
+            _ => panic!(),
+        }
+    }
 
     #[test]
     fn test_sub() {
@@ -370,9 +377,9 @@ mod tests {
         let codec = Codec::new();
 
         let mut buf = BytesMut::new();
-        codec.encode(pkt.clone(), &mut buf).unwrap();
+        codec.encode(pkt.clone().into(), &mut buf).unwrap();
 
-        assert_eq!(pkt, codec.decode(&mut buf).unwrap().unwrap().0);
+        assert_eq!(pkt, packet(codec.decode(&mut buf).unwrap().unwrap()));
     }
 
     #[test]

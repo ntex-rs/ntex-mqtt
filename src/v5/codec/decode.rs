@@ -1,15 +1,10 @@
 use ntex_bytes::{ByteString, Bytes};
 
 use super::{packet::*, UserProperty};
-use crate::error::DecodeError;
-use crate::types::packet_type;
-use crate::utils::Decode;
+use crate::{error::DecodeError, types::packet_type, utils::Decode};
 
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
-        packet_type::PUBLISH_START..=packet_type::PUBLISH_END => {
-            Ok(Packet::Publish(Publish::decode(src, first_byte & 0b0000_1111)?))
-        }
         packet_type::PUBACK => Ok(Packet::PublishAck(PublishAck::decode(&mut src)?)),
         packet_type::PINGREQ => Ok(Packet::PingRequest),
         packet_type::PINGRESP => Ok(Packet::PingResponse),
@@ -55,11 +50,38 @@ mod tests {
         let (_len, consumed) = decode_variable_length(&bytes[1..]).unwrap().unwrap();
         let cur = Bytes::copy_from_slice(&bytes[consumed + 1..]);
         let mut tmp = BytesMut::with_capacity(4096);
-        ntex_codec::Encoder::encode(&crate::v5::codec::Codec::new(), res.clone(), &mut tmp)
-            .unwrap();
+        ntex_codec::Encoder::encode(
+            &crate::v5::codec::Codec::new(),
+            EncodePacket::Packet(res.clone()),
+            &mut tmp,
+        )
+        .unwrap();
         let decoded = decode_packet(cur, fixed);
         let res = Ok(res);
         if decoded != res {
+            panic!("decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}", res, decoded, tmp.as_ref());
+        }
+        //assert_eq!(, Ok(res));
+    }
+
+    fn assert_decode_publish<B: AsRef<[u8]>>(bytes: B, res: Publish, pl: Bytes) {
+        let mut tmp = BytesMut::with_capacity(4096);
+        ntex_codec::Encoder::encode(
+            &crate::v5::codec::Codec::new(),
+            EncodePacket::Publish(res.clone(), Some(pl.clone())),
+            &mut tmp,
+        )
+        .unwrap();
+
+        let mut bytes = BytesMut::copy_from_slice(bytes.as_ref());
+        let codec = crate::v5::codec::Codec::new();
+        let decoded = ntex_codec::Decoder::decode(&codec, &mut bytes).unwrap().unwrap();
+        let (pkt, body) = match decoded {
+            DecodedPacket::Publish(ref pkt, ref body, _) => (pkt.clone(), body.clone()),
+            _ => panic!(),
+        };
+
+        if pkt != res {
             panic!("decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}", res, decoded, tmp.as_ref());
         }
         //assert_eq!(, Ok(res));
@@ -177,7 +199,7 @@ mod tests {
             qos: QoS::AtMostOnce,
             topic: ByteString::default(),
             packet_id: Some(packet_id(1)),
-            payload: Bytes::new(),
+            payload_size: 0,
             properties: PublishProperties::default(),
         }
     }
@@ -189,29 +211,31 @@ mod tests {
         //    Done(&b""[..], ("topic".to_owned(), 0x1234))
         //);
 
-        assert_decode_packet(
+        assert_decode_publish(
             b"\x3d\x0E\x00\x05topic\x43\x21\x00data",
-            Packet::Publish(Publish {
+            Publish {
                 dup: true,
                 retain: true,
                 qos: QoS::ExactlyOnce,
                 topic: ByteString::from_static("topic"),
                 packet_id: Some(packet_id(0x4321)),
-                payload: Bytes::from_static(b"data"),
+                payload_size: 4,
                 ..default_test_publish()
-            }),
+            },
+            Bytes::from_static(b"data"),
         );
-        assert_decode_packet(
+        assert_decode_publish(
             b"\x30\x0C\x00\x05topic\x00data",
-            Packet::Publish(Publish {
+            Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtMostOnce,
                 topic: ByteString::from_static("topic"),
                 packet_id: None,
-                payload: Bytes::from_static(b"data"),
+                payload_size: 4,
                 ..default_test_publish()
-            }),
+            },
+            Bytes::from_static(b"data"),
         );
 
         assert_decode_packet(

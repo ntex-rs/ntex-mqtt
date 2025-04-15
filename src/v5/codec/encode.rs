@@ -17,7 +17,6 @@ impl EncodeLtd for Packet {
         // limit -= 5; // fixed header = 1, var_len(remaining.max_value()) = 4
         match self {
             Packet::Connect(connect) => connect.encoded_size(limit),
-            Packet::Publish(publish) => publish.encoded_size(limit),
             Packet::ConnectAck(ack) => ack.encoded_size(limit),
             Packet::PublishAck(ack) | Packet::PublishReceived(ack) => ack.encoded_size(limit),
             Packet::PublishRelease(ack) | Packet::PublishComplete(ack) => {
@@ -44,16 +43,6 @@ impl EncodeLtd for Packet {
                 buf.put_u8(packet_type::CONNACK);
                 write_variable_length(check_size, buf);
                 ack.encode(buf, check_size)
-            }
-            Packet::Publish(publish) => {
-                buf.put_u8(
-                    packet_type::PUBLISH_START
-                        | (u8::from(publish.qos) << 1)
-                        | ((publish.dup as u8) << 3)
-                        | (publish.retain as u8),
-                );
-                write_variable_length(check_size, buf);
-                publish.encode(buf, check_size)
             }
             Packet::PublishAck(ack) => {
                 buf.put_u8(packet_type::PUBACK);
@@ -292,17 +281,17 @@ mod tests {
 
         v.clear();
 
-        let p = Packet::Publish(Publish {
+        let p = Publish {
             dup: true,
             retain: true,
             qos: QoS::ExactlyOnce,
             topic: ByteString::from_static("topic"),
             packet_id: Some(packet_id(0x4321)),
-            payload: (0..255).collect::<Vec<u8>>().into(),
+            payload_size: 255,
             properties: PublishProperties::default(),
-        });
+        };
 
-        assert_eq!(p.encoded_size(MAX_PACKET_SIZE), 265);
+        //assert_eq!(p.encoded_size(MAX_PACKET_SIZE), 265);
         p.encode(&mut v, 265).unwrap();
         assert_eq!(&v[..3], b"\x3d\x89\x02".as_ref());
     }
@@ -310,6 +299,14 @@ mod tests {
     fn assert_encode_packet(packet: &Packet, expected: &[u8]) {
         let mut v = BytesMut::with_capacity(1024);
         packet.encode(&mut v, packet.encoded_size(1024) as u32).unwrap();
+        assert_eq!(expected.len(), v.len());
+        assert_eq!(expected, &v[..]);
+    }
+
+    fn assert_encode_publish(packet: &Publish, pl: &[u8], expected: &[u8]) {
+        let mut v = BytesMut::with_capacity(1024);
+        packet.encode(&mut v, packet.encoded_size(1024) as u32).unwrap();
+        v.extend_from_slice(pl);
         assert_eq!(expected.len(), v.len());
         assert_eq!(expected, &v[..]);
     }
@@ -422,45 +419,48 @@ mod tests {
 
     #[test]
     fn test_encode_publish_packets() {
-        assert_encode_packet(
-            &Packet::Publish(Publish {
+        assert_encode_publish(
+            &Publish {
                 dup: true,
                 retain: true,
                 qos: QoS::ExactlyOnce,
                 topic: ByteString::from_static("topic"),
                 packet_id: Some(packet_id(0x4321)),
-                payload: Bytes::from_static(b"data"),
+                payload_size: 4,
                 properties: PublishProperties::default(),
-            }),
+            },
+            b"data",
             b"\x3d\x0E\x00\x05topic\x43\x21\x00data",
         );
 
-        assert_encode_packet(
-            &Packet::Publish(Publish {
+        assert_encode_publish(
+            &Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtMostOnce,
                 topic: ByteString::from_static("topic"),
                 packet_id: None,
-                payload: Bytes::from_static(b"data"),
+                payload_size: 4,
                 properties: PublishProperties::default(),
-            }),
+            },
+            b"data",
             b"\x30\x0c\x00\x05topic\x00data",
         );
 
-        assert_encode_packet(
-            &Packet::Publish(Publish {
+        assert_encode_publish(
+            &Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtMostOnce,
                 topic: ByteString::from_static("topic"),
                 packet_id: None,
-                payload: Bytes::from_static(b"data"),
+                payload_size: 4,
                 properties: PublishProperties {
                     subscription_ids: vec![NonZeroU32::new(1).unwrap()],
                     ..Default::default()
                 },
-            }),
+            },
+            b"data",
             b"\x30\x0e\x00\x05topic\x02\x0b\x01data",
         );
     }

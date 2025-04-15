@@ -1,12 +1,12 @@
-use std::{fmt, future::ready, future::Future, num::NonZeroU16, num::NonZeroU32, rc::Rc};
+use std::num::{NonZeroU16, NonZeroU32};
+use std::{cell::Cell, fmt, future::ready, future::Future, rc::Rc};
 
 use ntex_bytes::{ByteString, Bytes};
-use ntex_util::future::{Either, Ready};
+use ntex_util::{channel::pool, future::Either, future::Ready};
 
-use super::{
-    codec, codec::EncodeLtd, error::SendPacketError, shared::AckType, shared::MqttShared,
-};
-use crate::types::QoS;
+use super::codec::{self, EncodeLtd};
+use super::shared::{AckType, MqttShared};
+use crate::{error::EncodeError, error::SendPacketError, types::QoS};
 
 pub struct MqttSink(Rc<MqttShared>);
 
@@ -91,21 +91,24 @@ impl MqttSink {
     where
         ByteString: From<U>,
     {
-        self.publish_pkt(codec::Publish {
+        self.publish_pkt(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                topic: topic.into(),
+                qos: QoS::AtMostOnce,
+                packet_id: None,
+                payload_size: 0,
+                properties: codec::PublishProperties::default(),
+            },
             payload,
-            dup: false,
-            retain: false,
-            topic: topic.into(),
-            qos: QoS::AtMostOnce,
-            packet_id: None,
-            properties: codec::PublishProperties::default(),
-        })
+        )
     }
 
     #[inline]
     /// Create publish builder with publish packet
-    pub fn publish_pkt(&self, packet: codec::Publish) -> PublishBuilder {
-        PublishBuilder { packet, shared: self.0.clone() }
+    pub fn publish_pkt(&self, packet: codec::Publish, payload: Bytes) -> PublishBuilder {
+        PublishBuilder::new(self.0.clone(), packet, payload)
     }
 
     /// Set publish ack callback
@@ -158,9 +161,15 @@ impl fmt::Debug for MqttSink {
 pub struct PublishBuilder {
     shared: Rc<MqttShared>,
     packet: codec::Publish,
+    payload: Bytes,
 }
 
 impl PublishBuilder {
+    fn new(shared: Rc<MqttShared>, mut packet: codec::Publish, payload: Bytes) -> Self {
+        packet.payload_size = payload.len() as u32;
+        Self { shared, packet, payload }
+    }
+
     #[inline]
     /// Set packet id.
     ///
@@ -214,6 +223,28 @@ impl PublishBuilder {
         self.packet.encoded_size(u32::MAX) as u32
     }
 
+    /// Create streamimng publish builder
+    pub fn streaming(mut self, size: u32) -> (StreamingPublishBuilder, StreamingPayload) {
+        self.packet.payload_size = size;
+        let payload = if self.payload.is_empty() { None } else { Some(self.payload) };
+
+        let (tx, rx) = self.shared.pool.waiters.channel();
+        (
+            StreamingPublishBuilder {
+                size,
+                payload,
+                tx: Some(tx),
+                shared: self.shared.clone(),
+                packet: self.packet,
+            },
+            StreamingPayload {
+                rx: Cell::new(Some(rx)),
+                shared: self.shared.clone(),
+                inprocess: Cell::new(false),
+            },
+        )
+    }
+
     #[inline]
     /// Send publish packet with QoS 0
     pub fn send_at_most_once(mut self) -> Result<(), SendPacketError> {
@@ -221,7 +252,7 @@ impl PublishBuilder {
             log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
             self.packet.qos = QoS::AtMostOnce;
             self.shared
-                .encode_packet(codec::Packet::Publish(self.packet))
+                .encode_publish(self.packet, Some(self.payload))
                 .map_err(SendPacketError::Encode)
                 .map(|_| ())
         } else {
@@ -232,23 +263,21 @@ impl PublishBuilder {
 
     /// Send publish packet with QoS 1
     pub fn send_at_least_once(
-        self,
+        mut self,
     ) -> impl Future<Output = Result<codec::PublishAck, SendPacketError>> {
         if !self.shared.is_closed() {
-            let shared = self.shared;
-            let mut packet = self.packet;
-            packet.qos = QoS::AtLeastOnce;
+            self.packet.qos = QoS::AtLeastOnce;
 
             // handle client receive maximum
-            if let Some(rx) = shared.wait_readiness() {
+            if let Some(rx) = self.shared.wait_readiness() {
                 Either::Left(Either::Left(async move {
                     if rx.await.is_err() {
                         return Err(SendPacketError::Disconnected);
                     }
-                    Self::send_at_least_once_inner(packet, shared).await
+                    self.send_at_least_once_inner().await
                 }))
             } else {
-                Either::Left(Either::Right(Self::send_at_least_once_inner(packet, shared)))
+                Either::Left(Either::Right(self.send_at_least_once_inner()))
             }
         } else {
             Either::Right(Ready::Err(SendPacketError::Disconnected))
@@ -258,56 +287,38 @@ impl PublishBuilder {
     /// Non-blocking send publish packet with QoS 1
     ///
     /// Panics if sink is not ready or publish ack callback is not set
-    pub fn send_at_least_once_no_block(self) -> Result<(), SendPacketError> {
+    pub fn send_at_least_once_no_block(mut self) -> Result<(), SendPacketError> {
         if !self.shared.is_closed() {
-            let shared = self.shared;
-
             // check readiness
-            if !shared.is_ready() {
+            if !self.shared.is_ready() {
                 panic!("Mqtt sink is not ready");
             }
-            let mut packet = self.packet;
-            packet.qos = codec::QoS::AtLeastOnce;
+            self.packet.qos = codec::QoS::AtLeastOnce;
+            let idx = self.shared.set_publish_id(&mut self.packet);
 
-            // packet id
-            let idx = if let Some(idx) = packet.packet_id {
-                idx
-            } else {
-                let idx = shared.next_id();
-                packet.packet_id = Some(idx);
-                idx
-            };
-            log::trace!("Publish (QoS1) to {:#?}", packet);
-
-            shared.wait_packet_response_no_block(
+            log::trace!("Publish (QoS1) to {:#?}", self.packet);
+            self.shared.wait_publish_response_no_block(
                 idx,
                 AckType::Publish,
-                codec::Packet::Publish(packet),
+                self.packet,
+                Some(self.payload),
             )
         } else {
             Err(SendPacketError::Disconnected)
         }
     }
 
-    fn send_at_least_once_inner(
-        mut packet: codec::Publish,
-        shared: Rc<MqttShared>,
-    ) -> impl Future<Output = Result<codec::PublishAck, SendPacketError>> {
+    async fn send_at_least_once_inner(mut self) -> Result<codec::PublishAck, SendPacketError> {
         // packet id
-        let idx = if let Some(idx) = packet.packet_id {
-            idx
-        } else {
-            let idx = shared.next_id();
-            packet.packet_id = Some(idx);
-            idx
-        };
+        let idx = self.shared.set_publish_id(&mut self.packet);
 
         // send publish to client
-        log::trace!("Publish (QoS1) to {:#?}", packet);
-
-        let rx =
-            shared.wait_packet_response(idx, AckType::Publish, codec::Packet::Publish(packet));
-        async move { rx?.await.map(|pkt| pkt.publish()).map_err(|_| SendPacketError::Disconnected) }
+        log::trace!("Publish (QoS1) to {:#?}", self.packet);
+        self.shared
+            .wait_publish_response(idx, AckType::Publish, self.packet, Some(self.payload))?
+            .await
+            .map(|pkt| pkt.publish())
+            .map_err(|_| SendPacketError::Disconnected)
     }
 }
 
@@ -462,6 +473,158 @@ impl UnsubscribeBuilder {
             }
         } else {
             Err(SendPacketError::Disconnected)
+        }
+    }
+}
+
+pub struct StreamingPublishBuilder {
+    shared: Rc<MqttShared>,
+    packet: codec::Publish,
+    payload: Option<Bytes>,
+    size: u32,
+    tx: Option<pool::Sender<()>>,
+}
+
+impl StreamingPublishBuilder {
+    fn notify_payload_streamer(&mut self) -> Result<(), SendPacketError> {
+        if let Some(tx) = self.tx.take() {
+            tx.send(()).map_err(|_| SendPacketError::StreamingCancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Send publish packet with QoS 0
+    pub fn send_at_most_once(mut self) -> Result<(), SendPacketError> {
+        if !self.shared.is_closed() {
+            log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
+            self.notify_payload_streamer()?;
+
+            self.packet.qos = QoS::AtMostOnce;
+            self.shared
+                .encode_publish(self.packet, self.payload)
+                .map_err(SendPacketError::Encode)
+                .map(|_| ())
+        } else {
+            log::error!("Mqtt sink is disconnected");
+            Err(SendPacketError::Disconnected)
+        }
+    }
+
+    /// Send publish packet with QoS 1
+    pub fn send_at_least_once(
+        mut self,
+    ) -> impl Future<Output = Result<codec::PublishAck, SendPacketError>> {
+        if !self.shared.is_closed() {
+            self.packet.qos = QoS::AtLeastOnce;
+
+            // handle client receive maximum
+            if let Some(rx) = self.shared.wait_readiness() {
+                Either::Left(Either::Left(async move {
+                    if rx.await.is_err() {
+                        return Err(SendPacketError::Disconnected);
+                    }
+                    self.send_at_least_once_inner().await
+                }))
+            } else {
+                Either::Left(Either::Right(self.send_at_least_once_inner()))
+            }
+        } else {
+            Either::Right(Ready::Err(SendPacketError::Disconnected))
+        }
+    }
+
+    /// Non-blocking send publish packet with QoS 1
+    ///
+    /// Panics if sink is not ready or publish ack callback is not set
+    pub fn send_at_least_once_no_block(mut self) -> Result<(), SendPacketError> {
+        if !self.shared.is_closed() {
+            // check readiness
+            if !self.shared.is_ready() {
+                panic!("Mqtt sink is not ready");
+            }
+            self.packet.qos = codec::QoS::AtLeastOnce;
+            let tx = self.tx.take().unwrap();
+            let idx = self.shared.set_publish_id(&mut self.packet);
+
+            if tx.is_canceled() {
+                Err(SendPacketError::StreamingCancelled)
+            } else {
+                log::trace!("Publish (QoS1) to {:#?}", self.packet);
+                let _ = tx.send(());
+                self.shared.wait_publish_response_no_block(
+                    idx,
+                    AckType::Publish,
+                    self.packet,
+                    self.payload,
+                )
+            }
+        } else {
+            Err(SendPacketError::Disconnected)
+        }
+    }
+
+    async fn send_at_least_once_inner(mut self) -> Result<codec::PublishAck, SendPacketError> {
+        // packet id
+        let idx = self.shared.set_publish_id(&mut self.packet);
+
+        // send publish to client
+        log::trace!("Publish (QoS1) to {:#?}", self.packet);
+
+        let tx = self.tx.take().unwrap();
+        if tx.is_canceled() {
+            Err(SendPacketError::StreamingCancelled)
+        } else {
+            let rx = self.shared.wait_publish_response(
+                idx,
+                AckType::Publish,
+                self.packet,
+                self.payload,
+            );
+            let _ = tx.send(());
+
+            rx?.await.map(|pkt| pkt.publish()).map_err(|_| SendPacketError::Disconnected)
+        }
+    }
+}
+
+pub struct StreamingPayload {
+    shared: Rc<MqttShared>,
+    rx: Cell<Option<pool::Receiver<()>>>,
+    inprocess: Cell<bool>,
+}
+
+impl StreamingPayload {
+    fn drop(&mut self) {
+        if self.inprocess.get() {
+            if self.shared.is_streaming() {
+                self.shared.streaming_dropped();
+            }
+        }
+    }
+}
+
+impl StreamingPayload {
+    /// Send payload chunk
+    pub async fn send(&self, chunk: Bytes) -> Result<(), SendPacketError> {
+        if let Some(rx) = self.rx.take() {
+            if rx.await.is_err() {
+                return Err(SendPacketError::StreamingCancelled);
+            }
+            log::trace!("Publish is encoded, ready to process payload");
+            self.inprocess.set(true);
+        }
+
+        if !self.inprocess.get() {
+            Err(EncodeError::UnexpectedPayload.into())
+        } else {
+            log::trace!("Sending payload chunk: {:?}", chunk.len());
+            self.shared.want_payload_stream().await?;
+
+            if !self.shared.encode_publish_payload(chunk)? {
+                self.inprocess.set(false);
+            }
+            Ok(())
         }
     }
 }

@@ -15,12 +15,9 @@ impl std::convert::TryFrom<Error> for v5::PublishAck {
 }
 
 async fn publish(pkt: v5::Publish) -> Result<v5::PublishAck, Error> {
-    log::info!(
-        "incoming publish: {:?} -> {:?} payload {:?}",
-        pkt.id(),
-        pkt.topic(),
-        pkt.payload()
-    );
+    let pl = pkt.read_all().await;
+
+    log::info!("incoming publish: {:?} -> {:?} payload {:?}", pkt.id(), pkt.topic(), pl);
     Ok(pkt.ack())
 }
 

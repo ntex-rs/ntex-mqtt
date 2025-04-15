@@ -157,6 +157,7 @@ pub(crate) trait Encode {
 
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError>;
 }
+
 impl<T: Encode> Encode for Option<T> {
     fn encoded_size(&self) -> usize {
         if let Some(v) = self {
@@ -165,6 +166,7 @@ impl<T: Encode> Encode for Option<T> {
             0
         }
     }
+
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         if let Some(v) = self {
             v.encode(buf)
@@ -178,6 +180,7 @@ impl Encode for bool {
     fn encoded_size(&self) -> usize {
         1
     }
+
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         if *self {
             buf.put_u8(0x1);
@@ -192,6 +195,7 @@ impl Encode for u16 {
     fn encoded_size(&self) -> usize {
         2
     }
+
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         buf.put_u16(*self);
         Ok(())
@@ -202,6 +206,7 @@ impl Encode for NonZeroU16 {
     fn encoded_size(&self) -> usize {
         2
     }
+
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         self.get().encode(buf)
     }
@@ -211,6 +216,7 @@ impl Encode for u32 {
     fn encoded_size(&self) -> usize {
         4
     }
+
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         buf.put_u32(*self);
         Ok(())
@@ -221,6 +227,7 @@ impl Encode for NonZeroU32 {
     fn encoded_size(&self) -> usize {
         4
     }
+
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         self.get().encode(buf)
     }
@@ -230,6 +237,7 @@ impl Encode for Bytes {
     fn encoded_size(&self) -> usize {
         2 + self.len()
     }
+
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         let len = u16::try_from(self.len()).map_err(|_| EncodeError::InvalidLength)?;
         buf.put_u16(len);
@@ -242,6 +250,7 @@ impl Encode for ByteString {
     fn encoded_size(&self) -> usize {
         self.as_bytes().encoded_size()
     }
+
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         self.as_bytes().encode(buf)
     }
@@ -251,6 +260,7 @@ impl Encode for (ByteString, ByteString) {
     fn encoded_size(&self) -> usize {
         self.0.encoded_size() + self.1.encoded_size()
     }
+
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         self.0.encode(buf)?;
         self.1.encode(buf)
@@ -261,6 +271,7 @@ impl Encode for &[u8] {
     fn encoded_size(&self) -> usize {
         2 + self.len()
     }
+
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         let len = u16::try_from(self.len()).map_err(|_| EncodeError::InvalidLength)?;
         buf.put_u16(len);

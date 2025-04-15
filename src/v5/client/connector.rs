@@ -6,7 +6,8 @@ use ntex_net::connect::{self, Address, Connect, Connector};
 use ntex_service::{IntoService, Pipeline, Service};
 use ntex_util::time::{timeout_checked, Seconds};
 
-use super::{codec, connection::Client, error::ClientError, error::ProtocolError};
+use super::codec::{self, DecodedPacket, EncodePacket, Packet};
+use super::{connection::Client, error::ClientError, error::ProtocolError};
 use crate::v5::shared::{MqttShared, MqttSinkPool};
 
 /// Mqtt client connector
@@ -15,6 +16,7 @@ pub struct MqttConnector<A, T> {
     connector: Pipeline<T>,
     pkt: codec::Connect,
     handshake_timeout: Seconds,
+    min_chunk_size: u32,
     config: DispatcherConfig,
     pool: Rc<MqttSinkPool>,
 }
@@ -34,6 +36,7 @@ where
             pkt: codec::Connect::default(),
             connector: Pipeline::new(Connector::default()),
             handshake_timeout: Seconds::ZERO,
+            min_chunk_size: 32 * 1024,
             pool: Rc::new(MqttSinkPool::default()),
         }
     }
@@ -110,6 +113,17 @@ where
         } else {
             self.pkt.max_packet_size = None;
         }
+        self
+    }
+
+    /// Set min payload chunk size.
+    ///
+    /// If the minimum size is set to `0`, incoming payload chunks
+    /// will be processed immediately. Otherwise, the codec will
+    /// accumulate chunks until the total size reaches the specified minimum.
+    /// By default min size is set to `0`
+    pub fn min_chunk_size(mut self, size: u32) -> Self {
+        self.min_chunk_size = size;
         self
     }
 
@@ -191,6 +205,7 @@ where
             address: self.address,
             config: self.config,
             handshake_timeout: self.handshake_timeout,
+            min_chunk_size: self.min_chunk_size,
             pool: self.pool,
         }
     }
@@ -218,10 +233,11 @@ where
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(65535);
         let codec = codec::Codec::new();
         codec.set_max_inbound_size(max_packet_size);
+        codec.set_min_chunk_size(self.min_chunk_size);
         let pool = self.pool.clone();
         let config = self.config.clone();
 
-        io.encode(codec::Packet::Connect(Box::new(pkt)), &codec)?;
+        io.encode(EncodePacket::Packet(Packet::Connect(Box::new(pkt))), &codec)?;
 
         let packet = io.recv(&codec).await.map_err(ClientError::from)?.ok_or_else(|| {
             log::trace!("Mqtt server is disconnected during handshake");
@@ -230,7 +246,7 @@ where
 
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, pool));
         match packet {
-            (codec::Packet::ConnectAck(pkt), _) => {
+            DecodedPacket::Packet(Packet::ConnectAck(pkt), ..) => {
                 log::trace!("Connect ack response from server: {:#?}", pkt);
                 if pkt.reason_code == codec::ConnectAckReason::Success {
                     // set max outbound (encoder) packet size
@@ -247,11 +263,17 @@ where
                     Err(ClientError::Ack(pkt))
                 }
             }
-            (p, _) => Err(ProtocolError::unexpected_packet(
-                p.packet_type(),
+            DecodedPacket::Packet(packet, ..) => Err(ProtocolError::unexpected_packet(
+                packet.packet_type(),
                 "CONNACK packet expected from server first [MQTT-3.2.0-1]",
             )
             .into()),
+            DecodedPacket::Publish(..) => Err(ProtocolError::unexpected_packet(
+                crate::types::packet_type::PUBLISH_START,
+                "CONNACK packet expected from server first [MQTT-3.2.0-1]",
+            )
+            .into()),
+            DecodedPacket::PayloadChunk(..) => unreachable!(),
         }
     }
 }

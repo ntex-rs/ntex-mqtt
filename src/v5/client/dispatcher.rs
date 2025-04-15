@@ -1,4 +1,5 @@
-use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
+use std::cell::{Cell, RefCell};
+use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_io::DispatchItem;
@@ -6,10 +7,10 @@ use ntex_service::{Pipeline, Service, ServiceCtx};
 use ntex_util::{future::join, future::Either, HashMap, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::types::packet_type;
-use crate::v5::codec::DisconnectReasonCode;
+use crate::v5::codec::{DecodedPacket, DisconnectReasonCode, EncodePacket, Packet};
 use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{codec, publish::Publish, publish::PublishAck, sink::MqttSink};
+use crate::{payload::Payload, payload::PlSender, types::packet_type};
 
 use super::control::{Control, ControlAck};
 
@@ -20,7 +21,7 @@ pub(super) fn create_dispatcher<T, C, E>(
     max_topic_alias: u16,
     publish: T,
     control: C,
-) -> impl Service<DispatchItem<Rc<MqttShared>>, Response = Option<codec::Packet>, Error = MqttError<E>>
+) -> impl Service<DispatchItem<Rc<MqttShared>>, Response = Option<EncodePacket>, Error = MqttError<E>>
 where
     E: From<T::Error> + 'static,
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E> + 'static,
@@ -40,6 +41,7 @@ pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     max_receive: usize,
     max_topic_alias: u16,
+    payload: Cell<Option<PlSender>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<E>,
 }
@@ -71,6 +73,7 @@ where
             publish,
             max_receive,
             max_topic_alias,
+            payload: Cell::new(None),
             inner: Rc::new(Inner {
                 sink: sink.shared(),
                 control: Pipeline::new(control),
@@ -82,6 +85,12 @@ where
             _t: PhantomData,
         }
     }
+
+    fn drop_payload(&self) {
+        if let Some(pl) = self.payload.take() {
+            pl.set_error(());
+        }
+    }
 }
 
 impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
@@ -90,7 +99,7 @@ where
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E> + 'static,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
 {
-    type Response = Option<codec::Packet>;
+    type Response = Option<EncodePacket>;
     type Error = MqttError<E>;
 
     #[inline]
@@ -132,6 +141,7 @@ where
     }
 
     async fn shutdown(&self) {
+        self.drop_payload();
         self.inner.sink.drop_sink();
         let _ = self.inner.control.call(Control::closed()).await;
 
@@ -148,7 +158,7 @@ where
         log::trace!("Dispatch packet: {:#?}", request);
 
         match request {
-            DispatchItem::Item((codec::Packet::Publish(mut publish), size)) => {
+            DispatchItem::Item(DecodedPacket::Publish(mut publish, payload, size)) => {
                 let info = self.inner.as_ref();
                 let packet_id = publish.packet_id;
 
@@ -179,7 +189,7 @@ where
 
                         // check for duplicated packet id
                         if !inner.inflight.insert(pid) {
-                            let _ = self.inner.sink.encode_packet(codec::Packet::PublishAck(
+                            let _ = self.inner.sink.encode_packet(Packet::PublishAck(
                                 codec::PublishAck {
                                     packet_id: pid,
                                     reason_code: codec::PublishAckReason::PacketIdentifierInUse,
@@ -244,9 +254,17 @@ where
                     }
                 }
 
+                let payload = if publish.payload_size == payload.len() as u32 {
+                    Payload::from_bytes(payload)
+                } else {
+                    let (pl, sender) = Payload::from_stream(payload);
+                    self.payload.set(Some(sender));
+                    pl
+                };
+
                 publish_fn(
                     &self.publish,
-                    Publish::new(publish, size),
+                    Publish::new(publish, payload, size),
                     packet_id.map(|v| v.get()).unwrap_or(0),
                     size,
                     info,
@@ -254,31 +272,41 @@ where
                 )
                 .await
             }
-            DispatchItem::Item((codec::Packet::PublishAck(packet), _)) => {
+            DispatchItem::Item(DecodedPacket::PayloadChunk(buf, eof)) => {
+                let pl = self.payload.take().unwrap();
+                pl.feed_data(buf);
+                if eof {
+                    pl.feed_eof();
+                } else {
+                    self.payload.set(Some(pl));
+                }
+                Ok(None)
+            }
+            DispatchItem::Item(DecodedPacket::Packet(Packet::PublishAck(packet), ..)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
                     control(Control::proto_error(err), &self.inner, ctx, 0).await
                 } else {
                     Ok(None)
                 }
             }
-            DispatchItem::Item((codec::Packet::SubscribeAck(packet), _)) => {
+            DispatchItem::Item(DecodedPacket::Packet(Packet::SubscribeAck(packet), ..)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Subscribe(packet)) {
                     control(Control::proto_error(err), &self.inner, ctx, 0).await
                 } else {
                     Ok(None)
                 }
             }
-            DispatchItem::Item((codec::Packet::UnsubscribeAck(packet), _)) => {
+            DispatchItem::Item(DecodedPacket::Packet(Packet::UnsubscribeAck(packet), ..)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Unsubscribe(packet)) {
                     control(Control::proto_error(err), &self.inner, ctx, 0).await
                 } else {
                     Ok(None)
                 }
             }
-            DispatchItem::Item((codec::Packet::Disconnect(pkt), size)) => {
+            DispatchItem::Item(DecodedPacket::Packet(Packet::Disconnect(pkt), size)) => {
                 control(Control::dis(pkt, size), &self.inner, ctx, 0).await
             }
-            DispatchItem::Item((codec::Packet::Auth(_), _)) => {
+            DispatchItem::Item(DecodedPacket::Packet(Packet::Auth(_), ..)) => {
                 control(
                     Control::proto_error(ProtocolError::unexpected_packet(
                         packet_type::AUTH,
@@ -290,18 +318,17 @@ where
                 )
                 .await
             }
-            DispatchItem::Item((
-                pkt @ (codec::Packet::PingRequest
-                | codec::Packet::Subscribe(_)
-                | codec::Packet::Unsubscribe(_)),
-                _,
-            )) => Err(HandshakeError::Protocol(ProtocolError::unexpected_packet(
+            DispatchItem::Item(DecodedPacket::Packet(Packet::PingResponse, ..)) => Ok(None),
+            DispatchItem::Item(
+                (DecodedPacket::Packet(pkt @ Packet::PingRequest, _)
+                | DecodedPacket::Packet(pkt @ Packet::Subscribe(_), _)
+                | DecodedPacket::Packet(pkt @ Packet::Unsubscribe(_), _)),
+            ) => Err(HandshakeError::Protocol(ProtocolError::unexpected_packet(
                 pkt.packet_type(),
                 "Packet of the type is not expected from server",
             ))
             .into()),
-            DispatchItem::Item((codec::Packet::PingResponse, _)) => Ok(None),
-            DispatchItem::Item((pkt, _)) => {
+            DispatchItem::Item(DecodedPacket::Packet(pkt, _)) => {
                 log::debug!("Unsupported packet: {:?}", pkt);
                 Ok(None)
             }
@@ -314,9 +341,11 @@ where
                     .await
             }
             DispatchItem::Disconnect(err) => {
+                self.drop_payload();
                 control(Control::peer_gone(err), &self.inner, ctx, 0).await
             }
             DispatchItem::KeepAliveTimeout => {
+                self.drop_payload();
                 control(
                     Control::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
@@ -326,6 +355,7 @@ where
                 .await
             }
             DispatchItem::ReadTimeout => {
+                self.drop_payload();
                 control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx, 0)
                     .await
             }
@@ -349,7 +379,7 @@ async fn publish_fn<'f, T, C, E>(
     packet_size: u32,
     inner: &'f Inner<C>,
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-) -> Result<Option<codec::Packet>, MqttError<E>>
+) -> Result<Option<EncodePacket>, MqttError<E>>
 where
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
@@ -358,13 +388,14 @@ where
         Ok(res) => match res {
             Either::Right(ack) => ack,
             Either::Left(pkt) => {
+                let (pkt, payload) = pkt.into_inner();
                 return control(
-                    Control::publish(pkt.into_inner(), packet_size),
+                    Control::publish(pkt, payload, packet_size),
                     inner,
                     ctx,
                     packet_id,
                 )
-                .await
+                .await;
             }
         },
         Err(e) => return control(Control::error(e), inner, ctx, 0).await,
@@ -379,7 +410,7 @@ where
             reason_string: ack.reason_string,
             properties: ack.properties,
         };
-        Ok(Some(codec::Packet::PublishAck(ack)))
+        Ok(Some(EncodePacket::Packet(Packet::PublishAck(ack))))
     } else {
         Ok(None)
     }
@@ -390,7 +421,7 @@ async fn control<'f, T, C, E>(
     inner: &'f Inner<C>,
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     packet_id: u16,
-) -> Result<Option<codec::Packet>, MqttError<E>>
+) -> Result<Option<EncodePacket>, MqttError<E>>
 where
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
@@ -434,7 +465,7 @@ where
             if result.disconnect {
                 inner.sink.drop_sink();
             }
-            Ok(result.packet)
+            Ok(result.packet.map(EncodePacket::Packet))
         };
     }
 }
