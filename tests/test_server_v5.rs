@@ -1396,7 +1396,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
         let check = check2.clone();
 
         MqttServer::new(handshake)
-            .min_chunk_size(0)
+            .min_chunk_size(32 * 1024)
             .frame_read_rate(Seconds(1), Seconds(2), 10)
             .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
             .control(move |msg| {
