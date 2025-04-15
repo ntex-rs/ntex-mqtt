@@ -5,7 +5,7 @@ use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
 use ntex_util::{channel::pool, HashSet};
 
-use crate::v5::codec::{self, DecodedPacket, EncodePacket, Packet, Publish};
+use crate::v5::codec::{self, Decoded, Encoded, Packet, Publish};
 use crate::{error, error::SendPacketError, payload, types::packet_type, QoS};
 
 bitflags::bitflags! {
@@ -105,7 +105,7 @@ impl MqttShared {
 
     pub(super) fn close(&self, pkt: codec::Disconnect) {
         if !self.is_closed() {
-            let _ = self.io.encode(EncodePacket::Packet(Packet::Disconnect(pkt)), &self.codec);
+            let _ = self.io.encode(Encoded::Packet(Packet::Disconnect(pkt)), &self.codec);
             self.io.close();
         }
         self.clear_queues();
@@ -271,7 +271,7 @@ impl MqttShared {
 
     pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), error::EncodeError> {
         self.check_streaming()?;
-        self.io.encode(EncodePacket::Packet(pkt), &self.codec)
+        self.io.encode(Encoded::Packet(pkt), &self.codec)
     }
 
     pub(super) fn encode_publish(
@@ -281,7 +281,7 @@ impl MqttShared {
     ) -> Result<(), error::EncodeError> {
         self.check_streaming()?;
         self.enable_streaming(&pkt, payload.as_ref());
-        self.io.encode(EncodePacket::Publish(pkt, payload), &self.codec)
+        self.io.encode(Encoded::Publish(pkt, payload), &self.codec)
     }
 
     pub(super) fn encode_publish_payload(
@@ -294,7 +294,7 @@ impl MqttShared {
                 self.force_close();
                 Err(error::EncodeError::OverPublishSize)
             } else {
-                self.io.encode(EncodePacket::PayloadChunk(payload), &self.codec)?;
+                self.io.encode(Encoded::PayloadChunk(payload), &self.codec)?;
                 self.streaming_remaining.set(num::NonZeroU32::new(remaining.get() - len));
                 Ok(self.streaming_remaining.get().is_some())
             }
@@ -396,7 +396,7 @@ impl MqttShared {
         if queues.inflight_ids.contains(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
-            match self.io.encode(EncodePacket::Publish(pkt, payload), &self.codec) {
+            match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
                 Ok(_) => {
                     let (tx, rx) = self.pool.queue.channel();
                     queues.inflight.push_back((id, Some(tx), ack));
@@ -422,7 +422,7 @@ impl MqttShared {
         if queues.inflight_ids.contains(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
-            match self.io.encode(EncodePacket::Publish(pkt, payload), &self.codec) {
+            match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
                 Ok(_) => {
                     queues.inflight.push_back((id, None, ack));
                     queues.inflight_ids.insert(id);
@@ -449,7 +449,7 @@ impl MqttShared {
 }
 
 impl Encoder for MqttShared {
-    type Item = EncodePacket;
+    type Item = Encoded;
     type Error = error::EncodeError;
 
     #[inline]
@@ -459,7 +459,7 @@ impl Encoder for MqttShared {
 }
 
 impl Decoder for MqttShared {
-    type Item = DecodedPacket;
+    type Item = Decoded;
     type Error = error::DecodeError;
 
     #[inline]

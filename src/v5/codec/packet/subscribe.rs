@@ -328,12 +328,12 @@ impl EncodeLtd for UnsubscribeAck {
 mod tests {
     use ntex_codec::{Decoder, Encoder};
 
-    use super::super::super::{Codec, DecodedPacket, Packet};
+    use super::super::super::{Codec, Decoded, Packet};
     use super::*;
 
-    fn packet(res: DecodedPacket) -> Packet {
+    fn packet(res: Decoded) -> Packet {
         match res {
-            DecodedPacket::Packet(pkt, _) => pkt,
+            Decoded::Packet(pkt, _) => pkt,
             _ => panic!(),
         }
     }

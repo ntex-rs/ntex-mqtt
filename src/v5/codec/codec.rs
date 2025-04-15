@@ -8,7 +8,7 @@ use crate::types::{packet_type, FixedHeader, MAX_PACKET_SIZE};
 use crate::{payload::Payload, utils, utils::decode_variable_length};
 
 use super::{decode::decode_packet, encode::EncodeLtd, packet::Publish, Packet};
-use super::{DecodedPacket, EncodePacket};
+use super::{Decoded, Encoded};
 
 pub struct Codec {
     state: Cell<DecodeState>,
@@ -16,7 +16,6 @@ pub struct Codec {
     max_out_size: Cell<u32>,
     min_chunk_size: Cell<u32>,
     flags: Cell<CodecFlags>,
-    publish: Cell<Option<Publish>>,
     encoding_payload: Cell<Option<NonZeroU32>>,
 }
 
@@ -47,7 +46,6 @@ impl Codec {
             max_out_size: Cell::new(0),
             min_chunk_size: Cell::new(0),
             flags: Cell::new(CodecFlags::empty()),
-            publish: Cell::new(None),
             encoding_payload: Cell::new(None),
         }
     }
@@ -126,7 +124,7 @@ impl Default for Codec {
 }
 
 impl Decoder for Codec {
-    type Item = super::DecodedPacket;
+    type Item = super::Decoded;
     type Error = DecodeError;
 
     fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
@@ -206,14 +204,14 @@ impl Decoder for Codec {
                             src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
                         }
 
-                        return Ok(Some(DecodedPacket::Publish(
+                        return Ok(Some(Decoded::Publish(
                             publish,
                             payload,
                             fixed.remaining_length,
                         )));
                     } else {
                         self.state.set(DecodeState::PublishPayload(payload_len));
-                        return Ok(Some(DecodedPacket::Publish(
+                        return Ok(Some(Decoded::Publish(
                             publish,
                             Bytes::new(),
                             fixed.remaining_length,
@@ -238,7 +236,7 @@ impl Decoder for Codec {
                             src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
                             true
                         };
-                        Ok(Some(DecodedPacket::PayloadChunk(payload, eof)))
+                        Ok(Some(Decoded::PayloadChunk(payload, eof)))
                     } else {
                         Ok(None)
                     };
@@ -257,7 +255,7 @@ impl Decoder for Codec {
                             flags.set(CodecFlags::NO_PROBLEM_INFO, !pkt.request_problem_info);
                             self.flags.set(flags);
                         }
-                        Ok(Some(DecodedPacket::Packet(packet, fixed.remaining_length)))
+                        Ok(Some(Decoded::Packet(packet, fixed.remaining_length)))
                     };
                 }
             }
@@ -266,38 +264,38 @@ impl Decoder for Codec {
 }
 
 impl Encoder for Codec {
-    type Item = EncodePacket;
+    type Item = Encoded;
     type Error = EncodeError;
 
     fn encode(&self, mut item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
         // handle [MQTT 3.1.2.11.7]
         if self.flags.get().contains(CodecFlags::NO_PROBLEM_INFO) {
             match item {
-                EncodePacket::Packet(Packet::PublishAck(ref mut pkt))
-                | EncodePacket::Packet(Packet::PublishReceived(ref mut pkt)) => {
+                Encoded::Packet(Packet::PublishAck(ref mut pkt))
+                | Encoded::Packet(Packet::PublishReceived(ref mut pkt)) => {
                     pkt.properties.clear();
                     let _ = pkt.reason_string.take();
                 }
-                EncodePacket::Packet(Packet::PublishRelease(ref mut pkt))
-                | EncodePacket::Packet(Packet::PublishComplete(ref mut pkt)) => {
+                Encoded::Packet(Packet::PublishRelease(ref mut pkt))
+                | Encoded::Packet(Packet::PublishComplete(ref mut pkt)) => {
                     pkt.properties.clear();
                     let _ = pkt.reason_string.take();
                 }
-                EncodePacket::Packet(Packet::Subscribe(ref mut pkt)) => {
+                Encoded::Packet(Packet::Subscribe(ref mut pkt)) => {
                     pkt.user_properties.clear();
                 }
-                EncodePacket::Packet(Packet::SubscribeAck(ref mut pkt)) => {
+                Encoded::Packet(Packet::SubscribeAck(ref mut pkt)) => {
                     pkt.properties.clear();
                     let _ = pkt.reason_string.take();
                 }
-                EncodePacket::Packet(Packet::Unsubscribe(ref mut pkt)) => {
+                Encoded::Packet(Packet::Unsubscribe(ref mut pkt)) => {
                     pkt.user_properties.clear();
                 }
-                EncodePacket::Packet(Packet::UnsubscribeAck(ref mut pkt)) => {
+                Encoded::Packet(Packet::UnsubscribeAck(ref mut pkt)) => {
                     pkt.properties.clear();
                     let _ = pkt.reason_string.take();
                 }
-                EncodePacket::Packet(Packet::Auth(ref mut pkt)) => {
+                Encoded::Packet(Packet::Auth(ref mut pkt)) => {
                     pkt.user_properties.clear();
                     let _ = pkt.reason_string.take();
                 }
@@ -308,7 +306,7 @@ impl Encoder for Codec {
         let max_out_size = self.max_out_size.get();
         let max_size = if max_out_size != 0 { max_out_size } else { MAX_PACKET_SIZE };
         match item {
-            EncodePacket::Packet(pkt) => {
+            Encoded::Packet(pkt) => {
                 if self.encoding_payload.get().is_some() {
                     log::trace!("Expect payload, received {:?}", pkt);
                     Err(EncodeError::ExpectPayload)
@@ -323,7 +321,7 @@ impl Encoder for Codec {
                     }
                 }
             }
-            EncodePacket::Publish(pkt, buf) => {
+            Encoded::Publish(pkt, buf) => {
                 let content_size = pkt.encoded_size(max_size) as u32;
                 if content_size > max_size {
                     return Err(EncodeError::OverMaxPacketSize);
@@ -343,7 +341,7 @@ impl Encoder for Codec {
                 self.encoding_payload.set(NonZeroU32::new(remaining as u32));
                 Ok(())
             }
-            EncodePacket::PayloadChunk(chunk) => {
+            Encoded::PayloadChunk(chunk) => {
                 if let Some(remaining) = self.encoding_payload.get() {
                     let len = chunk.len() as u32;
                     if len > remaining.get() {
@@ -369,7 +367,6 @@ impl Clone for Codec {
             max_out_size: self.max_out_size.clone(),
             min_chunk_size: self.min_chunk_size.clone(),
             flags: Cell::new(CodecFlags::empty()),
-            publish: Cell::new(None),
             encoding_payload: Cell::new(None),
         }
     }

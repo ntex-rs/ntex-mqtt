@@ -1,6 +1,6 @@
 use std::num::NonZeroU16;
 
-use ntex_bytes::{Buf, ByteString, Bytes};
+use ntex_bytes::{Buf, ByteString, Bytes, BytesMut};
 
 use crate::error::DecodeError;
 use crate::types::{packet_type, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
@@ -13,9 +13,6 @@ pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, De
     match first_byte {
         packet_type::CONNECT => decode_connect_packet(&mut src),
         packet_type::CONNACK => decode_connect_ack_packet(&mut src),
-        packet_type::PUBLISH_START..=packet_type::PUBLISH_END => {
-            decode_publish_packet(&mut src, first_byte & 0b0000_1111)
-        }
         packet_type::PUBACK => decode_ack(src, |packet_id| Packet::PublishAck { packet_id }),
         packet_type::PUBREC => {
             decode_ack(src, |packet_id| Packet::PublishReceived { packet_id })
@@ -109,7 +106,11 @@ fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     }))
 }
 
-fn decode_publish_packet(src: &mut Bytes, packet_flags: u8) -> Result<Packet, DecodeError> {
+pub(super) fn decode_publish_packet(
+    src: &mut Bytes,
+    packet_flags: u8,
+    payload_size: u32,
+) -> Result<Publish, DecodeError> {
     let topic = ByteString::decode(src)?;
     let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
     let packet_id = if qos == QoS::AtMostOnce {
@@ -118,14 +119,29 @@ fn decode_publish_packet(src: &mut Bytes, packet_flags: u8) -> Result<Packet, De
         Some(NonZeroU16::decode(src)?) // packet id = 0 encountered
     };
 
-    Ok(Packet::Publish(Publish {
-        dup: (packet_flags & 0b1000) == 0b1000,
+    Ok(Publish {
         qos,
-        retain: (packet_flags & 0b0001) == 0b0001,
         topic,
         packet_id,
-        payload: src.split_off(0),
-    }))
+        payload_size,
+        dup: (packet_flags & 0b1000) == 0b1000,
+        retain: (packet_flags & 0b0001) == 0b0001,
+    })
+}
+
+pub(super) fn publish_size(src: &BytesMut, flags: u8) -> Result<Option<u32>, DecodeError> {
+    // topic len
+    if src.remaining() < 2 {
+        return Ok(None);
+    }
+    let mut len = u16::from_be_bytes([src[0], src[1]]) as u32 + 2;
+
+    // packet-id len
+    let qos = QoS::try_from((flags & 0b0110) >> 1)?;
+    if qos != QoS::AtMostOnce {
+        len += 2; // len of u16
+    }
+    Ok(Some(len))
 }
 
 fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
@@ -175,6 +191,16 @@ mod tests {
             let (_len, consumed) = decode_variable_length(&$bytes[1..]).unwrap().unwrap();
             let cur = Bytes::from_static(&$bytes[consumed + 1..]);
             assert_eq!(decode_packet(cur, first_byte), Ok($res));
+        }};
+    );
+
+    macro_rules! assert_decode_publish (
+        ($bytes:expr, $res:expr, $pl:expr) => {{
+            let first_byte = $bytes.as_ref()[0];
+            let (_len, consumed) = decode_variable_length(&$bytes[1..]).unwrap().unwrap();
+            let mut cur = Bytes::from_static(&$bytes[consumed + 1..]);
+            assert_eq!(decode_publish_packet(&mut cur, first_byte, $pl.len() as u32), Ok($res));
+            assert_eq!(cur, $pl);
         }};
     );
 
@@ -273,27 +299,29 @@ mod tests {
         //    Done(&b""[..], ("topic".to_owned(), 0x1234))
         //);
 
-        assert_decode_packet!(
+        assert_decode_publish!(
             b"\x3d\x0D\x00\x05topic\x43\x21data",
-            Packet::Publish(Publish {
+            Publish {
                 dup: true,
                 retain: true,
                 qos: QoS::ExactlyOnce,
                 topic: ByteString::try_from(Bytes::from_static(b"topic")).unwrap(),
                 packet_id: Some(packet_id(0x4321)),
-                payload: Bytes::from_static(b"data"),
-            })
+                payload_size: 4,
+            },
+            Bytes::from_static(b"data")
         );
-        assert_decode_packet!(
+        assert_decode_publish!(
             b"\x30\x0b\x00\x05topicdata",
-            Packet::Publish(Publish {
+            Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtMostOnce,
                 topic: ByteString::try_from(Bytes::from_static(b"topic")).unwrap(),
                 packet_id: None,
-                payload: Bytes::from_static(b"data"),
-            })
+                payload_size: 4,
+            },
+            Bytes::from_static(b"data")
         );
 
         assert_decode_packet!(

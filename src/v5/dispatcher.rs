@@ -10,7 +10,7 @@ use ntex_util::{future::join, HashMap, HashSet};
 use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::{payload::Payload, payload::PlSender, types::QoS};
 
-use super::codec::{self, DecodedPacket, DisconnectReasonCode, EncodePacket, Packet};
+use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
 use super::control::{Control, ControlAck};
 use super::publish::{Publish, PublishAck};
 use super::shared::{Ack, MqttShared};
@@ -24,7 +24,7 @@ pub(super) fn factory<St, T, C, E>(
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
     Session<St>,
-    Response = Option<EncodePacket>,
+    Response = Option<Encoded>,
     Error = MqttError<E>,
     InitError = MqttError<E>,
 >
@@ -69,8 +69,8 @@ where
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     fn size(&self) -> u32 {
         match self {
-            DispatchItem::Item(DecodedPacket::Packet(_, size))
-            | DispatchItem::Item(DecodedPacket::Publish(_, _, size)) => *size,
+            DispatchItem::Item(Decoded::Packet(_, size))
+            | DispatchItem::Item(Decoded::Publish(_, _, size)) => *size,
             _ => 0,
         }
     }
@@ -139,7 +139,7 @@ where
     PublishAck: TryFrom<T::Error, Error = E>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
 {
-    type Response = Option<EncodePacket>;
+    type Response = Option<Encoded>;
     type Error = MqttError<E>;
 
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
@@ -199,7 +199,7 @@ where
         log::trace!("Dispatch v5 packet: {:#?}", request);
 
         match request {
-            DispatchItem::Item(DecodedPacket::Publish(mut publish, payload, size)) => {
+            DispatchItem::Item(Decoded::Publish(mut publish, payload, size)) => {
                 let info = self.inner.as_ref();
                 let packet_id = publish.packet_id;
 
@@ -369,7 +369,7 @@ where
                 )
                 .await
             }
-            DispatchItem::Item(DecodedPacket::PayloadChunk(buf, eof)) => {
+            DispatchItem::Item(Decoded::PayloadChunk(buf, eof)) => {
                 let pl = self.payload.take().unwrap();
                 pl.feed_data(buf);
                 if eof {
@@ -379,27 +379,27 @@ where
                 }
                 Ok(None)
             }
-            DispatchItem::Item(DecodedPacket::Packet(Packet::PublishAck(packet), _)) => {
+            DispatchItem::Item(Decoded::Packet(Packet::PublishAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
                     control(Control::proto_error(err), &self.inner, ctx, 0).await
                 } else {
                     Ok(None)
                 }
             }
-            DispatchItem::Item(DecodedPacket::Packet(Packet::Auth(pkt), size)) => {
+            DispatchItem::Item(Decoded::Packet(Packet::Auth(pkt), size)) => {
                 if self.inner.sink.is_closed() {
                     return Ok(None);
                 }
 
                 control(Control::auth(pkt, size), &self.inner, ctx, 0).await
             }
-            DispatchItem::Item(DecodedPacket::Packet(Packet::PingRequest, _)) => {
+            DispatchItem::Item(Decoded::Packet(Packet::PingRequest, _)) => {
                 control(Control::ping(), &self.inner, ctx, 0).await
             }
-            DispatchItem::Item(DecodedPacket::Packet(Packet::Disconnect(pkt), size)) => {
+            DispatchItem::Item(Decoded::Packet(Packet::Disconnect(pkt), size)) => {
                 control(Control::remote_disconnect(pkt, size), &self.inner, ctx, 0).await
             }
-            DispatchItem::Item(DecodedPacket::Packet(Packet::Subscribe(pkt), size)) => {
+            DispatchItem::Item(Decoded::Packet(Packet::Subscribe(pkt), size)) => {
                 if self.inner.sink.is_closed() {
                     return Ok(None);
                 }
@@ -450,7 +450,7 @@ where
                 let id = pkt.packet_id;
                 control(Control::subscribe(pkt, size), &self.inner, ctx, id.get()).await
             }
-            DispatchItem::Item(DecodedPacket::Packet(Packet::Unsubscribe(pkt), size)) => {
+            DispatchItem::Item(Decoded::Packet(Packet::Unsubscribe(pkt), size)) => {
                 if self.inner.sink.is_closed() {
                     return Ok(None);
                 }
@@ -487,7 +487,7 @@ where
                 let id = pkt.packet_id;
                 control(Control::unsubscribe(pkt, size), &self.inner, ctx, id.get()).await
             }
-            DispatchItem::Item(DecodedPacket::Packet(_, _)) => Ok(None),
+            DispatchItem::Item(Decoded::Packet(_, _)) => Ok(None),
             DispatchItem::EncoderError(err) => {
                 self.drop_payload();
                 control(Control::proto_error(ProtocolError::Encode(err)), &self.inner, ctx, 0)
@@ -536,7 +536,7 @@ async fn publish_fn<'f, T, C, E>(
     packet_id: u16,
     inner: &'f Inner<C>,
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-) -> Result<Option<EncodePacket>, MqttError<E>>
+) -> Result<Option<Encoded>, MqttError<E>>
 where
     E: From<T::Error>,
     T: Service<Publish, Response = PublishAck>,
@@ -564,7 +564,7 @@ where
             reason_string: ack.reason_string,
             properties: ack.properties,
         };
-        Ok(Some(EncodePacket::Packet(codec::Packet::PublishAck(ack))))
+        Ok(Some(Encoded::Packet(codec::Packet::PublishAck(ack))))
     } else {
         Ok(None)
     }
@@ -575,7 +575,7 @@ async fn control<'f, T, C, E>(
     inner: &'f Inner<C>,
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     packet_id: u16,
-) -> Result<Option<EncodePacket>, MqttError<E>>
+) -> Result<Option<Encoded>, MqttError<E>>
 where
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
@@ -612,7 +612,7 @@ where
         }
         Ok(None)
     } else {
-        Ok(result.packet.map(EncodePacket::Packet))
+        Ok(result.packet.map(Encoded::Packet))
     };
 
     if result.disconnect {

@@ -8,7 +8,7 @@ use crate::utils::{self, write_variable_length, Decode, Encode, Property};
 use crate::v5::codec::{encode::*, property_type as pt, UserProperties};
 
 /// PUBLISH message
-#[derive(PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Publish {
     /// this might be re-delivery of an earlier attempt to send the Packet.
     pub dup: bool,
@@ -20,20 +20,6 @@ pub struct Publish {
     pub topic: ByteString,
     pub payload_size: u32,
     pub properties: PublishProperties,
-}
-
-impl fmt::Debug for Publish {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Publish")
-            .field("packet_id", &self.packet_id)
-            .field("topic", &self.topic)
-            .field("dup", &self.dup)
-            .field("retain", &self.retain)
-            .field("qos", &self.qos)
-            .field("properties", &self.properties)
-            .field("payload_size", &self.payload_size)
-            .finish()
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]

@@ -52,7 +52,7 @@ mod tests {
         let mut tmp = BytesMut::with_capacity(4096);
         ntex_codec::Encoder::encode(
             &crate::v5::codec::Codec::new(),
-            EncodePacket::Packet(res.clone()),
+            Encoded::Packet(res.clone()),
             &mut tmp,
         )
         .unwrap();
@@ -68,7 +68,7 @@ mod tests {
         let mut tmp = BytesMut::with_capacity(4096);
         ntex_codec::Encoder::encode(
             &crate::v5::codec::Codec::new(),
-            EncodePacket::Publish(res.clone(), Some(pl.clone())),
+            Encoded::Publish(res.clone(), Some(pl.clone())),
             &mut tmp,
         )
         .unwrap();
@@ -77,7 +77,7 @@ mod tests {
         let codec = crate::v5::codec::Codec::new();
         let decoded = ntex_codec::Decoder::decode(&codec, &mut bytes).unwrap().unwrap();
         let (pkt, body) = match decoded {
-            DecodedPacket::Publish(ref pkt, ref body, _) => (pkt.clone(), body.clone()),
+            Decoded::Publish(ref pkt, ref body, _) => (pkt.clone(), body.clone()),
             _ => panic!(),
         };
 

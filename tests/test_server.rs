@@ -6,9 +6,8 @@ use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{join_all, lazy, ByteString, Bytes, BytesMut, Ready};
 use ntex::{codec::Encoder, server, service::chain_factory};
 
-use ntex_mqtt::v3::{
-    client, codec, Control, Handshake, HandshakeAck, MqttServer, Publish, Session,
-};
+use ntex_mqtt::v3::codec::{self, Decoded, Encoded, Packet};
+use ntex_mqtt::v3::{client, Control, Handshake, HandshakeAck, MqttServer, Publish, Session};
 use ntex_mqtt::{error::ProtocolError, QoS};
 
 struct St;
@@ -127,14 +126,17 @@ async fn test_ping() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(codec::Packet::Connect(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        &codec,
+    )
+    .await
+    .unwrap();
     io.recv(&codec).await.unwrap().unwrap();
 
-    io.send(codec::Packet::PingRequest, &codec).await.unwrap();
+    io.send(Encoded::Packet(codec::Packet::PingRequest), &codec).await.unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(pkt.0, codec::Packet::PingResponse);
+    assert_eq!(pkt, Decoded::Packet(Packet::PingResponse, 0));
     assert!(ping.load(Relaxed));
 
     Ok(())
@@ -164,61 +166,76 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(codec::Connect::default().client_id("user").into(), &codec).await.unwrap();
+    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
+        .await
+        .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
-        codec::Publish {
-            dup: false,
-            retain: false,
-            qos: codec::QoS::AtLeastOnce,
-            topic: ByteString::from("test"),
-            packet_id: Some(NonZeroU16::new(1).unwrap()),
-            payload: Bytes::new(),
-        }
-        .into(),
+        Encoded::Publish(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                payload_size: 0,
+            },
+            None,
+        ),
         &codec,
     )
     .await
     .unwrap();
     io.send(
-        codec::Packet::Subscribe {
+        Encoded::Packet(Packet::Subscribe {
             packet_id: NonZeroU16::new(2).unwrap(),
             topic_filters: vec![(ByteString::from("topic1"), codec::QoS::AtLeastOnce)],
-        },
+        }),
         &codec,
     )
     .await
     .unwrap();
     io.send(
-        codec::Publish {
-            dup: false,
-            retain: false,
-            qos: codec::QoS::AtLeastOnce,
-            topic: ByteString::from("test"),
-            packet_id: Some(NonZeroU16::new(3).unwrap()),
-            payload: Bytes::new(),
-        }
-        .into(),
+        Encoded::Publish(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(3).unwrap()),
+                payload_size: 0,
+            },
+            None,
+        ),
         &codec,
     )
     .await
     .unwrap();
-
-    let pkt = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(pkt.0, codec::Packet::PublishAck { packet_id: NonZeroU16::new(1).unwrap() });
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
-        pkt.0,
-        codec::Packet::SubscribeAck {
-            packet_id: NonZeroU16::new(2).unwrap(),
-            status: vec![codec::SubscribeReturnCode::Success(codec::QoS::AtLeastOnce)],
-        }
+        pkt,
+        Decoded::Packet(Packet::PublishAck { packet_id: NonZeroU16::new(1).unwrap() }, 2)
     );
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(pkt.0, codec::Packet::PublishAck { packet_id: NonZeroU16::new(3).unwrap() });
+    assert_eq!(
+        pkt,
+        Decoded::Packet(
+            Packet::SubscribeAck {
+                packet_id: NonZeroU16::new(2).unwrap(),
+                status: vec![codec::SubscribeReturnCode::Success(codec::QoS::AtLeastOnce)],
+            },
+            3
+        )
+    );
+
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        pkt,
+        Decoded::Packet(Packet::PublishAck { packet_id: NonZeroU16::new(3).unwrap() }, 2)
+    );
 
     Ok(())
 }
@@ -355,21 +372,24 @@ async fn test_handle_incoming() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
+    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
+        .unwrap();
     io.encode(
-        codec::Publish {
-            dup: false,
-            retain: false,
-            qos: codec::QoS::AtLeastOnce,
-            topic: ByteString::from("test"),
-            packet_id: Some(NonZeroU16::new(3).unwrap()),
-            payload: Bytes::new(),
-        }
-        .into(),
+        Encoded::Publish(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(3).unwrap()),
+                payload_size: 0,
+            },
+            None,
+        ),
         &codec,
     )
     .unwrap();
-    io.encode(codec::Packet::Disconnect, &codec).unwrap();
+    io.encode(Encoded::Packet(Packet::Disconnect), &codec).unwrap();
     io.flush(true).await.unwrap();
     sleep(Millis(50)).await;
     drop(io);
@@ -433,21 +453,24 @@ async fn handle_or_drop_publish_after_disconnect(
     };
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
+    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
+        .unwrap();
     io.encode(
-        codec::Publish {
-            dup: false,
-            retain: false,
-            qos: publish_qos,
-            topic: ByteString::from("test"),
-            packet_id,
-            payload: Bytes::new(),
-        }
-        .into(),
+        Encoded::Publish(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: publish_qos,
+                topic: ByteString::from("test"),
+                packet_id,
+                payload_size: 0,
+            },
+            None,
+        ),
         &codec,
     )
     .unwrap();
-    io.encode(codec::Packet::Disconnect, &codec).unwrap();
+    io.encode(Encoded::Packet(Packet::Disconnect), &codec).unwrap();
     io.flush(true).await.unwrap();
     sleep(Millis(1750)).await;
     io.close();
@@ -494,11 +517,13 @@ async fn test_nested_errors() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(codec::Connect::default().client_id("user").into(), &codec).await.unwrap();
+    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
+        .await
+        .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     // disconnect
-    io.send(codec::Packet::Disconnect, &codec).await.unwrap();
+    io.send(Encoded::Packet(Packet::Disconnect), &codec).await.unwrap();
     assert!(io.recv(&codec).await.unwrap().is_none());
 
     Ok(())
@@ -512,18 +537,21 @@ async fn test_large_publish() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
+    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
+        .unwrap();
     let _ = io.recv(&codec).await;
 
-    let p = codec::Publish {
-        dup: false,
-        retain: false,
-        qos: codec::QoS::AtLeastOnce,
-        topic: ByteString::from("test"),
-        packet_id: Some(NonZeroU16::new(3).unwrap()),
-        payload: Bytes::from(vec![b'*'; 270 * 1024]),
-    }
-    .into();
+    let p = Encoded::Publish(
+        codec::Publish {
+            dup: false,
+            retain: false,
+            qos: codec::QoS::AtLeastOnce,
+            topic: ByteString::from("test"),
+            packet_id: Some(NonZeroU16::new(3).unwrap()),
+            payload_size: 270 * 1024,
+        },
+        Some(Bytes::from(vec![b'*'; 270 * 1024])),
+    );
     let res = io.send(p, &codec).await;
     assert!(res.is_ok());
     let result = io.recv(&codec).await;
@@ -564,18 +592,21 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
     let io = con.call(addr.into()).await.unwrap();
 
     let codec = codec::Codec::default();
-    io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
+    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
+        .unwrap();
     let _ = io.recv(&codec).await;
 
-    let p = codec::Publish {
-        dup: false,
-        retain: false,
-        qos: codec::QoS::AtLeastOnce,
-        topic: ByteString::from("test"),
-        packet_id: Some(NonZeroU16::new(3).unwrap()),
-        payload: Bytes::from(vec![b'*'; 270 * 1024]),
-    }
-    .into();
+    let p = Encoded::Publish(
+        codec::Publish {
+            dup: false,
+            retain: false,
+            qos: codec::QoS::AtLeastOnce,
+            topic: ByteString::from("test"),
+            packet_id: Some(NonZeroU16::new(3).unwrap()),
+            payload_size: 270 * 1024,
+        },
+        Some(Bytes::from(vec![b'*'; 270 * 1024])),
+    );
     let res = io.send(p, &codec).await;
     assert!(res.is_ok());
     let result = io.recv(&codec).await;
@@ -611,20 +642,25 @@ async fn test_max_qos() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(codec::Packet::Connect(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        &codec,
+    )
+    .await
+    .unwrap();
     io.recv(&codec).await.unwrap().unwrap();
 
-    let p = codec::Publish {
-        dup: false,
-        retain: false,
-        qos: codec::QoS::AtLeastOnce,
-        topic: ByteString::from("test"),
-        packet_id: Some(NonZeroU16::new(3).unwrap()),
-        payload: Bytes::from(vec![b'*'; 270 * 1024]),
-    }
-    .into();
+    let p = Encoded::Publish(
+        codec::Publish {
+            dup: false,
+            retain: false,
+            qos: codec::QoS::AtLeastOnce,
+            topic: ByteString::from("test"),
+            packet_id: Some(NonZeroU16::new(3).unwrap()),
+            payload_size: 270 * 1024,
+        },
+        Some(Bytes::from(vec![b'*'; 270 * 1024])),
+    );
 
     io.send(p, &codec).await.unwrap();
     assert!(io.recv(&codec).await.unwrap().is_none());
@@ -658,9 +694,12 @@ async fn test_sink_ready() -> std::io::Result<()> {
     // connect to server
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(codec::Packet::Connect(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        &codec,
+    )
+    .await
+    .unwrap();
     io.recv(&codec).await.unwrap().unwrap();
 
     let result = io.recv(&codec).await;
@@ -721,6 +760,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
         let check = check2.clone();
 
         MqttServer::new(handshake)
+            .min_chunk_size(32 * 1024)
             .frame_read_rate(Seconds(1), Seconds(2), 10)
             .publish(|_| Ready::Ok(()))
             .control(move |msg| {
@@ -742,18 +782,21 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(codec::Connect::default().client_id("user").into(), &codec).unwrap();
+    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
+        .unwrap();
     io.recv(&codec).await.unwrap();
 
-    let p = codec::Publish {
-        dup: false,
-        retain: false,
-        qos: codec::QoS::AtLeastOnce,
-        topic: ByteString::from("test"),
-        packet_id: Some(NonZeroU16::new(3).unwrap()),
-        payload: Bytes::from(vec![b'*'; 270 * 1024]),
-    }
-    .into();
+    let p = Encoded::Publish(
+        codec::Publish {
+            dup: false,
+            retain: false,
+            qos: codec::QoS::AtLeastOnce,
+            topic: ByteString::from("test"),
+            packet_id: Some(NonZeroU16::new(3).unwrap()),
+            payload_size: 270 * 1024,
+        },
+        Some(Bytes::from(vec![b'*'; 270 * 1024])),
+    );
 
     let mut buf = BytesMut::new();
     codec.encode(p, &mut buf).unwrap();
