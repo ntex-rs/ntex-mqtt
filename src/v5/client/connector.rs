@@ -231,11 +231,12 @@ where
         let keep_alive = pkt.keep_alive;
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(65535);
+        let pool = self.pool.clone();
+        let config = self.config.clone();
+
         let codec = codec::Codec::new();
         codec.set_max_inbound_size(max_packet_size);
         codec.set_min_chunk_size(self.min_chunk_size);
-        let pool = self.pool.clone();
-        let config = self.config.clone();
 
         io.encode(Encoded::Packet(Packet::Connect(Box::new(pkt))), &codec)?;
 

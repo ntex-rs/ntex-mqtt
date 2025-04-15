@@ -1,4 +1,4 @@
-use std::{cell::Cell, cell::RefCell, collections::VecDeque, num::NonZeroU16, rc::Rc};
+use std::{cell::Cell, cell::RefCell, collections::VecDeque, num, rc::Rc};
 
 use ntex_bytes::{Bytes, BytesMut, PoolId, PoolRef};
 use ntex_codec::{Decoder, Encoder};
@@ -6,12 +6,13 @@ use ntex_io::IoRef;
 use ntex_util::{channel::pool, HashSet};
 
 use crate::error::{DecodeError, EncodeError, ProtocolError, SendPacketError};
-use crate::{types::packet_type, v3::codec};
+use crate::types::packet_type;
+use crate::v3::codec::{self, Encoded, Publish};
 
 pub(super) enum Ack {
-    Publish(NonZeroU16),
-    Subscribe { packet_id: NonZeroU16, status: Vec<codec::SubscribeReturnCode> },
-    Unsubscribe(NonZeroU16),
+    Publish(num::NonZeroU16),
+    Subscribe { packet_id: num::NonZeroU16, status: Vec<codec::SubscribeReturnCode> },
+    Unsubscribe(num::NonZeroU16),
 }
 
 #[derive(Copy, Clone)]
@@ -23,7 +24,7 @@ pub(super) enum AckType {
 
 pub(super) struct MqttSinkPool {
     queue: pool::Pool<Ack>,
-    waiters: pool::Pool<()>,
+    pub(super) waiters: pool::Pool<()>,
     pub(super) pool: Cell<PoolRef>,
 }
 
@@ -51,15 +52,18 @@ pub struct MqttShared {
     cap: Cell<usize>,
     queues: RefCell<MqttSharedQueues>,
     inflight_idx: Cell<u16>,
-    pool: Rc<MqttSinkPool>,
     flags: Cell<Flags>,
-    on_publish_ack: Cell<Option<Box<dyn Fn(NonZeroU16, bool)>>>,
+    encode_error: Cell<Option<EncodeError>>,
+    streaming_waiter: Cell<Option<pool::Sender<()>>>,
+    streaming_remaining: Cell<Option<num::NonZeroU32>>,
+    on_publish_ack: Cell<Option<Box<dyn Fn(num::NonZeroU16, bool)>>>,
     pub(super) codec: codec::Codec,
+    pub(super) pool: Rc<MqttSinkPool>,
 }
 
 struct MqttSharedQueues {
-    inflight: VecDeque<(NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
-    inflight_ids: HashSet<NonZeroU16>,
+    inflight: VecDeque<(num::NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
+    inflight_ids: HashSet<num::NonZeroU16>,
     waiters: VecDeque<pool::Sender<()>>,
 }
 
@@ -82,6 +86,9 @@ impl MqttShared {
                 waiters: VecDeque::new(),
             }),
             inflight_idx: Cell::new(0),
+            encode_error: Cell::new(None),
+            streaming_waiter: Cell::new(None),
+            streaming_remaining: Cell::new(None),
             on_publish_ack: Cell::new(None),
         }
     }
@@ -99,6 +106,15 @@ impl MqttShared {
         self.clear_queues();
     }
 
+    pub(super) fn streaming_dropped(&self) {
+        self.force_close();
+        self.encode_error.set(Some(EncodeError::PublishIncomplete));
+    }
+
+    pub(super) fn is_streaming(&self) -> bool {
+        self.streaming_remaining.get().is_some()
+    }
+
     pub(super) fn is_closed(&self) -> bool {
         self.io.is_closed()
     }
@@ -111,7 +127,7 @@ impl MqttShared {
         self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
     }
 
-    pub(super) fn next_id(&self) -> NonZeroU16 {
+    pub(super) fn next_id(&self) -> num::NonZeroU16 {
         let idx = self.inflight_idx.get() + 1;
         let idx = if idx == u16::MAX {
             self.inflight_idx.set(0);
@@ -120,7 +136,18 @@ impl MqttShared {
             self.inflight_idx.set(idx);
             idx
         };
-        NonZeroU16::new(idx).unwrap()
+        num::NonZeroU16::new(idx).unwrap()
+    }
+
+    /// publish packet id
+    pub(super) fn set_publish_id(&self, pkt: &mut Publish) -> num::NonZeroU16 {
+        if let Some(idx) = pkt.packet_id {
+            idx
+        } else {
+            let idx = self.next_id();
+            pkt.packet_id = Some(idx);
+            idx
+        }
     }
 
     pub(super) fn set_cap(&self, cap: usize) {
@@ -138,7 +165,7 @@ impl MqttShared {
         self.cap.set(cap);
     }
 
-    pub(super) fn set_publish_ack(&self, f: Box<dyn Fn(NonZeroU16, bool)>) {
+    pub(super) fn set_publish_ack(&self, f: Box<dyn Fn(num::NonZeroU16, bool)>) {
         let mut flags = self.flags.get();
         flags.insert(Flags::ON_PUBLISH_ACK);
         self.flags.set(flags);
@@ -146,15 +173,34 @@ impl MqttShared {
     }
 
     pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), EncodeError> {
+        self.check_streaming()?;
         self.io.encode(pkt.into(), &self.codec)
     }
 
     pub(super) fn encode_publish(
         &self,
-        pkt: codec::Publish,
+        pkt: Publish,
         payload: Option<Bytes>,
     ) -> Result<(), EncodeError> {
-        self.io.encode(codec::Encoded::Publish(pkt, payload), &self.codec)
+        self.check_streaming()?;
+        self.enable_streaming(&pkt, payload.as_ref());
+        self.io.encode(Encoded::Publish(pkt, payload), &self.codec)
+    }
+
+    pub(super) fn encode_publish_payload(&self, payload: Bytes) -> Result<bool, EncodeError> {
+        if let Some(remaining) = self.streaming_remaining.get() {
+            let len = payload.len() as u32;
+            if len > remaining.get() {
+                self.force_close();
+                Err(EncodeError::OverPublishSize)
+            } else {
+                self.io.encode(Encoded::PayloadChunk(payload), &self.codec)?;
+                self.streaming_remaining.set(num::NonZeroU32::new(remaining.get() - len));
+                Ok(self.streaming_remaining.get().is_some())
+            }
+        } else {
+            Err(EncodeError::UnexpectedPayload)
+        }
     }
 
     fn clear_queues(&self) {
@@ -183,6 +229,13 @@ impl MqttShared {
         flags.remove(Flags::WRB_ENABLED);
         self.flags.set(flags);
 
+        // streaming waiter
+        if let Some(tx) = self.streaming_waiter.take() {
+            if tx.send(()).is_ok() {
+                return;
+            }
+        }
+
         // check if there are waiters
         let mut queues = self.queues.borrow_mut();
         if queues.inflight.len() < self.cap.get() {
@@ -197,6 +250,37 @@ impl MqttShared {
                 }
             }
         }
+    }
+
+    pub(super) async fn want_payload_stream(&self) -> Result<(), SendPacketError> {
+        if !self.is_closed() {
+            if self.flags.get().contains(Flags::WRB_ENABLED) {
+                let (tx, rx) = self.pool.waiters.channel();
+                self.streaming_waiter.set(Some(tx));
+                if rx.await.is_ok() {
+                    Ok(())
+                } else {
+                    Err(SendPacketError::Disconnected)
+                }
+            } else {
+                Ok(())
+            }
+        } else {
+            Err(SendPacketError::Disconnected)
+        }
+    }
+
+    fn check_streaming(&self) -> Result<(), EncodeError> {
+        if self.streaming_remaining.get().is_some() {
+            Err(EncodeError::ExpectPayload)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn enable_streaming(&self, pkt: &Publish, payload: Option<&Bytes>) {
+        let len = payload.map(|b| b.len()).unwrap_or(0);
+        self.streaming_remaining.set(num::NonZeroU32::new(pkt.payload_size - len as u32));
     }
 
     pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), ProtocolError> {
@@ -255,7 +339,7 @@ impl MqttShared {
     /// Register ack in response channel
     pub(super) fn wait_response(
         &self,
-        id: NonZeroU16,
+        id: num::NonZeroU16,
         ack: AckType,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
         let mut queues = self.queues.borrow_mut();
@@ -272,16 +356,19 @@ impl MqttShared {
     /// Register ack in response channel
     pub(super) fn wait_publish_response(
         &self,
-        id: NonZeroU16,
+        id: num::NonZeroU16,
         ack: AckType,
-        pkt: codec::Publish,
+        pkt: Publish,
         payload: Option<Bytes>,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
+        self.check_streaming()?;
+        self.enable_streaming(&pkt, payload.as_ref());
+
         let mut queues = self.queues.borrow_mut();
         if queues.inflight_ids.contains(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
-            match self.io.encode(codec::Encoded::Publish(pkt, payload), &self.codec) {
+            match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
                 Ok(_) => {
                     let (tx, rx) = self.pool.queue.channel();
                     queues.inflight.push_back((id, Some(tx), ack));
@@ -296,16 +383,19 @@ impl MqttShared {
     /// Register ack in response channel
     pub(super) fn wait_publish_response_no_block(
         &self,
-        id: NonZeroU16,
+        id: num::NonZeroU16,
         ack: AckType,
-        pkt: codec::Publish,
+        pkt: Publish,
         payload: Option<Bytes>,
     ) -> Result<(), SendPacketError> {
+        self.check_streaming()?;
+        self.enable_streaming(&pkt, payload.as_ref());
+
         let mut queues = self.queues.borrow_mut();
         if queues.inflight_ids.contains(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
-            match self.io.encode(codec::Encoded::Publish(pkt, payload), &self.codec) {
+            match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
                 Ok(_) => {
                     queues.inflight.push_back((id, None, ack));
                     queues.inflight_ids.insert(id);
@@ -335,7 +425,7 @@ impl MqttShared {
 }
 
 impl Encoder for MqttShared {
-    type Item = codec::Encoded;
+    type Item = Encoded;
     type Error = EncodeError;
 
     #[inline]
@@ -363,7 +453,7 @@ impl Ack {
         }
     }
 
-    pub(super) fn packet_id(&self) -> NonZeroU16 {
+    pub(super) fn packet_id(&self) -> num::NonZeroU16 {
         match self {
             Ack::Publish(id) => *id,
             Ack::Subscribe { packet_id, .. } => *packet_id,
