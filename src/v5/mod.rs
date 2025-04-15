@@ -21,7 +21,8 @@ pub use self::handshake::{Handshake, HandshakeAck};
 pub use self::publish::{Publish, PublishAck};
 pub use self::router::Router;
 pub use self::server::MqttServer;
-pub use self::sink::{MqttSink, PublishBuilder, SubscribeBuilder, UnsubscribeBuilder};
+pub use self::sink::{MqttSink, SubscribeBuilder, UnsubscribeBuilder};
+pub use self::sink::{PublishBuilder, StreamingPayload, StreamingPublishBuilder};
 
 pub use crate::error;
 pub use crate::topic::{TopicFilter, TopicFilterError};

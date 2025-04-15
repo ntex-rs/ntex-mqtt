@@ -8,7 +8,7 @@ use ntex_util::services::{buffer::BufferService, buffer::BufferServiceError};
 use ntex_util::{future::join, HashMap, HashSet};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{payload::Payload, payload::PayloadSender, types::QoS};
+use crate::{payload::Payload, payload::PlSender, types::QoS};
 
 use super::codec::{self, DecodedPacket, DisconnectReasonCode, EncodePacket, Packet};
 use super::control::{Control, ControlAck};
@@ -80,7 +80,7 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     handle_qos_after_disconnect: Option<QoS>,
-    payload: Cell<Option<PayloadSender>>,
+    payload: Cell<Option<PlSender>>,
     inner: Rc<Inner<C>>,
     _t: marker::PhantomData<E>,
 }

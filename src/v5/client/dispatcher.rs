@@ -10,7 +10,7 @@ use crate::error::{HandshakeError, MqttError, ProtocolError};
 use crate::v5::codec::{DecodedPacket, DisconnectReasonCode, EncodePacket, Packet};
 use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{codec, publish::Publish, publish::PublishAck, sink::MqttSink};
-use crate::{payload::Payload, payload::PayloadSender, types::packet_type};
+use crate::{payload::Payload, payload::PlSender, types::packet_type};
 
 use super::control::{Control, ControlAck};
 
@@ -41,7 +41,7 @@ pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     max_receive: usize,
     max_topic_alias: u16,
-    payload: Cell<Option<PayloadSender>>,
+    payload: Cell<Option<PlSender>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<E>,
 }

@@ -1,4 +1,4 @@
-use std::{cell::Cell, cell::RefCell, collections::VecDeque, num::NonZeroU16, rc::Rc};
+use std::{cell::Cell, cell::RefCell, collections::VecDeque, num, rc::Rc};
 
 use ntex_bytes::{Bytes, BytesMut, PoolId, PoolRef};
 use ntex_codec::{Decoder, Encoder};
@@ -25,20 +25,23 @@ pub struct MqttShared {
     inflight_idx: Cell<u16>,
     queues: RefCell<MqttSharedQueues>,
     flags: Cell<Flags>,
-    pool: Rc<MqttSinkPool>,
+    encode_error: Cell<Option<error::EncodeError>>,
+    streaming_waiter: Cell<Option<pool::Sender<()>>>,
+    streaming_remaining: Cell<Option<num::NonZeroU32>>,
     on_publish_ack: Cell<Option<Box<dyn Fn(codec::PublishAck, bool)>>>,
+    pub(super) pool: Rc<MqttSinkPool>,
     pub(super) codec: codec::Codec,
 }
 
 pub(super) struct MqttSharedQueues {
-    inflight: VecDeque<(NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
-    inflight_ids: HashSet<NonZeroU16>,
+    inflight: VecDeque<(num::NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
+    inflight_ids: HashSet<num::NonZeroU16>,
     waiters: VecDeque<pool::Sender<()>>,
 }
 
 pub(super) struct MqttSinkPool {
     queue: pool::Pool<Ack>,
-    waiters: pool::Pool<()>,
+    pub(super) waiters: pool::Pool<()>,
     pub(super) pool: Cell<PoolRef>,
 }
 
@@ -70,6 +73,9 @@ impl MqttShared {
             inflight_idx: Cell::new(0),
             flags: Cell::new(Flags::empty()),
             on_publish_ack: Cell::new(None),
+            encode_error: Cell::new(None),
+            streaming_waiter: Cell::new(None),
+            streaming_remaining: Cell::new(None),
         }
     }
 
@@ -110,8 +116,17 @@ impl MqttShared {
         self.clear_queues();
     }
 
+    pub(super) fn streaming_dropped(&self) {
+        self.force_close();
+        self.encode_error.set(Some(error::EncodeError::PublishIncomplete));
+    }
+
     pub(super) fn is_closed(&self) -> bool {
         self.io.is_closed()
+    }
+
+    pub(super) fn is_streaming(&self) -> bool {
+        self.streaming_remaining.get().is_some()
     }
 
     pub(super) fn credit(&self) -> usize {
@@ -122,7 +137,18 @@ impl MqttShared {
         self.credit() > 0 && !self.flags.get().contains(Flags::WRB_ENABLED)
     }
 
-    pub(super) fn next_id(&self) -> NonZeroU16 {
+    /// publish packet id
+    pub(super) fn set_publish_id(&self, pkt: &mut Publish) -> num::NonZeroU16 {
+        if let Some(idx) = pkt.packet_id {
+            idx
+        } else {
+            let idx = self.next_id();
+            pkt.packet_id = Some(idx);
+            idx
+        }
+    }
+
+    pub(super) fn next_id(&self) -> num::NonZeroU16 {
         let idx = self.inflight_idx.get() + 1;
         self.inflight_idx.set(idx);
         let idx = if idx == u16::MAX {
@@ -132,7 +158,7 @@ impl MqttShared {
             self.inflight_idx.set(idx);
             idx
         };
-        NonZeroU16::new(idx).unwrap()
+        num::NonZeroU16::new(idx).unwrap()
     }
 
     pub(super) fn set_cap(&self, cap: usize) {
@@ -155,18 +181,6 @@ impl MqttShared {
         flags.insert(Flags::ON_PUBLISH_ACK);
         self.flags.set(flags);
         self.on_publish_ack.set(Some(f));
-    }
-
-    pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), error::EncodeError> {
-        self.io.encode(EncodePacket::Packet(pkt), &self.codec)
-    }
-
-    pub(super) fn encode_publish(
-        &self,
-        pkt: Publish,
-        payload: Bytes,
-    ) -> Result<(), error::EncodeError> {
-        self.io.encode(EncodePacket::Publish(pkt, Some(payload)), &self.codec)
     }
 
     /// Close mqtt connection, dont send disconnect message
@@ -201,6 +215,13 @@ impl MqttShared {
         flags.remove(Flags::WRB_ENABLED);
         self.flags.set(flags);
 
+        // streaming waiter
+        if let Some(tx) = self.streaming_waiter.take() {
+            if tx.send(()).is_ok() {
+                return;
+            }
+        }
+
         // check if there are waiters
         let mut queues = self.queues.borrow_mut();
         if queues.inflight.len() < self.cap.get() {
@@ -214,6 +235,71 @@ impl MqttShared {
                     break;
                 }
             }
+        }
+    }
+
+    pub(super) async fn want_payload_stream(&self) -> Result<(), SendPacketError> {
+        if !self.is_closed() {
+            if self.flags.get().contains(Flags::WRB_ENABLED) {
+                let (tx, rx) = self.pool.waiters.channel();
+                self.streaming_waiter.set(Some(tx));
+                if rx.await.is_ok() {
+                    Ok(())
+                } else {
+                    Err(SendPacketError::Disconnected)
+                }
+            } else {
+                Ok(())
+            }
+        } else {
+            Err(SendPacketError::Disconnected)
+        }
+    }
+
+    fn check_streaming(&self) -> Result<(), error::EncodeError> {
+        if self.streaming_remaining.get().is_some() {
+            Err(error::EncodeError::ExpectPayload)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn enable_streaming(&self, pkt: &Publish, payload: Option<&Bytes>) {
+        let len = payload.map(|b| b.len()).unwrap_or(0);
+        self.streaming_remaining.set(num::NonZeroU32::new(pkt.payload_size - len as u32));
+    }
+
+    pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), error::EncodeError> {
+        self.check_streaming()?;
+        self.io.encode(EncodePacket::Packet(pkt), &self.codec)
+    }
+
+    pub(super) fn encode_publish(
+        &self,
+        pkt: Publish,
+        payload: Option<Bytes>,
+    ) -> Result<(), error::EncodeError> {
+        self.check_streaming()?;
+        self.enable_streaming(&pkt, payload.as_ref());
+        self.io.encode(EncodePacket::Publish(pkt, payload), &self.codec)
+    }
+
+    pub(super) fn encode_publish_payload(
+        &self,
+        payload: Bytes,
+    ) -> Result<bool, error::EncodeError> {
+        if let Some(remaining) = self.streaming_remaining.get() {
+            let len = payload.len() as u32;
+            if len > remaining.get() {
+                self.force_close();
+                Err(error::EncodeError::OverPublishSize)
+            } else {
+                self.io.encode(EncodePacket::PayloadChunk(payload), &self.codec)?;
+                self.streaming_remaining.set(num::NonZeroU32::new(remaining.get() - len));
+                Ok(self.streaming_remaining.get().is_some())
+            }
+        } else {
+            Err(error::EncodeError::UnexpectedPayload)
         }
     }
 
@@ -281,7 +367,7 @@ impl MqttShared {
     /// Register ack in response channel
     pub(super) fn wait_response(
         &self,
-        id: NonZeroU16,
+        id: num::NonZeroU16,
         ack: AckType,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
         let mut queues = self.queues.borrow_mut();
@@ -298,11 +384,14 @@ impl MqttShared {
     /// Register ack in response channel
     pub(super) fn wait_publish_response(
         &self,
-        id: NonZeroU16,
+        id: num::NonZeroU16,
         ack: AckType,
         pkt: Publish,
         payload: Option<Bytes>,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
+        self.check_streaming()?;
+        self.enable_streaming(&pkt, payload.as_ref());
+
         let mut queues = self.queues.borrow_mut();
         if queues.inflight_ids.contains(&id) {
             Err(SendPacketError::PacketIdInUse(id))
@@ -319,15 +408,16 @@ impl MqttShared {
         }
     }
 
-    pub(super) fn send_chunk(&self, chunk: Bytes) {}
-
     pub(super) fn wait_publish_response_no_block(
         &self,
-        id: NonZeroU16,
+        id: num::NonZeroU16,
         ack: AckType,
         pkt: Publish,
         payload: Option<Bytes>,
     ) -> Result<(), SendPacketError> {
+        self.check_streaming()?;
+        self.enable_streaming(&pkt, payload.as_ref());
+
         let mut queues = self.queues.borrow_mut();
         if queues.inflight_ids.contains(&id) {
             Err(SendPacketError::PacketIdInUse(id))
@@ -400,7 +490,7 @@ impl Ack {
         }
     }
 
-    pub(super) fn packet_id(&self) -> NonZeroU16 {
+    pub(super) fn packet_id(&self) -> num::NonZeroU16 {
         match self {
             Ack::Publish(ref pkt) => pkt.packet_id,
             Ack::Subscribe(ref pkt) => pkt.packet_id,

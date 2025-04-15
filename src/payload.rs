@@ -4,11 +4,16 @@ use ntex_bytes::{Bytes, BytesMut};
 use ntex_util::{channel::bstream, future::Either};
 
 type PlStream = bstream::Receiver<()>;
-pub type PayloadSender = bstream::Sender<()>;
+pub(crate) type PlSender = bstream::Sender<()>;
 
 /// Payload for Publish packet
 pub struct Payload {
     pl: Either<Cell<Option<Bytes>>, PlStream>,
+}
+
+/// Client payload streaming
+pub struct PayloadSender {
+    tx: PlSender,
 }
 
 impl Default for Payload {
@@ -22,7 +27,7 @@ impl Payload {
         Payload { pl: Either::Left(Cell::new(Some(buf))) }
     }
 
-    pub(crate) fn from_stream(buf: Bytes) -> (Payload, PayloadSender) {
+    pub(crate) fn from_stream(buf: Bytes) -> (Payload, PlSender) {
         let (tx, rx) = bstream::channel(false);
         tx.feed_data(buf);
 
