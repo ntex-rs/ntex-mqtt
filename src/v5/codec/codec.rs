@@ -1,6 +1,6 @@
 use std::{cell::Cell, cmp::min, fmt, num::NonZeroU32};
 
-use ntex_bytes::{Buf, BufMut, BytesMut};
+use ntex_bytes::{Buf, BufMut, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
@@ -14,7 +14,7 @@ pub struct Codec {
     state: Cell<DecodeState>,
     max_in_size: Cell<u32>,
     max_out_size: Cell<u32>,
-    max_fixed_payload: Cell<u32>,
+    min_chunk_size: Cell<u32>,
     flags: Cell<CodecFlags>,
     publish: Cell<Option<Publish>>,
     encoding_payload: Cell<Option<NonZeroU32>>,
@@ -35,8 +35,7 @@ enum DecodeState {
     Frame(FixedHeader),
     PublishHeader(FixedHeader),
     PublishProperties(u32, FixedHeader),
-    PublishFixed(u32, u32),
-    PublishVariable(u32),
+    PublishPayload(u32),
 }
 
 impl Codec {
@@ -46,19 +45,21 @@ impl Codec {
             state: Cell::new(DecodeState::FrameHeader),
             max_in_size: Cell::new(0),
             max_out_size: Cell::new(0),
-            max_fixed_payload: Cell::new(0),
+            min_chunk_size: Cell::new(0),
             flags: Cell::new(CodecFlags::empty()),
             publish: Cell::new(None),
             encoding_payload: Cell::new(None),
         }
     }
 
-    /// Set max fixed payload size.
+    /// Set min payload chunk size.
     ///
-    /// If fized size is set to `0`, size is unlimited.
-    /// By default max fized size is set to `0`
-    pub fn set_max_fixed_payload(&self, size: u32) {
-        self.max_fixed_payload.set(size)
+    /// If the minimum size is set to `0`, incoming payload chunks
+    /// will be processed immediately. Otherwise, the codec will
+    /// accumulate chunks until the total size reaches the specified minimum.
+    /// By default min size is set to `0`
+    pub fn set_min_chunk_size(&self, size: u32) {
+        self.min_chunk_size.set(size)
     }
 
     /// Set max inbound frame size.
@@ -191,32 +192,15 @@ impl Decoder for Codec {
                     let mut buf = src.split_to(props_len as usize).freeze();
                     let publish = Publish::decode(&mut buf, fixed.first_byte, payload_len)?;
 
-                    let fixed_size = self.max_fixed_payload.get();
-                    if fixed_size == 0 || payload_len <= fixed_size {
-                        if src.len() < payload_len as usize {
-                            self.publish.set(Some(publish));
-                            self.state.set(DecodeState::PublishFixed(
-                                payload_len,
-                                fixed.remaining_length,
-                            ));
-                        } else {
-                            self.state.set(DecodeState::FrameHeader);
-                            src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
-
-                            let payload = src.split_to(payload_len as usize).freeze();
-                            return Ok(Some(DecodedPacket::Publish(
-                                publish,
-                                payload,
-                                fixed.remaining_length,
-                            )));
-                        }
-                    } else {
+                    let len = src.len() as u32;
+                    let min_chunk_size = self.min_chunk_size.get();
+                    if len >= payload_len || min_chunk_size == 0 || len >= min_chunk_size {
                         let payload =
                             src.split_to(min(src.len(), payload_len as usize)).freeze();
                         let remaining = payload_len - payload.len() as u32;
 
                         if remaining > 0 {
-                            self.state.set(DecodeState::PublishVariable(remaining));
+                            self.state.set(DecodeState::PublishPayload(remaining));
                         } else {
                             self.state.set(DecodeState::FrameHeader);
                             src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
@@ -227,31 +211,27 @@ impl Decoder for Codec {
                             payload,
                             fixed.remaining_length,
                         )));
+                    } else {
+                        self.state.set(DecodeState::PublishPayload(payload_len));
+                        return Ok(Some(DecodedPacket::Publish(
+                            publish,
+                            Bytes::new(),
+                            fixed.remaining_length,
+                        )));
                     }
                 }
+                DecodeState::PublishPayload(remaining) => {
+                    let len = src.len() as u32;
+                    let min_chunk_size = self.min_chunk_size.get();
 
-                DecodeState::PublishFixed(pl_len, remaining_length) => {
-                    return if src.len() < pl_len as usize {
-                        Ok(None)
-                    } else {
-                        let publish = self.publish.take().unwrap();
-                        let payload = src.split_to(pl_len as usize).freeze();
-
-                        self.state.set(DecodeState::FrameHeader);
-                        src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
-
-                        Ok(Some(DecodedPacket::Publish(publish, payload, remaining_length)))
-                    };
-                }
-                DecodeState::PublishVariable(remaining) => {
-                    return if src.is_empty() {
-                        Ok(None)
-                    } else {
+                    return if (len >= remaining)
+                        || (min_chunk_size != 0 && len >= min_chunk_size)
+                    {
                         let payload = src.split_to(min(src.len(), remaining as usize)).freeze();
                         let remaining = remaining - payload.len() as u32;
 
                         let eof = if remaining > 0 {
-                            self.state.set(DecodeState::PublishVariable(remaining));
+                            self.state.set(DecodeState::PublishPayload(remaining));
                             false
                         } else {
                             self.state.set(DecodeState::FrameHeader);
@@ -259,6 +239,8 @@ impl Decoder for Codec {
                             true
                         };
                         Ok(Some(DecodedPacket::PayloadChunk(payload, eof)))
+                    } else {
+                        Ok(None)
                     };
                 }
                 DecodeState::Frame(fixed) => {
@@ -328,6 +310,7 @@ impl Encoder for Codec {
         match item {
             EncodePacket::Packet(pkt) => {
                 if self.encoding_payload.get().is_some() {
+                    log::trace!("Expect payload, received {:?}", pkt);
                     Err(EncodeError::ExpectPayload)
                 } else {
                     let content_size = pkt.encoded_size(max_size);
@@ -384,7 +367,7 @@ impl Clone for Codec {
             state: Cell::new(DecodeState::FrameHeader),
             max_in_size: self.max_in_size.clone(),
             max_out_size: self.max_out_size.clone(),
-            max_fixed_payload: self.max_fixed_payload.clone(),
+            min_chunk_size: self.min_chunk_size.clone(),
             flags: Cell::new(CodecFlags::empty()),
             publish: Cell::new(None),
             encoding_payload: Cell::new(None),
@@ -398,7 +381,7 @@ impl fmt::Debug for Codec {
             .field("state", &self.state)
             .field("max_in_size", &self.max_in_size)
             .field("max_out_size", &self.max_out_size)
-            .field("max_fixed_payload", &self.max_fixed_payload)
+            .field("min_chunk_size", &self.min_chunk_size)
             .field("flags", &self.flags)
             .finish()
     }

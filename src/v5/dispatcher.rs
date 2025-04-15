@@ -489,6 +489,7 @@ where
             }
             DispatchItem::Item(DecodedPacket::Packet(_, _)) => Ok(None),
             DispatchItem::EncoderError(err) => {
+                self.drop_payload();
                 control(Control::proto_error(ProtocolError::Encode(err)), &self.inner, ctx, 0)
                     .await
             }
@@ -508,6 +509,7 @@ where
                     .await
             }
             DispatchItem::DecoderError(err) => {
+                self.drop_payload();
                 control(Control::proto_error(ProtocolError::Decode(err)), &self.inner, ctx, 0)
                     .await
             }

@@ -29,8 +29,9 @@ impl Payload {
 
     pub(crate) fn from_stream(buf: Bytes) -> (Payload, PlSender) {
         let (tx, rx) = bstream::channel(false);
-        tx.feed_data(buf);
-
+        if !buf.is_empty() {
+            tx.feed_data(buf);
+        }
         (Payload { pl: Either::Right(rx) }, tx)
     }
 
@@ -40,16 +41,16 @@ impl Payload {
     }
 
     /// Read next chunk
-    pub async fn read(&self) -> Option<Bytes> {
+    pub async fn read(&self) -> Option<Result<Bytes, ()>> {
         match &self.pl {
-            Either::Left(pl) => pl.take(),
-            Either::Right(pl) => pl.read().await.and_then(|res| res.ok()),
+            Either::Left(pl) => pl.take().map(|b| Ok(b)),
+            Either::Right(pl) => pl.read().await,
         }
     }
 
-    pub async fn read_all(&self) -> Option<Bytes> {
+    pub async fn read_all(&self) -> Option<Result<Bytes, ()>> {
         match &self.pl {
-            Either::Left(pl) => pl.take(),
+            Either::Left(pl) => pl.take().map(|b| Ok(b)),
             Either::Right(pl) => {
                 let mut buf = if let Some(buf) = pl.read().await.and_then(|res| res.ok()) {
                     BytesMut::copy_from_slice(&buf)
@@ -59,9 +60,9 @@ impl Payload {
 
                 loop {
                     match pl.read().await {
-                        None => return Some(buf.freeze()),
+                        None => return Some(Ok(buf.freeze())),
                         Some(Ok(b)) => buf.extend_from_slice(&b),
-                        Some(Err(_)) => return None,
+                        Some(Err(_)) => return Some(Err(())),
                     }
                 }
             }

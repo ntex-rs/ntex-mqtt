@@ -25,7 +25,7 @@ pub struct MqttServer<St, C, Cn, P, M = Identity> {
     max_size: u32,
     max_receive: u16,
     max_topic_alias: u16,
-    max_fixed_payload: u32,
+    min_chunk_size: u32,
     handle_qos_after_disconnect: Option<QoS>,
     connect_timeout: Seconds,
     config: DispatcherConfig,
@@ -63,7 +63,7 @@ where
             max_size: 0,
             max_receive: 15,
             max_topic_alias: 32,
-            max_fixed_payload: 32 * 1024,
+            min_chunk_size: 32 * 1024,
             handle_qos_after_disconnect: None,
             connect_timeout: Seconds::ZERO,
             pool: Rc::new(MqttSinkPool::default()),
@@ -161,14 +161,14 @@ where
         self
     }
 
-    /// Set max fixed publish payload size.
+    /// Set min payload chunk size.
     ///
-    /// If publish payload smaller then this value, codec loads
-    /// complete payload otherwise codec streams payload.
-    /// If fized size is set to `0`, size is unlimited.
-    /// By default max fized size is set to 32kb
-    pub fn max_fixed_payload(mut self, size: u32) -> Self {
-        self.max_fixed_payload = size;
+    /// If the minimum size is set to `0`, incoming payload chunks
+    /// will be processed immediately. Otherwise, the codec will
+    /// accumulate chunks until the total size reaches the specified minimum.
+    /// By default min size is set to `0`
+    pub fn min_chunk_size(mut self, size: u32) -> Self {
+        self.min_chunk_size = size;
         self
     }
 
@@ -206,7 +206,7 @@ where
             max_size: self.max_size,
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
-            max_fixed_payload: self.max_fixed_payload,
+            min_chunk_size: self.min_chunk_size,
             max_qos: self.max_qos,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
@@ -233,7 +233,7 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_fixed_payload: self.max_fixed_payload,
+            min_chunk_size: self.min_chunk_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -261,7 +261,7 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_fixed_payload: self.max_fixed_payload,
+            min_chunk_size: self.min_chunk_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -288,7 +288,7 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_fixed_payload: self.max_fixed_payload,
+            min_chunk_size: self.min_chunk_size,
             handle_qos_after_disconnect: self.handle_qos_after_disconnect,
             connect_timeout: self.connect_timeout,
             pool: self.pool,
@@ -339,7 +339,7 @@ where
                 max_receive: self.max_receive,
                 max_topic_alias: self.max_topic_alias,
                 max_qos: self.max_qos,
-                max_fixed_payload: self.max_fixed_payload,
+                min_chunk_size: self.min_chunk_size,
                 connect_timeout: self.connect_timeout.into(),
                 pool: self.pool,
                 _t: PhantomData,
@@ -357,7 +357,7 @@ struct HandshakeFactory<St, H> {
     max_receive: u16,
     max_topic_alias: u16,
     max_qos: QoS,
-    max_fixed_payload: u32,
+    min_chunk_size: u32,
     connect_timeout: Millis,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
@@ -381,7 +381,7 @@ where
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,
             max_qos: self.max_qos,
-            max_fixed_payload: self.max_fixed_payload,
+            min_chunk_size: self.min_chunk_size,
             pool: self.pool.clone(),
             connect_timeout: self.connect_timeout,
             _t: PhantomData,
@@ -395,7 +395,7 @@ struct HandshakeService<St, H> {
     max_receive: u16,
     max_topic_alias: u16,
     max_qos: QoS,
-    max_fixed_payload: u32,
+    min_chunk_size: u32,
     connect_timeout: Millis,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
@@ -421,7 +421,7 @@ where
 
         let codec = mqtt::Codec::default();
         codec.set_max_inbound_size(self.max_size);
-        codec.set_max_fixed_payload(self.max_fixed_payload);
+        codec.set_min_chunk_size(self.min_chunk_size);
 
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
         shared.set_max_qos(self.max_qos);

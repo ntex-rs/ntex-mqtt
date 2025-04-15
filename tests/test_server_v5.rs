@@ -1,4 +1,4 @@
-use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc};
+use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc, Mutex};
 use std::{cell::RefCell, rc::Rc};
 use std::{future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 
@@ -79,6 +79,86 @@ async fn test_simple() -> std::io::Result<()> {
     assert!(res.is_err());
 
     sink.close();
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_simple_streaming() -> std::io::Result<()> {
+    let chunks = Arc::new(Mutex::new(Vec::new()));
+    let chunks2 = chunks.clone();
+
+    let srv = server::test_server(move || {
+        let chunks = chunks2.clone();
+        MqttServer::new(handshake)
+            .min_chunk_size(4)
+            .publish(move |p: Publish| {
+                let chunks = chunks.clone();
+                async move {
+                    while let Some(Ok(chunk)) = p.read().await {
+                        chunks.lock().unwrap().push(chunk);
+                    }
+                    Ok::<_, TestError>(p.ack())
+                }
+            })
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    // pkt 1
+    let (builder, payload) =
+        sink.publish(ByteString::from_static("test"), Bytes::new()).streaming(8);
+
+    ntex_rt::spawn(async move {
+        payload.send(Bytes::from_static(b"1111")).await.unwrap();
+        sleep(Millis(50)).await;
+        payload.send(Bytes::from_static(b"1111")).await.unwrap();
+    });
+
+    let res = builder.send_at_least_once().await;
+    assert!(res.is_ok());
+
+    // pkt 2
+    let (builder, payload) =
+        sink.publish(ByteString::from_static("test"), Bytes::new()).streaming(5);
+
+    ntex_rt::spawn(async move {
+        payload.send(Bytes::from_static(b"22")).await.unwrap();
+        sleep(Millis(50)).await;
+        payload.send(Bytes::from_static(b"222")).await.unwrap();
+    });
+
+    let res = builder.send_at_least_once().await;
+    assert!(res.is_ok());
+
+    // pkt 2
+    let res = sink
+        .publish(ByteString::from_static("test"), Bytes::from_static(b"123"))
+        .send_at_least_once()
+        .await;
+    assert!(res.is_ok());
+
+    let (builder, _) = sink.publish(ByteString::from_static("#"), Bytes::new()).streaming(12);
+    let res = builder.send_at_least_once().await;
+    assert!(res.is_err());
+
+    sink.close();
+
+    assert_eq!(
+        &chunks.lock().unwrap()[..],
+        vec![
+            Bytes::from_static(b"1111"),
+            Bytes::from_static(b"1111"),
+            Bytes::from_static(b"22222"),
+            Bytes::from_static(b"123"),
+        ]
+    );
     Ok(())
 }
 
@@ -1306,7 +1386,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
         let check = check2.clone();
 
         MqttServer::new(handshake)
-            .max_fixed_payload(0)
+            .min_chunk_size(0)
             .frame_read_rate(Seconds(1), Seconds(2), 10)
             .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
             .control(move |msg| {

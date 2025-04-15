@@ -85,13 +85,13 @@ impl Publish {
 
     #[inline]
     /// Payload that is being published.
-    pub async fn read(&self) -> Option<Bytes> {
+    pub async fn read(&self) -> Option<Result<Bytes, ()>> {
         self.payload.read().await
     }
 
     #[inline]
     /// Payload that is being published.
-    pub async fn read_all(&self) -> Option<Bytes> {
+    pub async fn read_all(&self) -> Option<Result<Bytes, ()>> {
         self.payload.read_all().await
     }
 

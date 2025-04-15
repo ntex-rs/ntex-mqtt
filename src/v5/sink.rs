@@ -611,12 +611,14 @@ impl StreamingPayload {
             if rx.await.is_err() {
                 return Err(SendPacketError::StreamingCancelled);
             }
+            log::trace!("Publish is encoded, ready to process payload");
             self.inprocess.set(true);
         }
 
         if !self.inprocess.get() {
             Err(EncodeError::UnexpectedPayload.into())
         } else {
+            log::trace!("Sending payload chunk: {:?}", chunk.len());
             self.shared.want_payload_stream().await?;
 
             if !self.shared.encode_publish_payload(chunk)? {
