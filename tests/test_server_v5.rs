@@ -113,12 +113,12 @@ async fn test_simple_streaming() -> std::io::Result<()> {
 
     // pkt 1
     let (builder, payload) =
-        sink.publish(ByteString::from_static("test"), Bytes::new()).streaming(8);
+        sink.publish(ByteString::from_static("test"), Bytes::new()).streaming(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
         sleep(Millis(50)).await;
-        payload.send(Bytes::from_static(b"1111")).await.unwrap();
+        payload.send(Bytes::from_static(b"111111")).await.unwrap();
     });
 
     let res = builder.send_at_least_once().await;
@@ -137,7 +137,16 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     let res = builder.send_at_least_once().await;
     assert!(res.is_ok());
 
-    // pkt 2
+    // pkt 3
+    let (builder, payload) =
+        sink.publish(ByteString::from_static("test"), Bytes::new()).streaming(2);
+    ntex_rt::spawn(async move {
+        payload.send(Bytes::from_static(b"33")).await.unwrap();
+    });
+    let res = builder.send_at_least_once().await;
+    assert!(res.is_ok());
+
+    // pkt 4
     let res = sink
         .publish(ByteString::from_static("test"), Bytes::from_static(b"123"))
         .send_at_least_once()
@@ -154,8 +163,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
         &chunks.lock().unwrap()[..],
         vec![
             Bytes::from_static(b"1111"),
-            Bytes::from_static(b"1111"),
+            Bytes::from_static(b"111111"),
             Bytes::from_static(b"22222"),
+            Bytes::from_static(b"33"),
             Bytes::from_static(b"123"),
         ]
     );
