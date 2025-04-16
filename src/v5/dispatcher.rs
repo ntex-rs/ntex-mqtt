@@ -72,11 +72,18 @@ where
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     fn size(&self) -> u32 {
         match self {
-            DispatchItem::Item(Decoded::Packet(_, size)) => *size,
-            DispatchItem::Item(Decoded::Publish(p, _, size)) => size - p.payload_size,
-            DispatchItem::Item(Decoded::PayloadChunk(chunk, _)) => chunk.len() as u32,
+            DispatchItem::Item(Decoded::Packet(_, size))
+            | DispatchItem::Item(Decoded::Publish(_, _, size)) => *size,
             _ => 0,
         }
+    }
+
+    fn is_publish(&self) -> bool {
+        matches!(self, DispatchItem::Item(Decoded::Publish(..)))
+    }
+
+    fn is_chunk(&self) -> bool {
+        matches!(self, DispatchItem::Item(Decoded::PayloadChunk(..)))
     }
 }
 
