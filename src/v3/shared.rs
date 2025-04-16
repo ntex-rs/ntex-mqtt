@@ -93,6 +93,10 @@ impl MqttShared {
         }
     }
 
+    pub(super) fn tag(&self) -> &'static str {
+        self.io.tag()
+    }
+
     pub(super) fn close(&self) {
         if self.flags.get().contains(Flags::CLIENT) {
             let _ = self.encode_packet(codec::Packet::Disconnect);

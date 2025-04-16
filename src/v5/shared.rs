@@ -79,6 +79,10 @@ impl MqttShared {
         }
     }
 
+    pub(super) fn tag(&self) -> &'static str {
+        self.io.tag()
+    }
+
     pub(super) fn receive_max(&self) -> u16 {
         self.receive_max.get()
     }

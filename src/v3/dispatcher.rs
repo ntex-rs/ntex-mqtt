@@ -73,8 +73,9 @@ where
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     fn size(&self) -> u32 {
         match self {
-            DispatchItem::Item(Decoded::Packet(_, size))
-            | DispatchItem::Item(Decoded::Publish(_, _, size)) => *size,
+            DispatchItem::Item(Decoded::Packet(_, size)) => *size,
+            DispatchItem::Item(Decoded::Publish(p, _, size)) => size - p.payload_size,
+            DispatchItem::Item(Decoded::PayloadChunk(chunk, _)) => chunk.len() as u32,
             _ => 0,
         }
     }
@@ -121,6 +122,10 @@ where
             }),
             _t: PhantomData,
         }
+    }
+
+    fn tag(&self) -> &'static str {
+        self.inner.sink.tag()
     }
 
     fn drop_payload<PErr>(&self, err: &PErr)
@@ -204,7 +209,7 @@ where
         req: DispatchItem<Rc<MqttShared>>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        log::trace!("Dispatch v3 packet: {:#?}", req);
+        log::trace!("{}; Dispatch v3 packet: {:#?}", self.tag(), req);
 
         match req {
             DispatchItem::Item(Decoded::Publish(publish, payload, size)) => {
@@ -226,7 +231,11 @@ where
                 // check for duplicated packet id
                 if let Some(pid) = packet_id {
                     if !inner.inflight.borrow_mut().insert(pid) {
-                        log::trace!("Duplicated packet id for publish packet: {:?}", pid);
+                        log::trace!(
+                            "{}: Duplicated packet id for publish packet: {:?}",
+                            self.tag(),
+                            pid
+                        );
                         return control(
                             Control::proto_error(
                                 ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]")
@@ -240,7 +249,8 @@ where
                 // check max allowed qos
                 if publish.qos > self.max_qos {
                     log::trace!(
-                        "Max allowed QoS is violated, max {:?} provided {:?}",
+                        "{}: Max allowed QoS is violated, max {:?} provided {:?}",
+                        self.tag(),
                         self.max_qos,
                         publish.qos
                     );
@@ -334,7 +344,11 @@ where
                 }
 
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
-                    log::trace!("Duplicated packet id for subscribe packet: {:?}", packet_id);
+                    log::trace!(
+                        "{}: Duplicated packet id for subscribe packet: {:?}",
+                        self.tag(),
+                        packet_id
+                    );
                     return control(
                         Control::proto_error(ProtocolError::generic_violation(
                             "SUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
@@ -371,7 +385,11 @@ where
                 }
 
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
-                    log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
+                    log::trace!(
+                        "{}: Duplicated packet id for unsubscribe packet: {:?}",
+                        self.tag(),
+                        packet_id
+                    );
                     return control(
                         Control::proto_error(ProtocolError::generic_violation(
                             "UNSUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
@@ -443,7 +461,11 @@ where
 {
     match ctx.call(svc, pkt).await {
         Ok(_) => {
-            log::trace!("Publish result for packet {:?} is ready", packet_id);
+            log::trace!(
+                "{}: Publish result for packet {:?} is ready",
+                inner.sink.tag(),
+                packet_id
+            );
 
             if let Some(packet_id) = packet_id {
                 inner.inflight.borrow_mut().remove(&packet_id);

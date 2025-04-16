@@ -72,8 +72,9 @@ where
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     fn size(&self) -> u32 {
         match self {
-            DispatchItem::Item(Decoded::Packet(_, size))
-            | DispatchItem::Item(Decoded::Publish(_, _, size)) => *size,
+            DispatchItem::Item(Decoded::Packet(_, size)) => *size,
+            DispatchItem::Item(Decoded::Publish(p, _, size)) => size - p.payload_size,
+            DispatchItem::Item(Decoded::PayloadChunk(chunk, _)) => chunk.len() as u32,
             _ => 0,
         }
     }
@@ -126,6 +127,10 @@ where
             }),
             _t: marker::PhantomData,
         }
+    }
+
+    fn tag(&self) -> &'static str {
+        self.inner.sink.tag()
     }
 
     fn drop_payload<PErr>(&self, err: &PErr)
@@ -214,7 +219,7 @@ where
         request: DispatchItem<Rc<MqttShared>>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        log::trace!("Dispatch v5 packet: {:#?}", request);
+        log::trace!("{}: Dispatch v5 packet: {:#?}", self.tag(), request);
 
         match request {
             DispatchItem::Item(Decoded::Publish(mut publish, payload, size)) => {
@@ -243,7 +248,8 @@ where
                         let receive_max = state.receive_max();
                         if receive_max != 0 && inner.inflight.len() >= receive_max as usize {
                             log::trace!(
-                                "Receive maximum exceeded: max: {} in-flight: {}",
+                                "{}: Receive maximum exceeded: max: {} in-flight: {}",
+                                self.tag(),
                                 receive_max,
                                 inner.inflight.len()
                             );
@@ -264,7 +270,8 @@ where
                         // check max allowed qos
                         if publish.qos > state.max_qos() {
                             log::trace!(
-                                "Max allowed QoS is violated, max {:?} provided {:?}",
+                                "{}: Max allowed QoS is violated, max {:?} provided {:?}",
+                                self.tag(),
                                 state.max_qos(),
                                 publish.qos
                             );
@@ -281,7 +288,7 @@ where
                             .await;
                         }
                         if publish.retain && !state.codec.retain_available() {
-                            log::trace!("Retain is not available but is set");
+                            log::trace!("{}: Retain is not available but is set", self.tag());
                             drop(inner);
                             return control(
                                 Control::proto_error(ProtocolError::violation(
@@ -446,7 +453,10 @@ where
                 }
 
                 if pkt.id.is_some() && !self.inner.sink.codec.sub_ids_available() {
-                    log::trace!("Subscription Identifiers are not supported but was set");
+                    log::trace!(
+                        "{}: Subscription Identifiers are not supported but was set",
+                        self.tag()
+                    );
                     return control(
                         Control::proto_error(ProtocolError::violation(
                             DisconnectReasonCode::SubscriptionIdentifiersNotSupported,
