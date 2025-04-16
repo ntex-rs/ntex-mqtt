@@ -27,7 +27,7 @@ impl Default for Payload {
 }
 
 impl Payload {
-    pub(crate) fn from_bytes(buf: Bytes) -> Payload {
+    pub fn from_bytes(buf: Bytes) -> Payload {
         Payload { pl: Either::Left(Cell::new(Some(buf))) }
     }
 
