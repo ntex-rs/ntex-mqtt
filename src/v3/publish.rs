@@ -5,7 +5,7 @@ use ntex_router::Path;
 use serde::de::DeserializeOwned;
 use serde_json::Error as JsonError;
 
-use crate::{payload::Payload, v3::codec};
+use crate::{error::PayloadError, payload::Payload, v3::codec};
 
 #[derive(Debug)]
 /// Publish message
@@ -87,13 +87,13 @@ impl Publish {
 
     #[inline]
     /// Payload that is being published.
-    pub async fn read(&self) -> Option<Result<Bytes, ()>> {
+    pub async fn read(&self) -> Result<Option<Bytes>, PayloadError> {
         self.payload.read().await
     }
 
     #[inline]
     /// Payload that is being published.
-    pub async fn read_all(&self) -> Option<Result<Bytes, ()>> {
+    pub async fn read_all(&self) -> Result<Option<Bytes>, PayloadError> {
         self.payload.read_all().await
     }
 

@@ -7,8 +7,8 @@ use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::services::inflight::InFlightService;
 use ntex_util::{future::join, HashSet};
 
-use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{payload::Payload, payload::PlSender, types::QoS};
+use crate::error::{DecodeError, HandshakeError, MqttError, PayloadError, ProtocolError};
+use crate::{payload::Payload, payload::PayloadStatus, payload::PlSender, types::QoS};
 
 use super::codec::{self, Decoded, Encoded, Packet};
 use super::control::{Control, ControlAck, ControlAckKind, Subscribe, Unsubscribe};
@@ -73,8 +73,9 @@ where
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     fn size(&self) -> u32 {
         match self {
-            DispatchItem::Item(Decoded::Packet(_, size))
-            | DispatchItem::Item(Decoded::Publish(_, _, size)) => *size,
+            DispatchItem::Item(Decoded::Packet(_, size)) => *size,
+            DispatchItem::Item(Decoded::Publish(p, _, size)) => size - p.payload_size,
+            DispatchItem::Item(Decoded::PayloadChunk(chunk, _)) => chunk.len() as u32,
             _ => 0,
         }
     }
@@ -123,9 +124,17 @@ where
         }
     }
 
-    fn drop_payload(&self) {
+    fn tag(&self) -> &'static str {
+        self.inner.sink.tag()
+    }
+
+    fn drop_payload<PErr>(&self, err: &PErr)
+    where
+        PErr: Clone,
+        PayloadError: From<PErr>,
+    {
         if let Some(pl) = self.payload.take() {
-            pl.set_error(());
+            pl.set_error(err.clone().into());
         }
     }
 }
@@ -143,7 +152,7 @@ where
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) =
             join(ctx.ready(&self.publish), ctx.ready(self.inner.control.get_ref())).await;
-        if let Err(e) = res1 {
+        let result = if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
             } else {
@@ -160,7 +169,18 @@ where
             }
         } else {
             res2
+        };
+
+        if result.is_ok() {
+            if let Some(pl) = self.payload.take() {
+                if pl.ready().await == PayloadStatus::Ready {
+                    self.payload.set(Some(pl));
+                } else {
+                    self.inner.sink.close();
+                }
+            }
         }
+        result
     }
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
@@ -176,7 +196,7 @@ where
     }
 
     async fn shutdown(&self) {
-        self.drop_payload();
+        self.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.close();
         let _ = self.inner.control.call(Control::closed()).await;
 
@@ -189,7 +209,7 @@ where
         req: DispatchItem<Rc<MqttShared>>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        log::trace!("Dispatch v3 packet: {:#?}", req);
+        log::trace!("{}; Dispatch v3 packet: {:#?}", self.tag(), req);
 
         match req {
             DispatchItem::Item(Decoded::Publish(publish, payload, size)) => {
@@ -211,7 +231,11 @@ where
                 // check for duplicated packet id
                 if let Some(pid) = packet_id {
                     if !inner.inflight.borrow_mut().insert(pid) {
-                        log::trace!("Duplicated packet id for publish packet: {:?}", pid);
+                        log::trace!(
+                            "{}: Duplicated packet id for publish packet: {:?}",
+                            self.tag(),
+                            pid
+                        );
                         return control(
                             Control::proto_error(
                                 ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]")
@@ -225,7 +249,8 @@ where
                 // check max allowed qos
                 if publish.qos > self.max_qos {
                     log::trace!(
-                        "Max allowed QoS is violated, max {:?} provided {:?}",
+                        "{}: Max allowed QoS is violated, max {:?} provided {:?}",
+                        self.tag(),
                         self.max_qos,
                         publish.qos
                     );
@@ -270,14 +295,24 @@ where
                 .await
             }
             DispatchItem::Item(Decoded::PayloadChunk(buf, eof)) => {
-                let pl = self.payload.take().unwrap();
-                pl.feed_data(buf);
-                if eof {
-                    pl.feed_eof();
+                if let Some(pl) = self.payload.take() {
+                    pl.feed_data(buf);
+                    if eof {
+                        pl.feed_eof();
+                    } else {
+                        self.payload.set(Some(pl));
+                    }
+                    Ok(None)
                 } else {
-                    self.payload.set(Some(pl));
+                    control(
+                        Control::proto_error(ProtocolError::Decode(
+                            DecodeError::UnexpectedPayload,
+                        )),
+                        &self.inner,
+                        ctx,
+                    )
+                    .await
                 }
-                Ok(None)
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
@@ -309,7 +344,11 @@ where
                 }
 
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
-                    log::trace!("Duplicated packet id for subscribe packet: {:?}", packet_id);
+                    log::trace!(
+                        "{}: Duplicated packet id for subscribe packet: {:?}",
+                        self.tag(),
+                        packet_id
+                    );
                     return control(
                         Control::proto_error(ProtocolError::generic_violation(
                             "SUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
@@ -346,7 +385,11 @@ where
                 }
 
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
-                    log::trace!("Duplicated packet id for unsubscribe packet: {:?}", packet_id);
+                    log::trace!(
+                        "{}: Duplicated packet id for unsubscribe packet: {:?}",
+                        self.tag(),
+                        packet_id
+                    );
                     return control(
                         Control::proto_error(ProtocolError::generic_violation(
                             "UNSUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
@@ -368,27 +411,27 @@ where
             }
             DispatchItem::Item(_) => Ok(None),
             DispatchItem::EncoderError(err) => {
-                self.drop_payload();
-                control(Control::proto_error(ProtocolError::Encode(err)), &self.inner, ctx)
-                    .await
+                let err = ProtocolError::Encode(err);
+                self.drop_payload(&err);
+                control(Control::proto_error(err), &self.inner, ctx).await
             }
             DispatchItem::KeepAliveTimeout => {
-                self.drop_payload();
+                self.drop_payload(&ProtocolError::KeepAliveTimeout);
                 control(Control::proto_error(ProtocolError::KeepAliveTimeout), &self.inner, ctx)
                     .await
             }
             DispatchItem::ReadTimeout => {
-                self.drop_payload();
+                self.drop_payload(&ProtocolError::ReadTimeout);
                 control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx)
                     .await
             }
             DispatchItem::DecoderError(err) => {
-                self.drop_payload();
-                control(Control::proto_error(ProtocolError::Decode(err)), &self.inner, ctx)
-                    .await
+                let err = ProtocolError::Decode(err);
+                self.drop_payload(&err);
+                control(Control::proto_error(err), &self.inner, ctx).await
             }
             DispatchItem::Disconnect(err) => {
-                self.drop_payload();
+                self.drop_payload(&PayloadError::Disconnected);
                 control(Control::peer_gone(err), &self.inner, ctx).await
             }
             DispatchItem::WBackPressureEnabled => {
@@ -418,7 +461,11 @@ where
 {
     match ctx.call(svc, pkt).await {
         Ok(_) => {
-            log::trace!("Publish result for packet {:?} is ready", packet_id);
+            log::trace!(
+                "{}: Publish result for packet {:?} is ready",
+                inner.sink.tag(),
+                packet_id
+            );
 
             if let Some(packet_id) = packet_id {
                 inner.inflight.borrow_mut().remove(&packet_id);

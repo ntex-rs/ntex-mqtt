@@ -32,6 +32,17 @@ pub enum HandshakeError<E> {
     Disconnected(Option<io::Error>),
 }
 
+/// Errors related to payload processing
+#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PayloadError {
+    /// Protocol error
+    #[error("{0}")]
+    Protocol(#[from] ProtocolError),
+    /// Peer is disconnected
+    #[error("Peer is disconnected")]
+    Disconnected,
+}
+
 /// Protocol level errors
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProtocolError {
@@ -149,6 +160,8 @@ pub enum DecodeError {
     MaxSizeExceeded,
     #[error("utf8 error")]
     Utf8Error,
+    #[error("Unexpected payload")]
+    UnexpectedPayload,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, thiserror::Error)]

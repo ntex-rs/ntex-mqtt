@@ -94,7 +94,7 @@ async fn test_simple_streaming() -> std::io::Result<()> {
             .publish(move |p: Publish| {
                 let chunks = chunks.clone();
                 async move {
-                    while let Some(Ok(chunk)) = p.read().await {
+                    while let Ok(Some(chunk)) = p.read().await {
                         chunks.lock().unwrap().push(chunk);
                     }
                     Ok::<_, TestError>(p.ack())
@@ -1446,7 +1446,10 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
         MqttServer::new(handshake)
             .min_chunk_size(32 * 1024)
             .frame_read_rate(Seconds(1), Seconds(2), 10)
-            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .publish(|p: Publish| async move {
+                let _ = p.read_all().await;
+                Ok::<_, TestError>(p.ack())
+            })
             .control(move |msg| {
                 let check = check.clone();
                 match msg {
@@ -1484,8 +1487,8 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
     let mut buf = BytesMut::new();
     codec.encode(p, &mut buf).unwrap();
 
-    io.write(&buf[..5]).unwrap();
-    buf.split_to(5);
+    io.write(&buf[..50]).unwrap();
+    buf.split_to(50);
     sleep(Millis(100)).await;
     io.write(&buf[..10]).unwrap();
     buf.split_to(10);

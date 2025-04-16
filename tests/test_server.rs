@@ -7,7 +7,9 @@ use ntex::util::{join_all, lazy, ByteString, Bytes, BytesMut, Ready};
 use ntex::{codec::Encoder, server, service::chain_factory};
 
 use ntex_mqtt::v3::codec::{self, Decoded, Encoded, Packet};
-use ntex_mqtt::v3::{client, Control, Handshake, HandshakeAck, MqttServer, Publish, Session};
+use ntex_mqtt::v3::{
+    self, client, Control, Handshake, HandshakeAck, MqttServer, Publish, Session,
+};
 use ntex_mqtt::{error::ProtocolError, QoS};
 
 struct St;
@@ -57,7 +59,7 @@ async fn test_simple_streaming() -> std::io::Result<()> {
             .publish(move |p: Publish| {
                 let chunks = chunks.clone();
                 async move {
-                    while let Some(Ok(chunk)) = p.read().await {
+                    while let Ok(Some(chunk)) = p.read().await {
                         chunks.lock().unwrap().push(chunk);
                     }
                     Ok(())
@@ -906,7 +908,10 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
         MqttServer::new(handshake)
             .min_chunk_size(32 * 1024)
             .frame_read_rate(Seconds(1), Seconds(2), 10)
-            .publish(|_| Ready::Ok(()))
+            .publish(|p: v3::Publish| async move {
+                let _ = p.read_all().await;
+                Ok(())
+            })
             .control(move |msg| {
                 let check = check.clone();
                 match msg {
@@ -916,7 +921,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
                         }
                         Ready::Ok(msg.ack())
                     }
-                    _ => Ready::Ok(msg.disconnect()),
+                    _ => Ready::Ok(msg.ack()),
                 }
             })
             .finish()

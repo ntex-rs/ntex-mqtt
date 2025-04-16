@@ -1,6 +1,10 @@
 # Changes
 
-## [5.0.0] - 2025-04-xx
+## [5.0.0-beta.1] - 2025-04-16
+
+* Cleanup payload errors
+
+## [5.0.0-beta.0] - 2025-04-15
 
 * Add publish packet streaming
 

@@ -1,4 +1,4 @@
-use std::{cell::Cell, cell::RefCell, marker, num, rc::Rc, task::Context};
+use std::{cell::Cell, cell::RefCell, future::poll_fn, marker, num, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_io::DispatchItem;
@@ -7,8 +7,11 @@ use ntex_util::services::inflight::InFlightService;
 use ntex_util::services::{buffer::BufferService, buffer::BufferServiceError};
 use ntex_util::{future::join, HashMap, HashSet};
 
-use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{payload::Payload, payload::PlSender, types::QoS};
+use crate::error::{
+    DecodeError, EncodeError, HandshakeError, MqttError, PayloadError, ProtocolError,
+};
+use crate::payload::{Payload, PayloadStatus, PlSender};
+use crate::types::QoS;
 
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
 use super::control::{Control, ControlAck};
@@ -69,8 +72,9 @@ where
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     fn size(&self) -> u32 {
         match self {
-            DispatchItem::Item(Decoded::Packet(_, size))
-            | DispatchItem::Item(Decoded::Publish(_, _, size)) => *size,
+            DispatchItem::Item(Decoded::Packet(_, size)) => *size,
+            DispatchItem::Item(Decoded::Publish(p, _, size)) => size - p.payload_size,
+            DispatchItem::Item(Decoded::PayloadChunk(chunk, _)) => chunk.len() as u32,
             _ => 0,
         }
     }
@@ -125,9 +129,17 @@ where
         }
     }
 
-    fn drop_payload(&self) {
+    fn tag(&self) -> &'static str {
+        self.inner.sink.tag()
+    }
+
+    fn drop_payload<PErr>(&self, err: &PErr)
+    where
+        PErr: Clone,
+        PayloadError: From<PErr>,
+    {
         if let Some(pl) = self.payload.take() {
-            pl.set_error(());
+            pl.set_error(err.clone().into());
         }
     }
 }
@@ -145,7 +157,7 @@ where
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) =
             join(ctx.ready(&self.publish), ctx.ready(self.inner.control.get_ref())).await;
-        if let Err(e) = res1 {
+        let result = if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
             } else {
@@ -164,7 +176,18 @@ where
             }
         } else {
             res2
+        };
+
+        if result.is_ok() {
+            if let Some(pl) = self.payload.take() {
+                if pl.ready().await == PayloadStatus::Ready {
+                    self.payload.set(Some(pl));
+                } else {
+                    self.inner.sink.force_close();
+                }
+            }
         }
+        result
     }
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
@@ -182,7 +205,7 @@ where
     }
 
     async fn shutdown(&self) {
-        self.drop_payload();
+        self.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink();
         let _ = self.inner.control.call(Control::closed()).await;
 
@@ -196,7 +219,7 @@ where
         request: DispatchItem<Rc<MqttShared>>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        log::trace!("Dispatch v5 packet: {:#?}", request);
+        log::trace!("{}: Dispatch v5 packet: {:#?}", self.tag(), request);
 
         match request {
             DispatchItem::Item(Decoded::Publish(mut publish, payload, size)) => {
@@ -225,7 +248,8 @@ where
                         let receive_max = state.receive_max();
                         if receive_max != 0 && inner.inflight.len() >= receive_max as usize {
                             log::trace!(
-                                "Receive maximum exceeded: max: {} in-flight: {}",
+                                "{}: Receive maximum exceeded: max: {} in-flight: {}",
+                                self.tag(),
                                 receive_max,
                                 inner.inflight.len()
                             );
@@ -246,7 +270,8 @@ where
                         // check max allowed qos
                         if publish.qos > state.max_qos() {
                             log::trace!(
-                                "Max allowed QoS is violated, max {:?} provided {:?}",
+                                "{}: Max allowed QoS is violated, max {:?} provided {:?}",
+                                self.tag(),
                                 state.max_qos(),
                                 publish.qos
                             );
@@ -263,7 +288,7 @@ where
                             .await;
                         }
                         if publish.retain && !state.codec.retain_available() {
-                            log::trace!("Retain is not available but is set");
+                            log::trace!("{}: Retain is not available but is set", self.tag());
                             drop(inner);
                             return control(
                                 Control::proto_error(ProtocolError::violation(
@@ -370,14 +395,25 @@ where
                 .await
             }
             DispatchItem::Item(Decoded::PayloadChunk(buf, eof)) => {
-                let pl = self.payload.take().unwrap();
-                pl.feed_data(buf);
-                if eof {
-                    pl.feed_eof();
+                if let Some(pl) = self.payload.take() {
+                    pl.feed_data(buf);
+                    if eof {
+                        pl.feed_eof();
+                    } else {
+                        self.payload.set(Some(pl));
+                    }
+                    Ok(None)
                 } else {
-                    self.payload.set(Some(pl));
+                    control(
+                        Control::proto_error(ProtocolError::Decode(
+                            DecodeError::UnexpectedPayload,
+                        )),
+                        &self.inner,
+                        ctx,
+                        0,
+                    )
+                    .await
                 }
-                Ok(None)
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
@@ -417,7 +453,10 @@ where
                 }
 
                 if pkt.id.is_some() && !self.inner.sink.codec.sub_ids_available() {
-                    log::trace!("Subscription Identifiers are not supported but was set");
+                    log::trace!(
+                        "{}: Subscription Identifiers are not supported but was set",
+                        self.tag()
+                    );
                     return control(
                         Control::proto_error(ProtocolError::violation(
                             DisconnectReasonCode::SubscriptionIdentifiersNotSupported,
@@ -489,12 +528,12 @@ where
             }
             DispatchItem::Item(Decoded::Packet(_, _)) => Ok(None),
             DispatchItem::EncoderError(err) => {
-                self.drop_payload();
-                control(Control::proto_error(ProtocolError::Encode(err)), &self.inner, ctx, 0)
-                    .await
+                let err = ProtocolError::Encode(err);
+                self.drop_payload(&err);
+                control(Control::proto_error(err), &self.inner, ctx, 0).await
             }
             DispatchItem::KeepAliveTimeout => {
-                self.drop_payload();
+                self.drop_payload(&ProtocolError::KeepAliveTimeout);
                 control(
                     Control::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
@@ -504,17 +543,17 @@ where
                 .await
             }
             DispatchItem::ReadTimeout => {
-                self.drop_payload();
+                self.drop_payload(&ProtocolError::ReadTimeout);
                 control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx, 0)
                     .await
             }
             DispatchItem::DecoderError(err) => {
-                self.drop_payload();
-                control(Control::proto_error(ProtocolError::Decode(err)), &self.inner, ctx, 0)
-                    .await
+                let err = ProtocolError::Decode(err);
+                self.drop_payload(&err);
+                control(Control::proto_error(err), &self.inner, ctx, 0).await
             }
             DispatchItem::Disconnect(err) => {
-                self.drop_payload();
+                self.drop_payload(&PayloadError::Disconnected);
                 control(Control::peer_gone(err), &self.inner, ctx, 0).await
             }
             DispatchItem::WBackPressureEnabled => {
