@@ -7,6 +7,10 @@ use ntex_util::{future::join, task::LocalWaker};
 /// Trait for types that could be sized
 pub trait SizedRequest {
     fn size(&self) -> u32;
+
+    fn is_publish(&self) -> bool;
+
+    fn is_chunk(&self) -> bool;
 }
 
 /// Service that can limit number of in-flight async requests.
@@ -55,6 +59,7 @@ impl<S> Middleware<S> for InFlightService {
     fn create(&self, service: S) -> Self::Service {
         InFlightServiceImpl {
             service,
+            publish: Cell::new(false),
             count: Counter::new(self.max_receive, self.max_receive_size),
         }
     }
@@ -63,6 +68,7 @@ impl<S> Middleware<S> for InFlightService {
 pub struct InFlightServiceImpl<S> {
     count: Counter,
     service: S,
+    publish: Cell<bool>,
 }
 
 impl<S, R> Service<R> for InFlightServiceImpl<S>
@@ -75,16 +81,23 @@ where
 
     #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), S::Error> {
-        if !self.count.is_available() {
-            let (_, res) = join(self.count.available(), ctx.ready(&self.service)).await;
-            res
-        } else {
+        if self.publish.get() || self.count.is_available() {
             ctx.ready(&self.service).await
+        } else {
+            join(self.count.available(), ctx.ready(&self.service)).await.1
         }
     }
 
     #[inline]
     async fn call(&self, req: R, ctx: ServiceCtx<'_, Self>) -> Result<S::Response, S::Error> {
+        // process payload chunks
+        if self.publish.get() && !req.is_chunk() {
+            self.publish.set(false);
+        }
+        if req.is_publish() {
+            self.publish.set(true);
+        }
+
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
         let task_guard = self.count.get(size);
         let result = ctx.call(&self.service, req).await;
@@ -205,6 +218,14 @@ mod tests {
     impl SizedRequest for () {
         fn size(&self) -> u32 {
             12
+        }
+
+        fn is_publish(&self) -> bool {
+            false
+        }
+
+        fn is_chunk(&self) -> bool {
+            false
         }
     }
 
