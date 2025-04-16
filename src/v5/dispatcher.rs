@@ -1,4 +1,4 @@
-use std::{cell::Cell, cell::RefCell, marker, num, rc::Rc, task::Context};
+use std::{cell::Cell, cell::RefCell, future::poll_fn, marker, num, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_io::DispatchItem;
@@ -145,7 +145,7 @@ where
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) =
             join(ctx.ready(&self.publish), ctx.ready(self.inner.control.get_ref())).await;
-        if let Err(e) = res1 {
+        let result = if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
             } else {
@@ -164,7 +164,15 @@ where
             }
         } else {
             res2
+        };
+
+        if result.is_ok() {
+            if let Some(pl) = self.payload.take() {
+                poll_fn(|cx| pl.poll_ready(cx)).await;
+                self.payload.set(Some(pl));
+            }
         }
+        result
     }
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
