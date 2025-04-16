@@ -242,7 +242,6 @@ mod tests {
             let _ = srv2.call(()).await;
         });
         ntex_util::time::sleep(Duration::from_millis(25)).await;
-        println!("----------------------------------------");
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
         ntex_util::time::sleep(Duration::from_millis(50)).await;
