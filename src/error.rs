@@ -149,6 +149,8 @@ pub enum DecodeError {
     MaxSizeExceeded,
     #[error("utf8 error")]
     Utf8Error,
+    #[error("Unexpected payload")]
+    UnexpectedPayload,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, thiserror::Error)]

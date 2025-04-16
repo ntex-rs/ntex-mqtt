@@ -7,8 +7,8 @@ use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::services::inflight::InFlightService;
 use ntex_util::{future::join, HashSet};
 
-use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{payload::Payload, payload::PlSender, types::QoS};
+use crate::error::{DecodeError, HandshakeError, MqttError, ProtocolError};
+use crate::{payload::Payload, payload::PayloadStatus, payload::PlSender, types::QoS};
 
 use super::codec::{self, Decoded, Encoded, Packet};
 use super::control::{Control, ControlAck, ControlAckKind, Subscribe, Unsubscribe};
@@ -143,7 +143,7 @@ where
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) =
             join(ctx.ready(&self.publish), ctx.ready(self.inner.control.get_ref())).await;
-        if let Err(e) = res1 {
+        let result = if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
             } else {
@@ -160,7 +160,16 @@ where
             }
         } else {
             res2
+        };
+
+        if result.is_ok() {
+            if let Some(pl) = self.payload.take() {
+                if pl.ready().await == PayloadStatus::Ready {
+                    self.payload.set(Some(pl));
+                }
+            }
         }
+        result
     }
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
@@ -270,14 +279,24 @@ where
                 .await
             }
             DispatchItem::Item(Decoded::PayloadChunk(buf, eof)) => {
-                let pl = self.payload.take().unwrap();
-                pl.feed_data(buf);
-                if eof {
-                    pl.feed_eof();
+                if let Some(pl) = self.payload.take() {
+                    pl.feed_data(buf);
+                    if eof {
+                        pl.feed_eof();
+                    } else {
+                        self.payload.set(Some(pl));
+                    }
+                    Ok(None)
                 } else {
-                    self.payload.set(Some(pl));
+                    control(
+                        Control::proto_error(ProtocolError::Decode(
+                            DecodeError::UnexpectedPayload,
+                        )),
+                        &self.inner,
+                        ctx,
+                    )
+                    .await
                 }
-                Ok(None)
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {

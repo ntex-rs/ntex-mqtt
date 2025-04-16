@@ -3,6 +3,8 @@ use std::{cell::Cell, fmt, io, mem};
 use ntex_bytes::{Bytes, BytesMut};
 use ntex_util::{channel::bstream, future::Either};
 
+pub(crate) use ntex_util::channel::bstream::Status as PayloadStatus;
+
 type PlStream = bstream::Receiver<()>;
 pub(crate) type PlSender = bstream::Sender<()>;
 
