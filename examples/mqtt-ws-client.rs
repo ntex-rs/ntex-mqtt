@@ -51,7 +51,7 @@ async fn main() -> std::io::Result<()> {
 
     // publish handler
     let router = client.resource("response", |pkt: v3::Publish| async move {
-        let payload = pkt.read_all().await.unwrap().unwrap();
+        let payload = pkt.read_all().await.unwrap();
 
         log::info!(
             "incoming publish: {:?} -> {:?} payload {:?}",

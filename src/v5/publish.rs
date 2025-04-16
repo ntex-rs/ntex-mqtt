@@ -3,7 +3,7 @@ use std::{mem, num::NonZeroU16};
 use ntex_bytes::{ByteString, Bytes};
 use ntex_router::Path;
 
-use crate::{payload::Payload, v5::codec};
+use crate::{error::PayloadError, payload::Payload, v5::codec};
 
 #[derive(Debug)]
 /// Publish message
@@ -85,13 +85,13 @@ impl Publish {
 
     #[inline]
     /// Payload that is being published.
-    pub async fn read(&self) -> Option<Result<Bytes, ()>> {
+    pub async fn read(&self) -> Result<Option<Bytes>, PayloadError> {
         self.payload.read().await
     }
 
     #[inline]
     /// Payload that is being published.
-    pub async fn read_all(&self) -> Option<Result<Bytes, ()>> {
+    pub async fn read_all(&self) -> Result<Option<Bytes>, PayloadError> {
         self.payload.read_all().await
     }
 

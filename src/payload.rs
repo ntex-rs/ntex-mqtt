@@ -5,8 +5,10 @@ use ntex_util::{channel::bstream, future::Either};
 
 pub(crate) use ntex_util::channel::bstream::Status as PayloadStatus;
 
-type PlStream = bstream::Receiver<()>;
-pub(crate) type PlSender = bstream::Sender<()>;
+use crate::error::PayloadError;
+
+type PlStream = bstream::Receiver<PayloadError>;
+pub(crate) type PlSender = bstream::Sender<PayloadError>;
 
 /// Payload for Publish packet
 pub struct Payload {
@@ -43,29 +45,39 @@ impl Payload {
     }
 
     /// Read next chunk
-    pub async fn read(&self) -> Option<Result<Bytes, ()>> {
+    pub async fn read(&self) -> Result<Option<Bytes>, PayloadError> {
         match &self.pl {
-            Either::Left(pl) => pl.take().map(|b| Ok(b)),
-            Either::Right(pl) => pl.read().await,
+            Either::Left(pl) => Ok(pl.take()),
+            Either::Right(pl) => {
+                pl.read().await.map_or(Ok(None), |res| res.map(|val| Some(val)))
+            }
         }
     }
 
-    pub async fn read_all(&self) -> Option<Result<Bytes, ()>> {
+    pub async fn read_all(&self) -> Result<Option<Bytes>, PayloadError> {
         match &self.pl {
-            Either::Left(pl) => pl.take().map(|b| Ok(b)),
+            Either::Left(pl) => Ok(pl.take()),
             Either::Right(pl) => {
-                let mut buf = if let Some(buf) = pl.read().await.and_then(|res| res.ok()) {
-                    BytesMut::copy_from_slice(&buf)
+                let mut chunk = if let Some(item) = pl.read().await {
+                    Some(item?)
                 } else {
-                    return None;
+                    return Ok(None);
                 };
 
+                let mut buf = BytesMut::new();
                 loop {
-                    match pl.read().await {
-                        None => return Some(Ok(buf.freeze())),
-                        Some(Ok(b)) => buf.extend_from_slice(&b),
-                        Some(Err(_)) => return Some(Err(())),
-                    }
+                    return match pl.read().await {
+                        Some(Ok(b)) => {
+                            if let Some(chunk) = chunk.take() {
+                                buf.reserve(b.len() + chunk.len());
+                                buf.extend_from_slice(&chunk);
+                            }
+                            buf.extend_from_slice(&b);
+                            continue;
+                        }
+                        None => Ok(Some(chunk.unwrap_or_else(|| buf.freeze()))),
+                        Some(Err(err)) => Err(err),
+                    };
                 }
             }
         }

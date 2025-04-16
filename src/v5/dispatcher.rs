@@ -7,7 +7,9 @@ use ntex_util::services::inflight::InFlightService;
 use ntex_util::services::{buffer::BufferService, buffer::BufferServiceError};
 use ntex_util::{future::join, HashMap, HashSet};
 
-use crate::error::{DecodeError, EncodeError, HandshakeError, MqttError, ProtocolError};
+use crate::error::{
+    DecodeError, EncodeError, HandshakeError, MqttError, PayloadError, ProtocolError,
+};
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::types::QoS;
 
@@ -126,9 +128,13 @@ where
         }
     }
 
-    fn drop_payload(&self) {
+    fn drop_payload<PErr>(&self, err: &PErr)
+    where
+        PErr: Clone,
+        PayloadError: From<PErr>,
+    {
         if let Some(pl) = self.payload.take() {
-            pl.set_error(());
+            pl.set_error(err.clone().into());
         }
     }
 }
@@ -171,6 +177,8 @@ where
             if let Some(pl) = self.payload.take() {
                 if pl.ready().await == PayloadStatus::Ready {
                     self.payload.set(Some(pl));
+                } else {
+                    self.inner.sink.force_close();
                 }
             }
         }
@@ -192,7 +200,7 @@ where
     }
 
     async fn shutdown(&self) {
-        self.drop_payload();
+        self.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink();
         let _ = self.inner.control.call(Control::closed()).await;
 
@@ -510,12 +518,12 @@ where
             }
             DispatchItem::Item(Decoded::Packet(_, _)) => Ok(None),
             DispatchItem::EncoderError(err) => {
-                self.drop_payload();
-                control(Control::proto_error(ProtocolError::Encode(err)), &self.inner, ctx, 0)
-                    .await
+                let err = ProtocolError::Encode(err);
+                self.drop_payload(&err);
+                control(Control::proto_error(err), &self.inner, ctx, 0).await
             }
             DispatchItem::KeepAliveTimeout => {
-                self.drop_payload();
+                self.drop_payload(&ProtocolError::KeepAliveTimeout);
                 control(
                     Control::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
@@ -525,17 +533,17 @@ where
                 .await
             }
             DispatchItem::ReadTimeout => {
-                self.drop_payload();
+                self.drop_payload(&ProtocolError::ReadTimeout);
                 control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx, 0)
                     .await
             }
             DispatchItem::DecoderError(err) => {
-                self.drop_payload();
-                control(Control::proto_error(ProtocolError::Decode(err)), &self.inner, ctx, 0)
-                    .await
+                let err = ProtocolError::Decode(err);
+                self.drop_payload(&err);
+                control(Control::proto_error(err), &self.inner, ctx, 0).await
             }
             DispatchItem::Disconnect(err) => {
-                self.drop_payload();
+                self.drop_payload(&PayloadError::Disconnected);
                 control(Control::peer_gone(err), &self.inner, ctx, 0).await
             }
             DispatchItem::WBackPressureEnabled => {

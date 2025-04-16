@@ -96,13 +96,13 @@ impl Publish {
 
     #[inline]
     /// Payload that is being published.
-    pub async fn read(&self) -> Option<Result<Bytes, ()>> {
+    pub async fn read(&self) -> Result<Option<Bytes>, error::PayloadError> {
         self.1.read().await
     }
 
     #[inline]
     /// Payload that is being published.
-    pub async fn read_all(&self) -> Option<Result<Bytes, ()>> {
+    pub async fn read_all(&self) -> Result<Option<Bytes>, error::PayloadError> {
         self.1.read_all().await
     }
 

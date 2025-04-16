@@ -57,7 +57,7 @@ async fn test_simple_streaming() -> std::io::Result<()> {
             .publish(move |p: Publish| {
                 let chunks = chunks.clone();
                 async move {
-                    while let Some(Ok(chunk)) = p.read().await {
+                    while let Ok(Some(chunk)) = p.read().await {
                         chunks.lock().unwrap().push(chunk);
                     }
                     Ok(())
