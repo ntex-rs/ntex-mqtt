@@ -194,6 +194,9 @@ pub enum SendPacketError {
     /// Provided packet id is in use
     #[error("Provided packet id is in use")]
     PacketIdInUse(NonZeroU16),
+    /// Unexpected release publish
+    #[error("Unexpected publish release")]
+    UnexpectedRelease,
     /// Streaming has been cancelled
     #[error("Streaming has been cancelled")]
     StreamingCancelled,

@@ -304,6 +304,41 @@ async fn test_qos2() -> std::io::Result<()> {
     assert_eq!(result, Decoded::Packet(Packet::PublishComplete { packet_id: id }, 2));
 
     assert!(release.load(Relaxed));
+}
+
+async fn test_qos2_client() -> std::io::Result<()> {
+    let release = Arc::new(AtomicBool::new(false));
+    let release2 = release.clone();
+
+    let srv = server::test_server(move || {
+        let release = release2.clone();
+        MqttServer::new(handshake)
+            .publish(|_| Ready::Ok(()))
+            .max_qos(QoS::ExactlyOnce)
+            .control(move |msg| match msg {
+                Control::PublishRelease(msg) => {
+                    release.store(true, Relaxed);
+                    Ready::Ok(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    let received = sink
+        .publish(ByteString::from_static("test"), Bytes::new())
+        .send_exactly_once()
+        .await
+        .unwrap();
+    received.release().await.unwrap();
+    assert!(release.load(Relaxed));
     Ok(())
 }
 
