@@ -1,5 +1,9 @@
 # Changes
 
+## [5.0.0-beta.2] - 2025-04-21
+
+* Add QoS::ExactlyOnce support
+
 ## [5.0.0-beta.1] - 2025-04-16
 
 * Cleanup payload errors

@@ -10,6 +10,8 @@ use crate::error;
 pub enum Control<E> {
     /// Auth packet from a client
     Auth(Auth),
+    /// PublishRelease packet from a client
+    PublishRelease(PublishRelease),
     /// Ping packet from a client
     Ping(Ping),
     /// Disconnect packet from a client
@@ -42,6 +44,10 @@ impl<E> Control<E> {
     #[doc(hidden)]
     pub fn auth(pkt: codec::Auth, size: u32) -> Self {
         Control::Auth(Auth { pkt, size })
+    }
+
+    pub(crate) fn pubrel(pkt: codec::PublishAck2, size: u32) -> Self {
+        Control::PublishRelease(PublishRelease::new(pkt, size))
     }
 
     /// Create a new `Control` from SUBSCRIBE packet.
@@ -111,6 +117,7 @@ impl<E> Control<E> {
     pub fn ack(self) -> ControlAck {
         match self {
             Control::Auth(_) => super::disconnect("Auth control message is not supported"),
+            Control::PublishRelease(msg) => msg.ack(),
             Control::Ping(msg) => msg.ack(),
             Control::Disconnect(msg) => msg.ack(),
             Control::Subscribe(msg) => msg.ack(),
@@ -143,6 +150,64 @@ impl Auth {
 
     pub fn ack(self, response: codec::Auth) -> ControlAck {
         ControlAck { packet: Some(codec::Packet::Auth(response)), disconnect: false }
+    }
+}
+
+#[derive(Debug)]
+pub struct PublishRelease {
+    pkt: codec::PublishAck2,
+    result: codec::PublishAck2,
+    size: u32,
+}
+
+impl PublishRelease {
+    fn new(pkt: codec::PublishAck2, size: u32) -> Self {
+        let packet_id = pkt.packet_id;
+        Self {
+            pkt,
+            size,
+            result: codec::PublishAck2 {
+                packet_id,
+                reason_code: codec::PublishAck2Reason::Success,
+                properties: codec::UserProperties::default(),
+                reason_string: None,
+            },
+        }
+    }
+
+    /// Returns reference to auth packet
+    pub fn packet(&self) -> &codec::PublishAck2 {
+        &self.pkt
+    }
+
+    /// Returns size of the packet
+    pub fn packet_size(&self) -> u32 {
+        self.size
+    }
+
+    /// Update user properties
+    #[inline]
+    pub fn properties<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&mut codec::UserProperties),
+    {
+        f(&mut self.result.properties);
+        self
+    }
+
+    /// Set ack reason string
+    #[inline]
+    pub fn reason(mut self, reason: ByteString) -> Self {
+        self.result.reason_string = Some(reason);
+        self
+    }
+
+    /// Ack publish release
+    pub fn ack(self) -> ControlAck {
+        ControlAck {
+            packet: Some(codec::Packet::PublishComplete(self.result)),
+            disconnect: false,
+        }
     }
 }
 

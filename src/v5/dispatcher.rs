@@ -436,6 +436,20 @@ where
 
                 control(Control::auth(pkt, size), &self.inner, ctx, 0).await
             }
+            DispatchItem::Item(Decoded::Packet(Packet::PublishRelease(ack), size)) => {
+                if self.inner.info.borrow().inflight.contains(&ack.packet_id) {
+                    control(Control::pubrel(ack, size), &self.inner, ctx, 0).await
+                } else {
+                    Ok(Some(Encoded::Packet(codec::Packet::PublishComplete(
+                        codec::PublishAck2 {
+                            packet_id: ack.packet_id,
+                            reason_code: codec::PublishAck2Reason::PacketIdNotFound,
+                            properties: codec::UserProperties::default(),
+                            reason_string: None,
+                        },
+                    ))))
+                }
+            }
             DispatchItem::Item(Decoded::Packet(Packet::PingRequest, _)) => {
                 control(Control::ping(), &self.inner, ctx, 0).await
             }
@@ -589,6 +603,7 @@ where
     PublishAck: TryFrom<T::Error, Error = E>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
+    let qos2 = pkt.qos() == QoS::ExactlyOnce;
     let ack = match ctx.call(publish, pkt).await {
         Ok(ack) => ack,
         Err(e) => {
@@ -603,14 +618,23 @@ where
         }
     };
     if let Some(id) = num::NonZeroU16::new(packet_id) {
-        inner.info.borrow_mut().inflight.remove(&id);
-        let ack = codec::PublishAck {
-            packet_id: id,
-            reason_code: ack.reason_code,
-            reason_string: ack.reason_string,
-            properties: ack.properties,
+        let ack = if qos2 {
+            codec::Packet::PublishReceived(codec::PublishAck {
+                packet_id: id,
+                reason_code: ack.reason_code,
+                reason_string: ack.reason_string,
+                properties: ack.properties,
+            })
+        } else {
+            inner.info.borrow_mut().inflight.remove(&id);
+            codec::Packet::PublishAck(codec::PublishAck {
+                packet_id: id,
+                reason_code: ack.reason_code,
+                reason_string: ack.reason_string,
+                properties: ack.properties,
+            })
         };
-        Ok(Some(Encoded::Packet(codec::Packet::PublishAck(ack))))
+        Ok(Some(Encoded::Packet(ack)))
     } else {
         Ok(None)
     }

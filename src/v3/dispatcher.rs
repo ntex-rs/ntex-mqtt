@@ -328,6 +328,15 @@ where
                     Ok(None)
                 }
             }
+            DispatchItem::Item(Decoded::Packet(Packet::PublishRelease { packet_id }, _)) => {
+                if self.inner.inflight.borrow().contains(&packet_id) {
+                    control(Control::pubrel(packet_id), &self.inner, ctx).await
+                } else {
+                    log::warn!("Unknown packet-id in PublishRelease packet");
+                    self.inner.sink.close();
+                    Ok(None)
+                }
+            }
             DispatchItem::Item(Decoded::Packet(Packet::PingRequest, _)) => {
                 control(Control::ping(), &self.inner, ctx).await
             }
@@ -466,6 +475,7 @@ where
     T: Service<Publish, Response = ()>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
+    let qos2 = pkt.qos() == QoS::ExactlyOnce;
     match ctx.call(svc, pkt).await {
         Ok(_) => {
             log::trace!(
@@ -475,8 +485,12 @@ where
             );
 
             if let Some(packet_id) = packet_id {
-                inner.inflight.borrow_mut().remove(&packet_id);
-                Ok(Some(Encoded::Packet(Packet::PublishAck { packet_id })))
+                if qos2 {
+                    Ok(Some(Encoded::Packet(Packet::PublishReceived { packet_id })))
+                } else {
+                    inner.inflight.borrow_mut().remove(&packet_id);
+                    Ok(Some(Encoded::Packet(Packet::PublishAck { packet_id })))
+                }
             } else {
                 Ok(None)
             }
@@ -518,6 +532,10 @@ where
                         None
                     }
                     ControlAckKind::Closed | ControlAckKind::Nothing => None,
+                    ControlAckKind::PublishRelease(packet_id) => {
+                        inner.inflight.borrow_mut().remove(&packet_id);
+                        Some(Encoded::Packet(Packet::PublishComplete { packet_id }))
+                    }
                     ControlAckKind::PublishAck(_) => unreachable!(),
                 };
                 return Ok(packet);
