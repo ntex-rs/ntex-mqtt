@@ -42,6 +42,7 @@ async fn main() -> std::io::Result<()> {
                     );
                     Ok(publish.ack(v5::codec::PublishAckReason::Success))
                 }
+                v5::client::Control::PublishRelease(msg) => Ok(msg.ack()),
                 v5::client::Control::Disconnect(msg) => {
                     log::warn!("Server disconnecting: {:?}", msg);
                     Ok(msg.ack())
