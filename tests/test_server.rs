@@ -304,8 +304,10 @@ async fn test_qos2() -> std::io::Result<()> {
     assert_eq!(result, Decoded::Packet(Packet::PublishComplete { packet_id: id }, 2));
 
     assert!(release.load(Relaxed));
+    Ok(())
 }
 
+#[ntex::test]
 async fn test_qos2_client() -> std::io::Result<()> {
     let release = Arc::new(AtomicBool::new(false));
     let release2 = release.clone();
