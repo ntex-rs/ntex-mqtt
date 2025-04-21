@@ -423,6 +423,91 @@ async fn test_disconnect_after_control_error() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_qos2() -> std::io::Result<()> {
+    let release = Arc::new(AtomicBool::new(false));
+    let release2 = release.clone();
+
+    let srv = server::test_server(move || {
+        let release = release2.clone();
+        MqttServer::new(handshake)
+            .max_qos(QoS::ExactlyOnce)
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+            .control(move |msg| match msg {
+                Control::PublishRelease(msg) => {
+                    release.store(true, Relaxed);
+                    Ready::Ok::<_, TestError>(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::new();
+    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
+        .await
+        .unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    let id = NonZeroU16::new(1).unwrap();
+    io.send(
+        Encoded::Publish(
+            codec::Publish {
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                qos: QoS::ExactlyOnce,
+                ..pkt_publish()
+            },
+            None,
+        ),
+        &codec,
+    )
+    .await
+    .unwrap();
+
+    let result = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        result,
+        Decoded::Packet(
+            Packet::PublishReceived(codec::PublishAck {
+                packet_id: id,
+                reason_code: codec::PublishAckReason::Success,
+                properties: Default::default(),
+                reason_string: None,
+            }),
+            4
+        )
+    );
+
+    io.send(
+        Encoded::Packet(Packet::PublishRelease(codec::PublishAck2 {
+            packet_id: id,
+            reason_code: codec::PublishAck2Reason::Success,
+            properties: Default::default(),
+            reason_string: None,
+        })),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let result = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        result,
+        Decoded::Packet(
+            Packet::PublishComplete(codec::PublishAck2 {
+                packet_id: id,
+                reason_code: codec::PublishAck2Reason::Success,
+                properties: Default::default(),
+                reason_string: None,
+            }),
+            4
+        )
+    );
+
+    assert!(release.load(Relaxed));
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_ping() -> std::io::Result<()> {
     let ping = Arc::new(AtomicBool::new(false));
     let ping2 = ping.clone();

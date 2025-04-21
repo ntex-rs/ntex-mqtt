@@ -120,10 +120,8 @@ pub enum SubscribeReturnCode {
 pub enum Packet {
     /// Client request to connect to Server
     Connect(Box<Connect>),
-
     /// Connect acknowledgment
     ConnectAck(ConnectAck),
-
     /// Publish acknowledgment
     PublishAck {
         /// Packet Identifier
@@ -144,7 +142,6 @@ pub enum Packet {
         /// Packet Identifier
         packet_id: NonZeroU16,
     },
-
     /// Client subscribe request
     Subscribe {
         /// Packet Identifier
@@ -158,7 +155,6 @@ pub enum Packet {
         /// corresponds to a Topic Filter in the SUBSCRIBE Packet being acknowledged.
         status: Vec<SubscribeReturnCode>,
     },
-
     /// Unsubscribe request
     Unsubscribe {
         /// Packet Identifier
@@ -171,7 +167,6 @@ pub enum Packet {
         /// Packet Identifier
         packet_id: NonZeroU16,
     },
-
     /// PING request
     PingRequest,
     /// PING response

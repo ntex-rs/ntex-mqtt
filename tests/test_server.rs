@@ -249,6 +249,65 @@ async fn test_connect_fail() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_qos2() -> std::io::Result<()> {
+    let release = Arc::new(AtomicBool::new(false));
+    let release2 = release.clone();
+
+    let srv = server::test_server(move || {
+        let release = release2.clone();
+        MqttServer::new(handshake)
+            .publish(|_| Ready::Ok(()))
+            .max_qos(QoS::ExactlyOnce)
+            .control(move |msg| match msg {
+                Control::PublishRelease(msg) => {
+                    release.store(true, Relaxed);
+                    Ready::Ok(msg.ack())
+                }
+                _ => Ready::Ok(msg.disconnect()),
+            })
+            .finish()
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        &codec,
+    )
+    .await
+    .unwrap();
+    io.recv(&codec).await.unwrap().unwrap();
+
+    let id = NonZeroU16::new(1).unwrap();
+    io.send(
+        Encoded::Publish(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::ExactlyOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(id),
+                payload_size: 0,
+            },
+            None,
+        ),
+        &codec,
+    )
+    .await
+    .unwrap();
+
+    let result = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(result, Decoded::Packet(Packet::PublishReceived { packet_id: id }, 2));
+
+    io.send(Encoded::Packet(Packet::PublishRelease { packet_id: id }), &codec).await.unwrap();
+    let result = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(result, Decoded::Packet(Packet::PublishComplete { packet_id: id }, 2));
+
+    assert!(release.load(Relaxed));
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_ping() -> std::io::Result<()> {
     let ping = Arc::new(AtomicBool::new(false));
     let ping2 = ping.clone();

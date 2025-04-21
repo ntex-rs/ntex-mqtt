@@ -132,7 +132,7 @@ impl PublishAck {
         }
     }
 
-    /// Set acknowledgement's Reason Code
+    /// Set Acknowledgement's Reason Code
     #[inline]
     pub fn reason_code(mut self, reason_code: codec::PublishAckReason) -> Self {
         self.reason_code = reason_code;

@@ -311,6 +311,10 @@ where
             inner.inflight.borrow_mut().remove(&id);
             Some(Encoded::Packet(codec::Packet::PublishAck { packet_id: id }))
         }
+        ControlAckKind::PublishRelease(id) => {
+            inner.inflight.borrow_mut().remove(&id);
+            Some(Encoded::Packet(Packet::PublishComplete { packet_id: id }))
+        }
         ControlAckKind::Subscribe(_) => unreachable!(),
         ControlAckKind::Unsubscribe(_) => unreachable!(),
         ControlAckKind::Disconnect => {

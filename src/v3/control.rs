@@ -7,6 +7,8 @@ use crate::{error, types::QoS};
 /// Server control messages
 #[derive(Debug)]
 pub enum Control<E> {
+    /// Publish release
+    PublishRelease(PublishRelease),
     /// Ping packet
     Ping(Ping),
     /// Disconnect packet
@@ -36,6 +38,7 @@ pub struct ControlAck {
 pub(crate) enum ControlAckKind {
     Nothing,
     PublishAck(NonZeroU16),
+    PublishRelease(NonZeroU16),
     Ping,
     Disconnect,
     Subscribe(SubscribeResult),
@@ -44,6 +47,10 @@ pub(crate) enum ControlAckKind {
 }
 
 impl<E> Control<E> {
+    pub(crate) fn pubrel(packet_id: NonZeroU16) -> Self {
+        Control::PublishRelease(PublishRelease { packet_id })
+    }
+
     /// Create a new PING `Control` message.
     #[doc(hidden)]
     pub fn ping() -> Self {
@@ -97,6 +104,7 @@ impl<E> Control<E> {
     /// Ack control message
     pub fn ack(self) -> ControlAck {
         match self {
+            Control::PublishRelease(msg) => msg.ack(),
             Control::Ping(msg) => msg.ack(),
             Control::Disconnect(msg) => msg.ack(),
             Control::Subscribe(_) => {
@@ -114,6 +122,30 @@ impl<E> Control<E> {
             Control::PeerGone(msg) => msg.ack(),
         }
     }
+}
+
+/// Publish release
+#[derive(Copy, Clone, Debug)]
+pub struct PublishRelease {
+    pub packet_id: NonZeroU16,
+}
+
+impl PublishRelease {
+    #[inline]
+    /// Packet Identifier
+    pub fn id(self) -> NonZeroU16 {
+        self.packet_id
+    }
+
+    #[inline]
+    /// convert packet to a result
+    pub fn ack(self) -> ControlAck {
+        ControlAck { result: ControlAckKind::PublishRelease(self.packet_id) }
+    }
+}
+
+pub(crate) struct PublishReleaseResult {
+    pub packet_id: NonZeroU16,
 }
 
 #[derive(Copy, Clone, Debug)]
