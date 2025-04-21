@@ -3,7 +3,8 @@ use std::{cell::Cell, fmt, future::ready, future::Future, num::NonZeroU16, rc::R
 use ntex_bytes::{ByteString, Bytes};
 use ntex_util::{channel::pool, future::Either, future::Ready};
 
-use super::{codec, error::SendPacketError, shared::AckType, shared::MqttShared};
+use crate::v3::shared::{Ack, AckType, MqttShared};
+use crate::v3::{codec, error::SendPacketError};
 use crate::{error::EncodeError, types::QoS};
 
 pub struct MqttSink(Rc<MqttShared>);
@@ -271,6 +272,72 @@ impl PublishBuilder {
             Some(self.payload),
         );
         async move { rx?.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected) }
+    }
+
+    /// Send publish packet with QoS 2
+    pub fn send_exactly_once(
+        mut self,
+    ) -> impl Future<Output = Result<PublishReceived, SendPacketError>> {
+        if !self.shared.is_closed() {
+            self.packet.qos = codec::QoS::ExactlyOnce;
+
+            // handle client receive maximum
+            if let Some(rx) = self.shared.wait_readiness() {
+                Either::Left(Either::Left(async move {
+                    if rx.await.is_err() {
+                        return Err(SendPacketError::Disconnected);
+                    }
+                    self.send_exactly_once_inner().await
+                }))
+            } else {
+                Either::Left(Either::Right(self.send_exactly_once_inner()))
+            }
+        } else {
+            Either::Right(Ready::Err(SendPacketError::Disconnected))
+        }
+    }
+
+    fn send_exactly_once_inner(
+        mut self,
+    ) -> impl Future<Output = Result<PublishReceived, SendPacketError>> {
+        let shared = self.shared.clone();
+        let idx = shared.set_publish_id(&mut self.packet);
+        log::trace!("Publish (QoS2) to {:#?}", self.packet);
+
+        let rx = shared.wait_publish_response(
+            idx,
+            AckType::Receive,
+            self.packet,
+            Some(self.payload),
+        );
+        async move {
+            rx?.await
+                .map(move |_| PublishReceived { packet_id: Some(idx), shared })
+                .map_err(|_| SendPacketError::Disconnected)
+        }
+    }
+}
+
+/// Publish released for QoS2
+pub struct PublishReceived {
+    packet_id: Option<NonZeroU16>,
+    shared: Rc<MqttShared>,
+}
+
+impl PublishReceived {
+    /// Release publish
+    pub async fn release(mut self) -> Result<(), SendPacketError> {
+        let rx = self.shared.release_publish(self.packet_id.take().unwrap())?;
+
+        rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
+    }
+}
+
+impl Drop for PublishReceived {
+    fn drop(&mut self) {
+        if let Some(id) = self.packet_id.take() {
+            self.shared.release_publish(id);
+        }
     }
 }
 

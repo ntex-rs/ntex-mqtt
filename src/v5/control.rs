@@ -161,7 +161,7 @@ pub struct PublishRelease {
 }
 
 impl PublishRelease {
-    fn new(pkt: codec::PublishAck2, size: u32) -> Self {
+    pub(crate) fn new(pkt: codec::PublishAck2, size: u32) -> Self {
         let packet_id = pkt.packet_id;
         Self {
             pkt,

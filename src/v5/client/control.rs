@@ -4,13 +4,17 @@ use ntex_bytes::{ByteString, Bytes};
 
 use crate::{error, payload::Payload, v5::codec};
 
-pub use crate::v5::control::{Closed, ControlAck, Disconnect, Error, ProtocolError};
+pub use crate::v5::control::{
+    Closed, ControlAck, Disconnect, Error, ProtocolError, PublishRelease,
+};
 
 /// Client control messages
 #[derive(Debug)]
 pub enum Control<E> {
     /// Unhandled publish packet
     Publish(Publish),
+    /// Publish release packet
+    PublishRelease(PublishRelease),
     /// Disconnect packet
     Disconnect(Disconnect),
     /// Application level error from resources and control services
@@ -26,6 +30,10 @@ pub enum Control<E> {
 impl<E> Control<E> {
     pub(super) fn publish(pkt: codec::Publish, pl: Payload, size: u32) -> Self {
         Control::Publish(Publish(pkt, pl, size))
+    }
+
+    pub(super) fn pubrel(pkt: codec::PublishAck2, size: u32) -> Self {
+        Control::PublishRelease(PublishRelease::new(pkt, size))
     }
 
     pub(super) fn dis(pkt: codec::Disconnect, size: u32) -> Self {
@@ -58,6 +66,7 @@ impl<E> Control<E> {
             Control::Publish(_) => {
                 crate::v5::disconnect("Publish control message is not supported")
             }
+            Control::PublishRelease(msg) => msg.ack(),
             Control::Disconnect(msg) => msg.ack(),
             Control::Closed(msg) => msg.ack(),
             Control::Error(_) => {

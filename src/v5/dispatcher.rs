@@ -429,12 +429,12 @@ where
                     Ok(None)
                 }
             }
-            DispatchItem::Item(Decoded::Packet(Packet::Auth(pkt), size)) => {
-                if self.inner.sink.is_closed() {
-                    return Ok(None);
+            DispatchItem::Item(Decoded::Packet(Packet::PublishReceived(pkt), _)) => {
+                if let Err(e) = self.inner.sink.pkt_ack(Ack::Receive(pkt)) {
+                    control(Control::proto_error(e), &self.inner, ctx, 0).await
+                } else {
+                    Ok(None)
                 }
-
-                control(Control::auth(pkt, size), &self.inner, ctx, 0).await
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishRelease(ack), size)) => {
                 if self.inner.info.borrow().inflight.contains(&ack.packet_id) {
@@ -449,6 +449,20 @@ where
                         },
                     ))))
                 }
+            }
+            DispatchItem::Item(Decoded::Packet(Packet::PublishComplete(pkt), _)) => {
+                if let Err(e) = self.inner.sink.pkt_ack(Ack::Complete(pkt)) {
+                    control(Control::proto_error(e), &self.inner, ctx, 0).await
+                } else {
+                    Ok(None)
+                }
+            }
+            DispatchItem::Item(Decoded::Packet(Packet::Auth(pkt), size)) => {
+                if self.inner.sink.is_closed() {
+                    return Ok(None);
+                }
+
+                control(Control::auth(pkt, size), &self.inner, ctx, 0).await
             }
             DispatchItem::Item(Decoded::Packet(Packet::PingRequest, _)) => {
                 control(Control::ping(), &self.inner, ctx, 0).await

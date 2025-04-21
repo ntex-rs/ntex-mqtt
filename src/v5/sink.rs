@@ -320,6 +320,109 @@ impl PublishBuilder {
             .map(|pkt| pkt.publish())
             .map_err(|_| SendPacketError::Disconnected)
     }
+
+    /// Send publish packet with QoS 2
+    pub fn send_exactly_once(
+        mut self,
+    ) -> impl Future<Output = Result<PublishReceived, SendPacketError>> {
+        if !self.shared.is_closed() {
+            self.packet.qos = codec::QoS::ExactlyOnce;
+
+            // handle client receive maximum
+            if let Some(rx) = self.shared.wait_readiness() {
+                Either::Left(Either::Left(async move {
+                    if rx.await.is_err() {
+                        return Err(SendPacketError::Disconnected);
+                    }
+                    self.send_exactly_once_inner().await
+                }))
+            } else {
+                Either::Left(Either::Right(self.send_exactly_once_inner()))
+            }
+        } else {
+            Either::Right(Ready::Err(SendPacketError::Disconnected))
+        }
+    }
+
+    fn send_exactly_once_inner(
+        mut self,
+    ) -> impl Future<Output = Result<PublishReceived, SendPacketError>> {
+        let shared = self.shared.clone();
+        let idx = shared.set_publish_id(&mut self.packet);
+        log::trace!("Publish (QoS2) to {:#?}", self.packet);
+
+        let rx = shared.wait_publish_response(
+            idx,
+            AckType::Receive,
+            self.packet,
+            Some(self.payload),
+        );
+        async move {
+            rx?.await
+                .map(move |ack| PublishReceived::new(ack.receive(), shared))
+                .map_err(|_| SendPacketError::Disconnected)
+        }
+    }
+}
+
+/// Publish released for QoS2
+pub struct PublishReceived {
+    ack: codec::PublishAck,
+    result: Option<codec::PublishAck2>,
+    shared: Rc<MqttShared>,
+}
+
+impl PublishReceived {
+    fn new(ack: codec::PublishAck, shared: Rc<MqttShared>) -> Self {
+        let packet_id = ack.packet_id;
+        Self {
+            ack,
+            shared,
+            result: Some(codec::PublishAck2 {
+                packet_id,
+                reason_code: codec::PublishAck2Reason::Success,
+                properties: codec::UserProperties::default(),
+                reason_string: None,
+            }),
+        }
+    }
+
+    /// Returns reference to auth packet
+    pub fn packet(&self) -> &codec::PublishAck {
+        &self.ack
+    }
+
+    /// Update user properties
+    #[inline]
+    pub fn properties<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&mut codec::UserProperties),
+    {
+        f(&mut self.result.as_mut().unwrap().properties);
+        self
+    }
+
+    /// Set ack reason string
+    #[inline]
+    pub fn reason(mut self, reason: ByteString) -> Self {
+        self.result.as_mut().unwrap().reason_string = Some(reason);
+        self
+    }
+
+    /// Release publish
+    pub async fn release(mut self) -> Result<(), SendPacketError> {
+        let rx = self.shared.release_publish(self.result.take().unwrap())?;
+
+        rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
+    }
+}
+
+impl Drop for PublishReceived {
+    fn drop(&mut self) {
+        if let Some(ack) = self.result.take() {
+            self.shared.release_publish(ack);
+        }
+    }
 }
 
 /// Subscribe packet builder

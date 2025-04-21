@@ -328,12 +328,26 @@ where
                     Ok(None)
                 }
             }
+            DispatchItem::Item(Decoded::Packet(Packet::PublishReceived { packet_id }, _)) => {
+                if let Err(e) = self.inner.sink.pkt_ack(Ack::Receive(packet_id)) {
+                    control(Control::proto_error(e), &self.inner, ctx).await
+                } else {
+                    Ok(None)
+                }
+            }
             DispatchItem::Item(Decoded::Packet(Packet::PublishRelease { packet_id }, _)) => {
                 if self.inner.inflight.borrow().contains(&packet_id) {
                     control(Control::pubrel(packet_id), &self.inner, ctx).await
                 } else {
                     log::warn!("Unknown packet-id in PublishRelease packet");
                     self.inner.sink.close();
+                    Ok(None)
+                }
+            }
+            DispatchItem::Item(Decoded::Packet(Packet::PublishComplete { packet_id }, _)) => {
+                if let Err(e) = self.inner.sink.pkt_ack(Ack::Complete(packet_id)) {
+                    control(Control::proto_error(e), &self.inner, ctx).await
+                } else {
                     Ok(None)
                 }
             }

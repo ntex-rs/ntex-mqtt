@@ -1,9 +1,11 @@
-use std::io;
+use std::{io, num::NonZeroU16};
 
 use ntex_bytes::Bytes;
 
 use crate::payload::Payload;
-pub use crate::v3::control::{Closed, ControlAck, Disconnect, Error, PeerGone, ProtocolError};
+pub use crate::v3::control::{
+    Closed, ControlAck, Disconnect, Error, PeerGone, ProtocolError, PublishRelease,
+};
 use crate::v3::{codec, control::ControlAckKind, error};
 
 /// Client control messages
@@ -11,6 +13,8 @@ use crate::v3::{codec, control::ControlAckKind, error};
 pub enum Control<E> {
     /// Unhandled publish packet
     Publish(Publish),
+    /// Publish release packet
+    PublishRelease(PublishRelease),
     /// Connection closed
     Closed(Closed),
     /// Application level error from resources and control services
@@ -24,6 +28,10 @@ pub enum Control<E> {
 impl<E> Control<E> {
     pub(super) fn publish(pkt: codec::Publish, pl: Payload, size: u32) -> Self {
         Control::Publish(Publish(pkt, pl, size))
+    }
+
+    pub(super) fn pubrel(packet_id: NonZeroU16) -> Self {
+        Control::PublishRelease(PublishRelease { packet_id })
     }
 
     pub(super) fn closed() -> Self {
@@ -51,6 +59,7 @@ impl<E> Control<E> {
     pub fn ack(self) -> ControlAck {
         match self {
             Control::Publish(msg) => msg.ack(),
+            Control::PublishRelease(msg) => msg.ack(),
             Control::Closed(msg) => msg.ack(),
             Control::Error(msg) => msg.ack(),
             Control::ProtocolError(msg) => msg.ack(),
