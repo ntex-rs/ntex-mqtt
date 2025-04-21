@@ -13,7 +13,7 @@ use crate::v3::{codec, control::ControlAckKind, error};
 pub enum Control<E> {
     /// Unhandled publish packet
     Publish(Publish),
-    /// Unhandled publish packet
+    /// Publish release packet
     PublishRelease(PublishRelease),
     /// Connection closed
     Closed(Closed),

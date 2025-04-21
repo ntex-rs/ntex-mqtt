@@ -297,9 +297,37 @@ where
                 }
                 Ok(None)
             }
-            DispatchItem::Item(Decoded::Packet(Packet::PublishAck(packet), ..)) => {
-                if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
+            DispatchItem::Item(Decoded::Packet(Packet::PublishAck(pkt), ..)) => {
+                if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(pkt)) {
                     control(Control::proto_error(err), &self.inner, ctx, 0).await
+                } else {
+                    Ok(None)
+                }
+            }
+            DispatchItem::Item(Decoded::Packet(Packet::PublishReceived(pkt), _)) => {
+                if let Err(e) = self.inner.sink.pkt_ack(Ack::Receive(pkt)) {
+                    control(Control::proto_error(e), &self.inner, ctx, 0).await
+                } else {
+                    Ok(None)
+                }
+            }
+            DispatchItem::Item(Decoded::Packet(Packet::PublishRelease(pkt), size)) => {
+                if self.inner.info.borrow().inflight.contains(&pkt.packet_id) {
+                    control(Control::pubrel(pkt, size), &self.inner, ctx, 0).await
+                } else {
+                    Ok(Some(Encoded::Packet(codec::Packet::PublishComplete(
+                        codec::PublishAck2 {
+                            packet_id: pkt.packet_id,
+                            reason_code: codec::PublishAck2Reason::PacketIdNotFound,
+                            properties: codec::UserProperties::default(),
+                            reason_string: None,
+                        },
+                    ))))
+                }
+            }
+            DispatchItem::Item(Decoded::Packet(Packet::PublishComplete(pkt), _)) => {
+                if let Err(e) = self.inner.sink.pkt_ack(Ack::Complete(pkt)) {
+                    control(Control::proto_error(e), &self.inner, ctx, 0).await
                 } else {
                     Ok(None)
                 }

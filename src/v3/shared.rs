@@ -466,8 +466,6 @@ impl MqttShared {
         &self,
         id: num::NonZeroU16,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
-        self.check_streaming()?;
-
         let rx = if let Some(rx) = self.queues.borrow_mut().rx.take() {
             rx
         } else {
