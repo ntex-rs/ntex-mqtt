@@ -185,7 +185,7 @@ async fn test_simple_streaming2() {
                 let chunks = chunks.clone();
                 async move {
                     assert!(!p.dup());
-                    assert!(!p.retain());
+                    assert!(p.retain());
                     assert_eq!(p.id(), Some(NonZeroU16::new(1).unwrap()));
                     assert_eq!(p.qos(), QoS::AtLeastOnce);
                     assert_eq!(p.topic().path(), "test");
@@ -210,7 +210,7 @@ async fn test_simple_streaming2() {
 
     // pkt 1
     let (builder, payload) =
-        sink.publish(ByteString::from_static("test"), Bytes::new()).streaming(10);
+        sink.publish(ByteString::from_static("test"), Bytes::new()).retain(true).streaming(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();

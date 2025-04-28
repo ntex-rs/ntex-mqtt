@@ -1,5 +1,9 @@
 # Changes
 
+## [5.0.0] - 2025-04-28
+
+* Raise ProtocolError for unexpected PublishRelease
+
 ## [5.0.0-beta.2] - 2025-04-21
 
 * Add QoS::ExactlyOnce support

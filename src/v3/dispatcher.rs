@@ -8,7 +8,8 @@ use ntex_util::services::inflight::InFlightService;
 use ntex_util::{future::join, HashSet};
 
 use crate::error::{DecodeError, HandshakeError, MqttError, PayloadError, ProtocolError};
-use crate::{payload::Payload, payload::PayloadStatus, payload::PlSender, types::QoS};
+use crate::payload::{Payload, PayloadStatus, PlSender};
+use crate::types::{packet_type, QoS};
 
 use super::codec::{self, Decoded, Encoded, Packet};
 use super::control::{Control, ControlAck, ControlAckKind, Subscribe, Unsubscribe};
@@ -339,9 +340,15 @@ where
                 if self.inner.inflight.borrow().contains(&packet_id) {
                     control(Control::pubrel(packet_id), &self.inner, ctx).await
                 } else {
-                    log::warn!("Unknown packet-id in PublishRelease packet");
-                    self.inner.sink.close();
-                    Ok(None)
+                    control(
+                        Control::proto_error(ProtocolError::unexpected_packet(
+                            packet_type::PUBREL,
+                            "Unknown packet-id in PublishRelease packet",
+                        )),
+                        &self.inner,
+                        ctx,
+                    )
+                    .await
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishComplete { packet_id }, _)) => {
