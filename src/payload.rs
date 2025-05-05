@@ -44,7 +44,7 @@ impl Payload {
         self.pl.is_left()
     }
 
-    /// Read next chunk
+    /// Read next payload chunk
     pub async fn read(&self) -> Result<Option<Bytes>, PayloadError> {
         match &self.pl {
             Either::Left(pl) => Ok(pl.take()),
@@ -54,14 +54,15 @@ impl Payload {
         }
     }
 
-    pub async fn read_all(&self) -> Result<Option<Bytes>, PayloadError> {
+    /// Read complete payload
+    pub async fn read_all(&self) -> Result<Bytes, PayloadError> {
         match &self.pl {
-            Either::Left(pl) => Ok(pl.take()),
+            Either::Left(pl) => pl.take().ok_or(PayloadError::Consumed),
             Either::Right(pl) => {
                 let mut chunk = if let Some(item) = pl.read().await {
                     Some(item?)
                 } else {
-                    return Ok(None);
+                    return Err(PayloadError::Consumed);
                 };
 
                 let mut buf = BytesMut::new();
@@ -75,7 +76,7 @@ impl Payload {
                             buf.extend_from_slice(&b);
                             continue;
                         }
-                        None => Ok(Some(chunk.unwrap_or_else(|| buf.freeze()))),
+                        None => Ok(chunk.unwrap_or_else(|| buf.freeze())),
                         Some(Err(err)) => Err(err),
                     };
                 }
