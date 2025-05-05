@@ -1,5 +1,9 @@
 # Changes
 
+## [5.1.0] - 2025-05-05
+
+* Fix .read_all() method return type
+
 ## [5.0.0] - 2025-04-28
 
 * Raise ProtocolError for unexpected PublishRelease

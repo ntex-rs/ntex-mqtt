@@ -160,7 +160,7 @@ async fn test_simple_streaming2() {
                     assert_eq!(p.publish_topic(), "test");
                     assert_eq!(p.packet_size(), 18);
                     assert_eq!(p.payload_size(), 10);
-                    let chunk = pl.read_all().await.unwrap().unwrap();
+                    let chunk = pl.read_all().await.unwrap();
                     chunks.lock().unwrap().push(chunk);
                     Ok(())
                 }

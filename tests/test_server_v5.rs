@@ -193,7 +193,7 @@ async fn test_simple_streaming2() {
                     assert_eq!(p.publish_topic(), "test");
                     assert_eq!(p.packet_size(), 19);
                     assert_eq!(p.payload_size(), 10);
-                    let chunk = p.read_all().await.unwrap().unwrap();
+                    let chunk = p.read_all().await.unwrap();
                     chunks.lock().unwrap().push(chunk);
                     Ok::<_, TestError>(p.ack())
                 }

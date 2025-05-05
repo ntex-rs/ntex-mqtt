@@ -86,14 +86,14 @@ impl Publish {
     }
 
     #[inline]
-    /// Payload that is being published.
+    /// Read next chunk of the published payload.
     pub async fn read(&self) -> Result<Option<Bytes>, PayloadError> {
         self.payload.read().await
     }
 
     #[inline]
-    /// Payload that is being published.
-    pub async fn read_all(&self) -> Result<Option<Bytes>, PayloadError> {
+    /// Read complete payload.
+    pub async fn read_all(&self) -> Result<Bytes, PayloadError> {
         self.payload.read_all().await
     }
 

@@ -57,7 +57,7 @@ async fn publish(
     if session.subscriptions.borrow().contains(&publish.packet().topic) {
         log::info!("client is subscribed to topic, sending echo");
 
-        let payload = publish.read_all().await.unwrap().unwrap();
+        let payload = publish.read_all().await.unwrap();
         session
             .sink
             .publish(publish.packet().topic.clone(), payload)
