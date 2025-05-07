@@ -71,11 +71,10 @@ async fn test_simple() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("test"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("test")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_ok());
 
-    let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    let res = sink.publish(ByteString::from_static("#")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_err());
 
     sink.close();
@@ -112,8 +111,8 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (builder, payload) =
-        sink.publish(ByteString::from_static("test"), Bytes::new()).streaming(10);
+    let (payload, fut) =
+        sink.publish(ByteString::from_static("test")).stream_at_least_once(10, None);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -121,12 +120,12 @@ async fn test_simple_streaming() -> std::io::Result<()> {
         payload.send(Bytes::from_static(b"111111")).await.unwrap();
     });
 
-    let res = builder.send_at_least_once().await;
+    let res = fut.await;
     assert!(res.is_ok());
 
     // pkt 2
-    let (builder, payload) =
-        sink.publish(ByteString::from_static("test"), Bytes::new()).streaming(5);
+    let (payload, fut) =
+        sink.publish(ByteString::from_static("test")).stream_at_least_once(5, None);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"22")).await.unwrap();
@@ -134,27 +133,27 @@ async fn test_simple_streaming() -> std::io::Result<()> {
         payload.send(Bytes::from_static(b"222")).await.unwrap();
     });
 
-    let res = builder.send_at_least_once().await;
+    let res = fut.await;
     assert!(res.is_ok());
 
     // pkt 3
-    let (builder, payload) =
-        sink.publish(ByteString::from_static("test"), Bytes::new()).streaming(2);
+    let (payload, fut) =
+        sink.publish(ByteString::from_static("test")).stream_at_least_once(2, None);
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"33")).await.unwrap();
     });
-    let res = builder.send_at_least_once().await;
+    let res = fut.await;
     assert!(res.is_ok());
 
     // pkt 4
     let res = sink
-        .publish(ByteString::from_static("test"), Bytes::from_static(b"123"))
-        .send_at_least_once()
+        .publish(ByteString::from_static("test"))
+        .send_at_least_once(Bytes::from_static(b"123"))
         .await;
     assert!(res.is_ok());
 
-    let (builder, _) = sink.publish(ByteString::from_static("#"), Bytes::new()).streaming(12);
-    let res = builder.send_at_least_once().await;
+    let (_, fut) = sink.publish(ByteString::from_static("#")).stream_at_least_once(12, None);
+    let res = fut.await;
     assert!(res.is_err());
 
     sink.close();
@@ -209,8 +208,10 @@ async fn test_simple_streaming2() {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (builder, payload) =
-        sink.publish(ByteString::from_static("test"), Bytes::new()).retain(true).streaming(10);
+    let (payload, fut) = sink
+        .publish(ByteString::from_static("test"))
+        .retain(true)
+        .stream_at_least_once(10, None);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -218,7 +219,7 @@ async fn test_simple_streaming2() {
         payload.send(Bytes::from_static(b"111111")).await.unwrap();
     });
 
-    let res = builder.send_at_least_once().await;
+    let res = fut.await;
     assert!(res.is_ok());
 
     assert_eq!(&chunks.lock().unwrap()[..], vec![Bytes::from_static(b"1111111111"),]);
@@ -270,8 +271,7 @@ async fn test_disconnect() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    let res = sink.publish(ByteString::from_static("#")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_err());
 
     Ok(())
@@ -304,8 +304,7 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("#"), Bytes::new()).send_at_least_once().await;
+    let res = sink.publish(ByteString::from_static("#")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_err());
 
     Ok(())
@@ -535,8 +534,8 @@ async fn test_qos2_client() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     let received = sink
-        .publish(ByteString::from_static("test"), Bytes::new())
-        .send_exactly_once()
+        .publish(ByteString::from_static("test"))
+        .send_exactly_once(Bytes::new())
         .await
         .unwrap();
     assert_eq!(received.packet().packet_id, NonZeroU16::new(1).unwrap());
@@ -924,11 +923,11 @@ async fn test_keepalive2() {
 
     assert!(sink.is_open());
     let res =
-        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_ok());
     sleep(Duration::from_millis(500)).await;
     let res =
-        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_ok());
     sleep(Duration::from_millis(2000)).await;
 
@@ -994,14 +993,14 @@ async fn test_keepalive3() {
 async fn test_sink_encoder_error_pub_qos1() {
     let srv = server::test_server(move || {
         MqttServer::new(|con: Handshake| async move {
-            let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
+            let builder = con.sink().publish("test").properties(|props| {
                 props.user_properties.push((
                     "ssssssssssssssssssssssssssssssssssss".into(),
                     "ssssssssssssssssssssssssssssssssssss".into(),
                 ));
             });
             ntex::rt::spawn(async move {
-                let res = builder.send_at_least_once().await;
+                let res = builder.send_at_least_once(Bytes::new()).await;
                 assert_eq!(
                     res,
                     Err(error::SendPacketError::Encode(error::EncodeError::OverMaxPacketSize))
@@ -1033,7 +1032,7 @@ async fn test_sink_encoder_error_pub_qos1() {
     ntex::rt::spawn(client.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_ok());
 }
 
@@ -1041,13 +1040,13 @@ async fn test_sink_encoder_error_pub_qos1() {
 async fn test_sink_encoder_error_pub_qos0() {
     let srv = server::test_server(move || {
         MqttServer::new(|con: Handshake| async move {
-            let builder = con.sink().publish("test", Bytes::new()).properties(|props| {
+            let builder = con.sink().publish("test").properties(|props| {
                 props.user_properties.push((
                     "ssssssssssssssssssssssssssssssssssss".into(),
                     "ssssssssssssssssssssssssssssssssssss".into(),
                 ));
             });
-            let res = builder.send_at_most_once();
+            let res = builder.send_at_most_once(Bytes::new());
             assert_eq!(
                 res,
                 Err(error::SendPacketError::Encode(error::EncodeError::OverMaxPacketSize))
@@ -1078,7 +1077,7 @@ async fn test_sink_encoder_error_pub_qos0() {
     ntex::rt::spawn(client.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_ok());
 }
 
@@ -1095,19 +1094,19 @@ async fn test_sink_success_after_encoder_error_qos1() {
             let success = success.clone();
 
             ntex::rt::spawn(async move {
-                let builder = sink.publish("test", Bytes::new()).properties(|props| {
+                let builder = sink.publish("test").properties(|props| {
                     props.user_properties.push((
                         "ssssssssssssssssssssssssssssssssssss".into(),
                         "ssssssssssssssssssssssssssssssssssss".into(),
                     ));
                 });
-                let res = builder.send_at_least_once().await;
+                let res = builder.send_at_least_once(Bytes::new()).await;
                 assert_eq!(
                     res,
                     Err(error::SendPacketError::Encode(error::EncodeError::OverMaxPacketSize))
                 );
 
-                let res = sink.publish("test", Bytes::new()).send_at_least_once().await;
+                let res = sink.publish("test").send_at_least_once(Bytes::new()).await;
                 assert!(res.is_ok());
                 success.store(true, Relaxed);
             });
@@ -1142,7 +1141,7 @@ async fn test_sink_success_after_encoder_error_qos1() {
     ntex::rt::spawn(router.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_ok());
     assert!(success.load(Relaxed));
 }
@@ -1180,8 +1179,8 @@ async fn test_request_problem_info() {
     ntex::rt::spawn(client.start_default());
 
     let res = sink
-        .publish(ByteString::from_static("topic"), Bytes::new())
-        .send_at_least_once()
+        .publish(ByteString::from_static("topic"))
+        .send_at_least_once(Bytes::new())
         .await
         .unwrap();
     assert!(res.properties.is_empty());
@@ -1479,7 +1478,7 @@ async fn test_sink_ready() -> std::io::Result<()> {
             ntex::rt::spawn(async move {
                 sink.ready().await;
                 assert!(sink.is_ready());
-                sink.publish("/test", Bytes::from_static(b"body")).send_at_most_once().unwrap();
+                sink.publish("/test").send_at_most_once(Bytes::from_static(b"body")).unwrap();
             });
 
             Ok::<_, TestError>(packet.ack(St))
@@ -1538,17 +1537,17 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
     });
 
     let res = sink
-        .publish(ByteString::from_static("test1"), Bytes::new())
-        .send_at_least_once_no_block();
+        .publish(ByteString::from_static("test1"))
+        .send_at_least_once_no_block(Bytes::new());
     assert!(res.is_ok());
 
     let res = sink
-        .publish(ByteString::from_static("test2"), Bytes::new())
-        .send_at_least_once_no_block();
+        .publish(ByteString::from_static("test2"))
+        .send_at_least_once_no_block(Bytes::new());
     assert!(res.is_ok());
 
     let res =
-        sink.publish(ByteString::from_static("test3"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("test3")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_ok());
 
     assert_eq!(*results.borrow(), &[NonZeroU16::new(1).unwrap(), NonZeroU16::new(2).unwrap()]);

@@ -60,8 +60,8 @@ async fn publish(
         let payload = publish.read_all().await.unwrap();
         session
             .sink
-            .publish(publish.packet().topic.clone(), payload)
-            .send_at_least_once()
+            .publish(publish.packet().topic.clone())
+            .send_at_least_once(payload)
             .await
             .unwrap();
     }

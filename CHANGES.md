@@ -1,5 +1,9 @@
 # Changes
 
+## [5.2.0] - 2025-05-07
+
+* Refactor stream support in publish builder
+
 ## [5.1.0] - 2025-05-05
 
 * Fix .read_all() method return type
