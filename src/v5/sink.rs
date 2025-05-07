@@ -214,7 +214,8 @@ impl PublishBuilder {
 
     #[inline]
     /// Get size of the publish packet
-    pub fn size(&self) -> u32 {
+    pub fn size(&self, payload_size: u32) -> u32 {
+        self.packet.payload_size = payload_size;
         self.packet.encoded_size(u32::MAX) as u32
     }
 
