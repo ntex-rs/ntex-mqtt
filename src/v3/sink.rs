@@ -169,8 +169,8 @@ impl PublishBuilder {
 
     #[inline]
     /// Get size of the publish packet
-    pub fn size(&self) -> u32 {
-        codec::encode::get_encoded_publish_size(&self.packet) as u32
+    pub fn size(&self, payload_size: usize) -> u32 {
+        (codec::encode::get_encoded_publish_size(&self.packet) + payload_size) as u32
     }
 
     #[inline]
