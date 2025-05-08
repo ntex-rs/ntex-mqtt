@@ -239,7 +239,6 @@ impl PublishBuilder {
     pub fn stream_at_most_once(
         mut self,
         size: u32,
-        chunk: Option<Bytes>,
     ) -> Result<StreamingPayload, SendPacketError> {
         if !self.shared.is_closed() {
             log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
@@ -247,13 +246,13 @@ impl PublishBuilder {
             let stream = StreamingPayload {
                 rx: Cell::new(None),
                 shared: self.shared.clone(),
-                inprocess: Cell::new(false),
+                inprocess: Cell::new(true),
             };
 
             self.packet.qos = QoS::AtMostOnce;
             self.packet.payload_size = size;
             self.shared
-                .encode_publish(self.packet, chunk)
+                .encode_publish(self.packet, None)
                 .map_err(SendPacketError::Encode)
                 .map(|_| stream)
         } else {
@@ -320,19 +319,18 @@ impl PublishBuilder {
     pub fn stream_at_least_once(
         mut self,
         size: u32,
-        chunk: Option<Bytes>,
-    ) -> (StreamingPayload, impl Future<Output = Result<codec::PublishAck, SendPacketError>>)
+    ) -> (impl Future<Output = Result<codec::PublishAck, SendPacketError>>, StreamingPayload)
     {
+        let (tx, rx) = self.shared.pool.waiters.channel();
+        let stream = StreamingPayload {
+            rx: Cell::new(Some(rx)),
+            shared: self.shared.clone(),
+            inprocess: Cell::new(false),
+        };
+
         if !self.shared.is_closed() {
             self.packet.qos = QoS::AtLeastOnce;
             self.packet.payload_size = size;
-
-            let (tx, rx) = self.shared.pool.waiters.channel();
-            let stream = StreamingPayload {
-                rx: Cell::new(Some(rx)),
-                shared: self.shared.clone(),
-                inprocess: Cell::new(false),
-            };
 
             // handle client receive maximum
             let fut = if let Some(rx) = self.shared.wait_readiness() {
@@ -340,21 +338,14 @@ impl PublishBuilder {
                     if rx.await.is_err() {
                         return Err(SendPacketError::Disconnected);
                     }
-                    self.stream_at_least_once_inner(tx, chunk).await
+                    self.stream_at_least_once_inner(tx, None).await
                 }))
             } else {
-                Either::Left(Either::Right(self.stream_at_least_once_inner(tx, chunk)))
+                Either::Left(Either::Right(self.stream_at_least_once_inner(tx, None)))
             };
-            (stream, fut)
+            (fut, stream)
         } else {
-            let (tx, rx) = self.shared.pool.waiters.channel();
-            let stream = StreamingPayload {
-                rx: Cell::new(Some(rx)),
-                shared: self.shared.clone(),
-                inprocess: Cell::new(false),
-            };
-
-            (stream, Either::Right(Ready::Err(SendPacketError::Disconnected)))
+            (Either::Right(Ready::Err(SendPacketError::Disconnected)), stream)
         }
     }
 

@@ -56,7 +56,7 @@ async fn test_simple() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     let res =
-        sink.publish(ByteString::from_static("topic"), Bytes::new()).send_at_least_once().await;
+        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
     assert!(res.is_ok());
     sink.close();
 

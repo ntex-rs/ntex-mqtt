@@ -111,8 +111,7 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (payload, fut) =
-        sink.publish(ByteString::from_static("test")).stream_at_least_once(10, None);
+    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -124,8 +123,7 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     // pkt 2
-    let (payload, fut) =
-        sink.publish(ByteString::from_static("test")).stream_at_least_once(5, None);
+    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(5);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"22")).await.unwrap();
@@ -137,8 +135,7 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     // pkt 3
-    let (payload, fut) =
-        sink.publish(ByteString::from_static("test")).stream_at_least_once(2, None);
+    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(2);
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"33")).await.unwrap();
     });
@@ -152,7 +149,7 @@ async fn test_simple_streaming() -> std::io::Result<()> {
         .await;
     assert!(res.is_ok());
 
-    let (_, fut) = sink.publish(ByteString::from_static("#")).stream_at_least_once(12, None);
+    let (fut, _) = sink.publish(ByteString::from_static("#")).stream_at_least_once(12);
     let res = fut.await;
     assert!(res.is_err());
 
@@ -208,10 +205,8 @@ async fn test_simple_streaming2() {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (payload, fut) = sink
-        .publish(ByteString::from_static("test"))
-        .retain(true)
-        .stream_at_least_once(10, None);
+    let (fut, payload) =
+        sink.publish(ByteString::from_static("test")).retain(true).stream_at_least_once(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();

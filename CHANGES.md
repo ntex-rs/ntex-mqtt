@@ -1,6 +1,6 @@
 # Changes
 
-## [5.2.0] - 2025-05-07
+## [5.2.0] - 2025-05-08
 
 * Refactor stream support in publish builder
 
