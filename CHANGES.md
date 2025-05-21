@@ -1,5 +1,9 @@
 # Changes
 
+## [5.2.1] - 2025-05-21
+
+* Try to fix docs.rs build
+
 ## [5.2.0] - 2025-05-08
 
 * Refactor stream support in publish builder

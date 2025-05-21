@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "5.2.0"
+version = "5.2.1"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -12,7 +12,7 @@ edition = "2021"
 rust-version = "1.75"
 
 [package.metadata.docs.rs]
-features = ["ntex/tokio"]
+features = ["ntex-net/tokio"]
 
 [dependencies]
 ntex-io = "2"
