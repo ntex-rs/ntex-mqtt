@@ -1,4 +1,4 @@
-use std::{fmt, rc::Rc};
+use std::{fmt, num::NonZeroU32, rc::Rc};
 
 use ntex_io::IoBoxed;
 use ntex_util::time::Seconds;
@@ -66,6 +66,7 @@ impl Handshake {
             session_present,
             session: Some(st),
             max_send: None,
+            max_packet_size: None,
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
         }
     }
@@ -79,6 +80,7 @@ impl Handshake {
             session_present: false,
             keepalive: DEFAULT_KEEPALIVE,
             max_send: None,
+            max_packet_size: None,
             return_code: mqtt::ConnectAckReason::IdentifierRejected,
         }
     }
@@ -91,6 +93,7 @@ impl Handshake {
             session: None,
             session_present: false,
             max_send: None,
+            max_packet_size: None,
             keepalive: DEFAULT_KEEPALIVE,
             return_code: mqtt::ConnectAckReason::BadUserNameOrPassword,
         }
@@ -104,6 +107,7 @@ impl Handshake {
             session: None,
             session_present: false,
             max_send: None,
+            max_packet_size: None,
             keepalive: DEFAULT_KEEPALIVE,
             return_code: mqtt::ConnectAckReason::NotAuthorized,
         }
@@ -117,6 +121,7 @@ impl Handshake {
             session: None,
             session_present: false,
             max_send: None,
+            max_packet_size: None,
             keepalive: DEFAULT_KEEPALIVE,
             return_code: mqtt::ConnectAckReason::ServiceUnavailable,
         }
@@ -138,10 +143,11 @@ pub struct HandshakeAck<St> {
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) keepalive: Seconds,
     pub(crate) max_send: Option<u16>,
+    pub(crate) max_packet_size: Option<NonZeroU32>,
 }
 
 impl<St> HandshakeAck<St> {
-    /// Set idle time-out for the connection in seconds
+    /// Set idle time-out for the connection in seconds.
     ///
     /// By default idle time-out is set to 30 seconds.
     pub fn idle_timeout(mut self, timeout: Seconds) -> Self {
@@ -154,6 +160,12 @@ impl<St> HandshakeAck<St> {
     /// By default outgoing is set to 16 messages
     pub fn max_send(mut self, val: u16) -> Self {
         self.max_send = Some(val);
+        self
+    }
+
+    /// Maximum supported size for incoming packets.
+    pub fn max_packet_size(mut self, val: NonZeroU32) -> Self {
+        self.max_packet_size = Some(val);
         self
     }
 }
