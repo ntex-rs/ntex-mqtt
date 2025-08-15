@@ -484,6 +484,9 @@ where
                         log::trace!("Sending success handshake ack: {:#?}", pkt);
 
                         ack.shared.set_cap(ack.max_send.unwrap_or(self.max_send) as usize);
+                        if let Some(max_packet_size) = ack.max_packet_size {
+                            ack.shared.codec.set_max_size(max_packet_size.get());
+                        }
                         ack.io.encode(mqtt::Encoded::Packet(pkt.into()), &ack.shared.codec)?;
                         Ok((
                             ack.io,

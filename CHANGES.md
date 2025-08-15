@@ -1,5 +1,9 @@
 # Changes
 
+## pending
+
+* Added v3::HandshakeAck.max_packet_size(..) to allow overriding maximum supported packet size on per connection basis
+
 ## [5.2.1] - 2025-05-21
 
 * Try to fix docs.rs build
