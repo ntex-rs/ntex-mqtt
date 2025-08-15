@@ -1,6 +1,6 @@
 # Changes
 
-## pending
+## [5.3.0] - 2025-08-15
 
 * Added v3::HandshakeAck.max_packet_size(..) to allow overriding maximum supported packet size on per connection basis
 
