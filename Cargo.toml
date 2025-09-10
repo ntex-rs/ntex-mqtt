@@ -17,7 +17,7 @@ features = ["ntex-net/tokio"]
 [dependencies]
 ntex-io = "2"
 ntex-net = "2"
-ntex-util = "2.12"
+ntex-util = "2.14"
 ntex-service = "3.5"
 ntex-bytes = "0.1"
 ntex-codec = "0.6"
