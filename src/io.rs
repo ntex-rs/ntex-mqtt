@@ -595,7 +595,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, io, sync::Arc, sync::Mutex};
+    use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
+    use std::{cell::Cell, io};
 
     use ntex_bytes::{Bytes, BytesMut};
     use ntex_codec::BytesCodec;
@@ -1172,5 +1173,55 @@ mod tests {
         assert!(state.flags().contains(nio::Flags::IO_STOPPING));
         assert!(client.is_closed());
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 1]);
+    }
+
+    /// Do not use keep-alive timer if not configured
+    #[ntex_macros::rt_test]
+    async fn cancel_on_stop() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        #[derive(Clone)]
+        struct OnDrop(Arc<AtomicBool>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let data = Arc::new(AtomicBool::new(false));
+        let data2 = OnDrop(data.clone());
+
+        let config = DispatcherConfig::default();
+        config.set_keepalive_timeout(Seconds(0)).set_frame_read_rate(Seconds(1), Seconds(2), 2);
+
+        let (disp, _) = Dispatcher::new_debug_cfg(
+            nio::Io::new(server),
+            BytesLenCodec(2),
+            config,
+            ntex_service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
+                let data = data2.clone();
+                async move {
+                    match msg {
+                        DispatchItem::Item(bytes) => {
+                            sleep(Millis(999999)).await;
+                            drop(data);
+                            return Ok::<_, ()>(Some(bytes.freeze()));
+                        }
+                        _ => (),
+                    }
+                    Ok(None)
+                }
+            }),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("1");
+        client.close().await;
+        sleep(Millis(250)).await;
+
+        assert!(&data.load(Ordering::Relaxed));
     }
 }
