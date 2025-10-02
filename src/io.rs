@@ -7,7 +7,8 @@ use ntex_io::{
     Decoded, DispatchItem, DispatcherConfig, IoBoxed, IoRef, IoStatusUpdate, RecvError,
 };
 use ntex_service::{IntoService, Pipeline, PipelineBinding, PipelineCall, Service};
-use ntex_util::{task::LocalWaker, time::Seconds};
+use ntex_util::channel::condition::Condition;
+use ntex_util::{future::select, future::Either, spawn, task::LocalWaker, time::Seconds};
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -50,6 +51,7 @@ struct DispatcherInner<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'stat
     read_remains_prev: u32,
     read_max_timeout: Seconds,
     keepalive_timeout: Seconds,
+    stopping: Condition,
 
     response: Option<PipelineCall<S, DispatchItem<U>>>,
     response_idx: usize,
@@ -145,6 +147,7 @@ where
                 read_remains: 0,
                 read_remains_prev: 0,
                 read_max_timeout: Seconds::ZERO,
+                stopping: Condition::new(),
             },
         }
     }
@@ -272,12 +275,12 @@ where
                                         "{}: Dispatcher is instructed to stop",
                                         inner.io.tag()
                                     );
-                                    inner.st = IoDispatcherState::Stop;
+                                    inner.stop();
                                     continue;
                                 }
                                 Err(RecvError::KeepAlive) => {
                                     if let Err(err) = inner.handle_timeout() {
-                                        inner.st = IoDispatcherState::Stop;
+                                        inner.stop();
                                         err
                                     } else {
                                         continue;
@@ -288,11 +291,11 @@ where
                                     DispatchItem::WBackPressureEnabled
                                 }
                                 Err(RecvError::Decoder(err)) => {
-                                    inner.st = IoDispatcherState::Stop;
+                                    inner.stop();
                                     DispatchItem::DecoderError(err)
                                 }
                                 Err(RecvError::PeerGone(err)) => {
-                                    inner.st = IoDispatcherState::Stop;
+                                    inner.stop();
                                     DispatchItem::Disconnect(err)
                                 }
                             }
@@ -312,7 +315,7 @@ where
                     };
 
                     let item = if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
-                        inner.st = IoDispatcherState::Stop;
+                        inner.stop();
                         DispatchItem::Disconnect(Some(err))
                     } else {
                         inner.st = IoDispatcherState::Processing;
@@ -389,6 +392,11 @@ where
     U: Decoder + Encoder + Clone + 'static,
     <U as Encoder>::Item: 'static,
 {
+    fn stop(&mut self) {
+        self.stopping.notify();
+        self.st = IoDispatcherState::Stop;
+    }
+
     fn call_service(&mut self, cx: &mut Context<'_>, item: DispatchItem<U>) {
         let mut fut = self.service.call_nowait(item);
         let mut queue = self.state.queue.borrow_mut();
@@ -425,10 +433,17 @@ where
             let st = self.io.get_ref();
             let codec = self.codec.clone();
             let state = self.state.clone();
+            let waiter = self.stopping.wait();
 
-            ntex_util::spawn(async move {
-                let item = fut.await;
-                state.handle_result(item, response_idx, &st, &codec, true);
+            spawn(async move {
+                match select(fut, waiter).await {
+                    Either::Left(item) => {
+                        state.handle_result(item, response_idx, &st, &codec, true)
+                    }
+                    Either::Right(_) => {
+                        state.handle_result(Ok(None), response_idx, &st, &codec, true)
+                    }
+                }
             });
         }
     }
@@ -437,7 +452,7 @@ where
         // check for errors
         if let Some(err) = self.state.error.take() {
             log::trace!("{}: Error occured, stopping dispatcher", self.io.tag());
-            self.st = IoDispatcherState::Stop;
+            self.stop();
             match err {
                 IoDispatcherError::Encoder(err) => {
                     PollService::Item(DispatchItem::EncoderError(err))
@@ -469,7 +484,7 @@ where
                             "{}: Keep-alive error, stopping dispatcher during pause",
                             self.io.tag()
                         );
-                        self.st = IoDispatcherState::Stop;
+                        self.stop();
                         Poll::Ready(PollService::Item(DispatchItem::KeepAliveTimeout))
                     }
                     IoStatusUpdate::Stop => {
@@ -486,7 +501,7 @@ where
                             self.io.tag(),
                             err
                         );
-                        self.st = IoDispatcherState::Stop;
+                        self.stop();
                         Poll::Ready(PollService::Item(DispatchItem::Disconnect(err)))
                     }
                     IoStatusUpdate::WriteBackpressure => {
@@ -498,7 +513,7 @@ where
             // handle service readiness error
             Poll::Ready(Err(err)) => {
                 log::error!("{}: Service readiness check failed, stopping", self.io.tag());
-                self.st = IoDispatcherState::Stop;
+                self.stop();
                 self.flags.insert(Flags::READY_ERR);
                 self.state.error.set(Some(IoDispatcherError::Service(err)));
                 Poll::Ready(PollService::Item(DispatchItem::Disconnect(None)))
@@ -645,6 +660,7 @@ mod tests {
                         read_remains: 0,
                         read_remains_prev: 0,
                         read_max_timeout: Seconds::ZERO,
+                        stopping: Condition::new(),
                     },
                 },
                 rio,

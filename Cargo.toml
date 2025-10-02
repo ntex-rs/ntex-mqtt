@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "5.3.0"
+version = "5.4.0"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -9,7 +9,7 @@ categories = ["network-programming"]
 keywords = ["MQTT", "IoT", "messaging"]
 license = "MIT OR Apache-2.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.81"
 
 [package.metadata.docs.rs]
 features = ["ntex-net/tokio"]
