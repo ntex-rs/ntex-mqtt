@@ -1,5 +1,9 @@
 # Changes
 
+## [5.5.0] - 2025-10-07
+
+* Drop payload stream on service error
+
 ## [5.4.0] - 2025-10-02
 
 * Cancel packet handling on stop

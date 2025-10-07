@@ -38,6 +38,9 @@ pub enum PayloadError {
     /// Protocol error
     #[error("{0}")]
     Protocol(#[from] ProtocolError),
+    /// Service error
+    #[error("Service error")]
+    Service,
     /// Payload is consumed
     #[error("Payload is consumed")]
     Consumed,

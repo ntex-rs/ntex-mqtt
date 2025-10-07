@@ -41,7 +41,6 @@ pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     max_receive: usize,
     max_topic_alias: u16,
-    payload: Cell<Option<PlSender>>,
     inner: Rc<Inner<C>>,
     _t: PhantomData<E>,
 }
@@ -50,6 +49,7 @@ struct Inner<C> {
     control: Pipeline<C>,
     sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
+    payload: Cell<Option<PlSender>>,
 }
 
 struct PublishInfo {
@@ -73,9 +73,9 @@ where
             publish,
             max_receive,
             max_topic_alias,
-            payload: Cell::new(None),
             inner: Rc::new(Inner {
                 sink: sink.shared(),
+                payload: Cell::new(None),
                 control: Pipeline::new(control),
                 info: RefCell::new(PublishInfo {
                     aliases: HashMap::default(),
@@ -85,7 +85,9 @@ where
             _t: PhantomData,
         }
     }
+}
 
+impl<C> Inner<C> {
     fn drop_payload<PErr>(&self, err: &PErr)
     where
         PErr: Clone,
@@ -129,9 +131,9 @@ where
         };
 
         if result.is_ok() {
-            if let Some(pl) = self.payload.take() {
+            if let Some(pl) = self.inner.payload.take() {
                 if pl.ready().await == PayloadStatus::Ready {
-                    self.payload.set(Some(pl));
+                    self.inner.payload.set(Some(pl));
                 } else {
                     self.inner.sink.force_close();
                 }
@@ -156,7 +158,7 @@ where
     }
 
     async fn shutdown(&self) {
-        self.drop_payload(&PayloadError::Disconnected);
+        self.inner.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink();
         let _ = self.inner.control.call(Control::closed()).await;
 
@@ -273,7 +275,7 @@ where
                     Payload::from_bytes(payload)
                 } else {
                     let (pl, sender) = Payload::from_stream(payload);
-                    self.payload.set(Some(sender));
+                    self.inner.payload.set(Some(sender));
                     pl
                 };
 
@@ -288,12 +290,12 @@ where
                 .await
             }
             DispatchItem::Item(Decoded::PayloadChunk(buf, eof)) => {
-                let pl = self.payload.take().unwrap();
+                let pl = self.inner.payload.take().unwrap();
                 pl.feed_data(buf);
                 if eof {
                     pl.feed_eof();
                 } else {
-                    self.payload.set(Some(pl));
+                    self.inner.payload.set(Some(pl));
                 }
                 Ok(None)
             }
@@ -377,20 +379,20 @@ where
             }
             DispatchItem::EncoderError(err) => {
                 let err = ProtocolError::Encode(err);
-                self.drop_payload(&err);
+                self.inner.drop_payload(&err);
                 control(Control::proto_error(err), &self.inner, ctx, 0).await
             }
             DispatchItem::DecoderError(err) => {
                 let err = ProtocolError::Decode(err);
-                self.drop_payload(&err);
+                self.inner.drop_payload(&err);
                 control(Control::proto_error(err), &self.inner, ctx, 0).await
             }
             DispatchItem::Disconnect(err) => {
-                self.drop_payload(&PayloadError::Disconnected);
+                self.inner.drop_payload(&PayloadError::Disconnected);
                 control(Control::peer_gone(err), &self.inner, ctx, 0).await
             }
             DispatchItem::KeepAliveTimeout => {
-                self.drop_payload(&ProtocolError::KeepAliveTimeout);
+                self.inner.drop_payload(&ProtocolError::KeepAliveTimeout);
                 control(
                     Control::proto_error(ProtocolError::KeepAliveTimeout),
                     &self.inner,
@@ -400,7 +402,7 @@ where
                 .await
             }
             DispatchItem::ReadTimeout => {
-                self.drop_payload(&ProtocolError::ReadTimeout);
+                self.inner.drop_payload(&ProtocolError::ReadTimeout);
                 control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx, 0)
                     .await
             }
@@ -481,6 +483,8 @@ where
                 result
             }
             Err(err) => {
+                inner.drop_payload(&PayloadError::Service);
+
                 // do not handle nested error
                 return if error {
                     Err(err)
@@ -503,11 +507,13 @@ where
                 let _ = inner.sink.encode_packet(pkt);
             }
             if result.disconnect {
+                inner.drop_payload(&PayloadError::Service);
                 inner.sink.drop_sink();
             }
             Ok(None)
         } else {
             if result.disconnect {
+                inner.drop_payload(&PayloadError::Service);
                 inner.sink.drop_sink();
             }
             Ok(result.packet.map(Encoded::Packet))

@@ -10,7 +10,7 @@ use ntex_mqtt::v3::codec::{self, Decoded, Encoded, Packet};
 use ntex_mqtt::v3::{
     self, client, Control, Handshake, HandshakeAck, MqttServer, Publish, Session,
 };
-use ntex_mqtt::{error::ProtocolError, QoS};
+use ntex_mqtt::{error::PayloadError, error::ProtocolError, QoS};
 
 struct St;
 
@@ -184,6 +184,55 @@ async fn test_simple_streaming2() {
     assert!(res.is_ok());
 
     assert_eq!(&chunks.lock().unwrap()[..], vec![Bytes::from_static(b"1111111111"),]);
+}
+
+#[ntex::test]
+async fn test_disconnect_while_streaming() -> std::io::Result<()> {
+    let chunks = Arc::new(Mutex::new(Vec::new()));
+    let chunks2 = chunks.clone();
+
+    let srv = server::test_server(move || {
+        let chunks = chunks2.clone();
+        MqttServer::new(handshake)
+            .min_chunk_size(4)
+            .publish(async move |p: Publish| {
+                let chunks = chunks.clone();
+                loop {
+                    let res = p.read().await;
+                    chunks.lock().unwrap().push(res.clone());
+                    if res.is_err() {
+                        break;
+                    }
+                }
+                Ok(())
+            })
+            .finish()
+    });
+
+    // connect to server
+    let client =
+        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    // pkt 1
+    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(10);
+
+    ntex_rt::spawn(async move {
+        payload.send(Bytes::from_static(b"1111")).await.unwrap();
+        sleep(Millis(50)).await;
+        sink.close();
+    });
+    let res = fut.await;
+    assert!(res.is_err());
+    sleep(Millis(150)).await;
+
+    assert_eq!(
+        &chunks.lock().unwrap()[..],
+        vec![Ok(Some(Bytes::from_static(b"1111"))), Err(PayloadError::Disconnected)]
+    );
+    Ok(())
 }
 
 #[ntex::test]
