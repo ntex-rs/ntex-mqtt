@@ -1,8 +1,8 @@
 use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_codec::{Decoder, Encoder};
-use ntex_io::{DispatchItem, DispatcherConfig, Filter, Io, IoBoxed};
-use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
+use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
+use ntex_service::{cfg::SharedCfg, Middleware, Service, ServiceCtx, ServiceFactory};
 use ntex_util::time::Seconds;
 
 use crate::io::Dispatcher;
@@ -13,15 +13,13 @@ pub struct MqttServer<St, C, T, M, Codec> {
     connect: C,
     handler: Rc<T>,
     middleware: Rc<M>,
-    config: DispatcherConfig,
     _t: PhantomData<(St, Codec)>,
 }
 
 impl<St, C, T, M, Codec> MqttServer<St, C, T, M, Codec> {
-    pub(crate) fn new(connect: C, service: T, mw: M, config: DispatcherConfig) -> Self {
+    pub(crate) fn new(connect: C, service: T, mw: M) -> Self {
         MqttServer {
             connect,
-            config,
             handler: Rc::new(service),
             middleware: Rc::new(mw),
             _t: PhantomData,
@@ -31,26 +29,26 @@ impl<St, C, T, M, Codec> MqttServer<St, C, T, M, Codec> {
 
 impl<St, C, T, M, Codec> MqttServer<St, C, T, M, Codec>
 where
-    C: ServiceFactory<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)>,
+    C: ServiceFactory<IoBoxed, SharedCfg, Response = (IoBoxed, Codec, St, Seconds)>,
 {
     async fn create_service(
         &self,
+        cfg: SharedCfg,
     ) -> Result<MqttHandler<St, C::Service, T, M, Codec>, C::InitError> {
         // create connect service and then create service impl
         Ok(MqttHandler {
-            config: self.config.clone(),
             handler: self.handler.clone(),
-            connect: self.connect.create(()).await?,
+            connect: self.connect.create(cfg).await?,
             middleware: self.middleware.clone(),
             _t: PhantomData,
         })
     }
 }
 
-impl<St, C, T, M, Codec> ServiceFactory<IoBoxed> for MqttServer<St, C, T, M, Codec>
+impl<St, C, T, M, Codec> ServiceFactory<IoBoxed, SharedCfg> for MqttServer<St, C, T, M, Codec>
 where
     St: 'static,
-    C: ServiceFactory<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
+    C: ServiceFactory<IoBoxed, SharedCfg, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
     C::Error: fmt::Debug,
     T: ServiceFactory<
             DispatchItem<Codec>,
@@ -69,16 +67,16 @@ where
     type InitError = C::InitError;
     type Service = MqttHandler<St, C::Service, T, M, Codec>;
 
-    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
-        self.create_service().await
+    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+        self.create_service(cfg).await
     }
 }
 
-impl<F, St, C, T, M, Codec> ServiceFactory<Io<F>> for MqttServer<St, C, T, M, Codec>
+impl<F, St, C, T, M, Codec> ServiceFactory<Io<F>, SharedCfg> for MqttServer<St, C, T, M, Codec>
 where
     F: Filter,
     St: 'static,
-    C: ServiceFactory<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
+    C: ServiceFactory<IoBoxed, SharedCfg, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
     C::Error: fmt::Debug,
     T: ServiceFactory<
             DispatchItem<Codec>,
@@ -97,8 +95,8 @@ where
     type InitError = C::InitError;
     type Service = MqttHandler<St, C::Service, T, M, Codec>;
 
-    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
-        self.create_service().await
+    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+        self.create_service(cfg).await
     }
 }
 
@@ -106,7 +104,6 @@ pub struct MqttHandler<St, C, T, M, Codec> {
     connect: C,
     handler: Rc<T>,
     middleware: Rc<M>,
-    config: DispatcherConfig,
     _t: PhantomData<(St, Codec)>,
 }
 
@@ -146,7 +143,7 @@ where
         let handler = self.handler.create(session).await?;
         log::trace!("{}: Connection handler is created, starting dispatcher", tag);
 
-        Dispatcher::new(io, codec, self.middleware.create(handler), &self.config)
+        Dispatcher::new(io, codec, self.middleware.create(handler))
             .keepalive_timeout(keepalive)
             .await
     }

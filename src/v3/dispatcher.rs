@@ -592,7 +592,7 @@ mod tests {
 
     use ntex_bytes::{ByteString, Bytes};
     use ntex_io::{testing::IoTest, Io};
-    use ntex_service::fn_service;
+    use ntex_service::{cfg::SharedCfg, fn_service};
     use ntex_util::future::{lazy, Ready};
     use ntex_util::time::{sleep, Seconds};
 
@@ -601,7 +601,7 @@ mod tests {
 
     #[ntex_macros::rt_test]
     async fn test_dup_packet_id() {
-        let io = Io::new(IoTest::create().0);
+        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
         let err = Rc::new(RefCell::new(false));
@@ -656,7 +656,7 @@ mod tests {
 
     #[ntex_macros::rt_test]
     async fn test_wr_backpressure() {
-        let io = Io::new(IoTest::create().0);
+        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
 

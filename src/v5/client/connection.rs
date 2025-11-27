@@ -1,7 +1,7 @@
 use std::{cell::RefCell, fmt, marker, num::NonZeroU16, rc::Rc};
 
 use ntex_bytes::ByteString;
-use ntex_io::{DispatcherConfig, IoBoxed};
+use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex_service::{boxed, fn_service, IntoService, Pipeline, Service};
 use ntex_util::time::{sleep, Millis, Seconds};
@@ -19,7 +19,6 @@ pub struct Client {
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     max_receive: usize,
-    config: DispatcherConfig,
     pkt: Box<codec::ConnectAck>,
 }
 
@@ -29,7 +28,6 @@ impl fmt::Debug for Client {
             .field("keepalive", &self.keepalive)
             .field("max_receive", &self.max_receive)
             .field("connect", &self.pkt)
-            .field("config", &self.config)
             .finish()
     }
 }
@@ -42,9 +40,8 @@ impl Client {
         pkt: Box<codec::ConnectAck>,
         max_receive: u16,
         keepalive: Seconds,
-        config: DispatcherConfig,
     ) -> Self {
-        Client { io, pkt, shared, keepalive, config, max_receive: max_receive as usize }
+        Client { io, pkt, shared, keepalive, max_receive: max_receive as usize }
     }
 }
 
@@ -92,7 +89,6 @@ impl Client {
             io: self.io,
             shared: self.shared,
             keepalive: self.keepalive,
-            config: self.config,
             max_receive: self.max_receive,
             _t: marker::PhantomData,
         }
@@ -117,7 +113,7 @@ impl Client {
             }),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher, &self.config).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher).await;
     }
 
     /// Run client with provided control messages handler
@@ -140,7 +136,7 @@ impl Client {
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared, dispatcher, &self.config).await
+        Dispatcher::new(self.io, self.shared, dispatcher).await
     }
 
     /// Get negotiated io stream and codec
@@ -158,7 +154,6 @@ pub struct ClientRouter<Err, PErr> {
     handlers: Vec<Pipeline<Handler<PErr>>>,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
-    config: DispatcherConfig,
     max_receive: usize,
     _t: marker::PhantomData<Err>,
 }
@@ -167,7 +162,6 @@ impl<Err, PErr> fmt::Debug for ClientRouter<Err, PErr> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("v5::ClientRouter")
             .field("keepalive", &self.keepalive)
-            .field("config", &self.config)
             .field("max_receive", &self.max_receive)
             .finish()
     }
@@ -208,7 +202,7 @@ where
             }),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher, &self.config).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher).await;
     }
 
     /// Run client and handle control messages
@@ -230,7 +224,7 @@ where
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared, dispatcher, &self.config).await
+        Dispatcher::new(self.io, self.shared, dispatcher).await
     }
 
     /// Get negotiated io stream and codec

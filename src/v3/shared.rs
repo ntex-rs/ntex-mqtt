@@ -1,6 +1,6 @@
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, num, rc::Rc};
 
-use ntex_bytes::{Bytes, BytesMut, PoolId, PoolRef};
+use ntex_bytes::{Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
 use ntex_util::{channel::pool, HashSet};
@@ -29,16 +29,11 @@ pub(super) enum AckType {
 pub(super) struct MqttSinkPool {
     queue: pool::Pool<Ack>,
     pub(super) waiters: pool::Pool<()>,
-    pub(super) pool: Cell<PoolRef>,
 }
 
 impl Default for MqttSinkPool {
     fn default() -> Self {
-        Self {
-            queue: pool::new(),
-            waiters: pool::new(),
-            pool: Cell::new(PoolId::P5.pool_ref()),
-        }
+        Self { queue: pool::new(), waiters: pool::new() }
     }
 }
 
