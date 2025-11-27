@@ -1,50 +1,57 @@
-use std::{num::NonZeroU16, num::NonZeroU32, rc::Rc};
+use std::{marker::PhantomData, num::NonZeroU16, num::NonZeroU32, rc::Rc};
 
-use ntex_bytes::{ByteString, Bytes, PoolId};
-use ntex_io::{DispatcherConfig, IoBoxed};
+use ntex_bytes::{ByteString, Bytes};
+use ntex_io::IoBoxed;
 use ntex_net::connect::{self, Address, Connect, Connector};
-use ntex_service::{IntoService, Pipeline, Service};
+use ntex_service::cfg::SharedCfg;
+use ntex_service::{IntoServiceFactory, Pipeline, Service, ServiceCtx, ServiceFactory};
 use ntex_util::time::{timeout_checked, Seconds};
 
 use super::codec::{self, Decoded, Encoded, Packet};
 use super::{connection::Client, error::ClientError, error::ProtocolError};
 use crate::v5::shared::{MqttShared, MqttSinkPool};
 
-/// Mqtt client connector
+/// Mqtt client connector factory
 pub struct MqttConnector<A, T> {
-    address: A,
-    connector: Pipeline<T>,
+    connector: T,
     pkt: codec::Connect,
     handshake_timeout: Seconds,
     min_chunk_size: u32,
-    config: DispatcherConfig,
     pool: Rc<MqttSinkPool>,
+    _t: PhantomData<A>,
+}
+
+/// Mqtt client connector
+pub struct MqttConnectorService<A, T> {
+    connector: T,
+    pkt: codec::Connect,
+    handshake_timeout: Seconds,
+    min_chunk_size: u32,
+    pool: Rc<MqttSinkPool>,
+    _t: PhantomData<A>,
 }
 
 impl<A> MqttConnector<A, ()>
 where
-    A: Address + Clone,
+    A: Address,
 {
     #[allow(clippy::new_ret_no_self)]
     /// Create new mqtt connector
-    pub fn new(address: A) -> MqttConnector<A, Connector<A>> {
-        let config = DispatcherConfig::default();
-        config.set_disconnect_timeout(Seconds(3)).set_keepalive_timeout(Seconds(0));
+    pub fn new() -> MqttConnector<A, Connector<A>> {
         MqttConnector {
-            address,
-            config,
             pkt: codec::Connect::default(),
-            connector: Pipeline::new(Connector::default()),
+            connector: Connector::default(),
             handshake_timeout: Seconds::ZERO,
             min_chunk_size: 32 * 1024,
             pool: Rc::new(MqttSinkPool::default()),
+            _t: PhantomData,
         }
     }
 }
 
 impl<A, T> MqttConnector<A, T>
 where
-    A: Address + Clone,
+    A: Address,
 {
     #[inline]
     /// Create new client and provide client id
@@ -170,69 +177,86 @@ where
         self
     }
 
-    /// Set client connection disconnect timeout.
-    ///
-    /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
-    /// within this time, the connection get dropped.
-    ///
-    /// To disable timeout set value to 0.
-    ///
-    /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(self, timeout: Seconds) -> Self {
-        self.config.set_disconnect_timeout(timeout);
-        self
-    }
-
-    /// Set memory pool.
-    ///
-    /// Use specified memory pool for memory allocations. By default P5
-    /// memory pool is used.
-    pub fn memory_pool(self, id: PoolId) -> Self {
-        self.pool.pool.set(id.pool_ref());
-        self
-    }
-
     /// Use custom connector
     pub fn connector<U, F>(self, connector: F) -> MqttConnector<A, U>
     where
-        F: IntoService<U, Connect<A>>,
-        U: Service<Connect<A>, Error = connect::ConnectError>,
+        F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
+        U: ServiceFactory<Connect<A>, SharedCfg, Error = connect::ConnectError>,
         IoBoxed: From<U::Response>,
     {
         MqttConnector {
-            connector: Pipeline::new(connector.into_service()),
+            connector: connector.into_factory(),
             pkt: self.pkt,
-            address: self.address,
-            config: self.config,
             handshake_timeout: self.handshake_timeout,
             min_chunk_size: self.min_chunk_size,
             pool: self.pool,
+            _t: PhantomData,
         }
     }
 }
 
-impl<A, T> MqttConnector<A, T>
+impl<A, T> ServiceFactory<A, SharedCfg> for MqttConnector<A, T>
 where
-    A: Address + Clone,
+    A: Address,
+    T: ServiceFactory<Connect<A>, SharedCfg, Error = connect::ConnectError>,
+    IoBoxed: From<T::Response>,
+{
+    type Response = Client;
+    type Error = ClientError<Box<codec::ConnectAck>>;
+    type InitError = T::InitError;
+    type Service = MqttConnectorService<A, T::Service>;
+
+    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+        Ok(MqttConnectorService {
+            connector: self.connector.create(cfg).await?,
+            pkt: self.pkt.clone(),
+            handshake_timeout: self.handshake_timeout,
+            min_chunk_size: self.min_chunk_size,
+            pool: self.pool.clone(),
+            _t: PhantomData,
+        })
+    }
+}
+
+impl<A, T> Service<A> for MqttConnectorService<A, T>
+where
+    A: Address,
     T: Service<Connect<A>, Error = connect::ConnectError>,
     IoBoxed: From<T::Response>,
 {
+    type Response = Client;
+    type Error = ClientError<Box<codec::ConnectAck>>;
+
+    ntex_service::forward_ready!(connector);
+    ntex_service::forward_poll!(connector);
+    ntex_service::forward_shutdown!(connector);
+
     /// Connect to mqtt server
-    pub async fn connect(&self) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
-        timeout_checked(self.handshake_timeout, self._connect())
+    async fn call(&self, req: A, ctx: ServiceCtx<'_, Self>) -> Result<Client, Self::Error> {
+        timeout_checked(self.handshake_timeout, self._connect(req, ctx))
             .await
             .map_err(|_| ClientError::HandshakeTimeout)
             .and_then(|res| res)
     }
+}
 
-    async fn _connect(&self) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
-        let io: IoBoxed = self.connector.call(Connect::new(self.address.clone())).await?.into();
+impl<A, T> MqttConnectorService<A, T>
+where
+    A: Address,
+    T: Service<Connect<A>, Error = connect::ConnectError>,
+    IoBoxed: From<T::Response>,
+{
+    async fn _connect(
+        &self,
+        req: A,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
+        let io: IoBoxed = ctx.call(&self.connector, Connect::new(req)).await?.into();
         let pkt = self.pkt.clone();
         let keep_alive = pkt.keep_alive;
         let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
         let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(65535);
         let pool = self.pool.clone();
-        let config = self.config.clone();
 
         let codec = codec::Codec::new();
         codec.set_max_inbound_size(max_packet_size);
@@ -259,7 +283,7 @@ where
 
                     shared.set_cap(pkt.receive_max.get() as usize);
 
-                    Ok(Client::new(io, shared, pkt, max_receive, Seconds(keep_alive), config))
+                    Ok(Client::new(io, shared, pkt, max_receive, Seconds(keep_alive)))
                 } else {
                     Err(ClientError::Ack(pkt))
                 }

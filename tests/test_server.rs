@@ -1,10 +1,10 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc, Mutex};
 use std::{cell::RefCell, future::Future, num::NonZeroU16, pin::Pin, rc::Rc, time::Duration};
 
-use ntex::service::{fn_service, Pipeline, ServiceFactory};
+use ntex::service::{cfg::SharedCfg, fn_service, Pipeline, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{join_all, lazy, ByteString, Bytes, BytesMut, Ready};
-use ntex::{codec::Encoder, server, service::chain_factory};
+use ntex::{codec::Encoder, io::IoConfig, server, service::chain_factory};
 
 use ntex_mqtt::v3::codec::{self, Decoded, Encoded, Packet};
 use ntex_mqtt::v3::{
@@ -28,8 +28,14 @@ async fn test_simple() -> std::io::Result<()> {
         server::test_server(|| MqttServer::new(handshake).publish(|_t| Ready::Ok(())).finish());
 
     // connect to server
-    let client =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
 
     let sink = client.sink();
 
@@ -68,8 +74,14 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     });
 
     // connect to server
-    let client =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
 
     let sink = client.sink();
 
@@ -165,8 +177,14 @@ async fn test_simple_streaming2() {
     });
 
     // connect to server
-    let client =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
 
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
@@ -210,8 +228,14 @@ async fn test_disconnect_while_streaming() -> std::io::Result<()> {
     });
 
     // connect to server
-    let client =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
 
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
@@ -243,8 +267,15 @@ async fn test_connect_fail() -> std::io::Result<()> {
             .publish(|_t| Ready::Ok(()))
             .finish()
     });
-    let err =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
+    let err = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .err()
+        .unwrap();
     if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::BadUserNameOrPassword);
@@ -256,8 +287,15 @@ async fn test_connect_fail() -> std::io::Result<()> {
             .publish(|_t| Ready::Ok(()))
             .finish()
     });
-    let err =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
+    let err = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .err()
+        .unwrap();
     if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::IdentifierRejected);
@@ -269,8 +307,15 @@ async fn test_connect_fail() -> std::io::Result<()> {
             .publish(|_t| Ready::Ok(()))
             .finish()
     });
-    let err =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
+    let err = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .err()
+        .unwrap();
     if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::NotAuthorized);
@@ -282,8 +327,15 @@ async fn test_connect_fail() -> std::io::Result<()> {
             .publish(|_t| Ready::Ok(()))
             .finish()
     });
-    let err =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.err().unwrap();
+    let err = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .err()
+        .unwrap();
     if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::ServiceUnavailable);
@@ -372,8 +424,14 @@ async fn test_qos2_client() -> std::io::Result<()> {
     });
 
     // connect to server
-    let client =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
 
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
@@ -538,8 +596,14 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
     });
 
     // connect to server
-    let client =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
     let sink = client.sink();
 
     ntex::rt::spawn(client.start_default());
@@ -574,8 +638,14 @@ async fn test_disconnect() -> std::io::Result<()> {
     });
 
     // connect to server
-    let client =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
 
     let sink = client.sink();
 
@@ -610,8 +680,14 @@ async fn test_client_disconnect() -> std::io::Result<()> {
     });
 
     // connect to server
-    let client =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
 
     let sink = client.sink();
 
@@ -872,7 +948,12 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
 
     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
     builder.set_verify(SslVerifyMode::NONE);
-    let con = Pipeline::new(ntex::connect::openssl::SslConnector::new(builder.build()));
+    let con = Pipeline::new(
+        ntex::connect::openssl::SslConnector::new(builder.build())
+            .create(SharedCfg::default())
+            .await
+            .unwrap(),
+    );
     let addr = format!("127.0.0.1:{}", srv.addr().port());
     let io = con.call(addr.into()).await.unwrap();
 
@@ -1000,8 +1081,14 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
     });
 
     // connect to server
-    let client =
-        client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
 
     let sink = client.sink();
 
@@ -1041,12 +1128,11 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
     let check = Arc::new(AtomicBool::new(false));
     let check2 = check.clone();
 
-    let srv = server::test_server(move || {
+    let srv = server::TestServerBuilder::new(move || {
         let check = check2.clone();
 
         MqttServer::new(handshake)
             .min_chunk_size(32 * 1024)
-            .frame_read_rate(Seconds(1), Seconds(2), 10)
             .publish(|p: v3::Publish| async move {
                 let _ = p.read_all().await;
                 Ok(())
@@ -1066,7 +1152,13 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
             .finish()
             .map_err(|_| ())
             .map_init_err(|_| ())
-    });
+    })
+    .config(
+        SharedCfg::new("MQTT")
+            .add(IoConfig::new().set_frame_read_rate(Seconds(1), Seconds(2), 10))
+            .into(),
+    )
+    .start();
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();

@@ -524,7 +524,7 @@ where
 #[cfg(test)]
 mod tests {
     use ntex_io::{testing::IoTest, Io};
-    use ntex_service::fn_service;
+    use ntex_service::{cfg::SharedCfg, fn_service};
     use ntex_util::future::{lazy, Ready};
 
     use super::*;
@@ -534,7 +534,7 @@ mod tests {
 
     #[ntex_macros::rt_test]
     async fn test_wr_backpressure() {
-        let io = Io::new(IoTest::create().0);
+        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Default::default()));
         let sink = MqttSink::new(shared.clone());

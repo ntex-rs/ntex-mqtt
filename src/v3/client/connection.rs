@@ -1,7 +1,7 @@
 #![allow(clippy::let_underscore_future)]
 use std::{fmt, marker::PhantomData, rc::Rc};
 
-use ntex_io::{DispatcherConfig, IoBoxed};
+use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Router, RouterBuilder};
 use ntex_service::{boxed, fn_service, IntoService, Pipeline, Service};
 use ntex_util::future::{Either, Ready};
@@ -19,7 +19,6 @@ pub struct Client {
     keepalive: Seconds,
     session_present: bool,
     max_receive: usize,
-    config: DispatcherConfig,
 }
 
 impl fmt::Debug for Client {
@@ -28,7 +27,6 @@ impl fmt::Debug for Client {
             .field("keepalive", &self.keepalive)
             .field("session_present", &self.session_present)
             .field("max_receive", &self.max_receive)
-            .field("config", &self.config)
             .finish()
     }
 }
@@ -41,16 +39,8 @@ impl Client {
         session_present: bool,
         keepalive_timeout: Seconds,
         max_receive: usize,
-        config: DispatcherConfig,
     ) -> Self {
-        Client {
-            io,
-            shared,
-            session_present,
-            max_receive,
-            config,
-            keepalive: keepalive_timeout,
-        }
+        Client { io, shared, session_present, max_receive, keepalive: keepalive_timeout }
     }
 }
 
@@ -84,7 +74,6 @@ impl Client {
             io: self.io,
             shared: self.shared,
             keepalive: self.keepalive,
-            config: self.config,
             max_receive: self.max_receive,
             _t: PhantomData,
         }
@@ -106,7 +95,7 @@ impl Client {
             fn_service(|msg: Control<()>| Ready::<_, ()>::Ok(msg.disconnect())),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher, &self.config).await;
+        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher).await;
     }
 
     /// Run client with provided control messages handler
@@ -128,7 +117,7 @@ impl Client {
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared.clone(), dispatcher, &self.config).await
+        Dispatcher::new(self.io, self.shared.clone(), dispatcher).await
     }
 
     /// Get negotiated io stream and codec
@@ -147,7 +136,6 @@ pub struct ClientRouter<Err, PErr> {
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     max_receive: usize,
-    config: DispatcherConfig,
     _t: PhantomData<Err>,
 }
 
@@ -156,7 +144,6 @@ impl<Err, PErr> fmt::Debug for ClientRouter<Err, PErr> {
         f.debug_struct("v3::ClientRouter")
             .field("keepalive", &self.keepalive)
             .field("max_receive", &self.max_receive)
-            .field("config", &self.config)
             .finish()
     }
 }
@@ -192,7 +179,7 @@ where
             fn_service(|msg: Control<Err>| Ready::<_, Err>::Ok(msg.disconnect())),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher, &self.config).await;
+        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher).await;
     }
 
     /// Run client and handle control messages
@@ -213,7 +200,7 @@ where
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared.clone(), dispatcher, &self.config).await
+        Dispatcher::new(self.io, self.shared.clone(), dispatcher).await
     }
 }
 

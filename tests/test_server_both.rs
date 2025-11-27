@@ -1,5 +1,5 @@
-use ntex::server;
 use ntex::util::{ByteString, Bytes, Ready};
+use ntex::{server, ServiceFactory, SharedCfg};
 
 use ntex_mqtt::{v3, v5, MqttServer};
 
@@ -39,8 +39,14 @@ async fn test_simple() -> std::io::Result<()> {
     });
 
     // connect to v5 server
-    let client =
-        v5::client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = v5::client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
@@ -50,8 +56,14 @@ async fn test_simple() -> std::io::Result<()> {
     sink.close();
 
     // connect to v3 server
-    let client =
-        v3::client::MqttConnector::new(srv.addr()).client_id("user").connect().await.unwrap();
+    let client = v3::client::MqttConnector::new()
+        .client_id("user")
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(srv.addr())
+        .await
+        .unwrap();
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 

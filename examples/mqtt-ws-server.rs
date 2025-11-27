@@ -4,7 +4,7 @@ use std::{error::Error, io};
 use ntex::http::{self, h1, HttpService, Request, Response};
 use ntex::io::{Filter, Io, Layer};
 use ntex::service::{chain_factory, fn_factory, fn_service, Pipeline, ServiceFactory};
-use ntex::{util::variant, util::Ready, ws};
+use ntex::{util::variant, util::Ready, ws, SharedCfg};
 use ntex_mqtt::{v3, v5, HandshakeError, MqttError, MqttServer, ProtocolError};
 use ntex_tls::openssl::SslAcceptor;
 use openssl::ssl::{self, SslFiletype, SslMethod};
@@ -31,7 +31,8 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 
 /// Mqtt server factory
 fn mqtt_server<F: Filter>(
-) -> impl ServiceFactory<Io<F>, Response = (), Error = Box<dyn Error>, InitError = ()> {
+) -> impl ServiceFactory<Io<F>, SharedCfg, Response = (), Error = Box<dyn Error>, InitError = ()>
+{
     MqttServer::new()
         .v3(v3::MqttServer::new(|handshake: v3::Handshake| async move {
             log::info!("new mqtt v3 connection: {:?}", handshake);
@@ -59,6 +60,7 @@ fn mqtt_server<F: Filter>(
 /// ws server negotiates ws protocol and switch to websocket transport
 pub fn ws<F: Filter>() -> impl ServiceFactory<
     (Request, Io<F>, h1::Codec),
+    SharedCfg,
     Response = Io<Layer<ws::WsTransport, F>>,
     Error = Box<dyn Error>,
     InitError = (),
@@ -162,43 +164,42 @@ async fn main() -> std::io::Result<()> {
                     // normal mqtt server
                     variant::variant(mqtt_server())
                         // http server for websockets
-                        .v2(HttpService::build()
-                            // websocket handler, we need to verify websocket handshake
-                            // and then switch to websokets streaming
-                            .h1_control(fn_factory(move || async move {
-                                let ws_svc = Pipeline::new(
-                                    chain_factory(ws())
-                                        .and_then(mqtt_server())
-                                        .create(())
-                                        .await?,
-                                );
+                        .v2(HttpService::new(|_req| {
+                            // ntex::web could be used for normal http
+                            //
+                            // this impl doe not allow http
+                            Ready::Ok::<_, io::Error>(
+                                Response::NotFound().body("Use WebSocket proto"),
+                            )
+                        })
+                        // websocket handler, we need to verify websocket handshake
+                        // and then switch to websokets streaming
+                        .h1_control(fn_factory(move || async move {
+                            let ws_svc = Pipeline::new(
+                                chain_factory(ws())
+                                    .and_then(mqtt_server())
+                                    .create(SharedCfg::default())
+                                    .await?,
+                            );
 
-                                Ok::<_, ()>(fn_service(move |msg: h1::Control<_, _>| {
-                                    let ack = match msg {
-                                        h1::Control::Upgrade(ctl) => {
-                                            let ws = ws_svc.clone();
-                                            ctl.handle(move |req, io, codec| {
-                                                ws.call_static((req, io, codec))
-                                            })
-                                        }
-                                        _ => msg.ack(),
-                                    };
-                                    async move { Ok::<_, io::Error>(ack) }
-                                }))
+                            Ok::<_, ()>(fn_service(move |msg: h1::Control<_, _>| {
+                                let ack = match msg {
+                                    h1::Control::Upgrade(ctl) => {
+                                        let ws = ws_svc.clone();
+                                        ctl.handle(move |req, io, codec| {
+                                            ws.call_static((req, io, codec))
+                                        })
+                                    }
+                                    _ => msg.ack(),
+                                };
+                                async move { Ok::<_, io::Error>(ack) }
                             }))
-                            .finish(|_req| {
-                                // ntex::web could be used for normal http
-                                //
-                                // this impl doe not allow http
-                                Ready::Ok::<_, io::Error>(
-                                    Response::NotFound().body("Use WebSocket proto"),
-                                )
-                            })
-                            // adapt service error to mqtt error
-                            .map_err(|e| {
-                                log::info!("Http server error: {:?}", e);
-                                Box::<dyn Error>::from(e)
-                            })),
+                        }))
+                        // adapt service error to mqtt error
+                        .map_err(|e| {
+                            log::info!("Http server error: {:?}", e);
+                            Box::<dyn Error>::from(e)
+                        })),
                 )
         })?
         .workers(1)

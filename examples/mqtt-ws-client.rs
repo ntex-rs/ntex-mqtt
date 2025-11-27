@@ -3,7 +3,7 @@ use std::{io, rc::Rc};
 
 use ntex::connect::{openssl::SslConnector, Connect, ConnectError};
 use ntex::time::{sleep, Millis, Seconds};
-use ntex::{util::Bytes, ws};
+use ntex::{util::Bytes, ws, ServiceFactory, SharedCfg};
 use ntex_mqtt::v3;
 use openssl::ssl;
 
@@ -25,12 +25,13 @@ async fn main() -> std::io::Result<()> {
             "https://127.0.0.1:8883",
             SslConnector::new(builder.build()),
         )
-        .finish()
+        .finish(SharedCfg::default())
+        .await
         .unwrap(),
     );
 
     // connect to server
-    let client = v3::client::MqttConnector::new("127.0.0.1:8883")
+    let client = v3::client::MqttConnector::new()
         .client_id("user")
         .keep_alive(Seconds::ONE)
         .connector(move |_: Connect<&str>| {
@@ -43,7 +44,10 @@ async fn main() -> std::io::Result<()> {
                     .into_transport())
             }
         })
-        .connect()
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call("127.0.0.1:8883")
         .await
         .unwrap();
 

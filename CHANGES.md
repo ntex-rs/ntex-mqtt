@@ -1,5 +1,11 @@
 # Changes
 
+## [6.0.0-pre.0] - 2025-11-28
+
+* Use shared configuration
+
+* Update MSRV to 1.85
+
 ## [5.5.0] - 2025-10-07
 
 * Drop payload stream on service error

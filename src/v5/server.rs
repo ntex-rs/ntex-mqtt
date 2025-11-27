@@ -1,7 +1,9 @@
 use std::{fmt, marker::PhantomData, rc::Rc};
 
-use ntex_io::{DispatchItem, DispatcherConfig, IoBoxed};
-use ntex_service::{Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack};
+use ntex_io::{DispatchItem, IoBoxed};
+use ntex_service::{
+    cfg::SharedCfg, Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack,
+};
 use ntex_util::time::{timeout_checked, Millis, Seconds};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
@@ -28,7 +30,6 @@ pub struct MqttServer<St, C, Cn, P, M = Identity> {
     min_chunk_size: u32,
     handle_qos_after_disconnect: Option<QoS>,
     connect_timeout: Seconds,
-    config: DispatcherConfig,
     pub(super) pool: Rc<MqttSinkPool>,
     _t: PhantomData<St>,
 }
@@ -42,19 +43,15 @@ impl<St, C>
         InFlightService,
     >
 where
-    C: ServiceFactory<Handshake, Response = HandshakeAck<St>>,
+    C: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>>,
     C::Error: fmt::Debug,
 {
     /// Create server factory and provide handshake service
     pub fn new<F>(handshake: F) -> Self
     where
-        F: IntoServiceFactory<C, Handshake>,
+        F: IntoServiceFactory<C, Handshake, SharedCfg>,
     {
-        let config = DispatcherConfig::default();
-        config.set_disconnect_timeout(Seconds(3));
-
         MqttServer {
-            config,
             handshake: handshake.into_factory(),
             srv_control: DefaultControlService::default(),
             srv_publish: DefaultPublishService::default(),
@@ -85,7 +82,7 @@ impl<St, C, Cn, P> MqttServer<St, C, Cn, P, InFlightService> {
 impl<St, C, Cn, P, M> MqttServer<St, C, Cn, P, M>
 where
     St: 'static,
-    C: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
+    C: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
     C::Error: fmt::Debug,
     Cn: ServiceFactory<Control<C::Error>, Session<St>, Response = ControlAck> + 'static,
     P: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
@@ -99,31 +96,6 @@ where
     /// By default, connect timeout is disabled.
     pub fn connect_timeout(mut self, timeout: Seconds) -> Self {
         self.connect_timeout = timeout;
-        self
-    }
-
-    /// Set server connection disconnect timeout.
-    ///
-    /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
-    /// within this time, the connection get dropped.
-    ///
-    /// To disable timeout set value to 0.
-    ///
-    /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(self, val: Seconds) -> Self {
-        self.config.set_disconnect_timeout(val);
-        self
-    }
-
-    /// Set read rate parameters for single frame.
-    ///
-    /// Set read timeout, max timeout and rate for reading payload. If the client
-    /// sends `rate` amount of data within `timeout` period of time, extend timeout by `timeout` seconds.
-    /// But no more than `max_timeout` timeout.
-    ///
-    /// By default frame read rate is disabled.
-    pub fn frame_read_rate(self, timeout: Seconds, max_timeout: Seconds, rate: u16) -> Self {
-        self.config.set_frame_read_rate(timeout, max_timeout, rate);
         self
     }
 
@@ -199,7 +171,6 @@ where
     pub fn reset_middlewares(self) -> MqttServer<St, C, Cn, P, Identity> {
         MqttServer {
             middleware: Identity,
-            config: self.config,
             handshake: self.handshake,
             srv_publish: self.srv_publish,
             srv_control: self.srv_control,
@@ -225,7 +196,6 @@ where
     pub fn middleware<U>(self, mw: U) -> MqttServer<St, C, Cn, P, Stack<M, U>> {
         MqttServer {
             middleware: Stack::new(self.middleware, mw),
-            config: self.config,
             handshake: self.handshake,
             srv_publish: self.srv_publish,
             srv_control: self.srv_control,
@@ -252,7 +222,6 @@ where
         C::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         MqttServer {
-            config: self.config,
             handshake: self.handshake,
             srv_publish: self.srv_publish,
             srv_control: service.into_factory(),
@@ -279,7 +248,6 @@ where
         PublishAck: TryFrom<Srv::Error, Error = C::Error>,
     {
         MqttServer {
-            config: self.config,
             handshake: self.handshake,
             srv_publish: publish.into_factory(),
             srv_control: self.srv_control,
@@ -300,7 +268,7 @@ where
 impl<St, C, Cn, P, M> MqttServer<St, C, Cn, P, M>
 where
     St: 'static,
-    C: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
+    C: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
     C::Error: From<Cn::Error>
         + From<Cn::InitError>
         + From<P::Error>
@@ -318,6 +286,7 @@ where
         Session<St>,
         impl ServiceFactory<
             IoBoxed,
+            SharedCfg,
             Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds),
             Error = MqttError<C::Error>,
             InitError = C::InitError,
@@ -346,7 +315,6 @@ where
             },
             factory(self.srv_publish, self.srv_control, self.handle_qos_after_disconnect),
             self.middleware,
-            self.config,
         )
     }
 }
@@ -363,9 +331,9 @@ struct HandshakeFactory<St, H> {
     _t: PhantomData<St>,
 }
 
-impl<St, H> ServiceFactory<IoBoxed> for HandshakeFactory<St, H>
+impl<St, H> ServiceFactory<IoBoxed, SharedCfg> for HandshakeFactory<St, H>
 where
-    H: ServiceFactory<Handshake, Response = HandshakeAck<St>> + 'static,
+    H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
     H::Error: fmt::Debug,
 {
     type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
@@ -374,9 +342,9 @@ where
     type Service = HandshakeService<St, H::Service>;
     type InitError = H::InitError;
 
-    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
         Ok(HandshakeService {
-            service: self.factory.create(()).await?,
+            service: self.factory.create(cfg).await?,
             max_size: self.max_size,
             max_receive: self.max_receive,
             max_topic_alias: self.max_topic_alias,

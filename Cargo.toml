@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "5.5.0"
+version = "6.0.0-pre.0"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -9,20 +9,21 @@ categories = ["network-programming"]
 keywords = ["MQTT", "IoT", "messaging"]
 license = "MIT OR Apache-2.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.85"
 
 [package.metadata.docs.rs]
 features = ["ntex-net/tokio"]
 
 [dependencies]
-ntex-io = "2"
-ntex-net = "2"
-ntex-util = "2.14"
-ntex-service = "3.5"
-ntex-bytes = "0.1"
-ntex-codec = "0.6"
-ntex-router = "0.5"
-ntex-rt = "0.4"
+ntex-io = "3.0.0-pre.1"
+ntex-net = "3.0.0-pre.1"
+ntex-util = "3"
+ntex-service = "3.6.2"
+ntex-bytes = "1"
+ntex-codec = "1"
+ntex-router = "1"
+ntex-macros = "0.2"
+ntex-rt = "3"
 bitflags = "2"
 log = "0.4"
 pin-project-lite = "0.2"
@@ -33,8 +34,7 @@ thiserror = "2"
 [dev-dependencies]
 rand = "0.8"
 env_logger = "0.11"
-ntex-tls = "2"
-ntex-macros = "0.1"
+ntex-tls = "3.0.0-pre.1"
 openssl = "0.10"
 test-case = "3.2"
-ntex = { version = "2", features = ["openssl"] }
+ntex = { version = "3.0.0-pre.1", features = ["openssl"] }
