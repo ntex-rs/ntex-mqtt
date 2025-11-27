@@ -1,6 +1,6 @@
 use ntex::connect::openssl::SslConnector;
 use ntex::time::{sleep, Millis, Seconds};
-use ntex::{Service, ServiceFactory, SharedCfg};
+use ntex::{ServiceFactory, SharedCfg};
 use ntex_mqtt::v5;
 use openssl::ssl;
 
@@ -37,10 +37,9 @@ async fn main() -> std::io::Result<()> {
         .client_id("user")
         .keep_alive(Seconds::ONE)
         .max_packet_size(30)
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call("127.0.0.1:8883")
         .await
         .unwrap();

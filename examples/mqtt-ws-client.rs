@@ -3,7 +3,7 @@ use std::{io, rc::Rc};
 
 use ntex::connect::{openssl::SslConnector, Connect, ConnectError};
 use ntex::time::{sleep, Millis, Seconds};
-use ntex::{util::Bytes, ws, Service, ServiceFactory, SharedCfg};
+use ntex::{util::Bytes, ws, ServiceFactory, SharedCfg};
 use ntex_mqtt::v3;
 use openssl::ssl;
 
@@ -44,10 +44,9 @@ async fn main() -> std::io::Result<()> {
                     .into_transport())
             }
         })
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call("127.0.0.1:8883")
         .await
         .unwrap();

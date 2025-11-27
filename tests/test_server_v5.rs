@@ -2,10 +2,10 @@ use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc, Mutex};
 use std::{cell::RefCell, rc::Rc};
 use std::{future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 
-use ntex::service::{fn_service, Service, ServiceFactory};
+use ntex::service::{cfg::SharedCfg, fn_service, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{lazy, ByteString, Bytes, BytesMut, Ready};
-use ntex::{codec::Encoder, io::IoConfig, server, SharedCfg};
+use ntex::{codec::Encoder, io::IoConfig, server};
 
 use ntex_mqtt::v5::codec::{self, Decoded, Encoded, Packet};
 use ntex_mqtt::v5::{
@@ -66,10 +66,9 @@ async fn test_simple() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -113,10 +112,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -215,10 +213,9 @@ async fn test_simple_streaming2() {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -255,10 +252,9 @@ async fn test_handshake_failed() -> std::io::Result<()> {
     // connect to server
     let err = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap_err();
@@ -291,10 +287,9 @@ async fn test_disconnect() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -331,10 +326,9 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -567,10 +561,9 @@ async fn test_qos2_client() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -925,10 +918,9 @@ async fn test_keepalive() {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -968,10 +960,9 @@ async fn test_keepalive2() {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -1087,10 +1078,9 @@ async fn test_sink_encoder_error_pub_qos1() {
     let client = client::MqttConnector::new()
         .client_id("user")
         .max_packet_size(30)
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -1136,10 +1126,9 @@ async fn test_sink_encoder_error_pub_qos0() {
     let client = client::MqttConnector::new()
         .client_id("user")
         .max_packet_size(30)
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -1199,10 +1188,9 @@ async fn test_sink_success_after_encoder_error_qos1() {
     let client = client::MqttConnector::new()
         .client_id("user")
         .max_packet_size(30)
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -1246,10 +1234,9 @@ async fn test_request_problem_info() {
         .client_id("user")
         .max_packet_size(30)
         .packet(|pkt| pkt.request_problem_info = false)
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -1603,10 +1590,9 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();

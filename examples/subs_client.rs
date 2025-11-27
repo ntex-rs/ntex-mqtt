@@ -1,4 +1,4 @@
-use ntex::service::{cfg::SharedCfg, fn_service, Service, ServiceFactory};
+use ntex::service::{cfg::SharedCfg, fn_service, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex_mqtt::v5;
 
@@ -22,10 +22,9 @@ async fn main() -> std::io::Result<()> {
     let client = v5::client::MqttConnector::new()
         .client_id("my-client-id")
         .keep_alive(Seconds(30))
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call("127.0.0.1:1883")
         .await
         .unwrap();

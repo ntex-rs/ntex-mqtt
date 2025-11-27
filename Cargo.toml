@@ -18,7 +18,7 @@ features = ["ntex-net/tokio"]
 ntex-io = "3.0.0-pre.1"
 ntex-net = "3.0.0-pre.1"
 ntex-util = "3"
-ntex-service = "3.6.3"
+ntex-service = "3.6.2"
 ntex-bytes = "1"
 ntex-codec = "1"
 ntex-router = "1"
@@ -37,9 +37,4 @@ env_logger = "0.11"
 ntex-tls = "3.0.0-pre.1"
 openssl = "0.10"
 test-case = "3.2"
-ntex = { version = "3.0.0-pre.0", features = ["openssl"] }
-
-[patch.crates-io]
-ntex = { path = "../../ntex/ntex" }
-ntex-net = { path = "../../ntex/ntex-net" }
-ntex-service = { path = "../../ntex/ntex-service" }
+ntex = { version = "3.0.0-pre.1", features = ["openssl"] }

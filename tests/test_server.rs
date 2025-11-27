@@ -1,7 +1,7 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc, Mutex};
 use std::{cell::RefCell, future::Future, num::NonZeroU16, pin::Pin, rc::Rc, time::Duration};
 
-use ntex::service::{cfg::SharedCfg, fn_service, Pipeline, Service, ServiceFactory};
+use ntex::service::{cfg::SharedCfg, fn_service, Pipeline, ServiceFactory};
 use ntex::time::{sleep, Millis, Seconds};
 use ntex::util::{join_all, lazy, ByteString, Bytes, BytesMut, Ready};
 use ntex::{codec::Encoder, io::IoConfig, server, service::chain_factory};
@@ -30,10 +30,9 @@ async fn test_simple() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -77,10 +76,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -181,10 +179,9 @@ async fn test_simple_streaming2() {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -233,10 +230,9 @@ async fn test_disconnect_while_streaming() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -273,10 +269,9 @@ async fn test_connect_fail() -> std::io::Result<()> {
     });
     let err = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .err()
@@ -294,10 +289,9 @@ async fn test_connect_fail() -> std::io::Result<()> {
     });
     let err = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .err()
@@ -315,10 +309,9 @@ async fn test_connect_fail() -> std::io::Result<()> {
     });
     let err = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .err()
@@ -336,10 +329,9 @@ async fn test_connect_fail() -> std::io::Result<()> {
     });
     let err = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .err()
@@ -434,10 +426,9 @@ async fn test_qos2_client() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -607,10 +598,9 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -650,10 +640,9 @@ async fn test_disconnect() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -693,10 +682,9 @@ async fn test_client_disconnect() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -1095,10 +1083,9 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
     // connect to server
     let client = client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();

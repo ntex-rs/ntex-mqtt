@@ -1,5 +1,5 @@
 use ntex::util::{ByteString, Bytes, Ready};
-use ntex::{server, Service, ServiceFactory, SharedCfg};
+use ntex::{server, ServiceFactory, SharedCfg};
 
 use ntex_mqtt::{v3, v5, MqttServer};
 
@@ -41,10 +41,9 @@ async fn test_simple() -> std::io::Result<()> {
     // connect to v5 server
     let client = v5::client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();
@@ -59,10 +58,9 @@ async fn test_simple() -> std::io::Result<()> {
     // connect to v3 server
     let client = v3::client::MqttConnector::new()
         .client_id("user")
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call(srv.addr())
         .await
         .unwrap();

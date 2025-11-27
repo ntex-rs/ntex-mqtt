@@ -1,5 +1,5 @@
 use ntex::time::{sleep, Millis, Seconds};
-use ntex::{Service, ServiceFactory, SharedCfg};
+use ntex::{ServiceFactory, SharedCfg};
 use ntex_mqtt::v5;
 
 #[derive(Debug)]
@@ -30,10 +30,9 @@ async fn main() -> std::io::Result<()> {
         .client_id("user")
         .max_packet_size(30)
         .keep_alive(Seconds::ONE)
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .pipeline()
         .call("127.0.0.1:1883")
         .await
         .unwrap();
