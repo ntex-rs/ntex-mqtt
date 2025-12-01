@@ -29,7 +29,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     ntex::server::build()
-        .bind("mqtt", "127.0.0.1:1883", |_| {
+        .bind("mqtt", "127.0.0.1:1883", async |_| {
             v5::MqttServer::new(
                 fn_service(|handshake: v5::Handshake| async move {
                     log::info!("new mqtt v3 connection: {:?}", handshake);

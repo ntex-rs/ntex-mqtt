@@ -24,7 +24,7 @@ impl TryFrom<TestError> for v5::PublishAck {
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    let srv = server::test_server(|| {
+    let srv = server::test_server(async || {
         MqttServer::new()
             .v3(v3::MqttServer::new(|con: v3::Handshake| {
                 Ready::Ok::<_, TestError>(con.ack(St, false))

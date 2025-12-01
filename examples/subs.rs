@@ -108,7 +108,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     ntex::server::build()
-        .bind("mqtt", "127.0.0.1:1883", |_| {
+        .bind("mqtt", "127.0.0.1:1883", async |_| {
             MqttServer::new(handshake)
                 .control(control_service_factory())
                 .publish(fn_factory_with_config(|session: Session<MySession>| {
