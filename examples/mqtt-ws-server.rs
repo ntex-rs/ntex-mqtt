@@ -114,7 +114,7 @@ async fn main() -> std::io::Result<()> {
     let acceptor = builder.build();
 
     ntex::server::Server::build()
-        .bind("mqtt", "127.0.0.1:8883", move |_| {
+        .bind("mqtt", "127.0.0.1:8883", async move |_| {
             // first switch to ssl stream
             chain_factory(SslAcceptor::new(acceptor.clone()))
                 .map_err(|_err| MqttError::Service(ServerError {}))

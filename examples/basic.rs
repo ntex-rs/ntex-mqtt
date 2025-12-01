@@ -50,7 +50,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     ntex::server::build()
-        .bind("mqtt", "127.0.0.1:1883", |_| {
+        .bind("mqtt", "127.0.0.1:1883", async |_| {
             MqttServer::new()
                 .v3(v3::MqttServer::new(handshake_v3).publish(publish_v3).finish())
                 .v5(v5::MqttServer::new(handshake_v5).publish(publish_v5).finish())

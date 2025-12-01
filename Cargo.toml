@@ -15,10 +15,10 @@ rust-version = "1.85"
 features = ["ntex-net/tokio"]
 
 [dependencies]
-ntex-io = "3.0.0-pre.1"
-ntex-net = "3.0.0-pre.1"
+ntex-io = "3.0.0-pre.2"
+ntex-net = "3.0.0-pre.2"
 ntex-util = "3"
-ntex-service = "3.6.2"
+ntex-service = "3.6.3"
 ntex-bytes = "1"
 ntex-codec = "1"
 ntex-router = "1"
@@ -34,7 +34,7 @@ thiserror = "2"
 [dev-dependencies]
 rand = "0.8"
 env_logger = "0.11"
-ntex-tls = "3.0.0-pre.1"
+ntex-tls = "3.0.0-pre.2"
 openssl = "0.10"
 test-case = "3.2"
-ntex = { version = "3.0.0-pre.1", features = ["openssl"] }
+ntex = { version = "3.0.0-pre.2", features = ["openssl"] }

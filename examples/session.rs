@@ -93,7 +93,7 @@ async fn main() -> std::io::Result<()> {
     log::info!("Hello");
 
     ntex::server::build()
-        .bind("mqtt", "127.0.0.1:1883", |_| {
+        .bind("mqtt", "127.0.0.1:1883", async |_| {
             MqttServer::new()
                 .v3(v3::MqttServer::new(handshake_v3)
                     .publish(fn_factory_with_config(|session: v3::Session<MySession>| {
