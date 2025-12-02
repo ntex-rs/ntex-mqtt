@@ -3,10 +3,10 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, num, rc::Rc};
 use ntex_bytes::{Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
-use ntex_util::{channel::pool, HashSet};
+use ntex_util::{HashSet, channel::pool};
 
 use crate::v5::codec::{self, Decoded, Encoded, Packet, Publish};
-use crate::{error, error::SendPacketError, payload, types::packet_type, QoS};
+use crate::{QoS, error, error::SendPacketError, payload, types::packet_type};
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -244,11 +244,7 @@ impl MqttShared {
             if self.flags.get().contains(Flags::WRB_ENABLED) {
                 let (tx, rx) = self.pool.waiters.channel();
                 self.streaming_waiter.set(Some(tx));
-                if rx.await.is_ok() {
-                    Ok(())
-                } else {
-                    Err(SendPacketError::Disconnected)
-                }
+                if rx.await.is_ok() { Ok(()) } else { Err(SendPacketError::Disconnected) }
             } else {
                 Ok(())
             }
@@ -544,44 +540,28 @@ impl Ack {
 
     pub(super) fn packet_id(&self) -> num::NonZeroU16 {
         match self {
-            Ack::Publish(ref pkt) => pkt.packet_id,
-            Ack::Receive(ref pkt) => pkt.packet_id,
-            Ack::Complete(ref pkt) => pkt.packet_id,
-            Ack::Subscribe(ref pkt) => pkt.packet_id,
-            Ack::Unsubscribe(ref pkt) => pkt.packet_id,
+            Ack::Publish(pkt) => pkt.packet_id,
+            Ack::Receive(pkt) => pkt.packet_id,
+            Ack::Complete(pkt) => pkt.packet_id,
+            Ack::Subscribe(pkt) => pkt.packet_id,
+            Ack::Unsubscribe(pkt) => pkt.packet_id,
         }
     }
 
     pub(super) fn publish(self) -> codec::PublishAck {
-        if let Ack::Publish(pkt) = self {
-            pkt
-        } else {
-            panic!()
-        }
+        if let Ack::Publish(pkt) = self { pkt } else { panic!() }
     }
 
     pub(super) fn receive(self) -> codec::PublishAck {
-        if let Ack::Receive(pkt) = self {
-            pkt
-        } else {
-            panic!()
-        }
+        if let Ack::Receive(pkt) = self { pkt } else { panic!() }
     }
 
     pub(super) fn subscribe(self) -> codec::SubscribeAck {
-        if let Ack::Subscribe(pkt) = self {
-            pkt
-        } else {
-            panic!()
-        }
+        if let Ack::Subscribe(pkt) = self { pkt } else { panic!() }
     }
 
     pub(super) fn unsubscribe(self) -> codec::UnsubscribeAck {
-        if let Ack::Unsubscribe(pkt) = self {
-            pkt
-        } else {
-            panic!()
-        }
+        if let Ack::Unsubscribe(pkt) = self { pkt } else { panic!() }
     }
 
     pub(super) fn is_match(&self, tp: AckType) -> bool {

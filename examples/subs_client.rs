@@ -1,5 +1,5 @@
-use ntex::service::{cfg::SharedCfg, fn_service, ServiceFactory};
-use ntex::time::{sleep, Millis, Seconds};
+use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_service};
+use ntex::time::{Millis, Seconds, sleep};
 use ntex_mqtt::v5;
 
 #[derive(Debug)]
@@ -15,7 +15,7 @@ impl std::convert::TryFrom<Error> for v5::PublishAck {
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex=info,ntex_mqtt=trace,subs_client=trace");
+    // std::env::set_var("RUST_LOG", "ntex=info,ntex_mqtt=trace,subs_client=trace");
     env_logger::init();
 
     // connect to server

@@ -2,9 +2,9 @@ use std::{fmt, marker::PhantomData};
 
 use ntex_service::{Service, ServiceCtx, ServiceFactory};
 
+use super::Session;
 use super::control::{Control, ControlAck, ControlAckKind};
 use super::publish::Publish;
-use super::Session;
 
 /// Default publish service
 pub struct DefaultPublishService<St, Err> {

@@ -1,5 +1,5 @@
 use std::num::{NonZeroU16, NonZeroU32};
-use std::{cell::Cell, fmt, future::ready, future::Future, rc::Rc};
+use std::{cell::Cell, fmt, future::Future, future::ready, rc::Rc};
 
 use ntex_bytes::{ByteString, Bytes};
 use ntex_util::{channel::pool, future::Either, future::Ready};
@@ -34,11 +34,7 @@ impl MqttSink {
     #[inline]
     /// Check if sink is ready
     pub fn is_ready(&self) -> bool {
-        if self.0.is_closed() {
-            false
-        } else {
-            self.0.is_ready()
-        }
+        if self.0.is_closed() { false } else { self.0.is_ready() }
     }
 
     #[inline]

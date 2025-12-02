@@ -5,15 +5,15 @@ use ntex_io::DispatchItem;
 use ntex_service::{Pipeline, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::services::inflight::InFlightService;
-use ntex_util::{future::join, HashSet};
+use ntex_util::{HashSet, future::join};
 
 use crate::error::{DecodeError, HandshakeError, MqttError, PayloadError, ProtocolError};
 use crate::payload::{Payload, PayloadStatus, PlSender};
-use crate::types::{packet_type, QoS};
+use crate::types::{QoS, packet_type};
 
 use super::codec::{self, Decoded, Encoded, Packet};
 use super::control::{Control, ControlAck, ControlAckKind, Subscribe, Unsubscribe};
-use super::{publish::Publish, shared::Ack, shared::MqttShared, Session};
+use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
@@ -591,15 +591,15 @@ mod tests {
     use std::{future::Future, pin::Pin};
 
     use ntex_bytes::{ByteString, Bytes};
-    use ntex_io::{testing::IoTest, Io};
+    use ntex_io::{Io, testing::IoTest};
     use ntex_service::{cfg::SharedCfg, fn_service};
-    use ntex_util::future::{lazy, Ready};
-    use ntex_util::time::{sleep, Seconds};
+    use ntex_util::future::{Ready, lazy};
+    use ntex_util::time::{Seconds, sleep};
 
     use super::*;
     use crate::v3::MqttSink;
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_dup_packet_id() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
@@ -654,7 +654,7 @@ mod tests {
         assert!(*err.borrow());
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_wr_backpressure() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();

@@ -1,5 +1,9 @@
 # Changes
 
+## [6.0.0] - 2025-12-03
+
+* Update edition
+
 ## [6.0.0-pre.0] - 2025-11-28
 
 * Use shared configuration

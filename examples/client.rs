@@ -1,4 +1,4 @@
-use ntex::time::{sleep, Millis, Seconds};
+use ntex::time::{Millis, Seconds, sleep};
 use ntex::{ServiceFactory, SharedCfg};
 use ntex_mqtt::v5;
 
@@ -22,7 +22,7 @@ async fn publish(pkt: v5::Publish) -> Result<v5::PublishAck, Error> {
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "client=trace,ntex=info,ntex_mqtt=trace");
+    // std::env::set_var("RUST_LOG", "client=trace,ntex=info,ntex_mqtt=trace");
     env_logger::init();
 
     // connect to server

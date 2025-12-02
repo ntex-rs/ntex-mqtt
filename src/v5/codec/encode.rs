@@ -4,7 +4,7 @@ use super::packet::{property_type as pt, *};
 use super::{UserProperties, UserProperty};
 use crate::error::EncodeError;
 use crate::types::packet_type;
-use crate::utils::{write_variable_length, Encode};
+use crate::utils::{Encode, write_variable_length};
 
 pub(crate) trait EncodeLtd {
     fn encoded_size(&self, limit: u32) -> usize;

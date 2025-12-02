@@ -1,7 +1,7 @@
 use ntex::service::{fn_factory_with_config, fn_service};
 use ntex::util::Ready;
 use ntex_mqtt::v5::codec::PublishAckReason;
-use ntex_mqtt::{v3, v5, MqttServer};
+use ntex_mqtt::{MqttServer, v3, v5};
 
 #[derive(Clone, Debug)]
 struct MySession {
@@ -87,7 +87,7 @@ async fn publish_v5(
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "session=trace,ntex=trace,ntex_mqtt=trace,basic=trace");
+    // std::env::set_var("RUST_LOG", "session=trace,ntex=trace,ntex_mqtt=trace,basic=trace");
     env_logger::init();
 
     log::info!("Hello");

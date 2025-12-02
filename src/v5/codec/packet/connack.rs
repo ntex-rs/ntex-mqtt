@@ -5,8 +5,8 @@ use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{ConnectAckFlags, QoS};
 use crate::utils::{self, Decode, Encode, Property};
-use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
 use crate::v5::RECEIVE_MAX_DEFAULT;
+use crate::v5::codec::{UserProperties, UserProperty, encode::*, property_type as pt};
 
 /// Connect acknowledgment packet
 #[derive(Debug, PartialEq, Eq, Clone)]

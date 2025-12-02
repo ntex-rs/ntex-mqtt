@@ -3,12 +3,12 @@ use std::{cell::RefCell, fmt, marker, num::NonZeroU16, rc::Rc};
 use ntex_bytes::ByteString;
 use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Path, Router, RouterBuilder};
-use ntex_service::{boxed, fn_service, IntoService, Pipeline, Service};
-use ntex_util::time::{sleep, Millis, Seconds};
-use ntex_util::{future::Either, future::Ready, HashMap};
+use ntex_service::{IntoService, Pipeline, Service, boxed, fn_service};
+use ntex_util::time::{Millis, Seconds, sleep};
+use ntex_util::{HashMap, future::Either, future::Ready};
 
 use crate::v5::publish::{Publish, PublishAck};
-use crate::v5::{codec, shared::MqttShared, sink::MqttSink, ControlAck};
+use crate::v5::{ControlAck, codec, shared::MqttShared, sink::MqttSink};
 use crate::{error::MqttError, io::Dispatcher};
 
 use super::{control::Control, dispatcher::create_dispatcher};

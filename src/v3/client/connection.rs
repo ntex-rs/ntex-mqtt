@@ -3,11 +3,11 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Router, RouterBuilder};
-use ntex_service::{boxed, fn_service, IntoService, Pipeline, Service};
+use ntex_service::{IntoService, Pipeline, Service, boxed, fn_service};
 use ntex_util::future::{Either, Ready};
-use ntex_util::time::{sleep, Millis, Seconds};
+use ntex_util::time::{Millis, Seconds, sleep};
 
-use crate::v3::{codec, shared::MqttShared, sink::MqttSink, ControlAck, Publish};
+use crate::v3::{ControlAck, Publish, codec, shared::MqttShared, sink::MqttSink};
 use crate::{error::MqttError, io::Dispatcher};
 
 use super::{control::Control, dispatcher::create_dispatcher};

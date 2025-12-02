@@ -3,9 +3,9 @@ use std::num::{NonZeroU16, NonZeroU32};
 use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{ConnectFlags, QoS, MQTT, MQTT_LEVEL_5, WILL_QOS_SHIFT};
+use crate::types::{ConnectFlags, MQTT, MQTT_LEVEL_5, QoS, WILL_QOS_SHIFT};
 use crate::utils::{self, Decode, Encode, Property};
-use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
+use crate::v5::codec::{UserProperties, UserProperty, encode::*, property_type as pt};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 /// Connect packet content

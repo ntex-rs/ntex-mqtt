@@ -131,11 +131,7 @@ impl TryFrom<Vec<TopicFilterLevel>> for TopicFilter {
 
     fn try_from(v: Vec<TopicFilterLevel>) -> Result<Self, Self::Error> {
         let tf = TopicFilter(v);
-        if tf.is_valid() {
-            Ok(tf)
-        } else {
-            Err(TopicFilterError::InvalidTopic)
-        }
+        if tf.is_valid() { Ok(tf) } else { Err(TopicFilterError::InvalidTopic) }
     }
 }
 
@@ -183,7 +179,7 @@ impl<T: AsRef<str>> MatchLevel for T {
     fn match_level(&self, level: &TopicFilterLevel, index: usize) -> bool {
         match level {
             TopicFilterLevel::Normal(lhs) => lhs == self.as_ref(),
-            TopicFilterLevel::System(ref lhs) => is_system(self) && lhs == self.as_ref(),
+            TopicFilterLevel::System(lhs) => is_system(self) && lhs == self.as_ref(),
             TopicFilterLevel::Blank => self.as_ref().is_empty(),
             TopicFilterLevel::SingleWildcard | TopicFilterLevel::MultiWildcard => {
                 !(index == 0 && is_system(self))
@@ -220,11 +216,7 @@ impl TryFrom<ByteString> for TopicFilter {
             .collect::<Result<Vec<_>, TopicFilterError>>()
             .map(TopicFilter)
             .and_then(|topic| {
-                if topic.is_valid() {
-                    Ok(topic)
-                } else {
-                    Err(TopicFilterError::InvalidTopic)
-                }
+                if topic.is_valid() { Ok(topic) } else { Err(TopicFilterError::InvalidTopic) }
             })
     }
 }

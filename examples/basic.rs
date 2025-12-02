@@ -1,4 +1,4 @@
-use ntex_mqtt::{v3, v5, MqttServer};
+use ntex_mqtt::{MqttServer, v3, v5};
 
 #[derive(Clone)]
 struct Session;
@@ -46,7 +46,7 @@ async fn publish_v5(publish: v5::Publish) -> Result<v5::PublishAck, ServerError>
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,basic=trace");
+    // std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,basic=trace");
     env_logger::init();
 
     ntex::server::build()

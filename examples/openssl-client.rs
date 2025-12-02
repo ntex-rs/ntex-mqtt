@@ -1,5 +1,5 @@
 use ntex::connect::openssl::SslConnector;
-use ntex::time::{sleep, Millis, Seconds};
+use ntex::time::{Millis, Seconds, sleep};
 use ntex::{ServiceFactory, SharedCfg};
 use ntex_mqtt::v5;
 use openssl::ssl;

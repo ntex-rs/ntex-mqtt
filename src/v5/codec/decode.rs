@@ -1,6 +1,6 @@
 use ntex_bytes::{ByteString, Bytes};
 
-use super::{packet::*, UserProperty};
+use super::{UserProperty, packet::*};
 use crate::{error::DecodeError, types::packet_type, utils::Decode};
 
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
@@ -59,7 +59,12 @@ mod tests {
         let decoded = decode_packet(cur, fixed);
         let res = Ok(res);
         if decoded != res {
-            panic!("decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}", res, decoded, tmp.as_ref());
+            panic!(
+                "decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}",
+                res,
+                decoded,
+                tmp.as_ref()
+            );
         }
         //assert_eq!(, Ok(res));
     }
@@ -82,7 +87,12 @@ mod tests {
         };
 
         if pkt != res {
-            panic!("decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}", res, decoded, tmp.as_ref());
+            panic!(
+                "decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}",
+                res,
+                decoded,
+                tmp.as_ref()
+            );
         }
         //assert_eq!(, Ok(res));
     }

@@ -2,7 +2,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
-use ntex_service::{cfg::SharedCfg, Middleware, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
 use ntex_util::time::Seconds;
 
 use crate::io::Dispatcher;

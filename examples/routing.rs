@@ -15,7 +15,7 @@ impl From<()> for ServerError {
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,routing=trace");
+    // std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,routing=trace");
     env_logger::init();
 
     ntex::server::build()

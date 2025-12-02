@@ -3,9 +3,9 @@ use std::{fmt, num::NonZeroU16, num::NonZeroU32};
 use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{packet_type, QoS};
-use crate::utils::{self, write_variable_length, Decode, Encode, Property};
-use crate::v5::codec::{encode::*, property_type as pt, UserProperties};
+use crate::types::{QoS, packet_type};
+use crate::utils::{self, Decode, Encode, Property, write_variable_length};
+use crate::v5::codec::{UserProperties, encode::*, property_type as pt};
 
 /// PUBLISH message
 #[derive(Debug, PartialEq, Eq, Clone)]

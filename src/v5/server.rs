@@ -2,12 +2,12 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_io::{DispatchItem, IoBoxed};
 use ntex_service::{
-    cfg::SharedCfg, Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack,
+    Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack, cfg::SharedCfg,
 };
-use ntex_util::time::{timeout_checked, Millis, Seconds};
+use ntex_util::time::{Millis, Seconds, timeout_checked};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{service, types::QoS, InFlightService};
+use crate::{InFlightService, service, types::QoS};
 
 use super::codec::{self as mqtt, Decoded, Encoded, Packet};
 use super::control::{Control, ControlAck};
@@ -15,7 +15,7 @@ use super::default::{DefaultControlService, DefaultPublishService};
 use super::handshake::{Handshake, HandshakeAck};
 use super::publish::{Publish, PublishAck};
 use super::shared::{MqttShared, MqttSinkPool};
-use super::{dispatcher::factory, MqttSink, Session};
+use super::{MqttSink, Session, dispatcher::factory};
 
 /// Mqtt Server
 pub struct MqttServer<St, C, Cn, P, M = Identity> {

@@ -1,7 +1,7 @@
 use ntex::util::{ByteString, Bytes, Ready};
-use ntex::{server, ServiceFactory, SharedCfg};
+use ntex::{ServiceFactory, SharedCfg, server};
 
-use ntex_mqtt::{v3, v5, MqttServer};
+use ntex_mqtt::{MqttServer, v3, v5};
 
 struct St;
 

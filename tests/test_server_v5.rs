@@ -1,16 +1,16 @@
-use std::sync::{atomic::AtomicBool, atomic::Ordering::Relaxed, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering::Relaxed};
 use std::{cell::RefCell, rc::Rc};
 use std::{future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 
-use ntex::service::{cfg::SharedCfg, fn_service, ServiceFactory};
-use ntex::time::{sleep, Millis, Seconds};
-use ntex::util::{lazy, ByteString, Bytes, BytesMut, Ready};
+use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_service};
+use ntex::time::{Millis, Seconds, sleep};
+use ntex::util::{ByteString, Bytes, BytesMut, Ready, lazy};
 use ntex::{codec::Encoder, io::IoConfig, server};
 
 use ntex_mqtt::v5::codec::{self, Decoded, Encoded, Packet};
 use ntex_mqtt::v5::{
-    client, error, Control, Handshake, HandshakeAck, MqttServer, Publish, PublishAck, QoS,
-    Session,
+    Control, Handshake, HandshakeAck, MqttServer, Publish, PublishAck, QoS, Session, client,
+    error,
 };
 
 struct St;
@@ -1542,6 +1542,7 @@ async fn test_sink_ready() -> std::io::Result<()> {
             assert!(res.is_pending());
             assert!(!sink.is_ready());
 
+            let sink = sink.clone();
             ntex::rt::spawn(async move {
                 sink.ready().await;
                 assert!(sink.is_ready());

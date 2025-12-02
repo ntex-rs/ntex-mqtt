@@ -2,10 +2,10 @@ use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};
 
-use super::{encode::*, property_type as pt, UserProperties};
+use super::{UserProperties, encode::*, property_type as pt};
 use crate::error::{DecodeError, EncodeError};
 use crate::types::packet_type;
-use crate::utils::{take_properties, write_variable_length, Decode, Property};
+use crate::utils::{Decode, Property, take_properties, write_variable_length};
 
 mod auth;
 mod connack;
