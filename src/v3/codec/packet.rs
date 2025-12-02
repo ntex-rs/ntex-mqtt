@@ -2,7 +2,7 @@ use std::{fmt, num::NonZeroU16};
 
 use ntex_bytes::{ByteString, Bytes};
 
-use crate::types::{packet_type, QoS};
+use crate::types::{QoS, packet_type};
 
 prim_enum! {
     /// Connect Return Code

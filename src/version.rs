@@ -2,7 +2,7 @@ use ntex_bytes::BytesMut;
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{packet_type, MQTT, MQTT_LEVEL_3, MQTT_LEVEL_5};
+use crate::types::{MQTT, MQTT_LEVEL_3, MQTT_LEVEL_5, packet_type};
 use crate::utils;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

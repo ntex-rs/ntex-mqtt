@@ -2,7 +2,7 @@ use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::utils::{self, Decode, Property};
-use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
+use crate::v5::codec::{UserProperties, UserProperty, encode::*, property_type as pt};
 
 /// DISCONNECT message
 #[derive(Debug, PartialEq, Eq, Clone)]

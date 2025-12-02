@@ -5,8 +5,8 @@ use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;
-use crate::utils::{self, write_variable_length, Decode, Encode};
-use crate::v5::codec::{encode::*, property_type as pt, UserProperties, UserProperty};
+use crate::utils::{self, Decode, Encode, write_variable_length};
+use crate::v5::codec::{UserProperties, UserProperty, encode::*, property_type as pt};
 
 /// Represents SUBSCRIBE packet
 #[derive(Debug, PartialEq, Eq, Clone)]

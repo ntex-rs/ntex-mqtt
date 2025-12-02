@@ -5,7 +5,7 @@ use ntex_io::IoBoxed;
 use ntex_net::connect::{self, Address, Connect, Connector};
 use ntex_service::cfg::SharedCfg;
 use ntex_service::{IntoServiceFactory, Pipeline, Service, ServiceCtx, ServiceFactory};
-use ntex_util::time::{timeout_checked, Seconds};
+use ntex_util::time::{Seconds, timeout_checked};
 
 use super::codec::{self, Decoded, Encoded, Packet};
 use super::{connection::Client, error::ClientError, error::ProtocolError};

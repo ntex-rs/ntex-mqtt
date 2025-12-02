@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 
-use ntex::service::{fn_factory_with_config, fn_service, ServiceFactory};
+use ntex::service::{ServiceFactory, fn_factory_with_config, fn_service};
 use ntex::util::{ByteString, Ready};
 use ntex_mqtt::v5::{self, Control, ControlAck, MqttServer, Publish, PublishAck, Session};
 
@@ -104,7 +104,7 @@ fn control_service_factory() -> impl ServiceFactory<
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,subs=trace");
+    // std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,subs=trace");
     env_logger::init();
 
     ntex::server::build()

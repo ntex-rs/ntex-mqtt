@@ -4,7 +4,7 @@ use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 use ntex_bytes::ByteString;
 use ntex_io::DispatchItem;
 use ntex_service::{Pipeline, Service, ServiceCtx};
-use ntex_util::{future::join, future::Either, HashMap, HashSet};
+use ntex_util::{HashMap, HashSet, future::Either, future::join};
 
 use crate::error::{HandshakeError, MqttError, PayloadError, ProtocolError};
 use crate::v5::codec::{Decoded, DisconnectReasonCode, Encoded, Packet};
@@ -523,16 +523,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use ntex_io::{testing::IoTest, Io};
+    use ntex_io::{Io, testing::IoTest};
     use ntex_service::{cfg::SharedCfg, fn_service};
-    use ntex_util::future::{lazy, Ready};
+    use ntex_util::future::{Ready, lazy};
 
     use super::*;
 
     #[derive(Debug)]
     struct TestError;
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_wr_backpressure() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();

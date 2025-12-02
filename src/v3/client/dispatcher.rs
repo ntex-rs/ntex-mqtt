@@ -3,8 +3,8 @@ use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_io::DispatchItem;
 use ntex_service::{Pipeline, Service, ServiceCtx};
-use ntex_util::future::{join, Either};
-use ntex_util::{services::inflight::InFlightService, HashSet};
+use ntex_util::future::{Either, join};
+use ntex_util::{HashSet, services::inflight::InFlightService};
 
 use crate::error::{HandshakeError, MqttError, PayloadError, ProtocolError};
 use crate::v3::codec::{self, Decoded, Encoded, Packet};
@@ -155,10 +155,11 @@ where
                 if let Some(pid) = packet_id {
                     if !inner.inflight.borrow_mut().insert(pid) {
                         log::trace!("Duplicated packet id for publish packet: {:?}", pid);
-                        return Err(MqttError::Handshake(
-                            HandshakeError::Protocol(
-                                ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]"))
-                        ));
+                        return Err(MqttError::Handshake(HandshakeError::Protocol(
+                            ProtocolError::generic_violation(
+                                "PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]",
+                            ),
+                        )));
                     }
                 }
 
@@ -363,15 +364,15 @@ mod tests {
     use std::{future::Future, pin::Pin};
 
     use ntex_bytes::{ByteString, Bytes};
-    use ntex_io::{testing::IoTest, Io, IoConfig};
+    use ntex_io::{Io, IoConfig, testing::IoTest};
     use ntex_service::{cfg::SharedCfg, fn_service};
-    use ntex_util::future::{lazy, Ready};
-    use ntex_util::time::{sleep, Seconds};
+    use ntex_util::future::{Ready, lazy};
+    use ntex_util::time::{Seconds, sleep};
 
     use super::*;
-    use crate::v3::{codec::Codec, codec::Decoded, MqttSink, QoS};
+    use crate::v3::{MqttSink, QoS, codec::Codec, codec::Decoded};
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_dup_packet_id() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
@@ -420,14 +421,16 @@ mod tests {
         let err = f.await.err().unwrap();
         match err {
             MqttError::Handshake(HandshakeError::Protocol(msg)) => {
-                assert!(format!("{}", msg)
-                    .contains("PUBLISH received with packet id that is already in use"))
+                assert!(
+                    format!("{}", msg)
+                        .contains("PUBLISH received with packet id that is already in use")
+                )
             }
             _ => panic!(),
         }
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_wr_backpressure() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = Codec::default();

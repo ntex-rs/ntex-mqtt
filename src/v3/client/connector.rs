@@ -5,7 +5,7 @@ use ntex_io::IoBoxed;
 use ntex_net::connect::{self, Address, Connect, Connector};
 use ntex_service::cfg::SharedCfg;
 use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
-use ntex_util::time::{timeout_checked, Seconds};
+use ntex_util::time::{Seconds, timeout_checked};
 
 use super::{connection::Client, error::ClientError, error::ProtocolError};
 use crate::v3::codec::{self, Decoded, Encoded, Packet};
@@ -272,7 +272,11 @@ where
 
         match packet {
             Decoded::Packet(codec::Packet::ConnectAck(pkt), _) => {
-                log::trace!("Connect ack response from server: session: present: {:?}, return code: {:?}", pkt.session_present, pkt.return_code);
+                log::trace!(
+                    "Connect ack response from server: session: present: {:?}, return code: {:?}",
+                    pkt.session_present,
+                    pkt.return_code
+                );
                 if pkt.return_code == codec::ConnectAckReason::ConnectionAccepted {
                     shared.set_cap(max_send);
                     Ok(Client::new(

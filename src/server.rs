@@ -2,8 +2,8 @@ use std::{fmt, io, marker, task::Context};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
-use ntex_service::{cfg::SharedCfg, Middleware, Service, ServiceCtx, ServiceFactory};
-use ntex_util::future::{join, select, Either};
+use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
+use ntex_util::future::{Either, join, select};
 use ntex_util::time::{Deadline, Millis, Seconds};
 
 use crate::version::{ProtocolVersion, VersionCodec};
@@ -67,19 +67,19 @@ impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr>
 where
     Err: fmt::Debug,
     V3: ServiceFactory<
-        IoBoxed,
-        SharedCfg,
-        Response = (),
-        Error = MqttError<Err>,
-        InitError = InitErr,
-    >,
+            IoBoxed,
+            SharedCfg,
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        >,
     V5: ServiceFactory<
-        IoBoxed,
-        SharedCfg,
-        Response = (),
-        Error = MqttError<Err>,
-        InitError = InitErr,
-    >,
+            IoBoxed,
+            SharedCfg,
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        >,
 {
     /// Service to handle v3 protocol
     pub fn v3<St, H, P, M, Codec>(
@@ -181,19 +181,19 @@ where
 impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr>
 where
     V3: ServiceFactory<
-        IoBoxed,
-        SharedCfg,
-        Response = (),
-        Error = MqttError<Err>,
-        InitError = InitErr,
-    >,
+            IoBoxed,
+            SharedCfg,
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        >,
     V5: ServiceFactory<
-        IoBoxed,
-        SharedCfg,
-        Response = (),
-        Error = MqttError<Err>,
-        InitError = InitErr,
-    >,
+            IoBoxed,
+            SharedCfg,
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        >,
 {
     async fn create_service(
         &self,

@@ -1,12 +1,12 @@
 //! Framed transport dispatcher
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Decoded, DispatchItem, IoBoxed, IoRef, IoStatusUpdate, RecvError};
 use ntex_service::{IntoService, Pipeline, PipelineBinding, PipelineCall, Service};
 use ntex_util::channel::condition::Condition;
-use ntex_util::{future::select, future::Either, spawn, task::LocalWaker, time::Seconds};
+use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
 
 type Response<U> = <U as Encoder>::Item;
 
@@ -586,15 +586,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
+    use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering};
     use std::{cell::Cell, io};
 
     use ntex_bytes::{Bytes, BytesMut};
     use ntex_codec::BytesCodec;
-    use ntex_io::{self as nio, testing::IoTest as Io, IoConfig};
-    use ntex_service::{cfg::SharedCfg, ServiceCtx};
+    use ntex_io::{self as nio, IoConfig, testing::IoTest as Io};
+    use ntex_service::{ServiceCtx, cfg::SharedCfg};
     use ntex_util::channel::condition::Condition;
-    use ntex_util::time::{sleep, Millis};
+    use ntex_util::time::{Millis, sleep};
     use rand::Rng;
 
     use super::*;
@@ -649,7 +649,7 @@ mod tests {
         }
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_basic() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -683,7 +683,7 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_ordering() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -727,7 +727,7 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_sink() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -762,7 +762,7 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_err_in_service() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(0);
@@ -795,7 +795,7 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_err_in_service_ready() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(0);
@@ -850,7 +850,7 @@ mod tests {
         assert_eq!(counter.get(), 1);
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_write_backpressure() {
         let (client, server) = Io::create();
         // do not allow to write to socket
@@ -920,7 +920,7 @@ mod tests {
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 1, 2]);
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_shutdown_dispatcher_waker() {
         let (client, server) = Io::create();
         let server = nio::Io::new(server, SharedCfg::new("DBG"));
@@ -977,7 +977,7 @@ mod tests {
     }
 
     /// Update keep-alive timer after receiving frame
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_keepalive() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -1047,16 +1047,12 @@ mod tests {
         type Error = io::Error;
 
         fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-            if src.len() >= self.0 {
-                Ok(Some(src.split_to(self.0)))
-            } else {
-                Ok(None)
-            }
+            if src.len() >= self.0 { Ok(Some(src.split_to(self.0))) } else { Ok(None) }
         }
     }
 
     /// Do not use keep-alive timer if not configured
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_no_keepalive_err_after_frame_timeout() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -1106,7 +1102,7 @@ mod tests {
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0]);
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_read_timeout() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -1166,7 +1162,7 @@ mod tests {
     }
 
     /// Do not use keep-alive timer if not configured
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn cancel_on_stop() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);

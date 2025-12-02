@@ -1,5 +1,5 @@
 //! Examples show how to handle different mqtt topics
-use ntex::service::{fn_factory_with_config, fn_service, ServiceFactory};
+use ntex::service::{ServiceFactory, fn_factory_with_config, fn_service};
 use ntex_mqtt::v5;
 
 #[derive(Clone)]
@@ -25,7 +25,7 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,routing_v5=trace");
+    // std::env::set_var("RUST_LOG", "ntex=trace,ntex_mqtt=trace,routing_v5=trace");
     env_logger::init();
 
     ntex::server::build()

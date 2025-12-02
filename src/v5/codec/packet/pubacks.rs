@@ -5,7 +5,7 @@ use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
 use crate::utils::{Decode, Encode};
-use crate::v5::codec::{encode::*, UserProperties};
+use crate::v5::codec::{UserProperties, encode::*};
 
 const HEADER_LEN: u32 = 2 + 1; // packet id + reason code
 

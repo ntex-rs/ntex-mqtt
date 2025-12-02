@@ -4,7 +4,7 @@ use ntex_router::{IntoPattern, RouterBuilder};
 use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 
-use super::{publish::Publish, Session};
+use super::{Session, publish::Publish};
 
 type Handler<S, E> = BoxServiceFactory<Session<S>, Publish, (), E, E>;
 type HandlerService<E> = BoxService<Publish, (), E>;

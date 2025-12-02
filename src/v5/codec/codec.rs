@@ -4,11 +4,11 @@ use ntex_bytes::{Buf, BufMut, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{packet_type, FixedHeader, MAX_PACKET_SIZE};
+use crate::types::{FixedHeader, MAX_PACKET_SIZE, packet_type};
 use crate::{payload::Payload, utils, utils::decode_variable_length};
 
-use super::{decode::decode_packet, encode::EncodeLtd, packet::Publish, Packet};
 use super::{Decoded, Encoded};
+use super::{Packet, decode::decode_packet, encode::EncodeLtd, packet::Publish};
 
 pub struct Codec {
     state: Cell<DecodeState>,

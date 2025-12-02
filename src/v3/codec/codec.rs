@@ -4,10 +4,10 @@ use ntex_bytes::{Buf, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{packet_type, FixedHeader, QoS};
+use crate::types::{FixedHeader, QoS, packet_type};
 use crate::utils::decode_variable_length;
 
-use super::{decode, encode, Decoded, Encoded, Packet, Publish};
+use super::{Decoded, Encoded, Packet, Publish, decode, encode};
 
 #[derive(Debug, Clone)]
 /// Mqtt v3.1.1 protocol codec

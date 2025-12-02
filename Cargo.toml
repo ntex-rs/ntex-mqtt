@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "6.0.0-pre.0"
+version = "6.0.0"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -8,21 +8,20 @@ repository = "https://github.com/ntex-rs/ntex-mqtt.git"
 categories = ["network-programming"]
 keywords = ["MQTT", "IoT", "messaging"]
 license = "MIT OR Apache-2.0"
-edition = "2021"
+edition = "2024"
 rust-version = "1.85"
 
 [package.metadata.docs.rs]
 features = ["ntex-net/tokio"]
 
 [dependencies]
-ntex-io = "3.0.0-pre.2"
-ntex-net = "3.0.0-pre.2"
+ntex-io = "3"
+ntex-net = "3"
 ntex-util = "3"
-ntex-service = "3.6.3"
+ntex-service = "3.6"
 ntex-bytes = "1"
 ntex-codec = "1"
 ntex-router = "1"
-ntex-macros = "0.2"
 ntex-rt = "3"
 bitflags = "2"
 log = "0.4"
@@ -34,7 +33,7 @@ thiserror = "2"
 [dev-dependencies]
 rand = "0.8"
 env_logger = "0.11"
-ntex-tls = "3.0.0-pre.2"
+ntex-tls = "3"
 openssl = "0.10"
 test-case = "3.2"
 ntex = { version = "3.0.0-pre.2", features = ["openssl"] }

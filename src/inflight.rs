@@ -229,7 +229,7 @@ mod tests {
         }
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_inflight() {
         let wait_time = Duration::from_millis(50);
 
@@ -249,7 +249,7 @@ mod tests {
         assert!(lazy(|cx| srv.poll_shutdown(cx)).await.is_ready());
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_inflight2() {
         let wait_time = Duration::from_millis(50);
 
@@ -305,7 +305,7 @@ mod tests {
     /// InflightService::poll_ready() must always register waker,
     /// otherwise it can lose wake up if inner service's poll_ready
     /// does not wakes dispatcher.
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_inflight3() {
         let wait_time = Duration::from_millis(50);
 

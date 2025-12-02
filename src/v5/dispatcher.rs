@@ -5,7 +5,7 @@ use ntex_io::DispatchItem;
 use ntex_service::{self as service, Pipeline, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::inflight::InFlightService;
 use ntex_util::services::{buffer::BufferService, buffer::BufferServiceError};
-use ntex_util::{future::join, HashMap, HashSet};
+use ntex_util::{HashMap, HashSet, future::join};
 
 use crate::error::{
     DecodeError, EncodeError, HandshakeError, MqttError, PayloadError, ProtocolError,
@@ -13,11 +13,11 @@ use crate::error::{
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::types::QoS;
 
+use super::Session;
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
 use super::control::{Control, ControlAck};
 use super::publish::{Publish, PublishAck};
 use super::shared::{Ack, MqttShared};
-use super::Session;
 
 /// MQTT 5 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
@@ -712,9 +712,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use ntex_io::{testing::IoTest, Io};
+    use ntex_io::{Io, testing::IoTest};
     use ntex_service::{cfg::SharedCfg, fn_service};
-    use ntex_util::future::{lazy, Ready};
+    use ntex_util::future::{Ready, lazy};
 
     use super::*;
     use crate::v5::MqttSink;
@@ -730,7 +730,7 @@ mod tests {
         }
     }
 
-    #[ntex_macros::rt_test]
+    #[ntex::test]
     async fn test_wr_backpressure() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();

@@ -1,8 +1,8 @@
 use ntex_bytes::{BufMut, ByteString, BytesMut};
 
 use crate::error::EncodeError;
-use crate::types::{packet_type, ConnectFlags, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
-use crate::utils::{write_variable_length, Encode};
+use crate::types::{ConnectFlags, MQTT, MQTT_LEVEL_3, QoS, WILL_QOS_SHIFT, packet_type};
+use crate::utils::{Encode, write_variable_length};
 
 use super::packet::*;
 
@@ -105,7 +105,7 @@ pub(crate) fn encode(
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;
         }
-        Packet::Subscribe { packet_id, ref topic_filters } => {
+        Packet::Subscribe { packet_id, topic_filters } => {
             dst.put_u8(packet_type::SUBSCRIBE);
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;
@@ -114,7 +114,7 @@ pub(crate) fn encode(
                 dst.put_u8(qos.into());
             }
         }
-        Packet::SubscribeAck { packet_id, ref status } => {
+        Packet::SubscribeAck { packet_id, status } => {
             dst.put_u8(packet_type::SUBACK);
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;
@@ -127,7 +127,7 @@ pub(crate) fn encode(
                 .collect();
             dst.put_slice(&buf);
         }
-        Packet::Unsubscribe { packet_id, ref topic_filters } => {
+        Packet::Unsubscribe { packet_id, topic_filters } => {
             dst.put_u8(packet_type::UNSUBSCRIBE);
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;

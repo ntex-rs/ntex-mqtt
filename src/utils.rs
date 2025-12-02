@@ -160,19 +160,11 @@ pub(crate) trait Encode {
 
 impl<T: Encode> Encode for Option<T> {
     fn encoded_size(&self) -> usize {
-        if let Some(v) = self {
-            v.encoded_size()
-        } else {
-            0
-        }
+        if let Some(v) = self { v.encoded_size() } else { 0 }
     }
 
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
-        if let Some(v) = self {
-            v.encode(buf)
-        } else {
-            Ok(())
-        }
+        if let Some(v) = self { v.encode(buf) } else { Ok(()) }
     }
 }
 

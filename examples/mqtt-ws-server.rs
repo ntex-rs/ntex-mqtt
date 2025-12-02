@@ -1,11 +1,11 @@
 //! Mqtt-over-WS server
 use std::{error::Error, io};
 
-use ntex::http::{self, h1, HttpService, Request, Response};
+use ntex::http::{self, HttpService, Request, Response, h1};
 use ntex::io::{Filter, Io, Layer};
-use ntex::service::{chain_factory, fn_factory, fn_service, Pipeline, ServiceFactory};
-use ntex::{util::variant, util::Ready, ws, SharedCfg};
-use ntex_mqtt::{v3, v5, HandshakeError, MqttError, MqttServer, ProtocolError};
+use ntex::service::{Pipeline, ServiceFactory, chain_factory, fn_factory, fn_service};
+use ntex::{SharedCfg, util::Ready, util::variant, ws};
+use ntex_mqtt::{HandshakeError, MqttError, MqttServer, ProtocolError, v3, v5};
 use ntex_tls::openssl::SslAcceptor;
 use openssl::ssl::{self, SslFiletype, SslMethod};
 
@@ -30,8 +30,8 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 }
 
 /// Mqtt server factory
-fn mqtt_server<F: Filter>(
-) -> impl ServiceFactory<Io<F>, SharedCfg, Response = (), Error = Box<dyn Error>, InitError = ()>
+fn mqtt_server<F: Filter>()
+-> impl ServiceFactory<Io<F>, SharedCfg, Response = (), Error = Box<dyn Error>, InitError = ()>
 {
     MqttServer::new()
         .v3(v3::MqttServer::new(|handshake: v3::Handshake| async move {
@@ -99,10 +99,7 @@ enum Protocol {
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var(
-        "RUST_LOG",
-        "ntex=info,ntex_io=info,ntex_mqtt=trace,mqtt_ws_server=trace",
-    );
+    // std::env::set_var("RUST_LOG", "ntex=info,ntex_io=info,ntex_mqtt=trace,mqtt_ws_server=trace");
     env_logger::init();
 
     // create self-signed certificates using:

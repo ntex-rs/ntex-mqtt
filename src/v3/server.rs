@@ -2,18 +2,18 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_io::{DispatchItem, IoBoxed};
 use ntex_service::{
-    cfg::SharedCfg, Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack,
+    Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack, cfg::SharedCfg,
 };
-use ntex_util::time::{timeout_checked, Millis, Seconds};
+use ntex_util::time::{Millis, Seconds, timeout_checked};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{service, types::QoS, InFlightService};
+use crate::{InFlightService, service, types::QoS};
 
 use super::control::{Control, ControlAck};
 use super::default::{DefaultControlService, DefaultPublishService};
 use super::handshake::{Handshake, HandshakeAck};
 use super::shared::{MqttShared, MqttSinkPool};
-use super::{codec as mqtt, dispatcher::factory, MqttSink, Publish, Session};
+use super::{MqttSink, Publish, Session, codec as mqtt, dispatcher::factory};
 
 /// Mqtt v3.1.1 server
 ///

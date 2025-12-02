@@ -6,7 +6,7 @@ use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex_util::HashMap;
 
-use super::{publish::Publish, publish::PublishAck, Session};
+use super::{Session, publish::Publish, publish::PublishAck};
 
 type Handler<S, E> = BoxServiceFactory<Session<S>, Publish, PublishAck, E, E>;
 type HandlerService<E> = BoxService<Publish, PublishAck, E>;

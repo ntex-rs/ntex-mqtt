@@ -3,7 +3,7 @@ use std::num::NonZeroU16;
 use ntex_bytes::{Buf, ByteString, Bytes, BytesMut};
 
 use crate::error::DecodeError;
-use crate::types::{packet_type, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
+use crate::types::{MQTT, MQTT_LEVEL_3, QoS, WILL_QOS_SHIFT, packet_type};
 use crate::utils::Decode;
 
 use super::packet::{Connect, ConnectAck, LastWill, Packet, Publish, SubscribeReturnCode};

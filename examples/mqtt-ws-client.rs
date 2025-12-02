@@ -1,9 +1,9 @@
 //! Mqtt-over-WS client
 use std::{io, rc::Rc};
 
-use ntex::connect::{openssl::SslConnector, Connect, ConnectError};
-use ntex::time::{sleep, Millis, Seconds};
-use ntex::{util::Bytes, ws, ServiceFactory, SharedCfg};
+use ntex::connect::{Connect, ConnectError, openssl::SslConnector};
+use ntex::time::{Millis, Seconds, sleep};
+use ntex::{ServiceFactory, SharedCfg, util::Bytes, ws};
 use ntex_mqtt::v3;
 use openssl::ssl;
 
@@ -12,7 +12,7 @@ struct Error;
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "mqtt_ws_client=trace,ntex=trace,ntex_mqtt=trace");
+    // std::env::set_var("RUST_LOG", "mqtt_ws_client=trace,ntex=trace,ntex_mqtt=trace");
     env_logger::init();
 
     // ssl connector

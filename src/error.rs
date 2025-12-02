@@ -109,7 +109,7 @@ impl ProtocolError {
     }
     pub(crate) fn packet_id_mismatch() -> Self {
         Self::generic_violation(
-            "Packet id of PUBACK packet does not match expected next value according to sending order of PUBLISH packets [MQTT-4.6.0-2]"
+            "Packet id of PUBACK packet does not match expected next value according to sending order of PUBLISH packets [MQTT-4.6.0-2]",
         )
     }
 }
