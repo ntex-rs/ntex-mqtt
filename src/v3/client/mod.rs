@@ -30,6 +30,12 @@ impl<A: Address> Connect<A> {
     }
 
     #[inline]
+    /// Construct new connect message with connect packet
+    pub fn with(addr: A, pkt: codec::Connect) -> Self {
+        Self { addr, pkt }
+    }
+
+    #[inline]
     /// Create new client and provide client id
     pub fn client_id<U>(mut self, client_id: U) -> Self
     where
