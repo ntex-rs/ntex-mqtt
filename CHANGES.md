@@ -1,5 +1,9 @@
 # Changes
 
+## [6.1.0] - 2025-12-04
+
+* Refactor service configuration
+
 ## [6.0.0] - 2025-12-03
 
 * Update edition

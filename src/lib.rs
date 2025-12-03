@@ -1,5 +1,6 @@
 //#![deny(rust_2018_idioms, warnings, unreachable_pub)]
-#![allow(rust_2018_idioms, warnings, unreachable_pub)]
+//#![deny(rust_2018_idioms, warnings)]
+#![allow(warnings)]
 #![allow(clippy::type_complexity)]
 
 //! MQTT Client/Server framework
@@ -12,6 +13,7 @@ pub mod error;
 pub mod v3;
 pub mod v5;
 
+mod config;
 mod inflight;
 mod io;
 mod payload;
@@ -21,8 +23,9 @@ mod session;
 mod types;
 mod version;
 
+pub use self::config::MqttServiceConfig;
 pub use self::error::{HandshakeError, MqttError, ProtocolError};
-pub use self::inflight::{InFlightService, SizedRequest};
+pub use self::inflight::SizedRequest;
 pub use self::payload::Payload;
 pub use self::server::MqttServer;
 pub use self::session::Session;

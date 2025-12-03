@@ -2,16 +2,16 @@ use std::cell::{Cell, RefCell};
 use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_io::DispatchItem;
-use ntex_service::{Pipeline, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Pipeline, Service, ServiceCtx, ServiceFactory, cfg::Cfg, cfg::SharedCfg};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::services::inflight::InFlightService;
 use ntex_util::{HashSet, future::join};
 
 use crate::error::{DecodeError, HandshakeError, MqttError, PayloadError, ProtocolError};
 use crate::payload::{Payload, PayloadStatus, PlSender};
-use crate::types::{QoS, packet_type};
+use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
-use super::codec::{self, Decoded, Encoded, Packet};
+use super::codec::{Decoded, Encoded, Packet};
 use super::control::{Control, ControlAck, ControlAckKind, Subscribe, Unsubscribe};
 use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
 
@@ -19,11 +19,9 @@ use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
-    max_qos: QoS,
-    handle_qos_after_disconnect: Option<QoS>,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
-    Session<St>,
+    (SharedCfg, Session<St>),
     Response = Option<Encoded>,
     Error = MqttError<E>,
     InitError = MqttError<E>,
@@ -36,10 +34,8 @@ where
 {
     let factories = Rc::new((publish, control));
 
-    ntex_service::fn_factory_with_config(move |session: Session<St>| {
-        let factories = factories.clone();
-
-        async move {
+    ntex_service::fn_factory_with_config(
+        async move |(cfg, session): (SharedCfg, Session<St>)| {
             // create services
             let sink = session.sink().shared();
             let fut = join(factories.0.create(session.clone()), factories.1.create(session));
@@ -60,15 +56,16 @@ where
                 }
             });
 
+            let cfg: Cfg<MqttServiceConfig> = cfg.get();
             Ok(Dispatcher::<_, _, E>::new(
                 sink,
                 publish,
                 control,
-                max_qos,
-                handle_qos_after_disconnect,
+                cfg.max_qos,
+                cfg.handle_qos_after_disconnect,
             ))
-        }
-    })
+        },
+    )
 }
 
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {

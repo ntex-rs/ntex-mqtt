@@ -1,8 +1,11 @@
 //! Service that limits number of in-flight async requests.
 use std::{cell::Cell, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
-use ntex_service::{Middleware, Service, ServiceCtx};
+use ntex_service::cfg::{Cfg, SharedCfg};
+use ntex_service::{Middleware2, Service, ServiceCtx};
 use ntex_util::{future::join, task::LocalWaker};
+
+use crate::MqttServiceConfig;
 
 /// Trait for types that could be sized
 pub trait SizedRequest {
@@ -13,62 +16,20 @@ pub trait SizedRequest {
     fn is_chunk(&self) -> bool;
 }
 
-/// Service that can limit number of in-flight async requests.
-///
-/// Default is 16 in-flight messages and 64kb size
-pub struct InFlightService {
-    max_receive: u16,
-    max_receive_size: usize,
-}
-
-impl Default for InFlightService {
-    fn default() -> Self {
-        Self { max_receive: 16, max_receive_size: 65535 }
-    }
-}
-
-impl InFlightService {
-    /// Create new `InFlightService` middleware
-    ///
-    /// By default max receive is 16 and max size is 64kb
-    pub fn new(max_receive: u16, max_receive_size: usize) -> Self {
-        Self { max_receive, max_receive_size }
-    }
-
-    /// Number of inbound in-flight concurrent messages.
-    ///
-    /// By default max receive number is set to 16 messages
-    pub fn max_receive(mut self, val: u16) -> Self {
-        self.max_receive = val;
-        self
-    }
-
-    /// Total size of inbound in-flight messages.
-    ///
-    /// By default total inbound in-flight size is set to 64Kb
-    pub fn max_receive_size(mut self, val: usize) -> Self {
-        self.max_receive_size = val;
-        self
-    }
-}
-
-impl<S> Middleware<S> for InFlightService {
-    type Service = InFlightServiceImpl<S>;
-
-    #[inline]
-    fn create(&self, service: S) -> Self::Service {
-        InFlightServiceImpl {
-            service,
-            publish: Cell::new(false),
-            count: Counter::new(self.max_receive, self.max_receive_size),
-        }
-    }
-}
-
 pub struct InFlightServiceImpl<S> {
     count: Counter,
     service: S,
     publish: Cell<bool>,
+}
+
+impl<S> InFlightServiceImpl<S> {
+    pub fn new(max_cap: u16, max_size: usize, service: S) -> Self {
+        InFlightServiceImpl {
+            service,
+            publish: Cell::new(false),
+            count: Counter::new(max_cap, max_size),
+        }
+    }
 }
 
 impl<S, R> Service<R> for InFlightServiceImpl<S>

@@ -6,7 +6,7 @@ use ntex_io::IoRef;
 use ntex_util::{HashSet, channel::pool};
 
 use crate::v5::codec::{self, Decoded, Encoded, Packet, Publish};
-use crate::{QoS, error, error::SendPacketError, payload, types::packet_type};
+use crate::{QoS, error, error::SendPacketError, types::packet_type};
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

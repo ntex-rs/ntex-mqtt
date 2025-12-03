@@ -1,6 +1,9 @@
 use std::{fmt, marker::PhantomData};
 
-use ntex_service::{Service, ServiceCtx, ServiceFactory};
+use ntex_service::cfg::{Cfg, SharedCfg};
+use ntex_service::{Middleware2, Service, ServiceCtx, ServiceFactory};
+
+use crate::{MqttServiceConfig, inflight::InFlightServiceImpl};
 
 use super::Session;
 use super::control::{Control, ControlAck};
@@ -81,5 +84,21 @@ impl<S, E: fmt::Debug> Service<Control<E>> for DefaultControlService<S, E> {
                 )))
             }
         }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+/// Service that can limit size of in-flight async requests.
+///
+/// Default is 64kb size
+pub struct InFlightService;
+
+impl<S> Middleware2<S, SharedCfg> for InFlightService {
+    type Service = InFlightServiceImpl<S>;
+
+    #[inline]
+    fn create(&self, service: S, cfg: SharedCfg) -> Self::Service {
+        let cfg: Cfg<MqttServiceConfig> = cfg.get();
+        InFlightServiceImpl::new(0, cfg.max_receive_size, service)
     }
 }

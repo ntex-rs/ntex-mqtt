@@ -10,7 +10,7 @@ use crate::error::{HandshakeError, MqttError, PayloadError, ProtocolError};
 use crate::v3::codec::{self, Decoded, Encoded, Packet};
 use crate::v3::shared::{Ack, MqttShared};
 use crate::v3::{control::ControlAckKind, publish::Publish};
-use crate::{payload::Payload, payload::PayloadStatus, payload::PlSender, types::packet_type};
+use crate::{payload::Payload, payload::PayloadStatus, payload::PlSender};
 
 use super::control::{Control, ControlAck};
 
@@ -238,10 +238,10 @@ where
                 }
             }
             DispatchItem::Item(
-                (Decoded::Packet(pkt @ Packet::PingRequest, _)
+                Decoded::Packet(pkt @ Packet::PingRequest, _)
                 | Decoded::Packet(pkt @ Packet::Disconnect, _)
                 | Decoded::Packet(pkt @ Packet::Subscribe { .. }, _)
-                | Decoded::Packet(pkt @ Packet::Unsubscribe { .. }, _)),
+                | Decoded::Packet(pkt @ Packet::Unsubscribe { .. }, _),
             ) => Err(HandshakeError::Protocol(ProtocolError::unexpected_packet(
                 pkt.packet_type(),
                 "Packet of the type is not expected from server",

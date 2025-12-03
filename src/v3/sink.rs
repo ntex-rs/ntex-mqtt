@@ -3,7 +3,7 @@ use std::{cell::Cell, fmt, future::Future, future::ready, num::NonZeroU16, rc::R
 use ntex_bytes::{ByteString, Bytes};
 use ntex_util::{channel::pool, future::Either, future::Ready};
 
-use crate::v3::shared::{Ack, AckType, MqttShared};
+use crate::v3::shared::{AckType, MqttShared};
 use crate::v3::{codec, error::SendPacketError};
 use crate::{error::EncodeError, types::QoS};
 

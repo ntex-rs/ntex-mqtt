@@ -157,7 +157,7 @@ pub struct PublishBuilder {
 }
 
 impl PublishBuilder {
-    fn new(shared: Rc<MqttShared>, mut packet: codec::Publish) -> Self {
+    fn new(shared: Rc<MqttShared>, packet: codec::Publish) -> Self {
         Self { shared, packet }
     }
 

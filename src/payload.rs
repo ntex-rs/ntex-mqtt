@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt, io, mem};
+use std::{cell::Cell, fmt, mem};
 
 use ntex_bytes::{Bytes, BytesMut};
 use ntex_util::{channel::bstream, future::Either};

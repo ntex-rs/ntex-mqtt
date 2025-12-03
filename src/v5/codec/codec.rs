@@ -1,11 +1,11 @@
 use std::{cell::Cell, cmp::min, fmt, num::NonZeroU32};
 
-use ntex_bytes::{Buf, BufMut, Bytes, BytesMut};
+use ntex_bytes::{Buf, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{FixedHeader, MAX_PACKET_SIZE, packet_type};
-use crate::{payload::Payload, utils, utils::decode_variable_length};
+use crate::utils::decode_variable_length;
 
 use super::{Decoded, Encoded};
 use super::{Packet, decode::decode_packet, encode::EncodeLtd, packet::Publish};
@@ -186,7 +186,7 @@ impl Decoder for Codec {
                     if src.len() < props_len as usize {
                         return Ok(None);
                     }
-                    let payload_len = (fixed.remaining_length - props_len);
+                    let payload_len = fixed.remaining_length - props_len;
                     let mut buf = src.split_to(props_len as usize).freeze();
                     let publish = Publish::decode(&mut buf, fixed.first_byte, payload_len)?;
 

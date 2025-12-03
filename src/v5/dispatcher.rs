@@ -1,17 +1,16 @@
-use std::{cell::Cell, cell::RefCell, future::poll_fn, marker, num, rc::Rc, task::Context};
+use std::{cell::Cell, cell::RefCell, marker, num, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_io::DispatchItem;
+use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{self as service, Pipeline, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::inflight::InFlightService;
 use ntex_util::services::{buffer::BufferService, buffer::BufferServiceError};
 use ntex_util::{HashMap, HashSet, future::join};
 
-use crate::error::{
-    DecodeError, EncodeError, HandshakeError, MqttError, PayloadError, ProtocolError,
-};
+use crate::error::{DecodeError, HandshakeError, MqttError, PayloadError, ProtocolError};
 use crate::payload::{Payload, PayloadStatus, PlSender};
-use crate::types::QoS;
+use crate::{MqttServiceConfig, types::QoS};
 
 use super::Session;
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
@@ -23,10 +22,9 @@ use super::shared::{Ack, MqttShared};
 pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
-    handle_qos_after_disconnect: Option<QoS>,
 ) -> impl ServiceFactory<
     DispatchItem<Rc<MqttShared>>,
-    Session<St>,
+    (SharedCfg, Session<St>),
     Response = Option<Encoded>,
     Error = MqttError<E>,
     InitError = MqttError<E>,
@@ -40,32 +38,30 @@ where
 {
     let factories = Rc::new((publish, control));
 
-    service::fn_factory_with_config(move |ses: Session<St>| {
-        let factories = factories.clone();
+    service::fn_factory_with_config(async move |(cfg, ses): (SharedCfg, Session<St>)| {
+        let cfg: Cfg<MqttServiceConfig> = cfg.get();
 
-        async move {
-            // create services
-            let sink = ses.sink().shared();
-            let (publish, control) =
-                join(factories.0.create(ses.clone()), factories.1.create(ses)).await;
+        // create services
+        let sink = ses.sink().shared();
+        let (publish, control) =
+            join(factories.0.create(ses.clone()), factories.1.create(ses)).await;
 
-            let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
-            let control = control.map_err(|e| MqttError::Service(e.into()))?;
+        let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
+        let control = control.map_err(|e| MqttError::Service(e.into()))?;
 
-            let control = BufferService::new(
-                16,
-                // limit number of in-flight messages
-                InFlightService::new(1, control),
-            )
-            .map_err(|err| match err {
-                BufferServiceError::Service(e) => MqttError::Service(E::from(e)),
-                BufferServiceError::RequestCanceled => {
-                    MqttError::Handshake(HandshakeError::Disconnected(None))
-                }
-            });
+        let control = BufferService::new(
+            16,
+            // limit number of in-flight messages
+            InFlightService::new(1, control),
+        )
+        .map_err(|err| match err {
+            BufferServiceError::Service(e) => MqttError::Service(E::from(e)),
+            BufferServiceError::RequestCanceled => {
+                MqttError::Handshake(HandshakeError::Disconnected(None))
+            }
+        });
 
-            Ok(Dispatcher::<_, _, E>::new(sink, publish, control, handle_qos_after_disconnect))
-        }
+        Ok(Dispatcher::<_, _, E>::new(sink, publish, control, cfg.handle_qos_after_disconnect))
     })
 }
 
