@@ -1,5 +1,9 @@
 # Changes
 
+## [6.1.1] - 2025-12-04
+
+* Add helper method for Connect message
+
 ## [6.1.0] - 2025-12-04
 
 * Refactor service configuration
