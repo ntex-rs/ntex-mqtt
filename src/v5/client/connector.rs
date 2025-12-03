@@ -1,6 +1,5 @@
-use std::{marker::PhantomData, num::NonZeroU16, num::NonZeroU32, rc::Rc};
+use std::{marker::PhantomData, rc::Rc};
 
-use ntex_bytes::{ByteString, Bytes};
 use ntex_io::IoBoxed;
 use ntex_net::connect::{self, Address, Connector};
 use ntex_service::cfg::{Cfg, SharedCfg};

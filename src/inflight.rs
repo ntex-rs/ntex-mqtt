@@ -1,11 +1,8 @@
 //! Service that limits number of in-flight async requests.
 use std::{cell::Cell, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
-use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Middleware2, Service, ServiceCtx};
+use ntex_service::{Service, ServiceCtx};
 use ntex_util::{future::join, task::LocalWaker};
-
-use crate::MqttServiceConfig;
 
 /// Trait for types that could be sized
 pub trait SizedRequest {
@@ -194,8 +191,7 @@ mod tests {
     async fn test_inflight() {
         let wait_time = Duration::from_millis(50);
 
-        let srv =
-            Pipeline::new(InFlightService::new(1, 0).create(SleepService(wait_time))).bind();
+        let srv = Pipeline::new(InFlightServiceImpl::new(1, 0, SleepService(wait_time))).bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
@@ -215,7 +211,7 @@ mod tests {
         let wait_time = Duration::from_millis(50);
 
         let srv =
-            Pipeline::new(InFlightService::new(0, 10).create(SleepService(wait_time))).bind();
+            Pipeline::new(InFlightServiceImpl::new(0, 10, SleepService(wait_time))).bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
@@ -270,11 +266,11 @@ mod tests {
     async fn test_inflight3() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightService::new(1, 10).create(Srv2 {
-            dur: wait_time,
-            cnt: Cell::new(false),
-            waker: LocalWaker::new(),
-        }))
+        let srv = Pipeline::new(InFlightServiceImpl::new(
+            1,
+            10,
+            Srv2 { dur: wait_time, cnt: Cell::new(false), waker: LocalWaker::new() },
+        ))
         .bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 

@@ -594,7 +594,7 @@ mod tests {
     use ntex_util::time::{Seconds, sleep};
 
     use super::*;
-    use crate::v3::MqttSink;
+    use crate::v3::{MqttSink, codec};
 
     #[ntex::test]
     async fn test_dup_packet_id() {

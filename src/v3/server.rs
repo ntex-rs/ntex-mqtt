@@ -3,13 +3,13 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 use ntex_io::{DispatchItem, IoBoxed};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack};
-use ntex_util::time::{Millis, Seconds, timeout_checked};
+use ntex_util::time::{Seconds, timeout_checked};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{MqttServiceConfig, service, types::QoS};
+use crate::{MqttServiceConfig, service};
 
 use super::control::{Control, ControlAck};
-use super::default::{DefaultControlService, DefaultPublishService, InFlightService};
+use super::default::{DefaultControlService, InFlightService};
 use super::handshake::{Handshake, HandshakeAck};
 use super::shared::{MqttShared, MqttSinkPool};
 use super::{MqttSink, Publish, Session, codec as mqtt, dispatcher::factory};
@@ -260,7 +260,7 @@ where
                         if let Some(max_packet_size) = ack.max_packet_size {
                             ack.shared.codec.set_max_size(max_packet_size.get());
                         }
-                        ack.io.encode(mqtt::Encoded::Packet(pkt.into()), &ack.shared.codec)?;
+                        ack.io.encode(mqtt::Encoded::Packet(pkt), &ack.shared.codec)?;
                         Ok((
                             ack.io,
                             ack.shared.clone(),
@@ -275,7 +275,7 @@ where
                         });
 
                         log::trace!("Sending failed handshake ack: {:#?}", pkt);
-                        ack.io.encode(mqtt::Encoded::Packet(pkt.into()), &ack.shared.codec)?;
+                        ack.io.encode(mqtt::Encoded::Packet(pkt), &ack.shared.codec)?;
                         let _ = ack.io.shutdown().await;
 
                         Err(MqttError::Handshake(HandshakeError::Disconnected(None)))

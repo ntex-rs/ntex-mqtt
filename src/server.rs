@@ -385,8 +385,7 @@ impl<Err, InitErr> Service<IoBoxed> for DefaultProtocolServer<Err, InitErr> {
         _: IoBoxed,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::new(
-            io::ErrorKind::Other,
+        Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::other(
             format!("Protocol is not supported: {:?}", self.ver),
         )))))
     }

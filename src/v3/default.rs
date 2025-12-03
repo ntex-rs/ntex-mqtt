@@ -7,43 +7,6 @@ use crate::{MqttServiceConfig, inflight::InFlightServiceImpl};
 
 use super::Session;
 use super::control::{Control, ControlAck, ControlAckKind};
-use super::publish::Publish;
-
-/// Default publish service
-pub struct DefaultPublishService<St, Err> {
-    _t: PhantomData<(St, Err)>,
-}
-
-impl<St, Err> Default for DefaultPublishService<St, Err> {
-    fn default() -> Self {
-        Self { _t: PhantomData }
-    }
-}
-
-impl<St, Err> ServiceFactory<Publish, Session<St>> for DefaultPublishService<St, Err> {
-    type Response = ();
-    type Error = Err;
-    type Service = DefaultPublishService<St, Err>;
-    type InitError = Err;
-
-    async fn create(&self, _: Session<St>) -> Result<Self::Service, Self::InitError> {
-        Ok(DefaultPublishService { _t: PhantomData })
-    }
-}
-
-impl<St, Err> Service<Publish> for DefaultPublishService<St, Err> {
-    type Response = ();
-    type Error = Err;
-
-    async fn call(
-        &self,
-        _: Publish,
-        _: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
-        log::warn!("Publish service is disabled");
-        Ok(())
-    }
-}
 
 /// Default control service
 pub struct DefaultControlService<S, E>(PhantomData<(S, E)>);

@@ -400,7 +400,7 @@ impl PublishReceived {
 impl Drop for PublishReceived {
     fn drop(&mut self) {
         if let Some(id) = self.packet_id.take() {
-            self.shared.release_publish(id);
+            let _ = self.shared.release_publish(id);
         }
     }
 }
@@ -551,12 +551,10 @@ pub struct StreamingPayload {
     inprocess: Cell<bool>,
 }
 
-impl StreamingPayload {
+impl Drop for StreamingPayload {
     fn drop(&mut self) {
-        if self.inprocess.get() {
-            if self.shared.is_streaming() {
-                self.shared.streaming_dropped();
-            }
+        if self.inprocess.get() && self.shared.is_streaming() {
+            self.shared.streaming_dropped();
         }
     }
 }

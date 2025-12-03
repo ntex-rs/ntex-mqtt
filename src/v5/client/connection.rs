@@ -99,8 +99,7 @@ impl Client {
     /// Default handler closes connection on any control message.
     pub async fn start_default(self) {
         if self.keepalive.non_zero() {
-            let _ =
-                ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
@@ -124,8 +123,7 @@ impl Client {
         S: Service<Control<E>, Response = ControlAck, Error = E> + 'static,
     {
         if self.keepalive.non_zero() {
-            let _ =
-                ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
@@ -188,8 +186,7 @@ where
     /// Run client with default control messages handler
     pub async fn start_default(self) {
         if self.keepalive.non_zero() {
-            let _ =
-                ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(
@@ -212,8 +209,7 @@ where
         S: Service<Control<Err>, Response = ControlAck, Error = Err> + 'static,
     {
         if self.keepalive.non_zero() {
-            let _ =
-                ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
         }
 
         let dispatcher = create_dispatcher(

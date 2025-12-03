@@ -1192,13 +1192,10 @@ mod tests {
             ntex_service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
                 let data = data2.clone();
                 async move {
-                    match msg {
-                        DispatchItem::Item(bytes) => {
-                            sleep(Millis(999999)).await;
-                            drop(data);
-                            return Ok::<_, ()>(Some(bytes.freeze()));
-                        }
-                        _ => (),
+                    if let DispatchItem::Item(bytes) = msg {
+                        sleep(Millis(999999)).await;
+                        drop(data);
+                        return Ok::<_, ()>(Some(bytes.freeze()));
                     }
                     Ok(None)
                 }

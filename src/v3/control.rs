@@ -144,9 +144,9 @@ impl PublishRelease {
     }
 }
 
-pub(crate) struct PublishReleaseResult {
-    pub packet_id: NonZeroU16,
-}
+// pub(crate) struct PublishReleaseResult {
+//     pub packet_id: NonZeroU16,
+// }
 
 #[derive(Copy, Clone, Debug)]
 pub struct Ping;

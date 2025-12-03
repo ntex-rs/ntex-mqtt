@@ -3,14 +3,14 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 use ntex_io::{DispatchItem, IoBoxed};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack};
-use ntex_util::time::{Millis, Seconds, timeout_checked};
+use ntex_util::time::{Seconds, timeout_checked};
 
 use crate::error::{HandshakeError, MqttError, ProtocolError};
-use crate::{MqttServiceConfig, service, types::QoS};
+use crate::{MqttServiceConfig, service};
 
 use super::codec::{self as mqtt, Decoded, Encoded, Packet};
 use super::control::{Control, ControlAck};
-use super::default::{DefaultControlService, DefaultPublishService, InFlightService};
+use super::default::{DefaultControlService, InFlightService};
 use super::handshake::{Handshake, HandshakeAck};
 use super::publish::{Publish, PublishAck};
 use super::shared::{MqttShared, MqttSinkPool};

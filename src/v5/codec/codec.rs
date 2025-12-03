@@ -338,7 +338,7 @@ impl Encoder for Codec {
                 } else {
                     pkt.payload_size
                 };
-                self.encoding_payload.set(NonZeroU32::new(remaining as u32));
+                self.encoding_payload.set(NonZeroU32::new(remaining));
                 Ok(())
             }
             Encoded::PayloadChunk(chunk) => {

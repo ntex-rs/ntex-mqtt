@@ -364,7 +364,7 @@ mod tests {
     use std::{future::Future, pin::Pin};
 
     use ntex_bytes::{ByteString, Bytes};
-    use ntex_io::{Io, IoConfig, testing::IoTest};
+    use ntex_io::{Io, testing::IoTest};
     use ntex_service::{cfg::SharedCfg, fn_service};
     use ntex_util::future::{Ready, lazy};
     use ntex_util::time::{Seconds, sleep};
@@ -388,24 +388,7 @@ mod tests {
         ));
 
         let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
-            Box::pin(disp.call(DispatchItem::Item(
-                (Decoded::Publish(
-                    codec::Publish {
-                        dup: false,
-                        retain: false,
-                        qos: QoS::AtLeastOnce,
-                        topic: ByteString::new(),
-                        packet_id: NonZeroU16::new(1),
-                        payload_size: 0,
-                    },
-                    Bytes::new(),
-                    999,
-                )),
-            )));
-        let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
-
-        let f = Box::pin(disp.call(DispatchItem::Item(
-            (Decoded::Publish(
+            Box::pin(disp.call(DispatchItem::Item(Decoded::Publish(
                 codec::Publish {
                     dup: false,
                     retain: false,
@@ -416,8 +399,21 @@ mod tests {
                 },
                 Bytes::new(),
                 999,
-            )),
-        )));
+            ))));
+        let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
+
+        let f = Box::pin(disp.call(DispatchItem::Item(Decoded::Publish(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: QoS::AtLeastOnce,
+                topic: ByteString::new(),
+                packet_id: NonZeroU16::new(1),
+                payload_size: 0,
+            },
+            Bytes::new(),
+            999,
+        ))));
         let err = f.await.err().unwrap();
         match err {
             MqttError::Handshake(HandshakeError::Protocol(msg)) => {

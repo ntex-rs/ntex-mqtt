@@ -223,7 +223,7 @@ impl Encoder for Codec {
                 } else {
                     pkt.payload_size
                 };
-                self.encoding_payload.set(NonZeroU32::new(remaining as u32));
+                self.encoding_payload.set(NonZeroU32::new(remaining));
                 Ok(())
             }
             Encoded::PayloadChunk(chunk) => {
@@ -275,8 +275,7 @@ mod tests {
         let payload = Bytes::from(Vec::from("a".repeat(260 * 1024)));
         codec.encode(Encoded::Publish(pkt.clone(), Some(payload)), &mut buf).unwrap();
 
-        let pkt2 = if let (Decoded::Publish(v, _, _)) = codec.decode(&mut buf).unwrap().unwrap()
-        {
+        let pkt2 = if let Decoded::Publish(v, _, _) = codec.decode(&mut buf).unwrap().unwrap() {
             v
         } else {
             panic!()
