@@ -55,7 +55,7 @@ impl Handshake {
         let Handshake { io, shared, pkt, .. } = self;
         // [MQTT-3.1.2-24].
         let keepalive = if pkt.keep_alive != 0 {
-            Seconds((pkt.keep_alive >> 1).checked_add(pkt.keep_alive).unwrap_or(u16::MAX))
+            Seconds((pkt.keep_alive >> 1).saturating_add(pkt.keep_alive))
         } else {
             DEFAULT_KEEPALIVE
         };

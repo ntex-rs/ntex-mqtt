@@ -53,7 +53,6 @@ async fn main() -> std::io::Result<()> {
                     },
                 ),
             )
-            .finish()
         })?
         .workers(1)
         .run()

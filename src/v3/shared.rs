@@ -285,9 +285,8 @@ impl MqttShared {
     }
 
     pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), ProtocolError> {
-        self.pkt_ack_inner(ack).map_err(|e| {
+        self.pkt_ack_inner(ack).inspect_err(|_| {
             self.close();
-            e
         })
     }
 

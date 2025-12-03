@@ -157,7 +157,7 @@ pub struct PublishBuilder {
 }
 
 impl PublishBuilder {
-    fn new(shared: Rc<MqttShared>, mut packet: codec::Publish) -> Self {
+    fn new(shared: Rc<MqttShared>, packet: codec::Publish) -> Self {
         Self { shared, packet }
     }
 
@@ -481,7 +481,7 @@ impl PublishReceived {
 impl Drop for PublishReceived {
     fn drop(&mut self) {
         if let Some(ack) = self.result.take() {
-            self.shared.release_publish(ack);
+            let _ = self.shared.release_publish(ack);
         }
     }
 }
@@ -647,12 +647,10 @@ pub struct StreamingPayload {
     inprocess: Cell<bool>,
 }
 
-impl StreamingPayload {
+impl Drop for StreamingPayload {
     fn drop(&mut self) {
-        if self.inprocess.get() {
-            if self.shared.is_streaming() {
-                self.shared.streaming_dropped();
-            }
+        if self.inprocess.get() && self.shared.is_streaming() {
+            self.shared.streaming_dropped();
         }
     }
 }

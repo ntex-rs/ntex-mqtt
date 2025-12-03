@@ -32,8 +32,6 @@ async fn main() -> std::io::Result<()> {
 
     // connect to server
     let client = v3::client::MqttConnector::new()
-        .client_id("user")
-        .keep_alive(Seconds::ONE)
         .connector(move |_: Connect<&str>| {
             let client = ws_client.clone();
             async move {
@@ -47,7 +45,11 @@ async fn main() -> std::io::Result<()> {
         .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .call("127.0.0.1:8883")
+        .call(
+            v3::client::Connect::new("127.0.0.1:8883")
+                .client_id("user")
+                .keep_alive(Seconds::ONE),
+        )
         .await
         .unwrap();
 

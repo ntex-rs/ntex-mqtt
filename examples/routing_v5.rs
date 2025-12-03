@@ -71,7 +71,6 @@ async fn main() -> std::io::Result<()> {
                     Ok(p.ack())
                 }),
             )
-            .finish()
         })?
         .workers(1)
         .run()

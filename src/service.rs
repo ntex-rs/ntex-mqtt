@@ -2,7 +2,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
-use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
+use ntex_service::{Middleware2, Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
 use ntex_util::time::Seconds;
 
 use crate::io::Dispatcher;
@@ -37,6 +37,7 @@ where
     ) -> Result<MqttHandler<St, C::Service, T, M, Codec>, C::InitError> {
         // create connect service and then create service impl
         Ok(MqttHandler {
+            cfg,
             handler: self.handler.clone(),
             connect: self.connect.create(cfg).await?,
             middleware: self.middleware.clone(),
@@ -52,12 +53,12 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
             DispatchItem<Codec>,
-            St,
+            (SharedCfg, St),
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
-    M: Middleware<T::Service>,
+    M: Middleware2<T::Service, SharedCfg>,
     M::Service: Service<DispatchItem<Codec>, Response = ResponseItem<Codec>, Error = C::Error>
         + 'static,
     Codec: Decoder + Encoder + Clone + 'static,
@@ -80,12 +81,12 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
             DispatchItem<Codec>,
-            St,
+            (SharedCfg, St),
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
-    M: Middleware<T::Service>,
+    M: Middleware2<T::Service, SharedCfg>,
     M::Service: Service<DispatchItem<Codec>, Response = ResponseItem<Codec>, Error = C::Error>
         + 'static,
     Codec: Decoder + Encoder + Clone + 'static,
@@ -104,6 +105,7 @@ pub struct MqttHandler<St, C, T, M, Codec> {
     connect: C,
     handler: Rc<T>,
     middleware: Rc<M>,
+    cfg: SharedCfg,
     _t: PhantomData<(St, Codec)>,
 }
 
@@ -114,12 +116,12 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
             DispatchItem<Codec>,
-            St,
+            (SharedCfg, St),
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
-    M: Middleware<T::Service>,
+    M: Middleware2<T::Service, SharedCfg>,
     M::Service: Service<DispatchItem<Codec>, Response = ResponseItem<Codec>, Error = C::Error>
         + 'static,
     Codec: Decoder + Encoder + Clone + 'static,
@@ -140,10 +142,10 @@ where
         })?;
         log::trace!("{}: Connection handshake succeeded", tag);
 
-        let handler = self.handler.create(session).await?;
+        let handler = self.handler.create((self.cfg, session)).await?;
         log::trace!("{}: Connection handler is created, starting dispatcher", tag);
 
-        Dispatcher::new(io, codec, self.middleware.create(handler))
+        Dispatcher::new(io, codec, self.middleware.create(handler, self.cfg))
             .keepalive_timeout(keepalive)
             .await
     }
@@ -157,12 +159,12 @@ where
     C::Error: fmt::Debug,
     T: ServiceFactory<
             DispatchItem<Codec>,
-            St,
+            (SharedCfg, St),
             Response = ResponseItem<Codec>,
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
-    M: Middleware<T::Service>,
+    M: Middleware2<T::Service, SharedCfg>,
     M::Service: Service<DispatchItem<Codec>, Response = ResponseItem<Codec>, Error = C::Error>
         + 'static,
     Codec: Decoder + Encoder + Clone + 'static,

@@ -6,7 +6,7 @@ use ntex_io::IoRef;
 use ntex_util::{HashSet, channel::pool};
 
 use crate::v5::codec::{self, Decoded, Encoded, Packet, Publish};
-use crate::{QoS, error, error::SendPacketError, payload, types::packet_type};
+use crate::{QoS, error, error::SendPacketError, types::packet_type};
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -301,12 +301,11 @@ impl MqttShared {
     }
 
     pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), error::ProtocolError> {
-        self.pkt_ack_inner(ack).map_err(|e| {
+        self.pkt_ack_inner(ack).inspect_err(|_| {
             self.close(codec::Disconnect {
                 reason_code: codec::DisconnectReasonCode::ImplementationSpecificError,
                 ..Default::default()
             });
-            e
         })
     }
 

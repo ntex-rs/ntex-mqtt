@@ -109,14 +109,13 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", async |_| {
-            MqttServer::new(handshake)
-                .control(control_service_factory())
-                .publish(fn_factory_with_config(|session: Session<MySession>| {
+            MqttServer::new(handshake).control(control_service_factory()).publish(
+                fn_factory_with_config(|session: Session<MySession>| {
                     Ready::Ok::<_, MyServerError>(fn_service(move |req| {
                         publish(session.clone(), req)
                     }))
-                }))
-                .finish()
+                }),
+            )
         })?
         .workers(1)
         .run()

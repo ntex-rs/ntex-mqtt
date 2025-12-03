@@ -7,7 +7,7 @@ use crate::error::{DecodeError, EncodeError};
 use crate::types::{FixedHeader, QoS, packet_type};
 use crate::utils::decode_variable_length;
 
-use super::{Decoded, Encoded, Packet, Publish, decode, encode};
+use super::{Decoded, Encoded, Publish, decode, encode};
 
 #[derive(Debug, Clone)]
 /// Mqtt v3.1.1 protocol codec
@@ -113,7 +113,7 @@ impl Decoder for Codec {
                         if src.len() < hdr_len as usize {
                             return Ok(None);
                         }
-                        let payload_len = (fixed.remaining_length - hdr_len);
+                        let payload_len = fixed.remaining_length - hdr_len;
                         let mut buf = src.split_to(hdr_len as usize).freeze();
                         let publish = decode::decode_publish_packet(
                             &mut buf,
@@ -202,12 +202,9 @@ impl Encoder for Codec {
                 Ok(())
             }
             Encoded::Publish(pkt, buf) => {
-                if let Publish { qos, packet_id, .. } = pkt {
-                    if (qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce)
-                        && packet_id.is_none()
-                    {
-                        return Err(EncodeError::PacketIdRequired);
-                    }
+                let Publish { qos, packet_id, .. } = pkt;
+                if (qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce) && packet_id.is_none() {
+                    return Err(EncodeError::PacketIdRequired);
                 }
 
                 let content_size = encode::get_encoded_publish_size(&pkt) as u32;
@@ -226,7 +223,7 @@ impl Encoder for Codec {
                 } else {
                     pkt.payload_size
                 };
-                self.encoding_payload.set(NonZeroU32::new(remaining as u32));
+                self.encoding_payload.set(NonZeroU32::new(remaining));
                 Ok(())
             }
             Encoded::PayloadChunk(chunk) => {
@@ -278,8 +275,7 @@ mod tests {
         let payload = Bytes::from(Vec::from("a".repeat(260 * 1024)));
         codec.encode(Encoded::Publish(pkt.clone(), Some(payload)), &mut buf).unwrap();
 
-        let pkt2 = if let (Decoded::Publish(v, _, _)) = codec.decode(&mut buf).unwrap().unwrap()
-        {
+        let pkt2 = if let Decoded::Publish(v, _, _) = codec.decode(&mut buf).unwrap().unwrap() {
             v
         } else {
             panic!()

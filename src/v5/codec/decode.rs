@@ -81,7 +81,7 @@ mod tests {
         let mut bytes = BytesMut::copy_from_slice(bytes.as_ref());
         let codec = crate::v5::codec::Codec::new();
         let decoded = ntex_codec::Decoder::decode(&codec, &mut bytes).unwrap().unwrap();
-        let (pkt, body) = match decoded {
+        let (pkt, _) = match decoded {
             Decoded::Publish(ref pkt, ref body, _) => (pkt.clone(), body.clone()),
             _ => panic!(),
         };

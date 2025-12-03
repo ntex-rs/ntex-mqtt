@@ -365,9 +365,9 @@ where
             }
             DispatchItem::Item(Decoded::Packet(Packet::PingResponse, ..)) => Ok(None),
             DispatchItem::Item(
-                (Decoded::Packet(pkt @ Packet::PingRequest, _)
+                Decoded::Packet(pkt @ Packet::PingRequest, _)
                 | Decoded::Packet(pkt @ Packet::Subscribe(_), _)
-                | Decoded::Packet(pkt @ Packet::Unsubscribe(_), _)),
+                | Decoded::Packet(pkt @ Packet::Unsubscribe(_), _),
             ) => Err(HandshakeError::Protocol(ProtocolError::unexpected_packet(
                 pkt.packet_type(),
                 "Packet of the type is not expected from server",

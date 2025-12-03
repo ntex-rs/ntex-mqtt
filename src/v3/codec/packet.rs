@@ -1,4 +1,4 @@
-use std::{fmt, num::NonZeroU16};
+use std::num::NonZeroU16;
 
 use ntex_bytes::{ByteString, Bytes};
 

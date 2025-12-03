@@ -41,8 +41,7 @@ fn mqtt_server<F: Filter>()
         .publish(|publish: v3::Publish| async move {
             log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
             Ok::<_, ServerError>(())
-        })
-        .finish())
+        }))
         .v5(v5::MqttServer::new(|handshake: v5::Handshake| async move {
             log::info!("new mqtt v5 connection: {:?}", handshake);
             Ok(handshake.ack(Session))
@@ -50,8 +49,7 @@ fn mqtt_server<F: Filter>()
         .publish(|publish: v5::Publish| async move {
             log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
             Ok::<_, ServerError>(publish.ack())
-        })
-        .finish())
+        }))
         .map_err(Box::<dyn Error>::from)
 }
 

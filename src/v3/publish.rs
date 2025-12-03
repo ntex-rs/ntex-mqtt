@@ -2,8 +2,6 @@ use std::{mem, num::NonZeroU16};
 
 use ntex_bytes::{ByteString, Bytes};
 use ntex_router::Path;
-use serde::de::DeserializeOwned;
-use serde_json::Error as JsonError;
 
 use crate::{error::PayloadError, payload::Payload, v3::codec};
 

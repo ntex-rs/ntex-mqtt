@@ -29,22 +29,19 @@ async fn test_simple() -> std::io::Result<()> {
             .v3(v3::MqttServer::new(|con: v3::Handshake| {
                 Ready::Ok::<_, TestError>(con.ack(St, false))
             })
-            .publish(|_| Ready::Ok::<_, TestError>(()))
-            .finish())
+            .publish(|_| Ready::Ok::<_, TestError>(())))
             .v5(v5::MqttServer::new(|con: v5::Handshake| {
                 Ready::Ok::<_, TestError>(con.ack(St))
             })
-            .publish(|p: v5::Publish| Ready::Ok::<_, TestError>(p.ack()))
-            .finish())
+            .publish(|p: v5::Publish| Ready::Ok::<_, TestError>(p.ack())))
     });
 
     // connect to v5 server
     let client = v5::client::MqttConnector::new()
-        .client_id("user")
         .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .call(srv.addr())
+        .call(v5::client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
     let sink = client.sink();
@@ -57,11 +54,10 @@ async fn test_simple() -> std::io::Result<()> {
 
     // connect to v3 server
     let client = v3::client::MqttConnector::new()
-        .client_id("user")
         .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .call(srv.addr())
+        .call(v3::client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
     let sink = client.sink();

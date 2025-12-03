@@ -95,20 +95,20 @@ async fn main() -> std::io::Result<()> {
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", async |_| {
             MqttServer::new()
-                .v3(v3::MqttServer::new(handshake_v3)
-                    .publish(fn_factory_with_config(|session: v3::Session<MySession>| {
+                .v3(v3::MqttServer::new(handshake_v3).publish(fn_factory_with_config(
+                    |session: v3::Session<MySession>| {
                         Ready::Ok::<_, MyServerError>(fn_service(move |req| {
                             publish_v3(session.clone(), req)
                         }))
-                    }))
-                    .finish())
-                .v5(v5::MqttServer::new(handshake_v5)
-                    .publish(fn_factory_with_config(|session: v5::Session<MySession>| {
+                    },
+                )))
+                .v5(v5::MqttServer::new(handshake_v5).publish(fn_factory_with_config(
+                    |session: v5::Session<MySession>| {
                         Ready::Ok::<_, MyServerError>(fn_service(move |req| {
                             publish_v5(session.clone(), req)
                         }))
-                    }))
-                    .finish())
+                    },
+                )))
         })?
         .workers(1)
         .run()

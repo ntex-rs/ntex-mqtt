@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt, io, mem};
+use std::{cell::Cell, fmt, mem};
 
 use ntex_bytes::{Bytes, BytesMut};
 use ntex_util::{channel::bstream, future::Either};
@@ -13,11 +13,6 @@ pub(crate) type PlSender = bstream::Sender<PayloadError>;
 /// Payload for Publish packet
 pub struct Payload {
     pl: Either<Cell<Option<Bytes>>, PlStream>,
-}
-
-/// Client payload streaming
-pub struct PayloadSender {
-    tx: PlSender,
 }
 
 impl Default for Payload {
@@ -48,9 +43,7 @@ impl Payload {
     pub async fn read(&self) -> Result<Option<Bytes>, PayloadError> {
         match &self.pl {
             Either::Left(pl) => Ok(pl.take()),
-            Either::Right(pl) => {
-                pl.read().await.map_or(Ok(None), |res| res.map(|val| Some(val)))
-            }
+            Either::Right(pl) => pl.read().await.map_or(Ok(None), |res| res.map(Some)),
         }
     }
 

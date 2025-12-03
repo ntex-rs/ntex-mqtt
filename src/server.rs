@@ -2,18 +2,18 @@ use std::{fmt, io, marker, task::Context};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
-use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
+use ntex_service::cfg::{Cfg, SharedCfg};
+use ntex_service::{Middleware2, Service, ServiceCtx, ServiceFactory};
 use ntex_util::future::{Either, join, select};
-use ntex_util::time::{Deadline, Millis, Seconds};
+use ntex_util::time::{Deadline, Seconds};
 
 use crate::version::{ProtocolVersion, VersionCodec};
-use crate::{error::HandshakeError, error::MqttError, service};
+use crate::{MqttServiceConfig, error::HandshakeError, error::MqttError, service};
 
 /// Mqtt Server
 pub struct MqttServer<V3, V5, Err, InitErr> {
     svc_v3: V3,
     svc_v5: V5,
-    connect_timeout: Millis,
     _t: marker::PhantomData<(Err, InitErr)>,
 }
 
@@ -30,7 +30,6 @@ impl<Err, InitErr>
         MqttServer {
             svc_v3: DefaultProtocolServer::new(ProtocolVersion::MQTT3),
             svc_v5: DefaultProtocolServer::new(ProtocolVersion::MQTT5),
-            connect_timeout: Millis(5_000),
             _t: marker::PhantomData,
         }
     }
@@ -46,20 +45,6 @@ impl<Err, InitErr> Default
 {
     fn default() -> Self {
         MqttServer::new()
-    }
-}
-
-impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr> {
-    /// Set client timeout reading protocol version.
-    ///
-    /// Defines a timeout for reading protocol version. If a client does not transmit
-    /// version of the protocol within this time, the connection is terminated with
-    /// Mqtt::Handshake(HandshakeError::Timeout) error.
-    ///
-    /// By default, timeuot is 5 seconds.
-    pub fn protocol_version_timeout(mut self, timeout: Seconds) -> Self {
-        self.connect_timeout = timeout.into();
-        self
     }
 }
 
@@ -108,12 +93,12 @@ where
             > + 'static,
         P: ServiceFactory<
                 DispatchItem<Codec>,
-                St,
+                (SharedCfg, St),
                 Response = Option<<Codec as Encoder>::Item>,
                 Error = MqttError<Err>,
                 InitError = MqttError<Err>,
             > + 'static,
-        M: Middleware<P::Service>,
+        M: Middleware2<P::Service, SharedCfg>,
         M::Service: Service<
                 DispatchItem<Codec>,
                 Response = Option<<Codec as Encoder>::Item>,
@@ -121,12 +106,7 @@ where
             > + 'static,
         Codec: Encoder + Decoder + Clone + 'static,
     {
-        MqttServer {
-            svc_v3: service,
-            svc_v5: self.svc_v5,
-            connect_timeout: self.connect_timeout,
-            _t: marker::PhantomData,
-        }
+        MqttServer { svc_v3: service, svc_v5: self.svc_v5, _t: marker::PhantomData }
     }
 
     /// Service to handle v5 protocol
@@ -156,12 +136,12 @@ where
             > + 'static,
         P: ServiceFactory<
                 DispatchItem<Codec>,
-                St,
+                (SharedCfg, St),
                 Response = Option<<Codec as Encoder>::Item>,
                 Error = MqttError<Err>,
                 InitError = MqttError<Err>,
             > + 'static,
-        M: Middleware<P::Service>,
+        M: Middleware2<P::Service, SharedCfg>,
         M::Service: Service<
                 DispatchItem<Codec>,
                 Response = Option<<Codec as Encoder>::Item>,
@@ -169,12 +149,7 @@ where
             > + 'static,
         Codec: Encoder + Decoder + Clone + 'static,
     {
-        MqttServer {
-            svc_v3: self.svc_v3,
-            svc_v5: service,
-            connect_timeout: self.connect_timeout,
-            _t: marker::PhantomData,
-        }
+        MqttServer { svc_v3: self.svc_v3, svc_v5: service, _t: marker::PhantomData }
     }
 }
 
@@ -202,11 +177,7 @@ where
         let (v3, v5) = join(self.svc_v3.create(cfg), self.svc_v5.create(cfg)).await;
         let v3 = v3?;
         let v5 = v5?;
-        Ok(MqttServerImpl {
-            handlers: (v3, v5),
-            connect_timeout: self.connect_timeout,
-            _t: marker::PhantomData,
-        })
+        Ok(MqttServerImpl { handlers: (v3, v5), cfg: cfg.get(), _t: marker::PhantomData })
     }
 }
 
@@ -274,7 +245,7 @@ where
 /// Mqtt Server
 pub struct MqttServerImpl<V3, V5, Err> {
     handlers: (V3, V5),
-    connect_timeout: Millis,
+    cfg: Cfg<MqttServiceConfig>,
     _t: marker::PhantomData<Err>,
 }
 
@@ -334,7 +305,7 @@ where
                 }
             };
 
-            match select(&mut Deadline::new(self.connect_timeout), fut).await {
+            match select(&mut Deadline::new(self.cfg.protocol_version_timeout), fut).await {
                 Either::Left(_) => Err(MqttError::Handshake(HandshakeError::Timeout)),
                 Either::Right(Ok(Some(ver))) => match ver {
                     ProtocolVersion::MQTT3 => ctx.call(&self.handlers.0, io).await,
@@ -400,7 +371,7 @@ impl<Err, InitErr> ServiceFactory<IoBoxed, SharedCfg> for DefaultProtocolServer<
     type Service = DefaultProtocolServer<Err, InitErr>;
     type InitError = InitErr;
 
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, _: SharedCfg) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultProtocolServer { ver: self.ver, _t: marker::PhantomData })
     }
 }
@@ -414,8 +385,7 @@ impl<Err, InitErr> Service<IoBoxed> for DefaultProtocolServer<Err, InitErr> {
         _: IoBoxed,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::new(
-            io::ErrorKind::Other,
+        Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::other(
             format!("Protocol is not supported: {:?}", self.ver),
         )))))
     }

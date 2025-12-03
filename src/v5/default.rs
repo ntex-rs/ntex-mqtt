@@ -1,46 +1,12 @@
 use std::{fmt, marker::PhantomData};
 
-use ntex_service::{Service, ServiceCtx, ServiceFactory};
+use ntex_service::cfg::{Cfg, SharedCfg};
+use ntex_service::{Middleware2, Service, ServiceCtx, ServiceFactory};
+
+use crate::{MqttServiceConfig, inflight::InFlightServiceImpl};
 
 use super::Session;
 use super::control::{Control, ControlAck};
-use super::publish::{Publish, PublishAck};
-
-/// Default publish service
-pub struct DefaultPublishService<St, Err> {
-    _t: PhantomData<(St, Err)>,
-}
-
-impl<St, Err> Default for DefaultPublishService<St, Err> {
-    fn default() -> Self {
-        Self { _t: PhantomData }
-    }
-}
-
-impl<St, Err> ServiceFactory<Publish, Session<St>> for DefaultPublishService<St, Err> {
-    type Response = PublishAck;
-    type Error = Err;
-    type Service = DefaultPublishService<St, Err>;
-    type InitError = Err;
-
-    async fn create(&self, _: Session<St>) -> Result<Self::Service, Self::InitError> {
-        Ok(DefaultPublishService { _t: PhantomData })
-    }
-}
-
-impl<St, Err> Service<Publish> for DefaultPublishService<St, Err> {
-    type Response = PublishAck;
-    type Error = Err;
-
-    async fn call(
-        &self,
-        req: Publish,
-        _: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
-        log::warn!("Publish service is disabled");
-        Ok(req.ack())
-    }
-}
 
 /// Default control service
 pub struct DefaultControlService<S, E>(PhantomData<(S, E)>);
@@ -81,5 +47,21 @@ impl<S, E: fmt::Debug> Service<Control<E>> for DefaultControlService<S, E> {
                 )))
             }
         }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+/// Service that can limit size of in-flight async requests.
+///
+/// Default is 64kb size
+pub struct InFlightService;
+
+impl<S> Middleware2<S, SharedCfg> for InFlightService {
+    type Service = InFlightServiceImpl<S>;
+
+    #[inline]
+    fn create(&self, service: S, cfg: SharedCfg) -> Self::Service {
+        let cfg: Cfg<MqttServiceConfig> = cfg.get();
+        InFlightServiceImpl::new(0, cfg.max_receive_size, service)
     }
 }

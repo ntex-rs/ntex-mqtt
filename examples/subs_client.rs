@@ -20,12 +20,14 @@ async fn main() -> std::io::Result<()> {
 
     // connect to server
     let client = v5::client::MqttConnector::new()
-        .client_id("my-client-id")
-        .keep_alive(Seconds(30))
         .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .call("127.0.0.1:1883")
+        .call(
+            v5::client::Connect::new("127.0.0.1:1883")
+                .client_id("my-client-id")
+                .keep_alive(Seconds(30)),
+        )
         .await
         .unwrap();
 

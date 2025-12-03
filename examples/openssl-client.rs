@@ -34,13 +34,15 @@ async fn main() -> std::io::Result<()> {
     // connect to server
     let client = v5::client::MqttConnector::new()
         .connector(SslConnector::new(builder.build()))
-        .client_id("user")
-        .keep_alive(Seconds::ONE)
-        .max_packet_size(30)
         .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .call("127.0.0.1:8883")
+        .call(
+            v5::client::Connect::new("127.0.0.1:8883")
+                .client_id("user")
+                .keep_alive(Seconds::ONE)
+                .max_packet_size(30),
+        )
         .await
         .unwrap();
 
