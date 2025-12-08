@@ -19,6 +19,7 @@ pub struct Client {
     keepalive: Seconds,
     session_present: bool,
     max_receive: usize,
+    max_buffer_size: usize,
 }
 
 impl fmt::Debug for Client {
@@ -37,10 +38,11 @@ impl Client {
         io: IoBoxed,
         shared: Rc<MqttShared>,
         session_present: bool,
-        keepalive_timeout: Seconds,
+        keepalive: Seconds,
         max_receive: usize,
+        max_buffer_size: usize,
     ) -> Self {
-        Client { io, shared, session_present, max_receive, keepalive: keepalive_timeout }
+        Client { io, shared, session_present, keepalive, max_receive, max_buffer_size }
     }
 }
 
@@ -75,6 +77,7 @@ impl Client {
             shared: self.shared,
             keepalive: self.keepalive,
             max_receive: self.max_receive,
+            max_buffer_size: self.max_buffer_size,
             _t: PhantomData,
         }
     }
@@ -91,6 +94,7 @@ impl Client {
         let dispatcher = create_dispatcher(
             self.shared.clone(),
             self.max_receive,
+            self.max_buffer_size,
             fn_service(|pkt| Ready::Ok(Either::Right(pkt))),
             fn_service(|msg: Control<()>| Ready::<_, ()>::Ok(msg.disconnect())),
         );
@@ -113,6 +117,7 @@ impl Client {
         let dispatcher = create_dispatcher(
             self.shared.clone(),
             self.max_receive,
+            self.max_buffer_size,
             fn_service(|pkt| Ready::Ok(Either::Right(pkt))),
             service.into_service(),
         );
@@ -136,6 +141,7 @@ pub struct ClientRouter<Err, PErr> {
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     max_receive: usize,
+    max_buffer_size: usize,
     _t: PhantomData<Err>,
 }
 
@@ -175,6 +181,7 @@ where
         let dispatcher = create_dispatcher(
             self.shared.clone(),
             self.max_receive,
+            self.max_buffer_size,
             dispatch(self.builder.finish(), self.handlers),
             fn_service(|msg: Control<Err>| Ready::<_, Err>::Ok(msg.disconnect())),
         );
@@ -196,6 +203,7 @@ where
         let dispatcher = create_dispatcher(
             self.shared.clone(),
             self.max_receive,
+            self.max_buffer_size,
             dispatch(self.builder.finish(), self.handlers),
             service.into_service(),
         );

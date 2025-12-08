@@ -18,6 +18,7 @@ use super::control::{Control, ControlAck};
 pub(super) fn create_dispatcher<T, C, E>(
     sink: Rc<MqttShared>,
     inflight: usize,
+    max_buffer_size: usize,
     publish: T,
     control: C,
 ) -> impl Service<DispatchItem<Rc<MqttShared>>, Response = Option<Encoded>, Error = MqttError<E>>
@@ -29,7 +30,7 @@ where
     // limit number of in-flight messages
     InFlightService::new(
         inflight,
-        Dispatcher::new(sink, publish, control.map_err(MqttError::Service)),
+        Dispatcher::new(sink, publish, control.map_err(MqttError::Service), max_buffer_size),
     )
 }
 
@@ -37,6 +38,7 @@ where
 pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
     inner: Rc<Inner<C>>,
+    max_buffer_size: usize,
     _t: PhantomData<E>,
 }
 
@@ -52,9 +54,15 @@ where
     T: Service<Publish, Response = Either<(), Publish>, Error = E>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    pub(crate) fn new(sink: Rc<MqttShared>, publish: T, control: C) -> Self {
+    pub(crate) fn new(
+        sink: Rc<MqttShared>,
+        publish: T,
+        control: C,
+        max_buffer_size: usize,
+    ) -> Self {
         Self {
             publish,
+            max_buffer_size,
             inner: Rc::new(Inner {
                 sink,
                 payload: Cell::new(None),
@@ -109,9 +117,8 @@ where
 
         if result.is_ok() {
             if let Some(pl) = self.inner.payload.take() {
-                if pl.ready().await == PayloadStatus::Ready {
-                    self.inner.payload.set(Some(pl));
-                } else {
+                self.inner.payload.set(Some(pl.clone()));
+                if pl.ready().await != PayloadStatus::Ready {
                     self.inner.sink.close();
                 }
             }
@@ -166,7 +173,7 @@ where
                 let payload = if publish.payload_size == payload.len() as u32 {
                     Payload::from_bytes(payload)
                 } else {
-                    let (pl, sender) = Payload::from_stream(payload);
+                    let (pl, sender) = Payload::from_stream(payload, self.max_buffer_size);
                     self.inner.payload.set(Some(sender));
                     pl
                 };
@@ -385,6 +392,7 @@ mod tests {
                 Ok(Either::Left(()))
             }),
             fn_service(|_| Ready::Ok(ControlAck { result: ControlAckKind::Nothing })),
+            32 * 1024,
         ));
 
         let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
@@ -436,6 +444,7 @@ mod tests {
             shared.clone(),
             fn_service(|_| Ready::Ok(Either::Left(()))),
             fn_service(|_| Ready::Ok(ControlAck { result: ControlAckKind::Nothing })),
+            32 * 1024,
         ));
 
         let sink = MqttSink::new(shared.clone());

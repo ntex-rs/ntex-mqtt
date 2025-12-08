@@ -13,6 +13,7 @@ pub struct MqttServiceConfig {
     pub(crate) max_send: u16,
     pub(crate) max_send_size: (u32, u32),
     pub(crate) min_chunk_size: u32,
+    pub(crate) max_payload_buffer_size: usize,
     pub(crate) handle_qos_after_disconnect: Option<QoS>,
     pub(crate) connect_timeout: Seconds,
     pub(crate) handshake_timeout: Seconds,
@@ -49,6 +50,7 @@ impl MqttServiceConfig {
             max_receive_size: 65535,
             max_topic_alias: 32,
             min_chunk_size: 32 * 1024,
+            max_payload_buffer_size: 32 * 1024,
             handle_qos_after_disconnect: None,
             connect_timeout: Seconds::ZERO,
             handshake_timeout: Seconds::ZERO,
@@ -148,6 +150,14 @@ impl MqttServiceConfig {
     /// By default min size is set to `0`
     pub fn set_min_chunk_size(mut self, size: u32) -> Self {
         self.min_chunk_size = size;
+        self
+    }
+
+    /// Max payload buffer size for payload streaming.
+    ///
+    /// By default buffer size is set to 32Kb
+    pub fn set_max_payload_buffer_size(mut self, val: usize) -> Self {
+        self.max_payload_buffer_size = val;
         self
     }
 

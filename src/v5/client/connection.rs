@@ -3,13 +3,13 @@ use std::{cell::RefCell, fmt, marker, num::NonZeroU16, rc::Rc};
 use ntex_bytes::ByteString;
 use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Path, Router, RouterBuilder};
-use ntex_service::{IntoService, Pipeline, Service, boxed, fn_service};
+use ntex_service::{IntoService, Pipeline, Service, boxed, cfg::Cfg, fn_service};
 use ntex_util::time::{Millis, Seconds, sleep};
 use ntex_util::{HashMap, future::Either, future::Ready};
 
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{ControlAck, codec, shared::MqttShared, sink::MqttSink};
-use crate::{error::MqttError, io::Dispatcher};
+use crate::{MqttServiceConfig, error::MqttError, io::Dispatcher};
 
 use super::{control::Control, dispatcher::create_dispatcher};
 
@@ -19,6 +19,7 @@ pub struct Client {
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     max_receive: usize,
+    cfg: Cfg<MqttServiceConfig>,
     pkt: Box<codec::ConnectAck>,
 }
 
@@ -27,6 +28,7 @@ impl fmt::Debug for Client {
         f.debug_struct("v5::Client")
             .field("keepalive", &self.keepalive)
             .field("max_receive", &self.max_receive)
+            .field("cfg", &self.cfg)
             .field("connect", &self.pkt)
             .finish()
     }
@@ -40,8 +42,9 @@ impl Client {
         pkt: Box<codec::ConnectAck>,
         max_receive: u16,
         keepalive: Seconds,
+        cfg: Cfg<MqttServiceConfig>,
     ) -> Self {
-        Client { io, pkt, shared, keepalive, max_receive: max_receive as usize }
+        Client { io, pkt, shared, cfg, keepalive, max_receive: max_receive as usize }
     }
 }
 
@@ -90,6 +93,7 @@ impl Client {
             shared: self.shared,
             keepalive: self.keepalive,
             max_receive: self.max_receive,
+            cfg: self.cfg,
             _t: marker::PhantomData,
         }
     }
@@ -104,12 +108,13 @@ impl Client {
 
         let dispatcher = create_dispatcher(
             MqttSink::new(self.shared.clone()),
-            self.max_receive,
-            16,
             fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
             fn_service(|msg: Control<()>| {
                 Ready::Ok(msg.disconnect(codec::Disconnect::default()))
             }),
+            self.max_receive,
+            16,
+            self.cfg,
         );
 
         let _ = Dispatcher::new(self.io, self.shared, dispatcher).await;
@@ -128,10 +133,11 @@ impl Client {
 
         let dispatcher = create_dispatcher(
             MqttSink::new(self.shared.clone()),
-            self.max_receive,
-            16,
             fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
             service.into_service(),
+            self.max_receive,
+            16,
+            self.cfg,
         );
 
         Dispatcher::new(self.io, self.shared, dispatcher).await
@@ -153,6 +159,7 @@ pub struct ClientRouter<Err, PErr> {
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     max_receive: usize,
+    cfg: Cfg<MqttServiceConfig>,
     _t: marker::PhantomData<Err>,
 }
 
@@ -191,12 +198,13 @@ where
 
         let dispatcher = create_dispatcher(
             MqttSink::new(self.shared.clone()),
-            self.max_receive,
-            16,
             dispatch(self.builder.finish(), self.handlers),
             fn_service(|msg: Control<Err>| {
                 Ready::Ok(msg.disconnect(codec::Disconnect::default()))
             }),
+            self.max_receive,
+            16,
+            self.cfg,
         );
 
         let _ = Dispatcher::new(self.io, self.shared, dispatcher).await;
@@ -214,10 +222,11 @@ where
 
         let dispatcher = create_dispatcher(
             MqttSink::new(self.shared.clone()),
-            self.max_receive,
-            16,
             dispatch(self.builder.finish(), self.handlers),
             service.into_service(),
+            self.max_receive,
+            16,
+            self.cfg,
         );
 
         Dispatcher::new(self.io, self.shared, dispatcher).await

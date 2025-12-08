@@ -147,7 +147,7 @@ where
 
                     shared.set_cap(pkt.receive_max.get() as usize);
 
-                    Ok(Client::new(io, shared, pkt, max_receive, Seconds(keep_alive)))
+                    Ok(Client::new(io, shared, pkt, max_receive, Seconds(keep_alive), self.cfg))
                 } else {
                     Err(ClientError::Ack(pkt))
                 }
