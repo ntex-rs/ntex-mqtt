@@ -1,5 +1,11 @@
 # Changes
 
+## [6.2.0] - 2025-12-08
+
+* Update bstream
+
+* Allow to configure payload buffer size
+
 ## [6.1.1] - 2025-12-04
 
 * Add helper method for Connect message

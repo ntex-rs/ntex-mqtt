@@ -4,8 +4,7 @@ use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 use ntex_io::DispatchItem;
 use ntex_service::{Pipeline, Service, ServiceCtx, ServiceFactory, cfg::Cfg, cfg::SharedCfg};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
-use ntex_util::services::inflight::InFlightService;
-use ntex_util::{HashSet, future::join};
+use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
 use crate::error::{DecodeError, HandshakeError, MqttError, PayloadError, ProtocolError};
 use crate::payload::{Payload, PayloadStatus, PlSender};
@@ -57,13 +56,7 @@ where
             });
 
             let cfg: Cfg<MqttServiceConfig> = cfg.get();
-            Ok(Dispatcher::<_, _, E>::new(
-                sink,
-                publish,
-                control,
-                cfg.max_qos,
-                cfg.handle_qos_after_disconnect,
-            ))
+            Ok(Dispatcher::<_, _, E>::new(sink, publish, control, cfg))
         },
     )
 }
@@ -89,9 +82,8 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 /// Mqtt protocol dispatcher
 pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
-    max_qos: QoS,
-    handle_qos_after_disconnect: Option<QoS>,
     inner: Rc<Inner<C>>,
+    cfg: Cfg<MqttServiceConfig>,
     _t: PhantomData<(E,)>,
 }
 
@@ -112,13 +104,11 @@ where
         sink: Rc<MqttShared>,
         publish: T,
         control: C,
-        max_qos: QoS,
-        handle_qos_after_disconnect: Option<QoS>,
+        cfg: Cfg<MqttServiceConfig>,
     ) -> Self {
         Self {
+            cfg,
             publish,
-            max_qos,
-            handle_qos_after_disconnect,
             inner: Rc::new(Inner {
                 sink,
                 payload: Cell::new(None),
@@ -180,9 +170,8 @@ where
 
         if result.is_ok() {
             if let Some(pl) = self.inner.payload.take() {
-                if pl.ready().await == PayloadStatus::Ready {
-                    self.inner.payload.set(Some(pl));
-                } else {
+                self.inner.payload.set(Some(pl.clone()));
+                if pl.ready().await != PayloadStatus::Ready {
                     self.inner.sink.close();
                 }
             }
@@ -254,11 +243,11 @@ where
                 }
 
                 // check max allowed qos
-                if publish.qos > self.max_qos {
+                if publish.qos > self.cfg.max_qos {
                     log::trace!(
                         "{}: Max allowed QoS is violated, max {:?} provided {:?}",
                         self.tag(),
-                        self.max_qos,
+                        self.cfg.max_qos,
                         publish.qos
                     );
                     return control(
@@ -277,6 +266,7 @@ where
 
                 if inner.sink.is_closed()
                     && !self
+                        .cfg
                         .handle_qos_after_disconnect
                         .map(|max_qos| publish.qos <= max_qos)
                         .unwrap_or_default()
@@ -287,7 +277,8 @@ where
                 let payload = if publish.payload_size == payload.len() as u32 {
                     Payload::from_bytes(payload)
                 } else {
-                    let (pl, sender) = Payload::from_stream(payload);
+                    let (pl, sender) =
+                        Payload::from_stream(payload, self.cfg.max_payload_buffer_size);
                     self.inner.payload.set(Some(sender));
                     pl
                 };
@@ -598,7 +589,11 @@ mod tests {
 
     #[ntex::test]
     async fn test_dup_packet_id() {
-        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
+        let cfg: SharedCfg = SharedCfg::new("DBG")
+            .add(MqttServiceConfig::new().set_max_qos(QoS::AtLeastOnce))
+            .into();
+
+        let io = Io::new(IoTest::create().0, cfg);
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
         let err = Rc::new(RefCell::new(false));
@@ -616,8 +611,7 @@ mod tests {
                 }
                 Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
             }),
-            QoS::AtLeastOnce,
-            None,
+            cfg.get(),
         ));
 
         let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
@@ -653,7 +647,11 @@ mod tests {
 
     #[ntex::test]
     async fn test_wr_backpressure() {
-        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
+        let cfg: SharedCfg = SharedCfg::new("DBG")
+            .add(MqttServiceConfig::new().set_max_qos(QoS::AtLeastOnce))
+            .into();
+
+        let io = Io::new(IoTest::create().0, cfg);
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
 
@@ -661,8 +659,7 @@ mod tests {
             shared.clone(),
             fn_service(|_| Ready::Ok(())),
             fn_service(|_| Ready::Ok(ControlAck { result: ControlAckKind::Nothing })),
-            QoS::AtLeastOnce,
-            None,
+            cfg.get(),
         ));
 
         let sink = MqttSink::new(shared.clone());

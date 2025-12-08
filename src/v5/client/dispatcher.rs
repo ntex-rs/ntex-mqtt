@@ -3,45 +3,57 @@ use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_io::DispatchItem;
-use ntex_service::{Pipeline, Service, ServiceCtx};
+use ntex_service::{Pipeline, Service, ServiceCtx, cfg::Cfg};
 use ntex_util::{HashMap, HashSet, future::Either, future::join};
 
 use crate::error::{HandshakeError, MqttError, PayloadError, ProtocolError};
+use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::v5::codec::{Decoded, DisconnectReasonCode, Encoded, Packet};
 use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{codec, publish::Publish, publish::PublishAck, sink::MqttSink};
-use crate::{payload::Payload, payload::PayloadStatus, payload::PlSender, types::packet_type};
+use crate::{MqttServiceConfig, types::packet_type};
 
 use super::control::{Control, ControlAck};
 
 /// mqtt5 protocol dispatcher
 pub(super) fn create_dispatcher<T, C, E>(
     sink: MqttSink,
-    max_receive: usize,
-    max_topic_alias: u16,
     publish: T,
     control: C,
+    max_receive: usize,
+    max_topic_alias: u16,
+    cfg: Cfg<MqttServiceConfig>,
 ) -> impl Service<DispatchItem<Rc<MqttShared>>, Response = Option<Encoded>, Error = MqttError<E>>
 where
     E: From<T::Error> + 'static,
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E> + 'static,
     C: Service<Control<E>, Response = ControlAck, Error = E> + 'static,
 {
-    Dispatcher::<_, _, E>::new(
-        sink,
+    Dispatcher {
+        cfg,
+        publish,
         max_receive,
         max_topic_alias,
-        publish,
-        control.map_err(MqttError::Service),
-    )
+        inner: Rc::new(Inner {
+            sink: sink.shared(),
+            payload: Cell::new(None),
+            control: Pipeline::new(control.map_err(MqttError::Service)),
+            info: RefCell::new(PublishInfo {
+                aliases: HashMap::default(),
+                inflight: HashSet::default(),
+            }),
+        }),
+        _t: PhantomData,
+    }
 }
 
 /// Mqtt protocol dispatcher
 pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
+    inner: Rc<Inner<C>>,
     max_receive: usize,
     max_topic_alias: u16,
-    inner: Rc<Inner<C>>,
+    cfg: Cfg<MqttServiceConfig>,
     _t: PhantomData<E>,
 }
 
@@ -55,36 +67,6 @@ struct Inner<C> {
 struct PublishInfo {
     inflight: HashSet<NonZeroU16>,
     aliases: HashMap<NonZeroU16, ByteString>,
-}
-
-impl<T, C, E> Dispatcher<T, C, E>
-where
-    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
-    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
-{
-    fn new(
-        sink: MqttSink,
-        max_receive: usize,
-        max_topic_alias: u16,
-        publish: T,
-        control: C,
-    ) -> Self {
-        Self {
-            publish,
-            max_receive,
-            max_topic_alias,
-            inner: Rc::new(Inner {
-                sink: sink.shared(),
-                payload: Cell::new(None),
-                control: Pipeline::new(control),
-                info: RefCell::new(PublishInfo {
-                    aliases: HashMap::default(),
-                    inflight: HashSet::default(),
-                }),
-            }),
-            _t: PhantomData,
-        }
-    }
 }
 
 impl<C> Inner<C> {
@@ -132,9 +114,8 @@ where
 
         if result.is_ok() {
             if let Some(pl) = self.inner.payload.take() {
-                if pl.ready().await == PayloadStatus::Ready {
-                    self.inner.payload.set(Some(pl));
-                } else {
+                self.inner.payload.set(Some(pl.clone()));
+                if pl.ready().await != PayloadStatus::Ready {
                     self.inner.sink.force_close();
                 }
             }
@@ -274,7 +255,8 @@ where
                 let payload = if publish.payload_size == payload.len() as u32 {
                     Payload::from_bytes(payload)
                 } else {
-                    let (pl, sender) = Payload::from_stream(payload);
+                    let (pl, sender) =
+                        Payload::from_stream(payload, self.cfg.max_payload_buffer_size);
                     self.inner.payload.set(Some(sender));
                     pl
                 };
@@ -539,17 +521,15 @@ mod tests {
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Default::default()));
         let sink = MqttSink::new(shared.clone());
 
-        let disp = Pipeline::new(Dispatcher::<_, _, _>::new(
+        let disp = Pipeline::new(create_dispatcher(
             sink.clone(),
-            16,
-            16,
             fn_service(|p: Publish| Ready::Ok::<_, TestError>(Either::Right(p.ack()))),
             fn_service(|_| {
-                Ready::Ok::<_, MqttError<TestError>>(ControlAck {
-                    packet: None,
-                    disconnect: false,
-                })
+                Ready::Ok::<_, TestError>(ControlAck { packet: None, disconnect: false })
             }),
+            16,
+            16,
+            Default::default(),
         ));
 
         assert!(!sink.is_ready());

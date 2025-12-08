@@ -147,6 +147,7 @@ where
                         pkt.session_present,
                         Seconds(keepalive_timeout),
                         self.cfg.max_receive as usize,
+                        self.cfg.max_payload_buffer_size,
                     ))
                 } else {
                     Err(ClientError::Ack(pkt))

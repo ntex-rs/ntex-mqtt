@@ -61,7 +61,7 @@ where
             }
         });
 
-        Ok(Dispatcher::<_, _, E>::new(sink, publish, control, cfg.handle_qos_after_disconnect))
+        Ok(Dispatcher::<_, _, E>::new(sink, publish, control, cfg))
     })
 }
 
@@ -86,8 +86,8 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 /// Mqtt protocol dispatcher
 pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
     publish: T,
-    handle_qos_after_disconnect: Option<QoS>,
     inner: Rc<Inner<C>>,
+    cfg: Cfg<MqttServiceConfig>,
     _t: marker::PhantomData<E>,
 }
 
@@ -110,15 +110,10 @@ where
     PublishAck: TryFrom<T::Error, Error = E>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    fn new(
-        sink: Rc<MqttShared>,
-        publish: T,
-        control: C,
-        handle_qos_after_disconnect: Option<QoS>,
-    ) -> Self {
+    fn new(sink: Rc<MqttShared>, publish: T, control: C, cfg: Cfg<MqttServiceConfig>) -> Self {
         Self {
+            cfg,
             publish,
-            handle_qos_after_disconnect,
             inner: Rc::new(Inner {
                 sink,
                 payload: Cell::new(None),
@@ -185,9 +180,8 @@ where
 
         if result.is_ok() {
             if let Some(pl) = self.inner.payload.take() {
-                if pl.ready().await == PayloadStatus::Ready {
-                    self.inner.payload.set(Some(pl));
-                } else {
+                self.inner.payload.set(Some(pl.clone()));
+                if pl.ready().await != PayloadStatus::Ready {
                     self.inner.sink.force_close();
                 }
             }
@@ -374,6 +368,7 @@ where
 
                     if state.is_closed()
                         && !self
+                            .cfg
                             .handle_qos_after_disconnect
                             .map(|max_qos| publish.qos <= max_qos)
                             .unwrap_or_default()
@@ -385,7 +380,8 @@ where
                 let payload = if publish.payload_size == payload.len() as u32 {
                     Payload::from_bytes(payload)
                 } else {
-                    let (pl, sender) = Payload::from_stream(payload);
+                    let (pl, sender) =
+                        Payload::from_stream(payload, self.cfg.max_payload_buffer_size);
                     self.inner.payload.set(Some(sender));
                     pl
                 };
@@ -741,7 +737,7 @@ mod tests {
                     disconnect: false,
                 })
             }),
-            None,
+            Default::default(),
         ));
 
         let sink = MqttSink::new(shared.clone());
