@@ -204,6 +204,7 @@ where
     }
 
     async fn shutdown(&self) {
+        log::trace!("{}: Shutdown v5 dispatcher", self.tag());
         self.inner.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink();
         let _ = self.inner.control.call(Control::closed()).await;

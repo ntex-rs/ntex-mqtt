@@ -1,5 +1,9 @@
 # Changes
 
+## [6.2.1] - 2025-12-09
+
+* Drop first handler future on stop
+
 ## [6.2.0] - 2025-12-08
 
 * Update bstream

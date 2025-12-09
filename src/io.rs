@@ -387,6 +387,16 @@ where
     fn stop(&mut self) {
         self.stopping.notify();
         self.st = IoDispatcherState::Stop;
+
+        if self.response.take().is_some() {
+            self.state.handle_result(
+                Ok(None),
+                self.response_idx,
+                self.io.as_ref(),
+                &self.codec,
+                false,
+            );
+        }
     }
 
     fn call_service(&mut self, cx: &mut Context<'_>, item: DispatchItem<U>) {
