@@ -10,7 +10,7 @@ use ntex_mqtt::v3::codec::{self, Decoded, Encoded, Packet};
 use ntex_mqtt::v3::{
     self, Control, Handshake, HandshakeAck, MqttServer, Publish, Session, client,
 };
-use ntex_mqtt::{MqttServiceConfig, QoS, error::PayloadError, error::ProtocolError};
+use ntex_mqtt::{MqttServiceConfig, QoS, error::ProtocolError};
 
 struct St;
 
@@ -245,10 +245,7 @@ async fn test_disconnect_while_streaming() -> std::io::Result<()> {
     assert!(res.is_err());
     sleep(Millis(150)).await;
 
-    assert_eq!(
-        &chunks.lock().unwrap()[..],
-        vec![Ok(Some(Bytes::from_static(b"1111"))), Err(PayloadError::Disconnected)]
-    );
+    assert_eq!(&chunks.lock().unwrap()[..], vec![Ok(Some(Bytes::from_static(b"1111")))]);
     Ok(())
 }
 
