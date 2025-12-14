@@ -6,7 +6,7 @@ use std::{future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_factory_with_config, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
 use ntex::util::{ByteString, Bytes, BytesMut, Ready, lazy};
-use ntex::{codec::Encoder, io::IoConfig, server};
+use ntex::{codec::Encoder, io::IoConfig, rt, server};
 
 use ntex_mqtt::MqttServiceConfig;
 use ntex_mqtt::v5::codec::{self, Decoded, Encoded, Packet};
@@ -1712,6 +1712,55 @@ async fn test_publish_sink_disconenct() -> std::io::Result<()> {
                 }))
             },
         ))
+    });
+
+    // connect to server
+    let client = client::MqttConnector::new()
+        .pipeline(SharedCfg::new("client").into())
+        .await
+        .unwrap()
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap();
+
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    let _ =
+        sink.publish(ByteString::from_static("test1")).send_at_least_once(Bytes::new()).await;
+
+    let _ = rx.await;
+    assert!(val.load(Relaxed));
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_peergone_after_sink_disconenct() -> std::io::Result<()> {
+    let val = Arc::new(AtomicBool::new(false));
+    let val2 = val.clone();
+    let (tx, rx) = ::oneshot::channel();
+    let tx = Arc::new(Mutex::new(Some(tx)));
+
+    let srv = server::test_server(async move || {
+        let tx = tx.clone();
+        let val = val2.clone();
+        MqttServer::new(handshake)
+            .control(fn_service(async move |pkt: Control<_>| {
+                if let Control::PeerGone(_) = pkt {
+                    val.store(true, Relaxed);
+                    let _ = tx.lock().unwrap().take().unwrap().send(());
+                }
+                Ok::<_, TestError>(pkt.ack())
+            }))
+            .publish(fn_factory_with_config(async move |session: Session<St>| {
+                let sink = session.sink().clone();
+                rt::spawn(async move {
+                    sleep(Seconds(1)).await;
+                    sink.close();
+                });
+                Ok::<_, ()>(fn_service(async move |p: Publish| Ok::<_, TestError>(p.ack())))
+            }))
     });
 
     // connect to server

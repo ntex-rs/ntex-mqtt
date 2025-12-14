@@ -1,5 +1,9 @@
 # Changes
 
+## [6.3.0] - 2025-12-14
+
+* Update ntex-io primitives
+
 ## [6.2.1] - 2025-12-09
 
 * Drop first handler future on stop
