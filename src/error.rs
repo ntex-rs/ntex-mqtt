@@ -84,10 +84,19 @@ enum ViolationInner {
 }
 
 impl ProtocolViolationError {
-    pub(crate) fn reason(&self) -> DisconnectReasonCode {
+    /// Protocol violation reason code
+    pub fn reason(&self) -> DisconnectReasonCode {
         match self.inner {
             ViolationInner::Common { reason, .. } => reason,
             ViolationInner::UnexpectedPacket { .. } => DisconnectReasonCode::ProtocolError,
+        }
+    }
+
+    /// Protocol violation reason message
+    pub fn message(&self) -> &'static str {
+        match self.inner {
+            ViolationInner::Common { message, .. } => message,
+            ViolationInner::UnexpectedPacket { message, .. } => message,
         }
     }
 }

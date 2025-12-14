@@ -1,5 +1,9 @@
 # Changes
 
+## [5.5.2] - 2025-12-14
+
+* Expose ProtocolViolationError info
+
 ## [5.5.0] - 2025-10-07
 
 * Drop payload stream on service error
