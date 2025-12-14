@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "6.3.0"
+version = "6.3.1"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"

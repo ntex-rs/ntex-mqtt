@@ -1,5 +1,9 @@
 # Changes
 
+## [6.3.1] - 2025-12-15
+
+* Expose ProtocolViolationError info
+
 ## [6.3.0] - 2025-12-14
 
 * Update ntex-io primitives
