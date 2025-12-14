@@ -262,14 +262,6 @@ where
                                         return Poll::Pending;
                                     }
                                 }
-                                Err(RecvError::Stop) => {
-                                    log::trace!(
-                                        "{}: Dispatcher is instructed to stop",
-                                        inner.io.tag()
-                                    );
-                                    inner.stop();
-                                    continue;
-                                }
                                 Err(RecvError::KeepAlive) => {
                                     if let Err(err) = inner.handle_timeout() {
                                         inner.stop();
@@ -337,9 +329,7 @@ where
                         }
                     } else if !inner.flags.contains(Flags::IO_ERR) {
                         match ready!(inner.io.poll_status_update(cx)) {
-                            IoStatusUpdate::PeerGone(_)
-                            | IoStatusUpdate::Stop
-                            | IoStatusUpdate::KeepAlive => {
+                            IoStatusUpdate::PeerGone(_) | IoStatusUpdate::KeepAlive => {
                                 inner.flags.insert(Flags::IO_ERR);
                                 continue;
                             }
@@ -488,14 +478,6 @@ where
                         );
                         self.stop();
                         Poll::Ready(PollService::Item(DispatchItem::KeepAliveTimeout))
-                    }
-                    IoStatusUpdate::Stop => {
-                        log::trace!(
-                            "{}: Dispatcher is instructed to stop during pause",
-                            self.io.tag()
-                        );
-                        self.st = IoDispatcherState::Stop;
-                        Poll::Ready(PollService::Continue)
                     }
                     IoStatusUpdate::PeerGone(err) => {
                         log::trace!(
