@@ -27,6 +27,9 @@ jobs:
       - name: Generate Cargo.lock
         run: cargo generate-lockfile
 
+      - name: Cache Dependencies
+        uses: Swatinem/rust-cache@v1.0.1
+
       - name: Run tests [tokio]
         uses: actions-rs/cargo@v1
         timeout-minutes: 15
