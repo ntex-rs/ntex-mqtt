@@ -29,14 +29,21 @@ jobs:
 
       - name: Run tests [tokio]
         uses: actions-rs/cargo@v1
-        timeout-minutes: 40
+        timeout-minutes: 15
         with:
           command: test
           args: --all --features=ntex/tokio
 
       - name: Run tests [neon]
         uses: actions-rs/cargo@v1
-        timeout-minutes: 40
+        timeout-minutes: 15
         with:
           command: test
           args: --all --features=ntex/neon
+
+      - name: Run tests [neon-uring]
+        uses: actions-rs/cargo@v1
+        timeout-minutes: 15
+        with:
+          command: test
+          args: --all --features=ntex/neon-uring

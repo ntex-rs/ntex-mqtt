@@ -25,13 +25,10 @@ jobs:
         with:
           toolchain: ${{ matrix.version }}-x86_64-pc-windows-msvc
 
-      - name: Generate Cargo.lock
-        run: cargo generate-lockfile
-
       - name: Cache vcpkg
         uses: actions/cache@v4
         with:
-          path: C:\vcpkg\installed\x64-windows\
+          path: C:\vcpkg\installed
           key: x86_64-pc-windows-msvc-openssl
 
       - name: Cache cargo registry
@@ -39,18 +36,6 @@ jobs:
         with:
           path: ~/.cargo/registry
           key: ${{ matrix.version }}-x86_64-pc-windows-msvc-cargo-registry-trimmed-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ matrix.version }}-x86_64-pc-windows-msvc-cargo-index-trimmed-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ matrix.version }}-x86_64-unknown-linux-gnu-cargo-build-trimmed-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install OpenSSL
         run: |
@@ -63,6 +48,7 @@ jobs:
 
       - name: Run tests
         uses: actions-rs/cargo@v1
+        timeout-minutes: 15
         with:
           command: test
           args: --all --features=ntex/compio -- --nocapture
