@@ -50,3 +50,10 @@ jobs:
         with:
           command: test
           args: --all --features=ntex/neon-uring
+
+      - name: Run tests [compio]
+        uses: actions-rs/cargo@v1
+        timeout-minutes: 15
+        with:
+          command: test
+          args: --all --features=ntex/compio
