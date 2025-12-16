@@ -494,9 +494,9 @@ where
     }
 }
 
-async fn control<'f, C, E>(
+async fn control<C, E>(
     mut pkt: Control<E>,
-    inner: &'f Inner<C>,
+    inner: &Inner<C>,
 ) -> Result<Option<Encoded>, MqttError<E>>
 where
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
