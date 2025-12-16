@@ -59,4 +59,4 @@ jobs:
         timeout-minutes: 15
         with:
           command: test
-          args: --all --features=ntex/compio -- --nocapture
+          args: --all --features=ntex/tokio -- --nocapture
