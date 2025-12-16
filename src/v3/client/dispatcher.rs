@@ -97,13 +97,12 @@ where
 
     #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        let (res1, res2) =
-            join(ctx.ready(&self.publish), ctx.ready(self.inner.control.get_ref())).await;
+        let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
         let result = if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e))
             } else {
-                match ctx.call_nowait(self.inner.control.get_ref(), Control::error(e)).await {
+                match self.inner.control.call(Control::error(e)).await {
                     Ok(_) => {
                         self.inner.sink.close();
                         Ok(())
@@ -130,7 +129,7 @@ where
         if let Err(e) = self.publish.poll(cx) {
             let inner = self.inner.clone();
             ntex_rt::spawn(async move {
-                if inner.control.call_nowait(Control::error(e)).await.is_ok() {
+                if inner.control.call(Control::error(e)).await.is_ok() {
                     inner.sink.close();
                 }
             });
@@ -206,21 +205,21 @@ where
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishReceived { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Receive(packet_id)) {
-                    control(Control::proto_error(e), &self.inner, ctx).await
+                    control(Control::proto_error(e), &self.inner).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishComplete { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Complete(packet_id)) {
-                    control(Control::proto_error(e), &self.inner, ctx).await
+                    control(Control::proto_error(e), &self.inner).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishRelease { packet_id }, _)) => {
                 if self.inner.inflight.borrow().contains(&packet_id) {
-                    control(Control::pubrel(packet_id), &self.inner, ctx).await
+                    control(Control::pubrel(packet_id), &self.inner).await
                 } else {
                     log::warn!("Unknown packet-id in PublishRelease packet");
                     self.inner.sink.close();
@@ -261,26 +260,25 @@ where
             DispatchItem::EncoderError(err) => {
                 let err = ProtocolError::Encode(err);
                 self.inner.drop_payload(&err);
-                control(Control::proto_error(err), &self.inner, ctx).await
+                control(Control::proto_error(err), &self.inner).await
             }
             DispatchItem::DecoderError(err) => {
                 let err = ProtocolError::Decode(err);
                 self.inner.drop_payload(&err);
-                control(Control::proto_error(err), &self.inner, ctx).await
+                control(Control::proto_error(err), &self.inner).await
             }
             DispatchItem::Disconnect(err) => {
                 self.inner.drop_payload(&PayloadError::Disconnected);
-                control(Control::peer_gone(err), &self.inner, ctx).await
+                control(Control::peer_gone(err), &self.inner).await
             }
             DispatchItem::KeepAliveTimeout => {
                 self.inner.drop_payload(&ProtocolError::KeepAliveTimeout);
-                control(Control::proto_error(ProtocolError::KeepAliveTimeout), &self.inner, ctx)
+                control(Control::proto_error(ProtocolError::KeepAliveTimeout), &self.inner)
                     .await
             }
             DispatchItem::ReadTimeout => {
                 self.inner.drop_payload(&ProtocolError::ReadTimeout);
-                control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx)
-                    .await
+                control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner).await
             }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
@@ -308,7 +306,7 @@ where
     let res = match ctx.call(svc, pkt).await {
         Ok(item) => item,
         Err(e) => {
-            return control(Control::error(e), inner, ctx).await;
+            return control(Control::error(e), inner).await;
         }
     };
 
@@ -325,21 +323,21 @@ where
         }
         Either::Right(pkt) => {
             let (pkt, payload, size) = pkt.into_inner();
-            control(Control::publish(pkt, payload, size), inner, ctx).await
+            control(Control::publish(pkt, payload, size), inner).await
         }
     }
 }
 
-async fn control<'f, T, C, E>(
+async fn control<C, E>(
     msg: Control<E>,
-    inner: &'f Inner<C>,
-    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+    inner: &Inner<C>,
 ) -> Result<Option<Encoded>, MqttError<E>>
 where
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    let packet = match ctx
-        .call(inner.control.get_ref(), msg)
+    let packet = match inner
+        .control
+        .call(msg)
         .await
         .inspect_err(|_| inner.drop_payload(&PayloadError::Service))?
         .result

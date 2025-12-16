@@ -1,5 +1,9 @@
 # Changes
 
+## [6.3.3] - 2025-12-16
+
+* Use proper context for control service call
+
 ## [6.3.2] - 2025-12-16
 
 * Use call_nowait() for service only if it is ready
