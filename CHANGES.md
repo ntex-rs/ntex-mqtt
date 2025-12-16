@@ -2,7 +2,7 @@
 
 ## [6.3.2] - 2025-12-16
 
-* Do not use call_nowait() for service, prevents possible deadlock
+* Use call_nowait() for service if it is ready
 
 ## [6.3.1] - 2025-12-15
 

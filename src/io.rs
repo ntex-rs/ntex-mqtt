@@ -288,13 +288,13 @@ where
                         PollService::Continue => continue,
                     };
 
-                    inner.call_service(cx, item);
+                    inner.call_service(cx, item, true);
                 }
                 // handle write back-pressure
                 IoDispatcherState::Backpressure => {
                     match ready!(inner.poll_service(cx)) {
                         PollService::Ready => (),
-                        PollService::Item(item) => inner.call_service(cx, item),
+                        PollService::Item(item) => inner.call_service(cx, item, false),
                         PollService::Continue => continue,
                     };
 
@@ -305,7 +305,7 @@ where
                         inner.st = IoDispatcherState::Processing;
                         DispatchItem::WBackPressureDisabled
                     };
-                    inner.call_service(cx, item);
+                    inner.call_service(cx, item, false);
                 }
 
                 // drain service responses and shutdown io
@@ -389,8 +389,9 @@ where
         }
     }
 
-    fn call_service(&mut self, cx: &mut Context<'_>, item: DispatchItem<U>) {
-        let mut fut = self.service.call(item);
+    fn call_service(&mut self, cx: &mut Context<'_>, item: DispatchItem<U>, nowait: bool) {
+        let mut fut =
+            if nowait { self.service.call_nowait(item) } else { self.service.call(item) };
         let mut queue = self.state.queue.borrow_mut();
 
         // optimize first call
