@@ -91,6 +91,7 @@ pub(crate) enum IoDispatcherError<S, U> {
 
 enum PollService<U: Encoder + Decoder> {
     Item(DispatchItem<U>),
+    ItemWait(DispatchItem<U>),
     Continue,
     Ready,
 }
@@ -250,14 +251,14 @@ where
         loop {
             match inner.st {
                 IoDispatcherState::Processing => {
-                    let item = match ready!(inner.poll_service(cx)) {
+                    let (item, nowait) = match ready!(inner.poll_service(cx)) {
                         PollService::Ready => {
                             // decode incoming bytes stream
                             match inner.io.poll_recv_decode(&inner.codec, cx) {
                                 Ok(decoded) => {
                                     inner.update_timer(&decoded);
                                     if let Some(el) = decoded.item {
-                                        DispatchItem::Item(el)
+                                        (DispatchItem::Item(el), true)
                                     } else {
                                         return Poll::Pending;
                                     }
@@ -265,36 +266,38 @@ where
                                 Err(RecvError::KeepAlive) => {
                                     if let Err(err) = inner.handle_timeout() {
                                         inner.stop();
-                                        err
+                                        (err, true)
                                     } else {
                                         continue;
                                     }
                                 }
                                 Err(RecvError::WriteBackpressure) => {
                                     inner.st = IoDispatcherState::Backpressure;
-                                    DispatchItem::WBackPressureEnabled
+                                    (DispatchItem::WBackPressureEnabled, true)
                                 }
                                 Err(RecvError::Decoder(err)) => {
                                     inner.stop();
-                                    DispatchItem::DecoderError(err)
+                                    (DispatchItem::DecoderError(err), true)
                                 }
                                 Err(RecvError::PeerGone(err)) => {
                                     inner.stop();
-                                    DispatchItem::Disconnect(err)
+                                    (DispatchItem::Disconnect(err), true)
                                 }
                             }
                         }
-                        PollService::Item(item) => item,
+                        PollService::Item(item) => (item, true),
+                        PollService::ItemWait(item) => (item, false),
                         PollService::Continue => continue,
                     };
 
-                    inner.call_service(cx, item);
+                    inner.call_service(cx, item, nowait);
                 }
                 // handle write back-pressure
                 IoDispatcherState::Backpressure => {
                     match ready!(inner.poll_service(cx)) {
                         PollService::Ready => (),
-                        PollService::Item(item) => inner.call_service(cx, item),
+                        PollService::Item(item) => inner.call_service(cx, item, true),
+                        PollService::ItemWait(item) => inner.call_service(cx, item, false),
                         PollService::Continue => continue,
                     };
 
@@ -305,7 +308,7 @@ where
                         inner.st = IoDispatcherState::Processing;
                         DispatchItem::WBackPressureDisabled
                     };
-                    inner.call_service(cx, item);
+                    inner.call_service(cx, item, false);
                 }
 
                 // drain service responses and shutdown io
@@ -389,8 +392,12 @@ where
         }
     }
 
-    fn call_service(&mut self, cx: &mut Context<'_>, item: DispatchItem<U>) {
-        let mut fut = self.service.call_nowait(item);
+    fn call_service(&mut self, cx: &mut Context<'_>, item: DispatchItem<U>, nowait: bool) {
+        let mut fut = if nowait {
+            self.service.call_nowait(item)
+        } else {
+            self.service.call(item)
+        };
         let mut queue = self.state.queue.borrow_mut();
 
         // optimize first call
@@ -477,7 +484,7 @@ where
                             self.io.tag()
                         );
                         self.stop();
-                        Poll::Ready(PollService::Item(DispatchItem::KeepAliveTimeout))
+                        Poll::Ready(PollService::ItemWait(DispatchItem::KeepAliveTimeout))
                     }
                     IoStatusUpdate::PeerGone(err) => {
                         log::trace!(
@@ -486,11 +493,11 @@ where
                             err
                         );
                         self.stop();
-                        Poll::Ready(PollService::Item(DispatchItem::Disconnect(err)))
+                        Poll::Ready(PollService::ItemWait(DispatchItem::Disconnect(err)))
                     }
                     IoStatusUpdate::WriteBackpressure => {
                         self.st = IoDispatcherState::Backpressure;
-                        Poll::Ready(PollService::Item(DispatchItem::WBackPressureEnabled))
+                        Poll::Ready(PollService::ItemWait(DispatchItem::WBackPressureEnabled))
                     }
                 }
             }
@@ -500,7 +507,7 @@ where
                 self.stop();
                 self.flags.insert(Flags::READY_ERR);
                 self.state.error.set(Some(IoDispatcherError::Service(err)));
-                Poll::Ready(PollService::Item(DispatchItem::Disconnect(None)))
+                Poll::Ready(PollService::Continue)
             }
         }
     }
@@ -1039,7 +1046,11 @@ mod tests {
         type Error = io::Error;
 
         fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-            if src.len() >= self.0 { Ok(Some(src.split_to(self.0))) } else { Ok(None) }
+            if src.len() >= self.0 {
+                Ok(Some(src.split_to(self.0)))
+            } else {
+                Ok(None)
+            }
         }
     }
 

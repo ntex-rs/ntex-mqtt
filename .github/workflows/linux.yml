@@ -27,16 +27,33 @@ jobs:
       - name: Generate Cargo.lock
         run: cargo generate-lockfile
 
+      - name: Cache Dependencies
+        uses: Swatinem/rust-cache@v1.0.1
+
       - name: Run tests [tokio]
         uses: actions-rs/cargo@v1
-        timeout-minutes: 40
+        timeout-minutes: 15
         with:
           command: test
           args: --all --features=ntex/tokio
 
       - name: Run tests [neon]
         uses: actions-rs/cargo@v1
-        timeout-minutes: 40
+        timeout-minutes: 15
         with:
           command: test
           args: --all --features=ntex/neon
+
+      - name: Run tests [neon-uring]
+        uses: actions-rs/cargo@v1
+        timeout-minutes: 15
+        with:
+          command: test
+          args: --all --features=ntex/neon-uring
+
+      - name: Run tests [compio]
+        uses: actions-rs/cargo@v1
+        timeout-minutes: 15
+        with:
+          command: test
+          args: --all --features=ntex/compio

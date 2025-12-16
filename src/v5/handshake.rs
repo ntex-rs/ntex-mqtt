@@ -57,7 +57,11 @@ impl Handshake {
             max_qos: self.shared.max_qos(),
             topic_alias_max: self.shared.topic_alias_max(),
             receive_max: NonZeroU16::new(receive_max).unwrap_or(crate::v5::RECEIVE_MAX_DEFAULT),
-            max_packet_size: if max_pkt_size == 0 { None } else { Some(max_pkt_size) },
+            max_packet_size: if max_pkt_size == 0 {
+                None
+            } else {
+                Some(max_pkt_size)
+            },
             ..codec::ConnectAck::default()
         };
 

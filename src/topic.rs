@@ -131,7 +131,11 @@ impl TryFrom<Vec<TopicFilterLevel>> for TopicFilter {
 
     fn try_from(v: Vec<TopicFilterLevel>) -> Result<Self, Self::Error> {
         let tf = TopicFilter(v);
-        if tf.is_valid() { Ok(tf) } else { Err(TopicFilterError::InvalidTopic) }
+        if tf.is_valid() {
+            Ok(tf)
+        } else {
+            Err(TopicFilterError::InvalidTopic)
+        }
     }
 }
 
@@ -216,7 +220,11 @@ impl TryFrom<ByteString> for TopicFilter {
             .collect::<Result<Vec<_>, TopicFilterError>>()
             .map(TopicFilter)
             .and_then(|topic| {
-                if topic.is_valid() { Ok(topic) } else { Err(TopicFilterError::InvalidTopic) }
+                if topic.is_valid() {
+                    Ok(topic)
+                } else {
+                    Err(TopicFilterError::InvalidTopic)
+                }
             })
     }
 }
