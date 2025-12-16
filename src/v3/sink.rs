@@ -33,7 +33,11 @@ impl MqttSink {
     #[inline]
     /// Check if sink is ready
     pub fn is_ready(&self) -> bool {
-        if self.0.is_closed() { false } else { self.0.is_ready() }
+        if self.0.is_closed() {
+            false
+        } else {
+            self.0.is_ready()
+        }
     }
 
     #[inline]

@@ -262,7 +262,11 @@ impl MqttShared {
             if self.flags.get().contains(Flags::WRB_ENABLED) {
                 let (tx, rx) = self.pool.waiters.channel();
                 self.streaming_waiter.set(Some(tx));
-                if rx.await.is_ok() { Ok(()) } else { Err(SendPacketError::Disconnected) }
+                if rx.await.is_ok() {
+                    Ok(())
+                } else {
+                    Err(SendPacketError::Disconnected)
+                }
             } else {
                 Ok(())
             }
@@ -514,7 +518,11 @@ impl Ack {
     }
 
     pub(super) fn subscribe(self) -> Vec<codec::SubscribeReturnCode> {
-        if let Ack::Subscribe { status, .. } = self { status } else { panic!() }
+        if let Ack::Subscribe { status, .. } = self {
+            status
+        } else {
+            panic!()
+        }
     }
 
     pub(super) fn is_match(&self, tp: AckType) -> bool {

@@ -81,8 +81,11 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     } else {
         None
     };
-    let password =
-        if flags.contains(ConnectFlags::PASSWORD) { Some(Bytes::decode(src)?) } else { None };
+    let password = if flags.contains(ConnectFlags::PASSWORD) {
+        Some(Bytes::decode(src)?)
+    } else {
+        None
+    };
     Ok(Connect {
         clean_session: flags.contains(ConnectFlags::CLEAN_START),
         keep_alive,

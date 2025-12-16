@@ -98,7 +98,14 @@ impl Counter {
     }
 
     async fn available(&self) {
-        poll_fn(|cx| if self.0.available(cx) { Poll::Ready(()) } else { Poll::Pending }).await
+        poll_fn(|cx| {
+            if self.0.available(cx) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
     }
 }
 

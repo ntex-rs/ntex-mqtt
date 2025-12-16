@@ -182,6 +182,7 @@ where
     type Error = MqttError<H::Error>;
 
     ntex_service::forward_ready!(service, MqttError::Service);
+    ntex_service::forward_poll!(service, MqttError::Service);
     ntex_service::forward_shutdown!(service);
 
     async fn call(

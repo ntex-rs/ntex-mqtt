@@ -130,6 +130,7 @@ where
     type Error = C::Error;
 
     ntex_service::forward_ready!(connect);
+    ntex_service::forward_poll!(connect);
     ntex_service::forward_shutdown!(connect);
 
     async fn call(&self, req: IoBoxed, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
@@ -173,6 +174,7 @@ where
     type Error = C::Error;
 
     ntex_service::forward_ready!(connect);
+    ntex_service::forward_poll!(connect);
     ntex_service::forward_shutdown!(connect);
 
     #[inline]

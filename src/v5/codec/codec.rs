@@ -304,7 +304,11 @@ impl Encoder for Codec {
         }
 
         let max_out_size = self.max_out_size.get();
-        let max_size = if max_out_size != 0 { max_out_size } else { MAX_PACKET_SIZE };
+        let max_size = if max_out_size != 0 {
+            max_out_size
+        } else {
+            MAX_PACKET_SIZE
+        };
         match item {
             Encoded::Packet(pkt) => {
                 if self.encoding_payload.get().is_some() {
