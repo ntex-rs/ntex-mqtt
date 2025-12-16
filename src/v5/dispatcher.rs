@@ -155,16 +155,12 @@ where
     type Error = MqttError<E>;
 
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        let (res1, res2) =
-            join(ctx.ready(&self.publish), ctx.ready(self.inner.control.get_ref())).await;
+        let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
         let result = if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
             } else {
-                match ctx
-                    .call_nowait(self.inner.control.get_ref(), Control::error(e.into()))
-                    .await
-                {
+                match self.inner.control.call(Control::error(e.into())).await {
                     Ok(res) => {
                         if res.disconnect {
                             self.inner.sink.drop_sink();
@@ -193,7 +189,7 @@ where
         if let Err(e) = self.publish.poll(cx) {
             let inner = self.inner.clone();
             ntex_rt::spawn(async move {
-                if let Ok(res) = inner.control.call_nowait(Control::error(e.into())).await {
+                if let Ok(res) = inner.control.call(Control::error(e.into())).await {
                     if res.disconnect {
                         inner.sink.drop_sink();
                     }
@@ -234,7 +230,6 @@ where
                             )
                         ),
                         &self.inner,
-                        ctx,
                         0,
                     ).await;
                 }
@@ -262,7 +257,6 @@ where
                                     )
                                 ),
                                 &self.inner,
-                                ctx,
                                 0,
                             ).await;
                         }
@@ -282,7 +276,6 @@ where
                                     "PUBLISH QoS is higher than supported [MQTT-3.2.2-11]",
                                 )),
                                 &self.inner,
-                                ctx,
                                 0,
                             )
                             .await;
@@ -296,7 +289,6 @@ where
                                     "RETAIN is not supported [MQTT-3.2.2-14]",
                                 )),
                                 &self.inner,
-                                ctx,
                                 0,
                             )
                             .await;
@@ -329,7 +321,6 @@ where
                                             "Unknown topic alias",
                                         )),
                                         &self.inner,
-                                        ctx,
                                         0,
                                     )
                                     .await;
@@ -355,7 +346,6 @@ where
                                                     )
                                                 ),
                                                 &self.inner,
-                                            ctx,
                                             0,
                                             ).await;
                                     }
@@ -411,7 +401,6 @@ where
                             DecodeError::UnexpectedPayload,
                         )),
                         &self.inner,
-                        ctx,
                         0,
                     )
                     .await
@@ -419,21 +408,21 @@ where
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishAck(packet), _)) => {
                 if let Err(err) = self.inner.sink.pkt_ack(Ack::Publish(packet)) {
-                    control(Control::proto_error(err), &self.inner, ctx, 0).await
+                    control(Control::proto_error(err), &self.inner, 0).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishReceived(pkt), _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Receive(pkt)) {
-                    control(Control::proto_error(e), &self.inner, ctx, 0).await
+                    control(Control::proto_error(e), &self.inner, 0).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishRelease(ack), size)) => {
                 if self.inner.info.borrow().inflight.contains(&ack.packet_id) {
-                    control(Control::pubrel(ack, size), &self.inner, ctx, 0).await
+                    control(Control::pubrel(ack, size), &self.inner, 0).await
                 } else {
                     Ok(Some(Encoded::Packet(codec::Packet::PublishComplete(
                         codec::PublishAck2 {
@@ -447,7 +436,7 @@ where
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishComplete(pkt), _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Complete(pkt)) {
-                    control(Control::proto_error(e), &self.inner, ctx, 0).await
+                    control(Control::proto_error(e), &self.inner, 0).await
                 } else {
                     Ok(None)
                 }
@@ -457,13 +446,13 @@ where
                     return Ok(None);
                 }
 
-                control(Control::auth(pkt, size), &self.inner, ctx, 0).await
+                control(Control::auth(pkt, size), &self.inner, 0).await
             }
             DispatchItem::Item(Decoded::Packet(Packet::PingRequest, _)) => {
-                control(Control::ping(), &self.inner, ctx, 0).await
+                control(Control::ping(), &self.inner, 0).await
             }
             DispatchItem::Item(Decoded::Packet(Packet::Disconnect(pkt), size)) => {
-                control(Control::remote_disconnect(pkt, size), &self.inner, ctx, 0).await
+                control(Control::remote_disconnect(pkt, size), &self.inner, 0).await
             }
             DispatchItem::Item(Decoded::Packet(Packet::Subscribe(pkt), size)) => {
                 if self.inner.sink.is_closed() {
@@ -476,7 +465,6 @@ where
                             "Topic filter is malformed [MQTT-4.7.1-*]",
                         )),
                         &self.inner,
-                        ctx,
                         0,
                     )
                     .await;
@@ -493,7 +481,6 @@ where
                             "Subscription Identifiers are not supported",
                         )),
                         &self.inner,
-                        ctx,
                         0,
                     )
                     .await;
@@ -517,7 +504,7 @@ where
                     return Ok(None);
                 }
                 let id = pkt.packet_id;
-                control(Control::subscribe(pkt, size), &self.inner, ctx, id.get()).await
+                control(Control::subscribe(pkt, size), &self.inner, id.get()).await
             }
             DispatchItem::Item(Decoded::Packet(Packet::Unsubscribe(pkt), size)) => {
                 if self.inner.sink.is_closed() {
@@ -530,7 +517,6 @@ where
                             "Topic filter is malformed [MQTT-4.7.1-*]",
                         )),
                         &self.inner,
-                        ctx,
                         0,
                     )
                     .await;
@@ -554,45 +540,39 @@ where
                     return Ok(None);
                 }
                 let id = pkt.packet_id;
-                control(Control::unsubscribe(pkt, size), &self.inner, ctx, id.get()).await
+                control(Control::unsubscribe(pkt, size), &self.inner, id.get()).await
             }
             DispatchItem::Item(Decoded::Packet(_, _)) => Ok(None),
             DispatchItem::EncoderError(err) => {
                 let err = ProtocolError::Encode(err);
                 self.inner.drop_payload(&err);
-                control(Control::proto_error(err), &self.inner, ctx, 0).await
+                control(Control::proto_error(err), &self.inner, 0).await
             }
             DispatchItem::KeepAliveTimeout => {
                 self.inner.drop_payload(&ProtocolError::KeepAliveTimeout);
-                control(
-                    Control::proto_error(ProtocolError::KeepAliveTimeout),
-                    &self.inner,
-                    ctx,
-                    0,
-                )
-                .await
+                control(Control::proto_error(ProtocolError::KeepAliveTimeout), &self.inner, 0)
+                    .await
             }
             DispatchItem::ReadTimeout => {
                 self.inner.drop_payload(&ProtocolError::ReadTimeout);
-                control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, ctx, 0)
-                    .await
+                control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner, 0).await
             }
             DispatchItem::DecoderError(err) => {
                 let err = ProtocolError::Decode(err);
                 self.inner.drop_payload(&err);
-                control(Control::proto_error(err), &self.inner, ctx, 0).await
+                control(Control::proto_error(err), &self.inner, 0).await
             }
             DispatchItem::Disconnect(err) => {
                 self.inner.drop_payload(&PayloadError::Disconnected);
-                control(Control::peer_gone(err), &self.inner, ctx, 0).await
+                control(Control::peer_gone(err), &self.inner, 0).await
             }
             DispatchItem::WBackPressureEnabled => {
                 self.inner.sink.enable_wr_backpressure();
-                control(Control::wr_backpressure(true), &self.inner, ctx, 0).await
+                control(Control::wr_backpressure(true), &self.inner, 0).await
             }
             DispatchItem::WBackPressureDisabled => {
                 self.inner.sink.disable_wr_backpressure();
-                control(Control::wr_backpressure(false), &self.inner, ctx, 0).await
+                control(Control::wr_backpressure(false), &self.inner, 0).await
             }
         }
     }
@@ -619,10 +599,10 @@ where
             if packet_id != 0 {
                 match PublishAck::try_from(e) {
                     Ok(ack) => ack,
-                    Err(e) => return control(Control::error(e), inner, ctx, 0).await,
+                    Err(e) => return control(Control::error(e), inner, 0).await,
                 }
             } else {
-                return control(Control::error(e.into()), inner, ctx, 0).await;
+                return control(Control::error(e.into()), inner, 0).await;
             }
         }
     };
@@ -649,10 +629,9 @@ where
     }
 }
 
-async fn control<'f, T, C, E>(
+async fn control<'f, C, E>(
     pkt: Control<E>,
     inner: &'f Inner<C>,
-    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
     packet_id: u16,
 ) -> Result<Option<Encoded>, MqttError<E>>
 where
@@ -660,7 +639,7 @@ where
 {
     let mut error = matches!(pkt, Control::Error(_) | Control::ProtocolError(_));
 
-    let result = match ctx.call(inner.control.get_ref(), pkt).await {
+    let result = match inner.control.call(pkt).await {
         Ok(result) => {
             if let Some(id) = num::NonZeroU16::new(packet_id) {
                 inner.info.borrow_mut().inflight.remove(&id);
@@ -679,7 +658,7 @@ where
                 match err {
                     MqttError::Service(err) => {
                         error = true;
-                        ctx.call(inner.control.get_ref(), Control::error(err)).await?
+                        inner.control.call(Control::error(err)).await?
                     }
                     _ => return Err(err),
                 }
