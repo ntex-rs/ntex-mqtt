@@ -2,7 +2,7 @@
 
 ## [6.3.2] - 2025-12-16
 
-* Use call_nowait() for service if it is ready
+* Use call_nowait() for service only if it is ready
 
 ## [6.3.1] - 2025-12-15
 

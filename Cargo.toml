@@ -15,10 +15,10 @@ rust-version = "1.85"
 features = ["ntex-net/tokio"]
 
 [dependencies]
-ntex-io = "3.1"
+ntex-io = "3.2"
 ntex-net = "3"
 ntex-util = "3.3"
-ntex-service = "3.7.3"
+ntex-service = "3.8"
 ntex-bytes = "1"
 ntex-codec = "1"
 ntex-router = "1"
