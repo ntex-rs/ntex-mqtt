@@ -390,7 +390,7 @@ where
     }
 
     fn call_service(&mut self, cx: &mut Context<'_>, item: DispatchItem<U>) {
-        let mut fut = self.service.call_nowait(item);
+        let mut fut = self.service.call(item);
         let mut queue = self.state.queue.borrow_mut();
 
         // optimize first call

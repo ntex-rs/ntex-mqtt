@@ -1,5 +1,9 @@
 # Changes
 
+## [6.3.2] - 2025-12-16
+
+* Do not use call_nowait() for service, prevents possible deadlock
+
 ## [6.3.1] - 2025-12-15
 
 * Expose ProtocolViolationError info
