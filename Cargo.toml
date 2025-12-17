@@ -38,6 +38,3 @@ openssl = "0.10"
 oneshot = "0.1"
 test-case = "3.2"
 ntex = { version = "3.0.0-pre.9", features = ["openssl"] }
-
-[patch.crates-io]
-ntex = { git = "https://github.com/ntex-rs/ntex.git" }
