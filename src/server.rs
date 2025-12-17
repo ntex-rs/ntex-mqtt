@@ -3,7 +3,7 @@ use std::{fmt, io, marker, task::Context};
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
 use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Middleware2, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
 use ntex_util::future::{Either, join, select};
 use ntex_util::time::{Deadline, Seconds};
 
@@ -98,7 +98,7 @@ where
                 Error = MqttError<Err>,
                 InitError = MqttError<Err>,
             > + 'static,
-        M: Middleware2<P::Service, SharedCfg>,
+        M: Middleware<P::Service, SharedCfg>,
         M::Service: Service<
                 DispatchItem<Codec>,
                 Response = Option<<Codec as Encoder>::Item>,
@@ -141,7 +141,7 @@ where
                 Error = MqttError<Err>,
                 InitError = MqttError<Err>,
             > + 'static,
-        M: Middleware2<P::Service, SharedCfg>,
+        M: Middleware<P::Service, SharedCfg>,
         M::Service: Service<
                 DispatchItem<Codec>,
                 Response = Option<<Codec as Encoder>::Item>,

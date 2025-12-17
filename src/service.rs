@@ -2,7 +2,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
-use ntex_service::{Middleware2, Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
+use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
 use ntex_util::time::Seconds;
 
 use crate::io::Dispatcher;
@@ -58,7 +58,7 @@ where
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
-    M: Middleware2<T::Service, SharedCfg>,
+    M: Middleware<T::Service, SharedCfg>,
     M::Service: Service<DispatchItem<Codec>, Response = ResponseItem<Codec>, Error = C::Error>
         + 'static,
     Codec: Decoder + Encoder + Clone + 'static,
@@ -86,7 +86,7 @@ where
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
-    M: Middleware2<T::Service, SharedCfg>,
+    M: Middleware<T::Service, SharedCfg>,
     M::Service: Service<DispatchItem<Codec>, Response = ResponseItem<Codec>, Error = C::Error>
         + 'static,
     Codec: Decoder + Encoder + Clone + 'static,
@@ -121,7 +121,7 @@ where
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
-    M: Middleware2<T::Service, SharedCfg>,
+    M: Middleware<T::Service, SharedCfg>,
     M::Service: Service<DispatchItem<Codec>, Response = ResponseItem<Codec>, Error = C::Error>
         + 'static,
     Codec: Decoder + Encoder + Clone + 'static,
@@ -165,7 +165,7 @@ where
             Error = C::Error,
             InitError = C::Error,
         > + 'static,
-    M: Middleware2<T::Service, SharedCfg>,
+    M: Middleware<T::Service, SharedCfg>,
     M::Service: Service<DispatchItem<Codec>, Response = ResponseItem<Codec>, Error = C::Error>
         + 'static,
     Codec: Decoder + Encoder + Clone + 'static,

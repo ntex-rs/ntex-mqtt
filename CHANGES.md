@@ -1,5 +1,9 @@
 # Changes
 
+## [6.4.0] - 2025-12-17
+
+* Upgrade to ntex-service v4
+
 ## [6.3.3] - 2025-12-16
 
 * Use proper context for control service call

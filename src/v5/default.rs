@@ -1,7 +1,7 @@
 use std::{fmt, marker::PhantomData};
 
 use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Middleware2, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
 
 use crate::{MqttServiceConfig, inflight::InFlightServiceImpl};
 
@@ -56,7 +56,7 @@ impl<S, E: fmt::Debug> Service<Control<E>> for DefaultControlService<S, E> {
 /// Default is 64kb size
 pub struct InFlightService;
 
-impl<S> Middleware2<S, SharedCfg> for InFlightService {
+impl<S> Middleware<S, SharedCfg> for InFlightService {
     type Service = InFlightServiceImpl<S>;
 
     #[inline]
