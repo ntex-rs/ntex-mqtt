@@ -1,5 +1,9 @@
 # Changes
 
+## [6.4.1] - 2025-12-18
+
+* Add v5::MqttServer::replace_middleware() helper method.
+
 ## [6.4.0] - 2025-12-17
 
 * Upgrade to ntex-service v4

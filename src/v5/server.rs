@@ -80,6 +80,17 @@ where
         }
     }
 
+    /// Replace middlewares
+    pub fn replace_middlewares<U>(self, mw: U) -> MqttServer<St, C, Cn, U> {
+        MqttServer {
+            middleware: mw,
+            handshake: self.handshake,
+            control: self.control,
+            pool: self.pool,
+            _t: PhantomData,
+        }
+    }
+
     /// Service to handle control packets
     ///
     /// All control packets are processed sequentially, max number of buffered
