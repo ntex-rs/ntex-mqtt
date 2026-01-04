@@ -8,7 +8,7 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - 1.85.0 # MSRV
+          - 1.86.0 # MSRV
           - stable
           - nightly
 
@@ -37,12 +37,12 @@ jobs:
           command: test
           args: --all --features=ntex/tokio
 
-      - name: Run tests [neon]
+      - name: Run tests [neon-polling]
         uses: actions-rs/cargo@v1
         timeout-minutes: 15
         with:
           command: test
-          args: --all --features=ntex/neon
+          args: --all --features=ntex/neon-polling
 
       - name: Run tests [neon-uring]
         uses: actions-rs/cargo@v1

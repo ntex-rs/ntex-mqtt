@@ -114,7 +114,7 @@ impl Decoder for Codec {
                             return Ok(None);
                         }
                         let payload_len = fixed.remaining_length - hdr_len;
-                        let mut buf = src.split_to(hdr_len as usize).freeze();
+                        let mut buf = src.split_to_bytes(hdr_len as usize);
                         let publish = decode::decode_publish_packet(
                             &mut buf,
                             fixed.first_byte,
@@ -125,7 +125,7 @@ impl Decoder for Codec {
                         let min_chunk_size = self.min_chunk_size.get();
                         if len >= payload_len || min_chunk_size == 0 || len >= min_chunk_size {
                             let payload =
-                                src.split_to(min(src.len(), payload_len as usize)).freeze();
+                                src.split_to_bytes(min(src.len(), payload_len as usize));
                             let remaining = payload_len - payload.len() as u32;
 
                             if remaining > 0 {
@@ -158,7 +158,7 @@ impl Decoder for Codec {
                     return if (len >= remaining)
                         || (min_chunk_size != 0 && len >= min_chunk_size)
                     {
-                        let payload = src.split_to(min(src.len(), remaining as usize)).freeze();
+                        let payload = src.split_to_bytes(min(src.len(), remaining as usize));
                         let remaining = remaining - payload.len() as u32;
 
                         let eof = if remaining > 0 {
@@ -178,8 +178,8 @@ impl Decoder for Codec {
                     if src.len() < fixed.remaining_length as usize {
                         return Ok(None);
                     }
-                    let packet_buf = src.split_to(fixed.remaining_length as usize);
-                    let packet = decode::decode_packet(packet_buf.freeze(), fixed.first_byte)?;
+                    let packet_buf = src.split_to_bytes(fixed.remaining_length as usize);
+                    let packet = decode::decode_packet(packet_buf, fixed.first_byte)?;
                     self.state.set(DecodeState::FrameHeader);
                     src.reserve(2);
                     return Ok(Some(Decoded::Packet(packet, fixed.remaining_length)));

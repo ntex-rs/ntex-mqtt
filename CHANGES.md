@@ -1,5 +1,9 @@
 # Changes
 
+## [6.5.0] - 2026-01-04
+
+* Use .split_to_bytes()
+
 ## [6.4.1] - 2025-12-18
 
 * Add v5::MqttServer::replace_middleware() helper method.

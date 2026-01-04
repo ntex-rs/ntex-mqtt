@@ -371,6 +371,7 @@ async fn test_disconnect_on_error() -> std::io::Result<()> {
                     Ready::Ok(m.ack(codec::DisconnectReasonCode::ImplementationSpecificError))
                 }
                 Control::Closed(m) => Ready::Ok(m.ack()),
+                Control::PeerGone(m) => Ready::Ok(m.ack()),
                 _ => panic!("{:?}", msg),
             })
             .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
