@@ -16,13 +16,13 @@ features = ["ntex-net/tokio"]
 
 [dependencies]
 ntex-io = "3.3"
-ntex-net = "3.4"
+ntex-net = "3.5"
 ntex-util = "3.4"
 ntex-service = "4"
 ntex-bytes = "1.2"
 ntex-codec = "1"
 ntex-router = "1"
-ntex-rt = "3"
+ntex-rt = "3.4"
 bitflags = "2"
 log = "0.4"
 pin-project-lite = "0.2"
@@ -37,4 +37,4 @@ ntex-tls = "3"
 openssl = "0.10"
 oneshot = "0.1"
 test-case = "3.2"
-ntex = { version = "3.0.0-pre.9", features = ["openssl"] }
+ntex = { version = "3.0.0-pre.10", features = ["openssl"] }
