@@ -4,11 +4,11 @@ use ntex_bytes::{Buf, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{packet_type, FixedHeader, MAX_PACKET_SIZE};
+use crate::types::{FixedHeader, MAX_PACKET_SIZE, packet_type};
 use crate::utils::decode_variable_length;
 
-use super::{decode::decode_packet, encode::EncodeLtd, packet::Publish, Packet};
 use super::{Decoded, Encoded};
+use super::{Packet, decode::decode_packet, encode::EncodeLtd, packet::Publish};
 
 pub struct Codec {
     state: Cell<DecodeState>,
@@ -221,7 +221,9 @@ impl Decoder for Codec {
                     let len = src.len() as u32;
                     let min_chunk_size = self.min_chunk_size.get();
 
-                    return if (len >= remaining) || (min_chunk_size != 0 && len >= min_chunk_size) {
+                    return if (len >= remaining)
+                        || (min_chunk_size != 0 && len >= min_chunk_size)
+                    {
                         let payload = src.split_to_bytes(min(src.len(), remaining as usize));
                         let remaining = remaining - payload.len() as u32;
 
@@ -349,8 +351,7 @@ impl Encoder for Codec {
                         Err(EncodeError::OverPublishSize)
                     } else {
                         dst.extend_from_slice(&chunk);
-                        self.encoding_payload
-                            .set(NonZeroU32::new(remaining.get() - len));
+                        self.encoding_payload.set(NonZeroU32::new(remaining.get() - len));
                         Ok(())
                     }
                 } else {
@@ -396,9 +397,6 @@ mod tests {
         codec.set_max_inbound_size(5);
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
-        assert_eq!(
-            codec.decode(&mut buf).err(),
-            Some(DecodeError::MaxSizeExceeded)
-        );
+        assert_eq!(codec.decode(&mut buf).err(), Some(DecodeError::MaxSizeExceeded));
     }
 }
