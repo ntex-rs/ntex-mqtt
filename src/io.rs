@@ -27,13 +27,14 @@ pin_project_lite::pin_project! {
 bitflags::bitflags! {
     #[derive(Copy, Clone, Eq, PartialEq, Debug)]
     struct Flags: u8  {
-        const READY_ERR     = 0b0000001;
-        const IO_ERR        = 0b0000010;
-        const KA_ENABLED    = 0b0000100;
-        const KA_TIMEOUT    = 0b0001000;
-        const READ_TIMEOUT  = 0b0010000;
-        const READY         = 0b0100000;
-        const READY_TASK    = 0b1000000;
+        const READY_ERR     = 0b0000_0001;
+        const IO_ERR        = 0b0000_0010;
+        const KA_ENABLED    = 0b0000_0100;
+        const KA_TIMEOUT    = 0b0000_1000;
+        const READ_TIMEOUT  = 0b0001_0000;
+        const READY         = 0b0010_0000;
+        const READY_TASK    = 0b0100_0000;
+        const RESPONSE_STOP = 0b1000_0000;
     }
 }
 
@@ -48,17 +49,16 @@ struct DispatcherInner<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'stat
     read_remains_prev: u32,
     read_max_timeout: Seconds,
     keepalive_timeout: Seconds,
-    stopping: Condition,
-
-    response: Option<PipelineCall<S, DispatchItem<U>>>,
-    response_idx: usize,
 }
 
-struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder> {
+struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'static> {
     error: Cell<Option<IoDispatcherError<S::Error, <U as Encoder>::Error>>>,
     base: Cell<usize>,
     queue: RefCell<VecDeque<ServiceResult<Result<S::Response, S::Error>>>>,
     waker: LocalWaker,
+    stopping: Condition,
+    response: Cell<Option<PipelineCall<S, DispatchItem<U>>>>,
+    response_idx: Cell<usize>,
 }
 
 enum ServiceResult<T> {
@@ -119,6 +119,9 @@ where
             base: Cell::new(0),
             queue: RefCell::new(VecDeque::new()),
             waker: LocalWaker::default(),
+            response: Cell::new(None),
+            response_idx: Cell::new(0),
+            stopping: Condition::new(),
         });
         let keepalive_timeout = io.cfg().keepalive_timeout();
 
@@ -135,12 +138,9 @@ where
                 },
                 service: Pipeline::new(service.into_service()).bind(),
                 st: IoDispatcherState::Processing,
-                response: None,
-                response_idx: 0,
                 read_remains: 0,
                 read_remains_prev: 0,
                 read_max_timeout: Seconds::ZERO,
-                stopping: Condition::new(),
             },
         }
     }
@@ -174,8 +174,25 @@ where
         io: &IoRef,
         codec: &U,
         wake: bool,
+        stop: bool,
     ) {
         let mut queue = self.queue.borrow_mut();
+
+        if stop {
+            self.stopping.notify();
+            // remove in-place message handler
+            if response_idx != self.response_idx.get() {
+                self.response.set(None);
+                let inplace_idx = self.response_idx.get().wrapping_sub(self.base.get());
+                if inplace_idx == 0 {
+                    let _ = queue.pop_front();
+                    self.base.set(self.base.get().wrapping_add(1));
+                } else {
+                    queue[inplace_idx] = ServiceResult::Ready(Ok(None));
+                }
+            }
+        }
+
         let idx = response_idx.wrapping_sub(self.base.get());
 
         // handle first response
@@ -235,30 +252,38 @@ where
         inner.state.waker.register(cx.waker());
 
         // handle service response future
-        if let Some(fut) = inner.response.as_mut() {
-            if let Poll::Ready(item) = Pin::new(fut).poll(cx) {
+        if let Some(mut fut) = inner.state.response.take() {
+            if let Poll::Ready(item) = Pin::new(&mut fut).poll(cx) {
+                let stop = if inner.flags.contains(Flags::RESPONSE_STOP) {
+                    inner.flags.remove(Flags::RESPONSE_STOP);
+                    true
+                } else {
+                    false
+                };
                 inner.state.handle_result(
                     item,
-                    inner.response_idx,
+                    inner.state.response_idx.get(),
                     inner.io.as_ref(),
                     &inner.codec,
                     false,
+                    stop,
                 );
-                inner.response = None;
+            } else {
+                inner.state.response.set(Some(fut));
             }
         }
 
         loop {
             match inner.st {
                 IoDispatcherState::Processing => {
-                    let (item, nowait) = match ready!(inner.poll_service(cx)) {
+                    let (item, nowait, stop) = match ready!(inner.poll_service(cx)) {
                         PollService::Ready => {
                             // decode incoming bytes stream
                             match inner.io.poll_recv_decode(&inner.codec, cx) {
                                 Ok(decoded) => {
                                     inner.update_timer(&decoded);
                                     if let Some(el) = decoded.item {
-                                        (DispatchItem::Item(el), true)
+                                        (DispatchItem::Item(el), true, false)
                                     } else {
                                         return Poll::Pending;
                                     }
@@ -266,38 +291,40 @@ where
                                 Err(RecvError::KeepAlive) => {
                                     if let Err(err) = inner.handle_timeout() {
                                         inner.stop();
-                                        (err, true)
+                                        (err, true, true)
                                     } else {
                                         continue;
                                     }
                                 }
                                 Err(RecvError::WriteBackpressure) => {
                                     inner.st = IoDispatcherState::Backpressure;
-                                    (DispatchItem::WBackPressureEnabled, true)
+                                    (DispatchItem::WBackPressureEnabled, true, false)
                                 }
                                 Err(RecvError::Decoder(err)) => {
                                     inner.stop();
-                                    (DispatchItem::DecoderError(err), true)
+                                    (DispatchItem::DecoderError(err), true, true)
                                 }
                                 Err(RecvError::PeerGone(err)) => {
                                     inner.stop();
-                                    (DispatchItem::Disconnect(err), true)
+                                    (DispatchItem::Disconnect(err), true, true)
                                 }
                             }
                         }
-                        PollService::Item(item) => (item, true),
-                        PollService::ItemWait(item) => (item, false),
+                        PollService::Item(item) => (item, true, false),
+                        PollService::ItemWait(item) => (item, false, false),
                         PollService::Continue => continue,
                     };
 
-                    inner.call_service(cx, item, nowait);
+                    inner.call_service(cx, item, nowait, stop);
                 }
                 // handle write back-pressure
                 IoDispatcherState::Backpressure => {
                     match ready!(inner.poll_service(cx)) {
                         PollService::Ready => (),
-                        PollService::Item(item) => inner.call_service(cx, item, true),
-                        PollService::ItemWait(item) => inner.call_service(cx, item, false),
+                        PollService::Item(item) => inner.call_service(cx, item, true, false),
+                        PollService::ItemWait(item) => {
+                            inner.call_service(cx, item, false, false)
+                        }
                         PollService::Continue => continue,
                     };
 
@@ -308,7 +335,7 @@ where
                         inner.st = IoDispatcherState::Processing;
                         DispatchItem::WBackPressureDisabled
                     };
-                    inner.call_service(cx, item, false);
+                    inner.call_service(cx, item, false, false);
                 }
 
                 // drain service responses and shutdown io
@@ -378,21 +405,16 @@ where
     <U as Encoder>::Item: 'static,
 {
     fn stop(&mut self) {
-        self.stopping.notify();
         self.st = IoDispatcherState::Stop;
-
-        if self.response.take().is_some() {
-            self.state.handle_result(
-                Ok(None),
-                self.response_idx,
-                self.io.as_ref(),
-                &self.codec,
-                false,
-            );
-        }
     }
 
-    fn call_service(&mut self, cx: &mut Context<'_>, item: DispatchItem<U>, nowait: bool) {
+    fn call_service(
+        &mut self,
+        cx: &mut Context<'_>,
+        item: DispatchItem<U>,
+        nowait: bool,
+        stop: bool,
+    ) {
         let mut fut = if nowait {
             self.service.call_nowait(item)
         } else {
@@ -401,49 +423,54 @@ where
         let mut queue = self.state.queue.borrow_mut();
 
         // optimize first call
-        if self.response.is_none() {
-            if let Poll::Ready(res) = Pin::new(&mut fut).poll(cx) {
-                // check if current result is only response
-                if queue.is_empty() {
-                    match res {
-                        Err(err) => {
-                            self.state.error.set(Some(err.into()));
-                        }
-                        Ok(Some(item)) => {
-                            if let Err(err) = self.io.encode(item, &self.codec) {
-                                self.state.error.set(Some(IoDispatcherError::Encoder(err)));
-                            }
-                        }
-                        Ok(None) => (),
-                    }
-                } else {
-                    queue.push_back(ServiceResult::Ready(res));
-                    self.response_idx = self.state.base.get().wrapping_add(queue.len());
-                }
-            } else {
-                self.response = Some(fut);
-                self.response_idx = self.state.base.get().wrapping_add(queue.len());
-                queue.push_back(ServiceResult::Pending);
-            }
-        } else {
+        if let Some(resp) = self.state.response.take() {
+            self.state.response.set(Some(resp));
+
             let response_idx = self.state.base.get().wrapping_add(queue.len());
             queue.push_back(ServiceResult::Pending);
 
             let st = self.io.get_ref();
             let codec = self.codec.clone();
             let state = self.state.clone();
-            let waiter = self.stopping.wait();
 
             spawn(async move {
-                match select(fut, waiter).await {
+                match select(fut, state.stopping.wait()).await {
                     Either::Left(item) => {
-                        state.handle_result(item, response_idx, &st, &codec, true)
+                        state.handle_result(item, response_idx, &st, &codec, true, stop)
                     }
                     Either::Right(_) => {
-                        state.handle_result(Ok(None), response_idx, &st, &codec, true)
+                        state.handle_result(Ok(None), response_idx, &st, &codec, true, stop)
                     }
                 }
             });
+        } else if let Poll::Ready(res) = Pin::new(&mut fut).poll(cx) {
+            // check if current result is only response
+            if queue.is_empty() {
+                match res {
+                    Err(err) => {
+                        self.state.error.set(Some(err.into()));
+                    }
+                    Ok(Some(item)) => {
+                        if let Err(err) = self.io.encode(item, &self.codec) {
+                            self.state.error.set(Some(IoDispatcherError::Encoder(err)));
+                        }
+                    }
+                    Ok(None) => (),
+                }
+            } else {
+                if stop {
+                    self.state.stopping.notify();
+                }
+                queue.push_back(ServiceResult::Ready(res));
+                self.state.response_idx.set(self.state.base.get().wrapping_add(queue.len()));
+            }
+        } else {
+            if stop {
+                self.flags.insert(Flags::RESPONSE_STOP);
+            }
+            self.state.response.set(Some(fut));
+            self.state.response_idx.set(self.state.base.get().wrapping_add(queue.len()));
+            queue.push_back(ServiceResult::Pending);
         }
     }
 
@@ -619,6 +646,9 @@ mod tests {
                 base: Cell::new(0),
                 waker: LocalWaker::default(),
                 queue: RefCell::new(VecDeque::new()),
+                stopping: Condition::new(),
+                response: Cell::new(None),
+                response_idx: Cell::new(0),
             });
 
             (
@@ -628,8 +658,6 @@ mod tests {
                         state,
                         keepalive_timeout,
                         service: Pipeline::new(service.into_service()).bind(),
-                        response: None,
-                        response_idx: 0,
                         io: IoBoxed::from(io),
                         st: IoDispatcherState::Processing,
                         flags: if keepalive_timeout.is_zero() {
@@ -640,7 +668,6 @@ mod tests {
                         read_remains: 0,
                         read_remains_prev: 0,
                         read_max_timeout: Seconds::ZERO,
-                        stopping: Condition::new(),
                     },
                 },
                 rio,
@@ -724,6 +751,75 @@ mod tests {
 
         client.close().await;
         assert!(client.is_server_dropped());
+    }
+
+    /// On disconnect, call control service and after call completion
+    /// drop in-flight publish handlers
+    #[ntex::test]
+    async fn test_disconnect_ordering() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+        enum Info {
+            Publish,
+            PublishDrop,
+            Disconnect,
+        }
+
+        struct OnDrop(Rc<RefCell<Vec<Info>>>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                self.0.borrow_mut().push(Info::PublishDrop);
+            }
+        }
+
+        let condition = Condition::new();
+        let waiter = condition.wait();
+        let ops = Rc::new(RefCell::new(Vec::new()));
+        let ops2 = ops.clone();
+
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG")),
+            BytesCodec,
+            ntex_service::fn_service(async move |msg: DispatchItem<BytesCodec>| {
+                if let DispatchItem::Item(msg) = msg {
+                    ops2.borrow_mut().push(Info::Publish);
+                    let on_drop = OnDrop(ops2.clone());
+                    waiter.clone().await;
+                    drop(on_drop);
+                    Ok::<_, ()>(Some(msg.freeze()))
+                } else if matches!(msg, DispatchItem::Disconnect(_)) {
+                    ops2.borrow_mut().push(Info::Disconnect);
+                    Ok(None)
+                } else {
+                    panic!()
+                }
+            }),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+        sleep(Millis(50)).await;
+
+        client.write("test");
+        sleep(Millis(50)).await;
+        client.write("test");
+        sleep(Millis(50)).await;
+        client.close().await;
+        assert!(client.is_server_dropped());
+        sleep(Millis(150)).await;
+
+        assert_eq!(
+            &[
+                Info::Publish,
+                Info::Publish,
+                Info::Disconnect,
+                Info::PublishDrop,
+                Info::PublishDrop
+            ][..],
+            &*ops.borrow()
+        );
     }
 
     #[ntex::test]
@@ -932,22 +1028,19 @@ mod tests {
         let (disp, _io) = Dispatcher::new_debug(
             server,
             BytesCodec,
-            ntex_service::fn_service(move |item: DispatchItem<BytesCodec>| {
+            ntex_service::fn_service(async move |item: DispatchItem<BytesCodec>| {
                 let first = flag2.get();
                 flag2.set(false);
-                let io = server_ref.clone();
-                async move {
-                    match item {
-                        DispatchItem::Item(b) => {
-                            if !first {
-                                sleep(Millis(500)).await;
-                            }
-                            Ok(Some(b.freeze()))
+                match item {
+                    DispatchItem::Item(b) => {
+                        if !first {
+                            sleep(Millis(500)).await;
                         }
-                        _ => {
-                            io.close();
-                            Ok::<_, ()>(None)
-                        }
+                        Ok(Some(b.freeze()))
+                    }
+                    _ => {
+                        server_ref.close();
+                        Ok::<_, ()>(None)
                     }
                 }
             }),
