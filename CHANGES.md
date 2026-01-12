@@ -1,5 +1,10 @@
 # Changes
 
+## [6.6.0] - 2026-01-12
+
+* Wait control service handling completion before dropping in-flight
+  publish handlers on error or disconnect.
+
 ## [6.5.0] - 2026-01-04
 
 * Use .split_to_bytes()
