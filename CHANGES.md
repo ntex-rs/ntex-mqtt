@@ -1,5 +1,9 @@
 # Changes
 
+## [6.6.1] - 2026-01-17
+
+* Update bytes dependency
+
 ## [6.6.0] - 2026-01-12
 
 * Wait control service handling completion before dropping in-flight

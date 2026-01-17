@@ -187,13 +187,13 @@ impl Decoder for Codec {
                         return Ok(None);
                     }
                     let payload_len = fixed.remaining_length - props_len;
-                    let mut buf = src.split_to_bytes(props_len as usize);
+                    let mut buf = src.split_to(props_len as usize);
                     let publish = Publish::decode(&mut buf, fixed.first_byte, payload_len)?;
 
                     let len = src.len() as u32;
                     let min_chunk_size = self.min_chunk_size.get();
                     if len >= payload_len || min_chunk_size == 0 || len >= min_chunk_size {
-                        let payload = src.split_to_bytes(min(src.len(), payload_len as usize));
+                        let payload = src.split_to(min(src.len(), payload_len as usize));
                         let remaining = payload_len - payload.len() as u32;
 
                         if remaining > 0 {
@@ -224,7 +224,7 @@ impl Decoder for Codec {
                     return if (len >= remaining)
                         || (min_chunk_size != 0 && len >= min_chunk_size)
                     {
-                        let payload = src.split_to_bytes(min(src.len(), remaining as usize));
+                        let payload = src.split_to(min(src.len(), remaining as usize));
                         let remaining = remaining - payload.len() as u32;
 
                         let eof = if remaining > 0 {
@@ -244,7 +244,7 @@ impl Decoder for Codec {
                     return if src.len() < fixed.remaining_length as usize {
                         Ok(None)
                     } else {
-                        let packet_buf = src.split_to_bytes(fixed.remaining_length as usize);
+                        let packet_buf = src.split_to(fixed.remaining_length as usize);
                         let packet = decode_packet(packet_buf, fixed.first_byte)?;
                         self.state.set(DecodeState::FrameHeader);
                         src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length

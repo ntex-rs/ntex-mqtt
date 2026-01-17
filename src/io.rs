@@ -687,7 +687,7 @@ mod tests {
             ntex_service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 sleep(Millis(50)).await;
                 if let DispatchItem::Item(msg) = msg {
-                    Ok::<_, ()>(Some(msg.freeze()))
+                    Ok::<_, ()>(Some(msg))
                 } else {
                     panic!()
                 }
@@ -726,7 +726,7 @@ mod tests {
                 async move {
                     waiter.await;
                     if let DispatchItem::Item(msg) = msg {
-                        Ok::<_, ()>(Some(msg.freeze()))
+                        Ok::<_, ()>(Some(msg))
                     } else if matches!(msg, DispatchItem::Disconnect(_)) {
                         Ok(None)
                     } else {
@@ -788,7 +788,7 @@ mod tests {
                     let on_drop = OnDrop(ops2.clone());
                     waiter.clone().await;
                     drop(on_drop);
-                    Ok::<_, ()>(Some(msg.freeze()))
+                    Ok::<_, ()>(Some(msg))
                 } else if matches!(msg, DispatchItem::Disconnect(_)) {
                     ops2.borrow_mut().push(Info::Disconnect);
                     Ok(None)
@@ -833,7 +833,7 @@ mod tests {
             BytesCodec,
             ntex_service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 if let DispatchItem::Item(msg) = msg {
-                    Ok::<_, ()>(Some(msg.freeze()))
+                    Ok::<_, ()>(Some(msg))
                 } else if let DispatchItem::Disconnect(_) = msg {
                     Ok(None)
                 } else {
@@ -1036,7 +1036,7 @@ mod tests {
                         if !first {
                             sleep(Millis(500)).await;
                         }
-                        Ok(Some(b.freeze()))
+                        Ok(Some(b))
                     }
                     _ => {
                         server_ref.close();
@@ -1086,7 +1086,7 @@ mod tests {
                     match msg {
                         DispatchItem::Item(bytes) => {
                             data.lock().unwrap().borrow_mut().push(0);
-                            return Ok::<_, ()>(Some(bytes.freeze()));
+                            return Ok::<_, ()>(Some(bytes));
                         }
                         DispatchItem::KeepAliveTimeout => {
                             data.lock().unwrap().borrow_mut().push(1);
@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     impl Decoder for BytesLenCodec {
-        type Item = BytesMut;
+        type Item = Bytes;
         type Error = io::Error;
 
         fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -1173,7 +1173,7 @@ mod tests {
                     match msg {
                         DispatchItem::Item(bytes) => {
                             data.lock().unwrap().borrow_mut().push(0);
-                            return Ok::<_, ()>(Some(bytes.freeze()));
+                            return Ok::<_, ()>(Some(bytes));
                         }
                         DispatchItem::KeepAliveTimeout => {
                             data.lock().unwrap().borrow_mut().push(1);
@@ -1223,7 +1223,7 @@ mod tests {
                     match msg {
                         DispatchItem::Item(bytes) => {
                             data.lock().unwrap().borrow_mut().push(0);
-                            return Ok::<_, ()>(Some(bytes.freeze()));
+                            return Ok::<_, ()>(Some(bytes));
                         }
                         DispatchItem::ReadTimeout => {
                             data.lock().unwrap().borrow_mut().push(1);
@@ -1291,7 +1291,7 @@ mod tests {
                     if let DispatchItem::Item(bytes) = msg {
                         sleep(Millis(999999)).await;
                         drop(data);
-                        return Ok::<_, ()>(Some(bytes.freeze()));
+                        return Ok::<_, ()>(Some(bytes));
                     }
                     Ok(None)
                 }
