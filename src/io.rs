@@ -173,16 +173,14 @@ where
         response_idx: usize,
         io: &IoRef,
         codec: &U,
-        wake: bool,
         stop: bool,
-    ) {
+    ) -> bool {
         let mut queue = self.queue.borrow_mut();
 
         if stop {
             self.stopping.notify();
             // remove in-place message handler
-            if response_idx != self.response_idx.get() {
-                self.response.set(None);
+            if self.response.take().is_some() {
                 let inplace_idx = self.response_idx.get().wrapping_sub(self.base.get());
                 if inplace_idx == 0 {
                     let _ = queue.pop_front();
@@ -228,11 +226,10 @@ where
                 }
             }
 
-            if wake && queue.is_empty() {
-                io.wake()
-            }
+            queue.is_empty()
         } else {
             queue[idx] = ServiceResult::Ready(item);
+            false
         }
     }
 }
@@ -265,7 +262,6 @@ where
                     inner.state.response_idx.get(),
                     inner.io.as_ref(),
                     &inner.codec,
-                    false,
                     stop,
                 );
             } else {
@@ -424,6 +420,7 @@ where
 
         // optimize first call
         if let Some(resp) = self.state.response.take() {
+            // first call is running
             self.state.response.set(Some(resp));
 
             let response_idx = self.state.base.get().wrapping_add(queue.len());
@@ -434,13 +431,16 @@ where
             let state = self.state.clone();
 
             spawn(async move {
-                match select(fut, state.stopping.wait()).await {
+                let empty_q = match select(fut, state.stopping.wait()).await {
                     Either::Left(item) => {
-                        state.handle_result(item, response_idx, &st, &codec, true, stop)
+                        state.handle_result(item, response_idx, &st, &codec, stop)
                     }
                     Either::Right(_) => {
-                        state.handle_result(Ok(None), response_idx, &st, &codec, true, stop)
+                        state.handle_result(Ok(None), response_idx, &st, &codec, stop)
                     }
+                };
+                if empty_q {
+                    st.wake()
                 }
             });
         } else if let Poll::Ready(res) = Pin::new(&mut fut).poll(cx) {
@@ -757,9 +757,6 @@ mod tests {
     /// drop in-flight publish handlers
     #[ntex::test]
     async fn test_disconnect_ordering() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
-
         #[derive(Debug, Copy, Clone, PartialEq, Eq)]
         enum Info {
             Publish,
@@ -779,27 +776,66 @@ mod tests {
         let ops = Rc::new(RefCell::new(Vec::new()));
         let ops2 = ops.clone();
 
-        let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
-            BytesCodec,
-            ntex_service::fn_service(async move |msg: DispatchItem<BytesCodec>| {
-                if let DispatchItem::Item(msg) = msg {
-                    ops2.borrow_mut().push(Info::Publish);
-                    let on_drop = OnDrop(ops2.clone());
-                    waiter.clone().await;
-                    drop(on_drop);
-                    Ok::<_, ()>(Some(msg))
-                } else if matches!(msg, DispatchItem::Disconnect(_)) {
-                    ops2.borrow_mut().push(Info::Disconnect);
-                    Ok(None)
-                } else {
-                    panic!()
-                }
-            }),
+        let run_server = async || -> Io {
+            let (client, server) = Io::create();
+            client.remote_buffer_cap(1024);
+
+            let (disp, _) = Dispatcher::new_debug(
+                nio::Io::new(server, SharedCfg::new("DBG")),
+                BytesCodec,
+                ntex_service::fn_service(async move |msg: DispatchItem<BytesCodec>| {
+                    if let DispatchItem::Item(msg) = msg {
+                        if msg == b"1" {
+                            sleep(Millis(75)).await;
+                        } else {
+                            ops2.borrow_mut().push(Info::Publish);
+                            let on_drop = OnDrop(ops2.clone());
+                            waiter.clone().await;
+                            drop(on_drop);
+                        }
+                        Ok::<_, ()>(Some(msg))
+                    } else if matches!(msg, DispatchItem::Disconnect(_)) {
+                        sleep(Millis(25)).await;
+                        ops2.borrow_mut().push(Info::Disconnect);
+                        Ok(None)
+                    } else {
+                        panic!()
+                    }
+                }),
+            );
+            ntex_util::spawn(async move {
+                let _ = disp.await;
+            });
+            sleep(Millis(50)).await;
+
+            client
+        };
+        let client = run_server.clone()().await;
+
+        client.write("test");
+        sleep(Millis(50)).await;
+        client.write("test");
+        sleep(Millis(50)).await;
+        client.close().await;
+        assert!(client.is_server_dropped());
+        sleep(Millis(150)).await;
+
+        assert_eq!(
+            &[
+                Info::Publish,
+                Info::Publish,
+                Info::Disconnect,
+                Info::PublishDrop,
+                Info::PublishDrop
+            ][..],
+            &*ops.borrow()
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+
+        // different options
+        ops.borrow_mut().clear();
+        let client = run_server().await;
+
+        client.write("1");
         sleep(Millis(50)).await;
 
         client.write("test");
