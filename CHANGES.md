@@ -1,5 +1,9 @@
 # Changes
 
+## [6.6.2] - 2026-01-20
+
+* Fix in-flight handling after drop
+
 ## [6.6.1] - 2026-01-17
 
 * Update bytes dependency
