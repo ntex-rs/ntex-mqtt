@@ -7,21 +7,51 @@ use crate::{error, types::QoS};
 /// Server control messages
 #[derive(Debug)]
 pub enum Control<E> {
+    /// MQTT protocol–related messages.
+    ///
+    /// The control service is always called with these messages one at a time.
+    /// Unhandled messages are stored in a buffer. Other types of messages may be
+    /// handled out of order.
+    Protocol(CtlFrame),
+    /// Control messages
+    Flow(CtlFlow),
+    /// Dispatcher is preparing for shutdown.
+    ///
+    /// The control service will receive this message only once. The next message
+    /// after `Disconnect` is `Shutdown`.
+    Stop(CtlReason<E>),
+    /// Underlying pipeline is shutting down.
+    ///
+    /// This is the last message the control service receives.
+    Shutdown(Shutdown),
+}
+
+/// MQTT protocol–related messages
+#[derive(Debug)]
+pub enum CtlFrame {
     /// Publish release
     PublishRelease(PublishRelease),
-    /// Ping packet
-    Ping(Ping),
-    /// Disconnect packet
-    Disconnect(Disconnect),
     /// Subscribe packet
     Subscribe(Subscribe),
     /// Unsubscribe packet
     Unsubscribe(Unsubscribe),
+    /// Disconnect packet
+    Disconnect(Disconnect),
+}
+
+/// Dispatcher flow–related messages
+#[derive(Debug)]
+pub enum CtlFlow {
+    /// Ping packet from a client
+    Ping(Ping),
     /// Write back-pressure is enabled/disabled
     WrBackpressure(WrBackpressure),
-    /// Connection dropped
-    Closed(Closed),
-    /// Service level error
+}
+
+/// Dispatcher stop reasons
+#[derive(Debug)]
+pub enum CtlReason<E> {
+    /// Unhandled application level error from handshake, publish and control services
     Error(Error<E>),
     /// Protocol level error
     ProtocolError(ProtocolError),
@@ -48,78 +78,80 @@ pub(crate) enum ControlAckKind {
 
 impl<E> Control<E> {
     pub(crate) fn pubrel(packet_id: NonZeroU16) -> Self {
-        Control::PublishRelease(PublishRelease { packet_id })
+        Control::Protocol(CtlFrame::PublishRelease(PublishRelease { packet_id }))
     }
 
     /// Create a new PING `Control` message.
     #[doc(hidden)]
     pub fn ping() -> Self {
-        Control::Ping(Ping)
+        Control::Flow(CtlFlow::Ping(Ping))
     }
 
     /// Create a new `Control` message from SUBSCRIBE packet.
     #[doc(hidden)]
     pub fn subscribe(pkt: Subscribe) -> Self {
-        Control::Subscribe(pkt)
+        Control::Protocol(CtlFrame::Subscribe(pkt))
     }
 
     /// Create a new `Control` message from UNSUBSCRIBE packet.
     #[doc(hidden)]
     pub fn unsubscribe(pkt: Unsubscribe) -> Self {
-        Control::Unsubscribe(pkt)
+        Control::Protocol(CtlFrame::Unsubscribe(pkt))
     }
 
     /// Create a new `Control` message from DISCONNECT packet.
     #[doc(hidden)]
     pub fn remote_disconnect() -> Self {
-        Control::Disconnect(Disconnect)
+        Control::Protocol(CtlFrame::Disconnect(Disconnect))
     }
 
-    pub(super) const fn closed() -> Self {
-        Control::Closed(Closed)
+    pub(super) const fn shutdown() -> Self {
+        Control::Shutdown(Shutdown)
     }
 
     pub(super) const fn wr_backpressure(enabled: bool) -> Self {
-        Control::WrBackpressure(WrBackpressure(enabled))
+        Control::Flow(CtlFlow::WrBackpressure(WrBackpressure(enabled)))
     }
 
     pub(super) fn error(err: E) -> Self {
-        Control::Error(Error::new(err))
+        Control::Stop(CtlReason::Error(Error::new(err)))
     }
 
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        Control::ProtocolError(ProtocolError::new(err))
+        Control::Stop(CtlReason::ProtocolError(ProtocolError::new(err)))
     }
 
     /// Create a new `Control` message from DISCONNECT packet.
     pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        Control::PeerGone(PeerGone(err))
+        Control::Stop(CtlReason::PeerGone(PeerGone(err)))
     }
 
+    #[inline]
     /// Disconnects the client by sending DISCONNECT packet.
     pub fn disconnect(&self) -> ControlAck {
         ControlAck { result: ControlAckKind::Disconnect }
     }
 
+    #[inline]
     /// Ack control message
     pub fn ack(self) -> ControlAck {
         match self {
-            Control::PublishRelease(msg) => msg.ack(),
-            Control::Ping(msg) => msg.ack(),
-            Control::Disconnect(msg) => msg.ack(),
-            Control::Subscribe(_) => {
+            Control::Protocol(CtlFrame::PublishRelease(msg)) => msg.ack(),
+            Control::Protocol(CtlFrame::Disconnect(msg)) => msg.ack(),
+            Control::Protocol(CtlFrame::Subscribe(_)) => {
                 log::warn!("Subscribe is not supported");
                 ControlAck { result: ControlAckKind::Disconnect }
             }
-            Control::Unsubscribe(_) => {
+            Control::Protocol(CtlFrame::Unsubscribe(_)) => {
                 log::warn!("Unsubscribe is not supported");
                 ControlAck { result: ControlAckKind::Disconnect }
             }
-            Control::WrBackpressure(msg) => msg.ack(),
-            Control::Closed(msg) => msg.ack(),
-            Control::Error(msg) => msg.ack(),
-            Control::ProtocolError(msg) => msg.ack(),
-            Control::PeerGone(msg) => msg.ack(),
+            Control::Flow(CtlFlow::Ping(msg)) => msg.ack(),
+            Control::Flow(CtlFlow::WrBackpressure(msg)) => msg.ack(),
+            Control::Stop(CtlReason::Error(msg)) => msg.ack(),
+            Control::Stop(CtlReason::ProtocolError(msg)) => msg.ack(),
+            Control::Stop(CtlReason::PeerGone(msg)) => msg.ack(),
+            Control::Shutdown(msg) => msg.ack(),
         }
     }
 }
@@ -144,14 +176,11 @@ impl PublishRelease {
     }
 }
 
-// pub(crate) struct PublishReleaseResult {
-//     pub packet_id: NonZeroU16,
-// }
-
 #[derive(Copy, Clone, Debug)]
 pub struct Ping;
 
 impl Ping {
+    #[inline]
     pub fn ack(self) -> ControlAck {
         ControlAck { result: ControlAckKind::Ping }
     }
@@ -161,6 +190,7 @@ impl Ping {
 pub struct Disconnect;
 
 impl Disconnect {
+    #[inline]
     pub fn ack(self) -> ControlAck {
         ControlAck { result: ControlAckKind::Disconnect }
     }
@@ -173,6 +203,7 @@ pub struct Error<E> {
 }
 
 impl<E> Error<E> {
+    #[inline]
     pub fn new(err: E) -> Self {
         Self { err }
     }
@@ -197,12 +228,13 @@ impl<E> Error<E> {
 }
 
 /// Protocol level error
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProtocolError {
     err: error::ProtocolError,
 }
 
 impl ProtocolError {
+    #[inline]
     pub fn new(err: error::ProtocolError) -> Self {
         Self { err }
     }
@@ -227,7 +259,7 @@ impl ProtocolError {
 }
 
 /// Subscribe message
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Subscribe {
     packet_id: NonZeroU16,
     packet_size: u32,
@@ -236,13 +268,14 @@ pub struct Subscribe {
 }
 
 /// Result of a subscribe message
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct SubscribeResult {
     pub(crate) codes: Vec<codec::SubscribeReturnCode>,
     pub(crate) packet_id: NonZeroU16,
 }
 
 impl Subscribe {
+    #[inline]
     /// Create a new `Subscribe` control message from packet id and
     /// a list of topics.
     #[doc(hidden)]
@@ -257,6 +290,7 @@ impl Subscribe {
         Self { packet_id, packet_size, topics, codes }
     }
 
+    #[inline]
     /// Returns size of the packet
     pub fn packet_size(&self) -> u32 {
         self.packet_size
@@ -365,7 +399,7 @@ impl<'a> Subscription<'a> {
 }
 
 /// Unsubscribe message
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Unsubscribe {
     packet_id: NonZeroU16,
     packet_size: u32,
@@ -373,12 +407,13 @@ pub struct Unsubscribe {
 }
 
 /// Result of a unsubscribe message
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub(crate) struct UnsubscribeResult {
     pub(crate) packet_id: NonZeroU16,
 }
 
 impl Unsubscribe {
+    #[inline]
     /// Create a new `Unsubscribe` control message from packet id and
     /// a list of topics.
     #[doc(hidden)]
@@ -386,18 +421,20 @@ impl Unsubscribe {
         Self { packet_id, packet_size, topics }
     }
 
+    #[inline]
     /// Returns size of the packet
     pub fn packet_size(&self) -> u32 {
         self.packet_size
     }
 
+    #[inline]
     /// returns iterator over unsubscribe topics
     pub fn iter(&self) -> impl Iterator<Item = &ByteString> {
         self.topics.iter()
     }
 
     #[inline]
-    /// convert packet to a result
+    /// Ack control message
     pub fn ack(self) -> ControlAck {
         ControlAck {
             result: ControlAckKind::Unsubscribe(UnsubscribeResult {
@@ -408,7 +445,7 @@ impl Unsubscribe {
 }
 
 /// Write back-pressure message
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct WrBackpressure(bool);
 
 impl WrBackpressure {
@@ -419,19 +456,19 @@ impl WrBackpressure {
     }
 
     #[inline]
-    /// convert packet to a result
+    /// Ack control message
     pub fn ack(self) -> ControlAck {
         ControlAck { result: ControlAckKind::Nothing }
     }
 }
 
 /// Connection closed message
-#[derive(Debug)]
-pub struct Closed;
+#[derive(Debug, Copy, Clone)]
+pub struct Shutdown;
 
-impl Closed {
+impl Shutdown {
     #[inline]
-    /// convert packet to a result
+    /// Ack shutdown control message
     pub fn ack(self) -> ControlAck {
         ControlAck { result: ControlAckKind::Closed }
     }
@@ -441,16 +478,20 @@ impl Closed {
 pub struct PeerGone(pub(super) Option<io::Error>);
 
 impl PeerGone {
+    #[inline]
     /// Returns error reference
     pub fn err(&self) -> Option<&io::Error> {
         self.0.as_ref()
     }
 
+    #[inline]
     /// Take error
     pub fn take(&mut self) -> Option<io::Error> {
         self.0.take()
     }
 
+    #[inline]
+    /// Ack control message
     pub fn ack(self) -> ControlAck {
         ControlAck { result: ControlAckKind::Nothing }
     }

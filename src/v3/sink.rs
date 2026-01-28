@@ -447,10 +447,10 @@ impl SubscribeBuilder {
     pub async fn send(self) -> Result<Vec<codec::SubscribeReturnCode>, SendPacketError> {
         if !self.shared.is_closed() {
             // handle client receive maximum
-            if let Some(rx) = self.shared.wait_readiness() {
-                if rx.await.is_err() {
-                    return Err(SendPacketError::Disconnected);
-                }
+            if let Some(rx) = self.shared.wait_readiness()
+                && rx.await.is_err()
+            {
+                return Err(SendPacketError::Disconnected);
             }
             let idx = self.id.unwrap_or_else(|| self.shared.next_id());
             let rx = self.shared.wait_response(idx, AckType::Subscribe)?;
@@ -521,10 +521,10 @@ impl UnsubscribeBuilder {
 
         if !shared.is_closed() {
             // handle client receive maximum
-            if let Some(rx) = shared.wait_readiness() {
-                if rx.await.is_err() {
-                    return Err(SendPacketError::Disconnected);
-                }
+            if let Some(rx) = shared.wait_readiness()
+                && rx.await.is_err()
+            {
+                return Err(SendPacketError::Disconnected);
             }
             // allocate packet id
             let idx = self.id.unwrap_or_else(|| shared.next_id());

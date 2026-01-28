@@ -37,7 +37,7 @@ async fn main() -> std::io::Result<()> {
     ntex::rt::spawn(client.start(fn_service(
         |control: v5::client::Control<Error>| async move {
             match control {
-                v5::client::Control::Publish(publish) => {
+                v5::client::Control::Protocol(v5::client::CtlFrame::Publish(publish)) => {
                     let pl = publish.read_all().await;
                     log::info!(
                         "incoming publish: {:?} -> {:?}, payload: {:?}",
@@ -47,24 +47,26 @@ async fn main() -> std::io::Result<()> {
                     );
                     Ok(publish.ack(v5::codec::PublishAckReason::Success))
                 }
-                v5::client::Control::PublishRelease(msg) => Ok(msg.ack()),
-                v5::client::Control::Disconnect(msg) => {
+                v5::client::Control::Protocol(v5::client::CtlFrame::PublishRelease(msg)) => {
+                    Ok(msg.ack())
+                }
+                v5::client::Control::Protocol(v5::client::CtlFrame::Disconnect(msg)) => {
                     log::warn!("Server disconnecting: {:?}", msg);
                     Ok(msg.ack())
                 }
-                v5::client::Control::Error(msg) => {
+                v5::client::Control::Stop(v5::client::CtlReason::Error(msg)) => {
                     log::error!("Codec error: {:?}", msg);
                     Ok(msg.ack(v5::codec::DisconnectReasonCode::UnspecifiedError))
                 }
-                v5::client::Control::ProtocolError(msg) => {
+                v5::client::Control::Stop(v5::client::CtlReason::ProtocolError(msg)) => {
                     log::error!("Protocol error: {:?}", msg);
                     Ok(msg.ack())
                 }
-                v5::client::Control::PeerGone(msg) => {
-                    log::warn!("Peer closed connection: {:?}", msg.error());
+                v5::client::Control::Stop(v5::client::CtlReason::PeerGone(msg)) => {
+                    log::warn!("Peer closed connection: {:?}", msg.err());
                     Ok(msg.ack())
                 }
-                v5::client::Control::Closed(msg) => {
+                v5::client::Control::Shutdown(msg) => {
                     log::warn!("Server closed connection: {:?}", msg);
                     Ok(msg.ack())
                 }

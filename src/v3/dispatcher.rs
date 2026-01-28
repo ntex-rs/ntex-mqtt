@@ -2,7 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_io::DispatchItem;
-use ntex_service::{Pipeline, Service, ServiceCtx, ServiceFactory, cfg::Cfg, cfg::SharedCfg};
+use ntex_service::cfg::{Cfg, SharedCfg};
+use ntex_service::{Pipeline, PipelineSvc, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
@@ -41,22 +42,28 @@ where
             let (publish, control) = fut.await;
 
             let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
-            let control = control.map_err(|e| MqttError::Service(e.into()))?;
+            let control_unbuf = Pipeline::new(
+                control
+                    .map_err(|e| MqttError::Service(e.into()))?
+                    .map_err(|e| MqttError::Service(E::from(e))),
+            );
 
-            let control = BufferService::new(
-                16,
-                // limit number of in-flight messages
-                InFlightService::new(1, control),
-            )
-            .map_err(|err| match err {
-                BufferServiceError::Service(e) => MqttError::Service(E::from(e)),
-                BufferServiceError::RequestCanceled => {
-                    MqttError::Handshake(HandshakeError::Disconnected(None))
-                }
-            });
+            let control = Pipeline::new(
+                BufferService::new(
+                    16,
+                    // limit number of in-flight messages
+                    InFlightService::new(1, PipelineSvc::new(control_unbuf.clone())),
+                )
+                .map_err(|err| match err {
+                    BufferServiceError::Service(e) => e,
+                    BufferServiceError::RequestCanceled => {
+                        MqttError::Handshake(HandshakeError::Disconnected(None))
+                    }
+                }),
+            );
 
             let cfg: Cfg<MqttServiceConfig> = cfg.get();
-            Ok(Dispatcher::<_, _, E>::new(sink, publish, control, cfg))
+            Ok(Dispatcher::<_, _, _, E>::new(sink, publish, control, control_unbuf, cfg))
         },
     )
 }
@@ -80,30 +87,34 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
+pub(crate) struct Dispatcher<T, C: Service<Control<E>>, C2: Service<Control<E>>, E> {
     publish: T,
-    inner: Rc<Inner<C>>,
+    inner: Rc<Inner<C, C2>>,
     cfg: Cfg<MqttServiceConfig>,
     _t: PhantomData<(E,)>,
 }
 
-struct Inner<C> {
+struct Inner<C, C2> {
     control: Pipeline<C>,
+    control_unbuf: Pipeline<C2>,
     sink: Rc<MqttShared>,
     payload: Cell<Option<PlSender>>,
     inflight: RefCell<HashSet<NonZeroU16>>,
+    stopped: Cell<bool>,
 }
 
-impl<T, C, E> Dispatcher<T, C, E>
+impl<T, C, C2, E> Dispatcher<T, C, C2, E>
 where
     E: From<T::Error>,
     T: Service<Publish, Response = ()>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     pub(crate) fn new(
         sink: Rc<MqttShared>,
         publish: T,
-        control: C,
+        control: Pipeline<C>,
+        control_unbuf: Pipeline<C2>,
         cfg: Cfg<MqttServiceConfig>,
     ) -> Self {
         Self {
@@ -111,9 +122,11 @@ where
             publish,
             inner: Rc::new(Inner {
                 sink,
+                control,
+                control_unbuf,
                 payload: Cell::new(None),
-                control: Pipeline::new(control),
                 inflight: RefCell::new(HashSet::default()),
+                stopped: Cell::new(false),
             }),
             _t: PhantomData,
         }
@@ -124,7 +137,7 @@ where
     }
 }
 
-impl<C> Inner<C> {
+impl<C, C2> Inner<C, C2> {
     fn drop_payload<PErr>(&self, err: &PErr)
     where
         PErr: Clone,
@@ -136,11 +149,12 @@ impl<C> Inner<C> {
     }
 }
 
-impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
+impl<T, C, C2, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, C2, E>
 where
     E: From<T::Error> + 'static,
     T: Service<Publish, Response = ()> + 'static,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
+    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
 {
     type Response = Option<Encoded>;
     type Error = MqttError<E>;
@@ -151,35 +165,41 @@ where
         let result = if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
-            } else {
-                match self.inner.control.call(Control::error(e.into())).await {
+            } else if !self.inner.stopped.get() {
+                self.inner.stopped.set(true);
+                match self.inner.control_unbuf.call(Control::error(e.into())).await {
                     Ok(_) => {
                         self.inner.sink.close();
                         Ok(())
                     }
                     Err(err) => Err(err),
                 }
+            } else {
+                res2
             }
         } else {
             res2
         };
 
-        if result.is_ok() {
-            if let Some(pl) = self.inner.payload.take() {
-                self.inner.payload.set(Some(pl.clone()));
-                if pl.ready().await != PayloadStatus::Ready {
-                    self.inner.sink.close();
-                }
+        if result.is_ok()
+            && let Some(pl) = self.inner.payload.take()
+        {
+            self.inner.payload.set(Some(pl.clone()));
+            if pl.ready().await != PayloadStatus::Ready {
+                self.inner.sink.close();
             }
         }
         result
     }
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        if let Err(e) = self.publish.poll(cx) {
+        if let Err(e) = self.publish.poll(cx)
+            && !self.inner.stopped.get()
+        {
             let inner = self.inner.clone();
+            inner.stopped.set(true);
             ntex_rt::spawn(async move {
-                if inner.control.call(Control::error(e.into())).await.is_ok() {
+                if inner.control_unbuf.call(Control::error(e.into())).await.is_ok() {
                     inner.sink.close();
                 }
             });
@@ -190,7 +210,7 @@ where
     async fn shutdown(&self) {
         self.inner.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.close();
-        let _ = self.inner.control.call(Control::closed()).await;
+        let _ = self.inner.control.call(Control::shutdown()).await;
 
         self.publish.shutdown().await;
         self.inner.control.shutdown().await;
@@ -220,20 +240,20 @@ where
                 let packet_id = publish.packet_id;
 
                 // check for duplicated packet id
-                if let Some(pid) = packet_id {
-                    if !inner.inflight.borrow_mut().insert(pid) {
-                        log::trace!(
-                            "{}: Duplicated packet id for publish packet: {:?}",
-                            self.tag(),
-                            pid
-                        );
-                        return control(
+                if let Some(pid) = packet_id
+                    && !inner.inflight.borrow_mut().insert(pid)
+                {
+                    log::trace!(
+                        "{}: Duplicated packet id for publish packet: {:?}",
+                        self.tag(),
+                        pid
+                    );
+                    return control(
                             Control::proto_error(
                                 ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]")
                             ),
                             &self.inner,
                         ).await;
-                    }
                 }
 
                 // check max allowed qos
@@ -458,17 +478,18 @@ where
 }
 
 /// Publish service response future
-async fn publish_fn<'f, T, C, E>(
+async fn publish_fn<'f, T, C, C2, E>(
     svc: &'f T,
     pkt: Publish,
     packet_id: Option<NonZeroU16>,
-    inner: &'f Inner<C>,
-    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+    inner: &'f Inner<C, C2>,
+    ctx: ServiceCtx<'f, Dispatcher<T, C, C2, E>>,
 ) -> Result<Option<Encoded>, MqttError<E>>
 where
     E: From<T::Error>,
     T: Service<Publish, Response = ()>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     let qos2 = pkt.qos() == QoS::ExactlyOnce;
     match ctx.call(svc, pkt).await {
@@ -494,17 +515,30 @@ where
     }
 }
 
-async fn control<C, E>(
+async fn control<C, C2, E>(
     mut pkt: Control<E>,
-    inner: &Inner<C>,
+    inner: &Inner<C, C2>,
 ) -> Result<Option<Encoded>, MqttError<E>>
 where
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    let mut error = matches!(pkt, Control::Error(_) | Control::ProtocolError(_));
-
     loop {
-        match inner.control.call(pkt).await {
+        let error = matches!(pkt, Control::Stop(_));
+        let result = if matches!(pkt, Control::Protocol(_)) {
+            inner.control.call(pkt).await
+        } else {
+            if error {
+                if !inner.stopped.get() {
+                    inner.stopped.set(true)
+                } else {
+                    return Ok(None);
+                }
+            }
+            inner.control_unbuf.call(pkt).await
+        };
+
+        match result {
             Ok(item) => {
                 let packet = match item.result {
                     ControlAckKind::Ping => Some(Encoded::Packet(Packet::PingResponse)),
@@ -543,13 +577,11 @@ where
                     Err(err)
                 } else {
                     // handle error from control service
-                    match err {
-                        MqttError::Service(err) => {
-                            error = true;
-                            pkt = Control::error(err);
-                            continue;
-                        }
-                        _ => Err(err),
+                    if let MqttError::Service(err) = err {
+                        pkt = Control::error(err);
+                        continue;
+                    } else {
+                        Err(err)
                     }
                 };
             }
@@ -568,7 +600,7 @@ mod tests {
     use ntex_util::time::{Seconds, sleep};
 
     use super::*;
-    use crate::v3::{MqttSink, codec};
+    use crate::v3::{CtlReason, MqttSink, codec};
 
     #[ntex::test]
     async fn test_dup_packet_id() {
@@ -582,18 +614,21 @@ mod tests {
         let err = Rc::new(RefCell::new(false));
         let err2 = err.clone();
 
-        let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
+        let control = Pipeline::new(fn_service(move |ctrl| {
+            if let Control::Stop(CtlReason::ProtocolError(_)) = ctrl {
+                *err2.borrow_mut() = true;
+            }
+            Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
+        }));
+
+        let disp = Pipeline::new(Dispatcher::<_, _, _, ()>::new(
             shared.clone(),
             fn_service(|_| async {
                 sleep(Seconds(10)).await;
                 Ok(())
             }),
-            fn_service(move |ctrl| {
-                if let Control::ProtocolError(_) = ctrl {
-                    *err2.borrow_mut() = true;
-                }
-                Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
-            }),
+            control.clone(),
+            control,
             cfg.get(),
         ));
 
@@ -637,11 +672,15 @@ mod tests {
         let io = Io::new(IoTest::create().0, cfg);
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+        let control = Pipeline::new(fn_service(|_| {
+            Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
+        }));
 
-        let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
+        let disp = Pipeline::new(Dispatcher::<_, _, _, ()>::new(
             shared.clone(),
             fn_service(|_| Ready::Ok(())),
-            fn_service(|_| Ready::Ok(ControlAck { result: ControlAckKind::Nothing })),
+            control.clone(),
+            control,
             cfg.get(),
         ));
 
@@ -661,5 +700,47 @@ mod tests {
         disp.call(DispatchItem::WBackPressureDisabled).await.unwrap();
         assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
         assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
+    }
+
+    #[ntex::test]
+    async fn control_stop_once_on_service_error() {
+        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
+        let codec = codec::Codec::default();
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+        let counter = Rc::new(Cell::new(0));
+        let counter2 = counter.clone();
+        let control = Pipeline::new(fn_service(async move |msg| {
+            if matches!(msg, Control::Stop(_)) {
+                counter2.set(counter2.get() + 1);
+            }
+            Ok::<_, MqttError<()>>(ControlAck { result: ControlAckKind::Nothing })
+        }));
+
+        let disp = Pipeline::new(Dispatcher::<_, _, _, _>::new(
+            shared.clone(),
+            fn_service(async |_: Publish| Err(())),
+            control.clone(),
+            control,
+            Default::default(),
+        ));
+
+        disp.call(DispatchItem::Item(Decoded::Publish(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                payload_size: 0,
+            },
+            Bytes::new(),
+            0,
+        )))
+        .await
+        .unwrap();
+
+        disp.call(DispatchItem::Disconnect(None)).await.unwrap();
+
+        assert_eq!(counter.get(), 1);
     }
 }

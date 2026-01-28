@@ -77,27 +77,29 @@ fn control_service_factory() -> impl ServiceFactory<
     InitError = MyServerError,
 > {
     fn_factory_with_config(|session: Session<MySession>| {
-        Ready::Ok(fn_service(move |control| match control {
-            v5::Control::Auth(a) => Ready::Ok(a.ack(v5::codec::Auth::default())),
-            v5::Control::Error(e) => {
-                Ready::Ok(e.ack(v5::codec::DisconnectReasonCode::UnspecifiedError))
+        Ready::Ok(fn_service(async move |control| match control {
+            v5::Control::Protocol(v5::CtlFrame::Auth(a)) => {
+                Ok(a.ack(v5::codec::Auth::default()))
             }
-            v5::Control::ProtocolError(e) => Ready::Ok(e.ack()),
-            v5::Control::Ping(p) => Ready::Ok(p.ack()),
-            v5::Control::Disconnect(d) => Ready::Ok(d.ack()),
-            v5::Control::Subscribe(mut s) => {
+            v5::Control::Protocol(v5::CtlFrame::Disconnect(d)) => Ok(d.ack()),
+            v5::Control::Protocol(v5::CtlFrame::Subscribe(mut s)) => {
                 // store subscribed topics in session, publish service uses this list for echos
                 s.iter_mut().for_each(|mut s| {
                     session.subscriptions.borrow_mut().push(s.topic().clone());
                     s.confirm(v5::QoS::AtLeastOnce);
                 });
 
-                Ready::Ok(s.ack())
+                Ok(s.ack())
             }
-            v5::Control::Unsubscribe(s) => Ready::Ok(s.ack()),
-            v5::Control::Closed(c) => Ready::Ok(c.ack()),
-            v5::Control::PeerGone(c) => Ready::Ok(c.ack()),
-            _ => Ready::Ok(control.ack()),
+            v5::Control::Protocol(v5::CtlFrame::Unsubscribe(s)) => Ok(s.ack()),
+            v5::Control::Flow(v5::CtlFlow::Ping(p)) => Ok(p.ack()),
+            v5::Control::Stop(v5::CtlReason::Error(e)) => {
+                Ok(e.ack(v5::codec::DisconnectReasonCode::UnspecifiedError))
+            }
+            v5::Control::Stop(v5::CtlReason::ProtocolError(e)) => Ok(e.ack()),
+            v5::Control::Stop(v5::CtlReason::PeerGone(c)) => Ok(c.ack()),
+            v5::Control::Shutdown(c) => Ok(c.ack()),
+            _ => Ok(control.ack()),
         }))
     })
 }

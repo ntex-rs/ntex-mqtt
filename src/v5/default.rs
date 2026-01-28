@@ -6,7 +6,7 @@ use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
 use crate::{MqttServiceConfig, inflight::InFlightServiceImpl};
 
 use super::Session;
-use super::control::{Control, ControlAck};
+use super::control::{Control, ControlAck, CtlFlow, CtlFrame};
 
 /// Default control service
 pub struct DefaultControlService<S, E>(PhantomData<(S, E)>);
@@ -38,8 +38,8 @@ impl<S, E: fmt::Debug> Service<Control<E>> for DefaultControlService<S, E> {
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         match pkt {
-            Control::Ping(pkt) => Ok(pkt.ack()),
-            Control::Disconnect(pkt) => Ok(pkt.ack()),
+            Control::Flow(CtlFlow::Ping(pkt)) => Ok(pkt.ack()),
+            Control::Protocol(CtlFrame::Disconnect(pkt)) => Ok(pkt.ack()),
             _ => {
                 log::warn!("MQTT5 Control service is not configured, pkt: {:?}", pkt);
                 Ok(pkt.disconnect_with(super::codec::Disconnect::new(

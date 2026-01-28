@@ -147,11 +147,11 @@ pub(crate) fn encode_opt_props(
         size -= prop_len as u32; // safe: checked it's less already
     }
 
-    if let Some(reason) = reason_str {
-        if reason.len() < size as usize {
-            buf.put_u8(pt::REASON_STRING);
-            reason.encode(buf)?;
-        }
+    if let Some(reason) = reason_str
+        && reason.len() < size as usize
+    {
+        buf.put_u8(pt::REASON_STRING);
+        reason.encode(buf)?;
     }
 
     // todo: debug_assert remaining is 0

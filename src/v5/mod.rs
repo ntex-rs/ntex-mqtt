@@ -16,7 +16,7 @@ pub type Session<St> = crate::Session<MqttSink, St>;
 
 use std::num::NonZeroU16;
 
-pub use self::control::{Control, ControlAck};
+pub use self::control::{Control, ControlAck, CtlFlow, CtlFrame, CtlReason};
 pub use self::handshake::{Handshake, HandshakeAck};
 pub use self::publish::{Publish, PublishAck};
 pub use self::router::Router;

@@ -1,5 +1,11 @@
 # Changes
 
+## [7.0.0] - 2026-01-20
+
+* Refactor `control` message
+
+* Send control stop message out of order
+
 ## [6.6.2] - 2026-01-20
 
 * Fix in-flight handling after drop

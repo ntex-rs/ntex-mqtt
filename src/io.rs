@@ -339,12 +339,11 @@ where
                     inner.io.stop_timer();
 
                     // service may relay on poll_ready for response results
-                    if !inner.flags.contains(Flags::READY_ERR) {
-                        if let Poll::Ready(res) = inner.service.poll_ready(cx) {
-                            if res.is_err() {
-                                inner.flags.insert(Flags::READY_ERR);
-                            }
-                        }
+                    if !inner.flags.contains(Flags::READY_ERR)
+                        && let Poll::Ready(res) = inner.service.poll_ready(cx)
+                        && res.is_err()
+                    {
+                        inner.flags.insert(Flags::READY_ERR);
                     }
 
                     if inner.state.queue.borrow().is_empty() {
