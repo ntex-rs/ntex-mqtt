@@ -542,10 +542,10 @@ impl SubscribeBuilder {
 
         if !shared.is_closed() {
             // handle client receive maximum
-            if let Some(rx) = shared.wait_readiness() {
-                if rx.await.is_err() {
-                    return Err(SendPacketError::Disconnected);
-                }
+            if let Some(rx) = shared.wait_readiness()
+                && rx.await.is_err()
+            {
+                return Err(SendPacketError::Disconnected);
             }
 
             // allocate packet id
@@ -618,10 +618,10 @@ impl UnsubscribeBuilder {
 
         if !shared.is_closed() {
             // handle client receive maximum
-            if let Some(rx) = shared.wait_readiness() {
-                if rx.await.is_err() {
-                    return Err(SendPacketError::Disconnected);
-                }
+            if let Some(rx) = shared.wait_readiness()
+                && rx.await.is_err()
+            {
+                return Err(SendPacketError::Disconnected);
             }
             // allocate packet id
             packet.packet_id = self.id.unwrap_or_else(|| shared.next_id());

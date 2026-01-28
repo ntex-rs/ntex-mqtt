@@ -235,10 +235,10 @@ impl MqttShared {
         self.flags.set(flags);
 
         // streaming waiter
-        if let Some(tx) = self.streaming_waiter.take() {
-            if tx.send(()).is_ok() {
-                return;
-            }
+        if let Some(tx) = self.streaming_waiter.take()
+            && tx.send(()).is_ok()
+        {
+            return;
         }
 
         // check if there are waiters

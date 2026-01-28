@@ -4,52 +4,62 @@ use ntex_bytes::Bytes;
 
 use crate::payload::Payload;
 pub use crate::v3::control::{
-    Closed, ControlAck, Disconnect, Error, PeerGone, ProtocolError, PublishRelease,
+    ControlAck, CtlReason, Disconnect, Error, PeerGone, ProtocolError, PublishRelease, Shutdown,
 };
 use crate::v3::{codec, control::ControlAckKind, error};
 
 /// Client control messages
 #[derive(Debug)]
 pub enum Control<E> {
+    /// MQTT protocol–related messages.
+    Protocol(CtlFrame),
+
+    /// Dispatcher is preparing for shutdown.
+    ///
+    /// The control service will receive this message only once. The next message
+    /// after `Disconnect` is `Shutdown`.
+    Stop(CtlReason<E>),
+    /// Underlying pipeline is shutting down.
+    ///
+    /// This is the last message the control service receives.
+    Shutdown(Shutdown),
+}
+
+/// MQTT protocol–related messages
+#[derive(Debug)]
+pub enum CtlFrame {
     /// Unhandled publish packet
     Publish(Publish),
-    /// Publish release packet
+    /// PublishRelease packet from a client
     PublishRelease(PublishRelease),
-    /// Connection closed
-    Closed(Closed),
-    /// Application level error from resources and control services
-    Error(Error<E>),
-    /// Protocol level error
-    ProtocolError(ProtocolError),
-    /// Peer is gone
-    PeerGone(PeerGone),
 }
 
 impl<E> Control<E> {
     pub(super) fn publish(pkt: codec::Publish, pl: Payload, size: u32) -> Self {
-        Control::Publish(Publish(pkt, pl, size))
+        Control::Protocol(CtlFrame::Publish(Publish(pkt, pl, size)))
     }
 
     pub(super) fn pubrel(packet_id: NonZeroU16) -> Self {
-        Control::PublishRelease(PublishRelease { packet_id })
+        Control::Protocol(CtlFrame::PublishRelease(PublishRelease { packet_id }))
     }
 
-    pub(super) fn closed() -> Self {
-        Control::Closed(Closed)
+    pub(super) fn shutdown() -> Self {
+        Control::Shutdown(Shutdown)
     }
 
     pub(super) fn error(err: E) -> Self {
-        Control::Error(Error::new(err))
+        Control::Stop(CtlReason::Error(Error::new(err)))
     }
 
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        Control::ProtocolError(ProtocolError::new(err))
+        Control::Stop(CtlReason::ProtocolError(ProtocolError::new(err)))
     }
 
     pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        Control::PeerGone(PeerGone(err))
+        Control::Stop(CtlReason::PeerGone(PeerGone(err)))
     }
 
+    #[inline]
     /// Initiate clean disconnect
     pub fn disconnect(&self) -> ControlAck {
         ControlAck { result: ControlAckKind::Disconnect }
@@ -58,12 +68,12 @@ impl<E> Control<E> {
     /// Ack control message
     pub fn ack(self) -> ControlAck {
         match self {
-            Control::Publish(msg) => msg.ack(),
-            Control::PublishRelease(msg) => msg.ack(),
-            Control::Closed(msg) => msg.ack(),
-            Control::Error(msg) => msg.ack(),
-            Control::ProtocolError(msg) => msg.ack(),
-            Control::PeerGone(msg) => msg.ack(),
+            Control::Protocol(CtlFrame::Publish(msg)) => msg.ack(),
+            Control::Protocol(CtlFrame::PublishRelease(msg)) => msg.ack(),
+            Control::Stop(CtlReason::Error(msg)) => msg.ack(),
+            Control::Stop(CtlReason::ProtocolError(msg)) => msg.ack(),
+            Control::Stop(CtlReason::PeerGone(msg)) => msg.ack(),
+            Control::Shutdown(msg) => msg.ack(),
         }
     }
 }
@@ -72,16 +82,19 @@ impl<E> Control<E> {
 pub struct Publish(codec::Publish, Payload, u32);
 
 impl Publish {
+    #[inline]
     /// Returns reference to publish packet
     pub fn packet(&self) -> &codec::Publish {
         &self.0
     }
 
+    #[inline]
     /// Returns reference to publish packet
     pub fn packet_mut(&mut self) -> &mut codec::Publish {
         &mut self.0
     }
 
+    #[inline]
     /// Returns size of the packet
     pub fn packet_size(&self) -> u32 {
         self.2
@@ -105,6 +118,7 @@ impl Publish {
         self.1.read_all().await
     }
 
+    #[inline]
     pub fn ack(self) -> ControlAck {
         if let Some(id) = self.0.packet_id {
             ControlAck { result: ControlAckKind::PublishAck(id) }
@@ -113,6 +127,7 @@ impl Publish {
         }
     }
 
+    #[inline]
     pub fn into_inner(self) -> (ControlAck, codec::Publish) {
         if let Some(id) = self.0.packet_id {
             (ControlAck { result: ControlAckKind::PublishAck(id) }, self.0)

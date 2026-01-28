@@ -2,7 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_io::DispatchItem;
-use ntex_service::{Pipeline, Service, ServiceCtx, ServiceFactory, cfg::Cfg, cfg::SharedCfg};
+use ntex_service::cfg::{Cfg, SharedCfg};
+use ntex_service::{Pipeline, PipelineSvc, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
@@ -11,7 +12,7 @@ use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
 use super::codec::{Decoded, Encoded, Packet};
-use super::control::{Control, ControlAck, ControlAckKind, Subscribe, Unsubscribe};
+use super::control::{Control, ControlAck, ControlAckKind, CtlReason, Subscribe, Unsubscribe};
 use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
@@ -41,22 +42,28 @@ where
             let (publish, control) = fut.await;
 
             let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
-            let control = control.map_err(|e| MqttError::Service(e.into()))?;
+            let control_unbuf = Pipeline::new(
+                control
+                    .map_err(|e| MqttError::Service(e.into()))?
+                    .map_err(|e| MqttError::Service(E::from(e))),
+            );
 
-            let control = BufferService::new(
-                16,
-                // limit number of in-flight messages
-                InFlightService::new(1, control),
-            )
-            .map_err(|err| match err {
-                BufferServiceError::Service(e) => MqttError::Service(E::from(e)),
-                BufferServiceError::RequestCanceled => {
-                    MqttError::Handshake(HandshakeError::Disconnected(None))
-                }
-            });
+            let control = Pipeline::new(
+                BufferService::new(
+                    16,
+                    // limit number of in-flight messages
+                    InFlightService::new(1, PipelineSvc::new(control_unbuf.clone())),
+                )
+                .map_err(|err| match err {
+                    BufferServiceError::Service(e) => e,
+                    BufferServiceError::RequestCanceled => {
+                        MqttError::Handshake(HandshakeError::Disconnected(None))
+                    }
+                }),
+            );
 
             let cfg: Cfg<MqttServiceConfig> = cfg.get();
-            Ok(Dispatcher::<_, _, E>::new(sink, publish, control, cfg))
+            Ok(Dispatcher::<_, _, _, E>::new(sink, publish, control, control_unbuf, cfg))
         },
     )
 }
@@ -80,30 +87,33 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C: Service<Control<E>>, E> {
+pub(crate) struct Dispatcher<T, C: Service<Control<E>>, C2: Service<Control<E>>, E> {
     publish: T,
-    inner: Rc<Inner<C>>,
+    inner: Rc<Inner<C, C2>>,
     cfg: Cfg<MqttServiceConfig>,
     _t: PhantomData<(E,)>,
 }
 
-struct Inner<C> {
+struct Inner<C, C2> {
     control: Pipeline<C>,
+    control_unbuf: Pipeline<C2>,
     sink: Rc<MqttShared>,
     payload: Cell<Option<PlSender>>,
     inflight: RefCell<HashSet<NonZeroU16>>,
 }
 
-impl<T, C, E> Dispatcher<T, C, E>
+impl<T, C, C2, E> Dispatcher<T, C, C2, E>
 where
     E: From<T::Error>,
     T: Service<Publish, Response = ()>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     pub(crate) fn new(
         sink: Rc<MqttShared>,
         publish: T,
-        control: C,
+        control: Pipeline<C>,
+        control_unbuf: Pipeline<C2>,
         cfg: Cfg<MqttServiceConfig>,
     ) -> Self {
         Self {
@@ -111,8 +121,9 @@ where
             publish,
             inner: Rc::new(Inner {
                 sink,
+                control,
+                control_unbuf,
                 payload: Cell::new(None),
-                control: Pipeline::new(control),
                 inflight: RefCell::new(HashSet::default()),
             }),
             _t: PhantomData,
@@ -124,7 +135,7 @@ where
     }
 }
 
-impl<C> Inner<C> {
+impl<C, C2> Inner<C, C2> {
     fn drop_payload<PErr>(&self, err: &PErr)
     where
         PErr: Clone,
@@ -136,11 +147,12 @@ impl<C> Inner<C> {
     }
 }
 
-impl<T, C, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, E>
+impl<T, C, C2, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, C2, E>
 where
     E: From<T::Error> + 'static,
     T: Service<Publish, Response = ()> + 'static,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
+    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
 {
     type Response = Option<Encoded>;
     type Error = MqttError<E>;
@@ -164,12 +176,12 @@ where
             res2
         };
 
-        if result.is_ok() {
-            if let Some(pl) = self.inner.payload.take() {
-                self.inner.payload.set(Some(pl.clone()));
-                if pl.ready().await != PayloadStatus::Ready {
-                    self.inner.sink.close();
-                }
+        if result.is_ok()
+            && let Some(pl) = self.inner.payload.take()
+        {
+            self.inner.payload.set(Some(pl.clone()));
+            if pl.ready().await != PayloadStatus::Ready {
+                self.inner.sink.close();
             }
         }
         result
@@ -190,7 +202,7 @@ where
     async fn shutdown(&self) {
         self.inner.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.close();
-        let _ = self.inner.control.call(Control::closed()).await;
+        let _ = self.inner.control.call(Control::shutdown()).await;
 
         self.publish.shutdown().await;
         self.inner.control.shutdown().await;
@@ -220,20 +232,20 @@ where
                 let packet_id = publish.packet_id;
 
                 // check for duplicated packet id
-                if let Some(pid) = packet_id {
-                    if !inner.inflight.borrow_mut().insert(pid) {
-                        log::trace!(
-                            "{}: Duplicated packet id for publish packet: {:?}",
-                            self.tag(),
-                            pid
-                        );
-                        return control(
+                if let Some(pid) = packet_id
+                    && !inner.inflight.borrow_mut().insert(pid)
+                {
+                    log::trace!(
+                        "{}: Duplicated packet id for publish packet: {:?}",
+                        self.tag(),
+                        pid
+                    );
+                    return control(
                             Control::proto_error(
                                 ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]")
                             ),
                             &self.inner,
                         ).await;
-                    }
                 }
 
                 // check max allowed qos
@@ -458,17 +470,18 @@ where
 }
 
 /// Publish service response future
-async fn publish_fn<'f, T, C, E>(
+async fn publish_fn<'f, T, C, C2, E>(
     svc: &'f T,
     pkt: Publish,
     packet_id: Option<NonZeroU16>,
-    inner: &'f Inner<C>,
-    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+    inner: &'f Inner<C, C2>,
+    ctx: ServiceCtx<'f, Dispatcher<T, C, C2, E>>,
 ) -> Result<Option<Encoded>, MqttError<E>>
 where
     E: From<T::Error>,
     T: Service<Publish, Response = ()>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
     let qos2 = pkt.qos() == QoS::ExactlyOnce;
     match ctx.call(svc, pkt).await {
@@ -494,17 +507,27 @@ where
     }
 }
 
-async fn control<C, E>(
+async fn control<C, C2, E>(
     mut pkt: Control<E>,
-    inner: &Inner<C>,
+    inner: &Inner<C, C2>,
 ) -> Result<Option<Encoded>, MqttError<E>>
 where
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    let mut error = matches!(pkt, Control::Error(_) | Control::ProtocolError(_));
+    let mut error = matches!(
+        pkt,
+        Control::Stop(CtlReason::Error(_)) | Control::Stop(CtlReason::ProtocolError(_))
+    );
 
     loop {
-        match inner.control.call(pkt).await {
+        let result = if matches!(pkt, Control::Protocol(_)) {
+            inner.control.call(pkt).await
+        } else {
+            inner.control_unbuf.call(pkt).await
+        };
+
+        match result {
             Ok(item) => {
                 let packet = match item.result {
                     ControlAckKind::Ping => Some(Encoded::Packet(Packet::PingResponse)),
@@ -582,18 +605,21 @@ mod tests {
         let err = Rc::new(RefCell::new(false));
         let err2 = err.clone();
 
-        let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
+        let control = Pipeline::new(fn_service(move |ctrl| {
+            if let Control::Stop(CtlReason::ProtocolError(_)) = ctrl {
+                *err2.borrow_mut() = true;
+            }
+            Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
+        }));
+
+        let disp = Pipeline::new(Dispatcher::<_, _, _, ()>::new(
             shared.clone(),
             fn_service(|_| async {
                 sleep(Seconds(10)).await;
                 Ok(())
             }),
-            fn_service(move |ctrl| {
-                if let Control::ProtocolError(_) = ctrl {
-                    *err2.borrow_mut() = true;
-                }
-                Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
-            }),
+            control.clone(),
+            control,
             cfg.get(),
         ));
 
@@ -637,11 +663,15 @@ mod tests {
         let io = Io::new(IoTest::create().0, cfg);
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+        let control = Pipeline::new(fn_service(|_| {
+            Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
+        }));
 
-        let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
+        let disp = Pipeline::new(Dispatcher::<_, _, _, ()>::new(
             shared.clone(),
             fn_service(|_| Ready::Ok(())),
-            fn_service(|_| Ready::Ok(ControlAck { result: ControlAckKind::Nothing })),
+            control.clone(),
+            control,
             cfg.get(),
         ));
 

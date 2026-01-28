@@ -4,6 +4,10 @@ use ntex_util::future::Either;
 
 use crate::v5::codec::DisconnectReasonCode;
 
+pub(crate) const ERR_PUB_NOT_SUP: &str = "Publish control message is not supported";
+pub(crate) const ERR_AUTH_NOT_SUP: &str = "Auth control message is not supported";
+pub(crate) const ERR_CTL_NOT_SUP: &str = "Error control message is not supported";
+
 /// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug, thiserror::Error)]
 pub enum MqttError<E> {

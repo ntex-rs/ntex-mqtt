@@ -8,7 +8,8 @@ use ntex::{codec::Encoder, io::IoConfig, server, service::chain_factory};
 
 use ntex_mqtt::v3::codec::{self, Decoded, Encoded, Packet};
 use ntex_mqtt::v3::{
-    self, Control, Handshake, HandshakeAck, MqttServer, Publish, Session, client,
+    self, Control, CtlFlow, CtlFrame, CtlReason, Handshake, HandshakeAck, MqttServer, Publish,
+    Session, client,
 };
 use ntex_mqtt::{MqttServiceConfig, QoS, error::ProtocolError};
 
@@ -335,7 +336,7 @@ async fn test_qos2() -> std::io::Result<()> {
         let release = release2.clone();
         MqttServer::new(handshake)
             .control(move |msg| match msg {
-                Control::PublishRelease(msg) => {
+                Control::Protocol(CtlFrame::PublishRelease(msg)) => {
                     release.store(true, Relaxed);
                     Ready::Ok(msg.ack())
                 }
@@ -394,7 +395,7 @@ async fn test_qos2_client() -> std::io::Result<()> {
         let release = release2.clone();
         MqttServer::new(handshake)
             .control(move |msg| match msg {
-                Control::PublishRelease(msg) => {
+                Control::Protocol(CtlFrame::PublishRelease(msg)) => {
                     release.store(true, Relaxed);
                     Ready::Ok(msg.ack())
                 }
@@ -438,7 +439,7 @@ async fn test_ping() -> std::io::Result<()> {
             .control(move |msg| {
                 let ping = ping.clone();
                 match msg {
-                    Control::Ping(msg) => {
+                    Control::Flow(CtlFlow::Ping(msg)) => {
                         ping.store(true, Relaxed);
                         Ready::Ok(msg.ack())
                     }
@@ -471,7 +472,7 @@ async fn test_ack_order() -> std::io::Result<()> {
     let srv = server::test_server(async move || {
         MqttServer::new(handshake)
             .control(move |msg| match msg {
-                Control::Subscribe(mut msg) => {
+                Control::Protocol(CtlFrame::Subscribe(mut msg)) => {
                     for mut sub in &mut msg {
                         assert_eq!(sub.qos(), codec::QoS::AtLeastOnce);
                         sub.topic();
@@ -642,7 +643,7 @@ async fn test_client_disconnect() -> std::io::Result<()> {
 
         MqttServer::new(handshake)
             .control(move |msg| match msg {
-                Control::Disconnect(msg) => {
+                Control::Protocol(CtlFrame::Disconnect(msg)) => {
                     disconnect.store(true, Relaxed);
                     Ready::Ok(msg.ack())
                 }
@@ -688,7 +689,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
         let disconnect = disconnect2.clone();
         MqttServer::new(handshake)
             .control(move |msg| match msg {
-                Control::Disconnect(msg) => {
+                Control::Protocol(CtlFrame::Disconnect(msg)) => {
                     disconnect.store(true, Relaxed);
                     Ready::Ok(msg.ack())
                 }
@@ -762,7 +763,7 @@ async fn handle_or_drop_publish_after_disconnect(
         let disconnect = disconnect2.clone();
         MqttServer::new(handshake)
             .control(move |msg| match msg {
-                Control::Disconnect(msg) => {
+                Control::Protocol(CtlFrame::Disconnect(msg)) => {
                     disconnect.store(true, Relaxed);
                     Ready::Ok(msg.ack())
                 }
@@ -845,8 +846,8 @@ async fn test_nested_errors() -> std::io::Result<()> {
     let srv = server::test_server(async move || {
         MqttServer::new(handshake)
             .control(move |msg| match msg {
-                Control::Disconnect(_) => Ready::Err(()),
-                Control::Error(_) => Ready::Err(()),
+                Control::Protocol(CtlFrame::Disconnect(_)) => Ready::Err(()),
+                Control::Stop(CtlReason::Error(_)) => Ready::Err(()),
                 _ => Ready::Ok(msg.disconnect()),
             })
             .publish(|_| Ready::Ok(()))
@@ -967,7 +968,7 @@ async fn test_max_qos() -> std::io::Result<()> {
             .control(move |msg| {
                 let violated = violated.clone();
                 match msg {
-                    Control::ProtocolError(err) => {
+                    Control::Stop(CtlReason::ProtocolError(err)) => {
                         if let ProtocolError::ProtocolViolation(_) = err.get_ref() {
                             violated.store(true, Relaxed);
                         }
@@ -1109,7 +1110,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
             .control(move |msg| {
                 let check = check.clone();
                 match msg {
-                    Control::ProtocolError(msg) => {
+                    Control::Stop(CtlReason::ProtocolError(msg)) => {
                         if msg.get_ref() == &ProtocolError::ReadTimeout {
                             check.store(true, Relaxed);
                         }

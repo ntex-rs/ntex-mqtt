@@ -114,12 +114,12 @@ where
             res2
         };
 
-        if result.is_ok() {
-            if let Some(pl) = self.inner.payload.take() {
-                self.inner.payload.set(Some(pl.clone()));
-                if pl.ready().await != PayloadStatus::Ready {
-                    self.inner.sink.close();
-                }
+        if result.is_ok()
+            && let Some(pl) = self.inner.payload.take()
+        {
+            self.inner.payload.set(Some(pl.clone()));
+            if pl.ready().await != PayloadStatus::Ready {
+                self.inner.sink.close();
             }
         }
         result
@@ -140,7 +140,7 @@ where
     async fn shutdown(&self) {
         self.inner.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.close();
-        let _ = self.inner.control.call(Control::closed()).await;
+        let _ = self.inner.control.call(Control::shutdown()).await;
 
         self.publish.shutdown().await;
         self.inner.control.shutdown().await
@@ -158,15 +158,15 @@ where
                 let packet_id = publish.packet_id;
 
                 // check for duplicated packet id
-                if let Some(pid) = packet_id {
-                    if !inner.inflight.borrow_mut().insert(pid) {
-                        log::trace!("Duplicated packet id for publish packet: {:?}", pid);
-                        return Err(MqttError::Handshake(HandshakeError::Protocol(
-                            ProtocolError::generic_violation(
-                                "PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]",
-                            ),
-                        )));
-                    }
+                if let Some(pid) = packet_id
+                    && !inner.inflight.borrow_mut().insert(pid)
+                {
+                    log::trace!("Duplicated packet id for publish packet: {:?}", pid);
+                    return Err(MqttError::Handshake(HandshakeError::Protocol(
+                        ProtocolError::generic_violation(
+                            "PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]",
+                        ),
+                    )));
                 }
 
                 let payload = if publish.payload_size == payload.len() as u32 {

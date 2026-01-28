@@ -13,7 +13,7 @@ use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{codec, publish::Publish, publish::PublishAck, sink::MqttSink};
 use crate::{MqttServiceConfig, types::packet_type};
 
-use super::control::{Control, ControlAck};
+use super::control::{Control, ControlAck, CtlReason};
 
 /// mqtt5 protocol dispatcher
 pub(super) fn create_dispatcher<T, C, E>(
@@ -111,12 +111,12 @@ where
             res2
         };
 
-        if result.is_ok() {
-            if let Some(pl) = self.inner.payload.take() {
-                self.inner.payload.set(Some(pl.clone()));
-                if pl.ready().await != PayloadStatus::Ready {
-                    self.inner.sink.force_close();
-                }
+        if result.is_ok()
+            && let Some(pl) = self.inner.payload.take()
+        {
+            self.inner.payload.set(Some(pl.clone()));
+            if pl.ready().await != PayloadStatus::Ready {
+                self.inner.sink.force_close();
             }
         }
         result
@@ -127,10 +127,10 @@ where
         if let Err(e) = self.publish.poll(cx) {
             let inner = self.inner.clone();
             ntex_rt::spawn(async move {
-                if let Ok(res) = inner.control.call(Control::error(e)).await {
-                    if res.disconnect {
-                        inner.sink.drop_sink();
-                    }
+                if let Ok(res) = inner.control.call(Control::error(e)).await
+                    && res.disconnect
+                {
+                    inner.sink.drop_sink();
                 }
             });
         }
@@ -140,7 +140,7 @@ where
     async fn shutdown(&self) {
         self.inner.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink();
-        let _ = self.inner.control.call(Control::closed()).await;
+        let _ = self.inner.control.call(Control::shutdown()).await;
 
         self.publish.shutdown().await;
         self.inner.control.shutdown().await;
@@ -437,7 +437,10 @@ async fn control<C, E>(
 where
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    let mut error = matches!(pkt, Control::Error(_) | Control::ProtocolError(_));
+    let mut error = matches!(
+        pkt,
+        Control::Stop(CtlReason::Error(_)) | Control::Stop(CtlReason::ProtocolError(_))
+    );
 
     loop {
         let result = match inner.control.call(pkt).await {

@@ -6,7 +6,7 @@ use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
 use crate::{MqttServiceConfig, inflight::InFlightServiceImpl};
 
 use super::Session;
-use super::control::{Control, ControlAck, ControlAckKind};
+use super::control::{Control, ControlAck, ControlAckKind, CtlFlow, CtlFrame};
 
 /// Default control service
 pub struct DefaultControlService<S, E>(PhantomData<(S, E)>);
@@ -40,9 +40,9 @@ impl<S, E: fmt::Debug> Service<Control<E>> for DefaultControlService<S, E> {
         log::warn!("MQTT3 Subscribe is not supported");
 
         Ok(match pkt {
-            Control::Ping(ping) => ping.ack(),
-            Control::Disconnect(disc) => disc.ack(),
-            Control::Closed(msg) => msg.ack(),
+            Control::Flow(CtlFlow::Ping(ping)) => ping.ack(),
+            Control::Protocol(CtlFrame::Disconnect(disc)) => disc.ack(),
+            Control::Shutdown(msg) => msg.ack(),
             _ => {
                 log::warn!("MQTT3 Control service is not configured, pkt: {:?}", pkt);
                 ControlAck { result: ControlAckKind::Disconnect }
