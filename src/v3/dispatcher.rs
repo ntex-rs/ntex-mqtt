@@ -165,19 +165,17 @@ where
         let result = if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
-            } else {
-                if !self.inner.stopped.get() {
-                    self.inner.stopped.set(true);
-                    match self.inner.control_unbuf.call(Control::error(e.into())).await {
-                        Ok(_) => {
-                            self.inner.sink.close();
-                            Ok(())
-                        }
-                        Err(err) => Err(err),
+            } else if !self.inner.stopped.get() {
+                self.inner.stopped.set(true);
+                match self.inner.control_unbuf.call(Control::error(e.into())).await {
+                    Ok(_) => {
+                        self.inner.sink.close();
+                        Ok(())
                     }
-                } else {
-                    res2
+                    Err(err) => Err(err),
                 }
+            } else {
+                res2
             }
         } else {
             res2
@@ -195,16 +193,16 @@ where
     }
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        if let Err(e) = self.publish.poll(cx) {
-            if !self.inner.stopped.get() {
-                let inner = self.inner.clone();
-                inner.stopped.set(true);
-                ntex_rt::spawn(async move {
-                    if inner.control_unbuf.call(Control::error(e.into())).await.is_ok() {
-                        inner.sink.close();
-                    }
-                });
-            }
+        if let Err(e) = self.publish.poll(cx)
+            && !self.inner.stopped.get()
+        {
+            let inner = self.inner.clone();
+            inner.stopped.set(true);
+            ntex_rt::spawn(async move {
+                if inner.control_unbuf.call(Control::error(e.into())).await.is_ok() {
+                    inner.sink.close();
+                }
+            });
         }
         self.inner.control.poll(cx)
     }
@@ -602,7 +600,7 @@ mod tests {
     use ntex_util::time::{Seconds, sleep};
 
     use super::*;
-    use crate::v3::{MqttSink, codec};
+    use crate::v3::{CtlReason, MqttSink, codec};
 
     #[ntex::test]
     async fn test_dup_packet_id() {
