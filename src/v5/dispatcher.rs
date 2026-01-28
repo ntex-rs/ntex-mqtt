@@ -210,8 +210,8 @@ where
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         if let Err(e) = self.publish.poll(cx) {
             if !self.inner.stopped.get() {
-                self.inner.stopped.set(true);
                 let inner = self.inner.clone();
+                inner.stopped.set(true);
                 ntex_rt::spawn(async move {
                     if let Ok(res) = inner.control_unbuf.call(Control::error(e.into())).await
                         && res.disconnect

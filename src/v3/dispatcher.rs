@@ -12,7 +12,7 @@ use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
 use super::codec::{Decoded, Encoded, Packet};
-use super::control::{Control, ControlAck, ControlAckKind, CtlReason, Subscribe, Unsubscribe};
+use super::control::{Control, ControlAck, ControlAckKind, Subscribe, Unsubscribe};
 use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
@@ -100,6 +100,7 @@ struct Inner<C, C2> {
     sink: Rc<MqttShared>,
     payload: Cell<Option<PlSender>>,
     inflight: RefCell<HashSet<NonZeroU16>>,
+    stopped: Cell<bool>,
 }
 
 impl<T, C, C2, E> Dispatcher<T, C, C2, E>
@@ -125,6 +126,7 @@ where
                 control_unbuf,
                 payload: Cell::new(None),
                 inflight: RefCell::new(HashSet::default()),
+                stopped: Cell::new(false),
             }),
             _t: PhantomData,
         }
@@ -164,12 +166,17 @@ where
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
             } else {
-                match self.inner.control.call(Control::error(e.into())).await {
-                    Ok(_) => {
-                        self.inner.sink.close();
-                        Ok(())
+                if !self.inner.stopped.get() {
+                    self.inner.stopped.set(true);
+                    match self.inner.control_unbuf.call(Control::error(e.into())).await {
+                        Ok(_) => {
+                            self.inner.sink.close();
+                            Ok(())
+                        }
+                        Err(err) => Err(err),
                     }
-                    Err(err) => Err(err),
+                } else {
+                    res2
                 }
             }
         } else {
@@ -189,12 +196,15 @@ where
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         if let Err(e) = self.publish.poll(cx) {
-            let inner = self.inner.clone();
-            ntex_rt::spawn(async move {
-                if inner.control.call(Control::error(e.into())).await.is_ok() {
-                    inner.sink.close();
-                }
-            });
+            if !self.inner.stopped.get() {
+                let inner = self.inner.clone();
+                inner.stopped.set(true);
+                ntex_rt::spawn(async move {
+                    if inner.control_unbuf.call(Control::error(e.into())).await.is_ok() {
+                        inner.sink.close();
+                    }
+                });
+            }
         }
         self.inner.control.poll(cx)
     }
@@ -515,15 +525,18 @@ where
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
     C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    let mut error = matches!(
-        pkt,
-        Control::Stop(CtlReason::Error(_)) | Control::Stop(CtlReason::ProtocolError(_))
-    );
-
     loop {
+        let error = matches!(pkt, Control::Stop(_));
         let result = if matches!(pkt, Control::Protocol(_)) {
             inner.control.call(pkt).await
         } else {
+            if error {
+                if !inner.stopped.get() {
+                    inner.stopped.set(true)
+                } else {
+                    return Ok(None);
+                }
+            }
             inner.control_unbuf.call(pkt).await
         };
 
@@ -566,13 +579,11 @@ where
                     Err(err)
                 } else {
                     // handle error from control service
-                    match err {
-                        MqttError::Service(err) => {
-                            error = true;
-                            pkt = Control::error(err);
-                            continue;
-                        }
-                        _ => Err(err),
+                    if let MqttError::Service(err) = err {
+                        pkt = Control::error(err);
+                        continue;
+                    } else {
+                        Err(err)
                     }
                 };
             }
@@ -691,5 +702,47 @@ mod tests {
         disp.call(DispatchItem::WBackPressureDisabled).await.unwrap();
         assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
         assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
+    }
+
+    #[ntex::test]
+    async fn control_stop_once_on_service_error() {
+        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
+        let codec = codec::Codec::default();
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+        let counter = Rc::new(Cell::new(0));
+        let counter2 = counter.clone();
+        let control = Pipeline::new(fn_service(async move |msg| {
+            if matches!(msg, Control::Stop(_)) {
+                counter2.set(counter2.get() + 1);
+            }
+            Ok::<_, MqttError<()>>(ControlAck { result: ControlAckKind::Nothing })
+        }));
+
+        let disp = Pipeline::new(Dispatcher::<_, _, _, _>::new(
+            shared.clone(),
+            fn_service(async |_: Publish| Err(())),
+            control.clone(),
+            control,
+            Default::default(),
+        ));
+
+        disp.call(DispatchItem::Item(Decoded::Publish(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtLeastOnce,
+                topic: ByteString::from("test"),
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                payload_size: 0,
+            },
+            Bytes::new(),
+            0,
+        )))
+        .await
+        .unwrap();
+
+        disp.call(DispatchItem::Disconnect(None)).await.unwrap();
+
+        assert_eq!(counter.get(), 1);
     }
 }
