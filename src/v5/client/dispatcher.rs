@@ -10,7 +10,7 @@ use crate::error::{HandshakeError, MqttError, PayloadError, ProtocolError};
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::v5::codec::{Decoded, DisconnectReasonCode, Encoded, Packet};
 use crate::v5::shared::{Ack, MqttShared};
-use crate::v5::{codec, publish::Publish, publish::PublishAck, sink::MqttSink};
+use crate::v5::{codec, control::Pkt, publish::Publish, publish::PublishAck, sink::MqttSink};
 use crate::{MqttServiceConfig, types::packet_type};
 
 use super::control::{Control, ControlAck, CtlReason};
@@ -470,22 +470,38 @@ where
             }
         };
 
-        return if error {
-            if let Some(pkt) = result.packet {
-                let _ = inner.sink.encode_packet(pkt);
-            }
-            if result.disconnect {
-                inner.drop_payload(&PayloadError::Service);
-                inner.sink.drop_sink();
+        let response = if error {
+            match result.packet {
+                Pkt::Packet(pkt) => {
+                    let _ = inner.sink.encode_packet(pkt);
+                }
+                Pkt::Disconnect(pkt) => {
+                    if !inner.sink.is_disconnect_sent() {
+                        let _ = inner.sink.encode_packet(pkt.into());
+                    }
+                }
+                Pkt::None => {}
             }
             Ok(None)
         } else {
-            if result.disconnect {
-                inner.drop_payload(&PayloadError::Service);
-                inner.sink.drop_sink();
+            match result.packet {
+                Pkt::Packet(pkt) => Ok(Some(Encoded::Packet(pkt))),
+                Pkt::Disconnect(pkt) => {
+                    if !inner.sink.is_disconnect_sent() {
+                        Ok(Some(Encoded::Packet(codec::Packet::from(pkt))))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Pkt::None => Ok(None),
             }
-            Ok(result.packet.map(Encoded::Packet))
         };
+
+        if result.disconnect {
+            inner.drop_payload(&PayloadError::Service);
+            inner.sink.drop_sink();
+        }
+        return response;
     }
 }
 
@@ -511,7 +527,7 @@ mod tests {
             sink.clone(),
             fn_service(|p: Publish| Ready::Ok::<_, TestError>(Either::Right(p.ack()))),
             fn_service(|_| {
-                Ready::Ok::<_, TestError>(ControlAck { packet: None, disconnect: false })
+                Ready::Ok::<_, TestError>(ControlAck { packet: Pkt::None, disconnect: false })
             }),
             16,
             16,

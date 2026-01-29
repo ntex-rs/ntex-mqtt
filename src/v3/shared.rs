@@ -40,9 +40,12 @@ impl Default for MqttSinkPool {
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct Flags: u8 {
-        const CLIENT         = 0b1000_0000;
-        const WRB_ENABLED    = 0b0100_0000; // write-backpressure
-        const ON_PUBLISH_ACK = 0b0010_0000; // on-publish-ack callback
+        const CLIENT         = 0b0000_0001;
+        const WRB_ENABLED    = 0b0000_0010; // write-backpressure
+        const ON_PUBLISH_ACK = 0b0000_0100; // on-publish-ack callback
+
+        const DISCONNECT     = 0b0100_0000; // Disconnect frame is sent
+        const STOPPED        = 0b1000_0000; // DispatchItem::Stop() is sent
     }
 }
 
@@ -99,7 +102,11 @@ impl MqttShared {
     }
 
     pub(super) fn close(&self) {
-        if self.flags.get().contains(Flags::CLIENT) {
+        let mut flags = self.flags.get();
+
+        if flags.contains(Flags::CLIENT) && !flags.contains(Flags::DISCONNECT) {
+            flags.insert(Flags::DISCONNECT);
+            self.flags.set(flags);
             let _ = self.encode_packet(codec::Packet::Disconnect);
         }
         self.io.close();
@@ -126,6 +133,16 @@ impl MqttShared {
 
     pub(super) fn is_ready(&self) -> bool {
         self.credit() > 0 && !self.flags.get().contains(Flags::WRB_ENABLED)
+    }
+
+    pub(super) fn is_dispatcher_stopped(&self) -> bool {
+        let mut flags = self.flags.get();
+        let stopped = flags.contains(Flags::STOPPED);
+        if !stopped {
+            flags.insert(Flags::STOPPED);
+            self.flags.set(flags);
+        }
+        stopped
     }
 
     pub(super) fn credit(&self) -> usize {

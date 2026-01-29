@@ -10,25 +10,30 @@ use crate::{QoS, error, error::SendPacketError, types::packet_type};
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    struct Flags: u8 {
-        const WRB_ENABLED    = 0b0100_0000; // write-backpressure
-        const ON_PUBLISH_ACK = 0b0010_0000; // on-publish-ack callback
+    pub(crate) struct Flags: u8 {
+        const WRB_ENABLED    = 0b0000_0001; // write-backpressure
+        const ON_PUBLISH_ACK = 0b0000_0010; // on-publish-ack callback
+
+        const QOS_ATLEAST    = 0b0000_0100; // AtLeastOnce
+        const QOS_EXACTLY    = 0b0000_1000; // ExactlyOnce
+
+        const DISCONNECT     = 0b0100_0000; // Disconnect frame is sent
+        const STOPPED        = 0b1000_0000; // DispatchItem::Stop() is sent
     }
 }
 
 pub struct MqttShared {
     io: IoRef,
     cap: Cell<usize>,
-    max_qos: Cell<QoS>,
     receive_max: Cell<u16>,
     topic_alias_max: Cell<u16>,
     inflight_idx: Cell<u16>,
     queues: RefCell<MqttSharedQueues>,
-    flags: Cell<Flags>,
     encode_error: Cell<Option<error::EncodeError>>,
     streaming_waiter: Cell<Option<pool::Sender<()>>>,
     streaming_remaining: Cell<Option<num::NonZeroU32>>,
     on_publish_ack: Cell<Option<Box<dyn Fn(codec::PublishAck, bool)>>>,
+    pub(super) flags: Cell<Flags>,
     pub(super) pool: Rc<MqttSinkPool>,
     pub(super) codec: codec::Codec,
 }
@@ -66,9 +71,8 @@ impl MqttShared {
             }),
             receive_max: Cell::new(0),
             topic_alias_max: Cell::new(0),
-            max_qos: Cell::new(QoS::AtLeastOnce),
             inflight_idx: Cell::new(0),
-            flags: Cell::new(Flags::empty()),
+            flags: Cell::new(Flags::QOS_ATLEAST),
             on_publish_ack: Cell::new(None),
             encode_error: Cell::new(None),
             streaming_waiter: Cell::new(None),
@@ -89,7 +93,14 @@ impl MqttShared {
     }
 
     pub(super) fn max_qos(&self) -> QoS {
-        self.max_qos.get()
+        let flags = self.flags.get();
+        if flags.contains(Flags::QOS_ATLEAST) {
+            QoS::AtLeastOnce
+        } else if flags.contains(Flags::QOS_EXACTLY) {
+            QoS::ExactlyOnce
+        } else {
+            QoS::AtMostOnce
+        }
     }
 
     pub(super) fn set_receive_max(&self, val: u16) {
@@ -101,12 +112,29 @@ impl MqttShared {
     }
 
     pub(super) fn set_max_qos(&self, val: QoS) {
-        self.max_qos.set(val);
+        let mut flags = self.flags.get();
+        match val {
+            QoS::AtLeastOnce => {
+                flags.insert(Flags::QOS_ATLEAST);
+                flags.remove(Flags::QOS_EXACTLY);
+            }
+            QoS::ExactlyOnce => {
+                flags.insert(Flags::QOS_EXACTLY);
+                flags.remove(Flags::QOS_ATLEAST);
+            }
+            QoS::AtMostOnce => {
+                flags.remove(Flags::QOS_ATLEAST);
+                flags.remove(Flags::QOS_EXACTLY);
+            }
+        }
+        self.flags.set(flags);
     }
 
     pub(super) fn close(&self, pkt: codec::Disconnect) {
         if !self.is_closed() {
-            let _ = self.io.encode(Encoded::Packet(Packet::Disconnect(pkt)), &self.codec);
+            if !self.is_disconnect_sent() {
+                let _ = self.io.encode(Encoded::Packet(Packet::Disconnect(pkt)), &self.codec);
+            }
             self.io.close();
         }
         self.clear_queues();
@@ -136,6 +164,26 @@ impl MqttShared {
 
     pub(super) fn is_ready(&self) -> bool {
         self.credit() > 0 && !self.flags.get().contains(Flags::WRB_ENABLED)
+    }
+
+    pub(super) fn is_dispatcher_stopped(&self) -> bool {
+        let mut flags = self.flags.get();
+        let stopped = flags.contains(Flags::STOPPED);
+        if !stopped {
+            flags.insert(Flags::STOPPED);
+            self.flags.set(flags);
+        }
+        stopped
+    }
+
+    pub(super) fn is_disconnect_sent(&self) -> bool {
+        let mut flags = self.flags.get();
+        let disconnect = flags.contains(Flags::DISCONNECT);
+        if !disconnect {
+            flags.insert(Flags::DISCONNECT);
+            self.flags.set(flags);
+        }
+        disconnect
     }
 
     /// publish packet id

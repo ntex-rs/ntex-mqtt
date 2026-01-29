@@ -62,10 +62,17 @@ pub enum CtlReason<E> {
     PeerGone(PeerGone),
 }
 
+#[derive(Debug)]
+pub(crate) enum Pkt {
+    None,
+    Disconnect(codec::Disconnect),
+    Packet(codec::Packet),
+}
+
 /// Control message handling result
 #[derive(Debug)]
 pub struct ControlAck {
-    pub(crate) packet: Option<codec::Packet>,
+    pub(crate) packet: Pkt,
     pub(crate) disconnect: bool,
 }
 
@@ -138,13 +145,13 @@ impl<E> Control<E> {
             reason_string: None,
             user_properties: Default::default(),
         };
-        ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+        ControlAck { packet: Pkt::Disconnect(pkt), disconnect: true }
     }
 
     /// Disconnects the client by sending DISCONNECT packet
     /// with provided reason code.
     pub fn disconnect_with(&self, pkt: codec::Disconnect) -> ControlAck {
-        ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+        ControlAck { packet: Pkt::Disconnect(pkt), disconnect: true }
     }
 
     /// Ack control message
@@ -196,7 +203,7 @@ impl Auth {
     }
 
     pub fn ack(self, response: codec::Auth) -> ControlAck {
-        ControlAck { packet: Some(codec::Packet::Auth(response)), disconnect: false }
+        ControlAck { packet: Pkt::Packet(codec::Packet::Auth(response)), disconnect: false }
     }
 }
 
@@ -252,7 +259,7 @@ impl PublishRelease {
     /// Ack publish release
     pub fn ack(self) -> ControlAck {
         ControlAck {
-            packet: Some(codec::Packet::PublishComplete(self.result)),
+            packet: Pkt::Packet(codec::Packet::PublishComplete(self.result)),
             disconnect: false,
         }
     }
@@ -263,7 +270,7 @@ pub struct Ping;
 
 impl Ping {
     pub fn ack(self) -> ControlAck {
-        ControlAck { packet: Some(codec::Packet::PingResponse), disconnect: false }
+        ControlAck { packet: Pkt::Packet(codec::Packet::PingResponse), disconnect: false }
     }
 }
 
@@ -283,7 +290,7 @@ impl Disconnect {
 
     /// Ack disconnect CtlFrame
     pub fn ack(self) -> ControlAck {
-        ControlAck { packet: None, disconnect: true }
+        ControlAck { packet: Pkt::None, disconnect: true }
     }
 }
 
@@ -339,7 +346,10 @@ impl Subscribe {
     #[inline]
     /// Ack Subscribe packet
     pub fn ack(self) -> ControlAck {
-        ControlAck { packet: Some(codec::Packet::SubscribeAck(self.result)), disconnect: false }
+        ControlAck {
+            packet: Pkt::Packet(codec::Packet::SubscribeAck(self.result)),
+            disconnect: false,
+        }
     }
 
     #[inline]
@@ -508,7 +518,7 @@ impl Unsubscribe {
     /// convert packet to a result
     pub fn ack(self) -> ControlAck {
         ControlAck {
-            packet: Some(codec::Packet::UnsubscribeAck(self.result)),
+            packet: Pkt::Packet(codec::Packet::UnsubscribeAck(self.result)),
             disconnect: false,
         }
     }
@@ -609,7 +619,7 @@ impl WrBackpressure {
     #[inline]
     /// convert packet to a result
     pub fn ack(self) -> ControlAck {
-        ControlAck { packet: None, disconnect: false }
+        ControlAck { packet: Pkt::None, disconnect: false }
     }
 }
 
@@ -621,7 +631,7 @@ impl Shutdown {
     #[inline]
     /// convert packet to a result
     pub fn ack(self) -> ControlAck {
-        ControlAck { packet: None, disconnect: false }
+        ControlAck { packet: Pkt::None, disconnect: false }
     }
 }
 
@@ -680,7 +690,7 @@ impl<E> Error<E> {
     /// Ack service error, return disconnect packet and close connection.
     pub fn ack(mut self, reason: DisconnectReasonCode) -> ControlAck {
         self.pkt.reason_code = reason;
-        ControlAck { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true }
+        ControlAck { packet: Pkt::Disconnect(self.pkt), disconnect: true }
     }
 
     #[inline]
@@ -690,7 +700,7 @@ impl<E> Error<E> {
         F: FnOnce(E, codec::Disconnect) -> codec::Disconnect,
     {
         let pkt = f(self.err, self.pkt);
-        ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+        ControlAck { packet: Pkt::Disconnect(pkt), disconnect: true }
     }
 }
 
@@ -770,16 +780,13 @@ impl ProtocolError {
     #[inline]
     /// Ack protocol error, return disconnect packet and close connection.
     pub fn ack(self) -> ControlAck {
-        ControlAck { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true }
+        ControlAck { packet: Pkt::Disconnect(self.pkt), disconnect: true }
     }
 
     #[inline]
     /// Ack protocol error, return disconnect packet and close connection.
     pub fn ack_and_error(self) -> (ControlAck, error::ProtocolError) {
-        (
-            ControlAck { packet: Some(codec::Packet::Disconnect(self.pkt)), disconnect: true },
-            self.err,
-        )
+        (ControlAck { packet: Pkt::Disconnect(self.pkt), disconnect: true }, self.err)
     }
 }
 
@@ -802,6 +809,6 @@ impl PeerGone {
     #[inline]
     /// Ack PeerGone CtlFrame
     pub fn ack(self) -> ControlAck {
-        ControlAck { packet: None, disconnect: true }
+        ControlAck { packet: Pkt::None, disconnect: true }
     }
 }

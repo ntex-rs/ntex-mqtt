@@ -6,7 +6,7 @@ use std::{future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_factory_with_config, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
 use ntex::util::{ByteString, Bytes, BytesMut, Ready, lazy};
-use ntex::{codec::Encoder, io::IoConfig, rt, server};
+use ntex::{codec::Encoder, io::Framed, io::IoConfig, rt, server};
 
 use ntex_mqtt::MqttServiceConfig;
 use ntex_mqtt::v5::codec::{self, Decoded, Encoded, Packet};
@@ -1789,6 +1789,71 @@ async fn test_peergone_after_sink_disconenct() -> std::io::Result<()> {
 
     let _ = rx.await;
     assert!(val.load(Relaxed));
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_disconenct_once() -> std::io::Result<()> {
+    let srv = server::test_server(async move || {
+        MqttServer::new(handshake)
+            .control(fn_factory_with_config(async move |session: Session<St>| {
+                let sink = session.sink().clone();
+                Ok::<_, ()>(fn_service(async move |pkt: Control<_>| {
+                    if let Control::Stop(CtlReason::Error(_)) = pkt {
+                        sink.close_with_reason(codec::Disconnect {
+                            reason_code: codec::DisconnectReasonCode::ServerMoved,
+                            ..Default::default()
+                        });
+                    }
+                    Ok::<_, TestError>(pkt.ack())
+                }))
+            }))
+            .publish(fn_service(async move |_: Publish| Err(TestError)))
+    });
+
+    // connect to server
+    let cl = client::MqttConnector::new()
+        .pipeline(SharedCfg::new("client").into())
+        .await
+        .unwrap()
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap()
+        .into_inner();
+    let client = Framed::new(cl.0, cl.1);
+
+    client
+        .send(Encoded::Publish(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: QoS::AtMostOnce,
+                packet_id: None,
+                topic: "test/test".into(),
+                payload_size: 0,
+                properties: Default::default(),
+            },
+            None,
+        ))
+        .await
+        .unwrap();
+
+    // Receive DISCONNECT
+    let res = client.recv().await.unwrap().unwrap();
+    assert!(matches!(
+        res,
+        codec::Decoded::Packet(
+            codec::Packet::Disconnect(codec::Disconnect {
+                reason_code: codec::DisconnectReasonCode::ServerMoved,
+                ..
+            }),
+            _
+        )
+    ));
+    // IO Close
+    let res = client.recv().await.unwrap();
+    assert_eq!(res, None);
 
     Ok(())
 }

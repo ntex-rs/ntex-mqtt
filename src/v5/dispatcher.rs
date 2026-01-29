@@ -13,7 +13,7 @@ use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::{MqttServiceConfig, types::QoS};
 
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
-use super::control::{Control, ControlAck};
+use super::control::{Control, ControlAck, Pkt};
 use super::publish::{Publish, PublishAck};
 use super::{Session, shared::Ack, shared::MqttShared};
 
@@ -102,7 +102,6 @@ struct Inner<C, C2> {
     sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
     payload: Cell<Option<PlSender>>,
-    stopped: Cell<bool>,
 }
 
 struct PublishInfo {
@@ -137,7 +136,6 @@ where
                     aliases: HashMap::default(),
                     inflight: HashSet::default(),
                 }),
-                stopped: Cell::new(false),
             }),
             _t: marker::PhantomData,
         }
@@ -176,8 +174,7 @@ where
         let result = if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
-            } else if !self.inner.stopped.get() {
-                self.inner.stopped.set(true);
+            } else if !self.inner.sink.is_dispatcher_stopped() {
                 match self.inner.control_unbuf.call(Control::error(e.into())).await {
                     Ok(res) => {
                         if res.disconnect {
@@ -207,10 +204,9 @@ where
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         if let Err(e) = self.publish.poll(cx)
-            && !self.inner.stopped.get()
+            && !self.inner.sink.is_dispatcher_stopped()
         {
             let inner = self.inner.clone();
-            inner.stopped.set(true);
             ntex_rt::spawn(async move {
                 if let Ok(res) = inner.control_unbuf.call(Control::error(e.into())).await
                     && res.disconnect
@@ -667,12 +663,8 @@ where
     let result = if pkt.is_protocol() {
         inner.control.call(pkt).await
     } else {
-        if stop {
-            if !inner.stopped.get() {
-                inner.stopped.set(true)
-            } else {
-                return Ok(None);
-            }
+        if stop && inner.sink.is_dispatcher_stopped() {
+            return Ok(None);
         }
         inner.control_unbuf.call(pkt).await
     };
@@ -693,9 +685,7 @@ where
                 return Err(err);
             } else {
                 // handle error from control service
-                if !inner.stopped.get() {
-                    inner.stopped.set(true);
-
+                if !inner.sink.is_dispatcher_stopped() {
                     if let MqttError::Service(err) = err {
                         stop = true;
                         inner.control_unbuf.call(Control::error(err)).await?
@@ -710,12 +700,30 @@ where
     };
 
     let response = if stop {
-        if let Some(pkt) = result.packet {
-            let _ = inner.sink.encode_packet(pkt);
+        match result.packet {
+            Pkt::Packet(pkt) => {
+                let _ = inner.sink.encode_packet(pkt);
+            }
+            Pkt::Disconnect(pkt) => {
+                if !inner.sink.is_disconnect_sent() {
+                    let _ = inner.sink.encode_packet(pkt.into());
+                }
+            }
+            Pkt::None => {}
         }
         Ok(None)
     } else {
-        Ok(result.packet.map(Encoded::Packet))
+        match result.packet {
+            Pkt::Packet(pkt) => Ok(Some(Encoded::Packet(pkt))),
+            Pkt::Disconnect(pkt) => {
+                if !inner.sink.is_disconnect_sent() {
+                    Ok(Some(Encoded::Packet(codec::Packet::from(pkt))))
+                } else {
+                    Ok(None)
+                }
+            }
+            Pkt::None => Ok(None),
+        }
     };
 
     if result.disconnect {
@@ -754,7 +762,10 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Default::default()));
         let control = Pipeline::new(fn_service(|_| {
-            Ready::Ok::<_, MqttError<TestError>>(ControlAck { packet: None, disconnect: false })
+            Ready::Ok::<_, MqttError<TestError>>(ControlAck {
+                packet: Pkt::None,
+                disconnect: false,
+            })
         }));
 
         let disp = Pipeline::new(Dispatcher::<_, _, _, _>::new(
@@ -794,7 +805,7 @@ mod tests {
             if matches!(msg, Control::Stop(_)) {
                 counter2.set(counter2.get() + 1);
             }
-            Ok::<_, MqttError<TestError>>(ControlAck { packet: None, disconnect: false })
+            Ok::<_, MqttError<TestError>>(ControlAck { packet: Pkt::None, disconnect: false })
         }));
 
         let disp = Pipeline::new(Dispatcher::<_, _, _, _>::new(

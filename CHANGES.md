@@ -1,5 +1,9 @@
 # Changes
 
+## [7.0.0-pre.2] - 2026-01-29
+
+* Send `Disconnect` packet once
+
 ## [7.0.0-pre.1] - 2026-01-29
 
 * Use ntex_dispatcher::DispatchItem instead of ntex_io

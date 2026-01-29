@@ -100,7 +100,6 @@ struct Inner<C, C2> {
     sink: Rc<MqttShared>,
     payload: Cell<Option<PlSender>>,
     inflight: RefCell<HashSet<NonZeroU16>>,
-    stopped: Cell<bool>,
 }
 
 impl<T, C, C2, E> Dispatcher<T, C, C2, E>
@@ -126,7 +125,6 @@ where
                 control_unbuf,
                 payload: Cell::new(None),
                 inflight: RefCell::new(HashSet::default()),
-                stopped: Cell::new(false),
             }),
             _t: PhantomData,
         }
@@ -165,8 +163,7 @@ where
         let result = if let Err(e) = res1 {
             if res2.is_err() {
                 Err(MqttError::Service(e.into()))
-            } else if !self.inner.stopped.get() {
-                self.inner.stopped.set(true);
+            } else if !self.inner.sink.is_dispatcher_stopped() {
                 match self.inner.control_unbuf.call(Control::error(e.into())).await {
                     Ok(_) => {
                         self.inner.sink.close();
@@ -194,10 +191,9 @@ where
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         if let Err(e) = self.publish.poll(cx)
-            && !self.inner.stopped.get()
+            && !self.inner.sink.is_dispatcher_stopped()
         {
             let inner = self.inner.clone();
-            inner.stopped.set(true);
             ntex_rt::spawn(async move {
                 if inner.control_unbuf.call(Control::error(e.into())).await.is_ok() {
                     inner.sink.close();
@@ -528,12 +524,8 @@ where
         let result = if matches!(pkt, Control::Protocol(_)) {
             inner.control.call(pkt).await
         } else {
-            if error {
-                if !inner.stopped.get() {
-                    inner.stopped.set(true)
-                } else {
-                    return Ok(None);
-                }
+            if error && inner.sink.is_dispatcher_stopped() {
+                return Ok(None);
             }
             inner.control_unbuf.call(pkt).await
         };
