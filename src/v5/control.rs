@@ -147,7 +147,7 @@ impl<E> Control<E> {
         ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
 
-    /// Ack control CtlFrame
+    /// Ack control message
     pub fn ack(self) -> ControlAck {
         match self {
             Control::Protocol(CtlFrame::Auth(_)) => super::disconnect(error::ERR_AUTH_NOT_SUP),
@@ -164,6 +164,16 @@ impl<E> Control<E> {
             Control::Stop(CtlReason::PeerGone(msg)) => msg.ack(),
 
             Control::Shutdown(msg) => msg.ack(),
+        }
+    }
+}
+
+impl CtlFlow {
+    /// Ack control flow message
+    pub fn ack(self) -> ControlAck {
+        match self {
+            CtlFlow::Ping(msg) => msg.ack(),
+            CtlFlow::WrBackpressure(msg) => msg.ack(),
         }
     }
 }
