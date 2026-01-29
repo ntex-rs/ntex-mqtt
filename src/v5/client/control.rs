@@ -2,7 +2,7 @@ use std::io;
 
 use ntex_bytes::{ByteString, Bytes};
 
-use crate::{error, payload::Payload, v5::codec};
+use crate::{error, payload::Payload, v5::codec, v5::control::Pkt};
 
 pub use crate::v5::control::{
     ControlAck, CtlReason, Disconnect, Error, PeerGone, ProtocolError, PublishRelease, Shutdown,
@@ -66,7 +66,7 @@ impl<E> Control<E> {
     }
 
     pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlAck {
-        ControlAck { packet: Some(codec::Packet::Disconnect(pkt)), disconnect: true }
+        ControlAck { packet: Pkt::Packet(codec::Packet::Disconnect(pkt)), disconnect: true }
     }
 
     /// Ack control message
@@ -127,20 +127,24 @@ impl Publish {
 
     #[inline]
     pub fn ack_qos0(self) -> ControlAck {
-        ControlAck { packet: None, disconnect: false }
+        ControlAck { packet: Pkt::None, disconnect: false }
     }
 
     #[inline]
     pub fn ack(self, reason_code: codec::PublishAckReason) -> ControlAck {
         ControlAck {
-            packet: self.0.packet_id.map(|packet_id| {
-                codec::Packet::PublishAck(codec::PublishAck {
-                    packet_id,
-                    reason_code,
-                    properties: codec::UserProperties::new(),
-                    reason_string: None,
+            packet: self
+                .0
+                .packet_id
+                .map(|packet_id| {
+                    Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
+                        packet_id,
+                        reason_code,
+                        properties: codec::UserProperties::new(),
+                        reason_string: None,
+                    }))
                 })
-            }),
+                .unwrap_or(Pkt::None),
             disconnect: false,
         }
     }
@@ -153,14 +157,18 @@ impl Publish {
         reason_string: Option<ByteString>,
     ) -> ControlAck {
         ControlAck {
-            packet: self.0.packet_id.map(|packet_id| {
-                codec::Packet::PublishAck(codec::PublishAck {
-                    packet_id,
-                    reason_code,
-                    properties,
-                    reason_string,
+            packet: self
+                .0
+                .packet_id
+                .map(|packet_id| {
+                    Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
+                        packet_id,
+                        reason_code,
+                        properties,
+                        reason_string,
+                    }))
                 })
-            }),
+                .unwrap_or(Pkt::None),
             disconnect: false,
         }
     }
@@ -171,14 +179,18 @@ impl Publish {
     ) -> (ControlAck, codec::Publish) {
         (
             ControlAck {
-                packet: self.0.packet_id.map(|packet_id| {
-                    codec::Packet::PublishAck(codec::PublishAck {
-                        packet_id,
-                        reason_code,
-                        properties: codec::UserProperties::new(),
-                        reason_string: None,
+                packet: self
+                    .0
+                    .packet_id
+                    .map(|packet_id| {
+                        Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
+                            packet_id,
+                            reason_code,
+                            properties: codec::UserProperties::new(),
+                            reason_string: None,
+                        }))
                     })
-                }),
+                    .unwrap_or(Pkt::None),
                 disconnect: false,
             },
             self.0,

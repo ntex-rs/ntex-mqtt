@@ -34,10 +34,9 @@ fn disconnect(msg: &'static str) -> ControlAck {
     log::error!("{}", msg);
 
     ControlAck {
-        packet: Some(
-            codec::Disconnect::new(codec::DisconnectReasonCode::ImplementationSpecificError)
-                .into(),
-        ),
+        packet: control::Pkt::Disconnect(codec::Disconnect::new(
+            codec::DisconnectReasonCode::ImplementationSpecificError,
+        )),
         disconnect: true,
     }
 }
