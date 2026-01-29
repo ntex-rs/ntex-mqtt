@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 
-use ntex_io::DispatchItem;
+use ntex_dispatcher::{Control as DispControl, DispatchItem, Reason};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{Pipeline, PipelineSvc, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
@@ -442,34 +442,34 @@ where
                 control(Control::remote_disconnect(), &self.inner).await
             }
             DispatchItem::Item(_) => Ok(None),
-            DispatchItem::EncoderError(err) => {
+            DispatchItem::Stop(Reason::Encoder(err)) => {
                 let err = ProtocolError::Encode(err);
                 self.inner.drop_payload(&err);
                 control(Control::proto_error(err), &self.inner).await
             }
-            DispatchItem::KeepAliveTimeout => {
+            DispatchItem::Stop(Reason::KeepAliveTimeout) => {
                 self.inner.drop_payload(&ProtocolError::KeepAliveTimeout);
                 control(Control::proto_error(ProtocolError::KeepAliveTimeout), &self.inner)
                     .await
             }
-            DispatchItem::ReadTimeout => {
+            DispatchItem::Stop(Reason::ReadTimeout) => {
                 self.inner.drop_payload(&ProtocolError::ReadTimeout);
                 control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner).await
             }
-            DispatchItem::DecoderError(err) => {
+            DispatchItem::Stop(Reason::Decoder(err)) => {
                 let err = ProtocolError::Decode(err);
                 self.inner.drop_payload(&err);
                 control(Control::proto_error(err), &self.inner).await
             }
-            DispatchItem::Disconnect(err) => {
+            DispatchItem::Stop(Reason::Io(err)) => {
                 self.inner.drop_payload(&PayloadError::Disconnected);
                 control(Control::peer_gone(err), &self.inner).await
             }
-            DispatchItem::WBackPressureEnabled => {
+            DispatchItem::Control(DispControl::WBackPressureEnabled) => {
                 self.inner.sink.enable_wr_backpressure();
                 control(Control::wr_backpressure(true), &self.inner).await
             }
-            DispatchItem::WBackPressureDisabled => {
+            DispatchItem::Control(DispControl::WBackPressureDisabled) => {
                 self.inner.sink.disable_wr_backpressure();
                 control(Control::wr_backpressure(false), &self.inner).await
             }
@@ -690,14 +690,14 @@ mod tests {
         assert!(sink.is_ready());
         assert!(shared.wait_readiness().is_none());
 
-        disp.call(DispatchItem::WBackPressureEnabled).await.unwrap();
+        disp.call(DispatchItem::Control(DispControl::WBackPressureEnabled)).await.unwrap();
         assert!(!sink.is_ready());
         let rx = shared.wait_readiness();
         let rx2 = shared.wait_readiness().unwrap();
         assert!(rx.is_some());
 
         let rx = rx.unwrap();
-        disp.call(DispatchItem::WBackPressureDisabled).await.unwrap();
+        disp.call(DispatchItem::Control(DispControl::WBackPressureDisabled)).await.unwrap();
         assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
         assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
     }
@@ -739,7 +739,7 @@ mod tests {
         .await
         .unwrap();
 
-        disp.call(DispatchItem::Disconnect(None)).await.unwrap();
+        disp.call(DispatchItem::Stop(Reason::Io(None))).await.unwrap();
 
         assert_eq!(counter.get(), 1);
     }

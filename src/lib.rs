@@ -30,6 +30,8 @@ pub use self::session::Session;
 pub use self::topic::{TopicFilter, TopicFilterError, TopicFilterLevel};
 pub use self::types::QoS;
 
+pub use ntex_dispatcher::{Control, DispatchItem, Reason};
+
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
 pub const TCP_PORT: u16 = 1883;
 pub const TLS_PORT: u16 = 8883;

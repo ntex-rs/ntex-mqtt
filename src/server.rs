@@ -1,9 +1,9 @@
 use std::{fmt, io, marker, task::Context};
 
 use ntex_codec::{Decoder, Encoder};
-use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
-use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
+use ntex_dispatcher::DispatchItem;
+use ntex_io::{Filter, Io, IoBoxed};
+use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory, cfg::Cfg, cfg::SharedCfg};
 use ntex_util::future::{Either, join, select};
 use ntex_util::time::{Deadline, Seconds};
 

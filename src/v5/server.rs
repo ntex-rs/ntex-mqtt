@@ -1,6 +1,7 @@
 use std::{fmt, marker::PhantomData, rc::Rc};
 
-use ntex_io::{DispatchItem, IoBoxed};
+use ntex_dispatcher::DispatchItem;
+use ntex_io::IoBoxed;
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack};
 use ntex_util::time::{Seconds, timeout_checked};

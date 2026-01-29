@@ -3,7 +3,8 @@ use std::task::{Context, Poll, ready};
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc};
 
 use ntex_codec::{Decoder, Encoder};
-use ntex_io::{Decoded, DispatchItem, IoBoxed, IoRef, IoStatusUpdate, RecvError};
+use ntex_dispatcher::{Control, DispatchItem, Reason};
+use ntex_io::{Decoded, IoBoxed, IoRef, IoStatusUpdate, RecvError};
 use ntex_service::{IntoService, Pipeline, PipelineBinding, PipelineCall, Service};
 use ntex_util::channel::condition::Condition;
 use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
@@ -287,22 +288,26 @@ where
                                 Err(RecvError::KeepAlive) => {
                                     if let Err(err) = inner.handle_timeout() {
                                         inner.stop();
-                                        (err, true, true)
+                                        (DispatchItem::Stop(err), true, true)
                                     } else {
                                         continue;
                                     }
                                 }
                                 Err(RecvError::WriteBackpressure) => {
                                     inner.st = IoDispatcherState::Backpressure;
-                                    (DispatchItem::WBackPressureEnabled, true, false)
+                                    (
+                                        DispatchItem::Control(Control::WBackPressureEnabled),
+                                        true,
+                                        false,
+                                    )
                                 }
                                 Err(RecvError::Decoder(err)) => {
                                     inner.stop();
-                                    (DispatchItem::DecoderError(err), true, true)
+                                    (DispatchItem::Stop(Reason::Decoder(err)), true, true)
                                 }
                                 Err(RecvError::PeerGone(err)) => {
                                     inner.stop();
-                                    (DispatchItem::Disconnect(err), true, true)
+                                    (DispatchItem::Stop(Reason::Io(err)), true, true)
                                 }
                             }
                         }
@@ -326,10 +331,10 @@ where
 
                     let item = if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
                         inner.stop();
-                        DispatchItem::Disconnect(Some(err))
+                        DispatchItem::Stop(Reason::Io(Some(err)))
                     } else {
                         inner.st = IoDispatcherState::Processing;
-                        DispatchItem::WBackPressureDisabled
+                        DispatchItem::Control(Control::WBackPressureDisabled)
                     };
                     inner.call_service(cx, item, false, false);
                 }
@@ -480,7 +485,7 @@ where
             self.stop();
             match err {
                 IoDispatcherError::Encoder(err) => {
-                    PollService::Item(DispatchItem::EncoderError(err))
+                    PollService::Item(DispatchItem::Stop(Reason::Encoder(err)))
                 }
                 IoDispatcherError::Service(err) => {
                     self.state.error.set(Some(IoDispatcherError::Service(err)));
@@ -510,7 +515,9 @@ where
                             self.io.tag()
                         );
                         self.stop();
-                        Poll::Ready(PollService::ItemWait(DispatchItem::KeepAliveTimeout))
+                        Poll::Ready(PollService::ItemWait(DispatchItem::Stop(
+                            Reason::KeepAliveTimeout,
+                        )))
                     }
                     IoStatusUpdate::PeerGone(err) => {
                         log::trace!(
@@ -519,11 +526,13 @@ where
                             err
                         );
                         self.stop();
-                        Poll::Ready(PollService::ItemWait(DispatchItem::Disconnect(err)))
+                        Poll::Ready(PollService::ItemWait(DispatchItem::Stop(Reason::Io(err))))
                     }
                     IoStatusUpdate::WriteBackpressure => {
                         self.st = IoDispatcherState::Backpressure;
-                        Poll::Ready(PollService::ItemWait(DispatchItem::WBackPressureEnabled))
+                        Poll::Ready(PollService::ItemWait(DispatchItem::Control(
+                            Control::WBackPressureEnabled,
+                        )))
                     }
                 }
             }
@@ -572,7 +581,7 @@ where
         }
     }
 
-    fn handle_timeout(&mut self) -> Result<(), DispatchItem<U>> {
+    fn handle_timeout(&mut self) -> Result<(), Reason<U>> {
         // check read timer
         if self.flags.contains(Flags::READ_TIMEOUT) {
             if let Some(params) = self.io.cfg().frame_read_rate() {
@@ -599,11 +608,11 @@ where
                     }
                 }
                 log::trace!("{}: Max payload timeout has been reached", self.io.tag());
-                return Err(DispatchItem::ReadTimeout);
+                return Err(Reason::ReadTimeout);
             }
         } else if self.flags.contains(Flags::KA_TIMEOUT) {
             log::trace!("{}: Keep-alive error, stopping dispatcher", self.io.tag());
-            return Err(DispatchItem::KeepAliveTimeout);
+            return Err(Reason::KeepAliveTimeout);
         }
         Ok(())
     }
@@ -726,7 +735,7 @@ mod tests {
                     waiter.await;
                     if let DispatchItem::Item(msg) = msg {
                         Ok::<_, ()>(Some(msg))
-                    } else if matches!(msg, DispatchItem::Disconnect(_)) {
+                    } else if matches!(msg, DispatchItem::Stop(Reason::Io(_))) {
                         Ok(None)
                     } else {
                         panic!()
@@ -793,7 +802,7 @@ mod tests {
                             drop(on_drop);
                         }
                         Ok::<_, ()>(Some(msg))
-                    } else if matches!(msg, DispatchItem::Disconnect(_)) {
+                    } else if matches!(msg, DispatchItem::Stop(Reason::Io(_))) {
                         sleep(Millis(25)).await;
                         ops2.borrow_mut().push(Info::Disconnect);
                         Ok(None)
@@ -869,7 +878,7 @@ mod tests {
             ntex_service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
                 if let DispatchItem::Item(msg) = msg {
                     Ok::<_, ()>(Some(msg))
-                } else if let DispatchItem::Disconnect(_) = msg {
+                } else if let DispatchItem::Stop(Reason::Io(_)) = msg {
                     Ok(None)
                 } else {
                     panic!()
@@ -1010,10 +1019,10 @@ mod tests {
                                 .collect::<String>();
                             return Ok::<_, ()>(Some(Bytes::from(bytes)));
                         }
-                        DispatchItem::WBackPressureEnabled => {
+                        DispatchItem::Control(Control::WBackPressureEnabled) => {
                             data.lock().unwrap().borrow_mut().push(1);
                         }
-                        DispatchItem::WBackPressureDisabled => {
+                        DispatchItem::Control(Control::WBackPressureDisabled) => {
                             data.lock().unwrap().borrow_mut().push(2);
                         }
                         _ => (),
@@ -1123,7 +1132,7 @@ mod tests {
                             data.lock().unwrap().borrow_mut().push(0);
                             return Ok::<_, ()>(Some(bytes));
                         }
-                        DispatchItem::KeepAliveTimeout => {
+                        DispatchItem::Stop(Reason::KeepAliveTimeout) => {
                             data.lock().unwrap().borrow_mut().push(1);
                         }
                         _ => (),
@@ -1210,7 +1219,7 @@ mod tests {
                             data.lock().unwrap().borrow_mut().push(0);
                             return Ok::<_, ()>(Some(bytes));
                         }
-                        DispatchItem::KeepAliveTimeout => {
+                        DispatchItem::Stop(Reason::KeepAliveTimeout) => {
                             data.lock().unwrap().borrow_mut().push(1);
                         }
                         _ => (),
@@ -1260,7 +1269,7 @@ mod tests {
                             data.lock().unwrap().borrow_mut().push(0);
                             return Ok::<_, ()>(Some(bytes));
                         }
-                        DispatchItem::ReadTimeout => {
+                        DispatchItem::Stop(Reason::ReadTimeout) => {
                             data.lock().unwrap().borrow_mut().push(1);
                         }
                         _ => (),

@@ -1,6 +1,10 @@
 # Changes
 
-## [7.0.0] - 2026-01-20
+## [7.0.0-pre.1] - 2026-01-29
+
+* Use ntex_dispatcher::DispatchItem instead of ntex_io
+
+## [7.0.0-pre.0] - 2026-01-28
 
 * Refactor `control` message
 

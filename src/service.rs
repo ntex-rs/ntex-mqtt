@@ -1,7 +1,8 @@
 use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_codec::{Decoder, Encoder};
-use ntex_io::{DispatchItem, Filter, Io, IoBoxed};
+use ntex_dispatcher::DispatchItem;
+use ntex_io::{Filter, Io, IoBoxed};
 use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
 use ntex_util::time::Seconds;
 
