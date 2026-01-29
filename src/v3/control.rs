@@ -156,6 +156,16 @@ impl<E> Control<E> {
     }
 }
 
+impl CtlFlow {
+    /// Ack control flow message
+    pub fn ack(self) -> ControlAck {
+        match self {
+            CtlFlow::Ping(msg) => msg.ack(),
+            CtlFlow::WrBackpressure(msg) => msg.ack(),
+        }
+    }
+}
+
 /// Publish release
 #[derive(Copy, Clone, Debug)]
 pub struct PublishRelease {
