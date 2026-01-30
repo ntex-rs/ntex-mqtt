@@ -1,5 +1,9 @@
 # Changes
 
+## [7.0.0] - 2026-01-30
+
+* Better disconnect handling on control service failure
+
 ## [7.0.0-pre.2] - 2026-01-29
 
 * Send `Disconnect` packet once

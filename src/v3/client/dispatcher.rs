@@ -339,7 +339,10 @@ where
         .control
         .call(msg)
         .await
-        .inspect_err(|_| inner.drop_payload(&PayloadError::Service))?
+        .inspect_err(|_| {
+            inner.drop_payload(&PayloadError::Service);
+            inner.sink.close();
+        })?
         .result
     {
         ControlAckKind::Ping => Some(Encoded::Packet(codec::Packet::PingResponse)),
