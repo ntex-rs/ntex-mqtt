@@ -13,7 +13,7 @@ use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{codec, control::Pkt, publish::Publish, publish::PublishAck, sink::MqttSink};
 use crate::{MqttServiceConfig, types::packet_type};
 
-use super::control::{Control, ControlAck, CtlReason};
+use super::control::{Control, ControlAck};
 
 /// mqtt5 protocol dispatcher
 pub(super) fn create_dispatcher<T, C, E>(
@@ -437,10 +437,7 @@ async fn control<C, E>(
 where
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
-    let mut error = matches!(
-        pkt,
-        Control::Stop(CtlReason::Error(_)) | Control::Stop(CtlReason::ProtocolError(_))
-    );
+    let mut error = matches!(pkt, Control::Stop(_));
 
     loop {
         let result = match inner.control.call(pkt).await {
@@ -451,10 +448,10 @@ where
                 result
             }
             Err(err) => {
-                inner.drop_payload(&PayloadError::Service);
-
                 // do not handle nested error
                 return if error {
+                    inner.drop_payload(&PayloadError::Service);
+                    inner.sink.drop_sink();
                     Err(err)
                 } else {
                     // handle error from control service

@@ -525,6 +525,8 @@ where
             inner.control.call(pkt).await
         } else {
             if error && inner.sink.is_dispatcher_stopped() {
+                inner.drop_payload(&PayloadError::Service);
+                inner.sink.close();
                 return Ok(None);
             }
             inner.control_unbuf.call(pkt).await
@@ -562,10 +564,8 @@ where
                 return Ok(packet);
             }
             Err(err) => {
-                inner.drop_payload(&PayloadError::Service);
-
                 // do not handle nested error
-                return if error {
+                let result = if error {
                     Err(err)
                 } else {
                     // handle error from control service
@@ -576,6 +576,9 @@ where
                         Err(err)
                     }
                 };
+                inner.drop_payload(&PayloadError::Service);
+                inner.sink.close();
+                return result;
             }
         }
     }

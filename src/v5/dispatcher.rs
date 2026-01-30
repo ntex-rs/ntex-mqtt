@@ -664,6 +664,8 @@ where
         inner.control.call(pkt).await
     } else {
         if stop && inner.sink.is_dispatcher_stopped() {
+            inner.drop_payload(&PayloadError::Service);
+            inner.sink.drop_sink();
             return Ok(None);
         }
         inner.control_unbuf.call(pkt).await
@@ -688,11 +690,17 @@ where
                 if !inner.sink.is_dispatcher_stopped() {
                     if let MqttError::Service(err) = err {
                         stop = true;
-                        inner.control_unbuf.call(Control::error(err)).await?
+                        inner
+                            .control_unbuf
+                            .call(Control::error(err))
+                            .await
+                            .inspect_err(|_| inner.sink.drop_sink())?
                     } else {
+                        inner.sink.drop_sink();
                         return Err(err);
                     }
                 } else {
+                    inner.sink.drop_sink();
                     return Err(err);
                 }
             }

@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "7.0.0-pre.2"
+version = "7.0.0"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -38,4 +38,4 @@ ntex-tls = "3"
 openssl = "0.10"
 oneshot = "0.1"
 test-case = "3.2"
-ntex = { version = "3.0.0-pre.14", features = ["openssl"] }
+ntex = { version = "3.0.0-pre.15", features = ["openssl"] }
