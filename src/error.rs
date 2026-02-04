@@ -99,8 +99,8 @@ impl ProtocolViolationError {
     /// Protocol violation reason message
     pub fn message(&self) -> &'static str {
         match self.inner {
-            ViolationInner::Common { message, .. } => message,
-            ViolationInner::UnexpectedPacket { message, .. } => message,
+            ViolationInner::Common { message, .. }
+            | ViolationInner::UnexpectedPacket { message, .. } => message,
         }
     }
 }

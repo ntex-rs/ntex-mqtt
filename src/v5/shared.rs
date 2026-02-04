@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, num, rc::Rc};
 
 use ntex_bytes::{Bytes, BytesMut};
@@ -38,6 +39,7 @@ pub struct MqttShared {
     pub(super) codec: codec::Codec,
 }
 
+#[derive(Debug)]
 pub(super) struct MqttSharedQueues {
     inflight: VecDeque<(num::NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
     inflight_ids: HashSet<num::NonZeroU16>,
@@ -249,7 +251,7 @@ impl MqttShared {
                 }
             }
         } else {
-            queues.inflight.clear()
+            queues.inflight.clear();
         }
     }
 
@@ -288,20 +290,18 @@ impl MqttShared {
     }
 
     pub(super) async fn want_payload_stream(&self) -> Result<(), SendPacketError> {
-        if !self.is_closed() {
-            if self.flags.get().contains(Flags::WRB_ENABLED) {
-                let (tx, rx) = self.pool.waiters.channel();
-                self.streaming_waiter.set(Some(tx));
-                if rx.await.is_ok() {
-                    Ok(())
-                } else {
-                    Err(SendPacketError::Disconnected)
-                }
-            } else {
+        if self.is_closed() {
+            Err(SendPacketError::Disconnected)
+        } else if self.flags.get().contains(Flags::WRB_ENABLED) {
+            let (tx, rx) = self.pool.waiters.channel();
+            self.streaming_waiter.set(Some(tx));
+            if rx.await.is_ok() {
                 Ok(())
+            } else {
+                Err(SendPacketError::Disconnected)
             }
         } else {
-            Err(SendPacketError::Disconnected)
+            Ok(())
         }
     }
 
@@ -314,7 +314,7 @@ impl MqttShared {
     }
 
     fn enable_streaming(&self, pkt: &Publish, payload: Option<&Bytes>) {
-        let len = payload.map(|b| b.len()).unwrap_or(0);
+        let len = payload.map_or(0, Bytes::len);
         self.streaming_remaining.set(num::NonZeroU32::new(pkt.payload_size - len as u32));
     }
 
@@ -473,7 +473,7 @@ impl MqttShared {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
             match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
-                Ok(_) => {
+                Ok(()) => {
                     let (tx, rx) = self.pool.queue.channel();
                     queues.inflight.push_back((id, Some(tx), ack));
                     queues.inflight_ids.insert(id);
@@ -499,7 +499,7 @@ impl MqttShared {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
             match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
-                Ok(_) => {
+                Ok(()) => {
                     queues.inflight.push_back((id, None, ack));
                     queues.inflight_ids.insert(id);
                     Ok(())
@@ -528,14 +528,12 @@ impl MqttShared {
         &self,
         pkt: codec::PublishAck2,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
-        let rx = if let Some(rx) = self.queues.borrow_mut().rx.take() {
-            rx
-        } else {
+        let Some(rx) = self.queues.borrow_mut().rx.take() else {
             return Err(SendPacketError::UnexpectedRelease);
         };
 
         match self.io.encode(Encoded::Packet(codec::Packet::PublishRelease(pkt)), &self.codec) {
-            Ok(_) => Ok(rx),
+            Ok(()) => Ok(rx),
             Err(e) => Err(SendPacketError::Encode(e)),
         }
     }
@@ -561,7 +559,7 @@ impl Decoder for MqttShared {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum AckType {
     Publish,
     Receive,
@@ -570,6 +568,7 @@ pub(super) enum AckType {
     Unsubscribe,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum Ack {
     Publish(codec::PublishAck),
     Receive(codec::PublishAck),
@@ -591,8 +590,7 @@ impl Ack {
 
     pub(super) fn packet_id(&self) -> num::NonZeroU16 {
         match self {
-            Ack::Publish(pkt) => pkt.packet_id,
-            Ack::Receive(pkt) => pkt.packet_id,
+            Ack::Publish(pkt) | Ack::Receive(pkt) => pkt.packet_id,
             Ack::Complete(pkt) => pkt.packet_id,
             Ack::Subscribe(pkt) => pkt.packet_id,
             Ack::Unsubscribe(pkt) => pkt.packet_id,
@@ -633,18 +631,18 @@ impl Ack {
 
     pub(super) fn is_match(&self, tp: AckType) -> bool {
         match (self, tp) {
-            (Ack::Publish(_), AckType::Publish) => true,
-            (Ack::Receive(_), AckType::Receive) => true,
-            (Ack::Complete(_), AckType::Complete) => true,
-            (Ack::Subscribe(_), AckType::Subscribe) => true,
-            (Ack::Unsubscribe(_), AckType::Unsubscribe) => true,
+            (Ack::Publish(_), AckType::Publish)
+            | (Ack::Receive(_), AckType::Receive)
+            | (Ack::Complete(_), AckType::Complete)
+            | (Ack::Subscribe(_), AckType::Subscribe)
+            | (Ack::Unsubscribe(_), AckType::Unsubscribe) => true,
             (_, _) => false,
         }
     }
 }
 
 impl AckType {
-    pub(super) fn expected_str(&self) -> &'static str {
+    pub(super) fn expected_str(self) -> &'static str {
         match self {
             AckType::Publish => "Expected PUBACK packet",
             AckType::Receive => "Expected PUBREC packet",

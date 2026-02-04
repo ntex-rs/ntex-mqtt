@@ -62,6 +62,7 @@ impl Payload {
         }
     }
 
+    #[must_use]
     pub fn take(&mut self) -> Payload {
         Payload { pl: mem::replace(&mut self.pl, Either::Left(Cell::new(None))) }
     }

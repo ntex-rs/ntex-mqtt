@@ -6,7 +6,7 @@ use crate::error::{DecodeError, EncodeError};
 use crate::types::{ConnectAckFlags, QoS};
 use crate::utils::{self, Decode, Encode, Property};
 use crate::v5::RECEIVE_MAX_DEFAULT;
-use crate::v5::codec::{UserProperties, UserProperty, encode::*, property_type as pt};
+use crate::v5::codec::{UserProperties, UserProperty, encode, property_type as pt};
 
 /// Connect acknowledgment packet
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -182,35 +182,41 @@ impl ConnectAck {
     }
 }
 
-impl EncodeLtd for ConnectAck {
+impl encode::EncodeLtd for ConnectAck {
     fn encoded_size(&self, limit: u32) -> usize {
         const HEADER_LEN: usize = 2; // state flags byte + reason code
 
-        let mut prop_len = encoded_property_size(&self.session_expiry_interval_secs)
-            + encoded_property_size_default(&self.receive_max, RECEIVE_MAX_DEFAULT)
+        let mut prop_len = encode::encoded_property_size(&self.session_expiry_interval_secs)
+            + encode::encoded_property_size_default(&self.receive_max, RECEIVE_MAX_DEFAULT)
             + if self.max_qos < QoS::ExactlyOnce { 1 + 1 } else { 0 }
-            + encoded_property_size(&self.max_packet_size)
-            + encoded_property_size(&self.assigned_client_id)
-            + encoded_property_size_default(&self.retain_available, true)
-            + encoded_property_size_default(&self.wildcard_subscription_available, true)
-            + encoded_property_size_default(&self.subscription_identifiers_available, true)
-            + encoded_property_size_default(&self.shared_subscription_available, true)
-            + encoded_property_size(&self.server_keepalive_sec)
-            + encoded_property_size(&self.response_info)
-            + encoded_property_size(&self.server_reference)
-            + encoded_property_size(&self.auth_method)
-            + encoded_property_size(&self.auth_data);
+            + encode::encoded_property_size(&self.max_packet_size)
+            + encode::encoded_property_size(&self.assigned_client_id)
+            + encode::encoded_property_size_default(&self.retain_available, true)
+            + encode::encoded_property_size_default(
+                &self.wildcard_subscription_available,
+                true,
+            )
+            + encode::encoded_property_size_default(
+                &self.subscription_identifiers_available,
+                true,
+            )
+            + encode::encoded_property_size_default(&self.shared_subscription_available, true)
+            + encode::encoded_property_size(&self.server_keepalive_sec)
+            + encode::encoded_property_size(&self.response_info)
+            + encode::encoded_property_size(&self.server_reference)
+            + encode::encoded_property_size(&self.auth_method)
+            + encode::encoded_property_size(&self.auth_data);
         if self.topic_alias_max > 0 {
             prop_len += 1 + self.topic_alias_max.encoded_size(); // [property type, value..]
         }
 
-        let diag_len = encoded_size_opt_props(
+        let diag_len = encode::encoded_size_opt_props(
             &self.user_properties,
             &self.reason_string,
-            reduce_limit(limit, HEADER_LEN + 4 + prop_len),
+            encode::reduce_limit(limit, HEADER_LEN + 4 + prop_len),
         ); // exclude other props and max of 4 bytes for property length value
         prop_len += diag_len;
-        HEADER_LEN + var_int_len(prop_len) as usize + prop_len
+        HEADER_LEN + encode::var_int_len(prop_len) as usize + prop_len
     }
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
@@ -218,43 +224,48 @@ impl EncodeLtd for ConnectAck {
 
         buf.put_slice(&[u8::from(self.session_present), self.reason_code.into()]);
 
-        let prop_len = var_int_len_from_size(size - 2);
+        let prop_len = encode::var_int_len_from_size(size - 2);
         utils::write_variable_length(prop_len, buf);
 
-        encode_property(&self.session_expiry_interval_secs, pt::SESS_EXPIRY_INT, buf)?;
-        encode_property_default(&self.receive_max, RECEIVE_MAX_DEFAULT, pt::RECEIVE_MAX, buf)?;
+        encode::encode_property(&self.session_expiry_interval_secs, pt::SESS_EXPIRY_INT, buf)?;
+        encode::encode_property_default(
+            &self.receive_max,
+            RECEIVE_MAX_DEFAULT,
+            pt::RECEIVE_MAX,
+            buf,
+        )?;
         if self.max_qos < QoS::ExactlyOnce {
             buf.put_slice(&[pt::MAX_QOS, self.max_qos.into()]);
         }
-        encode_property_default(&self.retain_available, true, pt::RETAIN_AVAIL, buf)?;
-        encode_property(&self.max_packet_size, pt::MAX_PACKET_SIZE, buf)?;
-        encode_property(&self.assigned_client_id, pt::ASSND_CLIENT_ID, buf)?;
-        encode_property_default(&self.topic_alias_max, 0, pt::TOPIC_ALIAS_MAX, buf)?;
-        encode_property_default(
+        encode::encode_property_default(&self.retain_available, true, pt::RETAIN_AVAIL, buf)?;
+        encode::encode_property(&self.max_packet_size, pt::MAX_PACKET_SIZE, buf)?;
+        encode::encode_property(&self.assigned_client_id, pt::ASSND_CLIENT_ID, buf)?;
+        encode::encode_property_default(&self.topic_alias_max, 0, pt::TOPIC_ALIAS_MAX, buf)?;
+        encode::encode_property_default(
             &self.wildcard_subscription_available,
             true,
             pt::WILDCARD_SUB_AVAIL,
             buf,
         )?;
-        encode_property_default(
+        encode::encode_property_default(
             &self.subscription_identifiers_available,
             true,
             pt::SUB_IDS_AVAIL,
             buf,
         )?;
-        encode_property_default(
+        encode::encode_property_default(
             &self.shared_subscription_available,
             true,
             pt::SHARED_SUB_AVAIL,
             buf,
         )?;
-        encode_property(&self.server_keepalive_sec, pt::SERVER_KA, buf)?;
-        encode_property(&self.response_info, pt::RESP_INFO, buf)?;
-        encode_property(&self.server_reference, pt::SERVER_REF, buf)?;
-        encode_property(&self.auth_method, pt::AUTH_METHOD, buf)?;
-        encode_property(&self.auth_data, pt::AUTH_DATA, buf)?;
+        encode::encode_property(&self.server_keepalive_sec, pt::SERVER_KA, buf)?;
+        encode::encode_property(&self.response_info, pt::RESP_INFO, buf)?;
+        encode::encode_property(&self.server_reference, pt::SERVER_REF, buf)?;
+        encode::encode_property(&self.auth_method, pt::AUTH_METHOD, buf)?;
+        encode::encode_property(&self.auth_data, pt::AUTH_DATA, buf)?;
 
-        encode_opt_props(
+        encode::encode_opt_props(
             &self.user_properties,
             &self.reason_string,
             buf,

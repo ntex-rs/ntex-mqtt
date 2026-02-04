@@ -306,7 +306,7 @@ where
             };
 
             match select(&mut Deadline::new(self.cfg.protocol_version_timeout), fut).await {
-                Either::Left(_) => Err(MqttError::Handshake(HandshakeError::Timeout)),
+                Either::Left(()) => Err(MqttError::Handshake(HandshakeError::Timeout)),
                 Either::Right(Ok(Some(ver))) => match ver {
                     ProtocolVersion::MQTT3 => ctx.call(&self.handlers.0, io).await,
                     ProtocolVersion::MQTT5 => ctx.call(&self.handlers.1, io).await,
@@ -341,7 +341,7 @@ where
 
     #[inline]
     async fn shutdown(&self) {
-        Service::<IoBoxed>::shutdown(self).await
+        Service::<IoBoxed>::shutdown(self).await;
     }
 
     #[inline]

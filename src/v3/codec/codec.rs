@@ -52,7 +52,7 @@ impl Codec {
     /// accumulate chunks until the total size reaches the specified minimum.
     /// By default min size is set to `0`
     pub fn set_min_chunk_size(&self, size: u32) {
-        self.min_chunk_size.set(size)
+        self.min_chunk_size.set(size);
     }
 }
 
@@ -66,6 +66,7 @@ impl Decoder for Codec {
     type Item = Decoded;
     type Error = DecodeError;
 
+    #[allow(clippy::too_many_lines)]
     fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, DecodeError> {
         loop {
             match self.state.get() {
@@ -139,14 +140,13 @@ impl Decoder for Codec {
                                 payload,
                                 fixed.remaining_length,
                             )));
-                        } else {
-                            self.state.set(DecodeState::PublishPayload(payload_len));
-                            return Ok(Some(Decoded::Publish(
-                                publish,
-                                Bytes::new(),
-                                fixed.remaining_length,
-                            )));
                         }
+                        self.state.set(DecodeState::PublishPayload(payload_len));
+                        return Ok(Some(Decoded::Publish(
+                            publish,
+                            Bytes::new(),
+                            fixed.remaining_length,
+                        )));
                     }
                     return Ok(None);
                 }
@@ -212,7 +212,7 @@ impl Encoder for Codec {
                 }
 
                 let current_size = content_size - pkt.payload_size
-                    + buf.as_ref().map(|b| b.len() as u32).unwrap_or(0);
+                    + buf.as_ref().map_or(0, |b| b.len() as u32);
                 dst.reserve((current_size + 5) as usize);
                 encode::encode_publish(&pkt, dst, content_size)?; // safe: max_size <= u32 max value
 
@@ -274,9 +274,7 @@ mod tests {
         let payload = Bytes::from(Vec::from("a".repeat(260 * 1024)));
         codec.encode(Encoded::Publish(pkt.clone(), Some(payload)), &mut buf).unwrap();
 
-        let pkt2 = if let Decoded::Publish(v, _, _) = codec.decode(&mut buf).unwrap().unwrap() {
-            v
-        } else {
+        let Decoded::Publish(pkt2, _, _) = codec.decode(&mut buf).unwrap().unwrap() else {
             panic!()
         };
         assert_eq!(pkt, pkt2);

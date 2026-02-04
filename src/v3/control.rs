@@ -1,8 +1,7 @@
 use ntex_bytes::ByteString;
-use std::{io, marker::PhantomData, num::NonZeroU16};
+use std::{io, marker::PhantomData, num::NonZeroU16, ptr};
 
-use super::codec;
-use crate::{error, types::QoS};
+use crate::{error, types::QoS, v3::codec};
 
 /// Server control messages
 #[derive(Debug)]
@@ -309,7 +308,7 @@ impl Subscribe {
     #[inline]
     /// returns iterator over subscription topics
     pub fn iter_mut(&mut self) -> SubscribeIter<'_> {
-        SubscribeIter { subs: self as *const _ as *mut _, entry: 0, lt: PhantomData }
+        SubscribeIter { subs: ptr::from_ref(self).cast_mut(), entry: 0, lt: PhantomData }
     }
 
     #[inline]
@@ -391,20 +390,20 @@ impl<'a> Subscription<'a> {
     #[inline]
     /// fail to subscribe to the topic
     pub fn fail(&mut self) {
-        *self.code = codec::SubscribeReturnCode::Failure
+        *self.code = codec::SubscribeReturnCode::Failure;
     }
 
     #[inline]
     /// confirm subscription to a topic with specific qos
     pub fn confirm(&mut self, qos: QoS) {
-        *self.code = codec::SubscribeReturnCode::Success(qos)
+        *self.code = codec::SubscribeReturnCode::Success(qos);
     }
 
     #[inline]
     #[doc(hidden)]
     /// confirm subscription to a topic with specific qos
     pub fn subscribe(&mut self, qos: QoS) {
-        self.confirm(qos)
+        self.confirm(qos);
     }
 }
 

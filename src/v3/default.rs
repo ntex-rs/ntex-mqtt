@@ -44,7 +44,7 @@ impl<S, E: fmt::Debug> Service<Control<E>> for DefaultControlService<S, E> {
             Control::Protocol(CtlFrame::Disconnect(disc)) => disc.ack(),
             Control::Shutdown(msg) => msg.ack(),
             _ => {
-                log::warn!("MQTT3 Control service is not configured, pkt: {:?}", pkt);
+                log::warn!("MQTT3 Control service is not configured, pkt: {pkt:?}");
                 ControlAck { result: ControlAckKind::Disconnect }
             }
         })

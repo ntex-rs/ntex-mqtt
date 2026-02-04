@@ -36,6 +36,7 @@ impl<A: Address> Connect<A> {
     }
 
     #[inline]
+    #[must_use]
     /// Create new client and provide client id
     pub fn client_id<U>(mut self, client_id: U) -> Self
     where
@@ -46,6 +47,7 @@ impl<A: Address> Connect<A> {
     }
 
     #[inline]
+    #[must_use]
     /// The handling of the Session state.
     pub fn clean_session(mut self) -> Self {
         self.pkt.clean_session = true;
@@ -53,6 +55,7 @@ impl<A: Address> Connect<A> {
     }
 
     #[inline]
+    #[must_use]
     /// A time interval measured in seconds.
     ///
     /// keep-alive is set to 30 seconds by default.
@@ -62,6 +65,7 @@ impl<A: Address> Connect<A> {
     }
 
     #[inline]
+    #[must_use]
     /// Will Message be stored on the Server and associated with the Network Connection.
     ///
     /// by default last will value is not set
@@ -71,6 +75,7 @@ impl<A: Address> Connect<A> {
     }
 
     #[inline]
+    #[must_use]
     /// Username can be used by the Server for authentication and authorization.
     pub fn username<U>(mut self, val: U) -> Self
     where
@@ -81,6 +86,7 @@ impl<A: Address> Connect<A> {
     }
 
     #[inline]
+    #[must_use]
     /// Password can be used by the Server for authentication and authorization.
     pub fn password(mut self, val: Bytes) -> Self {
         self.pkt.password = Some(val);
@@ -88,6 +94,7 @@ impl<A: Address> Connect<A> {
     }
 
     #[inline]
+    #[must_use]
     /// Update connect packet
     pub fn packet<F>(mut self, f: F) -> Self
     where

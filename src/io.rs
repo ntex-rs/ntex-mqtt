@@ -10,6 +10,7 @@ use ntex_util::channel::condition::Condition;
 use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
 
 type Response<U> = <U as Encoder>::Item;
+type Queue<T, E> = RefCell<VecDeque<ServiceResult<Result<T, E>>>>;
 
 pin_project_lite::pin_project! {
     /// Dispatcher for mqtt protocol
@@ -55,7 +56,7 @@ struct DispatcherInner<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'stat
 struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'static> {
     error: Cell<Option<IoDispatcherError<S::Error, <U as Encoder>::Error>>>,
     base: Cell<usize>,
-    queue: RefCell<VecDeque<ServiceResult<Result<S::Response, S::Error>>>>,
+    queue: Queue<S::Response, S::Error>,
     waker: LocalWaker,
     stopping: Condition,
     response: Cell<Option<PipelineCall<S, DispatchItem<U>>>>,
@@ -69,8 +70,8 @@ enum ServiceResult<T> {
 
 impl<T> ServiceResult<T> {
     fn take(&mut self) -> Option<T> {
-        let slf = std::mem::replace(self, ServiceResult::Pending);
-        match slf {
+        let this = std::mem::replace(self, ServiceResult::Pending);
+        match this {
             ServiceResult::Pending => None,
             ServiceResult::Ready(result) => Some(result),
         }
@@ -211,7 +212,7 @@ where
             }
 
             // check remaining response
-            while let Some(item) = queue.front_mut().and_then(|v| v.take()) {
+            while let Some(item) = queue.front_mut().and_then(ServiceResult::take) {
                 let _ = queue.pop_front();
                 self.base.set(self.base.get().wrapping_add(1));
                 match item {
@@ -243,9 +244,10 @@ where
 {
     type Output = Result<(), S::Error>;
 
+    #[allow(clippy::too_many_lines)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.as_mut().project();
-        let inner = &mut this.inner;
+        let this = self.as_mut().project();
+        let inner = this.inner;
 
         inner.state.waker.register(cx.waker());
 
@@ -324,10 +326,10 @@ where
                         PollService::Ready => (),
                         PollService::Item(item) => inner.call_service(cx, item, true, false),
                         PollService::ItemWait(item) => {
-                            inner.call_service(cx, item, false, false)
+                            inner.call_service(cx, item, false, false);
                         }
                         PollService::Continue => continue,
-                    };
+                    }
 
                     let item = if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
                         inner.stop();
@@ -439,12 +441,12 @@ where
                     Either::Left(item) => {
                         state.handle_result(item, response_idx, &st, &codec, stop)
                     }
-                    Either::Right(_) => {
+                    Either::Right(()) => {
                         state.handle_result(Ok(None), response_idx, &st, &codec, stop)
                     }
                 };
                 if empty_q {
-                    st.wake()
+                    st.wake();
                 }
             });
         } else if let Poll::Ready(res) = Pin::new(&mut fut).poll(cx) {
@@ -499,7 +501,7 @@ where
 
     fn poll_service(&mut self, cx: &mut Context<'_>) -> Poll<PollService<U>> {
         match self.service.poll_ready(cx) {
-            Poll::Ready(Ok(_)) => Poll::Ready(self.check_error()),
+            Poll::Ready(Ok(())) => Poll::Ready(self.check_error()),
             // pause io read task
             Poll::Pending => {
                 log::trace!("{}: Service is not ready, pause read task", self.io.tag());
@@ -936,12 +938,6 @@ mod tests {
 
     #[ntex::test]
     async fn test_err_in_service_ready() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(0);
-        client.write("GET /test HTTP/1\r\n\r\n");
-
-        let counter = Rc::new(Cell::new(0));
-
         struct Srv(Rc<Cell<usize>>);
 
         impl Service<DispatchItem<BytesCodec>> for Srv {
@@ -961,6 +957,12 @@ mod tests {
                 Ok(None)
             }
         }
+
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+        client.write("GET /test HTTP/1\r\n\r\n");
+
+        let counter = Rc::new(Cell::new(0));
 
         let (disp, io) = Dispatcher::new_debug(
             nio::Io::new(server, SharedCfg::new("DBG")),
@@ -1075,17 +1077,14 @@ mod tests {
             ntex_service::fn_service(async move |item: DispatchItem<BytesCodec>| {
                 let first = flag2.get();
                 flag2.set(false);
-                match item {
-                    DispatchItem::Item(b) => {
-                        if !first {
-                            sleep(Millis(500)).await;
-                        }
-                        Ok(Some(b))
+                if let DispatchItem::Item(b) = item {
+                    if !first {
+                        sleep(Millis(500)).await;
                     }
-                    _ => {
-                        server_ref.close();
-                        Ok::<_, ()>(None)
-                    }
+                    Ok(Some(b))
+                } else {
+                    server_ref.close();
+                    Ok::<_, ()>(None)
                 }
             }),
         );
@@ -1304,9 +1303,6 @@ mod tests {
     /// Do not use keep-alive timer if not configured
     #[ntex::test]
     async fn cancel_on_stop() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
-
         #[derive(Clone)]
         struct OnDrop(Arc<AtomicBool>);
         impl Drop for OnDrop {
@@ -1314,6 +1310,9 @@ mod tests {
                 self.0.store(true, Ordering::Relaxed);
             }
         }
+
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
 
         let data = Arc::new(AtomicBool::new(false));
         let data2 = OnDrop(data.clone());
@@ -1333,7 +1332,7 @@ mod tests {
                 let data = data2.clone();
                 async move {
                     if let DispatchItem::Item(bytes) = msg {
-                        sleep(Millis(999999)).await;
+                        sleep(Millis(99_9999)).await;
                         drop(data);
                         return Ok::<_, ()>(Some(bytes));
                     }

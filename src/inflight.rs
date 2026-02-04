@@ -105,7 +105,7 @@ impl Counter {
                 Poll::Pending
             }
         })
-        .await
+        .await;
     }
 }
 
@@ -173,9 +173,8 @@ mod tests {
         type Response = ();
         type Error = ();
 
-        async fn call(&self, _: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
-            let fut = sleep(self.0);
-            let _ = fut.await;
+        async fn call(&self, _r: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+            sleep(self.0).await;
             Ok::<_, ()>(())
         }
     }
@@ -244,30 +243,30 @@ mod tests {
 
         async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
             poll_fn(|cx| {
-                if !self.cnt.get() {
-                    Poll::Ready(Ok(()))
-                } else {
+                if self.cnt.get() {
                     self.waker.register(cx.waker());
                     Poll::Pending
+                } else {
+                    Poll::Ready(Ok(()))
                 }
             })
             .await
         }
 
-        async fn call(&self, _: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+        async fn call(&self, _r: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
             let fut = sleep(self.dur);
             self.cnt.set(true);
             self.waker.wake();
 
-            let _ = fut.await;
+            fut.await;
             self.cnt.set(false);
             self.waker.wake();
             Ok::<_, ()>(())
         }
     }
 
-    /// InflightService::poll_ready() must always register waker,
-    /// otherwise it can lose wake up if inner service's poll_ready
+    /// `InflightService::poll_ready()` must always register waker,
+    /// otherwise it can lose wake up if inner service's `poll_ready()`
     /// does not wakes dispatcher.
     #[ntex::test]
     async fn test_inflight3() {

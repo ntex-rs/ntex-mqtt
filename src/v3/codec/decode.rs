@@ -137,7 +137,7 @@ pub(super) fn publish_size(src: &BytesMut, flags: u8) -> Result<Option<u32>, Dec
     if src.remaining() < 2 {
         return Ok(None);
     }
-    let mut len = u16::from_be_bytes([src[0], src[1]]) as u32 + 2;
+    let mut len = u32::from(u16::from_be_bytes([src[0], src[1]])) + 2;
 
     // packet-id len
     let qos = QoS::try_from((flags & 0b0110) >> 1)?;
@@ -163,7 +163,7 @@ fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
 fn decode_subscribe_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let packet_id = NonZeroU16::decode(src)?;
     let mut status = Vec::with_capacity(src.len());
-    for code in src.as_ref().iter() {
+    for code in src.as_ref() {
         status.push(if *code == 0x80 {
             SubscribeReturnCode::Failure
         } else {

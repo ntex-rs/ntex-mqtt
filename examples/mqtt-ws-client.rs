@@ -25,7 +25,7 @@ async fn main() -> std::io::Result<()> {
             "https://127.0.0.1:8883",
             SslConnector::new(builder.build()),
         )
-        .finish(SharedCfg::default())
+        .build(SharedCfg::default())
         .await
         .unwrap(),
     );

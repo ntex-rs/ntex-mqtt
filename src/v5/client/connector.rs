@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, rc::Rc};
+use std::{marker::PhantomData, num::NonZero, rc::Rc};
 
 use ntex_io::IoBoxed;
 use ntex_net::connect::{self, Address, Connector};
@@ -97,9 +97,9 @@ where
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Client, Self::Error> {
         let (addr, pkt) = req.into_parts();
-        timeout_checked(self.cfg.handshake_timeout, self._connect(addr, pkt, ctx))
+        timeout_checked(self.cfg.handshake_timeout, self.connect_inner(addr, pkt, ctx))
             .await
-            .map_err(|_| ClientError::HandshakeTimeout)
+            .map_err(|()| ClientError::HandshakeTimeout)
             .and_then(|res| res)
     }
 }
@@ -110,7 +110,7 @@ where
     T: Service<connect::Connect<A>, Error = connect::ConnectError>,
     IoBoxed: From<T::Response>,
 {
-    async fn _connect(
+    async fn connect_inner(
         &self,
         addr: A,
         pkt: codec::Connect,
@@ -118,8 +118,8 @@ where
     ) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
         let io: IoBoxed = ctx.call(&self.connector, connect::Connect::new(addr)).await?.into();
         let keep_alive = pkt.keep_alive;
-        let max_packet_size = pkt.max_packet_size.map(|v| v.get()).unwrap_or(0);
-        let max_receive = pkt.receive_max.map(|v| v.get()).unwrap_or(65535);
+        let max_packet_size = pkt.max_packet_size.map_or(0, NonZero::get);
+        let max_receive = pkt.receive_max.map_or(65535, NonZero::get);
         let pool = self.pool.clone();
 
         let codec = codec::Codec::new();
@@ -136,7 +136,7 @@ where
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, pool));
         match packet {
             Decoded::Packet(Packet::ConnectAck(pkt), ..) => {
-                log::trace!("Connect ack response from server: {:#?}", pkt);
+                log::trace!("Connect ack response from server: {pkt:#?}");
                 if pkt.reason_code == codec::ConnectAckReason::Success {
                     // set max outbound (encoder) packet size
                     if let Some(size) = pkt.max_packet_size {

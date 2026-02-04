@@ -46,7 +46,7 @@ impl Publish {
     }
 
     #[inline]
-    /// only present in PUBLISH Packets where the QoS level is 1 or 2.
+    /// only present in PUBLISH Packets where the `QoS` level is 1 or 2.
     pub fn id(&self) -> Option<NonZeroU16> {
         self.pkt.packet_id
     }
@@ -132,15 +132,17 @@ impl PublishAck {
         }
     }
 
-    /// Set Acknowledgement's Reason Code
     #[inline]
+    #[must_use]
+    /// Set Acknowledgement's Reason Code
     pub fn reason_code(mut self, reason_code: codec::PublishAckReason) -> Self {
         self.reason_code = reason_code;
         self
     }
 
-    /// Update user properties
     #[inline]
+    #[must_use]
+    /// Update user properties
     pub fn properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::UserProperties),
@@ -149,8 +151,9 @@ impl PublishAck {
         self
     }
 
-    /// Set ack reason string
     #[inline]
+    #[must_use]
+    /// Set ack reason string
     pub fn reason(mut self, reason: ByteString) -> Self {
         self.reason_string = Some(reason);
         self

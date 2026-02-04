@@ -46,7 +46,7 @@ impl Publish {
     }
 
     #[inline]
-    /// only present in PUBLISH Packets where the QoS level is 1 or 2.
+    /// only present in PUBLISH Packets where the `QoS` level is 1 or 2.
     pub fn id(&self) -> Option<NonZeroU16> {
         self.pkt.packet_id
     }

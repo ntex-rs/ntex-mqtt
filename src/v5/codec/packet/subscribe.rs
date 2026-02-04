@@ -6,7 +6,7 @@ use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
 use crate::types::QoS;
 use crate::utils::{self, Decode, Encode, write_variable_length};
-use crate::v5::codec::{UserProperties, UserProperty, encode::*, property_type as pt};
+use crate::v5::codec::{UserProperties, UserProperty, encode, property_type as pt};
 
 /// Represents SUBSCRIBE packet
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -16,7 +16,7 @@ pub struct Subscribe {
     /// Subscription Identifier
     pub id: Option<NonZeroU32>,
     pub user_properties: UserProperties,
-    /// the list of Topic Filters and QoS to which the Client wants to subscribe.
+    /// the list of Topic Filters and `QoS` to which the Client wants to subscribe.
     pub topic_filters: Vec<(ByteString, SubscriptionOptions)>,
 }
 
@@ -185,22 +185,25 @@ impl UnsubscribeAck {
     }
 }
 
-impl EncodeLtd for Subscribe {
+impl encode::EncodeLtd for Subscribe {
     fn encoded_size(&self, _limit: u32) -> usize {
-        let prop_len = self.id.map_or(0, |v| 1 + var_int_len(v.get() as usize) as usize) // +1 to account for property type byte
+        let prop_len = self.id.map_or(0, |v| 1 + encode::var_int_len(v.get() as usize) as usize) // +1 to account for property type byte
             + self.user_properties.encoded_size();
         let payload_len = self
             .topic_filters
             .iter()
             .fold(0, |acc, (filter, _opts)| acc + filter.encoded_size() + 1);
-        self.packet_id.encoded_size() + var_int_len(prop_len) as usize + prop_len + payload_len
+        self.packet_id.encoded_size()
+            + encode::var_int_len(prop_len) as usize
+            + prop_len
+            + payload_len
     }
 
     fn encode(&self, buf: &mut BytesMut, _: u32) -> Result<(), EncodeError> {
         self.packet_id.encode(buf)?;
 
         // encode properties
-        let prop_len = self.id.map_or(0, |v| 1 + var_int_len(v.get() as usize))
+        let prop_len = self.id.map_or(0, |v| 1 + encode::var_int_len(v.get() as usize))
             + self.user_properties.encoded_size() as u32; // safe: size was already checked against maximum
         utils::write_variable_length(prop_len, buf);
 
@@ -212,7 +215,7 @@ impl EncodeLtd for Subscribe {
         self.user_properties.encode(buf)?;
 
         // payload
-        for (filter, opts) in self.topic_filters.iter() {
+        for (filter, opts) in &self.topic_filters {
             filter.encode(buf)?;
             opts.encode(buf)?;
         }
@@ -243,15 +246,15 @@ impl Encode for SubscriptionOptions {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
         buf.put_u8(
             u8::from(self.qos)
-                | ((self.no_local as u8) << 2)
-                | ((self.retain_as_published as u8) << 3)
+                | (u8::from(self.no_local) << 2)
+                | (u8::from(self.retain_as_published) << 3)
                 | (u8::from(self.retain_handling) << 4),
         );
         Ok(())
     }
 }
 
-impl EncodeLtd for SubscribeAck {
+impl encode::EncodeLtd for SubscribeAck {
     fn encoded_size(&self, limit: u32) -> usize {
         let len = self.status.len();
         if len > (u32::MAX - 2) as usize {
@@ -269,17 +272,17 @@ impl EncodeLtd for SubscribeAck {
         self.packet_id.encode(buf)?;
         let len = self.status.len() as u32; // safe: max size checked already
         ack_props::encode(&self.properties, &self.reason_string, buf, size - 2 - len)?;
-        for &reason in self.status.iter() {
+        for &reason in &self.status {
             buf.put_u8(reason.into());
         }
         Ok(())
     }
 }
 
-impl EncodeLtd for Unsubscribe {
+impl encode::EncodeLtd for Unsubscribe {
     fn encoded_size(&self, _limit: u32) -> usize {
         let prop_len = self.user_properties.encoded_size();
-        2 + var_int_len(prop_len) as usize
+        2 + encode::var_int_len(prop_len) as usize
             + prop_len
             + self.topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
     }
@@ -293,14 +296,14 @@ impl EncodeLtd for Unsubscribe {
         self.user_properties.encode(buf)?;
 
         // payload
-        for filter in self.topic_filters.iter() {
+        for filter in &self.topic_filters {
             filter.encode(buf)?;
         }
         Ok(())
     }
 }
 
-impl EncodeLtd for UnsubscribeAck {
+impl encode::EncodeLtd for UnsubscribeAck {
     // todo: almost identical to SUBACK
     fn encoded_size(&self, limit: u32) -> usize {
         let len = self.status.len();
@@ -308,7 +311,7 @@ impl EncodeLtd for UnsubscribeAck {
             + ack_props::encoded_size(
                 &self.properties,
                 &self.reason_string,
-                reduce_limit(limit, 2 + len),
+                encode::reduce_limit(limit, 2 + len),
             )
     }
 
@@ -317,7 +320,7 @@ impl EncodeLtd for UnsubscribeAck {
         let len = self.status.len() as u32;
 
         ack_props::encode(&self.properties, &self.reason_string, buf, size - 2 - len)?;
-        for &reason in self.status.iter() {
+        for &reason in &self.status {
             buf.put_u8(reason.into());
         }
         Ok(())
@@ -328,7 +331,8 @@ impl EncodeLtd for UnsubscribeAck {
 mod tests {
     use ntex_codec::{Decoder, Encoder};
 
-    use super::super::super::{Codec, Decoded, Packet};
+    use super::super::super::{Codec, Decoded, EncodeLtd, Packet};
+    // use crate::v5::codec::encode::EncodeLtd;
     use super::*;
 
     fn packet(res: Decoded) -> Packet {

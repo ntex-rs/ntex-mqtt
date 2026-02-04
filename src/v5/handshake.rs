@@ -88,7 +88,7 @@ impl Handshake {
     }
 
     #[inline]
-    /// Create handshake ack object with provided ConnectAck packet
+    /// Create handshake ack object with provided `ConnectAck` packet
     pub fn fail_with<St>(self, ack: codec::ConnectAck) -> HandshakeAck<St> {
         HandshakeAck {
             io: self.io,
@@ -117,21 +117,25 @@ pub struct HandshakeAck<St> {
 
 impl<St> HandshakeAck<St> {
     #[inline]
+    #[must_use]
     /// Set idle keep-alive for the connection in seconds.
     /// This method sets `server_keepalive_sec` property for `ConnectAck`
     /// response packet.
     ///
-    /// By default idle keep-alive is set to 30 seconds. Panics if timeout is `0`.
+    /// By default idle keep-alive is set to 30 seconds.
+    ///
+    /// # Panics
+    ///
+    /// Panics if timeout is `0`.
     pub fn keep_alive(mut self, timeout: u16) -> Self {
-        if timeout == 0 {
-            panic!("Timeout must be greater than 0")
-        }
+        assert!(timeout != 0, "Timeout must be greater than 0");
         self.keepalive = timeout;
         self
     }
 
-    /// Access to ConnectAck packet
     #[inline]
+    #[must_use]
+    /// Access to `ConnectAck` packet
     pub fn with(mut self, f: impl FnOnce(&mut codec::ConnectAck)) -> Self {
         f(&mut self.packet);
         self

@@ -2,6 +2,7 @@ use std::{fmt, fmt::Write, io};
 
 use ntex_bytes::ByteString;
 
+#[allow(clippy::match_same_arms)]
 pub(crate) fn is_valid(topic: &str) -> bool {
     if topic.is_empty() {
         false
@@ -72,15 +73,14 @@ fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(
             Some(TopicFilterLevel::MultiWildcard) => {
                 return subset_level.match_level(&TopicFilterLevel::MultiWildcard, index);
             }
-            Some(level) if subset_level.match_level(level, index) => continue,
+            Some(level) if subset_level.match_level(level, index) => (),
             _ => return false,
         }
     }
 
     match superset.next() {
-        Some(&TopicFilterLevel::MultiWildcard) => true,
+        Some(&TopicFilterLevel::MultiWildcard) | None => true,
         Some(_) => false,
-        None => true,
     }
 }
 
@@ -340,22 +340,25 @@ mod tests {
     }
 
     fn lvl_normal<T: AsRef<str>>(s: T) -> TopicFilterLevel {
-        if s.as_ref().contains(['+', '#']) {
-            panic!("invalid normal level `{}` contains +|#", s.as_ref());
-        }
-
+        assert!(
+            !s.as_ref().contains(['+', '#']),
+            "invalid normal level `{}` contains +|#",
+            s.as_ref()
+        );
         TopicFilterLevel::Normal(s.as_ref().into())
     }
 
     fn lvl_sys<T: AsRef<str>>(s: T) -> TopicFilterLevel {
-        if s.as_ref().contains(['+', '#']) {
-            panic!("invalid normal level `{}` contains +|#", s.as_ref());
-        }
-
-        if !s.as_ref().starts_with('$') {
-            panic!("invalid metadata level `{}` not starts with $", s.as_ref())
-        }
-
+        assert!(
+            !s.as_ref().contains(['+', '#']),
+            "invalid normal level `{}` contains +|#",
+            s.as_ref()
+        );
+        assert!(
+            s.as_ref().starts_with('$'),
+            "invalid metadata level `{}` not starts with $",
+            s.as_ref()
+        );
         TopicFilterLevel::System(s.as_ref().into())
     }
 
@@ -433,7 +436,7 @@ mod tests {
         assert_eq!(v.write_topic(&t).unwrap(), 10);
         assert_eq!(v, b"+/tennis/#");
 
-        assert_eq!(format!("{}", t), "+/tennis/#");
+        assert_eq!(format!("{t}"), "+/tennis/#");
         assert_eq!(t.to_string(), "+/tennis/#");
     }
 

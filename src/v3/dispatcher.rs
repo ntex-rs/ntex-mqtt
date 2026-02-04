@@ -70,10 +70,12 @@ where
 
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     fn size(&self) -> u32 {
-        match self {
-            DispatchItem::Item(Decoded::Packet(_, size))
-            | DispatchItem::Item(Decoded::Publish(_, _, size)) => *size,
-            _ => 0,
+        if let DispatchItem::Item(Decoded::Packet(_, size) | Decoded::Publish(_, _, size)) =
+            self
+        {
+            *size
+        } else {
+            0
         }
     }
 
@@ -212,6 +214,7 @@ where
         self.inner.control.shutdown().await;
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn call(
         &self,
         req: DispatchItem<Rc<MqttShared>>,
@@ -274,11 +277,10 @@ where
                 }
 
                 if inner.sink.is_closed()
-                    && !self
+                    && self
                         .cfg
                         .handle_qos_after_disconnect
-                        .map(|max_qos| publish.qos <= max_qos)
-                        .unwrap_or_default()
+                        .is_none_or(|max_qos| publish.qos > max_qos)
                 {
                     return Ok(None);
                 }
@@ -489,7 +491,7 @@ where
 {
     let qos2 = pkt.qos() == QoS::ExactlyOnce;
     match ctx.call(svc, pkt).await {
-        Ok(_) => {
+        Ok(()) => {
             log::trace!(
                 "{}: Publish result for packet {:?} is ready",
                 inner.sink.tag(),
@@ -572,9 +574,8 @@ where
                     if let MqttError::Service(err) = err {
                         pkt = Control::error(err);
                         continue;
-                    } else {
-                        Err(err)
                     }
+                    Err(err)
                 };
                 inner.drop_payload(&PayloadError::Service);
                 inner.sink.close();
@@ -605,7 +606,7 @@ mod tests {
 
         let io = Io::new(IoTest::create().0, cfg);
         let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
         let err = Rc::new(RefCell::new(false));
         let err2 = err.clone();
 
@@ -666,7 +667,7 @@ mod tests {
 
         let io = Io::new(IoTest::create().0, cfg);
         let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
         let control = Pipeline::new(fn_service(|_| {
             Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
         }));
@@ -701,7 +702,7 @@ mod tests {
     async fn control_stop_once_on_service_error() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
         let counter = Rc::new(Cell::new(0));
         let counter2 = counter.clone();
         let control = Pipeline::new(fn_service(async move |msg| {
@@ -716,7 +717,7 @@ mod tests {
             fn_service(async |_: Publish| Err(())),
             control.clone(),
             control,
-            Default::default(),
+            Cfg::default(),
         ));
 
         disp.call(DispatchItem::Item(Decoded::Publish(

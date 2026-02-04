@@ -31,7 +31,7 @@ pub use crate::types::QoS;
 const RECEIVE_MAX_DEFAULT: NonZeroU16 = NonZeroU16::new(65_535).unwrap();
 
 fn disconnect(msg: &'static str) -> ControlAck {
-    log::error!("{}", msg);
+    log::error!("{msg}");
 
     ControlAck {
         packet: control::Pkt::Disconnect(codec::Disconnect::new(

@@ -41,7 +41,7 @@ impl<S, E: fmt::Debug> Service<Control<E>> for DefaultControlService<S, E> {
             Control::Flow(CtlFlow::Ping(pkt)) => Ok(pkt.ack()),
             Control::Protocol(CtlFrame::Disconnect(pkt)) => Ok(pkt.ack()),
             _ => {
-                log::warn!("MQTT5 Control service is not configured, pkt: {:?}", pkt);
+                log::warn!("MQTT5 Control service is not configured, pkt: {pkt:?}");
                 Ok(pkt.disconnect_with(super::codec::Disconnect::new(
                     super::codec::DisconnectReasonCode::UnspecifiedError,
                 )))

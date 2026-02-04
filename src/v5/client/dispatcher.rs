@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
+use std::{marker::PhantomData, num::NonZero, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_dispatcher::{Control as DispControl, DispatchItem, Reason};
@@ -10,14 +10,14 @@ use crate::error::{HandshakeError, MqttError, PayloadError, ProtocolError};
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::v5::codec::{Decoded, DisconnectReasonCode, Encoded, Packet};
 use crate::v5::shared::{Ack, MqttShared};
-use crate::v5::{codec, control::Pkt, publish::Publish, publish::PublishAck, sink::MqttSink};
+use crate::v5::{codec, control::Pkt, publish::Publish, publish::PublishAck};
 use crate::{MqttServiceConfig, types::packet_type};
 
 use super::control::{Control, ControlAck};
 
 /// mqtt5 protocol dispatcher
 pub(super) fn create_dispatcher<T, C, E>(
-    sink: MqttSink,
+    sink: Rc<MqttShared>,
     publish: T,
     control: C,
     max_receive: usize,
@@ -35,7 +35,7 @@ where
         max_receive,
         max_topic_alias,
         inner: Rc::new(Inner {
-            sink: sink.shared(),
+            sink,
             payload: Cell::new(None),
             control: Pipeline::new(control.map_err(MqttError::Service)),
             info: RefCell::new(PublishInfo {
@@ -146,13 +146,13 @@ where
         self.inner.control.shutdown().await;
     }
 
-    #[allow(clippy::await_holding_refcell_ref)]
+    #[allow(clippy::too_many_lines, clippy::await_holding_refcell_ref)]
     async fn call(
         &self,
         request: DispatchItem<Rc<MqttShared>>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        log::trace!("Dispatch packet: {:#?}", request);
+        log::trace!("Dispatch packet: {request:#?}");
 
         match request {
             DispatchItem::Item(Decoded::Publish(mut publish, payload, size)) => {
@@ -200,20 +200,19 @@ where
                     if let Some(alias) = publish.properties.topic_alias {
                         if publish.topic.is_empty() {
                             // lookup topic by provided alias
-                            match inner.aliases.get(&alias) {
-                                Some(aliased_topic) => publish.topic = aliased_topic.clone(),
-                                None => {
-                                    drop(inner);
-                                    return control(
-                                        Control::proto_error(ProtocolError::violation(
-                                            DisconnectReasonCode::TopicAliasInvalid,
-                                            "Unknown topic alias",
-                                        )),
-                                        &self.inner,
-                                        0,
-                                    )
-                                    .await;
-                                }
+                            if let Some(aliased_topic) = inner.aliases.get(&alias) {
+                                publish.topic = aliased_topic.clone();
+                            } else {
+                                drop(inner);
+                                return control(
+                                    Control::proto_error(ProtocolError::violation(
+                                        DisconnectReasonCode::TopicAliasInvalid,
+                                        "Unknown topic alias",
+                                    )),
+                                    &self.inner,
+                                    0,
+                                )
+                                .await;
                             }
                         } else {
                             // record new alias
@@ -260,7 +259,7 @@ where
                 publish_fn(
                     &self.publish,
                     Publish::new(publish, payload, size),
-                    packet_id.map(|v| v.get()).unwrap_or(0),
+                    packet_id.map_or(0, NonZero::get),
                     size,
                     info,
                     ctx,
@@ -341,17 +340,16 @@ where
                 .await
             }
             DispatchItem::Item(Decoded::Packet(Packet::PingResponse, ..)) => Ok(None),
-            DispatchItem::Item(
-                Decoded::Packet(pkt @ Packet::PingRequest, _)
-                | Decoded::Packet(pkt @ Packet::Subscribe(_), _)
-                | Decoded::Packet(pkt @ Packet::Unsubscribe(_), _),
-            ) => Err(HandshakeError::Protocol(ProtocolError::unexpected_packet(
+            DispatchItem::Item(Decoded::Packet(
+                pkt @ (Packet::PingRequest | Packet::Subscribe(_) | Packet::Unsubscribe(_)),
+                _,
+            )) => Err(HandshakeError::Protocol(ProtocolError::unexpected_packet(
                 pkt.packet_type(),
                 "Packet of the type is not expected from server",
             ))
             .into()),
             DispatchItem::Item(Decoded::Packet(pkt, _)) => {
-                log::debug!("Unsupported packet: {:?}", pkt);
+                log::debug!("Unsupported packet: {pkt:?}");
                 Ok(None)
             }
             DispatchItem::Stop(Reason::Encoder(err)) => {
@@ -415,7 +413,7 @@ where
     };
 
     if let Some(id) = NonZeroU16::new(packet_id) {
-        log::trace!("Sending publish ack for {} id", packet_id);
+        log::trace!("Sending publish ack for {packet_id:?} id");
         inner.info.borrow_mut().inflight.remove(&id);
         let ack = codec::PublishAck {
             packet_id: id,
@@ -461,7 +459,7 @@ where
                             pkt = Control::error(err);
                             continue;
                         }
-                        _ => Err(err),
+                        MqttError::Handshake(_) => Err(err),
                     }
                 };
             }
@@ -484,10 +482,10 @@ where
             match result.packet {
                 Pkt::Packet(pkt) => Ok(Some(Encoded::Packet(pkt))),
                 Pkt::Disconnect(pkt) => {
-                    if !inner.sink.is_disconnect_sent() {
-                        Ok(Some(Encoded::Packet(codec::Packet::from(pkt))))
-                    } else {
+                    if inner.sink.is_disconnect_sent() {
                         Ok(None)
+                    } else {
+                        Ok(Some(Encoded::Packet(codec::Packet::from(pkt))))
                     }
                 }
                 Pkt::None => Ok(None),
@@ -508,6 +506,7 @@ mod tests {
     use ntex_service::{cfg::SharedCfg, fn_service};
     use ntex_util::future::{Ready, lazy};
 
+    use super::super::MqttSink;
     use super::*;
 
     #[derive(Debug)]
@@ -517,18 +516,18 @@ mod tests {
     async fn test_wr_backpressure() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Default::default()));
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
         let sink = MqttSink::new(shared.clone());
 
         let disp = Pipeline::new(create_dispatcher(
-            sink.clone(),
+            shared.clone(),
             fn_service(|p: Publish| Ready::Ok::<_, TestError>(Either::Right(p.ack()))),
             fn_service(|_| {
                 Ready::Ok::<_, TestError>(ControlAck { packet: Pkt::None, disconnect: false })
             }),
             16,
             16,
-            Default::default(),
+            Cfg::default(),
         ));
 
         assert!(!sink.is_ready());

@@ -1,7 +1,18 @@
-#![deny(rust_2018_idioms, warnings, unreachable_pub)]
-#![allow(clippy::type_complexity)]
-
 //! MQTT Client/Server framework
+#![deny(
+    rust_2018_idioms,
+    warnings,
+    unreachable_pub,
+    // missing_debug_implementations,
+    clippy::pedantic
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::missing_fields_in_debug,
+    clippy::must_use_candidate,
+    clippy::missing_errors_doc,
+    clippy::struct_field_names
+)]
 
 mod topic;
 #[macro_use]

@@ -1,6 +1,7 @@
+#![allow(clippy::ref_option, clippy::needless_pass_by_value)]
 use ntex_bytes::{BufMut, ByteString, BytesMut};
 
-use super::packet::{property_type as pt, *};
+use super::packet::{Packet, property_type as pt};
 use super::{UserProperties, UserProperty};
 use crate::error::EncodeError;
 use crate::types::packet_type;
@@ -112,7 +113,7 @@ pub(crate) fn encoded_size_opt_props(
     mut limit: u32,
 ) -> usize {
     let mut len = 0;
-    for up in user_props.iter() {
+    for up in user_props {
         let prop_len = 1 + up.encoded_size(); // prop type byte + key.len() + val.len()
         if prop_len > limit as usize {
             return len;
@@ -137,7 +138,7 @@ pub(crate) fn encode_opt_props(
     buf: &mut BytesMut,
     mut size: u32,
 ) -> Result<(), EncodeError> {
-    for up in user_props.iter() {
+    for up in user_props {
         let prop_len = 1 + up.0.encoded_size() + up.1.encoded_size(); // prop_type.len() + key.len() + val.len()
         if prop_len > size as usize {
             return Ok(());
@@ -190,11 +191,11 @@ pub(super) fn encode_property_default<T: Encode + PartialEq>(
     prop_type: u8,
     buf: &mut BytesMut,
 ) -> Result<(), EncodeError> {
-    if *v != default {
+    if *v == default {
+        Ok(())
+    } else {
         buf.put_u8(prop_type);
         v.encode(buf)
-    } else {
-        Ok(())
     }
 }
 
@@ -264,7 +265,8 @@ mod tests {
     use std::num::{NonZeroU16, NonZeroU32};
 
     use super::*;
-    use crate::types::MAX_PACKET_SIZE;
+    use crate::types::{MAX_PACKET_SIZE, QoS};
+    use crate::v5::codec::*;
 
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()

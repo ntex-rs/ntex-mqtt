@@ -19,7 +19,7 @@ prim_enum! {
         /// At least once delivery
         ///
         /// This quality of service ensures that the message arrives at the receiver at least once.
-        /// A QoS 1 PUBLISH Packet has a Packet Identifier in its variable header
+        /// A `QoS` 1 PUBLISH Packet has a Packet Identifier in its variable header
         /// and is acknowledged by a PUBACK Packet.
         AtLeastOnce = 1,
         /// Exactly once delivery

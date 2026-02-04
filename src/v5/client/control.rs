@@ -28,11 +28,11 @@ pub enum Control<E> {
 /// MQTT protocol–related messages
 #[derive(Debug)]
 pub enum CtlFrame {
-    /// Unhandled publish packet
+    /// Unhandled `Publish` packet
     Publish(Publish),
-    /// PublishRelease packet from a client
+    /// `PublishRelease` packet from a client
     PublishRelease(PublishRelease),
-    /// Disconnect packet from a client
+    /// `Disconnect` packet from a client
     Disconnect(Disconnect),
 }
 
@@ -133,18 +133,14 @@ impl Publish {
     #[inline]
     pub fn ack(self, reason_code: codec::PublishAckReason) -> ControlAck {
         ControlAck {
-            packet: self
-                .0
-                .packet_id
-                .map(|packet_id| {
-                    Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
-                        packet_id,
-                        reason_code,
-                        properties: codec::UserProperties::new(),
-                        reason_string: None,
-                    }))
-                })
-                .unwrap_or(Pkt::None),
+            packet: self.0.packet_id.map_or(Pkt::None, |packet_id| {
+                Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
+                    packet_id,
+                    reason_code,
+                    properties: codec::UserProperties::new(),
+                    reason_string: None,
+                }))
+            }),
             disconnect: false,
         }
     }
@@ -157,18 +153,14 @@ impl Publish {
         reason_string: Option<ByteString>,
     ) -> ControlAck {
         ControlAck {
-            packet: self
-                .0
-                .packet_id
-                .map(|packet_id| {
-                    Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
-                        packet_id,
-                        reason_code,
-                        properties,
-                        reason_string,
-                    }))
-                })
-                .unwrap_or(Pkt::None),
+            packet: self.0.packet_id.map_or(Pkt::None, |packet_id| {
+                Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
+                    packet_id,
+                    reason_code,
+                    properties,
+                    reason_string,
+                }))
+            }),
             disconnect: false,
         }
     }
@@ -179,18 +171,14 @@ impl Publish {
     ) -> (ControlAck, codec::Publish) {
         (
             ControlAck {
-                packet: self
-                    .0
-                    .packet_id
-                    .map(|packet_id| {
-                        Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
-                            packet_id,
-                            reason_code,
-                            properties: codec::UserProperties::new(),
-                            reason_string: None,
-                        }))
-                    })
-                    .unwrap_or(Pkt::None),
+                packet: self.0.packet_id.map_or(Pkt::None, |packet_id| {
+                    Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
+                        packet_id,
+                        reason_code,
+                        properties: codec::UserProperties::new(),
+                        reason_string: None,
+                    }))
+                }),
                 disconnect: false,
             },
             self.0,

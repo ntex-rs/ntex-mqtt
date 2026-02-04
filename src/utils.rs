@@ -115,7 +115,7 @@ impl Decode for Bytes {
 
 impl Decode for ByteString {
     fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        ByteString::try_from(Bytes::decode(src)?).map_err(|_| DecodeError::Utf8Error)
+        ByteString::try_from(Bytes::decode(src)?).map_err(|()| DecodeError::Utf8Error)
     }
 }
 
@@ -145,10 +145,9 @@ pub(crate) fn decode_variable_length_cursor<B: Buf>(src: &mut B) -> Result<u32, 
         len += ((val & 0b0111_1111u8) as u32) << shift;
         if val & 0b1000_0000 == 0 {
             return Ok(len);
-        } else {
-            ensure!(shift < 21, DecodeError::InvalidLength);
-            shift += 7;
         }
+        ensure!(shift < 21, DecodeError::InvalidLength);
+        shift += 7;
     }
 }
 
@@ -276,7 +275,7 @@ pub(crate) fn write_variable_length(len: u32, dst: &mut BytesMut) {
     match len {
         0..=127 => dst.put_u8(len as u8),
         128..=16_383 => {
-            dst.put_slice(&[((len & 0b0111_1111) | 0b1000_0000) as u8, (len >> 7) as u8])
+            dst.put_slice(&[((len & 0b0111_1111) | 0b1000_0000) as u8, (len >> 7) as u8]);
         }
         16_384..=2_097_151 => {
             dst.put_slice(&[

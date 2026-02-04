@@ -107,7 +107,7 @@ impl Client {
         }
 
         let dispatcher = create_dispatcher(
-            MqttSink::new(self.shared.clone()),
+            self.shared.clone(),
             fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
             fn_service(|msg: Control<()>| {
                 Ready::Ok(msg.disconnect(codec::Disconnect::default()))
@@ -132,7 +132,7 @@ impl Client {
         }
 
         let dispatcher = create_dispatcher(
-            MqttSink::new(self.shared.clone()),
+            self.shared.clone(),
             fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
             service.into_service(),
             self.max_receive,
@@ -178,6 +178,7 @@ where
     PublishAck: TryFrom<PErr, Error = Err>,
     PErr: 'static,
 {
+    #[must_use]
     /// Configure mqtt resource for a specific topic
     pub fn resource<T, F, S>(mut self, address: T, service: F) -> Self
     where
@@ -197,7 +198,7 @@ where
         }
 
         let dispatcher = create_dispatcher(
-            MqttSink::new(self.shared.clone()),
+            self.shared.clone(),
             dispatch(self.builder.finish(), self.handlers),
             fn_service(|msg: Control<Err>| {
                 Ready::Ok(msg.disconnect(codec::Disconnect::default()))
@@ -221,7 +222,7 @@ where
         }
 
         let dispatcher = create_dispatcher(
-            MqttSink::new(self.shared.clone()),
+            self.shared.clone(),
             dispatch(self.builder.finish(), self.handlers),
             service.into_service(),
             self.max_receive,
@@ -270,7 +271,7 @@ where
                 *req.topic_mut() = item.1.clone();
                 item.0
             } else {
-                log::error!("Unknown topic alias: {:?}", alias);
+                log::error!("Unknown topic alias: {alias:?}");
                 return Either::Right(Ready::<_, Err>::Ok(Either::Left(req)));
             }
         } else {
