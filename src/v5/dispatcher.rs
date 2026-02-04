@@ -72,10 +72,12 @@ where
 
 impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     fn size(&self) -> u32 {
-        match self {
-            DispatchItem::Item(Decoded::Packet(_, size))
-            | DispatchItem::Item(Decoded::Publish(_, _, size)) => *size,
-            _ => 0,
+        if let DispatchItem::Item(Decoded::Packet(_, size) | Decoded::Publish(_, _, size)) =
+            self
+        {
+            *size
+        } else {
+            0
         }
     }
 
@@ -228,7 +230,7 @@ where
         self.inner.control.shutdown().await;
     }
 
-    #[allow(clippy::await_holding_refcell_ref)]
+    #[allow(clippy::too_many_lines, clippy::await_holding_refcell_ref)]
     async fn call(
         &self,
         request: DispatchItem<Rc<MqttShared>>,
@@ -330,20 +332,19 @@ where
                     if let Some(alias) = publish.properties.topic_alias {
                         if publish.topic.is_empty() {
                             // lookup topic by provided alias
-                            match inner.aliases.get(&alias) {
-                                Some(aliased_topic) => publish.topic = aliased_topic.clone(),
-                                None => {
-                                    drop(inner);
-                                    return control(
-                                        Control::proto_error(ProtocolError::violation(
-                                            DisconnectReasonCode::TopicAliasInvalid,
-                                            "Unknown topic alias",
-                                        )),
-                                        &self.inner,
-                                        0,
-                                    )
-                                    .await;
-                                }
+                            if let Some(aliased_topic) = inner.aliases.get(&alias) {
+                                publish.topic = aliased_topic.clone();
+                            } else {
+                                drop(inner);
+                                return control(
+                                    Control::proto_error(ProtocolError::violation(
+                                        DisconnectReasonCode::TopicAliasInvalid,
+                                        "Unknown topic alias",
+                                    )),
+                                    &self.inner,
+                                    0,
+                                )
+                                .await;
                             }
                         } else {
                             // record new alias
@@ -377,11 +378,10 @@ where
                     }
 
                     if state.is_closed()
-                        && !self
+                        && self
                             .cfg
                             .handle_qos_after_disconnect
-                            .map(|max_qos| publish.qos <= max_qos)
-                            .unwrap_or_default()
+                            .is_none_or(|max_qos| publish.qos > max_qos)
                     {
                         return Ok(None);
                     }
@@ -399,7 +399,7 @@ where
                 publish_fn(
                     &self.publish,
                     Publish::new(publish, payload, size),
-                    packet_id.map(|v| v.get()).unwrap_or(0),
+                    packet_id.map_or(0, num::NonZero::get),
                     info,
                     ctx,
                 )
@@ -685,24 +685,22 @@ where
             if stop {
                 inner.sink.drop_sink();
                 return Err(err);
+            }
+            // handle error from control service
+            if inner.sink.is_dispatcher_stopped() {
+                inner.sink.drop_sink();
+                return Err(err);
+            }
+            if let MqttError::Service(err) = err {
+                stop = true;
+                inner
+                    .control_unbuf
+                    .call(Control::error(err))
+                    .await
+                    .inspect_err(|_| inner.sink.drop_sink())?
             } else {
-                // handle error from control service
-                if !inner.sink.is_dispatcher_stopped() {
-                    if let MqttError::Service(err) = err {
-                        stop = true;
-                        inner
-                            .control_unbuf
-                            .call(Control::error(err))
-                            .await
-                            .inspect_err(|_| inner.sink.drop_sink())?
-                    } else {
-                        inner.sink.drop_sink();
-                        return Err(err);
-                    }
-                } else {
-                    inner.sink.drop_sink();
-                    return Err(err);
-                }
+                inner.sink.drop_sink();
+                return Err(err);
             }
         }
     };
@@ -724,10 +722,10 @@ where
         match result.packet {
             Pkt::Packet(pkt) => Ok(Some(Encoded::Packet(pkt))),
             Pkt::Disconnect(pkt) => {
-                if !inner.sink.is_disconnect_sent() {
-                    Ok(Some(Encoded::Packet(codec::Packet::from(pkt))))
-                } else {
+                if inner.sink.is_disconnect_sent() {
                     Ok(None)
+                } else {
+                    Ok(Some(Encoded::Packet(codec::Packet::from(pkt))))
                 }
             }
             Pkt::None => Ok(None),
@@ -768,7 +766,7 @@ mod tests {
     async fn test_wr_backpressure() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Default::default()));
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
         let control = Pipeline::new(fn_service(|_| {
             Ready::Ok::<_, MqttError<TestError>>(ControlAck {
                 packet: Pkt::None,
@@ -781,7 +779,7 @@ mod tests {
             fn_service(|p: Publish| Ready::Ok::<_, TestError>(p.ack())),
             control.clone(),
             control,
-            Default::default(),
+            Cfg::default(),
         ));
 
         let sink = MqttSink::new(shared.clone());
@@ -806,7 +804,7 @@ mod tests {
     async fn control_stop_once_on_service_error() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Default::default()));
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
         let counter = Rc::new(Cell::new(0));
         let counter2 = counter.clone();
         let control = Pipeline::new(fn_service(async move |msg| {
@@ -821,7 +819,7 @@ mod tests {
             fn_service(async |_: Publish| Err(TestError)),
             control.clone(),
             control,
-            Default::default(),
+            Cfg::default(),
         ));
 
         disp.call(DispatchItem::Item(Decoded::Publish(
@@ -832,7 +830,7 @@ mod tests {
                 topic: ByteString::from("test"),
                 packet_id: Some(NonZeroU16::new(1).unwrap()),
                 payload_size: 0,
-                properties: Default::default(),
+                properties: codec::PublishProperties::default(),
             },
             Bytes::new(),
             0,

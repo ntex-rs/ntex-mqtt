@@ -4,7 +4,7 @@ use crate::error::EncodeError;
 use crate::types::{ConnectFlags, MQTT, MQTT_LEVEL_3, QoS, WILL_QOS_SHIFT, packet_type};
 use crate::utils::{Encode, write_variable_length};
 
-use super::packet::*;
+use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
 
 pub(crate) fn get_encoded_publish_size(p: &Publish) -> usize {
     // Topic + Packet Id + Payload
@@ -122,7 +122,7 @@ pub(crate) fn encode(
                 .iter()
                 .map(|s| match *s {
                     SubscribeReturnCode::Success(qos) => qos.into(),
-                    _ => 0x80u8,
+                    SubscribeReturnCode::Failure => 0x80u8,
                 })
                 .collect();
             dst.put_slice(&buf);
@@ -156,8 +156,8 @@ pub(super) fn encode_publish(
     dst.put_u8(
         packet_type::PUBLISH_START
             | (u8::from(publish.qos) << 1)
-            | ((publish.dup as u8) << 3)
-            | (publish.retain as u8),
+            | (u8::from(publish.dup) << 3)
+            | u8::from(publish.retain),
     );
     write_variable_length(content_size, dst);
     publish.topic.encode(dst)?;

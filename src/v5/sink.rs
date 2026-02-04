@@ -5,7 +5,7 @@ use ntex_bytes::{ByteString, Bytes};
 use ntex_util::{channel::pool, future::Either, future::Ready};
 
 use super::codec::{self, EncodeLtd};
-use super::shared::{AckType, MqttShared};
+use super::shared::{Ack, AckType, MqttShared};
 use crate::{error::EncodeError, error::SendPacketError, types::QoS};
 
 pub struct MqttSink(Rc<MqttShared>);
@@ -51,13 +51,13 @@ impl MqttSink {
     ///
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
-        if !self.0.is_closed() {
-            self.0
-                .wait_readiness()
-                .map(|rx| Either::Right(async move { rx.await.is_ok() }))
-                .unwrap_or_else(|| Either::Left(ready(true)))
-        } else {
+        if self.0.is_closed() {
             Either::Left(ready(false))
+        } else {
+            self.0.wait_readiness().map_or_else(
+                || Either::Left(ready(true)),
+                |rx| Either::Right(async move { rx.await.is_ok() }),
+            )
         }
     }
 
@@ -110,7 +110,7 @@ impl MqttSink {
 
     /// Set publish ack callback
     ///
-    /// Use non-blocking send, PublishBuilder::send_at_least_once_no_block()
+    /// Use non-blocking send, `PublishBuilder::send_at_least_once_no_block()`
     /// First argument is packet id, second argument is "disconnected" state
     pub fn publish_ack_cb<F>(&self, f: F)
     where
@@ -120,6 +120,7 @@ impl MqttSink {
     }
 
     #[inline]
+    #[allow(clippy::missing_panics_doc)]
     /// Create subscribe packet builder
     pub fn subscribe(&self, id: Option<NonZeroU32>) -> SubscribeBuilder {
         SubscribeBuilder {
@@ -135,6 +136,7 @@ impl MqttSink {
     }
 
     #[inline]
+    #[allow(clippy::missing_panics_doc)]
     /// Create unsubscribe packet builder
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
         UnsubscribeBuilder {
@@ -166,13 +168,16 @@ impl PublishBuilder {
     }
 
     #[inline]
+    #[must_use]
     /// Set packet id.
     ///
     /// Note: if packet id is not set, it gets generated automatically.
     /// Packet id management should not be mixed, it should be auto-generated
     /// or set by user. Otherwise collisions could occure.
     ///
-    /// panics if id is 0
+    /// # Panics
+    ///
+    /// Panics if id is 0
     pub fn packet_id(mut self, id: u16) -> Self {
         let id = NonZeroU16::new(id).expect("id 0 is not allowed");
         self.packet.packet_id = Some(id);
@@ -180,6 +185,7 @@ impl PublishBuilder {
     }
 
     #[inline]
+    #[must_use]
     /// This might be re-delivery of an earlier attempt to send the Packet.
     pub fn dup(mut self, val: bool) -> Self {
         self.packet.dup = val;
@@ -187,6 +193,7 @@ impl PublishBuilder {
     }
 
     #[inline]
+    #[must_use]
     /// Set retain flag
     pub fn retain(mut self, val: bool) -> Self {
         self.packet.retain = val;
@@ -194,6 +201,7 @@ impl PublishBuilder {
     }
 
     #[inline]
+    #[must_use]
     /// Set publish packet properties
     pub fn properties<F>(mut self, f: F) -> Self
     where
@@ -219,28 +227,30 @@ impl PublishBuilder {
     }
 
     #[inline]
-    /// Send publish packet with QoS 0
+    /// Send publish packet with `QoS 0`
     pub fn send_at_most_once(mut self, payload: Bytes) -> Result<(), SendPacketError> {
-        if !self.shared.is_closed() {
+        if self.shared.is_closed() {
+            log::error!("Mqtt sink is disconnected");
+            Err(SendPacketError::Disconnected)
+        } else {
             log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
             self.packet.qos = QoS::AtMostOnce;
             self.packet.payload_size = payload.len() as u32;
             self.shared
                 .encode_publish(self.packet, Some(payload))
                 .map_err(SendPacketError::Encode)
-                .map(|_| ())
-        } else {
-            log::error!("Mqtt sink is disconnected");
-            Err(SendPacketError::Disconnected)
         }
     }
 
-    /// Send publish packet with QoS 0
+    /// Send publish packet with `QoS 0`
     pub fn stream_at_most_once(
         mut self,
         size: u32,
     ) -> Result<StreamingPayload, SendPacketError> {
-        if !self.shared.is_closed() {
+        if self.shared.is_closed() {
+            log::error!("Mqtt sink is disconnected");
+            Err(SendPacketError::Disconnected)
+        } else {
             log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
 
             let stream = StreamingPayload {
@@ -254,19 +264,18 @@ impl PublishBuilder {
             self.shared
                 .encode_publish(self.packet, None)
                 .map_err(SendPacketError::Encode)
-                .map(|_| stream)
-        } else {
-            log::error!("Mqtt sink is disconnected");
-            Err(SendPacketError::Disconnected)
+                .map(|()| stream)
         }
     }
 
-    /// Send publish packet with QoS 1
+    /// Send publish packet with `QoS 1`
     pub fn send_at_least_once(
         mut self,
         payload: Bytes,
     ) -> impl Future<Output = Result<codec::PublishAck, SendPacketError>> {
-        if !self.shared.is_closed() {
+        if self.shared.is_closed() {
+            Either::Right(Ready::Err(SendPacketError::Disconnected))
+        } else {
             self.packet.qos = QoS::AtLeastOnce;
             self.packet.payload_size = payload.len() as u32;
 
@@ -281,23 +290,24 @@ impl PublishBuilder {
             } else {
                 Either::Left(Either::Right(self.send_at_least_once_inner(payload)))
             }
-        } else {
-            Either::Right(Ready::Err(SendPacketError::Disconnected))
         }
     }
 
-    /// Non-blocking send publish packet with QoS 1
+    /// Non-blocking send publish packet with `QoS 1`
+    ///
+    /// # Panics
     ///
     /// Panics if sink is not ready or publish ack callback is not set
     pub fn send_at_least_once_no_block(
         mut self,
         payload: Bytes,
     ) -> Result<(), SendPacketError> {
-        if !self.shared.is_closed() {
+        if self.shared.is_closed() {
+            Err(SendPacketError::Disconnected)
+        } else {
             // check readiness
-            if !self.shared.is_ready() {
-                panic!("Mqtt sink is not ready");
-            }
+            assert!(self.shared.is_ready(), "Mqtt sink is not ready");
+
             self.packet.qos = codec::QoS::AtLeastOnce;
             self.packet.payload_size = payload.len() as u32;
 
@@ -310,12 +320,10 @@ impl PublishBuilder {
                 self.packet,
                 Some(payload),
             )
-        } else {
-            Err(SendPacketError::Disconnected)
         }
     }
 
-    /// Send publish packet with QoS 1
+    /// Send publish packet with `QoS 1`
     pub fn stream_at_least_once(
         mut self,
         size: u32,
@@ -328,7 +336,9 @@ impl PublishBuilder {
             inprocess: Cell::new(false),
         };
 
-        if !self.shared.is_closed() {
+        if self.shared.is_closed() {
+            (Either::Right(Ready::Err(SendPacketError::Disconnected)), stream)
+        } else {
             self.packet.qos = QoS::AtLeastOnce;
             self.packet.payload_size = size;
 
@@ -344,8 +354,6 @@ impl PublishBuilder {
                 Either::Left(Either::Right(self.stream_at_least_once_inner(tx, None)))
             };
             (fut, stream)
-        } else {
-            (Either::Right(Ready::Err(SendPacketError::Disconnected)), stream)
         }
     }
 
@@ -361,7 +369,7 @@ impl PublishBuilder {
         self.shared
             .wait_publish_response(idx, AckType::Publish, self.packet, Some(payload))?
             .await
-            .map(|pkt| pkt.publish())
+            .map(Ack::publish)
             .map_err(|_| SendPacketError::Disconnected)
     }
 
@@ -383,16 +391,18 @@ impl PublishBuilder {
                 self.shared.wait_publish_response(idx, AckType::Publish, self.packet, chunk);
             let _ = tx.send(());
 
-            rx?.await.map(|pkt| pkt.publish()).map_err(|_| SendPacketError::Disconnected)
+            rx?.await.map(Ack::publish).map_err(|_| SendPacketError::Disconnected)
         }
     }
 
-    /// Send publish packet with QoS 2
+    /// Send publish packet with `QoS 2`
     pub fn send_exactly_once(
         mut self,
         payload: Bytes,
     ) -> impl Future<Output = Result<PublishReceived, SendPacketError>> {
-        if !self.shared.is_closed() {
+        if self.shared.is_closed() {
+            Either::Right(Ready::Err(SendPacketError::Disconnected))
+        } else {
             self.packet.qos = codec::QoS::ExactlyOnce;
             self.packet.payload_size = payload.len() as u32;
 
@@ -407,8 +417,6 @@ impl PublishBuilder {
             } else {
                 Either::Left(Either::Right(self.send_exactly_once_inner(payload)))
             }
-        } else {
-            Either::Right(Ready::Err(SendPacketError::Disconnected))
         }
     }
 
@@ -430,7 +438,7 @@ impl PublishBuilder {
     }
 }
 
-/// Publish released for QoS2
+/// Publish released for `QoS2`
 pub struct PublishReceived {
     ack: codec::PublishAck,
     result: Option<codec::PublishAck2>,
@@ -457,8 +465,9 @@ impl PublishReceived {
         &self.ack
     }
 
-    /// Update user properties
     #[inline]
+    #[must_use]
+    /// Update user properties
     pub fn properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::UserProperties),
@@ -467,8 +476,9 @@ impl PublishReceived {
         self
     }
 
-    /// Set ack reason string
     #[inline]
+    #[must_use]
+    /// Set ack reason string
     pub fn reason(mut self, reason: ByteString) -> Self {
         self.result.as_mut().unwrap().reason_string = Some(reason);
         self
@@ -499,9 +509,12 @@ pub struct SubscribeBuilder {
 
 impl SubscribeBuilder {
     #[inline]
+    #[must_use]
     /// Set packet id.
     ///
-    /// panics if id is 0
+    /// # Panics
+    ///
+    /// Panics if id is 0
     pub fn packet_id(mut self, id: u16) -> Self {
         if let Some(id) = NonZeroU16::new(id) {
             self.id = Some(id);
@@ -512,6 +525,7 @@ impl SubscribeBuilder {
     }
 
     #[inline]
+    #[must_use]
     /// Add topic filter
     pub fn topic_filter(
         mut self,
@@ -523,6 +537,7 @@ impl SubscribeBuilder {
     }
 
     #[inline]
+    #[must_use]
     /// Add user property
     pub fn property(mut self, key: ByteString, value: ByteString) -> Self {
         self.packet.user_properties.push((key, value));
@@ -530,6 +545,7 @@ impl SubscribeBuilder {
     }
 
     #[inline]
+    #[must_use]
     /// Get size of the subscribe packet
     pub fn size(&self) -> u32 {
         self.packet.encoded_size(u32::MAX) as u32
@@ -540,7 +556,9 @@ impl SubscribeBuilder {
         let shared = self.shared;
         let mut packet = self.packet;
 
-        if !shared.is_closed() {
+        if shared.is_closed() {
+            Err(SendPacketError::Disconnected)
+        } else {
             // handle client receive maximum
             if let Some(rx) = shared.wait_readiness()
                 && rx.await.is_err()
@@ -552,20 +570,16 @@ impl SubscribeBuilder {
             packet.packet_id = self.id.unwrap_or_else(|| shared.next_id());
 
             // send subscribe to client
-            log::trace!("Sending subscribe packet {:#?}", packet);
+            log::trace!("Sending subscribe packet {packet:#?}");
 
             let rx = shared.wait_response(packet.packet_id, AckType::Subscribe)?;
             match shared.encode_packet(codec::Packet::Subscribe(packet)) {
-                Ok(_) => {
+                Ok(()) => {
                     // wait ack from peer
-                    rx.await
-                        .map_err(|_| SendPacketError::Disconnected)
-                        .map(|pkt| pkt.subscribe())
+                    rx.await.map_err(|_| SendPacketError::Disconnected).map(Ack::subscribe)
                 }
                 Err(err) => Err(SendPacketError::Encode(err)),
             }
-        } else {
-            Err(SendPacketError::Disconnected)
         }
     }
 }
@@ -579,9 +593,12 @@ pub struct UnsubscribeBuilder {
 
 impl UnsubscribeBuilder {
     #[inline]
+    #[must_use]
     /// Set packet id.
     ///
-    /// panics if id is 0
+    /// # Panics
+    ///
+    /// Panics if id is 0
     pub fn packet_id(mut self, id: u16) -> Self {
         if let Some(id) = NonZeroU16::new(id) {
             self.id = Some(id);
@@ -592,6 +609,7 @@ impl UnsubscribeBuilder {
     }
 
     #[inline]
+    #[must_use]
     /// Add topic filter
     pub fn topic_filter(mut self, filter: ByteString) -> Self {
         self.packet.topic_filters.push(filter);
@@ -599,6 +617,7 @@ impl UnsubscribeBuilder {
     }
 
     #[inline]
+    #[must_use]
     /// Add user property
     pub fn property(mut self, key: ByteString, value: ByteString) -> Self {
         self.packet.user_properties.push((key, value));
@@ -616,7 +635,9 @@ impl UnsubscribeBuilder {
         let shared = self.shared;
         let mut packet = self.packet;
 
-        if !shared.is_closed() {
+        if shared.is_closed() {
+            Err(SendPacketError::Disconnected)
+        } else {
             // handle client receive maximum
             if let Some(rx) = shared.wait_readiness()
                 && rx.await.is_err()
@@ -627,20 +648,16 @@ impl UnsubscribeBuilder {
             packet.packet_id = self.id.unwrap_or_else(|| shared.next_id());
 
             // send unsubscribe to client
-            log::trace!("Sending unsubscribe packet {:#?}", packet);
+            log::trace!("Sending unsubscribe packet {packet:#?}");
 
             let rx = shared.wait_response(packet.packet_id, AckType::Unsubscribe)?;
             match shared.encode_packet(codec::Packet::Unsubscribe(packet)) {
-                Ok(_) => {
+                Ok(()) => {
                     // wait ack from peer
-                    rx.await
-                        .map_err(|_| SendPacketError::Disconnected)
-                        .map(|pkt| pkt.unsubscribe())
+                    rx.await.map_err(|_| SendPacketError::Disconnected).map(Ack::unsubscribe)
                 }
                 Err(err) => Err(SendPacketError::Encode(err)),
             }
-        } else {
-            Err(SendPacketError::Disconnected)
         }
     }
 }
@@ -670,9 +687,7 @@ impl StreamingPayload {
             self.inprocess.set(true);
         }
 
-        if !self.inprocess.get() {
-            Err(EncodeError::UnexpectedPayload.into())
-        } else {
+        if self.inprocess.get() {
             log::trace!("Sending payload chunk: {:?}", chunk.len());
             self.shared.want_payload_stream().await?;
 
@@ -680,6 +695,8 @@ impl StreamingPayload {
                 self.inprocess.set(false);
             }
             Ok(())
+        } else {
+            Err(EncodeError::UnexpectedPayload.into())
         }
     }
 }

@@ -143,15 +143,17 @@ where
         let _ = self.inner.control.call(Control::shutdown()).await;
 
         self.publish.shutdown().await;
-        self.inner.control.shutdown().await
+        self.inner.control.shutdown().await;
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn call(
         &self,
         packet: DispatchItem<Rc<MqttShared>>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        log::trace!("Dispatch packet: {:#?}", packet);
+        log::trace!("Dispatch packet: {packet:#?}");
+
         match packet {
             DispatchItem::Item(Decoded::Publish(publish, payload, size)) => {
                 let inner = self.inner.as_ref();
@@ -161,7 +163,7 @@ where
                 if let Some(pid) = packet_id
                     && !inner.inflight.borrow_mut().insert(pid)
                 {
-                    log::trace!("Duplicated packet id for publish packet: {:?}", pid);
+                    log::trace!("Duplicated packet id for publish packet: {pid:?}");
                     return Err(MqttError::Handshake(HandshakeError::Protocol(
                         ProtocolError::generic_violation(
                             "PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]",
@@ -243,18 +245,19 @@ where
                     Ok(None)
                 }
             }
-            DispatchItem::Item(
-                Decoded::Packet(pkt @ Packet::PingRequest, _)
-                | Decoded::Packet(pkt @ Packet::Disconnect, _)
-                | Decoded::Packet(pkt @ Packet::Subscribe { .. }, _)
-                | Decoded::Packet(pkt @ Packet::Unsubscribe { .. }, _),
-            ) => Err(HandshakeError::Protocol(ProtocolError::unexpected_packet(
+            DispatchItem::Item(Decoded::Packet(
+                pkt @ (Packet::PingRequest
+                | Packet::Disconnect
+                | Packet::Subscribe { .. }
+                | Packet::Unsubscribe { .. }),
+                _,
+            )) => Err(HandshakeError::Protocol(ProtocolError::unexpected_packet(
                 pkt.packet_type(),
                 "Packet of the type is not expected from server",
             ))
             .into()),
             DispatchItem::Item(Decoded::Packet(pkt, _)) => {
-                log::debug!("Unsupported packet: {:?}", pkt);
+                log::debug!("Unsupported packet: {pkt:?}");
                 Ok(None)
             }
             DispatchItem::Stop(Reason::Encoder(err)) => {
@@ -311,8 +314,8 @@ where
     };
 
     match res {
-        Either::Left(_) => {
-            log::trace!("Publish result for packet {:?} is ready", packet_id);
+        Either::Left(()) => {
+            log::trace!("Publish result for packet {packet_id:?} is ready");
 
             if let Some(packet_id) = packet_id {
                 inner.inflight.borrow_mut().remove(&packet_id);
@@ -354,8 +357,7 @@ where
             inner.inflight.borrow_mut().remove(&id);
             Some(Encoded::Packet(Packet::PublishComplete { packet_id: id }))
         }
-        ControlAckKind::Subscribe(_) => unreachable!(),
-        ControlAckKind::Unsubscribe(_) => unreachable!(),
+        ControlAckKind::Subscribe(_) | ControlAckKind::Unsubscribe(_) => unreachable!(),
         ControlAckKind::Disconnect => {
             inner.drop_payload(&PayloadError::Service);
             inner.sink.close();
@@ -384,7 +386,7 @@ mod tests {
     async fn test_dup_packet_id() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
         let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
             shared.clone(),
@@ -427,9 +429,9 @@ mod tests {
         match err {
             MqttError::Handshake(HandshakeError::Protocol(msg)) => {
                 assert!(
-                    format!("{}", msg)
+                    format!("{msg}")
                         .contains("PUBLISH received with packet id that is already in use")
-                )
+                );
             }
             _ => panic!(),
         }
@@ -439,7 +441,7 @@ mod tests {
     async fn test_wr_backpressure() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Default::default()));
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
         let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
             shared.clone(),

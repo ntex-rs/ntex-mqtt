@@ -59,11 +59,12 @@ impl MqttServiceConfig {
         }
     }
 
+    #[must_use]
     /// Set client timeout reading protocol version.
     ///
     /// Defines a timeout for reading protocol version. If a client does not transmit
     /// version of the protocol within this time, the connection is terminated with
-    /// Mqtt::Handshake(HandshakeError::Timeout) error.
+    /// `Mqtt::Handshake(HandshakeError::Timeout)` error.
     ///
     /// By default, timeuot is 5 seconds.
     pub fn protocol_version_timeout(mut self, timeout: Seconds) -> Self {
@@ -71,11 +72,12 @@ impl MqttServiceConfig {
         self
     }
 
+    #[must_use]
     /// Set client timeout for first `Connect` frame.
     ///
     /// Defines a timeout for reading `Connect` frame. If a client does not transmit
     /// the entire frame within this time, the connection is terminated with
-    /// Mqtt::Handshake(HandshakeError::Timeout) error.
+    /// `Mqtt::Handshake(HandshakeError::Timeout)` error.
     ///
     /// By default, connect timeout is disabled.
     pub fn set_connect_timeout(mut self, timeout: Seconds) -> Self {
@@ -83,15 +85,17 @@ impl MqttServiceConfig {
         self
     }
 
-    /// Set max allowed QoS.
+    #[must_use]
+    /// Set max allowed `QoS`.
     ///
-    /// If peer sends publish with higher qos then ProtocolError::MaxQoSViolated(..)
+    /// If peer sends publish with higher qos then `ProtocolError::MaxQoSViolated(..)`
     /// By default max qos is set to `ExactlyOnce`.
     pub fn set_max_qos(mut self, qos: QoS) -> Self {
         self.max_qos = qos;
         self
     }
 
+    #[must_use]
     /// Set max inbound frame size.
     ///
     /// If max size is set to `0`, size is unlimited.
@@ -101,6 +105,7 @@ impl MqttServiceConfig {
         self
     }
 
+    #[must_use]
     /// Set `receive max`
     ///
     /// Number of in-flight publish packets. By default receive max is set to 15 packets.
@@ -110,6 +115,7 @@ impl MqttServiceConfig {
         self
     }
 
+    #[must_use]
     /// Total size of received in-flight messages.
     ///
     /// By default total in-flight size is set to 64Kb
@@ -118,6 +124,7 @@ impl MqttServiceConfig {
         self
     }
 
+    #[must_use]
     /// Number of topic aliases.
     ///
     /// By default value is set to 32
@@ -126,6 +133,7 @@ impl MqttServiceConfig {
         self
     }
 
+    #[must_use]
     /// Number of outgoing concurrent messages.
     ///
     /// By default outgoing is set to 16 messages
@@ -134,6 +142,7 @@ impl MqttServiceConfig {
         self
     }
 
+    #[must_use]
     /// Total size of outgoing messages.
     ///
     /// By default total outgoing size is set to 64Kb
@@ -142,6 +151,7 @@ impl MqttServiceConfig {
         self
     }
 
+    #[must_use]
     /// Set min payload chunk size.
     ///
     /// If the minimum size is set to `0`, incoming payload chunks
@@ -153,6 +163,7 @@ impl MqttServiceConfig {
         self
     }
 
+    #[must_use]
     /// Max payload buffer size for payload streaming.
     ///
     /// By default buffer size is set to 32Kb
@@ -161,24 +172,25 @@ impl MqttServiceConfig {
         self
     }
 
-    /// Handle max received QoS messages after client disconnect.
+    #[must_use]
+    /// Handle max received `QoS` messages after client disconnect.
     ///
     /// By default, messages received before dispatched to the publish service will be dropped if
     /// the client disconnect is detected on the server.
     ///
-    /// If this option is set to `Some(QoS::AtMostOnce)`, only the received QoS 0 messages will
+    /// If this option is set to `Some(QoS::AtMostOnce)`, only the received `QoS 0` messages will
     /// always be handled by the server's publish service no matter if the client is disconnected
     /// or not.
     ///
-    /// If this option is set to `Some(QoS::AtLeastOnce)`, the received QoS 0 and QoS 1 messages
+    /// If this option is set to `Some(QoS::AtLeastOnce)`, the received `QoS 0` and `QoS 1` messages
     /// will always be handled by the server's publish service no matter if the client
-    /// is disconnected or not. The QoS 2 messages will be dropped if the client disconnecting is
+    /// is disconnected or not. The `QoS 2` messages will be dropped if the client disconnecting is
     /// detected before the server dispatches them to the publish service.
     ///
     /// If this option is set to `Some(QoS::ExactlyOnce)`, all the messages received will always
     /// be handled by the server's publish service no matter if the client is disconnected or not.
     ///
-    /// The received messages which QoS larger than the `max_handle_qos` will not be guaranteed to
+    /// The received messages which `QoS` larger than the `max_handle_qos` will not be guaranteed to
     /// be handled or not after the client disconnect. It depends on the network condition.
     ///
     /// By default handle-qos-after-disconnect is set to `None`
@@ -187,6 +199,7 @@ impl MqttServiceConfig {
         self
     }
 
+    #[must_use]
     /// Set handshake timeout.
     ///
     /// Handshake includes `connect` packet and response `connect-ack`.

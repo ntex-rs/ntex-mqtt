@@ -1,4 +1,5 @@
-use std::{fmt, marker::PhantomData, rc::Rc};
+#![allow(clippy::type_complexity)]
+use std::{fmt, marker::PhantomData, num::NonZero, rc::Rc};
 
 use ntex_dispatcher::DispatchItem;
 use ntex_io::IoBoxed;
@@ -216,13 +217,13 @@ where
         // read first packet
         let packet = timeout_checked(self.cfg.connect_timeout, io.recv(&shared.codec))
             .await
-            .map_err(|_| MqttError::Handshake(HandshakeError::Timeout))?
+            .map_err(|()| MqttError::Handshake(HandshakeError::Timeout))?
             .map_err(|err| {
-                log::trace!("Error is received during mqtt handshake: {:?}", err);
+                log::trace!("{}: Error is received during mqtt handshake: {err:?}", io.tag());
                 MqttError::Handshake(HandshakeError::from(err))
             })?
             .ok_or_else(|| {
-                log::trace!("Server mqtt is disconnected during handshake");
+                log::trace!("{}: Server mqtt is disconnected during handshake", io.tag());
                 MqttError::Handshake(HandshakeError::Disconnected(None))
             })?;
 
@@ -233,8 +234,7 @@ where
                     shared.codec.set_max_outbound_size(size.get());
                 }
                 let keep_alive = connect.keep_alive;
-                let peer_receive_max =
-                    connect.receive_max.map(|v| v.get()).unwrap_or(16) as usize;
+                let peer_receive_max = connect.receive_max.map_or(16, NonZero::get) as usize;
 
                 // authenticate mqtt connection
                 let mut ack = ctx
@@ -242,50 +242,44 @@ where
                     .await
                     .map_err(|e| MqttError::Handshake(HandshakeError::Service(e)))?;
 
-                match ack.session {
-                    Some(session) => {
-                        log::trace!("Sending: {:#?}", ack.packet);
-                        let shared = ack.shared;
+                if let Some(session) = ack.session {
+                    log::trace!("Sending: {:#?}", ack.packet);
+                    let shared = ack.shared;
 
-                        shared.set_max_qos(ack.packet.max_qos);
-                        shared.set_receive_max(ack.packet.receive_max.get());
-                        shared.set_topic_alias_max(ack.packet.topic_alias_max);
-                        shared
-                            .codec
-                            .set_max_inbound_size(ack.packet.max_packet_size.unwrap_or(0));
-                        shared.codec.set_retain_available(ack.packet.retain_available);
-                        shared.codec.set_sub_ids_available(
-                            ack.packet.subscription_identifiers_available,
-                        );
-                        if ack.packet.server_keepalive_sec.is_none()
-                            && (keep_alive > ack.keepalive)
-                        {
-                            ack.packet.server_keepalive_sec = Some(ack.keepalive);
-                        }
-                        shared.set_cap(peer_receive_max);
-
-                        ack.io.encode(
-                            Encoded::Packet(Packet::ConnectAck(Box::new(ack.packet))),
-                            &shared.codec,
-                        )?;
-
-                        Ok((
-                            ack.io,
-                            shared.clone(),
-                            Session::new(session, MqttSink::new(shared)),
-                            Seconds(ack.keepalive),
-                        ))
+                    shared.set_max_qos(ack.packet.max_qos);
+                    shared.set_receive_max(ack.packet.receive_max.get());
+                    shared.set_topic_alias_max(ack.packet.topic_alias_max);
+                    shared.codec.set_max_inbound_size(ack.packet.max_packet_size.unwrap_or(0));
+                    shared.codec.set_retain_available(ack.packet.retain_available);
+                    shared
+                        .codec
+                        .set_sub_ids_available(ack.packet.subscription_identifiers_available);
+                    if ack.packet.server_keepalive_sec.is_none() && (keep_alive > ack.keepalive)
+                    {
+                        ack.packet.server_keepalive_sec = Some(ack.keepalive);
                     }
-                    None => {
-                        log::trace!("Failed to complete handshake: {:#?}", ack.packet);
+                    shared.set_cap(peer_receive_max);
 
-                        ack.io.encode(
-                            Encoded::Packet(Packet::ConnectAck(Box::new(ack.packet))),
-                            &ack.shared.codec,
-                        )?;
-                        let _ = ack.io.shutdown().await;
-                        Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
-                    }
+                    ack.io.encode(
+                        Encoded::Packet(Packet::ConnectAck(Box::new(ack.packet))),
+                        &shared.codec,
+                    )?;
+
+                    Ok((
+                        ack.io,
+                        shared.clone(),
+                        Session::new(session, MqttSink::new(shared)),
+                        Seconds(ack.keepalive),
+                    ))
+                } else {
+                    log::trace!("Failed to complete handshake: {:#?}", ack.packet);
+
+                    ack.io.encode(
+                        Encoded::Packet(Packet::ConnectAck(Box::new(ack.packet))),
+                        &ack.shared.codec,
+                    )?;
+                    let _ = ack.io.shutdown().await;
+                    Err(MqttError::Handshake(HandshakeError::Disconnected(None)))
                 }
             }
             Decoded::Packet(packet, _) => {

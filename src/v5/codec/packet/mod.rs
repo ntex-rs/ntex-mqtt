@@ -1,8 +1,9 @@
+#![allow(clippy::struct_excessive_bools)]
 use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};
 
-use super::{UserProperties, encode::*, property_type as pt};
+use super::{UserProperties, encode, property_type as pt};
 use crate::error::{DecodeError, EncodeError};
 use crate::types::packet_type;
 use crate::utils::{Decode, Property, take_properties, write_variable_length};
@@ -173,6 +174,7 @@ pub(super) mod property_type {
     pub(crate) const SHARED_SUB_AVAIL: u8 = 0x2A;
 }
 
+#[allow(clippy::ref_option, clippy::wildcard_imports)]
 mod ack_props {
     use super::*;
     use crate::v5::codec::UserProperty;
@@ -187,8 +189,8 @@ mod ack_props {
             return 1; // 1 byte to encode property length = 0
         }
 
-        let len = encoded_size_opt_props(properties, reason_string, limit - 4);
-        var_int_len(len) as usize + len
+        let len = encode::encoded_size_opt_props(properties, reason_string, limit - 4);
+        encode::var_int_len(len) as usize + len
     }
 
     pub(crate) fn encode(
@@ -205,9 +207,9 @@ mod ack_props {
             return Ok(());
         }
 
-        let size = var_int_len_from_size(size);
+        let size = encode::var_int_len_from_size(size);
         write_variable_length(size, buf);
-        encode_opt_props(properties, reason_string, buf, size)
+        encode::encode_opt_props(properties, reason_string, buf, size)
     }
 
     /// Parses ACK properties (User and Reason String properties) from `src`

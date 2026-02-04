@@ -45,6 +45,7 @@ where
         }
     }
 
+    #[must_use]
     /// Configure mqtt resource for a specific topic.
     pub fn resource<T, F, U>(mut self, address: T, service: F) -> Self
     where
@@ -59,12 +60,18 @@ where
     }
 
     /// Finish router configuration and create router service factory
-    pub fn finish(self) -> RouterFactory<S, Err> {
+    pub fn build(self) -> RouterFactory<S, Err> {
         RouterFactory {
             router: self.router.finish(),
             handlers: Rc::new(self.handlers),
             default: self.default,
         }
+    }
+
+    #[doc(hidden)]
+    #[deprecated]
+    pub fn finish(self) -> RouterFactory<S, Err> {
+        self.build()
     }
 }
 
@@ -74,7 +81,7 @@ where
     Err: 'static,
 {
     fn into_factory(self) -> RouterFactory<S, Err> {
-        self.finish()
+        self.build()
     }
 }
 
@@ -124,7 +131,7 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
 
     #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        for hnd in self.handlers.iter() {
+        for hnd in &self.handlers {
             ctx.ready(hnd).await?;
         }
         ctx.ready(&self.default).await
@@ -161,9 +168,8 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
                 *req.topic_mut() = item.1.clone();
                 drop(aliases);
                 return ctx.call(&self.handlers[idx], req).await;
-            } else {
-                log::error!("Unknown topic alias: {:?}", alias);
             }
+            log::error!("Unknown topic alias: {alias:?}");
         }
         ctx.call(&self.default, req).await
     }

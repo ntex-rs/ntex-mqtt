@@ -1,4 +1,4 @@
-use std::{io, marker::PhantomData};
+use std::{io, marker::PhantomData, ptr};
 
 use ntex_bytes::ByteString;
 
@@ -14,7 +14,7 @@ pub enum Control<E> {
     /// Unhandled messages are stored in a buffer. Other types of messages may be
     /// handled out of order.
     Protocol(CtlFrame),
-    /// Control CtlFrames
+    /// Control flow messages
     Flow(CtlFlow),
     /// Dispatcher is preparing for shutdown.
     ///
@@ -30,22 +30,22 @@ pub enum Control<E> {
 /// MQTT protocol–related frames
 #[derive(Debug)]
 pub enum CtlFrame {
-    /// Auth packet from a client
+    /// `Auth` packet from a client
     Auth(Auth),
-    /// PublishRelease packet from a client
+    /// `PublishRelease` packet from a client
     PublishRelease(PublishRelease),
-    /// Subscribe packet from a client
+    /// `Subscribe` packet from a client
     Subscribe(Subscribe),
-    /// Unsubscribe packet from a client
+    /// `Unsubscribe` packet from a client
     Unsubscribe(Unsubscribe),
-    /// Disconnect packet from a client
+    /// `Disconnect` packet from a client
     Disconnect(Disconnect),
 }
 
 /// Dispatcher flow–related messages
 #[derive(Debug)]
 pub enum CtlFlow {
-    /// Ping packet from a client
+    /// `Ping` packet from a client
     Ping(Ping),
     /// Write back-pressure is enabled/disabled
     WrBackpressure(WrBackpressure),
@@ -143,7 +143,7 @@ impl<E> Control<E> {
             session_expiry_interval_secs: None,
             server_reference: None,
             reason_string: None,
-            user_properties: Default::default(),
+            user_properties: Vec::default(),
         };
         ControlAck { packet: Pkt::Disconnect(pkt), disconnect: true }
     }
@@ -239,8 +239,9 @@ impl PublishRelease {
         self.size
     }
 
-    /// Update user properties
     #[inline]
+    #[must_use]
+    /// Update user properties
     pub fn properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::UserProperties),
@@ -249,8 +250,9 @@ impl PublishRelease {
         self
     }
 
-    /// Set ack reason string
     #[inline]
+    #[must_use]
+    /// Set ack reason string
     pub fn reason(mut self, reason: ByteString) -> Self {
         self.result.reason_string = Some(reason);
         self
@@ -288,13 +290,13 @@ impl Disconnect {
         self.1
     }
 
-    /// Ack disconnect CtlFrame
+    /// Ack disconnect message
     pub fn ack(self) -> ControlAck {
         ControlAck { packet: Pkt::None, disconnect: true }
     }
 }
 
-/// Subscribe CtlFrame
+/// `Subscribe` control message
 #[derive(Debug, Clone)]
 pub struct Subscribe {
     packet: codec::Subscribe,
@@ -303,7 +305,7 @@ pub struct Subscribe {
 }
 
 impl Subscribe {
-    /// Create a new `Subscribe` control CtlFrame from a Subscribe
+    /// Create a new `Subscribe` control message from a Subscribe
     /// packet
     pub fn new(packet: codec::Subscribe, size: u32) -> Self {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
@@ -321,12 +323,14 @@ impl Subscribe {
     }
 
     #[inline]
+    #[must_use]
     /// returns iterator over subscription topics
     pub fn iter_mut(&mut self) -> SubscribeIter<'_> {
-        SubscribeIter { subs: self as *const _ as *mut _, entry: 0, lt: PhantomData }
+        SubscribeIter { subs: ptr::from_ref(self).cast_mut(), entry: 0, lt: PhantomData }
     }
 
     #[inline]
+    #[must_use]
     /// Reason string for ack packet
     pub fn ack_reason(mut self, reason: ByteString) -> Self {
         self.result.reason_string = Some(reason);
@@ -334,6 +338,7 @@ impl Subscribe {
     }
 
     #[inline]
+    #[must_use]
     /// Properties for ack packet
     pub fn ack_properties<F>(mut self, f: F) -> Self
     where
@@ -432,7 +437,7 @@ impl<'a> Subscription<'a> {
     #[inline]
     /// fail to subscribe to the topic
     pub fn fail(&mut self, status: codec::SubscribeAckReason) {
-        *self.status = status
+        *self.status = status;
     }
 
     #[inline]
@@ -449,11 +454,11 @@ impl<'a> Subscription<'a> {
     #[doc(hidden)]
     /// confirm subscription to a topic with specific qos
     pub fn subscribe(&mut self, qos: QoS) {
-        self.confirm(qos)
+        self.confirm(qos);
     }
 }
 
-/// Unsubscribe CtlFrame
+/// `Unsubscribe` control message
 #[derive(Debug, Clone)]
 pub struct Unsubscribe {
     packet: codec::Unsubscribe,
@@ -462,7 +467,7 @@ pub struct Unsubscribe {
 }
 
 impl Unsubscribe {
-    /// Create a new `Unsubscribe` control CtlFrame from an Unsubscribe
+    /// Create a new `Unsubscribe` control `CtlFrame` from an `Unsubscribe`
     /// packet
     pub fn new(packet: codec::Unsubscribe, size: u32) -> Self {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
@@ -494,10 +499,15 @@ impl Unsubscribe {
     #[inline]
     /// returns iterator over subscription topics
     pub fn iter_mut(&mut self) -> UnsubscribeIter<'_> {
-        UnsubscribeIter { subs: self as *const _ as *mut _, entry: 0, lt: PhantomData }
+        UnsubscribeIter {
+            subs: ptr::from_ref::<Unsubscribe>(self).cast_mut(),
+            entry: 0,
+            lt: PhantomData,
+        }
     }
 
     #[inline]
+    #[must_use]
     /// Reason string for ack packet
     pub fn ack_reason(mut self, reason: ByteString) -> Self {
         self.result.reason_string = Some(reason);
@@ -505,6 +515,7 @@ impl Unsubscribe {
     }
 
     #[inline]
+    #[must_use]
     /// Properties for ack packet
     pub fn ack_properties<F>(mut self, f: F) -> Self
     where
@@ -605,7 +616,7 @@ impl<'a> UnsubscribeItem<'a> {
     }
 }
 
-/// Write back-pressure CtlFrame
+/// Write back-pressure `CtlFrame` message
 #[derive(Debug, Copy, Clone)]
 pub struct WrBackpressure(bool);
 
@@ -663,6 +674,7 @@ impl<E> Error<E> {
     }
 
     #[inline]
+    #[must_use]
     /// Set reason string for disconnect packet
     pub fn reason_string(mut self, reason: ByteString) -> Self {
         self.pkt.reason_string = Some(reason);
@@ -670,6 +682,7 @@ impl<E> Error<E> {
     }
 
     #[inline]
+    #[must_use]
     /// Set server reference for disconnect packet
     pub fn server_reference(mut self, reference: ByteString) -> Self {
         self.pkt.server_reference = Some(reference);
@@ -677,6 +690,7 @@ impl<E> Error<E> {
     }
 
     #[inline]
+    #[must_use]
     /// Update disconnect packet properties
     pub fn properties<F>(mut self, f: F) -> Self
     where
@@ -747,6 +761,7 @@ impl ProtocolError {
     }
 
     #[inline]
+    #[must_use]
     /// Set reason code for disconnect packet
     pub fn reason_code(mut self, reason: DisconnectReasonCode) -> Self {
         self.pkt.reason_code = reason;
@@ -754,6 +769,7 @@ impl ProtocolError {
     }
 
     #[inline]
+    #[must_use]
     /// Set reason string for disconnect packet
     pub fn reason_string(mut self, reason: ByteString) -> Self {
         self.pkt.reason_string = Some(reason);
@@ -761,6 +777,7 @@ impl ProtocolError {
     }
 
     #[inline]
+    #[must_use]
     /// Set server reference for disconnect packet
     pub fn server_reference(mut self, reference: ByteString) -> Self {
         self.pkt.server_reference = Some(reference);
@@ -768,6 +785,7 @@ impl ProtocolError {
     }
 
     #[inline]
+    #[must_use]
     /// Update disconnect packet properties
     pub fn properties<F>(mut self, f: F) -> Self
     where
@@ -791,6 +809,7 @@ impl ProtocolError {
 }
 
 #[derive(Debug)]
+/// Peer gone control message
 pub struct PeerGone(pub(crate) Option<io::Error>);
 
 impl PeerGone {
@@ -807,7 +826,7 @@ impl PeerGone {
     }
 
     #[inline]
-    /// Ack PeerGone CtlFrame
+    /// Ack `PeerGone` message `CtlFrame`
     pub fn ack(self) -> ControlAck {
         ControlAck { packet: Pkt::None, disconnect: true }
     }

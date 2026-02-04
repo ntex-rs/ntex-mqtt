@@ -97,9 +97,9 @@ where
     ) -> Result<Client, Self::Error> {
         let (addr, pkt) = req.into_parts();
 
-        timeout_checked(self.cfg.handshake_timeout, self._connect(addr, pkt, ctx))
+        timeout_checked(self.cfg.handshake_timeout, self.connect_inner(addr, pkt, ctx))
             .await
-            .map_err(|_| ClientError::HandshakeTimeout)
+            .map_err(|()| ClientError::HandshakeTimeout)
             .and_then(|res| res)
     }
 }
@@ -110,7 +110,7 @@ where
     T: Service<connect::Connect<A>, Error = connect::ConnectError>,
     IoBoxed: From<T::Response>,
 {
-    async fn _connect(
+    async fn connect_inner(
         &self,
         addr: A,
         pkt: codec::Connect,

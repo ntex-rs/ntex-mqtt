@@ -1,24 +1,42 @@
 use ntex_bytes::{ByteString, Bytes};
 
-use super::{UserProperty, packet::*};
+use super::{UserProperty, packet, packet::Packet};
 use crate::{error::DecodeError, types::packet_type, utils::Decode};
 
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
-        packet_type::PUBACK => Ok(Packet::PublishAck(PublishAck::decode(&mut src)?)),
+        packet_type::PUBACK => Ok(Packet::PublishAck(packet::PublishAck::decode(&mut src)?)),
         packet_type::PINGREQ => Ok(Packet::PingRequest),
         packet_type::PINGRESP => Ok(Packet::PingResponse),
-        packet_type::SUBSCRIBE => Ok(Packet::Subscribe(Subscribe::decode(&mut src)?)),
-        packet_type::SUBACK => Ok(Packet::SubscribeAck(SubscribeAck::decode(&mut src)?)),
-        packet_type::UNSUBSCRIBE => Ok(Packet::Unsubscribe(Unsubscribe::decode(&mut src)?)),
-        packet_type::UNSUBACK => Ok(Packet::UnsubscribeAck(UnsubscribeAck::decode(&mut src)?)),
-        packet_type::CONNECT => Ok(Packet::Connect(Box::new(Connect::decode(&mut src)?))),
-        packet_type::CONNACK => Ok(Packet::ConnectAck(Box::new(ConnectAck::decode(&mut src)?))),
-        packet_type::DISCONNECT => Ok(Packet::Disconnect(Disconnect::decode(&mut src)?)),
-        packet_type::AUTH => Ok(Packet::Auth(Auth::decode(&mut src)?)),
-        packet_type::PUBREC => Ok(Packet::PublishReceived(PublishAck::decode(&mut src)?)),
-        packet_type::PUBREL => Ok(Packet::PublishRelease(PublishAck2::decode(&mut src)?)),
-        packet_type::PUBCOMP => Ok(Packet::PublishComplete(PublishAck2::decode(&mut src)?)),
+        packet_type::SUBSCRIBE => Ok(Packet::Subscribe(packet::Subscribe::decode(&mut src)?)),
+        packet_type::SUBACK => {
+            Ok(Packet::SubscribeAck(packet::SubscribeAck::decode(&mut src)?))
+        }
+        packet_type::UNSUBSCRIBE => {
+            Ok(Packet::Unsubscribe(packet::Unsubscribe::decode(&mut src)?))
+        }
+        packet_type::UNSUBACK => {
+            Ok(Packet::UnsubscribeAck(packet::UnsubscribeAck::decode(&mut src)?))
+        }
+        packet_type::CONNECT => {
+            Ok(Packet::Connect(Box::new(packet::Connect::decode(&mut src)?)))
+        }
+        packet_type::CONNACK => {
+            Ok(Packet::ConnectAck(Box::new(packet::ConnectAck::decode(&mut src)?)))
+        }
+        packet_type::DISCONNECT => {
+            Ok(Packet::Disconnect(packet::Disconnect::decode(&mut src)?))
+        }
+        packet_type::AUTH => Ok(Packet::Auth(packet::Auth::decode(&mut src)?)),
+        packet_type::PUBREC => {
+            Ok(Packet::PublishReceived(packet::PublishAck::decode(&mut src)?))
+        }
+        packet_type::PUBREL => {
+            Ok(Packet::PublishRelease(packet::PublishAck2::decode(&mut src)?))
+        }
+        packet_type::PUBCOMP => {
+            Ok(Packet::PublishComplete(packet::PublishAck2::decode(&mut src)?))
+        }
         _ => Err(DecodeError::UnsupportedPacketType),
     }
 }
@@ -44,7 +62,7 @@ mod tests {
         NonZeroU16::new(v).unwrap()
     }
 
-    fn assert_decode_packet<B: AsRef<[u8]>>(bytes: B, res: Packet) {
+    fn assert_decode_packet<B: AsRef<[u8]>>(bytes: B, res: &Packet) {
         let bytes = bytes.as_ref();
         let fixed = bytes[0];
         let (_len, consumed) = decode_variable_length(&bytes[1..]).unwrap().unwrap();
@@ -58,18 +76,16 @@ mod tests {
         .unwrap();
         let decoded = decode_packet(cur, fixed);
         let res = Ok(res);
-        if decoded != res {
-            panic!(
-                "decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}",
-                res,
-                decoded,
-                tmp.as_ref()
-            );
-        }
-        //assert_eq!(, Ok(res));
+        assert!(
+            decoded.as_ref() == res,
+            "decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}",
+            res,
+            decoded,
+            tmp.as_ref()
+        );
     }
 
-    fn assert_decode_publish<B: AsRef<[u8]>>(bytes: B, res: Publish, pl: Bytes) {
+    fn assert_decode_publish<B: AsRef<[u8]>>(bytes: B, res: &Publish, pl: &Bytes) {
         let mut tmp = BytesMut::with_capacity(4096);
         ntex_codec::Encoder::encode(
             &crate::v5::codec::Codec::new(),
@@ -86,15 +102,13 @@ mod tests {
             _ => panic!(),
         };
 
-        if pkt != res {
-            panic!(
-                "decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}",
-                res,
-                decoded,
-                tmp.as_ref()
-            );
-        }
-        //assert_eq!(, Ok(res));
+        assert!(
+            &pkt == res,
+            "decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}",
+            res,
+            decoded,
+            tmp.as_ref()
+        );
     }
 
     #[test]
@@ -192,14 +206,14 @@ mod tests {
 
         assert_decode_packet(
             b"\x20\x03\x01\x86\x00",
-            Packet::ConnectAck(Box::new(ConnectAck {
+            &Packet::ConnectAck(Box::new(ConnectAck {
                 session_present: true,
                 reason_code: ConnectAckReason::BadUserNameOrPassword,
                 ..ConnectAck::default()
             })),
         );
 
-        assert_decode_packet([0b1110_0000, 0], Packet::Disconnect(Disconnect::default()));
+        assert_decode_packet([0b1110_0000, 0], &Packet::Disconnect(Disconnect::default()));
     }
 
     fn default_test_publish() -> Publish {
@@ -223,7 +237,7 @@ mod tests {
 
         assert_decode_publish(
             b"\x3d\x0E\x00\x05topic\x43\x21\x00data",
-            Publish {
+            &Publish {
                 dup: true,
                 retain: true,
                 qos: QoS::ExactlyOnce,
@@ -232,11 +246,11 @@ mod tests {
                 payload_size: 4,
                 ..default_test_publish()
             },
-            Bytes::from_static(b"data"),
+            &Bytes::from_static(b"data"),
         );
         assert_decode_publish(
             b"\x30\x0C\x00\x05topic\x00data",
-            Publish {
+            &Publish {
                 dup: false,
                 retain: false,
                 qos: QoS::AtMostOnce,
@@ -245,12 +259,12 @@ mod tests {
                 payload_size: 4,
                 ..default_test_publish()
             },
-            Bytes::from_static(b"data"),
+            &Bytes::from_static(b"data"),
         );
 
         assert_decode_packet(
             b"\x40\x02\x43\x21",
-            Packet::PublishAck(PublishAck {
+            &Packet::PublishAck(PublishAck {
                 packet_id: packet_id(0x4321),
                 reason_code: PublishAckReason::Success,
                 properties: UserProperties::default(),
@@ -259,7 +273,7 @@ mod tests {
         );
         assert_decode_packet(
             b"\x50\x02\x43\x21",
-            Packet::PublishReceived(PublishAck {
+            &Packet::PublishReceived(PublishAck {
                 packet_id: packet_id(0x4321),
                 reason_code: PublishAckReason::Success,
                 properties: UserProperties::default(),
@@ -268,7 +282,7 @@ mod tests {
         );
         assert_decode_packet(
             b"\x62\x02\x43\x21",
-            Packet::PublishRelease(PublishAck2 {
+            &Packet::PublishRelease(PublishAck2 {
                 packet_id: packet_id(0x4321),
                 reason_code: PublishAck2Reason::Success,
                 properties: UserProperties::default(),
@@ -277,7 +291,7 @@ mod tests {
         );
         assert_decode_packet(
             b"\x70\x02\x43\x21",
-            Packet::PublishComplete(PublishAck2 {
+            &Packet::PublishComplete(PublishAck2 {
                 packet_id: packet_id(0x4321),
                 reason_code: PublishAck2Reason::Success,
                 properties: UserProperties::default(),
@@ -314,7 +328,7 @@ mod tests {
             user_properties: Vec::new(),
         });
 
-        assert_decode_packet(b"\x82\x13\x12\x34\x00\x00\x04test\x01\x00\x06filter\x02", p);
+        assert_decode_packet(b"\x82\x13\x12\x34\x00\x00\x04test\x01\x00\x06filter\x02", &p);
 
         let p = Packet::Subscribe(Subscribe {
             packet_id: packet_id(0x1234),
@@ -344,7 +358,7 @@ mod tests {
 
         assert_decode_packet(
             b"\x82\x15\x12\x34\x02\x0b\x01\x00\x04test\x01\x00\x06filter\x02",
-            p,
+            &p,
         );
 
         let p = Packet::SubscribeAck(SubscribeAck {
@@ -358,7 +372,7 @@ mod tests {
             reason_string: None,
         });
 
-        assert_decode_packet(b"\x90\x05\x12\x34\x00\x01\x80\x02", p);
+        assert_decode_packet(b"\x90\x05\x12\x34\x00\x01\x80\x02", &p);
 
         let p = Packet::Unsubscribe(Unsubscribe {
             packet_id: packet_id(0x1234),
@@ -378,11 +392,11 @@ mod tests {
             ),
             p.clone()
         );
-        assert_decode_packet(b"\xa2\x11\x12\x34\x00\x00\x04test\x00\x06filter", p);
+        assert_decode_packet(b"\xa2\x11\x12\x34\x00\x00\x04test\x00\x06filter", &p);
 
         assert_decode_packet(
             b"\xb0\x03\x43\x21\x00",
-            Packet::UnsubscribeAck(UnsubscribeAck {
+            &Packet::UnsubscribeAck(UnsubscribeAck {
                 packet_id: packet_id(0x4321),
                 properties: UserProperties::default(),
                 reason_string: None,
@@ -393,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_decode_ping_packets() {
-        assert_decode_packet(b"\xc0\x00", Packet::PingRequest);
-        assert_decode_packet(b"\xd0\x00", Packet::PingResponse);
+        assert_decode_packet(b"\xc0\x00", &Packet::PingRequest);
+        assert_decode_packet(b"\xd0\x00", &Packet::PingResponse);
     }
 }

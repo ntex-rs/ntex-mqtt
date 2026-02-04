@@ -38,6 +38,7 @@ where
         }
     }
 
+    #[must_use]
     /// Configure mqtt resource for a specific topic.
     pub fn resource<T, F, U>(mut self, address: T, service: F) -> Self
     where

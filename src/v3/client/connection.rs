@@ -42,7 +42,7 @@ impl Client {
         max_receive: usize,
         max_buffer_size: usize,
     ) -> Self {
-        Client { io, shared, session_present, keepalive, max_receive, max_buffer_size }
+        Client { io, shared, keepalive, session_present, max_receive, max_buffer_size }
     }
 }
 
@@ -159,6 +159,7 @@ where
     Err: From<PErr> + 'static,
     PErr: 'static,
 {
+    #[must_use]
     /// Configure mqtt resource for a specific topic
     pub fn resource<T, F, S>(mut self, address: T, service: F) -> Self
     where
@@ -240,7 +241,7 @@ where
     Err: From<PErr>,
 {
     match srv.call(req).await {
-        Ok(_) => Ok(Either::Left(())),
+        Ok(()) => Ok(Either::Left(())),
         Err(err) => Err(err.into()),
     }
 }

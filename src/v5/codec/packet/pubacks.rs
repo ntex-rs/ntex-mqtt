@@ -5,7 +5,7 @@ use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
 use crate::utils::{Decode, Encode};
-use crate::v5::codec::{UserProperties, encode::*};
+use crate::v5::codec::{UserProperties, encode};
 
 const HEADER_LEN: u32 = 2 + 1; // packet id + reason code
 
@@ -115,7 +115,7 @@ impl Default for PublishAck2 {
     }
 }
 
-impl EncodeLtd for PublishAck {
+impl encode::EncodeLtd for PublishAck {
     fn encoded_size(&self, limit: u32) -> usize {
         let prop_len = ack_props::encoded_size(
             &self.properties,
@@ -133,7 +133,7 @@ impl EncodeLtd for PublishAck {
     }
 }
 
-impl EncodeLtd for PublishAck2 {
+impl encode::EncodeLtd for PublishAck2 {
     fn encoded_size(&self, limit: u32) -> usize {
         const HEADER_LEN: u32 = 2 + 1; // fixed header + packet id + reason code
         let prop_len = ack_props::encoded_size(
@@ -178,7 +178,7 @@ mod tests {
                 packet_id: packet_id.try_into().unwrap(),
                 reason_code,
                 properties: properties.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
-                reason_string: reason_string.map(|s| s.into())
+                reason_string: reason_string.map(Into::into)
             })
         );
         assert_eq!(input.len(), 0);

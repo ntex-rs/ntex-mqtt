@@ -2,7 +2,7 @@ use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::utils::{self, Decode, Property};
-use crate::v5::codec::{UserProperties, UserProperty, encode::*, property_type as pt};
+use crate::v5::codec::{UserProperties, UserProperty, encode, property_type as pt};
 
 /// AUTH message
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -71,30 +71,30 @@ impl Default for Auth {
     }
 }
 
-impl EncodeLtd for Auth {
+impl encode::EncodeLtd for Auth {
     fn encoded_size(&self, limit: u32) -> usize {
         const HEADER_LEN: usize = 1; // reason code
 
-        let mut prop_len =
-            encoded_property_size(&self.auth_method) + encoded_property_size(&self.auth_data);
-        let diag_len = encoded_size_opt_props(
+        let mut prop_len = encode::encoded_property_size(&self.auth_method)
+            + encode::encoded_property_size(&self.auth_data);
+        let diag_len = encode::encoded_size_opt_props(
             &self.user_properties,
             &self.reason_string,
-            reduce_limit(limit, prop_len + HEADER_LEN + 4),
+            encode::reduce_limit(limit, prop_len + HEADER_LEN + 4),
         ); // exclude other props and max of 4 bytes for property length value
         prop_len += diag_len;
-        HEADER_LEN + var_int_len(prop_len) as usize + prop_len
+        HEADER_LEN + encode::var_int_len(prop_len) as usize + prop_len
     }
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
         let start_len = buf.len();
         buf.put_u8(self.reason_code.into());
 
-        let prop_len = var_int_len_from_size(size - 1);
+        let prop_len = encode::var_int_len_from_size(size - 1);
         utils::write_variable_length(prop_len, buf);
-        encode_property(&self.auth_method, pt::AUTH_METHOD, buf)?;
-        encode_property(&self.auth_data, pt::AUTH_DATA, buf)?;
-        encode_opt_props(
+        encode::encode_property(&self.auth_method, pt::AUTH_METHOD, buf)?;
+        encode::encode_property(&self.auth_data, pt::AUTH_DATA, buf)?;
+        encode::encode_opt_props(
             &self.user_properties,
             &self.reason_string,
             buf,

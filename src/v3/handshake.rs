@@ -147,6 +147,7 @@ pub struct HandshakeAck<St> {
 }
 
 impl<St> HandshakeAck<St> {
+    #[must_use]
     /// Set idle time-out for the connection in seconds.
     ///
     /// By default idle time-out is set to 30 seconds.
@@ -155,6 +156,7 @@ impl<St> HandshakeAck<St> {
         self
     }
 
+    #[must_use]
     /// Number of outgoing concurrent messages.
     ///
     /// By default outgoing is set to 16 messages
@@ -163,6 +165,7 @@ impl<St> HandshakeAck<St> {
         self
     }
 
+    #[must_use]
     /// Maximum supported size for incoming packets.
     pub fn max_packet_size(mut self, val: NonZeroU32) -> Self {
         self.max_packet_size = Some(val);

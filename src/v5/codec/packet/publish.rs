@@ -5,7 +5,7 @@ use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{QoS, packet_type};
 use crate::utils::{self, Decode, Encode, Property, write_variable_length};
-use crate::v5::codec::{UserProperties, encode::*, property_type as pt};
+use crate::v5::codec::{UserProperties, encode, property_type as pt};
 
 /// PUBLISH message
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -15,7 +15,7 @@ pub struct Publish {
     pub retain: bool,
     /// the level of assurance for delivery of an Application Message.
     pub qos: QoS,
-    /// only present in PUBLISH Packets where the QoS level is 1 or 2.
+    /// only present in PUBLISH Packets where the `QoS` level is 1 or 2.
     pub packet_id: Option<NonZeroU16>,
     pub topic: ByteString,
     pub payload_size: u32,
@@ -69,7 +69,7 @@ impl Publish {
         }
 
         // topic len
-        let mut len = u16::from_be_bytes([src[0], src[1]]) as u32 + 2;
+        let mut len = u32::from(u16::from_be_bytes([src[0], src[1]])) + 2;
 
         // packet-id len
         let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
@@ -130,12 +130,12 @@ fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, Decode
     })
 }
 
-impl EncodeLtd for Publish {
-    fn encoded_size(&self, _limit: u32) -> usize {
+impl encode::EncodeLtd for Publish {
+    fn encoded_size(&self, limit: u32) -> usize {
         let packet_id_size = if self.qos == QoS::AtMostOnce { 0 } else { 2 };
         self.topic.encoded_size()
             + packet_id_size
-            + self.properties.encoded_size(_limit)
+            + self.properties.encoded_size(limit)
             + self.payload_size as usize
     }
 
@@ -144,8 +144,8 @@ impl EncodeLtd for Publish {
         buf.put_u8(
             packet_type::PUBLISH_START
                 | (u8::from(self.qos) << 1)
-                | ((self.dup as u8) << 3)
-                | (self.retain as u8),
+                | (u8::from(self.dup) << 3)
+                | u8::from(self.retain),
         );
         utils::write_variable_length(size, buf);
 
@@ -167,32 +167,32 @@ impl EncodeLtd for Publish {
     }
 }
 
-impl EncodeLtd for PublishProperties {
+impl encode::EncodeLtd for PublishProperties {
     fn encoded_size(&self, _limit: u32) -> usize {
-        let prop_len = encoded_property_size(&self.topic_alias)
-            + encoded_property_size(&self.correlation_data)
-            + encoded_property_size(&self.message_expiry_interval)
-            + encoded_property_size(&self.content_type)
-            + encoded_property_size_default(&self.is_utf8_payload, false)
-            + encoded_property_size(&self.response_topic)
+        let prop_len = encode::encoded_property_size(&self.topic_alias)
+            + encode::encoded_property_size(&self.correlation_data)
+            + encode::encoded_property_size(&self.message_expiry_interval)
+            + encode::encoded_property_size(&self.content_type)
+            + encode::encoded_property_size_default(&self.is_utf8_payload, false)
+            + encode::encoded_property_size(&self.response_topic)
             + self
                 .subscription_ids
                 .iter()
-                .fold(0, |acc, id| acc + 1 + var_int_len(id.get() as usize) as usize)
+                .fold(0, |acc, id| acc + 1 + encode::var_int_len(id.get() as usize) as usize)
             + self.user_properties.encoded_size();
-        prop_len + var_int_len(prop_len) as usize
+        prop_len + encode::var_int_len(prop_len) as usize
     }
 
     fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
-        let prop_len = var_int_len_from_size(size);
+        let prop_len = encode::var_int_len_from_size(size);
         utils::write_variable_length(prop_len, buf);
-        encode_property(&self.topic_alias, pt::TOPIC_ALIAS, buf)?;
-        encode_property(&self.correlation_data, pt::CORR_DATA, buf)?;
-        encode_property(&self.message_expiry_interval, pt::MSG_EXPIRY_INT, buf)?;
-        encode_property(&self.content_type, pt::CONTENT_TYPE, buf)?;
-        encode_property_default(&self.is_utf8_payload, false, pt::UTF8_PAYLOAD, buf)?;
-        encode_property(&self.response_topic, pt::RESP_TOPIC, buf)?;
-        for sub_id in self.subscription_ids.iter() {
+        encode::encode_property(&self.topic_alias, pt::TOPIC_ALIAS, buf)?;
+        encode::encode_property(&self.correlation_data, pt::CORR_DATA, buf)?;
+        encode::encode_property(&self.message_expiry_interval, pt::MSG_EXPIRY_INT, buf)?;
+        encode::encode_property(&self.content_type, pt::CONTENT_TYPE, buf)?;
+        encode::encode_property_default(&self.is_utf8_payload, false, pt::UTF8_PAYLOAD, buf)?;
+        encode::encode_property(&self.response_topic, pt::RESP_TOPIC, buf)?;
+        for sub_id in &self.subscription_ids {
             buf.put_u8(pt::SUB_ID);
             write_variable_length(sub_id.get(), buf);
         }

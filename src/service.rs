@@ -139,13 +139,13 @@ where
         let handshake = ctx.call(&self.connect, req).await;
 
         let (io, codec, session, keepalive) = handshake.map_err(|e| {
-            log::trace!("{}: Connection handshake failed: {:?}", tag, e);
+            log::trace!("{tag}: Connection handshake failed: {e:?}");
             e
         })?;
-        log::trace!("{}: Connection handshake succeeded", tag);
+        log::trace!("{tag}: Connection handshake succeeded");
 
         let handler = self.handler.create((self.cfg, session)).await?;
-        log::trace!("{}: Connection handler is created, starting dispatcher", tag);
+        log::trace!("{tag}: Connection handler is created, starting dispatcher");
 
         Dispatcher::new(io, codec, self.middleware.create(handler, self.cfg))
             .keepalive_timeout(keepalive)

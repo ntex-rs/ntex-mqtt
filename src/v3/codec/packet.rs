@@ -37,7 +37,7 @@ impl ConnectAckReason {
                 "Connection Refused, bad user name or password"
             }
             ConnectAckReason::NotAuthorized => "Connection Refused, not authorized",
-            _ => "Connection Refused",
+            ConnectAckReason::Reserved => "Connection Refused",
         }
     }
 }
@@ -45,13 +45,13 @@ impl ConnectAckReason {
 #[derive(Debug, PartialEq, Eq, Clone)]
 /// Connection Will
 pub struct LastWill {
-    /// the QoS level to be used when publishing the Will Message.
+    /// the `QoS` level to be used when publishing the `Will Message`.
     pub qos: QoS,
-    /// the Will Message is to be Retained when it is published.
+    /// the `Will Message` is to be Retained when it is published.
     pub retain: bool,
-    /// the Will Topic
+    /// the `Will Topic`
     pub topic: ByteString,
-    /// defines the Application Message that is to be published to the Will Topic
+    /// defines the Application Message that is to be published to the `Will Topic`
     pub message: Bytes,
 }
 
@@ -73,7 +73,8 @@ pub struct Connect {
 }
 
 impl Connect {
-    /// Set client_id value
+    #[must_use]
+    /// Set `client_id` value
     pub fn client_id<T>(mut self, client_id: T) -> Self
     where
         ByteString: From<T>,
@@ -84,7 +85,7 @@ impl Connect {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-/// Publish message
+/// `Publish` message
 pub struct Publish {
     /// this might be re-delivery of an earlier attempt to send the Packet.
     pub dup: bool,
@@ -93,14 +94,14 @@ pub struct Publish {
     pub qos: QoS,
     /// the information channel to which payload data is published.
     pub topic: ByteString,
-    /// only present in PUBLISH Packets where the QoS level is 1 or 2.
+    /// only present in PUBLISH Packets where the `QoS` level is 1 or 2.
     pub packet_id: Option<NonZeroU16>,
     /// publish packet payload size
     pub payload_size: u32,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-/// ConnectAck message
+/// `ConnectAck` message
 pub struct ConnectAck {
     pub return_code: ConnectAckReason,
     /// enables a Client to establish whether the Client and Server have a consistent view
@@ -146,7 +147,7 @@ pub enum Packet {
     Subscribe {
         /// Packet Identifier
         packet_id: NonZeroU16,
-        /// the list of Topic Filters and QoS to which the Client wants to subscribe.
+        /// the list of Topic Filters and `QoS` to which the Client wants to subscribe.
         topic_filters: Vec<(ByteString, QoS)>,
     },
     /// Subscribe acknowledgment

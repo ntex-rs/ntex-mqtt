@@ -30,7 +30,7 @@ pub enum Control<E> {
 pub enum CtlFrame {
     /// Unhandled publish packet
     Publish(Publish),
-    /// PublishRelease packet from a client
+    /// `PublishRelease` packet from a client
     PublishRelease(PublishRelease),
 }
 
