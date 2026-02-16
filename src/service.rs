@@ -36,11 +36,13 @@ where
         &self,
         cfg: SharedCfg,
     ) -> Result<MqttHandler<St, C::Service, T, M, Codec>, C::InitError> {
+        let connect = self.connect.create(cfg.clone()).await?;
+
         // create connect service and then create service impl
         Ok(MqttHandler {
             cfg,
+            connect,
             handler: self.handler.clone(),
-            connect: self.connect.create(cfg).await?,
             middleware: self.middleware.clone(),
             _t: PhantomData,
         })
@@ -144,10 +146,10 @@ where
         })?;
         log::trace!("{tag}: Connection handshake succeeded");
 
-        let handler = self.handler.create((self.cfg, session)).await?;
+        let handler = self.handler.create((self.cfg.clone(), session)).await?;
         log::trace!("{tag}: Connection handler is created, starting dispatcher");
 
-        Dispatcher::new(io, codec, self.middleware.create(handler, self.cfg))
+        Dispatcher::new(io, codec, self.middleware.create(handler, self.cfg.clone()))
             .keepalive_timeout(keepalive)
             .await
     }

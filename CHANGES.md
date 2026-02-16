@@ -1,5 +1,9 @@
 # Changes
 
+## [7.1.0] - 2026-02-16
+
+* SharedCfg is not Copy anymore
+
 ## [7.0.0] - 2026-01-30
 
 * Better disconnect handling on control service failure

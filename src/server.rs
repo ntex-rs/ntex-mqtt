@@ -174,7 +174,8 @@ where
         &self,
         cfg: SharedCfg,
     ) -> Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr> {
-        let (v3, v5) = join(self.svc_v3.create(cfg), self.svc_v5.create(cfg)).await;
+        let (v3, v5) =
+            join(self.svc_v3.create(cfg.clone()), self.svc_v5.create(cfg.clone())).await;
         let v3 = v3?;
         let v5 = v5?;
         Ok(MqttServerImpl { handlers: (v3, v5), cfg: cfg.get(), _t: marker::PhantomData })
