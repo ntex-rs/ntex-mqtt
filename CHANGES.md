@@ -1,8 +1,12 @@
 # Changes
 
+## [7.2.0] - 2026-02-16
+
+* MqttServiceConfig is not Clone
+
 ## [7.1.0] - 2026-02-16
 
-* SharedCfg is not Copy anymore
+* SharedCfg is not Copy
 
 ## [7.0.0] - 2026-01-30
 

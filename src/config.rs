@@ -3,7 +3,7 @@ use ntex_util::time::{Millis, Seconds};
 
 use crate::types::QoS;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MqttServiceConfig {
     pub(crate) max_qos: QoS,
     pub(crate) max_size: u32,

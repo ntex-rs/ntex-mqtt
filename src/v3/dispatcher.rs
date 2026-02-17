@@ -604,7 +604,7 @@ mod tests {
             .add(MqttServiceConfig::new().set_max_qos(QoS::AtLeastOnce))
             .into();
 
-        let io = Io::new(IoTest::create().0, cfg);
+        let io = Io::new(IoTest::create().0, cfg.clone());
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
         let err = Rc::new(RefCell::new(false));
@@ -665,7 +665,7 @@ mod tests {
             .add(MqttServiceConfig::new().set_max_qos(QoS::AtLeastOnce))
             .into();
 
-        let io = Io::new(IoTest::create().0, cfg);
+        let io = Io::new(IoTest::create().0, cfg.clone());
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
         let control = Pipeline::new(fn_service(|_| {
