@@ -1,5 +1,9 @@
 # Changes
 
+## [7.3.0] - 2026-02-18
+
+* Allow to set max_send for v5 handshake
+
 ## [7.2.0] - 2026-02-16
 
 * MqttServiceConfig is not Clone

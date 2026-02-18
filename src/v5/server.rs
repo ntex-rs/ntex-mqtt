@@ -1,5 +1,5 @@
 #![allow(clippy::type_complexity)]
-use std::{fmt, marker::PhantomData, num::NonZero, rc::Rc};
+use std::{cmp, fmt, marker::PhantomData, num::NonZero, rc::Rc};
 
 use ntex_dispatcher::DispatchItem;
 use ntex_io::IoBoxed;
@@ -234,7 +234,7 @@ where
                     shared.codec.set_max_outbound_size(size.get());
                 }
                 let keep_alive = connect.keep_alive;
-                let peer_receive_max = connect.receive_max.map_or(16, NonZero::get) as usize;
+                let peer_receive_max = connect.receive_max.map(NonZero::get);
 
                 // authenticate mqtt connection
                 let mut ack = ctx
@@ -258,7 +258,14 @@ where
                     {
                         ack.packet.server_keepalive_sec = Some(ack.keepalive);
                     }
-                    shared.set_cap(peer_receive_max);
+
+                    // outbound receive max
+                    let max_send = if let Some(max_send) = ack.max_send {
+                        peer_receive_max.map_or(max_send, |val| cmp::min(max_send, val))
+                    } else {
+                        peer_receive_max.unwrap_or(self.cfg.max_send)
+                    };
+                    shared.set_cap(max_send as usize);
 
                     ack.io.encode(
                         Encoded::Packet(Packet::ConnectAck(Box::new(ack.packet))),
