@@ -260,11 +260,9 @@ where
                     }
 
                     // outbound receive max
-                    let max_send = if let Some(max_send) = ack.max_send {
-                        peer_receive_max.map_or(max_send, |val| cmp::min(max_send, val))
-                    } else {
-                        peer_receive_max.unwrap_or(self.cfg.max_send)
-                    };
+                    let max_send_cfg = ack.max_send.unwrap_or(self.cfg.max_send);
+                    let max_send = peer_receive_max
+                        .map_or(max_send_cfg, |val| cmp::min(max_send_cfg, val));
                     shared.set_cap(max_send as usize);
 
                     ack.io.encode(
