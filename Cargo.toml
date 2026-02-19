@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "6.6.2"
+version = "6.7.0"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -15,10 +15,10 @@ rust-version = "1.86"
 features = ["ntex-net/tokio"]
 
 [dependencies]
-ntex-io = "3.4"
+ntex-io = "=3.5.0"
 ntex-net = "3.5"
 ntex-util = "3.4"
-ntex-service = "4"
+ntex-service = "=4.3.0"
 ntex-bytes = "1.3"
 ntex-codec = "1.1"
 ntex-router = "1"
@@ -37,4 +37,4 @@ ntex-tls = "3"
 openssl = "0.10"
 oneshot = "0.1"
 test-case = "3.2"
-ntex = { version = "3.0.0-pre.12", features = ["openssl"] }
+ntex = { version = "3.0.0-pre.14", features = ["openssl"] }

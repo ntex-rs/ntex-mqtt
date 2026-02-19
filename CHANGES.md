@@ -1,5 +1,9 @@
 # Changes
 
+## [6.7.0] - 2026-02-18
+
+* Allow to set max_send for v5 handshake
+
 ## [6.6.2] - 2026-01-20
 
 * Fix in-flight handling after drop

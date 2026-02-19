@@ -72,7 +72,7 @@ impl Handshake {
         } else {
             30
         };
-        HandshakeAck { io, shared, keepalive, packet, session: Some(st) }
+        HandshakeAck { io, shared, keepalive, packet, session: Some(st), max_send: None }
     }
 
     #[inline]
@@ -83,6 +83,7 @@ impl Handshake {
             shared: self.shared,
             session: None,
             keepalive: 30,
+            max_send: None,
             packet: codec::ConnectAck { reason_code, ..codec::ConnectAck::default() },
         }
     }
@@ -96,6 +97,7 @@ impl Handshake {
             session: None,
             packet: ack,
             keepalive: 30,
+            max_send: None,
         }
     }
 }
@@ -113,6 +115,7 @@ pub struct HandshakeAck<St> {
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) packet: codec::ConnectAck,
     pub(crate) keepalive: u16,
+    pub(crate) max_send: Option<u16>,
 }
 
 impl<St> HandshakeAck<St> {
@@ -127,6 +130,17 @@ impl<St> HandshakeAck<St> {
             panic!("Timeout must be greater than 0")
         }
         self.keepalive = timeout;
+        self
+    }
+
+    #[must_use]
+    /// Number of outgoing concurrent messages.
+    ///
+    /// By default outgoing is set to 16 messages
+    pub fn max_send(mut self, val: u16) -> Self {
+        if val != 0 {
+            self.max_send = Some(val);
+        }
         self
     }
 
