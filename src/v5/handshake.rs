@@ -140,9 +140,11 @@ impl<St> HandshakeAck<St> {
     /// Number of outgoing concurrent messages.
     ///
     /// By default outgoing is set to 16 messages
-    pub fn max_send(mut self, val: u16) -> Self {
-        if val != 0 {
-            self.max_send = Some(val);
+    pub fn max_send(mut self, val: Option<u16>) -> Self {
+        if val == Some(0) {
+            self.max_send = None;
+        } else {
+            self.max_send = val;
         }
         self
     }

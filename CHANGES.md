@@ -1,5 +1,9 @@
 # Changes
 
+## [7.3.2] - 2026-02-20
+
+* `HandshakeAck::max_send()` uses `Option`
+
 ## [7.3.1] - 2026-02-20
 
 * Enforces an upper bound for max concurrent outbound messages
