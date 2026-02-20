@@ -1,5 +1,9 @@
 # Changes
 
+## [7.3.1] - 2026-02-20
+
+* Enforces an upper bound for max concurrent outbound messages
+
 ## [7.3.0] - 2026-02-18
 
 * Allow to set max_send for v5 handshake

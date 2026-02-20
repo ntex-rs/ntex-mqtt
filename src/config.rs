@@ -134,7 +134,10 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Number of outgoing concurrent messages.
+    /// Maximum number of concurrent outgoing messages.
+    ///
+    /// For MQTT v5, this also acts as the maximum number of in-flight
+    /// messages, regardless of what the client requests.
     ///
     /// By default outgoing is set to 16 messages
     pub fn set_max_send(mut self, val: u16) -> Self {
