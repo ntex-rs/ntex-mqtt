@@ -1857,3 +1857,37 @@ async fn test_disconenct_once() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[ntex::test]
+/// MqttServiceConfig::set_max_send() limits upper bound of outbound
+/// concurrent requests regardless client request
+async fn test_max_outbound() -> std::io::Result<()> {
+    let srv = server::TestServerBuilder::new(async move || {
+        MqttServer::new(handshake).publish(fn_factory_with_config(async |ses: Session<St>| {
+            assert_eq!(ses.sink().credit(), 10);
+            Ok::<_, ()>(fn_service(async |p: Publish| Ok::<_, TestError>(p.ack())))
+        }))
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_send(10)))
+    .start();
+
+    // connect to server
+    let client = client::MqttConnector::new()
+        .pipeline(SharedCfg::default())
+        .await
+        .unwrap()
+        .call(client::Connect::new(srv.addr()).client_id("user").max_receive(100))
+        .await
+        .unwrap();
+
+    let sink = client.sink();
+
+    ntex::rt::spawn(client.start_default());
+
+    let res =
+        sink.publish(ByteString::from_static("test")).send_at_least_once(Bytes::new()).await;
+    assert!(res.is_ok());
+
+    sink.close();
+    Ok(())
+}
