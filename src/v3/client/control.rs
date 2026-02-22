@@ -13,7 +13,6 @@ use crate::v3::{codec, control::ControlAckKind, error};
 pub enum Control<E> {
     /// MQTT protocol–related messages.
     Protocol(CtlFrame),
-
     /// Dispatcher is preparing for shutdown.
     ///
     /// The control service will receive this message only once. The next message
@@ -61,7 +60,7 @@ impl<E> Control<E> {
 
     #[inline]
     /// Initiate clean disconnect
-    pub fn disconnect(&self) -> ControlAck {
+    pub(super) fn disconnect() -> ControlAck {
         ControlAck { result: ControlAckKind::Disconnect }
     }
 

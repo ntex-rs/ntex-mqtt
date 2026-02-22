@@ -1,5 +1,9 @@
 # Changes
 
+## [7.4.0] - 2026-02-22
+
+* Do not send `DISCONNECT` if `DISCONNECT` packet is already received
+
 ## [7.3.2] - 2026-02-20
 
 * `HandshakeAck::max_send()` uses `Option`

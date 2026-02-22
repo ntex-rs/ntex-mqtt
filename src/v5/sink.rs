@@ -71,13 +71,21 @@ impl MqttSink {
     #[inline]
     /// Close mqtt connection with default Disconnect message
     pub fn close(&self) {
-        self.0.close(codec::Disconnect::default());
+        self.0.close(Some(codec::Disconnect::default()));
     }
 
     #[inline]
     /// Close mqtt connection
     pub fn close_with_reason(&self, pkt: codec::Disconnect) {
-        self.0.close(pkt);
+        self.0.close(Some(pkt));
+    }
+
+    #[inline]
+    /// Close mqtt connection
+    ///
+    /// This method does not send `disconnect` packet to the peer
+    pub fn close_with_no_reason(&self) {
+        self.0.close(None);
     }
 
     /// Send ping

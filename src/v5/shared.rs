@@ -132,8 +132,10 @@ impl MqttShared {
         self.flags.set(flags);
     }
 
-    pub(super) fn close(&self, pkt: codec::Disconnect) {
-        if !self.is_closed() {
+    pub(super) fn close(&self, pkt: Option<codec::Disconnect>) {
+        if let Some(pkt) = pkt
+            && !self.is_closed()
+        {
             if !self.is_disconnect_sent() {
                 let _ = self.io.encode(Encoded::Packet(Packet::Disconnect(pkt)), &self.codec);
             }
@@ -354,10 +356,10 @@ impl MqttShared {
 
     pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), error::ProtocolError> {
         self.pkt_ack_inner(ack).inspect_err(|_| {
-            self.close(codec::Disconnect {
+            self.close(Some(codec::Disconnect {
                 reason_code: codec::DisconnectReasonCode::ImplementationSpecificError,
                 ..Default::default()
-            });
+            }));
         })
     }
 

@@ -471,6 +471,7 @@ where
                 control(Control::ping(), &self.inner, 0).await
             }
             DispatchItem::Item(Decoded::Packet(Packet::Disconnect(pkt), size)) => {
+                self.inner.sink.is_disconnect_sent();
                 control(Control::remote_disconnect(pkt, size), &self.inner, 0).await
             }
             DispatchItem::Item(Decoded::Packet(Packet::Subscribe(pkt), size)) => {

@@ -96,7 +96,7 @@ impl Client {
             self.max_receive,
             self.max_buffer_size,
             fn_service(|pkt| Ready::Ok(Either::Right(pkt))),
-            fn_service(|msg: Control<()>| Ready::<_, ()>::Ok(msg.disconnect())),
+            fn_service(|_: Control<()>| Ready::<_, ()>::Ok(Control::<()>::disconnect())),
         );
 
         let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher).await;
@@ -184,7 +184,7 @@ where
             self.max_receive,
             self.max_buffer_size,
             dispatch(self.builder.finish(), self.handlers),
-            fn_service(|msg: Control<Err>| Ready::<_, Err>::Ok(msg.disconnect())),
+            fn_service(|_: Control<Err>| Ready::<_, Err>::Ok(Control::<Err>::disconnect())),
         );
 
         let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher).await;
