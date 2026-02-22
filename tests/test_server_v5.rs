@@ -387,8 +387,8 @@ async fn test_disconnect_on_error() -> std::io::Result<()> {
 
     // disconnect
     io.send(Encoded::Packet(codec::Disconnect::default().into()), &codec).await.unwrap();
-    let res = io.recv(&codec).await.unwrap().unwrap();
-    assert!(matches!(packet(res), Packet::Disconnect(_)));
+    let res = io.recv(&codec).await.unwrap();
+    assert!(res.is_none());
 
     Ok(())
 }
