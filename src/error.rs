@@ -82,7 +82,7 @@ pub struct ProtocolViolationError {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 enum ViolationInner {
     #[error("{0}")]
-    Spec(SpecViolationError),
+    Spec(SpecViolation),
     #[error("{message}")]
     Common { reason: DisconnectReasonCode, message: &'static str },
     #[error("{message}; received packet with type `{packet_type:b}`")]
@@ -91,31 +91,103 @@ enum ViolationInner {
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum SpecViolationError {
+pub enum SpecViolation {
+    #[error("[MQTT-2.2.1-3] PUBLISH received with packet id that is already in use")]
+    PacketId_2_2_1_3_Pub,
+    #[error("[MQTT-2.2.1-3] SUBSCRIBE received with packet id that is already in use")]
+    PacketId_2_2_1_3_Sub,
+    #[error("[MQTT-2.2.1-3] UNSUBSCRIBE received with packet id that is already in use")]
+    PacketId_2_2_1_3_Unsub,
+    #[error("[MQTT-3.1.2-26] Topic alias is greater than max allowed")]
+    Connect_3_1_2_26,
     #[error(
-        "MQTT 3.14.2-2 The Session Expiry Interval must not be set on DISCONNECT by Server"
+        "[MQTT-3.2.2-11] PUBLISH packet at a QoS level exceeding the Maximum QoS level specified in CONNACK"
     )]
-    Mqtt_3_14_2_21,
-    #[error("MQTT 3.14.2-2 Non-Zero Session Expiry Interval is set on DISCONNECT")]
-    Mqtt_3_14_2_22,
+    Connack_3_2_2_11,
+    #[error("[MQTT-3.2.2-14] RETAIN is not supported")]
+    Connack_3_2_2_14,
+    #[error("[MQTT-3.2.2-17] Topic alias is greater than max allowed")]
+    Connack_3_2_2_17,
+    #[error("[MQTT-3.2.2-*] Subscription Identifiers are not supported")]
+    Connack_3_2_2_21,
+    #[error("[MQTT-3.3.2-2] PUBLISH packet's topic name contains wildcard character")]
+    Pub_3_3_2_2,
+    #[error("[MQTT-3.3.4-7] Number of in-flight messages exceeds set maximum")]
+    Pub_3_3_4_7,
+    #[error("[MQTT-3.3.4-9] Number of in-flight messages exceeds set maximum")]
+    Pub_3_3_4_9,
+    #[error("[MQTT-4.7.1-*] Topic filter is malformed")]
+    Subs_4_7_1,
+    #[error(
+        "[MQTT-3.14.2-*] The Session Expiry Interval must not be set on DISCONNECT by Server"
+    )]
+    Disconnect_3_14_2_21,
+    #[error("[MQTT-3.14.2-*] Non-Zero Session Expiry Interval is set on DISCONNECT")]
+    Disconnect_3_14_2_22,
 }
 
-impl SpecViolationError {
+impl SpecViolation {
     const fn reason(self) -> DisconnectReasonCode {
         match self {
-            SpecViolationError::Mqtt_3_14_2_21 | SpecViolationError::Mqtt_3_14_2_22 => {
-                DisconnectReasonCode::ProtocolError
+            SpecViolation::Pub_3_3_4_7 | SpecViolation::Pub_3_3_4_9 => {
+                DisconnectReasonCode::ReceiveMaximumExceeded
             }
+            SpecViolation::Connack_3_2_2_11 => DisconnectReasonCode::QosNotSupported,
+            SpecViolation::Connack_3_2_2_14 => DisconnectReasonCode::RetainNotSupported,
+            SpecViolation::Connack_3_2_2_21 => {
+                DisconnectReasonCode::SubscriptionIdentifiersNotSupported
+            }
+            SpecViolation::PacketId_2_2_1_3_Pub
+            | SpecViolation::PacketId_2_2_1_3_Sub
+            | SpecViolation::PacketId_2_2_1_3_Unsub
+            | SpecViolation::Connect_3_1_2_26
+            | SpecViolation::Pub_3_3_2_2
+            | SpecViolation::Subs_4_7_1
+            | SpecViolation::Connack_3_2_2_17
+            | SpecViolation::Disconnect_3_14_2_21
+            | SpecViolation::Disconnect_3_14_2_22 => DisconnectReasonCode::ProtocolError,
         }
     }
 
     const fn as_str(self) -> &'static str {
         match self {
-            SpecViolationError::Mqtt_3_14_2_21 => {
-                "MQTT 3.14.2-2 The Session Expiry Interval must not be set on DISCONNECT by Server"
+            SpecViolation::PacketId_2_2_1_3_Pub => {
+                "[MQTT-2.2.1-3] PUBLISH received with packet id that is already in use"
             }
-            SpecViolationError::Mqtt_3_14_2_22 => {
-                "MQTT 3.14.2-2 Non-Zero Session Expiry Interval is set on DISCONNECT"
+            SpecViolation::PacketId_2_2_1_3_Sub => {
+                "[MQTT-2.2.1-3] SUBSCRIBE received with packet id that is already in use"
+            }
+            SpecViolation::PacketId_2_2_1_3_Unsub => {
+                "[MQTT-2.2.1-3] UNSUBSCRIBE received with packet id that is already in use"
+            }
+            SpecViolation::Connect_3_1_2_26 => {
+                "[MQTT-3.1.2-26] Topic alias is greater than max allowed"
+            }
+            SpecViolation::Connack_3_2_2_11 => {
+                "[MQTT-3.2.2-11] PUBLISH packet at a QoS level exceeding the Maximum QoS level specified in CONNACK"
+            }
+            SpecViolation::Connack_3_2_2_14 => "[MQTT-3.2.2-14] RETAIN is not supported",
+            SpecViolation::Connack_3_2_2_17 => {
+                "[MQTT-3.2.2-17] Topic alias is greater than max allowed"
+            }
+            SpecViolation::Connack_3_2_2_21 => {
+                "[MQTT-3.2.2-*] Subscription Identifiers are not supported"
+            }
+            SpecViolation::Pub_3_3_2_2 => {
+                "[MQTT-3.3.2-2] PUBLISH packet's topic name contains wildcard character"
+            }
+            SpecViolation::Pub_3_3_4_7 => {
+                "[MQTT-3.3.4-7] Number of in-flight messages exceeds set maximum"
+            }
+            SpecViolation::Pub_3_3_4_9 => {
+                "[MQTT-3.3.4-9] Number of in-flight messages exceeds set maximum"
+            }
+            SpecViolation::Subs_4_7_1 => "[MQTT-4.7.1-*] Topic filter is malformed",
+            SpecViolation::Disconnect_3_14_2_21 => {
+                "[MQTT-3.14.2-*] The Session Expiry Interval must not be set on DISCONNECT by Server"
+            }
+            SpecViolation::Disconnect_3_14_2_22 => {
+                "[MQTT-3.14.2-*] Non-Zero Session Expiry Interval is set on DISCONNECT"
             }
         }
     }
@@ -148,7 +220,7 @@ impl ProtocolError {
         })
     }
 
-    pub fn spec_violation(err: SpecViolationError) -> Self {
+    pub fn spec(err: SpecViolation) -> Self {
         Self::ProtocolViolation(ProtocolViolationError { inner: ViolationInner::Spec(err) })
     }
 

@@ -7,9 +7,9 @@ use ntex_service::{Pipeline, PipelineSvc, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
-use crate::error::{DecodeError, HandshakeError, MqttError, PayloadError, ProtocolError};
+use crate::error::{DecodeError, HandshakeError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus, PlSender};
-use crate::{MqttServiceConfig, types::QoS, types::packet_type};
+use crate::{MqttError, MqttServiceConfig, types::QoS, types::packet_type};
 
 use super::codec::{Decoded, Encoded, Packet};
 use super::control::{Control, ControlAck, ControlAckKind, Subscribe, Unsubscribe};
@@ -225,14 +225,7 @@ where
         match req {
             DispatchItem::Item(Decoded::Publish(publish, payload, size)) => {
                 if publish.topic.contains(['#', '+']) {
-                    return control(
-                        Control::proto_error(
-                            ProtocolError::generic_violation(
-                                "PUBLISH packet's topic name contains wildcard character [MQTT-3.3.2-2]"
-                            )
-                        ),
-                        &self.inner,
-                    ).await;
+                    return self.inner.control(Control::spec(SpecViolation::Pub_3_3_2_2)).await;
                 }
 
                 let inner = self.inner.as_ref();
@@ -247,12 +240,10 @@ where
                         self.tag(),
                         pid
                     );
-                    return control(
-                            Control::proto_error(
-                                ProtocolError::generic_violation("PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]")
-                            ),
-                            &self.inner,
-                        ).await;
+                    return self
+                        .inner
+                        .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Pub))
+                        .await;
                 }
 
                 // check max allowed qos
@@ -263,17 +254,10 @@ where
                         self.cfg.max_qos,
                         publish.qos
                     );
-                    return control(
-                        Control::proto_error(ProtocolError::generic_violation(
-                            match publish.qos {
-                                QoS::AtLeastOnce => "PUBLISH with QoS 1 is not supported",
-                                QoS::ExactlyOnce => "PUBLISH with QoS 2 is not supported",
-                                QoS::AtMostOnce => unreachable!(), // max_qos cannot be lower than QoS 0
-                            },
-                        )),
-                        &self.inner,
-                    )
-                    .await;
+                    return self
+                        .inner
+                        .control(Control::spec(SpecViolation::Connack_3_2_2_11))
+                        .await;
                 }
 
                 if inner.sink.is_closed()
@@ -313,52 +297,48 @@ where
                     }
                     Ok(None)
                 } else {
-                    control(
-                        Control::proto_error(ProtocolError::Decode(
+                    self.inner
+                        .control(Control::proto_error(ProtocolError::Decode(
                             DecodeError::UnexpectedPayload,
-                        )),
-                        &self.inner,
-                    )
-                    .await
+                        )))
+                        .await
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishAck { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
-                    control(Control::proto_error(e), &self.inner).await
+                    self.inner.control(Control::proto_error(e)).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishReceived { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Receive(packet_id)) {
-                    control(Control::proto_error(e), &self.inner).await
+                    self.inner.control(Control::proto_error(e)).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishRelease { packet_id }, _)) => {
                 if self.inner.inflight.borrow().contains(&packet_id) {
-                    control(Control::pubrel(packet_id), &self.inner).await
+                    self.inner.control(Control::pubrel(packet_id)).await
                 } else {
-                    control(
-                        Control::proto_error(ProtocolError::unexpected_packet(
+                    self.inner
+                        .control(Control::proto_error(ProtocolError::unexpected_packet(
                             packet_type::PUBREL,
                             "Unknown packet-id in PublishRelease packet",
-                        )),
-                        &self.inner,
-                    )
-                    .await
+                        )))
+                        .await
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishComplete { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Complete(packet_id)) {
-                    control(Control::proto_error(e), &self.inner).await
+                    self.inner.control(Control::proto_error(e)).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PingRequest, _)) => {
-                control(Control::ping(), &self.inner).await
+                self.inner.control(Control::ping()).await
             }
             DispatchItem::Item(Decoded::Packet(
                 Packet::Subscribe { packet_id, topic_filters },
@@ -369,13 +349,7 @@ where
                 }
 
                 if topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
-                    return control(
-                        Control::proto_error(ProtocolError::generic_violation(
-                            "Topic filter is malformed [MQTT-4.7.1-*]",
-                        )),
-                        &self.inner,
-                    )
-                    .await;
+                    return self.inner.control(Control::spec(SpecViolation::Subs_4_7_1)).await;
                 }
 
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
@@ -384,19 +358,15 @@ where
                         self.tag(),
                         packet_id
                     );
-                    return control(
-                        Control::proto_error(ProtocolError::generic_violation(
-                            "SUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
-                        )),
-                        &self.inner,
-                    ).await;
+                    return self
+                        .inner
+                        .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Sub))
+                        .await;
                 }
 
-                control(
-                    Control::subscribe(Subscribe::new(packet_id, size, topic_filters)),
-                    &self.inner,
-                )
-                .await
+                self.inner
+                    .control(Control::subscribe(Subscribe::new(packet_id, size, topic_filters)))
+                    .await
             }
             DispatchItem::Item(Decoded::Packet(
                 Packet::Unsubscribe { packet_id, topic_filters },
@@ -407,13 +377,7 @@ where
                 }
 
                 if topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
-                    return control(
-                        Control::proto_error(ProtocolError::generic_violation(
-                            "Topic filter is malformed [MQTT-4.7.1-*]",
-                        )),
-                        &self.inner,
-                    )
-                    .await;
+                    return self.inner.control(Control::spec(SpecViolation::Subs_4_7_1)).await;
                 }
 
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
@@ -422,56 +386,55 @@ where
                         self.tag(),
                         packet_id
                     );
-                    return control(
-                        Control::proto_error(ProtocolError::generic_violation(
-                            "UNSUBSCRIBE received with packet id that is already in use [MQTT-2.2.1-3]"
-                        )),
-                        &self.inner,
-                    ).await;
+                    return self
+                        .inner
+                        .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Unsub))
+                        .await;
                 }
 
-                control(
-                    Control::unsubscribe(Unsubscribe::new(packet_id, size, topic_filters)),
-                    &self.inner,
-                )
-                .await
+                self.inner
+                    .control(Control::unsubscribe(Unsubscribe::new(
+                        packet_id,
+                        size,
+                        topic_filters,
+                    )))
+                    .await
             }
             DispatchItem::Item(Decoded::Packet(Packet::Disconnect, _)) => {
                 self.inner.sink.is_disconnect_sent();
                 self.inner.sink.close();
-                control(Control::remote_disconnect(), &self.inner).await
+                self.inner.control(Control::remote_disconnect()).await
             }
             DispatchItem::Item(_) => Ok(None),
             DispatchItem::Stop(Reason::Encoder(err)) => {
                 let err = ProtocolError::Encode(err);
                 self.inner.drop_payload(&err);
-                control(Control::proto_error(err), &self.inner).await
+                self.inner.control(Control::proto_error(err)).await
             }
             DispatchItem::Stop(Reason::KeepAliveTimeout) => {
                 self.inner.drop_payload(&ProtocolError::KeepAliveTimeout);
-                control(Control::proto_error(ProtocolError::KeepAliveTimeout), &self.inner)
-                    .await
+                self.inner.control(Control::proto_error(ProtocolError::KeepAliveTimeout)).await
             }
             DispatchItem::Stop(Reason::ReadTimeout) => {
                 self.inner.drop_payload(&ProtocolError::ReadTimeout);
-                control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner).await
+                self.inner.control(Control::proto_error(ProtocolError::ReadTimeout)).await
             }
             DispatchItem::Stop(Reason::Decoder(err)) => {
                 let err = ProtocolError::Decode(err);
                 self.inner.drop_payload(&err);
-                control(Control::proto_error(err), &self.inner).await
+                self.inner.control(Control::proto_error(err)).await
             }
             DispatchItem::Stop(Reason::Io(err)) => {
                 self.inner.drop_payload(&PayloadError::Disconnected);
-                control(Control::peer_gone(err), &self.inner).await
+                self.inner.control(Control::peer_gone(err)).await
             }
             DispatchItem::Control(DispControl::WBackPressureEnabled) => {
                 self.inner.sink.enable_wr_backpressure();
-                control(Control::wr_backpressure(true), &self.inner).await
+                self.inner.control(Control::wr_backpressure(true)).await
             }
             DispatchItem::Control(DispControl::WBackPressureDisabled) => {
                 self.inner.sink.disable_wr_backpressure();
-                control(Control::wr_backpressure(false), &self.inner).await
+                self.inner.control(Control::wr_backpressure(false)).await
             }
         }
     }
@@ -511,77 +474,76 @@ where
                 Ok(None)
             }
         }
-        Err(e) => control(Control::error(e.into()), inner).await,
+        Err(e) => inner.control(Control::error(e.into())).await,
     }
 }
 
-async fn control<C, C2, E>(
-    mut pkt: Control<E>,
-    inner: &Inner<C, C2>,
-) -> Result<Option<Encoded>, MqttError<E>>
-where
-    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
-    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
-{
-    loop {
-        let error = matches!(pkt, Control::Stop(_));
-        let result = if matches!(pkt, Control::Protocol(_)) {
-            inner.control.call(pkt).await
-        } else {
-            if error && inner.sink.is_dispatcher_stopped() {
-                inner.drop_payload(&PayloadError::Service);
-                inner.sink.close();
-                return Ok(None);
-            }
-            inner.control_unbuf.call(pkt).await
-        };
+impl<C, C2> Inner<C, C2> {
+    async fn control<E>(&self, mut pkt: Control<E>) -> Result<Option<Encoded>, MqttError<E>>
+    where
+        C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+        C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+    {
+        loop {
+            let error = matches!(pkt, Control::Stop(_));
+            let result = if matches!(pkt, Control::Protocol(_)) {
+                self.control.call(pkt).await
+            } else {
+                if error && self.sink.is_dispatcher_stopped() {
+                    self.drop_payload(&PayloadError::Service);
+                    self.sink.close();
+                    return Ok(None);
+                }
+                self.control_unbuf.call(pkt).await
+            };
 
-        match result {
-            Ok(item) => {
-                let packet = match item.result {
-                    ControlAckKind::Ping => Some(Encoded::Packet(Packet::PingResponse)),
-                    ControlAckKind::Subscribe(res) => {
-                        inner.inflight.borrow_mut().remove(&res.packet_id);
-                        Some(Encoded::Packet(Packet::SubscribeAck {
-                            status: res.codes,
-                            packet_id: res.packet_id,
-                        }))
-                    }
-                    ControlAckKind::Unsubscribe(res) => {
-                        inner.inflight.borrow_mut().remove(&res.packet_id);
-                        Some(Encoded::Packet(Packet::UnsubscribeAck {
-                            packet_id: res.packet_id,
-                        }))
-                    }
-                    ControlAckKind::Disconnect => {
-                        inner.drop_payload(&PayloadError::Service);
-                        inner.sink.close();
-                        None
-                    }
-                    ControlAckKind::Closed | ControlAckKind::Nothing => None,
-                    ControlAckKind::PublishRelease(packet_id) => {
-                        inner.inflight.borrow_mut().remove(&packet_id);
-                        Some(Encoded::Packet(Packet::PublishComplete { packet_id }))
-                    }
-                    ControlAckKind::PublishAck(_) => unreachable!(),
-                };
-                return Ok(packet);
-            }
-            Err(err) => {
-                // do not handle nested error
-                let result = if error {
-                    Err(err)
-                } else {
-                    // handle error from control service
-                    if let MqttError::Service(err) = err {
-                        pkt = Control::error(err);
-                        continue;
-                    }
-                    Err(err)
-                };
-                inner.drop_payload(&PayloadError::Service);
-                inner.sink.close();
-                return result;
+            match result {
+                Ok(item) => {
+                    let packet = match item.result {
+                        ControlAckKind::Ping => Some(Encoded::Packet(Packet::PingResponse)),
+                        ControlAckKind::Subscribe(res) => {
+                            self.inflight.borrow_mut().remove(&res.packet_id);
+                            Some(Encoded::Packet(Packet::SubscribeAck {
+                                status: res.codes,
+                                packet_id: res.packet_id,
+                            }))
+                        }
+                        ControlAckKind::Unsubscribe(res) => {
+                            self.inflight.borrow_mut().remove(&res.packet_id);
+                            Some(Encoded::Packet(Packet::UnsubscribeAck {
+                                packet_id: res.packet_id,
+                            }))
+                        }
+                        ControlAckKind::Disconnect => {
+                            self.drop_payload(&PayloadError::Service);
+                            self.sink.close();
+                            None
+                        }
+                        ControlAckKind::Closed | ControlAckKind::Nothing => None,
+                        ControlAckKind::PublishRelease(packet_id) => {
+                            self.inflight.borrow_mut().remove(&packet_id);
+                            Some(Encoded::Packet(Packet::PublishComplete { packet_id }))
+                        }
+                        ControlAckKind::PublishAck(_) => unreachable!(),
+                    };
+                    return Ok(packet);
+                }
+                Err(err) => {
+                    // do not handle nested error
+                    let result = if error {
+                        Err(err)
+                    } else {
+                        // handle error from control service
+                        if let MqttError::Service(err) = err {
+                            pkt = Control::error(err);
+                            continue;
+                        }
+                        Err(err)
+                    };
+                    self.drop_payload(&PayloadError::Service);
+                    self.sink.close();
+                    return result;
+                }
             }
         }
     }
