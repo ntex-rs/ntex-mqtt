@@ -105,11 +105,7 @@ impl MqttShared {
     }
 
     pub(super) fn close(&self) {
-        let mut flags = self.flags.get();
-
-        if flags.contains(Flags::CLIENT) && !flags.contains(Flags::DISCONNECT) {
-            flags.insert(Flags::DISCONNECT);
-            self.flags.set(flags);
+        if self.flags.get().contains(Flags::CLIENT) && !self.is_disconnect_sent() {
             let _ = self.encode_packet(codec::Packet::Disconnect);
         }
         self.io.close();
@@ -136,6 +132,16 @@ impl MqttShared {
 
     pub(super) fn is_ready(&self) -> bool {
         self.credit() > 0 && !self.flags.get().contains(Flags::WRB_ENABLED)
+    }
+
+    pub(super) fn is_disconnect_sent(&self) -> bool {
+        let mut flags = self.flags.get();
+        let sent = flags.contains(Flags::DISCONNECT);
+        if !sent {
+            flags.insert(Flags::DISCONNECT);
+            self.flags.set(flags);
+        }
+        sent
     }
 
     pub(super) fn is_dispatcher_stopped(&self) -> bool {

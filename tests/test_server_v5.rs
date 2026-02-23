@@ -1748,7 +1748,7 @@ async fn test_publish_sink_disconenct() -> std::io::Result<()> {
 async fn test_peergone_after_sink_disconenct() -> std::io::Result<()> {
     let val = Arc::new(AtomicBool::new(false));
     let val2 = val.clone();
-    let (tx, rx) = ::oneshot::channel();
+    let (tx, rx) = oneshot::channel();
     let tx = Arc::new(Mutex::new(Some(tx)));
 
     let srv = server::test_server(async move || {
@@ -1924,5 +1924,73 @@ async fn test_max_outbound2() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     sink.close();
+    Ok(())
+}
+
+/// MQTT 3.14.2-2 Non-Zero Session Expiry Interval is set on DISCONNECT
+#[ntex::test]
+async fn protocol_error_session_expiry() -> std::io::Result<()> {
+    let val = Arc::new(AtomicBool::new(false));
+    let val2 = val.clone();
+    let (tx, rx) = oneshot::channel();
+    let tx = Arc::new(Mutex::new(Some(tx)));
+
+    let srv = server::test_server(async move || {
+        let tx = tx.clone();
+        let val = val2.clone();
+        MqttServer::new(handshake)
+            .control(async move |msg| match msg {
+                Control::Stop(CtlReason::ProtocolError(err)) => {
+                    val.store(true, Relaxed);
+                    let _ = tx.lock().unwrap().take().unwrap().send(());
+                    Ok(err.ack())
+                }
+                msg => Ok::<_, TestError>(msg.ack()),
+            })
+            .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
+    });
+
+    // connect to server, session expiry to 0
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        Encoded::Packet(
+            codec::Connect { session_expiry_interval_secs: 0, ..Default::default() }
+                .client_id("user")
+                .into(),
+        ),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    // disconnect, session expiry is not zero
+    io.send(
+        Encoded::Packet(
+            codec::Disconnect { session_expiry_interval_secs: Some(10), ..Default::default() }
+                .into(),
+        ),
+        &codec,
+    )
+    .await
+    .unwrap();
+
+    let result = io.recv(&codec).await;
+
+    assert!(
+        matches!(result, Ok(Some(codec::Decoded::Packet(codec::Packet::Disconnect(ref d), _)))
+                 if d.reason_code == codec::DisconnectReasonCode::ProtocolError
+        ),
+        "Unexpected result: {:#?}",
+        result
+    );
+
+    let _ = rx.await;
+    assert!(val.load(Relaxed));
+
+    let result = io.recv(&codec).await.unwrap();
+    assert_eq!(result, None);
+
     Ok(())
 }

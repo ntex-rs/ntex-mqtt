@@ -6,11 +6,11 @@ use ntex_service::{Pipeline, Service, ServiceCtx};
 use ntex_util::future::{Either, join};
 use ntex_util::{HashSet, services::inflight::InFlightService};
 
-use crate::error::{HandshakeError, MqttError, PayloadError, ProtocolError};
+use crate::error::{HandshakeError, PayloadError, ProtocolError, SpecViolation};
 use crate::v3::codec::{self, Decoded, Encoded, Packet};
 use crate::v3::shared::{Ack, MqttShared};
 use crate::v3::{control::ControlAckKind, publish::Publish};
-use crate::{payload::Payload, payload::PayloadStatus, payload::PlSender};
+use crate::{MqttError, payload::Payload, payload::PayloadStatus, payload::PlSender};
 
 use super::control::{Control, ControlAck};
 
@@ -165,9 +165,7 @@ where
                 {
                     log::trace!("Duplicated packet id for publish packet: {pid:?}");
                     return Err(MqttError::Handshake(HandshakeError::Protocol(
-                        ProtocolError::generic_violation(
-                            "PUBLISH received with packet id that is already in use [MQTT-2.2.1-3]",
-                        ),
+                        ProtocolError::spec(SpecViolation::PacketId_2_2_1_3_Pub),
                     )));
                 }
 
@@ -207,21 +205,21 @@ where
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishReceived { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Receive(packet_id)) {
-                    control(Control::proto_error(e), &self.inner).await
+                    self.inner.control(Control::proto_error(e)).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishComplete { packet_id }, _)) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Complete(packet_id)) {
-                    control(Control::proto_error(e), &self.inner).await
+                    self.inner.control(Control::proto_error(e)).await
                 } else {
                     Ok(None)
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishRelease { packet_id }, _)) => {
                 if self.inner.inflight.borrow().contains(&packet_id) {
-                    control(Control::pubrel(packet_id), &self.inner).await
+                    self.inner.control(Control::pubrel(packet_id)).await
                 } else {
                     log::warn!("Unknown packet-id in PublishRelease packet");
                     self.inner.sink.close();
@@ -263,25 +261,24 @@ where
             DispatchItem::Stop(Reason::Encoder(err)) => {
                 let err = ProtocolError::Encode(err);
                 self.inner.drop_payload(&err);
-                control(Control::proto_error(err), &self.inner).await
+                self.inner.control(Control::proto_error(err)).await
             }
             DispatchItem::Stop(Reason::Decoder(err)) => {
                 let err = ProtocolError::Decode(err);
                 self.inner.drop_payload(&err);
-                control(Control::proto_error(err), &self.inner).await
+                self.inner.control(Control::proto_error(err)).await
             }
             DispatchItem::Stop(Reason::Io(err)) => {
                 self.inner.drop_payload(&PayloadError::Disconnected);
-                control(Control::peer_gone(err), &self.inner).await
+                self.inner.control(Control::peer_gone(err)).await
             }
             DispatchItem::Stop(Reason::KeepAliveTimeout) => {
                 self.inner.drop_payload(&ProtocolError::KeepAliveTimeout);
-                control(Control::proto_error(ProtocolError::KeepAliveTimeout), &self.inner)
-                    .await
+                self.inner.control(Control::proto_error(ProtocolError::KeepAliveTimeout)).await
             }
             DispatchItem::Stop(Reason::ReadTimeout) => {
                 self.inner.drop_payload(&ProtocolError::ReadTimeout);
-                control(Control::proto_error(ProtocolError::ReadTimeout), &self.inner).await
+                self.inner.control(Control::proto_error(ProtocolError::ReadTimeout)).await
             }
             DispatchItem::Control(DispControl::WBackPressureEnabled) => {
                 self.inner.sink.enable_wr_backpressure();
@@ -309,7 +306,7 @@ where
     let res = match ctx.call(svc, pkt).await {
         Ok(item) => item,
         Err(e) => {
-            return control(Control::error(e), inner).await;
+            return inner.control(Control::error(e)).await;
         }
     };
 
@@ -326,47 +323,46 @@ where
         }
         Either::Right(pkt) => {
             let (pkt, payload, size) = pkt.into_inner();
-            control(Control::publish(pkt, payload, size), inner).await
+            inner.control(Control::publish(pkt, payload, size)).await
         }
     }
 }
 
-async fn control<C, E>(
-    msg: Control<E>,
-    inner: &Inner<C>,
-) -> Result<Option<Encoded>, MqttError<E>>
-where
-    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
-{
-    let packet = match inner
-        .control
-        .call(msg)
-        .await
-        .inspect_err(|_| {
-            inner.drop_payload(&PayloadError::Service);
-            inner.sink.close();
-        })?
-        .result
+impl<C> Inner<C> {
+    async fn control<E>(&self, msg: Control<E>) -> Result<Option<Encoded>, MqttError<E>>
+    where
+        C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
     {
-        ControlAckKind::Ping => Some(Encoded::Packet(codec::Packet::PingResponse)),
-        ControlAckKind::PublishAck(id) => {
-            inner.inflight.borrow_mut().remove(&id);
-            Some(Encoded::Packet(codec::Packet::PublishAck { packet_id: id }))
-        }
-        ControlAckKind::PublishRelease(id) => {
-            inner.inflight.borrow_mut().remove(&id);
-            Some(Encoded::Packet(Packet::PublishComplete { packet_id: id }))
-        }
-        ControlAckKind::Subscribe(_) | ControlAckKind::Unsubscribe(_) => unreachable!(),
-        ControlAckKind::Disconnect => {
-            inner.drop_payload(&PayloadError::Service);
-            inner.sink.close();
-            None
-        }
-        ControlAckKind::Closed | ControlAckKind::Nothing => None,
-    };
+        let packet = match self
+            .control
+            .call(msg)
+            .await
+            .inspect_err(|_| {
+                self.drop_payload(&PayloadError::Service);
+                self.sink.close();
+            })?
+            .result
+        {
+            ControlAckKind::Ping => Some(Encoded::Packet(codec::Packet::PingResponse)),
+            ControlAckKind::PublishAck(id) => {
+                self.inflight.borrow_mut().remove(&id);
+                Some(Encoded::Packet(codec::Packet::PublishAck { packet_id: id }))
+            }
+            ControlAckKind::PublishRelease(id) => {
+                self.inflight.borrow_mut().remove(&id);
+                Some(Encoded::Packet(Packet::PublishComplete { packet_id: id }))
+            }
+            ControlAckKind::Subscribe(_) | ControlAckKind::Unsubscribe(_) => unreachable!(),
+            ControlAckKind::Disconnect => {
+                self.drop_payload(&PayloadError::Service);
+                self.sink.close();
+                None
+            }
+            ControlAckKind::Closed | ControlAckKind::Nothing => None,
+        };
 
-    Ok(packet)
+        Ok(packet)
+    }
 }
 
 #[cfg(test)]

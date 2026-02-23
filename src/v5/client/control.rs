@@ -57,6 +57,12 @@ impl<E> Control<E> {
         Control::Stop(CtlReason::Error(Error::new(err)))
     }
 
+    pub(super) fn spec(err: error::SpecViolation) -> Self {
+        Control::Stop(CtlReason::ProtocolError(ProtocolError::new(error::ProtocolError::spec(
+            err,
+        ))))
+    }
+
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
         Control::Stop(CtlReason::ProtocolError(ProtocolError::new(err)))
     }

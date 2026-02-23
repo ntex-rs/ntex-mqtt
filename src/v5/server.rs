@@ -235,6 +235,9 @@ where
                 }
                 let keep_alive = connect.keep_alive;
                 let peer_receive_max = connect.receive_max.map(NonZero::get);
+                if connect.session_expiry_interval_secs == 0 {
+                    shared.set_zero_session_expiry();
+                }
 
                 // authenticate mqtt connection
                 let mut ack = ctx

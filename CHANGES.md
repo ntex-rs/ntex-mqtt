@@ -1,5 +1,13 @@
 # Changes
 
+## [7.5.0] - 2026-02-23
+
+* Close connection after Receiving Disconnect packet
+
+* Handle MQTT-3.14.2-2 error cases
+
+* Better handling for protocol spec violation errors
+
 ## [7.4.0] - 2026-02-22
 
 * Do not send `DISCONNECT` if `DISCONNECT` packet is already received
