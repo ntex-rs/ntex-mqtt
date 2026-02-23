@@ -81,26 +81,62 @@ pub struct ProtocolViolationError {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 enum ViolationInner {
+    #[error("{0}")]
+    Spec(SpecViolationError),
     #[error("{message}")]
     Common { reason: DisconnectReasonCode, message: &'static str },
     #[error("{message}; received packet with type `{packet_type:b}`")]
     UnexpectedPacket { packet_type: u8, message: &'static str },
 }
 
+#[allow(non_camel_case_types)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SpecViolationError {
+    #[error(
+        "MQTT 3.14.2-2 The Session Expiry Interval must not be set on DISCONNECT by Server"
+    )]
+    Mqtt_3_14_2_21,
+    #[error("MQTT 3.14.2-2 Non-Zero Session Expiry Interval is set on DISCONNECT")]
+    Mqtt_3_14_2_22,
+}
+
+impl SpecViolationError {
+    const fn reason(&self) -> DisconnectReasonCode {
+        match self {
+            SpecViolationError::Mqtt_3_14_2_21 | SpecViolationError::Mqtt_3_14_2_22 => {
+                DisconnectReasonCode::ProtocolError
+            }
+        }
+    }
+
+    const fn as_str(&self) -> &'static str {
+        match self {
+            SpecViolationError::Mqtt_3_14_2_21 => {
+                "MQTT 3.14.2-2 The Session Expiry Interval must not be set on DISCONNECT by Server"
+            }
+            SpecViolationError::Mqtt_3_14_2_22 => {
+                "MQTT 3.14.2-2 Non-Zero Session Expiry Interval is set on DISCONNECT"
+            }
+        }
+    }
+}
+
 impl ProtocolViolationError {
     /// Protocol violation reason code
-    pub fn reason(&self) -> DisconnectReasonCode {
+    pub const fn reason(&self) -> DisconnectReasonCode {
         match self.inner {
+            ViolationInner::Spec(err) => err.reason(),
             ViolationInner::Common { reason, .. } => reason,
             ViolationInner::UnexpectedPacket { .. } => DisconnectReasonCode::ProtocolError,
         }
     }
 
     /// Protocol violation reason message
-    pub fn message(&self) -> &'static str {
+    pub const fn message(&self) -> &'static str {
         match self.inner {
             ViolationInner::Common { message, .. }
             | ViolationInner::UnexpectedPacket { message, .. } => message,
+            ViolationInner::Spec(err) => err.as_str(),
         }
     }
 }
@@ -111,6 +147,11 @@ impl ProtocolError {
             inner: ViolationInner::Common { reason, message },
         })
     }
+
+    pub fn spec_violation(err: SpecViolationError) -> Self {
+        Self::ProtocolViolation(ProtocolViolationError { inner: ViolationInner::Spec(err) })
+    }
+
     pub fn generic_violation(message: &'static str) -> Self {
         Self::violation(DisconnectReasonCode::ProtocolError, message)
     }

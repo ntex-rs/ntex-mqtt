@@ -437,6 +437,8 @@ where
                 .await
             }
             DispatchItem::Item(Decoded::Packet(Packet::Disconnect, _)) => {
+                self.inner.sink.is_disconnect_sent();
+                self.inner.sink.close();
                 control(Control::remote_disconnect(), &self.inner).await
             }
             DispatchItem::Item(_) => Ok(None),

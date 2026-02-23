@@ -8,9 +8,9 @@ use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::services::inflight::InFlightService;
 use ntex_util::{HashMap, HashSet, future::join};
 
-use crate::error::{DecodeError, HandshakeError, MqttError, PayloadError, ProtocolError};
+use crate::error::{DecodeError, PayloadError, ProtocolError, SpecViolationError};
 use crate::payload::{Payload, PayloadStatus, PlSender};
-use crate::{MqttServiceConfig, types::QoS};
+use crate::{HandshakeError, MqttError, MqttServiceConfig, types::QoS};
 
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
 use super::control::{Control, ControlAck, Pkt};
@@ -471,8 +471,24 @@ where
                 control(Control::ping(), &self.inner, 0).await
             }
             DispatchItem::Item(Decoded::Packet(Packet::Disconnect(pkt), size)) => {
-                self.inner.sink.is_disconnect_sent();
-                control(Control::remote_disconnect(pkt, size), &self.inner, 0).await
+                // Check session expiry
+                if let Some(val) = pkt.session_expiry_interval_secs
+                    && val > 0
+                    && self.inner.sink.is_zero_session_expiry()
+                {
+                    control(
+                        Control::proto_error(ProtocolError::spec_violation(
+                            SpecViolationError::Mqtt_3_14_2_22,
+                        )),
+                        &self.inner,
+                        0,
+                    )
+                    .await
+                } else {
+                    self.inner.sink.is_disconnect_sent();
+                    self.inner.sink.close(None);
+                    control(Control::remote_disconnect(pkt, size), &self.inner, 0).await
+                }
             }
             DispatchItem::Item(Decoded::Packet(Packet::Subscribe(pkt), size)) => {
                 if self.inner.sink.is_closed() {

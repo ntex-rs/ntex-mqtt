@@ -6,7 +6,9 @@ use ntex_dispatcher::{Control as DispControl, DispatchItem, Reason};
 use ntex_service::{Pipeline, Service, ServiceCtx, cfg::Cfg};
 use ntex_util::{HashMap, HashSet, future::Either, future::join};
 
-use crate::error::{HandshakeError, MqttError, PayloadError, ProtocolError};
+use crate::error::{
+    HandshakeError, MqttError, PayloadError, ProtocolError, SpecViolationError,
+};
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::v5::codec::{Decoded, DisconnectReasonCode, Encoded, Packet};
 use crate::v5::shared::{Ack, MqttShared};
@@ -326,7 +328,21 @@ where
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::Disconnect(pkt), size)) => {
-                control(Control::dis(pkt, size), &self.inner, 0).await
+                if pkt.session_expiry_interval_secs.is_some() {
+                    control(
+                        Control::proto_error(ProtocolError::spec_violation(
+                            SpecViolationError::Mqtt_3_14_2_21,
+                        )),
+                        &self.inner,
+                        0,
+                    )
+                    .await
+                } else {
+                    // dont send disconnect if we received one and close connection
+                    self.inner.sink.is_disconnect_sent();
+                    self.inner.sink.close(None);
+                    control(Control::dis(pkt, size), &self.inner, 0).await
+                }
             }
             DispatchItem::Item(Decoded::Packet(Packet::Auth(_), ..)) => {
                 control(

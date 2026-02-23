@@ -12,14 +12,16 @@ use crate::{QoS, error, error::SendPacketError, types::packet_type};
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub(crate) struct Flags: u8 {
-        const WRB_ENABLED    = 0b0000_0001; // write-backpressure
-        const ON_PUBLISH_ACK = 0b0000_0010; // on-publish-ack callback
+        const WRB_ENABLED     = 0b0000_0001; // write-backpressure
+        const ON_PUBLISH_ACK  = 0b0000_0010; // on-publish-ack callback
 
-        const QOS_ATLEAST    = 0b0000_0100; // AtLeastOnce
-        const QOS_EXACTLY    = 0b0000_1000; // ExactlyOnce
+        const QOS_ATLEAST     = 0b0000_0100; // AtLeastOnce
+        const QOS_EXACTLY     = 0b0000_1000; // ExactlyOnce
 
-        const DISCONNECT     = 0b0100_0000; // Disconnect frame is sent
-        const STOPPED        = 0b1000_0000; // DispatchItem::Stop() is sent
+        const ZERO_SES_EXPIRY = 0b0001_0000; // Session expiry is zero in Connect
+
+        const DISCONNECT      = 0b0100_0000; // Disconnect frame is sent
+        const STOPPED         = 0b1000_0000; // DispatchItem::Stop() is sent
     }
 }
 
@@ -129,6 +131,16 @@ impl MqttShared {
                 flags.remove(Flags::QOS_EXACTLY);
             }
         }
+        self.flags.set(flags);
+    }
+
+    pub(super) fn is_zero_session_expiry(&self) -> bool {
+        self.flags.get().contains(Flags::ZERO_SES_EXPIRY)
+    }
+
+    pub(super) fn set_zero_session_expiry(&self) {
+        let mut flags = self.flags.get();
+        flags.insert(Flags::ZERO_SES_EXPIRY);
         self.flags.set(flags);
     }
 
