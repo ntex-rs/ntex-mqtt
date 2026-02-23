@@ -101,7 +101,7 @@ pub enum SpecViolationError {
 }
 
 impl SpecViolationError {
-    const fn reason(&self) -> DisconnectReasonCode {
+    const fn reason(self) -> DisconnectReasonCode {
         match self {
             SpecViolationError::Mqtt_3_14_2_21 | SpecViolationError::Mqtt_3_14_2_22 => {
                 DisconnectReasonCode::ProtocolError
@@ -109,7 +109,7 @@ impl SpecViolationError {
         }
     }
 
-    const fn as_str(&self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             SpecViolationError::Mqtt_3_14_2_21 => {
                 "MQTT 3.14.2-2 The Session Expiry Interval must not be set on DISCONNECT by Server"
