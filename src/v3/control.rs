@@ -547,10 +547,10 @@ mod tests {
         assert!(format!("{unsub:?}").contains("Unsubscribe"));
 
         // Ping, Disconnect, WrBackpressure, Shutdown, PeerGone
-        assert!(format!("{:?}", Ping).contains("Ping"));
-        assert!(format!("{:?}", Disconnect).contains("Disconnect"));
+        assert!(format!("{Ping:?}").contains("Ping"));
+        assert!(format!("{Disconnect:?}").contains("Disconnect"));
         assert!(format!("{:?}", WrBackpressure(true)).contains("WrBackpressure"));
-        assert!(format!("{:?}", Shutdown).contains("Shutdown"));
+        assert!(format!("{Shutdown:?}").contains("Shutdown"));
         assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
     }
 }

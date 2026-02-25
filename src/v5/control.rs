@@ -895,9 +895,9 @@ mod tests {
         assert!(format!("{uiter:?}").contains("UnsubscribeIter"));
 
         // Ping, WrBackpressure, Shutdown, PeerGone
-        assert!(format!("{:?}", Ping).contains("Ping"));
+        assert!(format!("{Ping:?}").contains("Ping"));
         assert!(format!("{:?}", WrBackpressure(false)).contains("WrBackpressure"));
-        assert!(format!("{:?}", Shutdown).contains("Shutdown"));
+        assert!(format!("{Shutdown:?}").contains("Shutdown"));
         assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
     }
 }
