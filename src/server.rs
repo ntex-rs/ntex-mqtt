@@ -409,3 +409,15 @@ impl<Err, InitErr> Service<IoBoxed> for DefaultProtocolServer<Err, InitErr> {
         )))))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debug() {
+        // Use the default constructor which fills in all type params automatically
+        let server = <MqttServer<_, _, (), ()>>::default();
+        assert!(format!("{server:?}").contains("MqttServer"));
+    }
+}

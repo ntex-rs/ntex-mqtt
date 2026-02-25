@@ -156,3 +156,19 @@ impl<Err> Service<Publish> for RouterService<Err> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ntex_service::fn_factory;
+    use ntex_util::future::Ready;
+
+    use super::*;
+
+    #[test]
+    fn test_debug() {
+        let router: Router<(), ()> = Router::new(fn_factory(|| async {
+            Ok::<_, ()>(ntex_service::fn_service(|_: Publish| Ready::<_, ()>::Ok(())))
+        }));
+        assert!(format!("{router:?}").contains("v3::Router"));
+    }
+}

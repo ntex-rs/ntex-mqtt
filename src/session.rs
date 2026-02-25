@@ -47,3 +47,14 @@ impl<T, St> fmt::Debug for Session<T, St> {
         f.debug_struct("Session").finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debug() {
+        let s = Session::new(42u32, "sink");
+        assert_eq!(format!("{s:?}"), "Session");
+    }
+}

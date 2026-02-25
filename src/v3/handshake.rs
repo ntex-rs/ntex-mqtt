@@ -188,3 +188,33 @@ impl<St> HandshakeAck<St> {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use ntex_io::{Io, IoBoxed, testing::IoTest};
+    use ntex_service::cfg::SharedCfg;
+
+    use super::*;
+    use crate::v3::shared::MqttShared;
+
+    #[ntex::test]
+    async fn test_debug() {
+        let io = Io::new(IoTest::create().0, SharedCfg::new("test"));
+        let codec = mqtt::Codec::default();
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
+        let connect = Box::new(mqtt::Connect::default());
+        let h = Handshake::new(connect, 0, IoBoxed::from(io), shared);
+
+        // Handshake delegates to the Connect packet
+        let dbg = format!("{h:?}");
+        assert!(!dbg.is_empty());
+
+        // HandshakeAck
+        let ack = h.ack(42u32, false);
+        let dbg = format!("{ack:?}");
+        assert!(dbg.contains("HandshakeAck"));
+        assert!(dbg.contains("session_present"));
+    }
+}

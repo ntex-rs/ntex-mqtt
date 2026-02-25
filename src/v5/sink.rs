@@ -744,3 +744,37 @@ impl StreamingPayload {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use ntex_io::{Io, testing::IoTest};
+    use ntex_service::cfg::SharedCfg;
+
+    use super::*;
+    use crate::v5::shared::MqttShared;
+
+    #[ntex::test]
+    async fn test_debug() {
+        let io = Io::new(IoTest::create().0, SharedCfg::new("test"));
+        let codec_v5 = codec::Codec::new();
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec_v5, Rc::default()));
+        let sink = MqttSink::new(shared);
+
+        // MqttSink
+        assert!(format!("{sink:?}").contains("MqttSink"));
+
+        // PublishBuilder
+        let pb = sink.publish("test/topic");
+        assert!(format!("{pb:?}").contains("PublishBuilder"));
+
+        // SubscribeBuilder
+        let sb = sink.subscribe(None);
+        assert!(format!("{sb:?}").contains("SubscribeBuilder"));
+
+        // UnsubscribeBuilder
+        let ub = sink.unsubscribe();
+        assert!(format!("{ub:?}").contains("UnsubscribeBuilder"));
+    }
+}

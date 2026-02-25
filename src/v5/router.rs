@@ -192,3 +192,22 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
         ctx.call(&self.default, req).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ntex_service::fn_factory;
+    use ntex_util::future::Ready;
+
+    use super::*;
+    use crate::v5::codec::PublishAckReason;
+
+    #[test]
+    fn test_debug() {
+        let router: Router<(), ()> = Router::new(fn_factory(|| async {
+            Ok::<_, ()>(ntex_service::fn_service(|_: Publish| {
+                Ready::<PublishAck, ()>::Ok(PublishAck::new(PublishAckReason::Success))
+            }))
+        }));
+        assert!(format!("{router:?}").contains("v5::Router"));
+    }
+}

@@ -303,4 +303,30 @@ mod tests {
 
         let _ = rx.await;
     }
+
+    #[test]
+    fn test_debug() {
+        struct NoopSvc;
+        struct Req;
+        impl Service<Req> for NoopSvc {
+            type Response = ();
+            type Error = ();
+            async fn call(&self, _: Req, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+                Ok(())
+            }
+        }
+        impl SizedRequest for Req {
+            fn size(&self) -> u32 {
+                0
+            }
+            fn is_publish(&self) -> bool {
+                false
+            }
+            fn is_chunk(&self) -> bool {
+                false
+            }
+        }
+        let svc = InFlightServiceImpl::new(16, 0, NoopSvc);
+        assert!(format!("{svc:?}").contains("InFlightServiceImpl"));
+    }
 }

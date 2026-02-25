@@ -517,3 +517,40 @@ impl PeerGone {
         ControlAck { result: ControlAckKind::Nothing }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU16;
+
+    use ntex_bytes::ByteString;
+
+    use super::*;
+    use crate::types::QoS;
+
+    #[test]
+    fn test_debug() {
+        // SubscribeIter via Subscribe
+        let mut sub = Subscribe::new(
+            NonZeroU16::new(1).unwrap(),
+            0,
+            vec![(ByteString::from_static("a/b"), QoS::AtLeastOnce)],
+        );
+        let iter = sub.iter_mut();
+        assert!(format!("{iter:?}").contains("SubscribeIter"));
+
+        // Unsubscribe
+        let unsub = Unsubscribe::new(
+            NonZeroU16::new(2).unwrap(),
+            0,
+            vec![ByteString::from_static("a/b")],
+        );
+        assert!(format!("{unsub:?}").contains("Unsubscribe"));
+
+        // Ping, Disconnect, WrBackpressure, Shutdown, PeerGone
+        assert!(format!("{:?}", Ping).contains("Ping"));
+        assert!(format!("{:?}", Disconnect).contains("Disconnect"));
+        assert!(format!("{:?}", WrBackpressure(true)).contains("WrBackpressure"));
+        assert!(format!("{:?}", Shutdown).contains("Shutdown"));
+        assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
+    }
+}

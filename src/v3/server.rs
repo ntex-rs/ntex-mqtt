@@ -310,3 +310,21 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ntex_service::fn_factory;
+    use ntex_util::future::Ready;
+
+    use super::*;
+
+    #[test]
+    fn test_debug() {
+        let server = MqttServer::new(fn_factory(|| async {
+            Ok::<_, ()>(ntex_service::fn_service(|h: Handshake| {
+                Ready::<HandshakeAck<()>, ()>::Ok(h.ack((), false))
+            }))
+        }));
+        assert!(format!("{server:?}").contains("v3::MqttServer"));
+    }
+}
