@@ -146,6 +146,18 @@ pub struct HandshakeAck<St> {
     pub(crate) max_packet_size: Option<NonZeroU32>,
 }
 
+impl<St> fmt::Debug for HandshakeAck<St> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HandshakeAck")
+            .field("session_present", &self.session_present)
+            .field("return_code", &self.return_code)
+            .field("keepalive", &self.keepalive)
+            .field("max_send", &self.max_send)
+            .field("max_packet_size", &self.max_packet_size)
+            .finish()
+    }
+}
+
 impl<St> HandshakeAck<St> {
     #[must_use]
     /// Set idle time-out for the connection in seconds.
@@ -174,5 +186,35 @@ impl<St> HandshakeAck<St> {
     pub fn max_packet_size(mut self, val: NonZeroU32) -> Self {
         self.max_packet_size = Some(val);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use ntex_io::{Io, IoBoxed, testing::IoTest};
+    use ntex_service::cfg::SharedCfg;
+
+    use super::*;
+    use crate::v3::shared::MqttShared;
+
+    #[ntex::test]
+    async fn test_debug() {
+        let io = Io::new(IoTest::create().0, SharedCfg::new("test"));
+        let codec = mqtt::Codec::default();
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
+        let connect = Box::new(mqtt::Connect::default());
+        let h = Handshake::new(connect, 0, IoBoxed::from(io), shared);
+
+        // Handshake delegates to the Connect packet
+        let dbg = format!("{h:?}");
+        assert!(!dbg.is_empty());
+
+        // HandshakeAck
+        let ack = h.ack(42u32, false);
+        let dbg = format!("{ack:?}");
+        assert!(dbg.contains("HandshakeAck"));
+        assert!(dbg.contains("session_present"));
     }
 }

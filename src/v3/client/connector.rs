@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, rc::Rc};
+use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_io::IoBoxed;
 use ntex_net::connect::{self, Address, Connector};
@@ -18,11 +18,23 @@ pub struct MqttConnector<A, T> {
     _t: PhantomData<A>,
 }
 
+impl<A, T> fmt::Debug for MqttConnector<A, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v3::MqttConnector").finish()
+    }
+}
+
 pub struct MqttConnectorService<A, T> {
     connector: T,
     cfg: Cfg<MqttServiceConfig>,
     pool: Rc<MqttSinkPool>,
     _t: PhantomData<A>,
+}
+
+impl<A, T> fmt::Debug for MqttConnectorService<A, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v3::MqttConnectorService").finish()
+    }
 }
 
 impl<A> MqttConnector<A, ()>

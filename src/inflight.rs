@@ -1,5 +1,5 @@
 //! Service that limits number of in-flight async requests.
-use std::{cell::Cell, future::poll_fn, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, fmt, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
 use ntex_service::{Service, ServiceCtx};
 use ntex_util::{future::join, task::LocalWaker};
@@ -17,6 +17,12 @@ pub struct InFlightServiceImpl<S> {
     count: Counter,
     service: S,
     publish: Cell<bool>,
+}
+
+impl<S> fmt::Debug for InFlightServiceImpl<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InFlightServiceImpl").finish()
+    }
 }
 
 impl<S> InFlightServiceImpl<S> {
@@ -296,5 +302,31 @@ mod tests {
         assert_eq!(poll_fn(|cx| srv.poll_ready(cx)).await, Ok(()));
 
         let _ = rx.await;
+    }
+
+    #[test]
+    fn test_debug() {
+        struct NoopSvc;
+        struct Req;
+        impl Service<Req> for NoopSvc {
+            type Response = ();
+            type Error = ();
+            async fn call(&self, _: Req, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+                Ok(())
+            }
+        }
+        impl SizedRequest for Req {
+            fn size(&self) -> u32 {
+                0
+            }
+            fn is_publish(&self) -> bool {
+                false
+            }
+            fn is_chunk(&self) -> bool {
+                false
+            }
+        }
+        let svc = InFlightServiceImpl::new(16, 0, NoopSvc);
+        assert!(format!("{svc:?}").contains("InFlightServiceImpl"));
     }
 }

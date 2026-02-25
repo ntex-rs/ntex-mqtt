@@ -1,4 +1,4 @@
-use std::{rc::Rc, task::Context};
+use std::{fmt, rc::Rc, task::Context};
 
 use ntex_router::{IntoPattern, RouterBuilder};
 use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
@@ -15,6 +15,12 @@ pub struct Router<S, Err> {
     router: RouterBuilder<usize>,
     handlers: Vec<Handler<S, Err>>,
     default: Handler<S, Err>,
+}
+
+impl<S, Err> fmt::Debug for Router<S, Err> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v3::Router").finish()
+    }
 }
 
 impl<S, Err> Router<S, Err>
@@ -73,6 +79,12 @@ pub struct RouterFactory<S, Err> {
     default: Handler<S, Err>,
 }
 
+impl<S, Err> fmt::Debug for RouterFactory<S, Err> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v3::RouterFactory").finish()
+    }
+}
+
 impl<S, Err> ServiceFactory<Publish, Session<S>> for RouterFactory<S, Err>
 where
     S: 'static,
@@ -103,6 +115,12 @@ pub struct RouterService<Err> {
     router: Rc<ntex_router::Router<usize>>,
     handlers: Vec<HandlerService<Err>>,
     default: HandlerService<Err>,
+}
+
+impl<Err> fmt::Debug for RouterService<Err> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v3::RouterService").finish()
+    }
 }
 
 impl<Err> Service<Publish> for RouterService<Err> {
@@ -136,5 +154,21 @@ impl<Err> Service<Publish> for RouterService<Err> {
         } else {
             ctx.call(&self.default, req).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex_service::fn_factory;
+    use ntex_util::future::Ready;
+
+    use super::*;
+
+    #[test]
+    fn test_debug() {
+        let router: Router<(), ()> = Router::new(fn_factory(|| async {
+            Ok::<_, ()>(ntex_service::fn_service(|_: Publish| Ready::<_, ()>::Ok(())))
+        }));
+        assert!(format!("{router:?}").contains("v3::Router"));
     }
 }

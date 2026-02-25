@@ -170,6 +170,12 @@ pub struct PublishBuilder {
     packet: codec::Publish,
 }
 
+impl fmt::Debug for PublishBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublishBuilder").field("packet", &self.packet).finish()
+    }
+}
+
 impl PublishBuilder {
     fn new(shared: Rc<MqttShared>, packet: codec::Publish) -> Self {
         Self { shared, packet }
@@ -453,6 +459,12 @@ pub struct PublishReceived {
     shared: Rc<MqttShared>,
 }
 
+impl fmt::Debug for PublishReceived {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublishReceived").field("ack", &self.ack).finish()
+    }
+}
+
 impl PublishReceived {
     fn new(ack: codec::PublishAck, shared: Rc<MqttShared>) -> Self {
         let packet_id = ack.packet_id;
@@ -513,6 +525,15 @@ pub struct SubscribeBuilder {
     id: Option<NonZeroU16>,
     packet: codec::Subscribe,
     shared: Rc<MqttShared>,
+}
+
+impl fmt::Debug for SubscribeBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SubscribeBuilder")
+            .field("id", &self.id)
+            .field("packet", &self.packet)
+            .finish()
+    }
 }
 
 impl SubscribeBuilder {
@@ -599,6 +620,15 @@ pub struct UnsubscribeBuilder {
     shared: Rc<MqttShared>,
 }
 
+impl fmt::Debug for UnsubscribeBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnsubscribeBuilder")
+            .field("id", &self.id)
+            .field("packet", &self.packet)
+            .finish()
+    }
+}
+
 impl UnsubscribeBuilder {
     #[inline]
     #[must_use]
@@ -676,6 +706,12 @@ pub struct StreamingPayload {
     inprocess: Cell<bool>,
 }
 
+impl fmt::Debug for StreamingPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StreamingPayload").finish()
+    }
+}
+
 impl Drop for StreamingPayload {
     fn drop(&mut self) {
         if self.inprocess.get() && self.shared.is_streaming() {
@@ -706,5 +742,39 @@ impl StreamingPayload {
         } else {
             Err(EncodeError::UnexpectedPayload.into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use ntex_io::{Io, testing::IoTest};
+    use ntex_service::cfg::SharedCfg;
+
+    use super::*;
+    use crate::v5::shared::MqttShared;
+
+    #[ntex::test]
+    async fn test_debug() {
+        let io = Io::new(IoTest::create().0, SharedCfg::new("test"));
+        let codec_v5 = codec::Codec::new();
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec_v5, Rc::default()));
+        let sink = MqttSink::new(shared);
+
+        // MqttSink
+        assert!(format!("{sink:?}").contains("MqttSink"));
+
+        // PublishBuilder
+        let pb = sink.publish("test/topic");
+        assert!(format!("{pb:?}").contains("PublishBuilder"));
+
+        // SubscribeBuilder
+        let sb = sink.subscribe(None);
+        assert!(format!("{sb:?}").contains("SubscribeBuilder"));
+
+        // UnsubscribeBuilder
+        let ub = sink.unsubscribe();
+        assert!(format!("{ub:?}").contains("UnsubscribeBuilder"));
     }
 }

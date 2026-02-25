@@ -118,6 +118,16 @@ pub struct HandshakeAck<St> {
     pub(crate) max_send: Option<u16>,
 }
 
+impl<St> fmt::Debug for HandshakeAck<St> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HandshakeAck")
+            .field("packet", &self.packet)
+            .field("keepalive", &self.keepalive)
+            .field("max_send", &self.max_send)
+            .finish()
+    }
+}
+
 impl<St> HandshakeAck<St> {
     #[inline]
     #[must_use]
@@ -155,5 +165,35 @@ impl<St> HandshakeAck<St> {
     pub fn with(mut self, f: impl FnOnce(&mut codec::ConnectAck)) -> Self {
         f(&mut self.packet);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use ntex_io::{Io, IoBoxed, testing::IoTest};
+    use ntex_service::cfg::SharedCfg;
+
+    use super::*;
+    use crate::v5::shared::MqttShared;
+
+    #[ntex::test]
+    async fn test_debug() {
+        let io = Io::new(IoTest::create().0, SharedCfg::new("test"));
+        let codec_v5 = codec::Codec::new();
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec_v5, Rc::default()));
+        let connect = Box::new(codec::Connect::default());
+        let h = Handshake::new(connect, 0, IoBoxed::from(io), shared);
+
+        // Handshake delegates to the Connect packet
+        let dbg = format!("{h:?}");
+        assert!(!dbg.is_empty());
+
+        // HandshakeAck
+        let ack = h.ack(42u32);
+        let dbg = format!("{ack:?}");
+        assert!(dbg.contains("HandshakeAck"));
+        assert!(dbg.contains("keepalive"));
     }
 }

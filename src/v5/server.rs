@@ -27,6 +27,12 @@ pub struct MqttServer<St, C, Cn, M = Identity> {
     _t: PhantomData<St>,
 }
 
+impl<St, C, Cn, M> fmt::Debug for MqttServer<St, C, Cn, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v5::MqttServer").finish()
+    }
+}
+
 impl<St, C> MqttServer<St, C, DefaultControlService<St, C::Error>, InFlightService>
 where
     C: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>>,
@@ -313,5 +319,23 @@ where
             }
             Decoded::PayloadChunk(..) => unreachable!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex_service::fn_factory;
+    use ntex_util::future::Ready;
+
+    use super::*;
+
+    #[test]
+    fn test_debug() {
+        let server = MqttServer::new(fn_factory(|| async {
+            Ok::<_, ()>(ntex_service::fn_service(|h: Handshake| {
+                Ready::<HandshakeAck<()>, ()>::Ok(h.ack(()))
+            }))
+        }));
+        assert!(format!("{server:?}").contains("v5::MqttServer"));
     }
 }

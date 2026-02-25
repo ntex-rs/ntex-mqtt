@@ -17,6 +17,12 @@ pub struct MqttServer<St, C, T, M, Codec> {
     _t: PhantomData<(St, Codec)>,
 }
 
+impl<St, C, T, M, Codec> fmt::Debug for MqttServer<St, C, T, M, Codec> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MqttServer").finish()
+    }
+}
+
 impl<St, C, T, M, Codec> MqttServer<St, C, T, M, Codec> {
     pub(crate) fn new(connect: C, service: T, mw: M) -> Self {
         MqttServer {
@@ -110,6 +116,12 @@ pub struct MqttHandler<St, C, T, M, Codec> {
     middleware: Rc<M>,
     cfg: SharedCfg,
     _t: PhantomData<(St, Codec)>,
+}
+
+impl<St, C, T, M, Codec> fmt::Debug for MqttHandler<St, C, T, M, Codec> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MqttHandler").finish()
+    }
 }
 
 impl<St, C, T, M, Codec> Service<IoBoxed> for MqttHandler<St, C, T, M, Codec>

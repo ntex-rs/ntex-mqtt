@@ -1,4 +1,4 @@
-use std::{cell::RefCell, num::NonZeroU16, rc::Rc, task::Context};
+use std::{cell::RefCell, fmt, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_router::{IntoPattern, Path, RouterBuilder};
@@ -17,6 +17,12 @@ pub struct Router<S, Err> {
     router: RouterBuilder<usize>,
     handlers: Vec<Handler<S, Err>>,
     default: Handler<S, Err>,
+}
+
+impl<S, Err> fmt::Debug for Router<S, Err> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v5::Router").finish()
+    }
 }
 
 impl<S, Err> Router<S, Err>
@@ -91,6 +97,12 @@ pub struct RouterFactory<S, Err> {
     default: Handler<S, Err>,
 }
 
+impl<S, Err> fmt::Debug for RouterFactory<S, Err> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v5::RouterFactory").finish()
+    }
+}
+
 impl<S, Err> ServiceFactory<Publish, Session<S>> for RouterFactory<S, Err>
 where
     S: 'static,
@@ -123,6 +135,12 @@ pub struct RouterService<Err> {
     default: HandlerService<Err>,
     handlers: Vec<HandlerService<Err>>,
     aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>>,
+}
+
+impl<Err> fmt::Debug for RouterService<Err> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v5::RouterService").finish()
+    }
 }
 
 impl<Err: 'static> Service<Publish> for RouterService<Err> {
@@ -172,5 +190,24 @@ impl<Err: 'static> Service<Publish> for RouterService<Err> {
             log::error!("Unknown topic alias: {alias:?}");
         }
         ctx.call(&self.default, req).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex_service::fn_factory;
+    use ntex_util::future::Ready;
+
+    use super::*;
+    use crate::v5::codec::PublishAckReason;
+
+    #[test]
+    fn test_debug() {
+        let router: Router<(), ()> = Router::new(fn_factory(|| async {
+            Ok::<_, ()>(ntex_service::fn_service(|_: Publish| {
+                Ready::<PublishAck, ()>::Ok(PublishAck::new(PublishAckReason::Success))
+            }))
+        }));
+        assert!(format!("{router:?}").contains("v5::Router"));
     }
 }

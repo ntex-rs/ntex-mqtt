@@ -1,5 +1,5 @@
 use ntex_bytes::ByteString;
-use std::{io, marker::PhantomData, num::NonZeroU16, ptr};
+use std::{fmt, io, marker::PhantomData, num::NonZeroU16, ptr};
 
 use crate::{error, types::QoS, v3::codec};
 
@@ -345,6 +345,12 @@ pub struct SubscribeIter<'a> {
     lt: PhantomData<&'a mut Subscribe>,
 }
 
+impl fmt::Debug for SubscribeIter<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SubscribeIter").finish()
+    }
+}
+
 impl<'a> SubscribeIter<'a> {
     fn next_unsafe(&mut self) -> Option<Subscription<'a>> {
         let subs = unsafe { &mut *self.subs };
@@ -509,5 +515,42 @@ impl PeerGone {
     /// Ack control message
     pub fn ack(self) -> ControlAck {
         ControlAck { result: ControlAckKind::Nothing }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU16;
+
+    use ntex_bytes::ByteString;
+
+    use super::*;
+    use crate::types::QoS;
+
+    #[test]
+    fn test_debug() {
+        // SubscribeIter via Subscribe
+        let mut sub = Subscribe::new(
+            NonZeroU16::new(1).unwrap(),
+            0,
+            vec![(ByteString::from_static("a/b"), QoS::AtLeastOnce)],
+        );
+        let iter = sub.iter_mut();
+        assert!(format!("{iter:?}").contains("SubscribeIter"));
+
+        // Unsubscribe
+        let unsub = Unsubscribe::new(
+            NonZeroU16::new(2).unwrap(),
+            0,
+            vec![ByteString::from_static("a/b")],
+        );
+        assert!(format!("{unsub:?}").contains("Unsubscribe"));
+
+        // Ping, Disconnect, WrBackpressure, Shutdown, PeerGone
+        assert!(format!("{Ping:?}").contains("Ping"));
+        assert!(format!("{Disconnect:?}").contains("Disconnect"));
+        assert!(format!("{:?}", WrBackpressure(true)).contains("WrBackpressure"));
+        assert!(format!("{Shutdown:?}").contains("Shutdown"));
+        assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
     }
 }

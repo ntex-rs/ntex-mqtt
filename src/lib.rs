@@ -3,8 +3,8 @@
     rust_2018_idioms,
     warnings,
     unreachable_pub,
-    // missing_debug_implementations,
-    clippy::pedantic,
+    missing_debug_implementations,
+    clippy::pedantic
 )]
 #![allow(
     clippy::cast_possible_truncation,

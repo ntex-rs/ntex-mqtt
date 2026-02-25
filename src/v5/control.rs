@@ -1,4 +1,4 @@
-use std::{io, marker::PhantomData, ptr};
+use std::{fmt, io, marker::PhantomData, ptr};
 
 use ntex_bytes::ByteString;
 
@@ -392,6 +392,12 @@ pub struct SubscribeIter<'a> {
     lt: PhantomData<&'a mut Subscribe>,
 }
 
+impl fmt::Debug for SubscribeIter<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SubscribeIter").finish()
+    }
+}
+
 impl<'a> SubscribeIter<'a> {
     fn next_unsafe(&mut self) -> Option<Subscription<'a>> {
         let subs = unsafe { &mut *self.subs };
@@ -567,6 +573,12 @@ pub struct UnsubscribeIter<'a> {
     subs: *mut Unsubscribe,
     entry: usize,
     lt: PhantomData<&'a mut Unsubscribe>,
+}
+
+impl fmt::Debug for UnsubscribeIter<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnsubscribeIter").finish()
+    }
 }
 
 impl<'a> UnsubscribeIter<'a> {
@@ -835,5 +847,57 @@ impl PeerGone {
     /// Ack `PeerGone` message `CtlFrame`
     pub fn ack(self) -> ControlAck {
         ControlAck { packet: Pkt::None, disconnect: true }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU16;
+
+    use ntex_bytes::ByteString;
+
+    use super::*;
+    use crate::types::QoS;
+
+    #[test]
+    fn test_debug() {
+        // SubscribeIter via Subscribe
+        let mut sub = Subscribe::new(
+            codec::Subscribe {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                id: None,
+                user_properties: Vec::new(),
+                topic_filters: vec![(
+                    ByteString::from_static("a/b"),
+                    codec::SubscriptionOptions {
+                        qos: QoS::AtLeastOnce,
+                        no_local: false,
+                        retain_as_published: false,
+                        retain_handling: codec::RetainHandling::AtSubscribe,
+                    },
+                )],
+            },
+            0,
+        );
+        let iter = sub.iter_mut();
+        assert!(format!("{iter:?}").contains("SubscribeIter"));
+
+        // UnsubscribeIter via Unsubscribe
+        let mut unsub = Unsubscribe::new(
+            codec::Unsubscribe {
+                packet_id: NonZeroU16::new(2).unwrap(),
+                user_properties: Vec::new(),
+                topic_filters: vec![ByteString::from_static("a/b")],
+            },
+            0,
+        );
+        let uiter = unsub.iter_mut();
+        assert!(format!("{uiter:?}").contains("UnsubscribeIter"));
+
+        // Ping, WrBackpressure, Shutdown, PeerGone
+        assert!(format!("{Ping:?}").contains("Ping"));
+        assert!(format!("{:?}", WrBackpressure(false)).contains("WrBackpressure"));
+        assert!(format!("{Shutdown:?}").contains("Shutdown"));
+        assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
     }
 }

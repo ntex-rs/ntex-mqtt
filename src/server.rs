@@ -17,6 +17,12 @@ pub struct MqttServer<V3, V5, Err, InitErr> {
     _t: marker::PhantomData<(Err, InitErr)>,
 }
 
+impl<V3, V5, Err, InitErr> fmt::Debug for MqttServer<V3, V5, Err, InitErr> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MqttServer").finish()
+    }
+}
+
 impl<Err, InitErr>
     MqttServer<
         DefaultProtocolServer<Err, InitErr>,
@@ -250,6 +256,12 @@ pub struct MqttServerImpl<V3, V5, Err> {
     _t: marker::PhantomData<Err>,
 }
 
+impl<V3, V5, Err> fmt::Debug for MqttServerImpl<V3, V5, Err> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MqttServerImpl").finish()
+    }
+}
+
 impl<V3, V5, Err> Service<IoBoxed> for MqttServerImpl<V3, V5, Err>
 where
     V3: Service<IoBoxed, Response = (), Error = MqttError<Err>>,
@@ -360,6 +372,12 @@ pub struct DefaultProtocolServer<Err, InitErr> {
     _t: marker::PhantomData<(Err, InitErr)>,
 }
 
+impl<Err, InitErr> fmt::Debug for DefaultProtocolServer<Err, InitErr> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DefaultProtocolServer").field("ver", &self.ver).finish()
+    }
+}
+
 impl<Err, InitErr> DefaultProtocolServer<Err, InitErr> {
     fn new(ver: ProtocolVersion) -> Self {
         Self { ver, _t: marker::PhantomData }
@@ -389,5 +407,17 @@ impl<Err, InitErr> Service<IoBoxed> for DefaultProtocolServer<Err, InitErr> {
         Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::other(
             format!("Protocol is not supported: {:?}", self.ver),
         )))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debug() {
+        // Use the default constructor which fills in all type params automatically
+        let server = <MqttServer<_, _, (), ()>>::default();
+        assert!(format!("{server:?}").contains("MqttServer"));
     }
 }

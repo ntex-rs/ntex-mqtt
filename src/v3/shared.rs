@@ -1,5 +1,5 @@
 #![allow(clippy::type_complexity)]
-use std::{cell::Cell, cell::RefCell, collections::VecDeque, num, rc::Rc};
+use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, num, rc::Rc};
 
 use ntex_bytes::{Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
@@ -63,6 +63,12 @@ pub struct MqttShared {
     on_publish_ack: Cell<Option<Box<dyn Fn(num::NonZeroU16, bool)>>>,
     pub(super) codec: codec::Codec,
     pub(super) pool: Rc<MqttSinkPool>,
+}
+
+impl fmt::Debug for MqttShared {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MqttShared").finish()
+    }
 }
 
 #[derive(Debug)]
