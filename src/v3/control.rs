@@ -345,7 +345,7 @@ pub struct SubscribeIter<'a> {
     lt: PhantomData<&'a mut Subscribe>,
 }
 
-impl<'a> fmt::Debug for SubscribeIter<'a> {
+impl fmt::Debug for SubscribeIter<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SubscribeIter").finish()
     }

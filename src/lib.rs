@@ -4,7 +4,7 @@
     warnings,
     unreachable_pub,
     missing_debug_implementations,
-    clippy::pedantic,
+    clippy::pedantic
 )]
 #![allow(
     clippy::cast_possible_truncation,
