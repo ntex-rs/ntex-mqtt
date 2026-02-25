@@ -1,3 +1,4 @@
+use std::fmt;
 use std::ops::Deref;
 use std::rc::Rc;
 
@@ -38,5 +39,11 @@ impl<T, St> Deref for Session<T, St> {
     #[inline]
     fn deref(&self) -> &St {
         &self.0.st
+    }
+}
+
+impl<T, St> fmt::Debug for Session<T, St> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Session").finish()
     }
 }

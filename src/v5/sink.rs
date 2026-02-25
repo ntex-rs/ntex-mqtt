@@ -170,6 +170,12 @@ pub struct PublishBuilder {
     packet: codec::Publish,
 }
 
+impl fmt::Debug for PublishBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublishBuilder").field("packet", &self.packet).finish()
+    }
+}
+
 impl PublishBuilder {
     fn new(shared: Rc<MqttShared>, packet: codec::Publish) -> Self {
         Self { shared, packet }
@@ -453,6 +459,12 @@ pub struct PublishReceived {
     shared: Rc<MqttShared>,
 }
 
+impl fmt::Debug for PublishReceived {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublishReceived").field("ack", &self.ack).finish()
+    }
+}
+
 impl PublishReceived {
     fn new(ack: codec::PublishAck, shared: Rc<MqttShared>) -> Self {
         let packet_id = ack.packet_id;
@@ -513,6 +525,15 @@ pub struct SubscribeBuilder {
     id: Option<NonZeroU16>,
     packet: codec::Subscribe,
     shared: Rc<MqttShared>,
+}
+
+impl fmt::Debug for SubscribeBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SubscribeBuilder")
+            .field("id", &self.id)
+            .field("packet", &self.packet)
+            .finish()
+    }
 }
 
 impl SubscribeBuilder {
@@ -599,6 +620,15 @@ pub struct UnsubscribeBuilder {
     shared: Rc<MqttShared>,
 }
 
+impl fmt::Debug for UnsubscribeBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnsubscribeBuilder")
+            .field("id", &self.id)
+            .field("packet", &self.packet)
+            .finish()
+    }
+}
+
 impl UnsubscribeBuilder {
     #[inline]
     #[must_use]
@@ -674,6 +704,12 @@ pub struct StreamingPayload {
     shared: Rc<MqttShared>,
     rx: Cell<Option<pool::Receiver<()>>>,
     inprocess: Cell<bool>,
+}
+
+impl fmt::Debug for StreamingPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StreamingPayload").finish()
+    }
 }
 
 impl Drop for StreamingPayload {

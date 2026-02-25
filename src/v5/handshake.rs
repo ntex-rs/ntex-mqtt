@@ -118,6 +118,16 @@ pub struct HandshakeAck<St> {
     pub(crate) max_send: Option<u16>,
 }
 
+impl<St> fmt::Debug for HandshakeAck<St> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HandshakeAck")
+            .field("packet", &self.packet)
+            .field("keepalive", &self.keepalive)
+            .field("max_send", &self.max_send)
+            .finish()
+    }
+}
+
 impl<St> HandshakeAck<St> {
     #[inline]
     #[must_use]

@@ -138,6 +138,12 @@ pub struct PublishBuilder {
     shared: Rc<MqttShared>,
 }
 
+impl fmt::Debug for PublishBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublishBuilder").field("packet", &self.packet).finish()
+    }
+}
+
 impl PublishBuilder {
     #[inline]
     #[must_use]
@@ -397,6 +403,12 @@ pub struct PublishReceived {
     shared: Rc<MqttShared>,
 }
 
+impl fmt::Debug for PublishReceived {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublishReceived").field("packet_id", &self.packet_id).finish()
+    }
+}
+
 impl PublishReceived {
     /// Release publish
     pub async fn release(mut self) -> Result<(), SendPacketError> {
@@ -419,6 +431,15 @@ pub struct SubscribeBuilder {
     id: Option<NonZeroU16>,
     shared: Rc<MqttShared>,
     topic_filters: Vec<(ByteString, codec::QoS)>,
+}
+
+impl fmt::Debug for SubscribeBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SubscribeBuilder")
+            .field("id", &self.id)
+            .field("topic_filters", &self.topic_filters)
+            .finish()
+    }
 }
 
 impl SubscribeBuilder {
@@ -494,6 +515,15 @@ pub struct UnsubscribeBuilder {
     topic_filters: Vec<ByteString>,
 }
 
+impl fmt::Debug for UnsubscribeBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnsubscribeBuilder")
+            .field("id", &self.id)
+            .field("topic_filters", &self.topic_filters)
+            .finish()
+    }
+}
+
 impl UnsubscribeBuilder {
     #[inline]
     #[must_use]
@@ -564,6 +594,12 @@ pub struct StreamingPayload {
     shared: Rc<MqttShared>,
     rx: Cell<Option<pool::Receiver<()>>>,
     inprocess: Cell<bool>,
+}
+
+impl fmt::Debug for StreamingPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StreamingPayload").finish()
+    }
 }
 
 impl Drop for StreamingPayload {

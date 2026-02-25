@@ -27,6 +27,12 @@ pub struct MqttServer<St, C, Cn, M = Identity> {
     _t: PhantomData<St>,
 }
 
+impl<St, C, Cn, M> fmt::Debug for MqttServer<St, C, Cn, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v5::MqttServer").finish()
+    }
+}
+
 impl<St, C> MqttServer<St, C, DefaultControlService<St, C::Error>, InFlightService>
 where
     C: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>>,

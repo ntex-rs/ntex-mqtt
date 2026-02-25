@@ -146,6 +146,18 @@ pub struct HandshakeAck<St> {
     pub(crate) max_packet_size: Option<NonZeroU32>,
 }
 
+impl<St> fmt::Debug for HandshakeAck<St> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HandshakeAck")
+            .field("session_present", &self.session_present)
+            .field("return_code", &self.return_code)
+            .field("keepalive", &self.keepalive)
+            .field("max_send", &self.max_send)
+            .field("max_packet_size", &self.max_packet_size)
+            .finish()
+    }
+}
+
 impl<St> HandshakeAck<St> {
     #[must_use]
     /// Set idle time-out for the connection in seconds.

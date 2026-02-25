@@ -1,5 +1,5 @@
 use ntex_bytes::ByteString;
-use std::{io, marker::PhantomData, num::NonZeroU16, ptr};
+use std::{fmt, io, marker::PhantomData, num::NonZeroU16, ptr};
 
 use crate::{error, types::QoS, v3::codec};
 
@@ -343,6 +343,12 @@ pub struct SubscribeIter<'a> {
     subs: *mut Subscribe,
     entry: usize,
     lt: PhantomData<&'a mut Subscribe>,
+}
+
+impl<'a> fmt::Debug for SubscribeIter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SubscribeIter").finish()
+    }
 }
 
 impl<'a> SubscribeIter<'a> {

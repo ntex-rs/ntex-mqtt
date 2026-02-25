@@ -1,5 +1,5 @@
 //! Service that limits number of in-flight async requests.
-use std::{cell::Cell, future::poll_fn, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, fmt, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
 use ntex_service::{Service, ServiceCtx};
 use ntex_util::{future::join, task::LocalWaker};
@@ -17,6 +17,12 @@ pub struct InFlightServiceImpl<S> {
     count: Counter,
     service: S,
     publish: Cell<bool>,
+}
+
+impl<S> fmt::Debug for InFlightServiceImpl<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InFlightServiceImpl").finish()
+    }
 }
 
 impl<S> InFlightServiceImpl<S> {

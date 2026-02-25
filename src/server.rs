@@ -17,6 +17,12 @@ pub struct MqttServer<V3, V5, Err, InitErr> {
     _t: marker::PhantomData<(Err, InitErr)>,
 }
 
+impl<V3, V5, Err, InitErr> fmt::Debug for MqttServer<V3, V5, Err, InitErr> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MqttServer").finish()
+    }
+}
+
 impl<Err, InitErr>
     MqttServer<
         DefaultProtocolServer<Err, InitErr>,
@@ -250,6 +256,12 @@ pub struct MqttServerImpl<V3, V5, Err> {
     _t: marker::PhantomData<Err>,
 }
 
+impl<V3, V5, Err> fmt::Debug for MqttServerImpl<V3, V5, Err> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MqttServerImpl").finish()
+    }
+}
+
 impl<V3, V5, Err> Service<IoBoxed> for MqttServerImpl<V3, V5, Err>
 where
     V3: Service<IoBoxed, Response = (), Error = MqttError<Err>>,
@@ -358,6 +370,12 @@ where
 pub struct DefaultProtocolServer<Err, InitErr> {
     ver: ProtocolVersion,
     _t: marker::PhantomData<(Err, InitErr)>,
+}
+
+impl<Err, InitErr> fmt::Debug for DefaultProtocolServer<Err, InitErr> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DefaultProtocolServer").field("ver", &self.ver).finish()
+    }
 }
 
 impl<Err, InitErr> DefaultProtocolServer<Err, InitErr> {

@@ -51,6 +51,12 @@ pub struct MqttServer<St, H, C, M = Identity> {
     _t: PhantomData<St>,
 }
 
+impl<St, H, C, M> fmt::Debug for MqttServer<St, H, C, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("v3::MqttServer").finish()
+    }
+}
+
 impl<St, H> MqttServer<St, H, DefaultControlService<St, H::Error>, InFlightService>
 where
     St: 'static,

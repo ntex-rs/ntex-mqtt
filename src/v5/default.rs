@@ -9,6 +9,7 @@ use super::Session;
 use super::control::{Control, ControlAck, CtlFlow, CtlFrame};
 
 /// Default control service
+#[derive(Debug)]
 pub struct DefaultControlService<S, E>(PhantomData<(S, E)>);
 
 impl<S, E: fmt::Debug> Default for DefaultControlService<S, E> {

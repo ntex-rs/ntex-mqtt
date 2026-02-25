@@ -1,4 +1,4 @@
-use std::{io, marker::PhantomData, ptr};
+use std::{fmt, io, marker::PhantomData, ptr};
 
 use ntex_bytes::ByteString;
 
@@ -392,6 +392,12 @@ pub struct SubscribeIter<'a> {
     lt: PhantomData<&'a mut Subscribe>,
 }
 
+impl<'a> fmt::Debug for SubscribeIter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SubscribeIter").finish()
+    }
+}
+
 impl<'a> SubscribeIter<'a> {
     fn next_unsafe(&mut self) -> Option<Subscription<'a>> {
         let subs = unsafe { &mut *self.subs };
@@ -567,6 +573,12 @@ pub struct UnsubscribeIter<'a> {
     subs: *mut Unsubscribe,
     entry: usize,
     lt: PhantomData<&'a mut Unsubscribe>,
+}
+
+impl<'a> fmt::Debug for UnsubscribeIter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnsubscribeIter").finish()
+    }
 }
 
 impl<'a> UnsubscribeIter<'a> {
