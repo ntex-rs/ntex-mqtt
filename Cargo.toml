@@ -18,13 +18,13 @@ features = ["ntex-net/tokio"]
 ntex-dispatcher = "3"
 ntex-error = "1.2"
 ntex-io = "3.9"
-ntex-net = "3.7"
-ntex-util = "3.4"
-ntex-service = "4.5"
+ntex-net = "3.8"
+ntex-util = "3.5"
+ntex-service = "4.6"
 ntex-bytes = "1.5"
 ntex-codec = "1.1"
 ntex-router = "1"
-ntex-rt = "3.7"
+ntex-rt = "3.10"
 bitflags = "2"
 log = "0.4"
 pin-project-lite = "0.2"
@@ -40,6 +40,3 @@ openssl = "0.10"
 oneshot = "0.1"
 test-case = "3.2"
 ntex = { version = "3.6", features = ["openssl"] }
-
-[patch.crates-io]
-ntex-error = { path = "../ntex/ntex-error" }
