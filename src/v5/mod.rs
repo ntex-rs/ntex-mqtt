@@ -3,6 +3,7 @@
 pub mod client;
 pub mod codec;
 pub mod control;
+
 mod default;
 mod dispatcher;
 mod handshake;
@@ -14,6 +15,7 @@ mod sink;
 
 pub type Session<St> = crate::Session<MqttSink, St>;
 
+use ntex_error::Error;
 use std::num::NonZeroU16;
 
 pub use self::control::{Control, ControlAck, CtlFlow, CtlFrame, CtlReason};
@@ -24,9 +26,8 @@ pub use self::server::MqttServer;
 pub use self::sink::{MqttSink, SubscribeBuilder, UnsubscribeBuilder};
 pub use self::sink::{PublishBuilder, StreamingPayload};
 
-pub use crate::error;
 pub use crate::topic::{TopicFilter, TopicFilterError};
-pub use crate::types::QoS;
+pub use crate::{error, types::QoS};
 
 const RECEIVE_MAX_DEFAULT: NonZeroU16 = NonZeroU16::new(65_535).unwrap();
 
@@ -49,15 +50,15 @@ pub trait ToPublishAck {
     fn into_error(self) -> Self::Error;
 }
 
-impl<E: ToPublishAck + Clone> ToPublishAck for ntex_error::Error<E> {
-    type Error = ntex_error::Error<E::Error>;
+impl<E: ToPublishAck + Clone> ToPublishAck for Error<E> {
+    type Error = Error<E::Error>;
 
     fn try_ack(self) -> Result<PublishAck, Self::Error> {
-        self.try_map(|err| err.try_ack())
+        self.try_map(ToPublishAck::try_ack)
     }
 
     fn into_error(self) -> Self::Error {
-        self.map(|err| err.into_error())
+        self.map(ToPublishAck::into_error)
     }
 }
 
