@@ -1155,15 +1155,15 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
     codec.encode(p, &mut buf).unwrap();
 
     io.write(&buf[..5]).unwrap();
-    buf.split_to(5);
+    buf.advance_to(5);
     sleep(Millis(100)).await;
     io.write(&buf[..10]).unwrap();
-    buf.split_to(10);
+    buf.advance_to(10);
     sleep(Millis(1000)).await;
     assert!(!check.load(Relaxed));
 
     io.write(&buf[..12]).unwrap();
-    buf.split_to(12);
+    buf.advance_to(12);
     sleep(Millis(1000)).await;
     assert!(!check.load(Relaxed));
 

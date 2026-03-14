@@ -16,7 +16,7 @@ use super::default::{DefaultControlService, InFlightService};
 use super::handshake::{Handshake, HandshakeAck};
 use super::publish::{Publish, PublishAck};
 use super::shared::{MqttShared, MqttSinkPool};
-use super::{MqttSink, Session, dispatcher::factory};
+use super::{MqttSink, Session, ToPublishAck, dispatcher::factory};
 
 /// Mqtt Server
 pub struct MqttServer<St, C, Cn, M = Identity> {
@@ -144,11 +144,9 @@ where
     >
     where
         F: IntoServiceFactory<Srv, Publish, Session<St>>,
-        C::Error:
-            From<Cn::Error> + From<Cn::InitError> + From<Srv::Error> + From<Srv::InitError>,
+        C::Error: From<Cn::Error> + From<Cn::InitError> + From<Srv::InitError>,
         Srv: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
-        Srv::Error: fmt::Debug,
-        PublishAck: TryFrom<Srv::Error, Error = C::Error>,
+        Srv::Error: ToPublishAck<Error = C::Error> + fmt::Debug,
     {
         service::MqttServer::new(
             HandshakeFactory { factory: self.handshake, pool: self.pool, _t: PhantomData },

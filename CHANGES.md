@@ -1,5 +1,9 @@
 # Changes
 
+## [7.6.0] - 2026-03-14
+
+* Add support for ntex-error
+
 ## [7.5.0] - 2026-02-23
 
 * Close connection after Receiving Disconnect packet
