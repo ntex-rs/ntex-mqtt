@@ -40,3 +40,38 @@ fn disconnect(msg: &'static str) -> ControlAck {
         disconnect: true,
     }
 }
+
+pub trait ToPublishAck {
+    type Error;
+
+    fn try_ack(self) -> Result<PublishAck, Self::Error>;
+
+    fn into_error(self) -> Self::Error;
+}
+
+impl<E: ToPublishAck + Clone> ToPublishAck for ntex_error::Error<E> {
+    type Error = ntex_error::Error<E::Error>;
+
+    fn try_ack(self) -> Result<PublishAck, Self::Error> {
+        self.try_map(|err| err.try_ack())
+    }
+
+    fn into_error(self) -> Self::Error {
+        self.map(|err| err.into_error())
+    }
+}
+
+impl<E> ToPublishAck for E
+where
+    E: TryInto<PublishAck> + Into<E::Error>,
+{
+    type Error = E::Error;
+
+    fn try_ack(self) -> Result<PublishAck, Self::Error> {
+        self.try_into()
+    }
+
+    fn into_error(self) -> Self::Error {
+        self.into()
+    }
+}

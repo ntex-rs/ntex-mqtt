@@ -15,7 +15,7 @@ use crate::{HandshakeError, MqttError, MqttServiceConfig, types::QoS};
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
 use super::control::{Control, ControlAck, Pkt};
 use super::publish::{Publish, PublishAck};
-use super::{Session, shared::Ack, shared::MqttShared};
+use super::{Session, ToPublishAck, shared::Ack, shared::MqttShared};
 
 /// MQTT 5 protocol dispatcher
 pub(super) fn factory<St, T, C, E>(
@@ -30,10 +30,10 @@ pub(super) fn factory<St, T, C, E>(
 >
 where
     St: 'static,
-    E: From<T::Error> + From<T::InitError> + From<C::Error> + From<C::InitError> + 'static,
+    E: From<T::InitError> + From<C::Error> + From<C::InitError> + 'static,
     T: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
     C: ServiceFactory<Control<E>, Session<St>, Response = ControlAck> + 'static,
-    PublishAck: TryFrom<T::Error, Error = E>,
+    T::Error: ToPublishAck<Error = E>,
 {
     let factories = Rc::new((publish, control));
 
@@ -113,9 +113,8 @@ struct PublishInfo {
 
 impl<T, C, C2, E> Dispatcher<T, C, C2, E>
 where
-    E: From<T::Error>,
     T: Service<Publish, Response = PublishAck>,
-    PublishAck: TryFrom<T::Error, Error = E>,
+    T::Error: ToPublishAck<Error = E>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
     C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
@@ -162,9 +161,9 @@ impl<C, C2> Inner<C, C2> {
 
 impl<T, C, C2, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, C2, E>
 where
-    E: From<T::Error> + 'static,
+    E: 'static,
     T: Service<Publish, Response = PublishAck> + 'static,
-    PublishAck: TryFrom<T::Error, Error = E>,
+    T::Error: ToPublishAck<Error = E>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
     C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
 {
@@ -175,9 +174,9 @@ where
         let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
         let result = if let Err(e) = res1 {
             if res2.is_err() {
-                Err(MqttError::Service(e.into()))
+                Err(MqttError::Service(e.into_error()))
             } else if !self.inner.sink.is_dispatcher_stopped() {
-                match self.inner.control_unbuf.call(Control::error(e.into())).await {
+                match self.inner.control_unbuf.call(Control::error(e.into_error())).await {
                     Ok(res) => {
                         if res.disconnect {
                             self.inner.sink.drop_sink();
@@ -210,7 +209,7 @@ where
         {
             let inner = self.inner.clone();
             ntex_rt::spawn(async move {
-                if let Ok(res) = inner.control_unbuf.call(Control::error(e.into())).await
+                if let Ok(res) = inner.control_unbuf.call(Control::error(e.into_error())).await
                     && res.disconnect
                 {
                     inner.sink.drop_sink();
@@ -663,9 +662,8 @@ async fn publish_fn<'f, T, C, C2, E>(
     ctx: ServiceCtx<'f, Dispatcher<T, C, C2, E>>,
 ) -> Result<Option<Encoded>, MqttError<E>>
 where
-    E: From<T::Error>,
     T: Service<Publish, Response = PublishAck>,
-    PublishAck: TryFrom<T::Error, Error = E>,
+    T::Error: ToPublishAck<Error = E>,
     C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
     C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
 {
@@ -674,12 +672,12 @@ where
         Ok(ack) => ack,
         Err(e) => {
             if packet_id != 0 {
-                match PublishAck::try_from(e) {
+                match e.try_ack() {
                     Ok(ack) => ack,
                     Err(e) => return inner.control(Control::error(e)).await,
                 }
             } else {
-                return inner.control(Control::error(e.into())).await;
+                return inner.control(Control::error(e.into_error())).await;
             }
         }
     };
