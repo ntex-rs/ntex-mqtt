@@ -1,6 +1,6 @@
 # Changes
 
-## [7.7.0] - 2026-03-28
+## [7.6.1] - 2026-03-28
 
 * Fix deadlock in io::dispatcher if disconnect happen during long in-flight
   publish and Disconnect packet.
