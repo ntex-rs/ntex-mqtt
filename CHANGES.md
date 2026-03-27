@@ -1,5 +1,7 @@
 # Changes
 
+* Handle re-send packets with packet-id
+
 ## [7.6.0] - 2026-03-14
 
 * Add support for ntex-error

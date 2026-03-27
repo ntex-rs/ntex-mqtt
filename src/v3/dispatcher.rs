@@ -5,7 +5,7 @@ use ntex_dispatcher::{Control as DispControl, DispatchItem, Reason};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{Pipeline, PipelineSvc, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
-use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
+use ntex_util::{HashMap, future::join, services::inflight::InFlightService};
 
 use crate::error::{DecodeError, HandshakeError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus, PlSender};
@@ -101,7 +101,7 @@ struct Inner<C, C2> {
     control_unbuf: Pipeline<C2>,
     sink: Rc<MqttShared>,
     payload: Cell<Option<PlSender>>,
-    inflight: RefCell<HashSet<NonZeroU16>>,
+    inflight: RefCell<HashMap<NonZeroU16, u8>>,
 }
 
 impl<T, C, C2, E> Dispatcher<T, C, C2, E>
@@ -126,7 +126,7 @@ where
                 control,
                 control_unbuf,
                 payload: Cell::new(None),
-                inflight: RefCell::new(HashSet::default()),
+                inflight: RefCell::new(HashMap::default()),
             }),
             _t: PhantomData,
         }
@@ -232,18 +232,26 @@ where
                 let packet_id = publish.packet_id;
 
                 // check for duplicated packet id
-                if let Some(pid) = packet_id
-                    && !inner.inflight.borrow_mut().insert(pid)
-                {
-                    log::trace!(
-                        "{}: Duplicated packet id for publish packet: {:?}",
-                        self.tag(),
-                        pid
-                    );
-                    return self
-                        .inner
-                        .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Pub))
-                        .await;
+                if let Some(pid) = packet_id {
+                    let mut inflight = inner.inflight.borrow_mut();
+
+                    // publish re-send with same packet-id and dup
+                    if let Some(tp) = inflight.get(&pid) {
+                        if *tp == packet_type::PUBLISH_START && publish.dup {
+                            return Ok(None);
+                        }
+
+                        log::trace!(
+                            "{}: Duplicated packet id for publish packet: {:?}",
+                            self.tag(),
+                            pid
+                        );
+                        return self
+                            .inner
+                            .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Pub))
+                            .await;
+                    }
+                    inflight.insert(pid, packet_type::PUBLISH_START);
                 }
 
                 // check max allowed qos
@@ -319,7 +327,9 @@ where
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishRelease { packet_id }, _)) => {
-                if self.inner.inflight.borrow().contains(&packet_id) {
+                if let Some(tp) = self.inner.inflight.borrow().get(&packet_id)
+                    && *tp == packet_type::PUBLISH_START
+                {
                     self.inner.control(Control::pubrel(packet_id)).await
                 } else {
                     self.inner
@@ -352,7 +362,13 @@ where
                     return self.inner.control(Control::spec(SpecViolation::Subs_4_7_1)).await;
                 }
 
-                if !self.inner.inflight.borrow_mut().insert(packet_id) {
+                let mut inflight = self.inner.inflight.borrow_mut();
+                if let Some(tp) = inflight.get(&packet_id) {
+                    // re-send packet
+                    if *tp == packet_type::SUBSCRIBE {
+                        return Ok(None);
+                    }
+
                     log::trace!(
                         "{}: Duplicated packet id for subscribe packet: {:?}",
                         self.tag(),
@@ -363,6 +379,7 @@ where
                         .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Sub))
                         .await;
                 }
+                inflight.insert(packet_id, packet_type::SUBSCRIBE);
 
                 self.inner
                     .control(Control::subscribe(Subscribe::new(packet_id, size, topic_filters)))
@@ -380,7 +397,13 @@ where
                     return self.inner.control(Control::spec(SpecViolation::Subs_4_7_1)).await;
                 }
 
-                if !self.inner.inflight.borrow_mut().insert(packet_id) {
+                let mut inflight = self.inner.inflight.borrow_mut();
+                if let Some(tp) = inflight.get(&packet_id) {
+                    // re-send packet
+                    if *tp == packet_type::UNSUBSCRIBE {
+                        return Ok(None);
+                    }
+
                     log::trace!(
                         "{}: Duplicated packet id for unsubscribe packet: {:?}",
                         self.tag(),
@@ -391,6 +414,7 @@ where
                         .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Unsub))
                         .await;
                 }
+                inflight.insert(packet_id, packet_type::UNSUBSCRIBE);
 
                 self.inner
                     .control(Control::unsubscribe(Unsubscribe::new(
