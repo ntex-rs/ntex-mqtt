@@ -63,18 +63,12 @@ struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'stat
     response_idx: Cell<usize>,
 }
 
+#[derive(Default)]
 enum ResponseCall<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'static> {
     Call(PipelineCall<S, DispatchItem<U>>),
     Canceled,
+    #[default]
     Empty,
-}
-
-impl<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'static> Default
-    for ResponseCall<S, U>
-{
-    fn default() -> Self {
-        ResponseCall::Empty
-    }
 }
 
 enum ServiceResult<T> {
