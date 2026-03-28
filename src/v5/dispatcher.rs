@@ -6,11 +6,11 @@ use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{self as service, Pipeline, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::services::inflight::InFlightService;
-use ntex_util::{HashMap, HashSet, future::join};
+use ntex_util::{HashMap, future::join};
 
 use crate::error::{DecodeError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus, PlSender};
-use crate::{HandshakeError, MqttError, MqttServiceConfig, types::QoS};
+use crate::{HandshakeError, MqttError, MqttServiceConfig, types::QoS, types::packet_type};
 
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
 use super::control::{Control, ControlAck, Pkt};
@@ -107,7 +107,7 @@ struct Inner<C, C2> {
 }
 
 struct PublishInfo {
-    inflight: HashSet<num::NonZeroU16>,
+    inflight: HashMap<num::NonZeroU16, u8>,
     aliases: HashMap<num::NonZeroU16, ByteString>,
 }
 
@@ -135,7 +135,7 @@ where
                 payload: Cell::new(None),
                 info: RefCell::new(PublishInfo {
                     aliases: HashMap::default(),
-                    inflight: HashSet::default(),
+                    inflight: HashMap::default(),
                 }),
             }),
             _t: marker::PhantomData,
@@ -291,16 +291,20 @@ where
                         }
 
                         // check for duplicated packet id
-                        if !inner.inflight.insert(pid) {
-                            let _ = self.inner.sink.encode_packet(codec::Packet::PublishAck(
-                                codec::PublishAck {
-                                    packet_id: pid,
-                                    reason_code: codec::PublishAckReason::PacketIdentifierInUse,
-                                    ..Default::default()
-                                },
-                            ));
+                        if let Some(tp) = inner.inflight.get(&pid) {
+                            if *tp != packet_type::PUBLISH_START || !publish.dup {
+                                let _ = self.inner.sink.encode_packet(
+                                    codec::Packet::PublishAck(codec::PublishAck {
+                                        packet_id: pid,
+                                        reason_code:
+                                            codec::PublishAckReason::PacketIdentifierInUse,
+                                        ..Default::default()
+                                    }),
+                                );
+                            }
                             return Ok(None);
                         }
+                        inner.inflight.insert(pid, packet_type::PUBLISH_START);
                     }
 
                     // handle topic aliases
@@ -407,7 +411,9 @@ where
                 }
             }
             DispatchItem::Item(Decoded::Packet(Packet::PublishRelease(ack), size)) => {
-                if self.inner.info.borrow().inflight.contains(&ack.packet_id) {
+                if let Some(tp) = self.inner.info.borrow().inflight.get(&ack.packet_id)
+                    && *tp == packet_type::PUBLISH_START
+                {
                     self.inner.control(Control::pubrel(ack, size)).await
                 } else {
                     Ok(Some(Encoded::Packet(codec::Packet::PublishComplete(
@@ -471,22 +477,28 @@ where
                 }
 
                 // register inflight packet id
-                if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
-                    // duplicated packet id
-                    let _ = self.inner.sink.encode_packet(codec::Packet::SubscribeAck(
-                        codec::SubscribeAck {
-                            packet_id: pkt.packet_id,
-                            status: pkt
-                                .topic_filters
-                                .iter()
-                                .map(|_| codec::SubscribeAckReason::PacketIdentifierInUse)
-                                .collect(),
-                            properties: codec::UserProperties::new(),
-                            reason_string: None,
-                        },
-                    ));
+                let mut inner = self.inner.info.borrow_mut();
+                if let Some(tp) = inner.inflight.get(&pkt.packet_id) {
+                    // re-send packet
+                    if *tp != packet_type::SUBSCRIBE {
+                        // duplicated packet id
+                        let _ = self.inner.sink.encode_packet(codec::Packet::SubscribeAck(
+                            codec::SubscribeAck {
+                                packet_id: pkt.packet_id,
+                                status: pkt
+                                    .topic_filters
+                                    .iter()
+                                    .map(|_| codec::SubscribeAckReason::PacketIdentifierInUse)
+                                    .collect(),
+                                properties: codec::UserProperties::new(),
+                                reason_string: None,
+                            },
+                        ));
+                    }
                     return Ok(None);
                 }
+                inner.inflight.insert(pkt.packet_id, packet_type::SUBSCRIBE);
+
                 let id = pkt.packet_id;
                 self.inner.control_pkt(Control::subscribe(pkt, size), id.get()).await
             }
@@ -500,22 +512,27 @@ where
                 }
 
                 // register inflight packet id
-                if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
+                let mut inner = self.inner.info.borrow_mut();
+                if let Some(tp) = inner.inflight.get(&pkt.packet_id) {
                     // duplicated packet id
-                    let _ = self.inner.sink.encode_packet(codec::Packet::UnsubscribeAck(
-                        codec::UnsubscribeAck {
-                            packet_id: pkt.packet_id,
-                            status: pkt
-                                .topic_filters
-                                .iter()
-                                .map(|_| codec::UnsubscribeAckReason::PacketIdentifierInUse)
-                                .collect(),
-                            properties: codec::UserProperties::new(),
-                            reason_string: None,
-                        },
-                    ));
+                    if *tp != packet_type::UNSUBSCRIBE {
+                        let _ = self.inner.sink.encode_packet(codec::Packet::UnsubscribeAck(
+                            codec::UnsubscribeAck {
+                                packet_id: pkt.packet_id,
+                                status: pkt
+                                    .topic_filters
+                                    .iter()
+                                    .map(|_| codec::UnsubscribeAckReason::PacketIdentifierInUse)
+                                    .collect(),
+                                properties: codec::UserProperties::new(),
+                                reason_string: None,
+                            },
+                        ));
+                    }
                     return Ok(None);
                 }
+                inner.inflight.insert(pkt.packet_id, packet_type::UNSUBSCRIBE);
+
                 let id = pkt.packet_id;
                 self.inner.control_pkt(Control::unsubscribe(pkt, size), id.get()).await
             }
