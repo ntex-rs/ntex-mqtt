@@ -240,6 +240,7 @@ where
                         if *tp == packet_type::PUBLISH_START && publish.dup {
                             return Ok(None);
                         }
+                        drop(inlight);
 
                         log::trace!(
                             "{}: Duplicated packet id for publish packet: {:?}",
