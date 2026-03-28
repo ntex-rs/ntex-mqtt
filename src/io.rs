@@ -638,6 +638,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_statements)]
 mod tests {
     use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering};
     use std::{cell::Cell, io};
