@@ -59,8 +59,16 @@ struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'stat
     queue: Queue<S::Response, S::Error>,
     waker: LocalWaker,
     stopping: Condition,
-    response: Cell<Option<PipelineCall<S, DispatchItem<U>>>>,
+    response: Cell<ResponseCall<S, U>>,
     response_idx: Cell<usize>,
+}
+
+#[derive(Default)]
+enum ResponseCall<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'static> {
+    Call(PipelineCall<S, DispatchItem<U>>),
+    Canceled,
+    #[default]
+    Empty,
 }
 
 enum ServiceResult<T> {
@@ -121,7 +129,7 @@ where
             base: Cell::new(0),
             queue: RefCell::new(VecDeque::new()),
             waker: LocalWaker::default(),
-            response: Cell::new(None),
+            response: Cell::new(ResponseCall::Empty),
             response_idx: Cell::new(0),
             stopping: Condition::new(),
         });
@@ -181,15 +189,11 @@ where
 
         if stop {
             self.stopping.notify();
+
             // remove in-place message handler
-            if self.response.take().is_some() {
-                let inplace_idx = self.response_idx.get().wrapping_sub(self.base.get());
-                if inplace_idx == 0 {
-                    let _ = queue.pop_front();
-                    self.base.set(self.base.get().wrapping_add(1));
-                } else {
-                    queue[inplace_idx] = ServiceResult::Ready(Ok(None));
-                }
+            let resp = self.response.take();
+            if matches!(resp, ResponseCall::Call(_) | ResponseCall::Canceled) {
+                self.response.set(ResponseCall::Canceled);
             }
         }
 
@@ -252,24 +256,36 @@ where
         inner.state.waker.register(cx.waker());
 
         // handle service response future
-        if let Some(mut fut) = inner.state.response.take() {
-            if let Poll::Ready(item) = Pin::new(&mut fut).poll(cx) {
-                let stop = if inner.flags.contains(Flags::RESPONSE_STOP) {
-                    inner.flags.remove(Flags::RESPONSE_STOP);
-                    true
+        match inner.state.response.take() {
+            ResponseCall::Call(mut fut) => {
+                if let Poll::Ready(item) = Pin::new(&mut fut).poll(cx) {
+                    let stop = if inner.flags.contains(Flags::RESPONSE_STOP) {
+                        inner.flags.remove(Flags::RESPONSE_STOP);
+                        true
+                    } else {
+                        false
+                    };
+                    inner.state.handle_result(
+                        item,
+                        inner.state.response_idx.get(),
+                        inner.io.as_ref(),
+                        &inner.codec,
+                        stop,
+                    );
                 } else {
-                    false
-                };
+                    inner.state.response.set(ResponseCall::Call(fut));
+                }
+            }
+            ResponseCall::Canceled => {
                 inner.state.handle_result(
-                    item,
+                    Ok(None),
                     inner.state.response_idx.get(),
                     inner.io.as_ref(),
                     &inner.codec,
-                    stop,
+                    true,
                 );
-            } else {
-                inner.state.response.set(Some(fut));
             }
+            ResponseCall::Empty => {}
         }
 
         loop {
@@ -425,9 +441,10 @@ where
         let mut queue = self.state.queue.borrow_mut();
 
         // optimize first call
-        if let Some(resp) = self.state.response.take() {
+        let resp = self.state.response.take();
+        if matches!(resp, ResponseCall::Call(_) | ResponseCall::Canceled) {
             // first call is running
-            self.state.response.set(Some(resp));
+            self.state.response.set(resp);
 
             let response_idx = self.state.base.get().wrapping_add(queue.len());
             queue.push_back(ServiceResult::Pending);
@@ -445,7 +462,7 @@ where
                         state.handle_result(Ok(None), response_idx, &st, &codec, stop)
                     }
                 };
-                if empty_q {
+                if empty_q || stop {
                     st.wake();
                 }
             });
@@ -474,7 +491,7 @@ where
             if stop {
                 self.flags.insert(Flags::RESPONSE_STOP);
             }
-            self.state.response.set(Some(fut));
+            self.state.response.set(ResponseCall::Call(fut));
             self.state.response_idx.set(self.state.base.get().wrapping_add(queue.len()));
             queue.push_back(ServiceResult::Pending);
         }
@@ -621,6 +638,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_statements)]
 mod tests {
     use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering};
     use std::{cell::Cell, io};
@@ -657,7 +675,7 @@ mod tests {
                 waker: LocalWaker::default(),
                 queue: RefCell::new(VecDeque::new()),
                 stopping: Condition::new(),
-                response: Cell::new(None),
+                response: Cell::new(ResponseCall::Empty),
                 response_idx: Cell::new(0),
             });
 
@@ -717,6 +735,50 @@ mod tests {
 
         client.close().await;
         assert!(client.is_server_dropped());
+    }
+
+    #[ntex::test]
+    async fn test_drop_connection() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+        client.write("test");
+
+        #[derive(Clone)]
+        struct OnDrop(Rc<Cell<bool>>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                if Rc::strong_count(&self.0) == 2 {
+                    self.0.set(true);
+                }
+            }
+        }
+        let ops = Rc::new(Cell::new(false));
+        let on_drop = OnDrop(ops.clone());
+
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG")),
+            BytesCodec,
+            ntex_service::fn_service(async move |msg: DispatchItem<BytesCodec>| {
+                let _on_drop = on_drop.clone();
+                if let DispatchItem::Item(msg) = msg {
+                    if msg == "test" {
+                        sleep(Millis(500)).await;
+                    }
+                    Ok::<_, ()>(Some(msg))
+                } else {
+                    Ok::<_, ()>(None)
+                }
+            }),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+        sleep(Millis(25)).await;
+        client.write("pl1");
+        client.close().await;
+        assert!(client.is_server_dropped());
+        // service dropped?
+        assert!(ops.get());
     }
 
     #[ntex::test]
