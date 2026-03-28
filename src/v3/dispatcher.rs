@@ -214,7 +214,7 @@ where
         self.inner.control.shutdown().await;
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::await_holding_refcell_ref)]
     async fn call(
         &self,
         req: DispatchItem<Rc<MqttShared>>,
@@ -362,24 +362,27 @@ where
                     return self.inner.control(Control::spec(SpecViolation::Subs_4_7_1)).await;
                 }
 
-                let mut inflight = self.inner.inflight.borrow_mut();
-                if let Some(tp) = inflight.get(&packet_id) {
-                    // re-send packet
-                    if *tp == packet_type::SUBSCRIBE {
-                        return Ok(None);
-                    }
+                {
+                    let mut inflight = self.inner.inflight.borrow_mut();
+                    if let Some(tp) = inflight.get(&packet_id) {
+                        // re-send packet
+                        if *tp == packet_type::SUBSCRIBE {
+                            return Ok(None);
+                        }
+                        drop(inflight);
 
-                    log::trace!(
-                        "{}: Duplicated packet id for subscribe packet: {:?}",
-                        self.tag(),
-                        packet_id
-                    );
-                    return self
-                        .inner
-                        .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Sub))
-                        .await;
+                        log::trace!(
+                            "{}: Duplicated packet id for subscribe packet: {:?}",
+                            self.tag(),
+                            packet_id
+                        );
+                        return self
+                            .inner
+                            .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Sub))
+                            .await;
+                    }
+                    inflight.insert(packet_id, packet_type::SUBSCRIBE);
                 }
-                inflight.insert(packet_id, packet_type::SUBSCRIBE);
 
                 self.inner
                     .control(Control::subscribe(Subscribe::new(packet_id, size, topic_filters)))
@@ -397,24 +400,27 @@ where
                     return self.inner.control(Control::spec(SpecViolation::Subs_4_7_1)).await;
                 }
 
-                let mut inflight = self.inner.inflight.borrow_mut();
-                if let Some(tp) = inflight.get(&packet_id) {
-                    // re-send packet
-                    if *tp == packet_type::UNSUBSCRIBE {
-                        return Ok(None);
-                    }
+                {
+                    let mut inflight = self.inner.inflight.borrow_mut();
+                    if let Some(tp) = inflight.get(&packet_id) {
+                        // re-send packet
+                        if *tp == packet_type::UNSUBSCRIBE {
+                            return Ok(None);
+                        }
 
-                    log::trace!(
-                        "{}: Duplicated packet id for unsubscribe packet: {:?}",
-                        self.tag(),
-                        packet_id
-                    );
-                    return self
-                        .inner
-                        .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Unsub))
-                        .await;
+                        log::trace!(
+                            "{}: Duplicated packet id for unsubscribe packet: {:?}",
+                            self.tag(),
+                            packet_id
+                        );
+                        drop(inflight);
+                        return self
+                            .inner
+                            .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Unsub))
+                            .await;
+                    }
+                    inflight.insert(packet_id, packet_type::UNSUBSCRIBE);
                 }
-                inflight.insert(packet_id, packet_type::UNSUBSCRIBE);
 
                 self.inner
                     .control(Control::unsubscribe(Unsubscribe::new(
