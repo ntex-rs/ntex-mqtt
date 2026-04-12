@@ -1,5 +1,9 @@
 # Changes
 
+## [8.0.0] - 2026-04-xx
+
+* v5: MqttSink::close_with_no_reason() propery close io
+
 ## [7.6.1] - 2026-03-28
 
 * Fix deadlock in io::dispatcher if disconnect happen during long in-flight

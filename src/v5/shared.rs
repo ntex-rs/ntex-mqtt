@@ -151,10 +151,10 @@ impl MqttShared {
     }
 
     pub(super) fn close(&self, pkt: Option<codec::Disconnect>) {
-        if let Some(pkt) = pkt
-            && !self.is_closed()
-        {
-            if !self.is_disconnect_sent() {
+        if !self.is_closed() {
+            if let Some(pkt) = pkt
+                && !self.is_disconnect_sent()
+            {
                 let _ = self.io.encode(Encoded::Packet(Packet::Disconnect(pkt)), &self.codec);
             }
             self.io.close();
