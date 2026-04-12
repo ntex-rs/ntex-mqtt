@@ -1698,7 +1698,7 @@ impl Drop for SetOnDrop {
 }
 
 #[ntex::test]
-async fn test_publish_sink_disconenct() -> std::io::Result<()> {
+async fn test_publish_sink_disconnect() -> std::io::Result<()> {
     let val = Arc::new(AtomicBool::new(false));
     let val2 = val.clone();
     let (tx, rx) = ::oneshot::channel();
@@ -1991,6 +1991,53 @@ async fn protocol_error_session_expiry() -> std::io::Result<()> {
 
     let result = io.recv(&codec).await.unwrap();
     assert_eq!(result, None);
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_sink_close_with_no_reason() -> std::io::Result<()> {
+    let val = Arc::new(AtomicBool::new(false));
+    let val2 = val.clone();
+    let (tx, rx) = ::oneshot::channel();
+    let tx = Arc::new(Mutex::new(Some(tx)));
+
+    let srv = server::test_server(async move || {
+        let tx = tx.clone();
+        let val = val2.clone();
+        MqttServer::new(handshake).publish(fn_factory_with_config(
+            async move |session: Session<St>| {
+                let tx = tx.clone();
+                let val = val.clone();
+                let sink = session.sink().clone();
+
+                Ok::<_, ()>(fn_service(async move |p: Publish| {
+                    let _st = SetOnDrop(val.clone(), tx.lock().unwrap().take());
+                    sink.close_with_no_reason();
+                    sleep(Seconds(999)).await;
+                    Ok::<_, TestError>(p.ack())
+                }))
+            },
+        ))
+    });
+
+    // connect to server
+    let client = client::MqttConnector::new()
+        .pipeline(SharedCfg::new("client").into())
+        .await
+        .unwrap()
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap();
+
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    let _ =
+        sink.publish(ByteString::from_static("test1")).send_at_least_once(Bytes::new()).await;
+
+    let _ = rx.await;
+    assert!(val.load(Relaxed));
 
     Ok(())
 }
