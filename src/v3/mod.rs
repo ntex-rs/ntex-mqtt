@@ -1,6 +1,6 @@
 //! MQTT 3.1.1 Client/Server framework
 
-// pub mod client;
+pub mod client;
 pub mod codec;
 pub mod control;
 mod default;

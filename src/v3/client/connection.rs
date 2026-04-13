@@ -7,10 +7,10 @@ use ntex_service::{IntoService, Pipeline, Service, boxed, fn_service};
 use ntex_util::future::{Either, Ready};
 use ntex_util::time::{Millis, Seconds, sleep};
 
-use crate::v3::{ControlAck, Publish, codec, shared::MqttShared, sink::MqttSink};
+use crate::v3::{ProtocolMessageAck, Publish, codec, shared::MqttShared, sink::MqttSink};
 use crate::{error::MqttError, io::Dispatcher};
 
-use super::{control::Control, dispatcher::create_dispatcher};
+use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
 
 /// Mqtt client
 pub struct Client {
@@ -96,7 +96,9 @@ impl Client {
             self.max_receive,
             self.max_buffer_size,
             fn_service(|pkt| Ready::Ok(Either::Right(pkt))),
-            fn_service(|_: Control<()>| Ready::<_, ()>::Ok(Control::<()>::disconnect())),
+            fn_service(|_: ProtocolMessage| {
+                Ready::<_, ()>::Ok(Some(ProtocolMessage::disconnect()))
+            }),
         );
 
         let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher).await;
@@ -106,8 +108,8 @@ impl Client {
     pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
     where
         E: 'static,
-        F: IntoService<S, Control<E>> + 'static,
-        S: Service<Control<E>, Response = ControlAck, Error = E> + 'static,
+        F: IntoService<S, ProtocolMessage> + 'static,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =
@@ -184,7 +186,7 @@ where
             self.max_receive,
             self.max_buffer_size,
             dispatch(self.builder.finish(), self.handlers),
-            fn_service(|_: Control<Err>| Ready::<_, Err>::Ok(Control::<Err>::disconnect())),
+            fn_service(|_: ProtocolMessage| Ready::<_, Err>::Ok(ProtocolMessage::disconnect())),
         );
 
         let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher).await;
@@ -193,8 +195,8 @@ where
     /// Run client and handle control messages
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
-        F: IntoService<S, Control<Err>>,
-        S: Service<Control<Err>, Response = ControlAck, Error = Err> + 'static,
+        F: IntoService<S, ProtocolMessage>,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err> + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =
