@@ -6,7 +6,7 @@ use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
 use crate::{MqttServiceConfig, inflight::InFlightServiceImpl};
 
 use super::Session;
-use super::control::{Control, ControlAck, CtlFlow, CtlFrame};
+use super::control::{ProtocolMessage, ProtocolMessageAck};
 
 /// Default control service
 #[derive(Debug)]
@@ -18,8 +18,10 @@ impl<S, E: fmt::Debug> Default for DefaultControlService<S, E> {
     }
 }
 
-impl<S, E: fmt::Debug> ServiceFactory<Control<E>, Session<S>> for DefaultControlService<S, E> {
-    type Response = ControlAck;
+impl<S, E: fmt::Debug> ServiceFactory<ProtocolMessage, Session<S>>
+    for DefaultControlService<S, E>
+{
+    type Response = ProtocolMessageAck;
     type Error = E;
     type InitError = E;
     type Service = DefaultControlService<S, E>;
@@ -29,18 +31,18 @@ impl<S, E: fmt::Debug> ServiceFactory<Control<E>, Session<S>> for DefaultControl
     }
 }
 
-impl<S, E: fmt::Debug> Service<Control<E>> for DefaultControlService<S, E> {
-    type Response = ControlAck;
+impl<S, E: fmt::Debug> Service<ProtocolMessage> for DefaultControlService<S, E> {
+    type Response = ProtocolMessageAck;
     type Error = E;
 
     async fn call(
         &self,
-        pkt: Control<E>,
+        pkt: ProtocolMessage,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         match pkt {
-            Control::Flow(CtlFlow::Ping(pkt)) => Ok(pkt.ack()),
-            Control::Protocol(CtlFrame::Disconnect(pkt)) => Ok(pkt.ack()),
+            ProtocolMessage::Ping(pkt) => Ok(pkt.ack()),
+            ProtocolMessage::Disconnect(pkt) => Ok(pkt.ack()),
             _ => {
                 log::warn!("MQTT5 Control service is not configured, pkt: {pkt:?}");
                 Ok(pkt.disconnect_with(super::codec::Disconnect::new(

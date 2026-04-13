@@ -36,6 +36,23 @@ pub enum HandshakeError<E> {
     Disconnected(Option<io::Error>),
 }
 
+/// Errors related to protocol dispatcher
+#[derive(Debug, thiserror::Error)]
+pub enum DispatcherError<E> {
+    /// Publish handler service error
+    #[error("Service error")]
+    Service(E),
+    /// Protocol violations error
+    #[error("Protocol violations error: {}", _0)]
+    Protocol(#[from] ProtocolError),
+}
+
+impl<E> From<SpecViolation> for DispatcherError<E> {
+    fn from(spec: SpecViolation) -> Self {
+        DispatcherError::Protocol(ProtocolError::spec(spec))
+    }
+}
+
 /// Errors related to payload processing
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PayloadError {

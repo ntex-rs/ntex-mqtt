@@ -3,26 +3,32 @@ use std::task::{Context, Poll, ready};
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc};
 
 use ntex_codec::{Decoder, Encoder};
-use ntex_dispatcher::{Control, DispatchItem, Reason};
 use ntex_io::{Decoded, IoBoxed, IoRef, IoStatusUpdate, RecvError};
-use ntex_service::{IntoService, Pipeline, PipelineBinding, PipelineCall, Service};
+use ntex_service::{Pipeline, PipelineBinding, PipelineCall, Service};
 use ntex_util::channel::condition::Condition;
 use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
 
+use crate::control::Control;
+use crate::error::{DecodeError, DispatcherError, EncodeError, ProtocolError};
+
+type Request<U> = <U as Decoder>::Item;
 type Response<U> = <U as Encoder>::Item;
 type Queue<T, E> = RefCell<VecDeque<ServiceResult<Result<T, E>>>>;
 
 pin_project_lite::pin_project! {
     /// Dispatcher for mqtt protocol
-    pub(crate) struct Dispatcher<S, U>
+    pub(crate) struct Dispatcher<P, C, U, E>
     where
-        S: Service<DispatchItem<U>, Response = Option<Response<U>>>,
-        S: 'static,
+        P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>,
+        P: 'static,
+        C: Service<Control<E>, Response = Option<Response<U>>>,
+        C: 'static,
         U: Encoder,
         U: Decoder,
         U: 'static,
+        E: 'static
     {
-        inner: DispatcherInner<S, U>
+        inner: DispatcherInner<P, C, U, E>
     }
 }
 
@@ -36,39 +42,41 @@ bitflags::bitflags! {
         const READ_TIMEOUT  = 0b0001_0000;
         const READY         = 0b0010_0000;
         const READY_TASK    = 0b0100_0000;
-        const RESPONSE_STOP = 0b1000_0000;
     }
 }
 
-struct DispatcherInner<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'static> {
+struct DispatcherInner<P, C, U, E>
+where
+    P: Service<Request<U>>,
+    C: Service<Control<E>>,
+    U: Encoder + Decoder + 'static,
+    E: 'static,
+{
     io: IoBoxed,
     flags: Flags,
     codec: U,
-    service: PipelineBinding<S, DispatchItem<U>>,
-    st: IoDispatcherState,
-    state: Rc<DispatcherState<S, U>>,
+    service: PipelineBinding<P, Request<U>>,
+    control: PipelineBinding<C, Control<E>>,
+    st: IoDispatcherState<C, E>,
+    state: Rc<DispatcherState<P, U>>,
+    stopping: Condition,
     read_remains: u32,
     read_remains_prev: u32,
     read_max_timeout: Seconds,
     keepalive_timeout: Seconds,
 }
 
-struct DispatcherState<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'static> {
-    error: Cell<Option<IoDispatcherError<S::Error, <U as Encoder>::Error>>>,
+struct DispatcherState<P, U>
+where
+    P: Service<Request<U>>,
+    U: Encoder + Decoder + 'static,
+{
+    error: Cell<Option<IoDispatcherError<P::Error>>>,
     base: Cell<usize>,
-    queue: Queue<S::Response, S::Error>,
+    queue: Queue<P::Response, P::Error>,
     waker: LocalWaker,
-    stopping: Condition,
-    response: Cell<ResponseCall<S, U>>,
+    response: Cell<Option<PipelineCall<P, Request<U>>>>,
     response_idx: Cell<usize>,
-}
-
-#[derive(Default)]
-enum ResponseCall<S: Service<DispatchItem<U>>, U: Encoder + Decoder + 'static> {
-    Call(PipelineCall<S, DispatchItem<U>>),
-    Canceled,
-    #[default]
-    Empty,
 }
 
 enum ServiceResult<T> {
@@ -86,52 +94,44 @@ impl<T> ServiceResult<T> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-enum IoDispatcherState {
+#[derive(Debug)]
+enum IoDispatcherState<C: Service<Control<E>>, E: 'static> {
     Processing,
     Backpressure,
-    Stop,
-    Shutdown,
+    Stop(Option<PipelineCall<C, Control<E>>>),
+    Shutdown(Option<Result<(), C::Error>>),
+    ShutdownIo(Option<Result<(), C::Error>>),
 }
 
-pub(crate) enum IoDispatcherError<S, U> {
-    Encoder(U),
+pub(crate) enum IoDispatcherError<S> {
+    Encoder(EncodeError),
     Service(S),
 }
 
-enum PollService<U: Encoder + Decoder> {
-    Item(DispatchItem<U>),
-    ItemWait(DispatchItem<U>),
+enum PollService<U: Decoder> {
+    Item(U::Item),
     Continue,
     Ready,
 }
 
-impl<S, U> From<S> for IoDispatcherError<S, U> {
-    fn from(err: S) -> Self {
-        IoDispatcherError::Service(err)
-    }
-}
-
-impl<S, U> Dispatcher<S, U>
+impl<P, C, U, E> Dispatcher<P, C, U, E>
 where
-    S: Service<DispatchItem<U>, Response = Option<Response<U>>> + 'static,
-    U: Decoder + Encoder + Clone + 'static,
+    P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>
+        + 'static,
+    C: Service<Control<E>, Response = Option<Response<U>>> + 'static,
+    U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
     <U as Encoder>::Item: 'static,
+    E: 'static,
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
-    pub(crate) fn new<F: IntoService<S, DispatchItem<U>>>(
-        io: IoBoxed,
-        codec: U,
-        service: F,
-    ) -> Self {
+    pub(crate) fn new(io: IoBoxed, codec: U, service: P, control: C) -> Self {
         let state = Rc::new(DispatcherState {
             error: Cell::new(None),
             base: Cell::new(0),
             queue: RefCell::new(VecDeque::new()),
             waker: LocalWaker::default(),
-            response: Cell::new(ResponseCall::Empty),
+            response: Cell::new(None),
             response_idx: Cell::new(0),
-            stopping: Condition::new(),
         });
         let keepalive_timeout = io.cfg().keepalive_timeout();
 
@@ -146,8 +146,10 @@ where
                 } else {
                     Flags::empty()
                 },
-                service: Pipeline::new(service.into_service()).bind(),
+                service: Pipeline::new(service).bind(),
+                control: Pipeline::new(control).bind(),
                 st: IoDispatcherState::Processing,
+                stopping: Condition::new(),
                 read_remains: 0,
                 read_remains_prev: 0,
                 read_max_timeout: Seconds::ZERO,
@@ -171,32 +173,20 @@ where
     }
 }
 
-impl<S, U> DispatcherState<S, U>
+impl<P, U> DispatcherState<P, U>
 where
-    S: Service<DispatchItem<U>, Response = Option<Response<U>>> + 'static,
-    U: Encoder + Decoder,
+    P: Service<Request<U>, Response = Option<Response<U>>> + 'static,
+    U: Encoder<Error = EncodeError> + Decoder<Error = DecodeError>,
     <U as Encoder>::Item: 'static,
 {
     fn handle_result(
         &self,
-        item: Result<S::Response, S::Error>,
+        item: Result<P::Response, P::Error>,
         response_idx: usize,
         io: &IoRef,
         codec: &U,
-        stop: bool,
     ) -> bool {
         let mut queue = self.queue.borrow_mut();
-
-        if stop {
-            self.stopping.notify();
-
-            // remove in-place message handler
-            let resp = self.response.take();
-            if matches!(resp, ResponseCall::Call(_) | ResponseCall::Canceled) {
-                self.response.set(ResponseCall::Canceled);
-            }
-        }
-
         let idx = response_idx.wrapping_sub(self.base.get());
 
         // handle first response
@@ -205,7 +195,7 @@ where
             self.base.set(self.base.get().wrapping_add(1));
             match item {
                 Err(err) => {
-                    self.error.set(Some(err.into()));
+                    self.error.set(Some(IoDispatcherError::Service(err)));
                 }
                 Ok(Some(item)) => {
                     if let Err(err) = io.encode(item, codec) {
@@ -221,7 +211,7 @@ where
                 self.base.set(self.base.get().wrapping_add(1));
                 match item {
                     Err(err) => {
-                        self.error.set(Some(err.into()));
+                        self.error.set(Some(IoDispatcherError::Service(err)));
                     }
                     Ok(Some(item)) => {
                         if let Err(err) = io.encode(item, codec) {
@@ -240,127 +230,95 @@ where
     }
 }
 
-impl<S, U> Future for Dispatcher<S, U>
+impl<P, C, U, E> Future for Dispatcher<P, C, U, E>
 where
-    S: Service<DispatchItem<U>, Response = Option<Response<U>>> + 'static,
-    U: Decoder + Encoder + Clone + 'static,
+    P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>
+        + 'static,
+    C: Service<Control<E>, Response = Option<Response<U>>> + 'static,
+    U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
     <U as Encoder>::Item: 'static,
+    E: 'static,
 {
-    type Output = Result<(), S::Error>;
+    type Output = Result<(), C::Error>;
 
     #[allow(clippy::too_many_lines)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().project();
         let inner = this.inner;
-
         inner.state.waker.register(cx.waker());
 
         // handle service response future
-        match inner.state.response.take() {
-            ResponseCall::Call(mut fut) => {
-                if let Poll::Ready(item) = Pin::new(&mut fut).poll(cx) {
-                    let stop = if inner.flags.contains(Flags::RESPONSE_STOP) {
-                        inner.flags.remove(Flags::RESPONSE_STOP);
-                        true
-                    } else {
-                        false
-                    };
-                    inner.state.handle_result(
-                        item,
-                        inner.state.response_idx.get(),
-                        inner.io.as_ref(),
-                        &inner.codec,
-                        stop,
-                    );
-                } else {
-                    inner.state.response.set(ResponseCall::Call(fut));
-                }
-            }
-            ResponseCall::Canceled => {
+        if let Some(mut fut) = inner.state.response.take() {
+            if let Poll::Ready(item) = Pin::new(&mut fut).poll(cx) {
                 inner.state.handle_result(
-                    Ok(None),
+                    item,
                     inner.state.response_idx.get(),
                     inner.io.as_ref(),
                     &inner.codec,
-                    true,
                 );
+            } else {
+                inner.state.response.set(Some(fut));
             }
-            ResponseCall::Empty => {}
         }
 
         loop {
             match inner.st {
                 IoDispatcherState::Processing => {
-                    let (item, nowait, stop) = match ready!(inner.poll_service(cx)) {
+                    match ready!(inner.poll_service(cx)) {
                         PollService::Ready => {
                             // decode incoming bytes stream
                             match inner.io.poll_recv_decode(&inner.codec, cx) {
                                 Ok(decoded) => {
                                     inner.update_timer(&decoded);
                                     if let Some(el) = decoded.item {
-                                        (DispatchItem::Item(el), true, false)
+                                        inner.call_service(cx, el, true);
                                     } else {
                                         return Poll::Pending;
                                     }
                                 }
                                 Err(RecvError::KeepAlive) => {
                                     if let Err(err) = inner.handle_timeout() {
-                                        inner.stop();
-                                        (DispatchItem::Stop(err), true, true)
-                                    } else {
-                                        continue;
+                                        inner.stop(inner.control.call(Control::proto(err)));
                                     }
                                 }
                                 Err(RecvError::WriteBackpressure) => {
                                     inner.st = IoDispatcherState::Backpressure;
-                                    (
-                                        DispatchItem::Control(Control::WBackPressureEnabled),
-                                        true,
-                                        false,
-                                    )
+                                    spawn(inner.control.call(Control::wr(true)));
                                 }
                                 Err(RecvError::Decoder(err)) => {
-                                    inner.stop();
-                                    (DispatchItem::Stop(Reason::Decoder(err)), true, true)
+                                    inner.stop(
+                                        inner
+                                            .control
+                                            .call(Control::proto(ProtocolError::Decode(err))),
+                                    );
                                 }
                                 Err(RecvError::PeerGone(err)) => {
-                                    inner.stop();
-                                    (DispatchItem::Stop(Reason::Io(err)), true, true)
+                                    inner.stop(inner.control.call(Control::peer_gone(err)))
                                 }
                             }
                         }
-                        PollService::Item(item) => (item, true, false),
-                        PollService::ItemWait(item) => (item, false, false),
+                        PollService::Item(item) => inner.call_service(cx, item, true),
                         PollService::Continue => continue,
-                    };
-
-                    inner.call_service(cx, item, nowait, stop);
+                    }
                 }
                 // handle write back-pressure
                 IoDispatcherState::Backpressure => {
                     match ready!(inner.poll_service(cx)) {
                         PollService::Ready => (),
-                        PollService::Item(item) => inner.call_service(cx, item, true, false),
-                        PollService::ItemWait(item) => {
-                            inner.call_service(cx, item, false, false);
-                        }
+                        PollService::Item(item) => inner.call_service(cx, item, true),
                         PollService::Continue => continue,
                     }
 
-                    let item = if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
-                        inner.stop();
-                        DispatchItem::Stop(Reason::Io(Some(err)))
+                    if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
+                        inner.stop(inner.control.call(Control::peer_gone(Some(err))));
                     } else {
                         inner.st = IoDispatcherState::Processing;
-                        DispatchItem::Control(Control::WBackPressureDisabled)
-                    };
-                    inner.call_service(cx, item, false, false);
+                        spawn(inner.control.call(Control::wr(false)));
+                    }
                 }
 
                 // drain service responses and shutdown io
-                IoDispatcherState::Stop => {
-                    inner.io.stop_timer();
-
+                IoDispatcherState::Stop(ref mut stop) => {
                     // service may relay on poll_ready for response results
                     if !inner.flags.contains(Flags::READY_ERR)
                         && let Poll::Ready(res) = inner.service.poll_ready(cx)
@@ -369,46 +327,42 @@ where
                         inner.flags.insert(Flags::READY_ERR);
                     }
 
-                    if inner.state.queue.borrow().is_empty() {
-                        if inner.io.poll_shutdown(cx).is_ready() {
-                            log::trace!("{}: io shutdown completed", inner.io.tag());
-                            inner.st = IoDispatcherState::Shutdown;
-                            continue;
-                        }
-                    } else if !inner.flags.contains(Flags::IO_ERR) {
-                        match ready!(inner.io.poll_status_update(cx)) {
-                            IoStatusUpdate::PeerGone(_) | IoStatusUpdate::KeepAlive => {
-                                inner.flags.insert(Flags::IO_ERR);
-                                continue;
+                    let mut fut = stop.take().unwrap();
+                    match Pin::new(&mut fut).poll(cx) {
+                        Poll::Ready(Ok(item)) => {
+                            if let Some(item) = item {
+                                inner.io.encode(item, &inner.codec);
                             }
-                            IoStatusUpdate::WriteBackpressure => {
-                                if ready!(inner.io.poll_flush(cx, true)).is_err() {
-                                    inner.flags.insert(Flags::IO_ERR);
-                                }
-                                continue;
-                            }
+                            inner.st = IoDispatcherState::Shutdown(Some(Ok(())));
                         }
-                    } else {
-                        inner.io.poll_dispatch(cx);
+                        Poll::Ready(Err(err)) => {
+                            inner.st = IoDispatcherState::Shutdown(Some(Err(err)));
+                        }
+                        Poll::Pending => {
+                            *stop = Some(fut);
+                            return Poll::Pending;
+                        }
                     }
-                    return Poll::Pending;
                 }
                 // shutdown service
-                IoDispatcherState::Shutdown => {
-                    return if inner.service.poll_shutdown(cx).is_ready() {
+                IoDispatcherState::Shutdown(ref mut res) => {
+                    if inner.service.poll_shutdown(cx).is_ready() {
                         log::trace!("{}: Service shutdown is completed, stop", inner.io.tag());
-
-                        Poll::Ready(
-                            if let Some(IoDispatcherError::Service(err)) =
-                                inner.state.error.take()
-                            {
-                                Err(err)
-                            } else {
-                                Ok(())
-                            },
-                        )
+                        inner.st = IoDispatcherState::ShutdownIo(res.take());
                     } else {
+                        return Poll::Pending;
+                    }
+                }
+
+                IoDispatcherState::ShutdownIo(ref mut res) => {
+                    return if !inner.flags.contains(Flags::IO_ERR) {
+                        if inner.io.poll_shutdown(cx).is_ready() {
+                            log::trace!("{}: io shutdown completed", inner.io.tag());
+                            continue;
+                        }
                         Poll::Pending
+                    } else {
+                        Poll::Ready(res.take().unwrap_or(Ok(())))
                     };
                 }
             }
@@ -416,23 +370,22 @@ where
     }
 }
 
-impl<S, U> DispatcherInner<S, U>
+impl<P, C, U, E> DispatcherInner<P, C, U, E>
 where
-    S: Service<DispatchItem<U>, Response = Option<Response<U>>> + 'static,
-    U: Decoder + Encoder + Clone + 'static,
+    P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>
+        + 'static,
+    C: Service<Control<E>, Response = Option<Response<U>>> + 'static,
+    U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
     <U as Encoder>::Item: 'static,
+    E: 'static,
 {
-    fn stop(&mut self) {
-        self.st = IoDispatcherState::Stop;
+    fn stop(&mut self, fut: PipelineCall<C, Control<E>>) {
+        self.io.stop_timer();
+        self.stopping.notify();
+        self.st = IoDispatcherState::Stop(Some(fut));
     }
 
-    fn call_service(
-        &mut self,
-        cx: &mut Context<'_>,
-        item: DispatchItem<U>,
-        nowait: bool,
-        stop: bool,
-    ) {
+    fn call_service(&mut self, cx: &mut Context<'_>, item: Request<U>, nowait: bool) {
         let mut fut = if nowait {
             self.service.call_nowait(item)
         } else {
@@ -441,10 +394,9 @@ where
         let mut queue = self.state.queue.borrow_mut();
 
         // optimize first call
-        let resp = self.state.response.take();
-        if matches!(resp, ResponseCall::Call(_) | ResponseCall::Canceled) {
+        if let Some(resp) = self.state.response.take() {
             // first call is running
-            self.state.response.set(resp);
+            self.state.response.set(Some(resp));
 
             let response_idx = self.state.base.get().wrapping_add(queue.len());
             queue.push_back(ServiceResult::Pending);
@@ -452,17 +404,16 @@ where
             let st = self.io.get_ref();
             let codec = self.codec.clone();
             let state = self.state.clone();
+            let stopping = self.stopping.wait();
 
             spawn(async move {
-                let empty_q = match select(fut, state.stopping.wait()).await {
-                    Either::Left(item) => {
-                        state.handle_result(item, response_idx, &st, &codec, stop)
-                    }
+                let empty_q = match select(fut, stopping).await {
+                    Either::Left(item) => state.handle_result(item, response_idx, &st, &codec),
                     Either::Right(()) => {
-                        state.handle_result(Ok(None), response_idx, &st, &codec, stop)
+                        state.handle_result(Ok(None), response_idx, &st, &codec)
                     }
                 };
-                if empty_q || stop {
+                if empty_q {
                     st.wake();
                 }
             });
@@ -471,7 +422,7 @@ where
             if queue.is_empty() {
                 match res {
                     Err(err) => {
-                        self.state.error.set(Some(err.into()));
+                        self.state.error.set(Some(IoDispatcherError::Service(err)));
                     }
                     Ok(Some(item)) => {
                         if let Err(err) = self.io.encode(item, &self.codec) {
@@ -481,44 +432,34 @@ where
                     Ok(None) => (),
                 }
             } else {
-                if stop {
-                    self.state.stopping.notify();
-                }
                 queue.push_back(ServiceResult::Ready(res));
                 self.state.response_idx.set(self.state.base.get().wrapping_add(queue.len()));
             }
         } else {
-            if stop {
-                self.flags.insert(Flags::RESPONSE_STOP);
-            }
-            self.state.response.set(ResponseCall::Call(fut));
+            self.state.response.set(Some(fut));
             self.state.response_idx.set(self.state.base.get().wrapping_add(queue.len()));
             queue.push_back(ServiceResult::Pending);
         }
     }
 
-    fn check_error(&mut self) -> PollService<U> {
+    fn poll_service(&mut self, cx: &mut Context<'_>) -> Poll<PollService<U>> {
         // check for errors
         if let Some(err) = self.state.error.take() {
             log::trace!("{}: Error occured, stopping dispatcher", self.io.tag());
-            self.stop();
-            match err {
-                IoDispatcherError::Encoder(err) => {
-                    PollService::Item(DispatchItem::Stop(Reason::Encoder(err)))
+            let item = match err {
+                IoDispatcherError::Encoder(err) => Control::proto(ProtocolError::Encode(err)),
+                IoDispatcherError::Service(DispatcherError::Service(err)) => Control::err(err),
+                IoDispatcherError::Service(DispatcherError::Protocol(err)) => {
+                    Control::proto(err)
                 }
-                IoDispatcherError::Service(err) => {
-                    self.state.error.set(Some(IoDispatcherError::Service(err)));
-                    PollService::Continue
-                }
-            }
-        } else {
-            PollService::Ready
+            };
+            self.stop(self.control.call(item));
+            return Poll::Ready(PollService::Continue);
         }
-    }
 
-    fn poll_service(&mut self, cx: &mut Context<'_>) -> Poll<PollService<U>> {
+        // check readiness
         match self.service.poll_ready(cx) {
-            Poll::Ready(Ok(())) => Poll::Ready(self.check_error()),
+            Poll::Ready(Ok(())) => Poll::Ready(PollService::Ready),
             // pause io read task
             Poll::Pending => {
                 log::trace!("{}: Service is not ready, pause read task", self.io.tag());
@@ -533,10 +474,10 @@ where
                             "{}: Keep-alive error, stopping dispatcher during pause",
                             self.io.tag()
                         );
-                        self.stop();
-                        Poll::Ready(PollService::ItemWait(DispatchItem::Stop(
-                            Reason::KeepAliveTimeout,
-                        )))
+                        self.stop(
+                            self.control.call(Control::proto(ProtocolError::KeepAliveTimeout)),
+                        );
+                        Poll::Ready(PollService::Continue)
                     }
                     IoStatusUpdate::PeerGone(err) => {
                         log::trace!(
@@ -544,23 +485,26 @@ where
                             self.io.tag(),
                             err
                         );
-                        self.stop();
-                        Poll::Ready(PollService::ItemWait(DispatchItem::Stop(Reason::Io(err))))
+                        self.stop(self.control.call(Control::peer_gone(err)));
+                        Poll::Ready(PollService::Continue)
                     }
                     IoStatusUpdate::WriteBackpressure => {
                         self.st = IoDispatcherState::Backpressure;
-                        Poll::Ready(PollService::ItemWait(DispatchItem::Control(
-                            Control::WBackPressureEnabled,
-                        )))
+                        spawn(self.control.call(Control::wr(true)));
+                        Poll::Ready(PollService::Continue)
                     }
                 }
             }
             // handle service readiness error
-            Poll::Ready(Err(err)) => {
+            Poll::Ready(Err(DispatcherError::Service(err))) => {
                 log::error!("{}: Service readiness check failed, stopping", self.io.tag());
-                self.stop();
                 self.flags.insert(Flags::READY_ERR);
-                self.state.error.set(Some(IoDispatcherError::Service(err)));
+                self.stop(self.control.call(Control::err(err)));
+                Poll::Ready(PollService::Continue)
+            }
+            // handle protocol violations
+            Poll::Ready(Err(DispatcherError::Protocol(err))) => {
+                self.stop(self.control.call(Control::proto(err)));
                 Poll::Ready(PollService::Continue)
             }
         }
@@ -600,7 +544,7 @@ where
         }
     }
 
-    fn handle_timeout(&mut self) -> Result<(), Reason<U>> {
+    fn handle_timeout(&mut self) -> Result<(), ProtocolError> {
         // check read timer
         if self.flags.contains(Flags::READ_TIMEOUT) {
             if let Some(params) = self.io.cfg().frame_read_rate() {
@@ -627,11 +571,11 @@ where
                     }
                 }
                 log::trace!("{}: Max payload timeout has been reached", self.io.tag());
-                return Err(Reason::ReadTimeout);
+                return Err(ProtocolError::ReadTimeout);
             }
         } else if self.flags.contains(Flags::KA_TIMEOUT) {
             log::trace!("{}: Keep-alive error, stopping dispatcher", self.io.tag());
-            return Err(Reason::KeepAliveTimeout);
+            return Err(ProtocolError::KeepAliveTimeout);
         }
         Ok(())
     }

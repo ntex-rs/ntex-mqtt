@@ -1,6 +1,6 @@
 //! MQTT 3.1.1 Client/Server framework
 
-pub mod client;
+// pub mod client;
 pub mod codec;
 pub mod control;
 mod default;
@@ -14,7 +14,7 @@ mod sink;
 
 pub type Session<St> = crate::Session<MqttSink, St>;
 
-pub use self::control::{Control, ControlAck, CtlFlow, CtlFrame, CtlReason};
+pub use self::control::{ProtocolMessage, ProtocolMessageAck};
 pub use self::handshake::{Handshake, HandshakeAck};
 pub use self::publish::Publish;
 pub use self::router::Router;

@@ -6,7 +6,7 @@ use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
 use crate::{MqttServiceConfig, inflight::InFlightServiceImpl};
 
 use super::Session;
-use super::control::{Control, ControlAck, ControlAckKind, CtlFlow, CtlFrame};
+use super::control::{ProtocolMessage, ProtocolMessageAck};
 
 /// Default control service
 #[derive(Debug)]
@@ -18,8 +18,10 @@ impl<S, E> Default for DefaultControlService<S, E> {
     }
 }
 
-impl<S, E: fmt::Debug> ServiceFactory<Control<E>, Session<S>> for DefaultControlService<S, E> {
-    type Response = ControlAck;
+impl<S, E: fmt::Debug> ServiceFactory<ProtocolMessage, Session<S>>
+    for DefaultControlService<S, E>
+{
+    type Response = ProtocolMessageAck;
     type Error = E;
     type InitError = E;
     type Service = DefaultControlService<S, E>;
@@ -29,24 +31,23 @@ impl<S, E: fmt::Debug> ServiceFactory<Control<E>, Session<S>> for DefaultControl
     }
 }
 
-impl<S, E: fmt::Debug> Service<Control<E>> for DefaultControlService<S, E> {
-    type Response = ControlAck;
+impl<S, E: fmt::Debug> Service<ProtocolMessage> for DefaultControlService<S, E> {
+    type Response = ProtocolMessageAck;
     type Error = E;
 
     async fn call(
         &self,
-        pkt: Control<E>,
+        pkt: ProtocolMessage,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::warn!("MQTT3 Subscribe is not supported");
 
         Ok(match pkt {
-            Control::Flow(CtlFlow::Ping(ping)) => ping.ack(),
-            Control::Protocol(CtlFrame::Disconnect(disc)) => disc.ack(),
-            Control::Shutdown(msg) => msg.ack(),
-            _ => {
+            ProtocolMessage::Ping(ping) => ping.ack(),
+            ProtocolMessage::Disconnect(disc) => disc.ack(),
+            pkt => {
                 log::warn!("MQTT3 Control service is not configured, pkt: {pkt:?}");
-                ControlAck { result: ControlAckKind::Disconnect }
+                pkt.disconnect()
             }
         })
     }

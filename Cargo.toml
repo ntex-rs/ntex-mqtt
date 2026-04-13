@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "7.6.1"
+version = "8.0.0-beta.1"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -15,7 +15,6 @@ rust-version = "1.88"
 features = ["ntex-net/tokio"]
 
 [dependencies]
-ntex-dispatcher = "3"
 ntex-error = "1.7"
 ntex-io = "3.9"
 ntex-net = "3.8"

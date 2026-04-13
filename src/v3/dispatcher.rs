@@ -1,18 +1,21 @@
 use std::cell::{Cell, RefCell};
 use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
 
-use ntex_dispatcher::{Control as DispControl, DispatchItem, Reason};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{Pipeline, PipelineSvc, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
-use crate::error::{DecodeError, HandshakeError, PayloadError, ProtocolError, SpecViolation};
+use crate::error::{
+    DecodeError, DispatcherError, HandshakeError, PayloadError, ProtocolError, SpecViolation,
+};
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::{MqttError, MqttServiceConfig, types::QoS, types::packet_type};
 
 use super::codec::{Decoded, Encoded, Packet};
-use super::control::{Control, ControlAck, ControlAckKind, Subscribe, Unsubscribe};
+use super::control::{
+    ProtocolMessage, ProtocolMessageAck, ProtocolMessageKind, Subscribe, Unsubscribe,
+};
 use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
@@ -20,16 +23,16 @@ pub(super) fn factory<St, T, C, E>(
     publish: T,
     control: C,
 ) -> impl ServiceFactory<
-    DispatchItem<Rc<MqttShared>>,
+    Decoded,
     (SharedCfg, Session<St>),
     Response = Option<Encoded>,
-    Error = MqttError<E>,
+    Error = DispatcherError<E>,
     InitError = MqttError<E>,
 >
 where
     St: 'static,
     T: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
-    C: ServiceFactory<Control<E>, Session<St>, Response = ControlAck> + 'static,
+    C: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
     E: From<C::Error> + From<C::InitError> + From<T::Error> + From<T::InitError> + 'static,
 {
     let factories = Rc::new((publish, control));
@@ -42,37 +45,35 @@ where
             let (publish, control) = fut.await;
 
             let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
-            let control_unbuf = Pipeline::new(
+            let control = Pipeline::new(
                 control
                     .map_err(|e| MqttError::Service(e.into()))?
-                    .map_err(|e| MqttError::Service(E::from(e))),
+                    .map_err(|e| DispatcherError::Service(E::from(e))),
             );
 
             let control = Pipeline::new(
                 BufferService::new(
                     16,
                     // limit number of in-flight messages
-                    InFlightService::new(1, PipelineSvc::new(control_unbuf.clone())),
+                    InFlightService::new(1, PipelineSvc::new(control.clone())),
                 )
                 .map_err(|err| match err {
                     BufferServiceError::Service(e) => e,
                     BufferServiceError::RequestCanceled => {
-                        MqttError::Handshake(HandshakeError::Disconnected(None))
+                        DispatcherError::Protocol(ProtocolError::ReadTimeout)
                     }
                 }),
             );
 
             let cfg: Cfg<MqttServiceConfig> = cfg.get();
-            Ok(Dispatcher::<_, _, _, E>::new(sink, publish, control, control_unbuf, cfg))
+            Ok(Dispatcher::<_, _, E>::new(sink, publish, control, cfg))
         },
     )
 }
 
-impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
+impl crate::inflight::SizedRequest for Decoded {
     fn size(&self) -> u32 {
-        if let DispatchItem::Item(Decoded::Packet(_, size) | Decoded::Publish(_, _, size)) =
-            self
-        {
+        if let Decoded::Packet(_, size) | Decoded::Publish(_, _, size) = self {
             *size
         } else {
             0
@@ -80,42 +81,39 @@ impl crate::inflight::SizedRequest for DispatchItem<Rc<MqttShared>> {
     }
 
     fn is_publish(&self) -> bool {
-        matches!(self, DispatchItem::Item(Decoded::Publish(..)))
+        matches!(self, Decoded::Publish(..))
     }
 
     fn is_chunk(&self) -> bool {
-        matches!(self, DispatchItem::Item(Decoded::PayloadChunk(..)))
+        matches!(self, Decoded::PayloadChunk(..))
     }
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C: Service<Control<E>>, C2: Service<Control<E>>, E> {
+pub(crate) struct Dispatcher<T, C, E> {
     publish: T,
-    inner: Rc<Inner<C, C2>>,
+    inner: Rc<Inner<C>>,
     cfg: Cfg<MqttServiceConfig>,
-    _t: PhantomData<(E,)>,
+    _t: PhantomData<E>,
 }
 
-struct Inner<C, C2> {
+struct Inner<C> {
     control: Pipeline<C>,
-    control_unbuf: Pipeline<C2>,
     sink: Rc<MqttShared>,
     payload: Cell<Option<PlSender>>,
     inflight: RefCell<HashSet<NonZeroU16>>,
 }
 
-impl<T, C, C2, E> Dispatcher<T, C, C2, E>
+impl<T, C, E> Dispatcher<T, C, E>
 where
     E: From<T::Error>,
     T: Service<Publish, Response = ()>,
-    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
-    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
     pub(crate) fn new(
         sink: Rc<MqttShared>,
         publish: T,
         control: Pipeline<C>,
-        control_unbuf: Pipeline<C2>,
         cfg: Cfg<MqttServiceConfig>,
     ) -> Self {
         Self {
@@ -124,7 +122,6 @@ where
             inner: Rc::new(Inner {
                 sink,
                 control,
-                control_unbuf,
                 payload: Cell::new(None),
                 inflight: RefCell::new(HashSet::default()),
             }),
@@ -137,7 +134,7 @@ where
     }
 }
 
-impl<C, C2> Inner<C, C2> {
+impl<C> Inner<C> {
     fn drop_payload<PErr>(&self, err: &PErr)
     where
         PErr: Clone,
@@ -149,67 +146,41 @@ impl<C, C2> Inner<C, C2> {
     }
 }
 
-impl<T, C, C2, E> Service<DispatchItem<Rc<MqttShared>>> for Dispatcher<T, C, C2, E>
+impl<T, C, E> Service<Decoded> for Dispatcher<T, C, E>
 where
     E: From<T::Error> + 'static,
     T: Service<Publish, Response = ()> + 'static,
-    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
-    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>> + 'static,
+    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>
+        + 'static,
 {
     type Response = Option<Encoded>;
-    type Error = MqttError<E>;
+    type Error = DispatcherError<E>;
 
     #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
-        let result = if let Err(e) = res1 {
-            if res2.is_err() {
-                Err(MqttError::Service(e.into()))
-            } else if !self.inner.sink.is_dispatcher_stopped() {
-                match self.inner.control_unbuf.call(Control::error(e.into())).await {
-                    Ok(_) => {
-                        self.inner.sink.close();
-                        Ok(())
-                    }
-                    Err(err) => Err(err),
-                }
-            } else {
-                res2
-            }
-        } else {
-            res2
-        };
-
-        if result.is_ok()
+        if (res1.is_err() || res2.is_err())
             && let Some(pl) = self.inner.payload.take()
         {
             self.inner.payload.set(Some(pl.clone()));
             if pl.ready().await != PayloadStatus::Ready {
-                self.inner.sink.close();
+                self.inner.sink.force_close();
             }
         }
-        result
+
+        res1.map_err(|e| DispatcherError::Service(e.into()))?;
+        res2?;
+        Ok(())
     }
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        if let Err(e) = self.publish.poll(cx)
-            && !self.inner.sink.is_dispatcher_stopped()
-        {
-            let inner = self.inner.clone();
-            ntex_rt::spawn(async move {
-                if inner.control_unbuf.call(Control::error(e.into())).await.is_ok() {
-                    inner.sink.close();
-                }
-            });
-        }
+        self.publish.poll(cx).map_err(|e| DispatcherError::Service(e.into()))?;
         self.inner.control.poll(cx)
     }
 
     async fn shutdown(&self) {
         self.inner.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.close();
-        let _ = self.inner.control.call(Control::shutdown()).await;
-
         self.publish.shutdown().await;
         self.inner.control.shutdown().await;
     }
@@ -217,15 +188,15 @@ where
     #[allow(clippy::too_many_lines)]
     async fn call(
         &self,
-        req: DispatchItem<Rc<MqttShared>>,
+        req: Decoded,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::trace!("{}; Dispatch v3 packet: {:#?}", self.tag(), req);
 
         match req {
-            DispatchItem::Item(Decoded::Publish(publish, payload, size)) => {
+            Decoded::Publish(publish, payload, size) => {
                 if publish.topic.contains(['#', '+']) {
-                    return self.inner.control(Control::spec(SpecViolation::Pub_3_3_2_2)).await;
+                    return Err(SpecViolation::Pub_3_3_2_2.into());
                 }
 
                 let inner = self.inner.as_ref();
@@ -240,10 +211,7 @@ where
                         self.tag(),
                         pid
                     );
-                    return self
-                        .inner
-                        .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Pub))
-                        .await;
+                    return Err(SpecViolation::PacketId_2_2_1_3_Pub.into());
                 }
 
                 // check max allowed qos
@@ -254,10 +222,7 @@ where
                         self.cfg.max_qos,
                         publish.qos
                     );
-                    return self
-                        .inner
-                        .control(Control::spec(SpecViolation::Connack_3_2_2_11))
-                        .await;
+                    return Err(SpecViolation::Connack_3_2_2_11.into());
                 }
 
                 if inner.sink.is_closed()
@@ -287,7 +252,7 @@ where
                 )
                 .await
             }
-            DispatchItem::Item(Decoded::PayloadChunk(buf, eof)) => {
+            Decoded::PayloadChunk(buf, eof) => {
                 if let Some(pl) = self.inner.payload.take() {
                     pl.feed_data(buf);
                     if eof {
@@ -297,59 +262,51 @@ where
                     }
                     Ok(None)
                 } else {
-                    self.inner
-                        .control(Control::proto_error(ProtocolError::Decode(
-                            DecodeError::UnexpectedPayload,
-                        )))
-                        .await
+                    Err(ProtocolError::Decode(DecodeError::UnexpectedPayload).into())
                 }
             }
-            DispatchItem::Item(Decoded::Packet(Packet::PublishAck { packet_id }, _)) => {
+            Decoded::Packet(Packet::PublishAck { packet_id }, _) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(packet_id)) {
-                    self.inner.control(Control::proto_error(e)).await
+                    Err(e.into())
                 } else {
                     Ok(None)
                 }
             }
-            DispatchItem::Item(Decoded::Packet(Packet::PublishReceived { packet_id }, _)) => {
+            Decoded::Packet(Packet::PublishReceived { packet_id }, _) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Receive(packet_id)) {
-                    self.inner.control(Control::proto_error(e)).await
+                    Err(e.into())
                 } else {
                     Ok(None)
                 }
             }
-            DispatchItem::Item(Decoded::Packet(Packet::PublishRelease { packet_id }, _)) => {
+            Decoded::Packet(Packet::PublishRelease { packet_id }, _) => {
                 if self.inner.inflight.borrow().contains(&packet_id) {
-                    self.inner.control(Control::pubrel(packet_id)).await
+                    self.inner.control(ProtocolMessage::pubrel(packet_id)).await
                 } else {
-                    self.inner
-                        .control(Control::proto_error(ProtocolError::unexpected_packet(
-                            packet_type::PUBREL,
-                            "Unknown packet-id in PublishRelease packet",
-                        )))
-                        .await
+                    Err(ProtocolError::unexpected_packet(
+                        packet_type::PUBREL,
+                        "Unknown packet-id in PublishRelease packet",
+                    )
+                    .into())
                 }
             }
-            DispatchItem::Item(Decoded::Packet(Packet::PublishComplete { packet_id }, _)) => {
+            Decoded::Packet(Packet::PublishComplete { packet_id }, _) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Complete(packet_id)) {
-                    self.inner.control(Control::proto_error(e)).await
+                    Err(e.into())
                 } else {
                     Ok(None)
                 }
             }
-            DispatchItem::Item(Decoded::Packet(Packet::PingRequest, _)) => {
-                self.inner.control(Control::ping()).await
+            Decoded::Packet(Packet::PingRequest, _) => {
+                self.inner.control(ProtocolMessage::ping()).await
             }
-            DispatchItem::Item(Decoded::Packet(
-                Packet::Subscribe { packet_id, topic_filters },
-                size,
-            )) => {
+            Decoded::Packet(Packet::Subscribe { packet_id, topic_filters }, size) => {
                 if self.inner.sink.is_closed() {
                     return Ok(None);
                 }
 
                 if topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
-                    return self.inner.control(Control::spec(SpecViolation::Subs_4_7_1)).await;
+                    return Err(SpecViolation::Subs_4_7_1.into());
                 }
 
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
@@ -358,26 +315,24 @@ where
                         self.tag(),
                         packet_id
                     );
-                    return self
-                        .inner
-                        .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Sub))
-                        .await;
+                    return Err(SpecViolation::PacketId_2_2_1_3_Sub.into());
                 }
 
                 self.inner
-                    .control(Control::subscribe(Subscribe::new(packet_id, size, topic_filters)))
+                    .control(ProtocolMessage::subscribe(Subscribe::new(
+                        packet_id,
+                        size,
+                        topic_filters,
+                    )))
                     .await
             }
-            DispatchItem::Item(Decoded::Packet(
-                Packet::Unsubscribe { packet_id, topic_filters },
-                size,
-            )) => {
+            Decoded::Packet(Packet::Unsubscribe { packet_id, topic_filters }, size) => {
                 if self.inner.sink.is_closed() {
                     return Ok(None);
                 }
 
                 if topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
-                    return self.inner.control(Control::spec(SpecViolation::Subs_4_7_1)).await;
+                    return Err(SpecViolation::Subs_4_7_1.into());
                 }
 
                 if !self.inner.inflight.borrow_mut().insert(packet_id) {
@@ -386,73 +341,39 @@ where
                         self.tag(),
                         packet_id
                     );
-                    return self
-                        .inner
-                        .control(Control::spec(SpecViolation::PacketId_2_2_1_3_Unsub))
-                        .await;
+                    return Err(SpecViolation::PacketId_2_2_1_3_Unsub.into());
                 }
 
                 self.inner
-                    .control(Control::unsubscribe(Unsubscribe::new(
+                    .control(ProtocolMessage::unsubscribe(Unsubscribe::new(
                         packet_id,
                         size,
                         topic_filters,
                     )))
                     .await
             }
-            DispatchItem::Item(Decoded::Packet(Packet::Disconnect, _)) => {
+            Decoded::Packet(Packet::Disconnect, _) => {
                 self.inner.sink.is_disconnect_sent();
                 self.inner.sink.close();
-                self.inner.control(Control::remote_disconnect()).await
+                self.inner.control(ProtocolMessage::remote_disconnect()).await
             }
-            DispatchItem::Item(_) => Ok(None),
-            DispatchItem::Stop(Reason::Encoder(err)) => {
-                let err = ProtocolError::Encode(err);
-                self.inner.drop_payload(&err);
-                self.inner.control(Control::proto_error(err)).await
-            }
-            DispatchItem::Stop(Reason::KeepAliveTimeout) => {
-                self.inner.drop_payload(&ProtocolError::KeepAliveTimeout);
-                self.inner.control(Control::proto_error(ProtocolError::KeepAliveTimeout)).await
-            }
-            DispatchItem::Stop(Reason::ReadTimeout) => {
-                self.inner.drop_payload(&ProtocolError::ReadTimeout);
-                self.inner.control(Control::proto_error(ProtocolError::ReadTimeout)).await
-            }
-            DispatchItem::Stop(Reason::Decoder(err)) => {
-                let err = ProtocolError::Decode(err);
-                self.inner.drop_payload(&err);
-                self.inner.control(Control::proto_error(err)).await
-            }
-            DispatchItem::Stop(Reason::Io(err)) => {
-                self.inner.drop_payload(&PayloadError::Disconnected);
-                self.inner.control(Control::peer_gone(err)).await
-            }
-            DispatchItem::Control(DispControl::WBackPressureEnabled) => {
-                self.inner.sink.enable_wr_backpressure();
-                self.inner.control(Control::wr_backpressure(true)).await
-            }
-            DispatchItem::Control(DispControl::WBackPressureDisabled) => {
-                self.inner.sink.disable_wr_backpressure();
-                self.inner.control(Control::wr_backpressure(false)).await
-            }
+            _ => Ok(None),
         }
     }
 }
 
 /// Publish service response future
-async fn publish_fn<'f, T, C, C2, E>(
+async fn publish_fn<'f, T, C, E>(
     svc: &'f T,
     pkt: Publish,
     packet_id: Option<NonZeroU16>,
-    inner: &'f Inner<C, C2>,
-    ctx: ServiceCtx<'f, Dispatcher<T, C, C2, E>>,
-) -> Result<Option<Encoded>, MqttError<E>>
+    inner: &'f Inner<C>,
+    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+) -> Result<Option<Encoded>, DispatcherError<E>>
 where
     E: From<T::Error>,
     T: Service<Publish, Response = ()>,
-    C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
-    C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
     let qos2 = pkt.qos() == QoS::ExactlyOnce;
     match ctx.call(svc, pkt).await {
@@ -474,76 +395,53 @@ where
                 Ok(None)
             }
         }
-        Err(e) => inner.control(Control::error(e.into())).await,
+        Err(e) => Err(DispatcherError::Service(e.into())),
     }
 }
 
-impl<C, C2> Inner<C, C2> {
-    async fn control<E>(&self, mut pkt: Control<E>) -> Result<Option<Encoded>, MqttError<E>>
+impl<C> Inner<C> {
+    async fn control<E>(
+        &self,
+        mut pkt: ProtocolMessage,
+    ) -> Result<Option<Encoded>, DispatcherError<E>>
     where
-        C: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
-        C2: Service<Control<E>, Response = ControlAck, Error = MqttError<E>>,
+        C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
     {
-        loop {
-            let error = matches!(pkt, Control::Stop(_));
-            let result = if matches!(pkt, Control::Protocol(_)) {
-                self.control.call(pkt).await
-            } else {
-                if error && self.sink.is_dispatcher_stopped() {
-                    self.drop_payload(&PayloadError::Service);
-                    self.sink.close();
-                    return Ok(None);
-                }
-                self.control_unbuf.call(pkt).await
-            };
-
-            match result {
-                Ok(item) => {
-                    let packet = match item.result {
-                        ControlAckKind::Ping => Some(Encoded::Packet(Packet::PingResponse)),
-                        ControlAckKind::Subscribe(res) => {
-                            self.inflight.borrow_mut().remove(&res.packet_id);
-                            Some(Encoded::Packet(Packet::SubscribeAck {
-                                status: res.codes,
-                                packet_id: res.packet_id,
-                            }))
-                        }
-                        ControlAckKind::Unsubscribe(res) => {
-                            self.inflight.borrow_mut().remove(&res.packet_id);
-                            Some(Encoded::Packet(Packet::UnsubscribeAck {
-                                packet_id: res.packet_id,
-                            }))
-                        }
-                        ControlAckKind::Disconnect => {
-                            self.drop_payload(&PayloadError::Service);
-                            self.sink.close();
-                            None
-                        }
-                        ControlAckKind::Closed | ControlAckKind::Nothing => None,
-                        ControlAckKind::PublishRelease(packet_id) => {
-                            self.inflight.borrow_mut().remove(&packet_id);
-                            Some(Encoded::Packet(Packet::PublishComplete { packet_id }))
-                        }
-                        ControlAckKind::PublishAck(_) => unreachable!(),
-                    };
-                    return Ok(packet);
-                }
-                Err(err) => {
-                    // do not handle nested error
-                    let result = if error {
-                        Err(err)
-                    } else {
-                        // handle error from control service
-                        if let MqttError::Service(err) = err {
-                            pkt = Control::error(err);
-                            continue;
-                        }
-                        Err(err)
-                    };
-                    self.drop_payload(&PayloadError::Service);
-                    self.sink.close();
-                    return result;
-                }
+        match self.control.call(pkt).await {
+            Ok(item) => {
+                let packet = match item.result {
+                    ProtocolMessageKind::Ping => Some(Encoded::Packet(Packet::PingResponse)),
+                    ProtocolMessageKind::Subscribe(res) => {
+                        self.inflight.borrow_mut().remove(&res.packet_id);
+                        Some(Encoded::Packet(Packet::SubscribeAck {
+                            status: res.codes,
+                            packet_id: res.packet_id,
+                        }))
+                    }
+                    ProtocolMessageKind::Unsubscribe(res) => {
+                        self.inflight.borrow_mut().remove(&res.packet_id);
+                        Some(Encoded::Packet(Packet::UnsubscribeAck {
+                            packet_id: res.packet_id,
+                        }))
+                    }
+                    ProtocolMessageKind::Disconnect => {
+                        self.drop_payload(&PayloadError::Service);
+                        self.sink.close();
+                        None
+                    }
+                    ProtocolMessageKind::Closed | ProtocolMessageKind::Nothing => None,
+                    ProtocolMessageKind::PublishRelease(packet_id) => {
+                        self.inflight.borrow_mut().remove(&packet_id);
+                        Some(Encoded::Packet(Packet::PublishComplete { packet_id }))
+                    }
+                    ProtocolMessageKind::PublishAck(_) => unreachable!(),
+                };
+                Ok(packet)
+            }
+            Err(err) => {
+                self.drop_payload(&PayloadError::Service);
+                self.sink.close();
+                Err(err)
             }
         }
     }
