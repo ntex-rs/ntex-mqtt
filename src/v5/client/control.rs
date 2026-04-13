@@ -4,89 +4,48 @@ use ntex_bytes::{ByteString, Bytes};
 
 use crate::{error, payload::Payload, v5::codec, v5::control::Pkt};
 
-pub use crate::v5::control::{
-    ControlAck, CtlReason, Disconnect, Error, PeerGone, ProtocolError, PublishRelease, Shutdown,
-};
-
-/// Client control messages
-#[derive(Debug)]
-pub enum Control<E> {
-    /// MQTT protocol–related messages.
-    Protocol(CtlFrame),
-
-    /// Dispatcher is preparing for shutdown.
-    ///
-    /// The control service will receive this message only once. The next message
-    /// after `Disconnect` is `Shutdown`.
-    Stop(CtlReason<E>),
-    /// Underlying pipeline is shutting down.
-    ///
-    /// This is the last message the control service receives.
-    Shutdown(Shutdown),
-}
+pub use crate::v5::control::{Disconnect, Ping, ProtocolMessageAck, PublishRelease};
 
 /// MQTT protocol–related messages
 #[derive(Debug)]
-pub enum CtlFrame {
+pub enum ProtocolMessage {
     /// Unhandled `Publish` packet
     Publish(Publish),
-    /// `PublishRelease` packet from a client
+    /// `PublishRelease` packet from a server
     PublishRelease(PublishRelease),
-    /// `Disconnect` packet from a client
+    /// `Disconnect` packet from a server
     Disconnect(Disconnect),
+    /// `Ping` packet from a server
+    Ping(Ping),
 }
 
-impl<E> Control<E> {
+impl ProtocolMessage {
     pub(super) fn publish(pkt: codec::Publish, pl: Payload, size: u32) -> Self {
-        Control::Protocol(CtlFrame::Publish(Publish(pkt, pl, size)))
+        ProtocolMessage::Publish(Publish(pkt, pl, size))
     }
 
     pub(super) fn pubrel(pkt: codec::PublishAck2, size: u32) -> Self {
-        Control::Protocol(CtlFrame::PublishRelease(PublishRelease::new(pkt, size)))
+        ProtocolMessage::PublishRelease(PublishRelease::new(pkt, size))
     }
 
     pub(super) fn dis(pkt: codec::Disconnect, size: u32) -> Self {
-        Control::Protocol(CtlFrame::Disconnect(Disconnect(pkt, size)))
+        ProtocolMessage::Disconnect(Disconnect(pkt, size))
     }
 
-    pub(super) const fn shutdown() -> Self {
-        Control::Shutdown(Shutdown)
-    }
-
-    pub(super) fn error(err: E) -> Self {
-        Control::Stop(CtlReason::Error(Error::new(err)))
-    }
-
-    pub(super) fn spec(err: error::SpecViolation) -> Self {
-        Control::Stop(CtlReason::ProtocolError(ProtocolError::new(error::ProtocolError::spec(
-            err,
-        ))))
-    }
-
-    pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        Control::Stop(CtlReason::ProtocolError(ProtocolError::new(err)))
-    }
-
-    pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        Control::Stop(CtlReason::PeerGone(PeerGone(err)))
-    }
-
-    pub fn disconnect(&self, pkt: codec::Disconnect) -> ControlAck {
-        ControlAck { packet: Pkt::Packet(codec::Packet::Disconnect(pkt)), disconnect: true }
+    pub fn disconnect(&self, pkt: codec::Disconnect) -> ProtocolMessageAck {
+        ProtocolMessageAck {
+            packet: Pkt::Packet(codec::Packet::Disconnect(pkt)),
+            disconnect: true,
+        }
     }
 
     /// Ack control message
-    pub fn ack(self) -> ControlAck {
+    pub fn ack(self) -> ProtocolMessageAck {
         match self {
-            Control::Protocol(CtlFrame::Publish(_)) => {
-                crate::v5::disconnect(error::ERR_PUB_NOT_SUP)
-            }
-            Control::Protocol(CtlFrame::PublishRelease(msg)) => msg.ack(),
-            Control::Protocol(CtlFrame::Disconnect(msg)) => msg.ack(),
-            Control::Shutdown(msg) => msg.ack(),
-            Control::Stop(CtlReason::Error(_)) => crate::v5::disconnect(error::ERR_CTL_NOT_SUP),
-            Control::Stop(CtlReason::ProtocolError(msg)) => msg.ack(),
-            Control::Stop(CtlReason::PeerGone(msg)) => msg.ack(),
+            ProtocolMessage::Publish(_) => crate::v5::disconnect(error::ERR_PUB_NOT_SUP),
+            ProtocolMessage::PublishRelease(msg) => msg.ack(),
+            ProtocolMessage::Disconnect(msg) => msg.ack(),
+            ProtocolMessage::Ping(msg) => msg.ack(),
         }
     }
 }
@@ -132,13 +91,13 @@ impl Publish {
     }
 
     #[inline]
-    pub fn ack_qos0(self) -> ControlAck {
-        ControlAck { packet: Pkt::None, disconnect: false }
+    pub fn ack_qos0(self) -> ProtocolMessageAck {
+        ProtocolMessageAck { packet: Pkt::None, disconnect: false }
     }
 
     #[inline]
-    pub fn ack(self, reason_code: codec::PublishAckReason) -> ControlAck {
-        ControlAck {
+    pub fn ack(self, reason_code: codec::PublishAckReason) -> ProtocolMessageAck {
+        ProtocolMessageAck {
             packet: self.0.packet_id.map_or(Pkt::None, |packet_id| {
                 Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
                     packet_id,
@@ -157,8 +116,8 @@ impl Publish {
         reason_code: codec::PublishAckReason,
         properties: codec::UserProperties,
         reason_string: Option<ByteString>,
-    ) -> ControlAck {
-        ControlAck {
+    ) -> ProtocolMessageAck {
+        ProtocolMessageAck {
             packet: self.0.packet_id.map_or(Pkt::None, |packet_id| {
                 Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
                     packet_id,
@@ -174,9 +133,9 @@ impl Publish {
     pub fn into_inner(
         self,
         reason_code: codec::PublishAckReason,
-    ) -> (ControlAck, codec::Publish) {
+    ) -> (ProtocolMessageAck, codec::Publish) {
         (
-            ControlAck {
+            ProtocolMessageAck {
                 packet: self.0.packet_id.map_or(Pkt::None, |packet_id| {
                     Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
                         packet_id,

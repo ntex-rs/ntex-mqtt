@@ -8,7 +8,7 @@ use ntex_util::future::{Either, Ready};
 use ntex_util::time::{Millis, Seconds, sleep};
 
 use crate::v3::{ProtocolMessageAck, Publish, codec, shared::MqttShared, sink::MqttSink};
-use crate::{error::MqttError, io::Dispatcher};
+use crate::{control, error::MqttError, io::Dispatcher};
 
 use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
 
@@ -96,18 +96,16 @@ impl Client {
             self.max_receive,
             self.max_buffer_size,
             fn_service(|pkt| Ready::Ok(Either::Right(pkt))),
-            fn_service(|_: ProtocolMessage| {
-                Ready::<_, ()>::Ok(Some(ProtocolMessage::disconnect()))
-            }),
+            fn_service(|_: ProtocolMessage| Ready::<_, ()>::Ok(ProtocolMessage::disconnect())),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher).await;
+        let _ = Dispatcher::<_, control::DefaultControlService<(), (), Rc<MqttShared>>, _, ()>::new(self.io, self.shared.clone(), dispatcher, control::DefaultControlService::default()).await;
     }
 
     /// Run client with provided control messages handler
-    pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
+    pub async fn start<F, S, E>(self, service: F) -> Result<(), E>
     where
-        E: 'static,
+        E: fmt::Debug + 'static,
         F: IntoService<S, ProtocolMessage> + 'static,
         S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
     {
@@ -124,7 +122,13 @@ impl Client {
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared.clone(), dispatcher).await
+        Dispatcher::<_, control::DefaultControlService<(), E, Rc<MqttShared>>, _, E>::new(
+            self.io,
+            self.shared.clone(),
+            dispatcher,
+            control::DefaultControlService::default(),
+        )
+        .await
     }
 
     /// Get negotiated io stream and codec
@@ -158,7 +162,7 @@ impl<Err, PErr> fmt::Debug for ClientRouter<Err, PErr> {
 
 impl<Err, PErr> ClientRouter<Err, PErr>
 where
-    Err: From<PErr> + 'static,
+    Err: From<PErr> + fmt::Debug + 'static,
     PErr: 'static,
 {
     #[must_use]
@@ -189,11 +193,11 @@ where
             fn_service(|_: ProtocolMessage| Ready::<_, Err>::Ok(ProtocolMessage::disconnect())),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher).await;
+        let _ = Dispatcher::<_, control::DefaultControlService<(), Err, Rc<MqttShared>>, _, Err>::new(self.io, self.shared.clone(), dispatcher, control::DefaultControlService::default()).await;
     }
 
     /// Run client and handle control messages
-    pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
+    pub async fn start<F, S>(self, service: F) -> Result<(), Err>
     where
         F: IntoService<S, ProtocolMessage>,
         S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err> + 'static,
@@ -211,7 +215,13 @@ where
             service.into_service(),
         );
 
-        Dispatcher::new(self.io, self.shared.clone(), dispatcher).await
+        Dispatcher::<_, control::DefaultControlService<(), Err, Rc<MqttShared>>, _, Err>::new(
+            self.io,
+            self.shared.clone(),
+            dispatcher,
+            control::DefaultControlService::default(),
+        )
+        .await
     }
 }
 

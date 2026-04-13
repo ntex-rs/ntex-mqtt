@@ -1,6 +1,6 @@
 //! MQTT5 Client/Server framework
 
-//pub mod client;
+pub mod client;
 pub mod codec;
 pub mod control;
 
@@ -26,8 +26,7 @@ pub use self::server::MqttServer;
 pub use self::sink::{MqttSink, SubscribeBuilder, UnsubscribeBuilder};
 pub use self::sink::{PublishBuilder, StreamingPayload};
 
-pub use crate::topic::{TopicFilter, TopicFilterError};
-pub use crate::{error, types::QoS};
+pub use crate::{error, topic::TopicFilter, topic::TopicFilterError, types::QoS};
 
 const RECEIVE_MAX_DEFAULT: NonZeroU16 = NonZeroU16::new(65_535).unwrap();
 

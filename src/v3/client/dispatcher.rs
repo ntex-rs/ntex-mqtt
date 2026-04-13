@@ -31,7 +31,12 @@ where
     // limit number of in-flight messages
     InFlightService::new(
         inflight,
-        Dispatcher::new(sink, publish, control.map_err(MqttError::Service), max_buffer_size),
+        Dispatcher::new(
+            sink,
+            publish,
+            control.map_err(DispatcherError::Service),
+            max_buffer_size,
+        ),
     )
 }
 
@@ -243,12 +248,12 @@ async fn publish_fn<'f, T, C, E>(
     packet_id: Option<NonZeroU16>,
     inner: &'f Inner<C>,
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
-) -> Result<Option<Encoded>, MqttError<E>>
+) -> Result<Option<Encoded>, DispatcherError<E>>
 where
     T: Service<Publish, Response = Either<(), Publish>, Error = E>,
-    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = MqttError<E>>,
+    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
-    let res = ctx.call(svc, pkt).await?;
+    let res = ctx.call(svc, pkt).await.map_err(|e| DispatcherError::Service(e.into()))?;
     match res {
         Either::Left(()) => {
             log::trace!("Publish result for packet {packet_id:?} is ready");
