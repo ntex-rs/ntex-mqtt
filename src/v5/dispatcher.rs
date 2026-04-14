@@ -1,4 +1,4 @@
-use std::{cell::Cell, cell::RefCell, marker, num, rc::Rc, task::Context};
+use std::{cell::Cell, cell::RefCell, marker, marker::PhantomData, num, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_service::cfg::{Cfg, SharedCfg};
@@ -7,6 +7,7 @@ use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::services::inflight::InFlightService;
 use ntex_util::{HashMap, HashSet, future::join};
 
+use crate::control::{Control, Reason};
 use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::{MqttError, MqttServiceConfig, types::QoS};
@@ -45,17 +46,15 @@ where
             join(factories.0.create(ses.clone()), factories.1.create(ses)).await;
 
         let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
-        let control_unbuf = Pipeline::new(
-            control
-                .map_err(|e| MqttError::Service(e.into()))?
-                .map_err(|e| DispatcherError::Service(E::from(e))),
-        );
+        let control = control
+            .map_err(|e| MqttError::Service(e.into()))?
+            .map_err(|e| DispatcherError::Service(E::from(e)));
 
         let control = Pipeline::new(
             BufferService::new(
                 16,
                 // limit number of in-flight messages
-                InFlightService::new(1, service::PipelineSvc::new(control_unbuf.clone())),
+                InFlightService::new(1, control),
             )
             .map_err(|err| match err {
                 BufferServiceError::Service(e) => e,
@@ -99,7 +98,6 @@ struct Inner<C> {
     control: Pipeline<C>,
     sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
-    payload: Cell<Option<PlSender>>,
 }
 
 struct PublishInfo {
@@ -125,7 +123,6 @@ where
             inner: Rc::new(Inner {
                 sink,
                 control,
-                payload: Cell::new(None),
                 info: RefCell::new(PublishInfo {
                     aliases: HashMap::default(),
                     inflight: HashSet::default(),
@@ -137,18 +134,6 @@ where
 
     fn tag(&self) -> &'static str {
         self.inner.sink.tag()
-    }
-}
-
-impl<C> Inner<C> {
-    fn drop_payload<PErr>(&self, err: &PErr)
-    where
-        PErr: Clone,
-        PayloadError: From<PErr>,
-    {
-        if let Some(pl) = self.payload.take() {
-            pl.set_error(err.clone().into());
-        }
     }
 }
 
@@ -166,9 +151,9 @@ where
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
         if (res1.is_err() || res2.is_err())
-            && let Some(pl) = self.inner.payload.take()
+            && let Some(pl) = self.inner.sink.payload.take()
         {
-            self.inner.payload.set(Some(pl.clone()));
+            self.inner.sink.payload.set(Some(pl.clone()));
             if pl.ready().await != PayloadStatus::Ready {
                 self.inner.sink.force_close();
             }
@@ -186,7 +171,7 @@ where
 
     async fn shutdown(&self) {
         log::trace!("{}: Shutdown v5 dispatcher", self.tag());
-        self.inner.drop_payload(&PayloadError::Disconnected);
+        self.inner.sink.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink();
 
         self.publish.shutdown().await;
@@ -305,7 +290,7 @@ where
                 } else {
                     let (pl, sender) =
                         Payload::from_stream(payload, self.cfg.max_payload_buffer_size);
-                    self.inner.payload.set(Some(sender));
+                    self.inner.sink.payload.set(Some(sender));
                     pl
                 };
 
@@ -319,12 +304,12 @@ where
                 .await
             }
             Decoded::PayloadChunk(buf, eof) => {
-                if let Some(pl) = self.inner.payload.take() {
+                if let Some(pl) = self.inner.sink.payload.take() {
                     pl.feed_data(buf);
                     if eof {
                         pl.feed_eof();
                     } else {
-                        self.inner.payload.set(Some(pl));
+                        self.inner.sink.payload.set(Some(pl));
                     }
                     Ok(None)
                 } else {
@@ -478,7 +463,7 @@ impl<C> Inner<C> {
             }
             Err(err) => {
                 self.sink.drop_sink();
-                self.drop_payload(&PayloadError::Service);
+                self.sink.drop_payload(&PayloadError::Service);
                 return Err(err);
             }
         };
@@ -497,7 +482,7 @@ impl<C> Inner<C> {
 
         if result.disconnect {
             self.sink.drop_sink();
-            self.drop_payload(&PayloadError::Service);
+            self.sink.drop_payload(&PayloadError::Service);
         }
         response
     }
@@ -554,6 +539,92 @@ where
     } else {
         Ok(None)
     }
+}
+
+pub(super) struct ControlService<S, E> {
+    svc: S,
+    shared: Rc<MqttShared>,
+    _t: PhantomData<E>,
+}
+
+pub(super) struct ControlFactory<S, St, E> {
+    svc: S,
+    _t: PhantomData<(E, St)>,
+}
+
+impl<S, E> ControlService<S, E>
+where
+    S: Service<Control<E>>,
+{
+    pub(super) fn new(svc: S, shared: Rc<MqttShared>) -> Self {
+        Self { svc, shared, _t: PhantomData }
+    }
+}
+
+impl<S, St, E> ControlFactory<S, St, E>
+where
+    S: ServiceFactory<Control<E>, Session<St>>,
+{
+    pub(super) fn new(svc: S) -> Self {
+        Self { svc, _t: PhantomData }
+    }
+}
+
+impl<S, St, E> ServiceFactory<Control<E>, Session<St>> for ControlFactory<S, St, E>
+where
+    S: ServiceFactory<Control<E>, Session<St>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type InitError = S::InitError;
+    type Service = ControlService<S::Service, E>;
+
+    async fn create(&self, cfg: Session<St>) -> Result<Self::Service, Self::InitError> {
+        Ok(ControlService {
+            shared: cfg.sink().shared(),
+            svc: self.svc.create(cfg).await?,
+            _t: PhantomData,
+        })
+    }
+}
+
+impl<S, E> Service<Control<E>> for ControlService<S, E>
+where
+    S: Service<Control<E>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+
+    async fn call(
+        &self,
+        req: Control<E>,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
+        match &req {
+            Control::Stop(Reason::Error(_)) => {
+                self.shared.drop_payload(&PayloadError::Service);
+            }
+            Control::Stop(Reason::ProtocolError(err)) => {
+                self.shared.drop_payload(err.get_ref());
+            }
+            Control::Stop(Reason::PeerGone(_)) => {
+                self.shared.drop_payload(&PayloadError::Disconnected);
+            }
+            Control::WrBackpressure(status) => {
+                if status.enabled() {
+                    self.shared.enable_wr_backpressure();
+                } else {
+                    self.shared.disable_wr_backpressure();
+                }
+            }
+        }
+
+        ctx.call(&self.svc, req).await
+    }
+
+    ntex_service::forward_ready!(svc);
+    ntex_service::forward_poll!(svc);
+    ntex_service::forward_shutdown!(svc);
 }
 
 #[cfg(test)]

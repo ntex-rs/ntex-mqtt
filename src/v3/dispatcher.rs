@@ -458,7 +458,7 @@ mod tests {
     use ntex_util::time::{Seconds, sleep};
 
     use super::*;
-    use crate::v3::{CtlReason, MqttSink, codec};
+    use crate::v3::{MqttSink, codec};
 
     #[ntex::test]
     async fn test_dup_packet_id() {
@@ -473,10 +473,10 @@ mod tests {
         let err2 = err.clone();
 
         let control = Pipeline::new(fn_service(move |ctrl| {
-            if let Control::Stop(CtlReason::ProtocolError(_)) = ctrl {
+            if let Control::ProtocolError(_) = ctrl {
                 *err2.borrow_mut() = true;
             }
-            Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
+            Ready::Ok(None)
         }));
 
         let disp = Pipeline::new(Dispatcher::<_, _, _, ()>::new(

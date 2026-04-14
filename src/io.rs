@@ -619,7 +619,7 @@ mod tests {
                 waker: LocalWaker::default(),
                 queue: RefCell::new(VecDeque::new()),
                 stopping: Condition::new(),
-                response: Cell::new(ResponseCall::Empty),
+                response: Cell::new(None),
                 response_idx: Cell::new(0),
             });
 
@@ -1334,15 +1334,12 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server, config),
             BytesLenCodec(2),
-            ntex_service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
+            ntex_service::fn_service(move |msg: Bytes| {
                 let data = data2.clone();
                 async move {
-                    if let DispatchItem::Item(bytes) = msg {
-                        sleep(Millis(99_9999)).await;
-                        drop(data);
-                        return Ok::<_, ()>(Some(bytes));
-                    }
-                    Ok(None)
+                    sleep(Millis(99_9999)).await;
+                    drop(data);
+                    return Ok::<_, ()>(Some(msg));
                 }
             }),
         );

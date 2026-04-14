@@ -8,8 +8,7 @@ use ntex::{codec::Encoder, io::IoConfig, server, service::chain_factory};
 
 use ntex_mqtt::v3::codec::{self, Decoded, Encoded, Packet};
 use ntex_mqtt::v3::{
-    self, Control, CtlFlow, CtlFrame, CtlReason, Handshake, HandshakeAck, MqttServer, Publish,
-    Session, client,
+    self, Handshake, HandshakeAck, MqttServer, ProtocolMessage, Publish, Session, client,
 };
 use ntex_mqtt::{MqttServiceConfig, QoS, error::ProtocolError};
 
@@ -394,8 +393,8 @@ async fn test_qos2_client() -> std::io::Result<()> {
     let srv = server::TestServerBuilder::new(async move || {
         let release = release2.clone();
         MqttServer::new(handshake)
-            .control(move |msg| match msg {
-                Control::Protocol(CtlFrame::PublishRelease(msg)) => {
+            .protocol(move |msg| match msg {
+                ProtocolMessage::PublishRelease(msg) => {
                     release.store(true, Relaxed);
                     Ready::Ok(msg.ack())
                 }

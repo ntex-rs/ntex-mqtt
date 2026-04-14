@@ -37,7 +37,6 @@ where
         max_topic_alias,
         inner: Rc::new(Inner {
             sink,
-            payload: Cell::new(None),
             control: Pipeline::new(control.map_err(DispatcherError::Service)),
             info: RefCell::new(PublishInfo {
                 aliases: HashMap::default(),
@@ -62,24 +61,11 @@ struct Inner<C> {
     control: Pipeline<C>,
     sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
-    payload: Cell<Option<PlSender>>,
 }
 
 struct PublishInfo {
     inflight: HashSet<NonZeroU16>,
     aliases: HashMap<NonZeroU16, ByteString>,
-}
-
-impl<C> Inner<C> {
-    fn drop_payload<PErr>(&self, err: &PErr)
-    where
-        PErr: Clone,
-        PayloadError: From<PErr>,
-    {
-        if let Some(pl) = self.payload.take() {
-            pl.set_error(err.clone().into());
-        }
-    }
 }
 
 impl<T, C, E> Service<Decoded> for Dispatcher<T, C, E>
@@ -96,9 +82,9 @@ where
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
         if (res1.is_err() || res2.is_err())
-            && let Some(pl) = self.inner.payload.take()
+            && let Some(pl) = self.inner.sink.payload.take()
         {
-            self.inner.payload.set(Some(pl.clone()));
+            self.inner.sink.payload.set(Some(pl.clone()));
             if pl.ready().await != PayloadStatus::Ready {
                 self.inner.sink.force_close();
             }
@@ -116,7 +102,7 @@ where
     }
 
     async fn shutdown(&self) {
-        self.inner.drop_payload(&PayloadError::Disconnected);
+        self.inner.sink.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink();
         self.publish.shutdown().await;
         self.inner.control.shutdown().await;
@@ -203,7 +189,7 @@ where
                 } else {
                     let (pl, sender) =
                         Payload::from_stream(payload, self.cfg.max_payload_buffer_size);
-                    self.inner.payload.set(Some(sender));
+                    self.inner.sink.payload.set(Some(sender));
                     pl
                 };
 
@@ -218,12 +204,12 @@ where
                 .await
             }
             Decoded::PayloadChunk(buf, eof) => {
-                let pl = self.inner.payload.take().unwrap();
+                let pl = self.inner.sink.payload.take().unwrap();
                 pl.feed_data(buf);
                 if eof {
                     pl.feed_eof();
                 } else {
-                    self.inner.payload.set(Some(pl));
+                    self.inner.sink.payload.set(Some(pl));
                 }
                 Ok(None)
             }
@@ -374,7 +360,7 @@ impl<C> Inner<C> {
             }
             Err(err) => {
                 // do not handle nested error
-                self.drop_payload(&PayloadError::Service);
+                self.sink.drop_payload(&PayloadError::Service);
                 self.sink.drop_sink();
                 return Err(err);
             }
@@ -392,7 +378,7 @@ impl<C> Inner<C> {
             Pkt::None => Ok(None),
         };
         if result.disconnect {
-            self.drop_payload(&PayloadError::Service);
+            self.sink.drop_payload(&PayloadError::Service);
             self.sink.drop_sink();
         }
         response

@@ -3,12 +3,15 @@ use std::{cell::RefCell, fmt, marker, num::NonZeroU16, rc::Rc};
 use ntex_bytes::ByteString;
 use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Path, Router, RouterBuilder};
-use ntex_service::{IntoService, Pipeline, Service, boxed, cfg::Cfg, fn_service};
+use ntex_service::{
+    IntoService, Pipeline, Service, boxed, cfg::Cfg, fn_factory_with_config, fn_service,
+};
 use ntex_util::time::{Millis, Seconds, sleep};
 use ntex_util::{HashMap, future::Either, future::Ready};
 
+use crate::v5::dispatcher::ControlService;
 use crate::v5::publish::{Publish, PublishAck};
-use crate::v5::{ProtocolMessageAck, codec, shared::MqttShared, sink::MqttSink};
+use crate::v5::{ProtocolMessageAck, Session, codec, shared::MqttShared, sink::MqttSink};
 use crate::{MqttServiceConfig, control, error::MqttError, io::Dispatcher};
 
 use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
@@ -116,8 +119,12 @@ impl Client {
             16,
             self.cfg,
         );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, (), Rc<MqttShared>>::default(),
+            self.shared.clone(),
+        );
 
-        let _ = Dispatcher::<_, control::DefaultControlService<(), (), Rc<MqttShared>>, _, ()>::new(self.io, self.shared, dispatcher, Default::default()).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
 
     /// Run client with provided control messages handler
@@ -139,14 +146,12 @@ impl Client {
             16,
             self.cfg,
         );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, E, Rc<MqttShared>>::default(),
+            self.shared.clone(),
+        );
 
-        Dispatcher::<_, control::DefaultControlService<(), E, Rc<MqttShared>>, _, E>::new(
-            self.io,
-            self.shared,
-            dispatcher,
-            Default::default(),
-        )
-        .await
+        Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 
     /// Get negotiated io stream and codec
@@ -213,8 +218,12 @@ where
             16,
             self.cfg,
         );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, Err, Rc<MqttShared>>::default(),
+            self.shared.clone(),
+        );
 
-        let _ = Dispatcher::<_, control::DefaultControlService<(), Err, Rc<MqttShared>>, _, Err>::new(self.io, self.shared, dispatcher, Default::default()).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
 
     /// Run client and handle control messages
@@ -235,14 +244,12 @@ where
             16,
             self.cfg,
         );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, Err, Rc<MqttShared>>::default(),
+            self.shared.clone(),
+        );
 
-        Dispatcher::<_, control::DefaultControlService<(), Err, Rc<MqttShared>>, _, Err>::new(
-            self.io,
-            self.shared,
-            dispatcher,
-            control::DefaultControlService::default(),
-        )
-        .await
+        Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 
     /// Get negotiated io stream and codec

@@ -7,7 +7,7 @@ use ntex_io::IoRef;
 use ntex_util::{HashSet, channel::pool};
 
 use crate::v5::codec::{self, Decoded, Encoded, Packet, Publish};
-use crate::{QoS, error, error::SendPacketError, types::packet_type};
+use crate::{QoS, error, error::SendPacketError, payload::PlSender, types::packet_type};
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -36,6 +36,7 @@ pub struct MqttShared {
     streaming_waiter: Cell<Option<pool::Sender<()>>>,
     streaming_remaining: Cell<Option<num::NonZeroU32>>,
     on_publish_ack: Cell<Option<Box<dyn Fn(codec::PublishAck, bool)>>>,
+    pub(super) payload: Cell<Option<PlSender>>,
     pub(super) flags: Cell<Flags>,
     pub(super) pool: Rc<MqttSinkPool>,
     pub(super) codec: codec::Codec,
@@ -83,6 +84,7 @@ impl MqttShared {
             topic_alias_max: Cell::new(0),
             inflight_idx: Cell::new(0),
             flags: Cell::new(Flags::QOS_ATLEAST),
+            payload: Cell::new(None),
             on_publish_ack: Cell::new(None),
             encode_error: Cell::new(None),
             streaming_waiter: Cell::new(None),
@@ -258,6 +260,16 @@ impl MqttShared {
     pub(super) fn drop_sink(&self) {
         self.clear_queues();
         self.io.close();
+    }
+
+    pub(super) fn drop_payload<E>(&self, err: &E)
+    where
+        E: Clone,
+        error::PayloadError: From<E>,
+    {
+        if let Some(pl) = self.payload.take() {
+            pl.set_error(err.clone().into());
+        }
     }
 
     fn clear_queues(&self) {

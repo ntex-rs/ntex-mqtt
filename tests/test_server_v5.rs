@@ -1939,13 +1939,12 @@ async fn protocol_error_session_expiry() -> std::io::Result<()> {
         let tx = tx.clone();
         let val = val2.clone();
         MqttServer::new(handshake)
-            .control(async move |msg| match msg {
-                Control::Stop(CtlReason::ProtocolError(err)) => {
+            .control(async move |msg| {
+                if let Control::ProtocolError(err) = msg {
                     val.store(true, Relaxed);
                     let _ = tx.lock().unwrap().take().unwrap().send(());
-                    Ok(err.ack())
                 }
-                msg => Ok::<_, TestError>(msg.ack()),
+                Ok::<_, TestError>(None)
             })
             .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
     });

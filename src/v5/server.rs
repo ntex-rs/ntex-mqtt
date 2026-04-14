@@ -15,7 +15,7 @@ use super::default::{DefaultControlService, InFlightService};
 use super::handshake::{Handshake, HandshakeAck};
 use super::publish::{Publish, PublishAck};
 use super::shared::{MqttShared, MqttSinkPool};
-use super::{MqttSink, Session, ToPublishAck, dispatcher::factory};
+use super::{MqttSink, Session, ToPublishAck, dispatcher::ControlFactory, dispatcher::factory};
 
 /// Mqtt Server
 pub struct MqttServer<St, H, P, C, M = Identity> {
@@ -38,7 +38,11 @@ impl<St, H>
         St,
         H,
         DefaultControlService<St, H::Error>,
-        control::DefaultControlService<St, H::Error, mqtt::Codec>,
+        ControlFactory<
+            control::DefaultControlService<Session<St>, H::Error, mqtt::Codec>,
+            St,
+            H::Error,
+        >,
         InFlightService,
     >
 where
@@ -54,7 +58,7 @@ where
             handshake: handshake.into_factory(),
             protocol: DefaultControlService::default(),
             middleware: InFlightService,
-            control: control::DefaultControlService::default(),
+            control: ControlFactory::new(control::DefaultControlService::default()),
             pool: Rc::new(MqttSinkPool::default()),
             _t: PhantomData,
         }
@@ -134,7 +138,10 @@ where
     }
 
     /// Service to handle connection control messages
-    pub fn control<F, Srv>(self, service: F) -> MqttServer<St, H, P, Srv, M>
+    pub fn control<F, Srv>(
+        self,
+        service: F,
+    ) -> MqttServer<St, H, P, ControlFactory<Srv, St, H::Error>, M>
     where
         F: IntoServiceFactory<Srv, Control<H::Error>, Session<St>>,
         Srv: ServiceFactory<Control<H::Error>, Session<St>, Response = Option<mqtt::Packet>>
@@ -144,7 +151,7 @@ where
         MqttServer {
             handshake: self.handshake,
             protocol: self.protocol,
-            control: service.into_factory(),
+            control: ControlFactory::new(service.into_factory()),
             middleware: self.middleware,
             pool: self.pool,
             _t: PhantomData,
