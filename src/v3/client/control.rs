@@ -1,4 +1,4 @@
-use std::{io, num::NonZeroU16};
+use std::num::NonZeroU16;
 
 use ntex_bytes::Bytes;
 

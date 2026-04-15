@@ -3,16 +3,14 @@ use std::{cell::RefCell, fmt, marker, num::NonZeroU16, rc::Rc};
 use ntex_bytes::ByteString;
 use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Path, Router, RouterBuilder};
-use ntex_service::{
-    IntoService, Pipeline, Service, boxed, cfg::Cfg, fn_factory_with_config, fn_service,
-};
+use ntex_service::{IntoService, Pipeline, Service, boxed, cfg::Cfg, fn_service};
 use ntex_util::time::{Millis, Seconds, sleep};
 use ntex_util::{HashMap, future::Either, future::Ready};
 
 use crate::v5::dispatcher::ControlService;
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{ProtocolMessageAck, Session, codec, shared::MqttShared, sink::MqttSink};
-use crate::{MqttServiceConfig, control, error::MqttError, io::Dispatcher};
+use crate::{MqttServiceConfig, control, io::Dispatcher};
 
 use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
 

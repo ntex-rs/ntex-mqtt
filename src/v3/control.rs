@@ -1,7 +1,8 @@
-use ntex_bytes::ByteString;
-use std::{fmt, io, marker::PhantomData, num::NonZeroU16, ptr};
+use std::{fmt, marker::PhantomData, num::NonZeroU16, ptr};
 
-use crate::{error, types::QoS, v3::codec};
+use ntex_bytes::ByteString;
+
+use crate::{types::QoS, v3::codec};
 
 /// MQTT protocol–related messages.
 ///

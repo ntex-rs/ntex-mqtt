@@ -8,7 +8,7 @@ use ntex_util::future::{Either, Ready};
 use ntex_util::time::{Millis, Seconds, sleep};
 
 use crate::v3::{ProtocolMessageAck, Publish, codec, shared::MqttShared, sink::MqttSink};
-use crate::{control, error::MqttError, io::Dispatcher};
+use crate::{control, io::Dispatcher};
 
 use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
 

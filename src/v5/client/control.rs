@@ -1,5 +1,3 @@
-use std::io;
-
 use ntex_bytes::{ByteString, Bytes};
 
 use crate::{error, payload::Payload, v5::codec, v5::control::Pkt};

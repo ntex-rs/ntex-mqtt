@@ -1,8 +1,6 @@
 //! MQTT Client/Server framework
 #![deny(rust_2018_idioms, unreachable_pub, missing_debug_implementations, clippy::pedantic)]
 #![allow(
-    warnings,
-    dead_code,
     clippy::cast_possible_truncation,
     clippy::missing_fields_in_debug,
     clippy::must_use_candidate,
@@ -16,7 +14,7 @@ mod utils;
 
 pub mod control;
 pub mod error;
-//pub mod v3;
+pub mod v3;
 pub mod v5;
 
 mod config;

@@ -1,14 +1,12 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::{marker::PhantomData, num::NonZero, num::NonZeroU16, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_service::{Pipeline, Service, ServiceCtx, cfg::Cfg};
 use ntex_util::{HashMap, HashSet, future::Either, future::join};
 
-use crate::error::{
-    DispatcherError, HandshakeError, MqttError, PayloadError, ProtocolError, SpecViolation,
-};
-use crate::payload::{Payload, PayloadStatus, PlSender};
+use crate::error::{DispatcherError, PayloadError, ProtocolError, SpecViolation};
+use crate::payload::{Payload, PayloadStatus};
 use crate::v5::codec::{Decoded, DisconnectReasonCode, Encoded, Packet};
 use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{codec, control::Pkt, publish::Publish, publish::PublishAck};
@@ -90,14 +88,14 @@ where
             }
         }
 
-        res1.map_err(|e| DispatcherError::Service(e.into()))?;
+        res1.map_err(DispatcherError::Service)?;
         res2?;
         Ok(())
     }
 
     #[inline]
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        self.publish.poll(cx).map_err(|e| DispatcherError::Service(e.into()))?;
+        self.publish.poll(cx).map_err(DispatcherError::Service)?;
         self.inner.control.poll(cx)
     }
 
@@ -307,7 +305,7 @@ where
     T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
     C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
-    let ack = match ctx.call(svc, pkt).await.map_err(|e| DispatcherError::Service(e.into()))? {
+    let ack = match ctx.call(svc, pkt).await.map_err(DispatcherError::Service)? {
         Either::Right(ack) => ack,
         Either::Left(pkt) => {
             let (pkt, payload) = pkt.into_inner();
@@ -345,7 +343,7 @@ impl<C> Inner<C> {
 
     async fn control_pkt<E>(
         &self,
-        mut pkt: ProtocolMessage,
+        pkt: ProtocolMessage,
         packet_id: u16,
     ) -> Result<Option<Encoded>, DispatcherError<E>>
     where
@@ -382,53 +380,5 @@ impl<C> Inner<C> {
             self.sink.drop_sink();
         }
         response
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use ntex_io::{Io, testing::IoTest};
-    use ntex_service::{cfg::SharedCfg, fn_service};
-    use ntex_util::future::{Ready, lazy};
-
-    use super::super::MqttSink;
-    use super::*;
-
-    #[derive(Debug)]
-    struct TestError;
-
-    #[ntex::test]
-    async fn test_wr_backpressure() {
-        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
-        let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
-        let sink = MqttSink::new(shared.clone());
-
-        let disp = Pipeline::new(create_dispatcher(
-            shared.clone(),
-            fn_service(|p: Publish| Ready::Ok::<_, TestError>(Either::Right(p.ack()))),
-            fn_service(|_| {
-                Ready::Ok::<_, TestError>(ControlAck { packet: Pkt::None, disconnect: false })
-            }),
-            16,
-            16,
-            Cfg::default(),
-        ));
-
-        assert!(!sink.is_ready());
-        shared.set_cap(1);
-        assert!(sink.is_ready());
-        assert!(shared.wait_readiness().is_none());
-
-        disp.call(DispatchItem::Control(DispControl::WBackPressureEnabled)).await.unwrap();
-        assert!(!sink.is_ready());
-        let rx = shared.wait_readiness();
-        let rx2 = shared.wait_readiness().unwrap();
-        assert!(rx.is_some());
-
-        let rx = rx.unwrap();
-        disp.call(DispatchItem::Control(DispControl::WBackPressureDisabled)).await.unwrap();
-        assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
-        assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
     }
 }

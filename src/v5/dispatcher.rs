@@ -1,4 +1,4 @@
-use std::{cell::Cell, cell::RefCell, marker, marker::PhantomData, num, rc::Rc, task::Context};
+use std::{cell::RefCell, marker, marker::PhantomData, num, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_service::cfg::{Cfg, SharedCfg};
@@ -9,7 +9,7 @@ use ntex_util::{HashMap, HashSet, future::join};
 
 use crate::control::{Control, Reason};
 use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
-use crate::payload::{Payload, PayloadStatus, PlSender};
+use crate::payload::{Payload, PayloadStatus};
 use crate::{MqttError, MqttServiceConfig, types::QoS};
 
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
@@ -541,13 +541,15 @@ where
     }
 }
 
-pub(super) struct ControlService<S, E> {
+#[derive(Clone, Debug)]
+pub struct ControlService<S, E> {
     svc: S,
     shared: Rc<MqttShared>,
     _t: PhantomData<E>,
 }
 
-pub(super) struct ControlFactory<S, St, E> {
+#[derive(Clone, Debug)]
+pub struct ControlFactory<S, St, E> {
     svc: S,
     _t: PhantomData<(E, St)>,
 }
@@ -655,20 +657,11 @@ mod tests {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
-        let control = Pipeline::new(fn_service(|_| {
-            Ready::Ok::<_, MqttError<TestError>>(ControlAck {
-                packet: Pkt::None,
-                disconnect: false,
-            })
-        }));
 
-        let disp = Pipeline::new(Dispatcher::<_, _, _, _>::new(
+        let disp = ControlFactrory::<_, ()>::new(
+            control::DefaultControlService::default(),
             shared.clone(),
-            fn_service(|p: Publish| Ready::Ok::<_, TestError>(p.ack())),
-            control.clone(),
-            control,
-            Cfg::default(),
-        ));
+        );
 
         let sink = MqttSink::new(shared.clone());
         assert!(!sink.is_ready());
@@ -676,14 +669,14 @@ mod tests {
         assert!(sink.is_ready());
         assert!(shared.wait_readiness().is_none());
 
-        disp.call(DispatchItem::Control(DispControl::WBackPressureEnabled)).await.unwrap();
+        disp.call(Control::wr(false)).await.unwrap();
         assert!(!sink.is_ready());
         let rx = shared.wait_readiness();
         let rx2 = shared.wait_readiness().unwrap();
         assert!(rx.is_some());
 
         let rx = rx.unwrap();
-        disp.call(DispatchItem::Control(DispControl::WBackPressureDisabled)).await.unwrap();
+        disp.call(Control::wr(true)).await.unwrap();
         assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
         assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
     }

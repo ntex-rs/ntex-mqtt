@@ -6,9 +6,7 @@ use ntex_service::{Pipeline, PipelineSvc, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
-use crate::error::{
-    DecodeError, DispatcherError, HandshakeError, PayloadError, ProtocolError, SpecViolation,
-};
+use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::{MqttError, MqttServiceConfig, types::QoS, types::packet_type};
 
@@ -402,7 +400,7 @@ where
 impl<C> Inner<C> {
     async fn control<E>(
         &self,
-        mut pkt: ProtocolMessage,
+        pkt: ProtocolMessage,
     ) -> Result<Option<Encoded>, DispatcherError<E>>
     where
         C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,

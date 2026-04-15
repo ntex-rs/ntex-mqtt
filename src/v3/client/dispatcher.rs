@@ -5,13 +5,11 @@ use ntex_service::{Pipeline, Service, ServiceCtx};
 use ntex_util::future::{Either, join};
 use ntex_util::{HashSet, services::inflight::InFlightService};
 
-use crate::error::{
-    DispatcherError, HandshakeError, PayloadError, ProtocolError, SpecViolation,
-};
+use crate::error::{DispatcherError, PayloadError, ProtocolError, SpecViolation};
 use crate::v3::codec::{self, Decoded, Encoded, Packet};
 use crate::v3::shared::{Ack, MqttShared};
 use crate::v3::{control::ProtocolMessageKind, publish::Publish};
-use crate::{MqttError, payload::Payload, payload::PayloadStatus, payload::PlSender};
+use crate::{payload::Payload, payload::PayloadStatus, payload::PlSender};
 
 use super::control::{ProtocolMessage, ProtocolMessageAck};
 
@@ -114,13 +112,13 @@ where
             }
         }
 
-        res1.map_err(|e| DispatcherError::Service(e.into()))?;
+        res1.map_err(DispatcherError::Service)?;
         res2?;
         Ok(())
     }
 
     fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        self.publish.poll(cx).map_err(|e| DispatcherError::Service(e.into()))?;
+        self.publish.poll(cx).map_err(DispatcherError::Service)?;
         self.inner.control.poll(cx)
     }
 
@@ -253,7 +251,7 @@ where
     T: Service<Publish, Response = Either<(), Publish>, Error = E>,
     C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
-    let res = ctx.call(svc, pkt).await.map_err(|e| DispatcherError::Service(e.into()))?;
+    let res = ctx.call(svc, pkt).await.map_err(DispatcherError::Service)?;
     match res {
         Either::Left(()) => {
             log::trace!("Publish result for packet {packet_id:?} is ready");

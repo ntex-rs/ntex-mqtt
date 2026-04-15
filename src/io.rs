@@ -293,12 +293,12 @@ where
                                     );
                                 }
                                 Err(RecvError::PeerGone(err)) => {
-                                    inner.stop(inner.control.call(Control::peer_gone(err)))
+                                    inner.stop(inner.control.call(Control::peer_gone(err)));
                                 }
                             }
                         }
                         PollService::Item(item) => inner.call_service(cx, item, true),
-                        PollService::Continue => continue,
+                        PollService::Continue => (),
                     }
                 }
                 // handle write back-pressure
@@ -331,7 +331,7 @@ where
                     match Pin::new(&mut fut).poll(cx) {
                         Poll::Ready(Ok(item)) => {
                             if let Some(item) = item {
-                                inner.io.encode(item, &inner.codec);
+                                let _ = inner.io.encode(item, &inner.codec);
                             }
                             inner.st = IoDispatcherState::Shutdown(Some(Ok(())));
                         }
@@ -355,14 +355,14 @@ where
                 }
 
                 IoDispatcherState::ShutdownIo(ref mut res) => {
-                    return if !inner.flags.contains(Flags::IO_ERR) {
+                    return if inner.flags.contains(Flags::IO_ERR) {
+                        Poll::Ready(res.take().unwrap_or(Ok(())))
+                    } else {
                         if inner.io.poll_shutdown(cx).is_ready() {
                             log::trace!("{}: io shutdown completed", inner.io.tag());
                             continue;
                         }
                         Poll::Pending
-                    } else {
-                        Poll::Ready(res.take().unwrap_or(Ok(())))
                     };
                 }
             }
@@ -597,12 +597,13 @@ mod tests {
 
     use super::*;
 
-    impl<S, U> Dispatcher<S, U>
+    impl<P, C, U, E> Dispatcher<P, C, U, E>
     where
-        S: Service<DispatchItem<U>, Response = Option<Response<U>>>,
-        S::Error: 'static,
-        U: Decoder + Encoder + 'static,
-        <U as Encoder>::Item: 'static,
+        P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>
+            + 'static,
+        C: Service<Control<E>, Response = Option<Response<U>>> + 'static,
+        U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
+        E: 'static,
     {
         /// Construct new `Dispatcher` instance
         pub(crate) fn new_debug<F: IntoService<S, DispatchItem<U>>>(
