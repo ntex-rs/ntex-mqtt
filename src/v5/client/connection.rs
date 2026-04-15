@@ -118,7 +118,7 @@ impl Client {
             self.cfg,
         );
         let control = ControlService::new(
-            control::DefaultControlService::<Session<()>, (), Rc<MqttShared>>::default(),
+            control::DefaultControlService::<Session<()>, (), codec::Encoded>::default(),
             self.shared.clone(),
         );
 
@@ -145,7 +145,7 @@ impl Client {
             self.cfg,
         );
         let control = ControlService::new(
-            control::DefaultControlService::<Session<()>, E, Rc<MqttShared>>::default(),
+            control::DefaultControlService::<Session<()>, E, codec::Encoded>::default(),
             self.shared.clone(),
         );
 
@@ -217,7 +217,7 @@ where
             self.cfg,
         );
         let control = ControlService::new(
-            control::DefaultControlService::<Session<()>, Err, Rc<MqttShared>>::default(),
+            control::DefaultControlService::<Session<()>, Err, codec::Encoded>::default(),
             self.shared.clone(),
         );
 
@@ -243,7 +243,7 @@ where
             self.cfg,
         );
         let control = ControlService::new(
-            control::DefaultControlService::<Session<()>, Err, Rc<MqttShared>>::default(),
+            control::DefaultControlService::<Session<()>, Err, codec::Encoded>::default(),
             self.shared.clone(),
         );
 

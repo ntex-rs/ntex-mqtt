@@ -1,7 +1,6 @@
 //! Control message for connection management service
 use std::{fmt, io, marker::PhantomData};
 
-use ntex_codec::Encoder;
 use ntex_service::{Service, ServiceCtx, ServiceFactory};
 
 use crate::error;
@@ -24,7 +23,7 @@ pub enum Reason<E> {
     /// Unhandled application level error from handshake, publish and control services
     Error(Error<E>),
     /// Protocol level error
-    ProtocolError(ProtocolError),
+    Protocol(ProtocolError),
     /// Peer is gone
     PeerGone(PeerGone),
 }
@@ -43,7 +42,7 @@ impl<E> Control<E> {
     }
 
     pub(super) fn proto(err: error::ProtocolError) -> Self {
-        Control::Stop(Reason::ProtocolError(ProtocolError::new(err)))
+        Control::Stop(Reason::Protocol(ProtocolError::new(err)))
     }
 }
 
@@ -115,29 +114,27 @@ impl PeerGone {
 
 /// Default control service
 #[derive(Debug)]
-pub struct DefaultControlService<S, E, U>(PhantomData<(S, E, U)>);
+pub struct DefaultControlService<S, E, R>(PhantomData<(S, E, R)>);
 
-impl<S, E: fmt::Debug, U> Default for DefaultControlService<S, E, U> {
+impl<S, E: fmt::Debug, R> Default for DefaultControlService<S, E, R> {
     fn default() -> Self {
         DefaultControlService(PhantomData)
     }
 }
 
-impl<S, E: fmt::Debug, U: Encoder> ServiceFactory<Control<E>, S>
-    for DefaultControlService<S, E, U>
-{
-    type Response = Option<U::Item>;
+impl<S, E: fmt::Debug, R> ServiceFactory<Control<E>, S> for DefaultControlService<S, E, R> {
+    type Response = Option<R>;
     type Error = E;
     type InitError = E;
-    type Service = DefaultControlService<S, E, U>;
+    type Service = DefaultControlService<S, E, R>;
 
     async fn create(&self, _: S) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService(PhantomData))
     }
 }
 
-impl<S, E: fmt::Debug, U: Encoder> Service<Control<E>> for DefaultControlService<S, E, U> {
-    type Response = Option<U::Item>;
+impl<S, E: fmt::Debug, R> Service<Control<E>> for DefaultControlService<S, E, R> {
+    type Response = Option<R>;
     type Error = E;
 
     async fn call(

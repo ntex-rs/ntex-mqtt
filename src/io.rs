@@ -581,8 +581,8 @@ where
 #[cfg(test)]
 #[allow(clippy::items_after_statements)]
 mod tests {
+    use std::cell::Cell;
     use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering};
-    use std::{cell::Cell, io};
 
     use ntex_bytes::{Bytes, BytesMut};
     use ntex_io::{self as nio, IoConfig, testing::IoTest as Io};
@@ -1138,7 +1138,7 @@ mod tests {
             }),
             fn_service(async move |msg: Control<()>| {
                 match msg {
-                    Control::Stop(Reason::ProtocolError(err)) => {
+                    Control::Stop(Reason::Protocol(err)) => {
                         if matches!(err.get_ref(), &ProtocolError::KeepAliveTimeout) {
                             data3.lock().unwrap().borrow_mut().push(1);
                         }
@@ -1225,7 +1225,7 @@ mod tests {
             }),
             fn_service(async move |msg: Control<()>| {
                 match msg {
-                    Control::Stop(Reason::ProtocolError(err)) => {
+                    Control::Stop(Reason::Protocol(err)) => {
                         if matches!(err.get_ref(), &ProtocolError::KeepAliveTimeout) {
                             data3.lock().unwrap().borrow_mut().push(1);
                         }
@@ -1275,7 +1275,7 @@ mod tests {
             }),
             fn_service(async move |msg: Control<()>| {
                 match msg {
-                    Control::Stop(Reason::ProtocolError(err)) => {
+                    Control::Stop(Reason::Protocol(err)) => {
                         if matches!(err.get_ref(), &ProtocolError::ReadTimeout) {
                             data3.lock().unwrap().borrow_mut().push(1);
                         }

@@ -11,7 +11,7 @@ use crate::{control::Control, io::Dispatcher};
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = Option<<U as Encoder>::Item>;
 
-pub struct MqttServer<St, H, T, M, E, C, Codec> {
+pub struct MqttServer<St, E, H, T, M, C, Codec> {
     handshake: H,
     handler: Rc<T>,
     middleware: Rc<M>,
@@ -19,13 +19,13 @@ pub struct MqttServer<St, H, T, M, E, C, Codec> {
     _t: PhantomData<(St, E, Codec)>,
 }
 
-impl<St, H, T, M, E, C, Codec> fmt::Debug for MqttServer<St, H, T, M, E, C, Codec> {
+impl<St, E, H, T, M, C, Codec> fmt::Debug for MqttServer<St, E, H, T, M, C, Codec> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MqttServer").finish()
     }
 }
 
-impl<St, H, T, M, E, C, Codec> MqttServer<St, H, T, M, E, C, Codec> {
+impl<St, E, H, T, M, C, Codec> MqttServer<St, E, H, T, M, C, Codec> {
     pub(crate) fn new(handshake: H, service: T, mw: M, control: C) -> Self {
         MqttServer {
             handshake,
@@ -37,14 +37,14 @@ impl<St, H, T, M, E, C, Codec> MqttServer<St, H, T, M, E, C, Codec> {
     }
 }
 
-impl<St, H, T, M, E, C, Codec> MqttServer<St, H, T, M, E, C, Codec>
+impl<St, E, H, T, M, C, Codec> MqttServer<St, E, H, T, M, C, Codec>
 where
     H: ServiceFactory<IoBoxed, SharedCfg, Response = (IoBoxed, Codec, St, Seconds)>,
 {
     async fn create_service(
         &self,
         cfg: SharedCfg,
-    ) -> Result<MqttHandler<St, H::Service, T, M, E, C, Codec>, H::InitError> {
+    ) -> Result<MqttHandler<St, E, H::Service, T, M, C, Codec>, H::InitError> {
         let handshake = self.handshake.create(cfg.clone()).await?;
 
         // create connect service and then create service impl
@@ -59,12 +59,11 @@ where
     }
 }
 
-impl<St, H, T, M, E, C, Codec> ServiceFactory<IoBoxed, SharedCfg>
-    for MqttServer<St, H, T, M, E, C, Codec>
+impl<St, E, H, T, M, C, Codec> ServiceFactory<IoBoxed, SharedCfg>
+    for MqttServer<St, E, H, T, M, C, Codec>
 where
     St: Clone + 'static,
     H: ServiceFactory<IoBoxed, SharedCfg, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
-    H::Error: fmt::Debug,
     T: ServiceFactory<
             Request<Codec>,
             (SharedCfg, St),
@@ -88,20 +87,19 @@ where
     type Response = ();
     type Error = H::Error;
     type InitError = H::InitError;
-    type Service = MqttHandler<St, H::Service, T, M, E, C, Codec>;
+    type Service = MqttHandler<St, E, H::Service, T, M, C, Codec>;
 
     async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
         self.create_service(cfg).await
     }
 }
 
-impl<F, St, H, T, M, E, C, Codec> ServiceFactory<Io<F>, SharedCfg>
-    for MqttServer<St, H, T, M, E, C, Codec>
+impl<F, St, E, H, T, M, C, Codec> ServiceFactory<Io<F>, SharedCfg>
+    for MqttServer<St, E, H, T, M, C, Codec>
 where
     F: Filter,
     St: Clone + 'static,
     H: ServiceFactory<IoBoxed, SharedCfg, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
-    H::Error: fmt::Debug,
     T: ServiceFactory<
             Request<Codec>,
             (SharedCfg, St),
@@ -125,14 +123,14 @@ where
     type Response = ();
     type Error = H::Error;
     type InitError = H::InitError;
-    type Service = MqttHandler<St, H::Service, T, M, E, C, Codec>;
+    type Service = MqttHandler<St, E, H::Service, T, M, C, Codec>;
 
     async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
         self.create_service(cfg).await
     }
 }
 
-pub struct MqttHandler<St, H, T, M, E, C, Codec> {
+pub struct MqttHandler<St, E, H, T, M, C, Codec> {
     handshake: H,
     handler: Rc<T>,
     middleware: Rc<M>,
@@ -141,17 +139,16 @@ pub struct MqttHandler<St, H, T, M, E, C, Codec> {
     _t: PhantomData<(St, E, Codec)>,
 }
 
-impl<St, H, T, M, E, C, Codec> fmt::Debug for MqttHandler<St, H, T, M, E, C, Codec> {
+impl<St, E, H, T, M, C, Codec> fmt::Debug for MqttHandler<St, E, H, T, M, C, Codec> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MqttHandler").finish()
     }
 }
 
-impl<St, H, T, M, E, C, Codec> Service<IoBoxed> for MqttHandler<St, H, T, M, E, C, Codec>
+impl<St, E, H, T, M, C, Codec> Service<IoBoxed> for MqttHandler<St, E, H, T, M, C, Codec>
 where
     St: Clone + 'static,
     H: Service<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
-    H::Error: fmt::Debug,
     T: ServiceFactory<
             Request<Codec>,
             (SharedCfg, St),
@@ -184,7 +181,7 @@ where
         let handshake = ctx.call(&self.handshake, req).await;
 
         let (io, codec, session, keepalive) = handshake.map_err(|e| {
-            log::trace!("{tag}: Connection handshake failed: {e:?}");
+            // log::trace!("{tag}: Connection handshake failed: {e:?}");
             e
         })?;
         log::trace!("{tag}: Connection handshake succeeded");
@@ -199,12 +196,11 @@ where
     }
 }
 
-impl<F, St, H, T, M, E, C, Codec> Service<Io<F>> for MqttHandler<St, H, T, M, E, C, Codec>
+impl<F, St, E, H, T, M, C, Codec> Service<Io<F>> for MqttHandler<St, E, H, T, M, C, Codec>
 where
     F: Filter,
     St: Clone + 'static,
     H: Service<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
-    H::Error: fmt::Debug,
     T: ServiceFactory<
             Request<Codec>,
             (SharedCfg, St),

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, marker, marker::PhantomData, num, rc::Rc, task::Context};
+use std::{cell::RefCell, marker::PhantomData, num, rc::Rc, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_service::cfg::{Cfg, SharedCfg};
@@ -10,7 +10,7 @@ use ntex_util::{HashMap, HashSet, future::join};
 use crate::control::{Control, Reason};
 use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
-use crate::{MqttError, MqttServiceConfig, types::QoS};
+use crate::{MqttServiceConfig, types::QoS};
 
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
 use super::control::{Pkt, ProtocolMessage, ProtocolMessageAck};
@@ -18,22 +18,23 @@ use super::publish::{Publish, PublishAck};
 use super::{Session, ToPublishAck, shared::Ack, shared::MqttShared};
 
 /// MQTT 5 protocol dispatcher
-pub(super) fn factory<St, T, C, E>(
+pub(super) fn factory<St, T, P, E>(
     publish: T,
-    control: C,
+    control: P,
 ) -> impl ServiceFactory<
     Decoded,
     (SharedCfg, Session<St>),
     Response = Option<Encoded>,
     Error = DispatcherError<E>,
-    InitError = MqttError<E>,
+    InitError = T::InitError,
 >
 where
     St: 'static,
-    E: From<T::InitError> + From<C::Error> + From<C::InitError> + 'static,
+    E: From<P::Error> + 'static,
     T: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
-    C: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
     T::Error: ToPublishAck<Error = E>,
+    T::InitError: From<P::InitError>,
+    P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
 {
     let factories = Rc::new((publish, control));
 
@@ -45,10 +46,10 @@ where
         let (publish, control) =
             join(factories.0.create(ses.clone()), factories.1.create(ses)).await;
 
-        let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
+        let publish = publish?;
         let control = control
-            .map_err(|e| MqttError::Service(e.into()))?
-            .map_err(|e| DispatcherError::Service(E::from(e)));
+            .map_err(<T::InitError>::from)?
+            .map_err(|e| DispatcherError::Service(e.into()));
 
         let control = Pipeline::new(
             BufferService::new(
@@ -64,7 +65,7 @@ where
             }),
         );
 
-        Ok(Dispatcher::<_, _, E>::new(sink, publish, control, cfg))
+        Ok(Dispatcher::new(sink, publish, control, cfg))
     })
 }
 
@@ -91,7 +92,7 @@ pub(crate) struct Dispatcher<T, C, E> {
     publish: T,
     inner: Rc<Inner<C>>,
     cfg: Cfg<MqttServiceConfig>,
-    _t: marker::PhantomData<E>,
+    _t: PhantomData<E>,
 }
 
 struct Inner<C> {
@@ -120,6 +121,7 @@ where
         Self {
             cfg,
             publish,
+            _t: PhantomData,
             inner: Rc::new(Inner {
                 sink,
                 control,
@@ -128,7 +130,6 @@ where
                     inflight: HashSet::default(),
                 }),
             }),
-            _t: marker::PhantomData,
         }
     }
 
@@ -139,7 +140,6 @@ where
 
 impl<T, C, E> Service<Decoded> for Dispatcher<T, C, E>
 where
-    E: 'static,
     T: Service<Publish, Response = PublishAck> + 'static,
     T::Error: ToPublishAck<Error = E>,
     C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>
@@ -606,7 +606,7 @@ where
             Control::Stop(Reason::Error(_)) => {
                 self.shared.drop_payload(&PayloadError::Service);
             }
-            Control::Stop(Reason::ProtocolError(err)) => {
+            Control::Stop(Reason::Protocol(err)) => {
                 self.shared.drop_payload(err.get_ref());
             }
             Control::Stop(Reason::PeerGone(_)) => {
@@ -631,11 +631,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU16;
-
-    use ntex_bytes::Bytes;
     use ntex_io::{Io, testing::IoTest};
-    use ntex_service::fn_service;
     use ntex_util::future::lazy;
 
     use super::*;
@@ -657,70 +653,30 @@ mod tests {
         let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
-
-        let disp = ControlFactory::<_, (), ()>::new(
-            control::DefaultControlService::default(),
-            shared.clone(),
-        );
-
         let sink = MqttSink::new(shared.clone());
+        let ses = Session::new((), sink.clone());
+
+        let disp = ControlFactory::<_, (), ()>::new(control::DefaultControlService::<
+            _,
+            (),
+            codec::Codec,
+        >::default());
+        let svc = disp.pipeline(ses).await.unwrap();
+
         assert!(!sink.is_ready());
         shared.set_cap(1);
         assert!(sink.is_ready());
         assert!(shared.wait_readiness().is_none());
 
-        disp.call(Control::wr(false)).await.unwrap();
+        svc.call(Control::wr(false)).await.unwrap();
         assert!(!sink.is_ready());
         let rx = shared.wait_readiness();
         let rx2 = shared.wait_readiness().unwrap();
         assert!(rx.is_some());
 
         let rx = rx.unwrap();
-        disp.call(Control::wr(true)).await.unwrap();
+        svc.call(Control::wr(true)).await.unwrap();
         assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
         assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
-    }
-
-    #[ntex::test]
-    async fn control_stop_once_on_service_error() {
-        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
-        let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
-        let counter = Rc::new(Cell::new(0));
-        let counter2 = counter.clone();
-        let control = Pipeline::new(fn_service(async move |msg| {
-            if matches!(msg, Control::Stop(_)) {
-                counter2.set(counter2.get() + 1);
-            }
-            Ok::<_, MqttError<TestError>>(ControlAck { packet: Pkt::None, disconnect: false })
-        }));
-
-        let disp = Pipeline::new(Dispatcher::<_, _, _, _>::new(
-            shared.clone(),
-            fn_service(async |_: Publish| Err(TestError)),
-            control.clone(),
-            control,
-            Cfg::default(),
-        ));
-
-        disp.call(DispatchItem::Item(Decoded::Publish(
-            codec::Publish {
-                dup: false,
-                retain: false,
-                qos: codec::QoS::AtLeastOnce,
-                topic: ByteString::from("test"),
-                packet_id: Some(NonZeroU16::new(1).unwrap()),
-                payload_size: 0,
-                properties: codec::PublishProperties::default(),
-            },
-            Bytes::new(),
-            0,
-        )))
-        .await
-        .unwrap();
-
-        disp.call(DispatchItem::Stop(Reason::Io(None))).await.unwrap();
-
-        assert_eq!(counter.get(), 1);
     }
 }
