@@ -1501,10 +1501,10 @@ async fn test_max_qos() -> std::io::Result<()> {
         let violated = violated2.clone();
         MqttServer::new(handshake)
             .control(async move |msg| {
-                if let Control::Stop(Reason::Protocol(msg)) = msg {
-                    if let error::ProtocolError::ProtocolViolation(_) = msg.get_ref() {
-                        violated.store(true, Relaxed);
-                    }
+                if let Control::Stop(Reason::Protocol(msg)) = msg
+                    && let error::ProtocolError::ProtocolViolation(_) = msg.get_ref()
+                {
+                    violated.store(true, Relaxed);
                 }
                 Ok::<_, TestError>(None)
             })
@@ -1641,10 +1641,10 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
 
         MqttServer::new(handshake)
             .control(async move |msg| {
-                if let Control::Stop(Reason::Protocol(msg)) = msg {
-                    if msg.get_ref() == &error::ProtocolError::ReadTimeout {
-                        check.store(true, Relaxed);
-                    }
+                if let Control::Stop(Reason::Protocol(msg)) = msg
+                    && msg.get_ref() == &error::ProtocolError::ReadTimeout
+                {
+                    check.store(true, Relaxed);
                 }
                 Ok::<_, TestError>(None)
             })

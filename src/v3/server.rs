@@ -99,7 +99,7 @@ where
     E: From<H::Error> + fmt::Debug,
     H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
     P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
-    C: ServiceFactory<Control<H::Error>, Session<St>, Response = Option<mqtt::Packet>>
+    C: ServiceFactory<Control<H::Error>, Session<St>, Response = Option<mqtt::Encoded>>
         + 'static,
     H::Error: From<P::Error> + From<P::InitError> + fmt::Debug,
 {

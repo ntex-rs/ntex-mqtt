@@ -34,45 +34,26 @@ async fn main() -> std::io::Result<()> {
     let sink = client.sink();
 
     // handle incoming publishes
-    ntex::rt::spawn(client.start(fn_service(
-        |control: v5::client::Control<Error>| async move {
-            match control {
-                v5::client::Control::Protocol(v5::client::CtlFrame::Publish(publish)) => {
-                    let pl = publish.read_all().await;
-                    log::info!(
-                        "incoming publish: {:?} -> {:?}, payload: {:?}",
-                        publish.packet().packet_id,
-                        publish.packet().topic,
-                        pl,
-                    );
-                    Ok(publish.ack(v5::codec::PublishAckReason::Success))
-                }
-                v5::client::Control::Protocol(v5::client::CtlFrame::PublishRelease(msg)) => {
-                    Ok(msg.ack())
-                }
-                v5::client::Control::Protocol(v5::client::CtlFrame::Disconnect(msg)) => {
-                    log::warn!("Server disconnecting: {:?}", msg);
-                    Ok(msg.ack())
-                }
-                v5::client::Control::Stop(v5::client::CtlReason::Error(msg)) => {
-                    log::error!("Codec error: {:?}", msg);
-                    Ok(msg.ack(v5::codec::DisconnectReasonCode::UnspecifiedError))
-                }
-                v5::client::Control::Stop(v5::client::CtlReason::ProtocolError(msg)) => {
-                    log::error!("Protocol error: {:?}", msg);
-                    Ok(msg.ack())
-                }
-                v5::client::Control::Stop(v5::client::CtlReason::PeerGone(msg)) => {
-                    log::warn!("Peer closed connection: {:?}", msg.err());
-                    Ok(msg.ack())
-                }
-                v5::client::Control::Shutdown(msg) => {
-                    log::warn!("Server closed connection: {:?}", msg);
-                    Ok(msg.ack())
-                }
+    ntex::rt::spawn(client.start(fn_service(async move |msg: v5::client::ProtocolMessage| {
+        match msg {
+            v5::client::ProtocolMessage::Publish(publish) => {
+                let pl = publish.read_all().await;
+                log::info!(
+                    "incoming publish: {:?} -> {:?}, payload: {:?}",
+                    publish.packet().packet_id,
+                    publish.packet().topic,
+                    pl,
+                );
+                Ok(publish.ack(v5::codec::PublishAckReason::Success))
             }
-        },
-    )));
+            v5::client::ProtocolMessage::PublishRelease(msg) => Ok(msg.ack()),
+            v5::client::ProtocolMessage::Disconnect(msg) => {
+                log::warn!("Server disconnecting: {:?}", msg);
+                Ok::<_, ()>(msg.ack())
+            }
+            _ => Ok(msg.ack()),
+        }
+    })));
 
     // subscribe to topic
     sink.subscribe(None)

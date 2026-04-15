@@ -1,8 +1,9 @@
 use std::cell::RefCell;
 
 use ntex::service::{ServiceFactory, fn_factory_with_config, fn_service};
-use ntex::util::{ByteString, Ready};
-use ntex_mqtt::v5::{self, Control, ControlAck, MqttServer, Publish, PublishAck, Session};
+use ntex::util::ByteString;
+use ntex_mqtt::v5::{self, MqttServer, Publish, PublishAck, Session};
+use ntex_mqtt::{Control, Reason};
 
 #[derive(Clone, Debug)]
 struct MySession {
@@ -69,20 +70,18 @@ async fn publish(
     Ok(publish.ack())
 }
 
-fn control_service_factory() -> impl ServiceFactory<
-    Control<MyServerError>,
+fn protocol_service_factory() -> impl ServiceFactory<
+    v5::ProtocolMessage,
     Session<MySession>,
-    Response = ControlAck,
+    Response = v5::ProtocolMessageAck,
     Error = MyServerError,
     InitError = MyServerError,
 > {
-    fn_factory_with_config(|session: Session<MySession>| {
-        Ready::Ok(fn_service(async move |control| match control {
-            v5::Control::Protocol(v5::CtlFrame::Auth(a)) => {
-                Ok(a.ack(v5::codec::Auth::default()))
-            }
-            v5::Control::Protocol(v5::CtlFrame::Disconnect(d)) => Ok(d.ack()),
-            v5::Control::Protocol(v5::CtlFrame::Subscribe(mut s)) => {
+    fn_factory_with_config(async move |session: Session<MySession>| {
+        Ok(fn_service(async move |msg| match msg {
+            v5::ProtocolMessage::Auth(a) => Ok(a.ack(v5::codec::Auth::default())),
+            v5::ProtocolMessage::Disconnect(d) => Ok(d.ack()),
+            v5::ProtocolMessage::Subscribe(mut s) => {
                 // store subscribed topics in session, publish service uses this list for echos
                 s.iter_mut().for_each(|mut s| {
                     session.subscriptions.borrow_mut().push(s.topic().clone());
@@ -91,15 +90,32 @@ fn control_service_factory() -> impl ServiceFactory<
 
                 Ok(s.ack())
             }
-            v5::Control::Protocol(v5::CtlFrame::Unsubscribe(s)) => Ok(s.ack()),
-            v5::Control::Flow(v5::CtlFlow::Ping(p)) => Ok(p.ack()),
-            v5::Control::Stop(v5::CtlReason::Error(e)) => {
-                Ok(e.ack(v5::codec::DisconnectReasonCode::UnspecifiedError))
-            }
-            v5::Control::Stop(v5::CtlReason::ProtocolError(e)) => Ok(e.ack()),
-            v5::Control::Stop(v5::CtlReason::PeerGone(c)) => Ok(c.ack()),
-            v5::Control::Shutdown(c) => Ok(c.ack()),
-            _ => Ok(control.ack()),
+            v5::ProtocolMessage::Unsubscribe(s) => Ok(s.ack()),
+            v5::ProtocolMessage::Ping(p) => Ok(p.ack()),
+            _ => Ok(msg.ack()),
+        }))
+    })
+}
+
+fn control_service_factory() -> impl ServiceFactory<
+    Control<MyServerError>,
+    Session<MySession>,
+    Response = Option<v5::codec::Encoded>,
+    Error = MyServerError,
+    InitError = MyServerError,
+> {
+    fn_factory_with_config(async move |_: Session<MySession>| {
+        Ok(fn_service(async move |control| match control {
+            Control::Stop(Reason::Error(_)) => Ok(Some(
+                v5::codec::Packet::from(v5::codec::Disconnect {
+                    reason_code: v5::codec::DisconnectReasonCode::UnspecifiedError,
+                    ..Default::default()
+                })
+                .into(),
+            )),
+            Control::Stop(Reason::Protocol(_)) => Ok(None),
+            Control::Stop(Reason::PeerGone(_)) => Ok(None),
+            _ => Ok(None),
         }))
     })
 }
@@ -111,13 +127,12 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", async |_| {
-            MqttServer::new(handshake).control(control_service_factory()).publish(
-                fn_factory_with_config(|session: Session<MySession>| {
-                    Ready::Ok::<_, MyServerError>(fn_service(move |req| {
-                        publish(session.clone(), req)
-                    }))
-                }),
-            )
+            MqttServer::new(handshake)
+                .control(control_service_factory())
+                .protocol(protocol_service_factory())
+                .publish(fn_factory_with_config(async |session: Session<MySession>| {
+                    Ok::<_, MyServerError>(fn_service(move |req| publish(session.clone(), req)))
+                }))
         })?
         .workers(1)
         .run()

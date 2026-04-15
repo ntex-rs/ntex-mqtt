@@ -378,7 +378,7 @@ mod tests {
                         .contains("PUBLISH received with packet id that is already in use")
                 );
             }
-            _ => panic!(),
+            DispatcherError::Service(()) => panic!(),
         }
     }
 }

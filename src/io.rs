@@ -1081,7 +1081,7 @@ mod tests {
 
         let flag = Rc::new(Cell::new(true));
         let flag2 = flag.clone();
-        let server_ref = server.get_ref();
+        let _server_ref = server.get_ref();
 
         let (disp, _io) = Dispatcher::new_debug(
             server,
@@ -1134,16 +1134,13 @@ mod tests {
             BytesCodec,
             fn_service(async move |msg: Bytes| {
                 data2.lock().unwrap().borrow_mut().push(0);
-                return Ok::<_, DispatcherError<()>>(Some(msg));
+                Ok::<_, DispatcherError<()>>(Some(msg))
             }),
             fn_service(async move |msg: Control<()>| {
-                match msg {
-                    Control::Stop(Reason::Protocol(err)) => {
-                        if matches!(err.get_ref(), &ProtocolError::KeepAliveTimeout) {
-                            data3.lock().unwrap().borrow_mut().push(1);
-                        }
-                    }
-                    _ => (),
+                if let Control::Stop(Reason::Protocol(err)) = msg
+                    && matches!(err.get_ref(), &ProtocolError::KeepAliveTimeout)
+                {
+                    data3.lock().unwrap().borrow_mut().push(1);
                 }
                 Ok::<_, ()>(None)
             }),
@@ -1221,16 +1218,13 @@ mod tests {
             BytesLenCodec(2),
             fn_service(async move |msg: Bytes| {
                 data2.lock().unwrap().borrow_mut().push(0);
-                return Ok::<_, DispatcherError<()>>(Some(msg));
+                Ok::<_, DispatcherError<()>>(Some(msg))
             }),
             fn_service(async move |msg: Control<()>| {
-                match msg {
-                    Control::Stop(Reason::Protocol(err)) => {
-                        if matches!(err.get_ref(), &ProtocolError::KeepAliveTimeout) {
-                            data3.lock().unwrap().borrow_mut().push(1);
-                        }
-                    }
-                    _ => (),
+                if let Control::Stop(Reason::Protocol(err)) = msg
+                    && matches!(err.get_ref(), &ProtocolError::KeepAliveTimeout)
+                {
+                    data3.lock().unwrap().borrow_mut().push(1);
                 }
                 Ok::<_, ()>(None)
             }),
@@ -1271,16 +1265,13 @@ mod tests {
             BytesLenCodec(8),
             fn_service(async move |msg: Bytes| {
                 data2.lock().unwrap().borrow_mut().push(0);
-                return Ok::<_, DispatcherError<()>>(Some(msg));
+                Ok::<_, DispatcherError<()>>(Some(msg))
             }),
             fn_service(async move |msg: Control<()>| {
-                match msg {
-                    Control::Stop(Reason::Protocol(err)) => {
-                        if matches!(err.get_ref(), &ProtocolError::ReadTimeout) {
-                            data3.lock().unwrap().borrow_mut().push(1);
-                        }
-                    }
-                    _ => (),
+                if let Control::Stop(Reason::Protocol(err)) = msg
+                    && matches!(err.get_ref(), &ProtocolError::ReadTimeout)
+                {
+                    data3.lock().unwrap().borrow_mut().push(1);
                 }
                 Ok::<_, ()>(None)
             }),
@@ -1340,7 +1331,7 @@ mod tests {
                 let data = data2.clone();
                 sleep(Millis(99_9999)).await;
                 drop(data);
-                return Ok::<_, DispatcherError<()>>(Some(msg));
+                Ok::<_, DispatcherError<()>>(Some(msg))
             }),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
