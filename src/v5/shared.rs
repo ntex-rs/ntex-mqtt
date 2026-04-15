@@ -190,16 +190,6 @@ impl MqttShared {
         self.credit() > 0 && !self.flags.get().contains(Flags::WRB_ENABLED)
     }
 
-    pub(super) fn is_dispatcher_stopped(&self) -> bool {
-        let mut flags = self.flags.get();
-        let stopped = flags.contains(Flags::STOPPED);
-        if !stopped {
-            flags.insert(Flags::STOPPED);
-            self.flags.set(flags);
-        }
-        stopped
-    }
-
     pub(super) fn is_disconnect_sent(&self) -> bool {
         let mut flags = self.flags.get();
         let disconnect = flags.contains(Flags::DISCONNECT);

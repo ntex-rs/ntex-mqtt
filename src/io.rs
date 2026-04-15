@@ -108,8 +108,7 @@ pub(crate) enum IoDispatcherError<S> {
     Service(S),
 }
 
-enum PollService<U: Decoder> {
-    Item(U::Item),
+enum PollService {
     Continue,
     Ready,
 }
@@ -297,7 +296,6 @@ where
                                 }
                             }
                         }
-                        PollService::Item(item) => inner.call_service(cx, item, true),
                         PollService::Continue => (),
                     }
                 }
@@ -305,7 +303,6 @@ where
                 IoDispatcherState::Backpressure => {
                     match ready!(inner.poll_service(cx)) {
                         PollService::Ready => (),
-                        PollService::Item(item) => inner.call_service(cx, item, true),
                         PollService::Continue => continue,
                     }
 
@@ -348,6 +345,7 @@ where
                 IoDispatcherState::Shutdown(ref mut res) => {
                     if inner.service.poll_shutdown(cx).is_ready() {
                         log::trace!("{}: Service shutdown is completed, stop", inner.io.tag());
+                        inner.stopping.notify();
                         inner.st = IoDispatcherState::ShutdownIo(res.take());
                     } else {
                         return Poll::Pending;
@@ -381,7 +379,6 @@ where
 {
     fn stop(&mut self, fut: PipelineCall<C, Control<E>>) {
         self.io.stop_timer();
-        self.stopping.notify();
         self.st = IoDispatcherState::Stop(Some(fut));
     }
 
@@ -442,7 +439,7 @@ where
         }
     }
 
-    fn poll_service(&mut self, cx: &mut Context<'_>) -> Poll<PollService<U>> {
+    fn poll_service(&mut self, cx: &mut Context<'_>) -> Poll<PollService> {
         // check for errors
         if let Some(err) = self.state.error.take() {
             log::trace!("{}: Error occured, stopping dispatcher", self.io.tag());

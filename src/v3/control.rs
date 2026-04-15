@@ -36,7 +36,6 @@ pub(crate) enum ProtocolMessageKind {
     Disconnect,
     Subscribe(SubscribeResult),
     Unsubscribe(UnsubscribeResult),
-    Closed,
 }
 
 impl ProtocolMessage {

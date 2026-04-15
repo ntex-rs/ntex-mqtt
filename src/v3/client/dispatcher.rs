@@ -305,7 +305,7 @@ impl<C> Inner<C> {
                 self.sink.close();
                 None
             }
-            ProtocolMessageKind::Closed | ProtocolMessageKind::Nothing => None,
+            ProtocolMessageKind::Nothing => None,
         };
 
         Ok(packet)

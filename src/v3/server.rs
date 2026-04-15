@@ -11,9 +11,10 @@ use crate::{MqttServiceConfig, control, control::Control, service};
 
 use super::control::{ProtocolMessage, ProtocolMessageAck};
 use super::default::{DefaultControlService, InFlightService};
+use super::dispatcher::{ControlFactory, factory};
 use super::handshake::{Handshake, HandshakeAck};
 use super::shared::{MqttShared, MqttSinkPool};
-use super::{MqttSink, Publish, Session, codec as mqtt, dispatcher::factory};
+use super::{MqttSink, Publish, Session, codec as mqtt};
 
 /// Mqtt v3.1.1 server
 ///
@@ -62,7 +63,11 @@ impl<St, H>
         St,
         H,
         DefaultControlService<St, H::Error>,
-        control::DefaultControlService<St, H::Error, mqtt::Codec>,
+        ControlFactory<
+            control::DefaultControlService<Session<St>, H::Error, mqtt::Codec>,
+            St,
+            H::Error,
+        >,
         InFlightService,
     >
 where
@@ -79,7 +84,7 @@ where
             handshake: handshake.into_factory(),
             protocol: DefaultControlService::default(),
             middleware: InFlightService,
-            control: control::DefaultControlService::default(),
+            control: ControlFactory::new(control::DefaultControlService::default()),
             pool: Rc::default(),
             _t: PhantomData,
         }
@@ -147,7 +152,10 @@ where
     }
 
     /// Service to handle connection control messages
-    pub fn control<F, Srv>(self, service: F) -> MqttServer<St, H, P, Srv, M>
+    pub fn control<F, Srv>(
+        self,
+        service: F,
+    ) -> MqttServer<St, H, P, ControlFactory<Srv, St, H::Error>, M>
     where
         F: IntoServiceFactory<Srv, Control<H::Error>, Session<St>>,
         Srv: ServiceFactory<Control<H::Error>, Session<St>, Response = Option<mqtt::Packet>>
@@ -157,7 +165,7 @@ where
         MqttServer {
             handshake: self.handshake,
             protocol: self.protocol,
-            control: service.into_factory(),
+            control: ControlFactory::new(service.into_factory()),
             middleware: self.middleware,
             pool: self.pool,
             _t: PhantomData,
