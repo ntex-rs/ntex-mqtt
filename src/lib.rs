@@ -14,14 +14,14 @@ mod utils;
 
 pub mod control;
 pub mod error;
-pub mod v3;
+//pub mod v3;
 pub mod v5;
 
 mod config;
 mod inflight;
 mod io;
 mod payload;
-mod server;
+//mod server;
 mod service;
 mod session;
 mod types;
@@ -32,7 +32,7 @@ pub use self::control::{Control, Reason};
 pub use self::error::{HandshakeError, MqttError, ProtocolError};
 pub use self::inflight::SizedRequest;
 pub use self::payload::Payload;
-pub use self::server::MqttServer;
+//pub use self::server::MqttServer;
 pub use self::session::Session;
 pub use self::topic::{TopicFilter, TopicFilterError, TopicFilterLevel};
 pub use self::types::QoS;

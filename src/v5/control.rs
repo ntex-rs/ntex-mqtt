@@ -599,10 +599,7 @@ mod tests {
         let uiter = unsub.iter_mut();
         assert!(format!("{uiter:?}").contains("UnsubscribeIter"));
 
-        // Ping, WrBackpressure, Shutdown, PeerGone
+        // Ping
         assert!(format!("{Ping:?}").contains("Ping"));
-        assert!(format!("{:?}", WrBackpressure(false)).contains("WrBackpressure"));
-        assert!(format!("{Shutdown:?}").contains("Shutdown"));
-        assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
     }
 }

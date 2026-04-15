@@ -585,14 +585,41 @@ mod tests {
     use std::{cell::Cell, io};
 
     use ntex_bytes::{Bytes, BytesMut};
-    use ntex_codec::BytesCodec;
     use ntex_io::{self as nio, IoConfig, testing::IoTest as Io};
-    use ntex_service::{ServiceCtx, cfg::SharedCfg};
+    use ntex_service::{IntoService, ServiceCtx, cfg::SharedCfg, fn_service};
     use ntex_util::channel::condition::Condition;
     use ntex_util::time::{Millis, sleep};
     use rand::Rng;
 
     use super::*;
+    use crate::{control::Reason, error::DecodeError, error::EncodeError};
+
+    #[derive(Debug, Copy, Clone)]
+    struct BytesCodec;
+
+    impl Encoder for BytesCodec {
+        type Item = Bytes;
+        type Error = EncodeError;
+
+        #[inline]
+        fn encode(&self, item: Bytes, dst: &mut BytesMut) -> Result<(), Self::Error> {
+            dst.extend_from_slice(&item[..]);
+            Ok(())
+        }
+    }
+
+    impl Decoder for BytesCodec {
+        type Item = Bytes;
+        type Error = DecodeError;
+
+        fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+            if src.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(src.split_to(src.len())))
+            }
+        }
+    }
 
     impl<P, C, U, E> Dispatcher<P, C, U, E>
     where
@@ -603,10 +630,11 @@ mod tests {
         E: 'static,
     {
         /// Construct new `Dispatcher` instance
-        pub(crate) fn new_debug<F: IntoService<S, DispatchItem<U>>>(
+        pub(crate) fn new_debug<F: IntoService<P, Request<U>>>(
             io: nio::Io,
             codec: U,
             service: F,
+            control: C,
         ) -> (Self, nio::IoRef) {
             let keepalive_timeout = io.cfg().keepalive_timeout();
             let rio = io.get_ref();
@@ -616,7 +644,6 @@ mod tests {
                 base: Cell::new(0),
                 waker: LocalWaker::default(),
                 queue: RefCell::new(VecDeque::new()),
-                stopping: Condition::new(),
                 response: Cell::new(None),
                 response_idx: Cell::new(0),
             });
@@ -627,7 +654,9 @@ mod tests {
                         codec,
                         state,
                         keepalive_timeout,
+                        stopping: Condition::new(),
                         service: Pipeline::new(service.into_service()).bind(),
+                        control: Pipeline::new(control).bind(),
                         io: IoBoxed::from(io),
                         st: IoDispatcherState::Processing,
                         flags: if keepalive_timeout.is_zero() {
@@ -654,14 +683,11 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server, SharedCfg::new("DBG")),
             BytesCodec,
-            ntex_service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
+            fn_service(async move |msg: Bytes| {
                 sleep(Millis(50)).await;
-                if let DispatchItem::Item(msg) = msg {
-                    Ok::<_, ()>(Some(msg))
-                } else {
-                    panic!()
-                }
+                Ok::<_, DispatcherError<()>>(Some(msg))
             }),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         ntex_util::spawn(async move {
             let _ = disp.await;
@@ -700,17 +726,14 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server, SharedCfg::new("DBG")),
             BytesCodec,
-            ntex_service::fn_service(async move |msg: DispatchItem<BytesCodec>| {
+            fn_service(async move |msg: Bytes| {
                 let _on_drop = on_drop.clone();
-                if let DispatchItem::Item(msg) = msg {
-                    if msg == "test" {
-                        sleep(Millis(500)).await;
-                    }
-                    Ok::<_, ()>(Some(msg))
-                } else {
-                    Ok::<_, ()>(None)
+                if msg == "test" {
+                    sleep(Millis(500)).await;
                 }
+                Ok::<_, DispatcherError<()>>(Some(msg))
             }),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         ntex_util::spawn(async move {
             let _ = disp.await;
@@ -735,19 +758,11 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server, SharedCfg::new("DBG")),
             BytesCodec,
-            ntex_service::fn_service(move |msg: DispatchItem<BytesCodec>| {
-                let waiter = waiter.clone();
-                async move {
-                    waiter.await;
-                    if let DispatchItem::Item(msg) = msg {
-                        Ok::<_, ()>(Some(msg))
-                    } else if matches!(msg, DispatchItem::Stop(Reason::Io(_))) {
-                        Ok(None)
-                    } else {
-                        panic!()
-                    }
-                }
+            fn_service(async move |msg: Bytes| {
+                waiter.clone().await;
+                Ok::<_, DispatcherError<()>>(Some(msg))
             }),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         ntex_util::spawn(async move {
             let _ = disp.await;
@@ -789,6 +804,7 @@ mod tests {
         let waiter = condition.wait();
         let ops = Rc::new(RefCell::new(Vec::new()));
         let ops2 = ops.clone();
+        let ops3 = ops.clone();
 
         let run_server = async || -> Io {
             let (client, server) = Io::create();
@@ -797,24 +813,25 @@ mod tests {
             let (disp, _) = Dispatcher::new_debug(
                 nio::Io::new(server, SharedCfg::new("DBG")),
                 BytesCodec,
-                ntex_service::fn_service(async move |msg: DispatchItem<BytesCodec>| {
-                    if let DispatchItem::Item(msg) = msg {
-                        if msg == b"1" {
-                            sleep(Millis(75)).await;
-                        } else {
-                            ops2.borrow_mut().push(Info::Publish);
-                            let on_drop = OnDrop(ops2.clone());
-                            waiter.clone().await;
-                            drop(on_drop);
-                        }
-                        Ok::<_, ()>(Some(msg))
-                    } else if matches!(msg, DispatchItem::Stop(Reason::Io(_))) {
+                fn_service(async move |msg: Bytes| {
+                    if msg == b"1" {
+                        sleep(Millis(75)).await;
+                    } else {
+                        ops2.borrow_mut().push(Info::Publish);
+                        let on_drop = OnDrop(ops2.clone());
+                        waiter.clone().await;
+                        drop(on_drop);
+                    }
+                    Ok::<_, DispatcherError<()>>(Some(msg))
+                }),
+                fn_service(async move |msg: Control<()>| {
+                    if matches!(msg, Control::Stop(Reason::PeerGone(_))) {
                         sleep(Millis(25)).await;
-                        ops2.borrow_mut().push(Info::Disconnect);
-                        Ok(None)
+                        ops3.borrow_mut().push(Info::Disconnect);
                     } else {
                         panic!()
                     }
+                    Ok::<_, ()>(None)
                 }),
             );
             ntex_util::spawn(async move {
@@ -881,15 +898,8 @@ mod tests {
         let (disp, io) = Dispatcher::new_debug(
             nio::Io::new(server, SharedCfg::new("DBG")),
             BytesCodec,
-            ntex_service::fn_service(|msg: DispatchItem<BytesCodec>| async move {
-                if let DispatchItem::Item(msg) = msg {
-                    Ok::<_, ()>(Some(msg))
-                } else if let DispatchItem::Stop(Reason::Io(_)) = msg {
-                    Ok(None)
-                } else {
-                    panic!()
-                }
-            }),
+            fn_service(async move |msg: Bytes| Ok::<_, DispatcherError<()>>(Some(msg))),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         ntex_util::spawn(async move {
             let _ = disp.await;
@@ -916,9 +926,10 @@ mod tests {
         let (disp, io) = Dispatcher::new_debug(
             nio::Io::new(server, SharedCfg::new("DBG")),
             BytesCodec,
-            ntex_service::fn_service(|_: DispatchItem<BytesCodec>| async move {
-                Err::<Option<Bytes>, _>(())
+            fn_service(async move |_: Bytes| {
+                Err::<Option<Bytes>, _>(DispatcherError::Service(()))
             }),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         ntex_util::spawn(async move {
             let _ = disp.await;
@@ -944,20 +955,20 @@ mod tests {
     async fn test_err_in_service_ready() {
         struct Srv(Rc<Cell<usize>>);
 
-        impl Service<DispatchItem<BytesCodec>> for Srv {
-            type Response = Option<Response<BytesCodec>>;
-            type Error = ();
+        impl Service<Bytes> for Srv {
+            type Response = Option<Bytes>;
+            type Error = DispatcherError<()>;
 
-            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
                 self.0.set(self.0.get() + 1);
-                Err(())
+                Err(DispatcherError::Service(()))
             }
 
             async fn call(
                 &self,
-                _: DispatchItem<BytesCodec>,
+                _: Bytes,
                 _: ServiceCtx<'_, Self>,
-            ) -> Result<Option<Response<BytesCodec>>, ()> {
+            ) -> Result<Option<Bytes>, Self::Error> {
                 Ok(None)
             }
         }
@@ -972,6 +983,7 @@ mod tests {
             nio::Io::new(server, SharedCfg::new("DBG")),
             BytesCodec,
             Srv(counter.clone()),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec).unwrap();
         ntex_util::spawn(async move {
@@ -1004,6 +1016,7 @@ mod tests {
 
         let data = Arc::new(Mutex::new(RefCell::new(Vec::new())));
         let data2 = data.clone();
+        let data3 = data.clone();
 
         let config = SharedCfg::new("DBG").add(
             IoConfig::new().set_read_buf(8 * 1024, 1024, 16).set_write_buf(32 * 1024, 1024, 16),
@@ -1012,29 +1025,24 @@ mod tests {
         let (disp, io) = Dispatcher::new_debug(
             nio::Io::new(server, config),
             BytesCodec,
-            ntex_service::fn_service(move |msg: DispatchItem<BytesCodec>| {
-                let data = data2.clone();
-                async move {
-                    match msg {
-                        DispatchItem::Item(_) => {
-                            data.lock().unwrap().borrow_mut().push(0);
-                            let bytes = rand::thread_rng()
-                                .sample_iter(&rand::distributions::Alphanumeric)
-                                .take(65_536)
-                                .map(char::from)
-                                .collect::<String>();
-                            return Ok::<_, ()>(Some(Bytes::from(bytes)));
-                        }
-                        DispatchItem::Control(Control::WBackPressureEnabled) => {
-                            data.lock().unwrap().borrow_mut().push(1);
-                        }
-                        DispatchItem::Control(Control::WBackPressureDisabled) => {
-                            data.lock().unwrap().borrow_mut().push(2);
-                        }
-                        _ => (),
+            fn_service(async move |_: Bytes| {
+                data2.lock().unwrap().borrow_mut().push(0);
+                let bytes = rand::thread_rng()
+                    .sample_iter(&rand::distributions::Alphanumeric)
+                    .take(65_536)
+                    .map(char::from)
+                    .collect::<String>();
+                Ok::<_, DispatcherError<()>>(Some(Bytes::from(bytes)))
+            }),
+            fn_service(async move |msg: Control<()>| {
+                if let Control::WrBackpressure(st) = msg {
+                    if st.enabled() {
+                        data3.lock().unwrap().borrow_mut().push(1);
+                    } else {
+                        data3.lock().unwrap().borrow_mut().push(2);
                     }
-                    Ok(None)
                 }
+                Ok::<_, ()>(None)
             }),
         );
 
@@ -1078,19 +1086,15 @@ mod tests {
         let (disp, _io) = Dispatcher::new_debug(
             server,
             BytesCodec,
-            ntex_service::fn_service(async move |item: DispatchItem<BytesCodec>| {
+            fn_service(async move |item: Bytes| {
                 let first = flag2.get();
                 flag2.set(false);
-                if let DispatchItem::Item(b) = item {
-                    if !first {
-                        sleep(Millis(500)).await;
-                    }
-                    Ok(Some(b))
-                } else {
-                    server_ref.close();
-                    Ok::<_, ()>(None)
+                if !first {
+                    sleep(Millis(500)).await;
                 }
+                Ok(Some(item))
             }),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         let (tx, rx) = ntex_util::channel::oneshot::channel();
         ntex_util::spawn(async move {
@@ -1123,25 +1127,25 @@ mod tests {
 
         let data = Arc::new(Mutex::new(RefCell::new(Vec::new())));
         let data2 = data.clone();
+        let data3 = data.clone();
 
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server, SharedCfg::new("DBG")),
             BytesCodec,
-            ntex_service::fn_service(move |msg: DispatchItem<BytesCodec>| {
-                let data = data2.clone();
-                async move {
-                    match msg {
-                        DispatchItem::Item(bytes) => {
-                            data.lock().unwrap().borrow_mut().push(0);
-                            return Ok::<_, ()>(Some(bytes));
+            fn_service(async move |msg: Bytes| {
+                data2.lock().unwrap().borrow_mut().push(0);
+                return Ok::<_, DispatcherError<()>>(Some(msg));
+            }),
+            fn_service(async move |msg: Control<()>| {
+                match msg {
+                    Control::Stop(Reason::ProtocolError(err)) => {
+                        if matches!(err.get_ref(), &ProtocolError::KeepAliveTimeout) {
+                            data3.lock().unwrap().borrow_mut().push(1);
                         }
-                        DispatchItem::Stop(Reason::KeepAliveTimeout) => {
-                            data.lock().unwrap().borrow_mut().push(1);
-                        }
-                        _ => (),
                     }
-                    Ok(None)
+                    _ => (),
                 }
+                Ok::<_, ()>(None)
             }),
         );
         ntex_util::spawn(async move {
@@ -1172,7 +1176,7 @@ mod tests {
 
     impl Encoder for BytesLenCodec {
         type Item = Bytes;
-        type Error = io::Error;
+        type Error = EncodeError;
 
         #[inline]
         fn encode(&self, item: Bytes, dst: &mut BytesMut) -> Result<(), Self::Error> {
@@ -1183,7 +1187,7 @@ mod tests {
 
     impl Decoder for BytesLenCodec {
         type Item = Bytes;
-        type Error = io::Error;
+        type Error = DecodeError;
 
         fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
             if src.len() >= self.0 {
@@ -1202,6 +1206,7 @@ mod tests {
 
         let data = Arc::new(Mutex::new(RefCell::new(Vec::new())));
         let data2 = data.clone();
+        let data3 = data.clone();
 
         let config = SharedCfg::new("BDG").add(
             IoConfig::new().set_keepalive_timeout(Seconds(0)).set_frame_read_rate(
@@ -1214,21 +1219,20 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server, config),
             BytesLenCodec(2),
-            ntex_service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
-                let data = data2.clone();
-                async move {
-                    match msg {
-                        DispatchItem::Item(bytes) => {
-                            data.lock().unwrap().borrow_mut().push(0);
-                            return Ok::<_, ()>(Some(bytes));
+            fn_service(async move |msg: Bytes| {
+                data2.lock().unwrap().borrow_mut().push(0);
+                return Ok::<_, DispatcherError<()>>(Some(msg));
+            }),
+            fn_service(async move |msg: Control<()>| {
+                match msg {
+                    Control::Stop(Reason::ProtocolError(err)) => {
+                        if matches!(err.get_ref(), &ProtocolError::KeepAliveTimeout) {
+                            data3.lock().unwrap().borrow_mut().push(1);
                         }
-                        DispatchItem::Stop(Reason::KeepAliveTimeout) => {
-                            data.lock().unwrap().borrow_mut().push(1);
-                        }
-                        _ => (),
                     }
-                    Ok(None)
+                    _ => (),
                 }
+                Ok::<_, ()>(None)
             }),
         );
         ntex_util::spawn(async move {
@@ -1252,6 +1256,7 @@ mod tests {
 
         let data = Arc::new(Mutex::new(RefCell::new(Vec::new())));
         let data2 = data.clone();
+        let data3 = data.clone();
 
         let config = SharedCfg::new("DBG").add(
             IoConfig::new().set_keepalive_timeout(Seconds::ZERO).set_frame_read_rate(
@@ -1264,21 +1269,20 @@ mod tests {
         let (disp, state) = Dispatcher::new_debug(
             nio::Io::new(server, config),
             BytesLenCodec(8),
-            ntex_service::fn_service(move |msg: DispatchItem<BytesLenCodec>| {
-                let data = data2.clone();
-                async move {
-                    match msg {
-                        DispatchItem::Item(bytes) => {
-                            data.lock().unwrap().borrow_mut().push(0);
-                            return Ok::<_, ()>(Some(bytes));
+            fn_service(async move |msg: Bytes| {
+                data2.lock().unwrap().borrow_mut().push(0);
+                return Ok::<_, DispatcherError<()>>(Some(msg));
+            }),
+            fn_service(async move |msg: Control<()>| {
+                match msg {
+                    Control::Stop(Reason::ProtocolError(err)) => {
+                        if matches!(err.get_ref(), &ProtocolError::ReadTimeout) {
+                            data3.lock().unwrap().borrow_mut().push(1);
                         }
-                        DispatchItem::Stop(Reason::ReadTimeout) => {
-                            data.lock().unwrap().borrow_mut().push(1);
-                        }
-                        _ => (),
                     }
-                    Ok(None)
+                    _ => (),
                 }
+                Ok::<_, ()>(None)
             }),
         );
         ntex_util::spawn(async move {
@@ -1332,14 +1336,13 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server, config),
             BytesLenCodec(2),
-            ntex_service::fn_service(move |msg: Bytes| {
+            fn_service(async move |msg: Bytes| {
                 let data = data2.clone();
-                async move {
-                    sleep(Millis(99_9999)).await;
-                    drop(data);
-                    return Ok::<_, ()>(Some(msg));
-                }
+                sleep(Millis(99_9999)).await;
+                drop(data);
+                return Ok::<_, DispatcherError<()>>(Some(msg));
             }),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         ntex_util::spawn(async move {
             let _ = disp.await;

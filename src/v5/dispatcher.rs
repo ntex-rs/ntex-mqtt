@@ -636,10 +636,10 @@ mod tests {
     use ntex_bytes::Bytes;
     use ntex_io::{Io, testing::IoTest};
     use ntex_service::fn_service;
-    use ntex_util::future::{Ready, lazy};
+    use ntex_util::future::lazy;
 
     use super::*;
-    use crate::v5::MqttSink;
+    use crate::{control, v5::MqttSink};
 
     #[derive(Debug)]
     struct TestError;
@@ -658,7 +658,7 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
 
-        let disp = ControlFactrory::<_, ()>::new(
+        let disp = ControlFactory::<_, (), ()>::new(
             control::DefaultControlService::default(),
             shared.clone(),
         );

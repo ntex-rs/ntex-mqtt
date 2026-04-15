@@ -149,3 +149,16 @@ impl<S, E: fmt::Debug, U: Encoder> Service<Control<E>> for DefaultControlService
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debug() {
+        // WrBackpressure, Error, PeerGone
+        assert!(format!("{:?}", WrBackpressure(false)).contains("WrBackpressure"));
+        assert!(format!("{:?}", Error { err: () }).contains("Error"));
+        assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
+    }
+}
