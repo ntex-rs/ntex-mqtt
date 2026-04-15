@@ -355,13 +355,11 @@ where
                 IoDispatcherState::ShutdownIo(ref mut res) => {
                     return if inner.flags.contains(Flags::IO_ERR) {
                         Poll::Ready(res.take().unwrap_or(Ok(())))
+                    } else if inner.io.poll_shutdown(cx).is_ready() {
+                        log::trace!("{}: io shutdown completed", inner.io.tag());
+                        Poll::Ready(res.take().unwrap_or(Ok(())))
                     } else {
-                        if inner.io.poll_shutdown(cx).is_ready() {
-                            log::trace!("{}: io shutdown completed", inner.io.tag());
-                            Poll::Ready(res.take().unwrap_or(Ok(())))
-                        } else {
-                            Poll::Pending
-                        }
+                        Poll::Pending
                     };
                 }
             }

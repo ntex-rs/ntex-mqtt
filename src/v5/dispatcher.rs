@@ -668,14 +668,14 @@ mod tests {
         assert!(sink.is_ready());
         assert!(shared.wait_readiness().is_none());
 
-        svc.call(Control::wr(false)).await.unwrap();
+        svc.call(Control::wr(true)).await.unwrap();
         assert!(!sink.is_ready());
         let rx = shared.wait_readiness();
         let rx2 = shared.wait_readiness().unwrap();
         assert!(rx.is_some());
 
         let rx = rx.unwrap();
-        svc.call(Control::wr(true)).await.unwrap();
+        svc.call(Control::wr(false)).await.unwrap();
         assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
         assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
     }

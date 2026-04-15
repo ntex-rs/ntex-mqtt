@@ -10,7 +10,7 @@ use crate::error::{DispatcherError, HandshakeError, MqttError, ProtocolError};
 use crate::{MqttServiceConfig, control, control::Control, service};
 
 use super::control::{ProtocolMessage, ProtocolMessageAck};
-use super::default::{DefaultControlService, InFlightService};
+use super::default::{DefaultProtocolService, InFlightService};
 use super::dispatcher::{ControlFactory, factory};
 use super::handshake::{Handshake, HandshakeAck};
 use super::shared::{MqttShared, MqttSinkPool};
@@ -63,9 +63,9 @@ impl<St, E, H>
         St,
         E,
         H,
-        DefaultControlService<Session<St>, E>,
+        DefaultProtocolService<Session<St>, E>,
         ControlFactory<
-            control::DefaultControlService<Session<St>, E, mqtt::Codec, H::Error>,
+            control::DefaultControlService<Session<St>, E, mqtt::Encoded, H::Error>,
             St,
             E,
         >,
@@ -83,7 +83,7 @@ where
     {
         MqttServer {
             handshake: handshake.into_factory(),
-            protocol: DefaultControlService::default(),
+            protocol: DefaultProtocolService::default(),
             middleware: InFlightService,
             control: ControlFactory::new(control::DefaultControlService::default()),
             pool: Rc::default(),

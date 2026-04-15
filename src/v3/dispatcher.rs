@@ -527,7 +527,7 @@ mod tests {
     use ntex_util::{future::lazy, time::Seconds, time::sleep};
 
     use super::*;
-    use crate::{control, v3::MqttSink, v3::codec};
+    use crate::{control, error, v3::MqttSink, v3::codec};
 
     #[ntex::test]
     async fn test_dup_packet_id() {
@@ -538,7 +538,6 @@ mod tests {
         let io = Io::new(IoTest::create().0, cfg.clone());
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
-        let err = Rc::new(RefCell::new(false));
 
         let disp = Pipeline::new(Dispatcher::new(
             shared.clone(),
@@ -579,8 +578,16 @@ mod tests {
             Bytes::new(),
             999,
         )));
-        assert!(f.await.unwrap().is_none());
-        assert!(*err.borrow());
+
+        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) =
+            f.await.err().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            err.inner,
+            error::ViolationInner::Spec(error::SpecViolation::PacketId_2_2_1_3_Pub)
+        );
     }
 
     #[ntex::test]
@@ -603,14 +610,14 @@ mod tests {
         assert!(sink.is_ready());
         assert!(shared.wait_readiness().is_none());
 
-        svc.call(Control::wr(false)).await.unwrap();
+        svc.call(Control::wr(true)).await.unwrap();
         assert!(!sink.is_ready());
         let rx = shared.wait_readiness();
         let rx2 = shared.wait_readiness().unwrap();
         assert!(rx.is_some());
 
         let rx = rx.unwrap();
-        svc.call(Control::wr(true)).await.unwrap();
+        svc.call(Control::wr(false)).await.unwrap();
         assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
         assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
     }

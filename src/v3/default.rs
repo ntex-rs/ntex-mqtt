@@ -5,33 +5,30 @@ use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
 
 use crate::{MqttServiceConfig, inflight::InFlightServiceImpl};
 
-use super::Session;
-use super::control::{ProtocolMessage, ProtocolMessageAck};
+use super::{Session, control::ProtocolMessage, control::ProtocolMessageAck};
 
 /// Default control service
 #[derive(Debug)]
-pub struct DefaultControlService<S, E>(PhantomData<(S, E)>);
+pub struct DefaultProtocolService<S, E>(PhantomData<(S, E)>);
 
-impl<S, E> Default for DefaultControlService<S, E> {
+impl<S, E> Default for DefaultProtocolService<S, E> {
     fn default() -> Self {
-        DefaultControlService(PhantomData)
+        DefaultProtocolService(PhantomData)
     }
 }
 
-impl<S, E: fmt::Debug> ServiceFactory<ProtocolMessage, Session<S>>
-    for DefaultControlService<S, E>
-{
+impl<S, E: fmt::Debug> ServiceFactory<ProtocolMessage, S> for DefaultProtocolService<S, E> {
     type Response = ProtocolMessageAck;
     type Error = E;
     type InitError = E;
-    type Service = DefaultControlService<S, E>;
+    type Service = DefaultProtocolService<S, E>;
 
-    async fn create(&self, _: Session<S>) -> Result<Self::Service, Self::InitError> {
-        Ok(DefaultControlService(PhantomData))
+    async fn create(&self, _: S) -> Result<Self::Service, Self::InitError> {
+        Ok(DefaultProtocolService(PhantomData))
     }
 }
 
-impl<S, E: fmt::Debug> Service<ProtocolMessage> for DefaultControlService<S, E> {
+impl<S, E: fmt::Debug> Service<ProtocolMessage> for DefaultProtocolService<S, E> {
     type Response = ProtocolMessageAck;
     type Error = E;
 

@@ -92,11 +92,11 @@ pub enum ProtocolError {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(transparent)]
 pub struct ProtocolViolationError {
-    inner: ViolationInner,
+    pub(crate) inner: ViolationInner,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
-enum ViolationInner {
+pub(crate) enum ViolationInner {
     #[error("{0}")]
     Spec(SpecViolation),
     #[error("{message}")]
