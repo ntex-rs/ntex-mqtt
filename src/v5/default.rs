@@ -5,7 +5,7 @@ use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
 
 use crate::{MqttServiceConfig, inflight::InFlightServiceImpl};
 
-use super::control::{ProtocolMessage, ProtocolMessageAck};
+use super::{Session, control::ProtocolMessage, control::ProtocolMessageAck};
 
 /// Default control service
 #[derive(Debug)]
@@ -56,12 +56,12 @@ impl<S, E: fmt::Debug> Service<ProtocolMessage> for DefaultProtocolService<S, E>
 /// Default is 64kb size
 pub struct InFlightService;
 
-impl<S> Middleware<S, SharedCfg> for InFlightService {
+impl<S, St> Middleware<S, (SharedCfg, Session<St>)> for InFlightService {
     type Service = InFlightServiceImpl<S>;
 
     #[inline]
-    fn create(&self, service: S, cfg: SharedCfg) -> Self::Service {
-        let cfg: Cfg<MqttServiceConfig> = cfg.get();
+    fn create(&self, service: S, cfg: (SharedCfg, Session<St>)) -> Self::Service {
+        let cfg: Cfg<MqttServiceConfig> = cfg.0.get();
         InFlightServiceImpl::new(0, cfg.max_receive_size, service)
     }
 }

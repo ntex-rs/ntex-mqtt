@@ -114,26 +114,28 @@ impl PeerGone {
 
 /// Default control service
 #[derive(Debug)]
-pub struct DefaultControlService<S, E, R>(PhantomData<(S, E, R)>);
+pub struct DefaultControlService<S, E, R, Err = ()>(PhantomData<(S, E, R, Err)>);
 
-impl<S, E: fmt::Debug, R> Default for DefaultControlService<S, E, R> {
+impl<S, E: fmt::Debug, R, Err> Default for DefaultControlService<S, E, R, Err> {
     fn default() -> Self {
         DefaultControlService(PhantomData)
     }
 }
 
-impl<S, E: fmt::Debug, R> ServiceFactory<Control<E>, S> for DefaultControlService<S, E, R> {
+impl<S, E: fmt::Debug, R, Err> ServiceFactory<Control<E>, S>
+    for DefaultControlService<S, E, R, Err>
+{
     type Response = Option<R>;
     type Error = E;
-    type InitError = E;
-    type Service = DefaultControlService<S, E, R>;
+    type InitError = Err;
+    type Service = DefaultControlService<S, E, R, ()>;
 
     async fn create(&self, _: S) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService(PhantomData))
     }
 }
 
-impl<S, E: fmt::Debug, R> Service<Control<E>> for DefaultControlService<S, E, R> {
+impl<S, E: fmt::Debug, R> Service<Control<E>> for DefaultControlService<S, E, R, ()> {
     type Response = Option<R>;
     type Error = E;
 

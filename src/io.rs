@@ -1027,8 +1027,8 @@ mod tests {
             BytesCodec,
             fn_service(async move |_: Bytes| {
                 data2.lock().unwrap().borrow_mut().push(0);
-                let bytes = rand::thread_rng()
-                    .sample_iter(&rand::distributions::Alphanumeric)
+                let bytes = rand::rng()
+                    .sample_iter(&rand::distr::Alphanumeric)
                     .take(65_536)
                     .map(char::from)
                     .collect::<String>();

@@ -39,7 +39,11 @@ impl<St, E, H>
         E,
         H,
         DefaultProtocolService<Session<St>, E>,
-        ControlFactory<control::DefaultControlService<Session<St>, E, Encoded>, St, E>,
+        ControlFactory<
+            control::DefaultControlService<Session<St>, E, Encoded, H::Error>,
+            St,
+            E,
+        >,
         InFlightService,
     >
 where
@@ -138,7 +142,20 @@ where
     pub fn control<F, Srv>(
         self,
         service: F,
-    ) -> MqttServer<St, E, H, P, ControlFactory<Srv, St, E>, M>
+    ) -> MqttServer<
+        St,
+        E,
+        H,
+        P,
+        impl ServiceFactory<
+            Control<E>,
+            Session<St>,
+            Response = Option<Encoded>,
+            Error = H::Error,
+            InitError = H::Error,
+        >,
+        M,
+    >
     where
         F: IntoServiceFactory<Srv, Control<E>, Session<St>>,
         Srv: ServiceFactory<Control<E>, Session<St>, Response = Option<Encoded>> + 'static,
@@ -147,7 +164,9 @@ where
         MqttServer {
             handshake: self.handshake,
             protocol: self.protocol,
-            control: ControlFactory::new(service.into_factory()),
+            control: ControlFactory::new(service.into_factory())
+                .map_err(H::Error::from)
+                .map_init_err(H::Error::from),
             middleware: self.middleware,
             pool: self.pool,
             _t: PhantomData,
@@ -163,15 +182,17 @@ where
     ) -> service::MqttServer<
         Session<St>,
         E,
+        H::Error,
         impl ServiceFactory<
             IoBoxed,
             SharedCfg,
             Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds),
+            Error = MqttError<H::Error>,
         >,
         impl ServiceFactory<
             Decoded,
             (SharedCfg, Session<St>),
-            Response = Option<mqtt::Encoded>,
+            Response = Option<Encoded>,
             Error = DispatcherError<E>,
             InitError = H::Error,
         >,
