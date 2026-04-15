@@ -1,6 +1,6 @@
 use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
 
-use crate::error::{DecodeError, EncodeError};
+use crate::error::{DecodeError, EncodeError, ProtocolError};
 use crate::utils::{self, Decode, Property};
 use crate::v5::codec::{UserProperties, UserProperty, encode, property_type as pt};
 
@@ -60,6 +60,51 @@ impl Disconnect {
             reason_string: None,
             user_properties: Vec::new(),
         }
+    }
+
+    /// Create new instance of `Disconnect`, set reason from protocol error
+    pub fn from_proto_error(err: &ProtocolError) -> Self {
+        Self {
+            reason_code: match err {
+                ProtocolError::Decode(DecodeError::InvalidLength) => {
+                    DisconnectReasonCode::MalformedPacket
+                }
+                ProtocolError::Decode(DecodeError::MaxSizeExceeded) => {
+                    DisconnectReasonCode::PacketTooLarge
+                }
+                ProtocolError::KeepAliveTimeout => DisconnectReasonCode::KeepAliveTimeout,
+                ProtocolError::ProtocolViolation(e) => e.reason(),
+                _ => DisconnectReasonCode::ImplementationSpecificError,
+            },
+            ..Default::default()
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    /// Set reason string for disconnect packet
+    pub fn reason_string(mut self, reason: ByteString) -> Self {
+        self.reason_string = Some(reason);
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    /// Set server reference for disconnect packet
+    pub fn server_reference(mut self, reference: ByteString) -> Self {
+        self.server_reference = Some(reference);
+        self
+    }
+
+    #[inline]
+    #[must_use]
+    /// Update disconnect packet properties
+    pub fn properties<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&mut UserProperties),
+    {
+        f(&mut self.user_properties);
+        self
     }
 
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {

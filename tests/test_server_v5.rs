@@ -822,25 +822,31 @@ async fn test_dups() {
 
 #[ntex::test]
 async fn test_max_receive() {
-    let srv =
-        server::TestServerBuilder::new(async move || {
-            MqttServer::new(handshake)
-                .control(async move |msg| {
-                    if let Control::Stop(Reason::Protocol(_)) = msg {
-                        Ok::<_, TestError>(None)
-                    } else {
-                        Ok(Some(codec::Packet::from(codec::Disconnect::default()).into()))
-                    }
-                })
-                .publish(|p: Publish| async move {
-                    sleep(Duration::from_millis(10000)).await;
-                    Ok::<_, TestError>(p.ack())
-                })
-        })
-        .config(SharedCfg::new("MQTT").add(
+    let srv = server::TestServerBuilder::new(async move || {
+        MqttServer::new(handshake)
+            .control(async move |msg| {
+                if let Control::Stop(Reason::Protocol(err)) = msg {
+                    Ok(Some(
+                        codec::Packet::from(codec::Disconnect::from_proto_error(err.get_ref()))
+                            .into(),
+                    ))
+                } else {
+                    Ok::<_, TestError>(Some(
+                        codec::Packet::from(codec::Disconnect::default()).into(),
+                    ))
+                }
+            })
+            .publish(|p: Publish| async move {
+                sleep(Duration::from_millis(10000)).await;
+                Ok::<_, TestError>(p.ack())
+            })
+    })
+    .config(
+        SharedCfg::new("MQTT").add(
             MqttServiceConfig::new().set_max_receive(1).set_max_qos(codec::QoS::AtLeastOnce),
-        ))
-        .start();
+        ),
+    )
+    .start();
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
