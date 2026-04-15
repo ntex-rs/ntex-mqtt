@@ -9,7 +9,7 @@ use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 use crate::control::{Control, Reason};
 use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
-use crate::{MqttError, MqttServiceConfig, types::QoS, types::packet_type};
+use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
 use super::codec::{Decoded, Encoded, Packet};
 use super::control::{
@@ -26,13 +26,14 @@ pub(super) fn factory<St, T, C, E>(
     (SharedCfg, Session<St>),
     Response = Option<Encoded>,
     Error = DispatcherError<E>,
-    InitError = MqttError<E>,
+    InitError = T::InitError,
 >
 where
     St: 'static,
     T: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
     C: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
-    E: From<C::Error> + From<C::InitError> + From<T::Error> + From<T::InitError> + 'static,
+    E: From<C::Error> + From<T::Error> + From<T::InitError> + 'static,
+    T::InitError: From<C::InitError>,
 {
     let factories = Rc::new((publish, control));
 
@@ -43,11 +44,11 @@ where
             let fut = join(factories.0.create(session.clone()), factories.1.create(session));
             let (publish, control) = fut.await;
 
-            let publish = publish.map_err(|e| MqttError::Service(e.into()))?;
+            let publish = publish?;
             let control = Pipeline::new(
                 control
-                    .map_err(|e| MqttError::Service(e.into()))?
-                    .map_err(|e| DispatcherError::Service(E::from(e))),
+                    .map_err(<T::InitError>::from)?
+                    .map_err(|e| DispatcherError::Service(e.into())),
             );
 
             let control = Pipeline::new(
@@ -493,7 +494,7 @@ where
             Control::Stop(Reason::Error(_)) => {
                 self.shared.drop_payload(&PayloadError::Service);
             }
-            Control::Stop(Reason::ProtocolError(err)) => {
+            Control::Stop(Reason::Protocol(err)) => {
                 self.shared.drop_payload(err.get_ref());
             }
             Control::Stop(Reason::PeerGone(_)) => {
@@ -523,11 +524,10 @@ mod tests {
     use ntex_bytes::{ByteString, Bytes};
     use ntex_io::{Io, testing::IoTest};
     use ntex_service::{cfg::SharedCfg, fn_service};
-    use ntex_util::future::{Ready, lazy};
-    use ntex_util::time::{Seconds, sleep};
+    use ntex_util::{future::lazy, time::Seconds, time::sleep};
 
     use super::*;
-    use crate::v3::{MqttSink, codec};
+    use crate::{control, v3::MqttSink, v3::codec};
 
     #[ntex::test]
     async fn test_dup_packet_id() {
@@ -539,28 +539,21 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
         let err = Rc::new(RefCell::new(false));
-        let err2 = err.clone();
 
-        let control = Pipeline::new(fn_service(move |ctrl| {
-            if let Control::ProtocolError(_) = ctrl {
-                *err2.borrow_mut() = true;
-            }
-            Ready::Ok(None)
-        }));
-
-        let disp = Pipeline::new(Dispatcher::<_, _, _, ()>::new(
+        let disp = Pipeline::new(Dispatcher::new(
             shared.clone(),
-            fn_service(|_| async {
+            fn_service(async |_| {
                 sleep(Seconds(10)).await;
                 Ok(())
             }),
-            control.clone(),
-            control,
+            Pipeline::new(fn_service(async |msg: ProtocolMessage| {
+                Ok::<_, DispatcherError<()>>(msg.ack())
+            })),
             cfg.get(),
         ));
 
         let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
-            Box::pin(disp.call(DispatchItem::Item(Decoded::Publish(
+            Box::pin(disp.call(Decoded::Publish(
                 codec::Publish {
                     dup: false,
                     retain: false,
@@ -571,10 +564,10 @@ mod tests {
                 },
                 Bytes::new(),
                 999,
-            ))));
+            )));
         let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
 
-        let f = Box::pin(disp.call(DispatchItem::Item(Decoded::Publish(
+        let f = Box::pin(disp.call(Decoded::Publish(
             codec::Publish {
                 dup: false,
                 retain: false,
@@ -585,89 +578,40 @@ mod tests {
             },
             Bytes::new(),
             999,
-        ))));
+        )));
         assert!(f.await.unwrap().is_none());
         assert!(*err.borrow());
     }
 
     #[ntex::test]
     async fn test_wr_backpressure() {
-        let cfg: SharedCfg = SharedCfg::new("DBG")
-            .add(MqttServiceConfig::new().set_max_qos(QoS::AtLeastOnce))
-            .into();
-
-        let io = Io::new(IoTest::create().0, cfg.clone());
+        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
-        let control = Pipeline::new(fn_service(|_| {
-            Ready::Ok(ControlAck { result: ControlAckKind::Nothing })
-        }));
-
-        let disp = Pipeline::new(Dispatcher::<_, _, _, ()>::new(
-            shared.clone(),
-            fn_service(|_| Ready::Ok(())),
-            control.clone(),
-            control,
-            cfg.get(),
-        ));
-
         let sink = MqttSink::new(shared.clone());
+        let ses = Session::new((), sink.clone());
+
+        let disp = ControlFactory::<_, (), ()>::new(control::DefaultControlService::<
+            _,
+            (),
+            codec::Codec,
+        >::default());
+        let svc = disp.pipeline(ses).await.unwrap();
+
         assert!(!sink.is_ready());
         shared.set_cap(1);
         assert!(sink.is_ready());
         assert!(shared.wait_readiness().is_none());
 
-        disp.call(DispatchItem::Control(DispControl::WBackPressureEnabled)).await.unwrap();
+        svc.call(Control::wr(false)).await.unwrap();
         assert!(!sink.is_ready());
         let rx = shared.wait_readiness();
         let rx2 = shared.wait_readiness().unwrap();
         assert!(rx.is_some());
 
         let rx = rx.unwrap();
-        disp.call(DispatchItem::Control(DispControl::WBackPressureDisabled)).await.unwrap();
+        svc.call(Control::wr(true)).await.unwrap();
         assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
         assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
-    }
-
-    #[ntex::test]
-    async fn control_stop_once_on_service_error() {
-        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
-        let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
-        let counter = Rc::new(Cell::new(0));
-        let counter2 = counter.clone();
-        let control = Pipeline::new(fn_service(async move |msg| {
-            if matches!(msg, Control::Stop(_)) {
-                counter2.set(counter2.get() + 1);
-            }
-            Ok::<_, MqttError<()>>(ControlAck { result: ControlAckKind::Nothing })
-        }));
-
-        let disp = Pipeline::new(Dispatcher::<_, _, _, _>::new(
-            shared.clone(),
-            fn_service(async |_: Publish| Err(())),
-            control.clone(),
-            control,
-            Cfg::default(),
-        ));
-
-        disp.call(DispatchItem::Item(Decoded::Publish(
-            codec::Publish {
-                dup: false,
-                retain: false,
-                qos: codec::QoS::AtLeastOnce,
-                topic: ByteString::from("test"),
-                packet_id: Some(NonZeroU16::new(1).unwrap()),
-                payload_size: 0,
-            },
-            Bytes::new(),
-            0,
-        )))
-        .await
-        .unwrap();
-
-        disp.call(DispatchItem::Stop(Reason::Io(None))).await.unwrap();
-
-        assert_eq!(counter.get(), 1);
     }
 }

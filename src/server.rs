@@ -64,22 +64,29 @@ where
     V5: ServiceFactory<IoBoxed, SharedCfg, Response = (), Error = Err, InitError = InitErr>,
 {
     /// Service to handle v3 protocol
-    pub fn v3<St, H, T, M, E, C, Codec>(
+    pub fn v3<St, E, H, T, M, C, Codec>(
         self,
-        service: service::MqttServer<St, H, T, M, E, C, Codec>,
+        service: service::MqttServer<St, E, Err, H, T, M, C, Codec>,
     ) -> MqttServer<
-        impl ServiceFactory<IoBoxed, SharedCfg, Response = (), Error = Err, InitError = InitErr>,
+        impl ServiceFactory<
+            IoBoxed,
+            SharedCfg,
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        >,
         V5,
         Err,
         InitErr,
     >
     where
         St: Clone + 'static,
+        E: 'static,
         H: ServiceFactory<
                 IoBoxed,
                 SharedCfg,
                 Response = (IoBoxed, Codec, St, Seconds),
-                Error = Err,
+                Error = MqttError<Err>,
                 InitError = InitErr,
             > + 'static,
         T: ServiceFactory<
@@ -89,39 +96,45 @@ where
                 Error = DispatcherError<E>,
                 InitError = Err,
             > + 'static,
-        M: Middleware<T::Service, SharedCfg>,
+        M: Middleware<T::Service, (SharedCfg, St)>,
         M::Service: Service<Request<Codec>, Response = Response<Codec>, Error = DispatcherError<E>>
             + 'static,
         C: ServiceFactory<
                 Control<E>,
                 St,
                 Response = Response<Codec>,
-                Error = H::Error,
-                InitError = H::Error,
+                Error = Err,
+                InitError = Err,
             > + 'static,
-        E: 'static,
         Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError> + Clone + 'static,
     {
         MqttServer { svc_v3: service, svc_v5: self.svc_v5, _t: marker::PhantomData }
     }
 
     /// Service to handle v5 protocol
-    pub fn v5<St, H, T, M, E, C, Codec>(
+    pub fn v5<St, E, H, T, M, C, Codec>(
         self,
-        service: service::MqttServer<St, H, T, M, E, C, Codec>,
+        service: service::MqttServer<St, E, Err, H, T, M, C, Codec>,
     ) -> MqttServer<
         V3,
-        impl ServiceFactory<IoBoxed, SharedCfg, Response = (), Error = Err, InitError = InitErr>,
+        impl ServiceFactory<
+            IoBoxed,
+            SharedCfg,
+            Response = (),
+            Error = MqttError<Err>,
+            InitError = InitErr,
+        >,
         Err,
         InitErr,
     >
     where
         St: Clone + 'static,
+        E: fmt::Debug + 'static,
         H: ServiceFactory<
                 IoBoxed,
                 SharedCfg,
                 Response = (IoBoxed, Codec, St, Seconds),
-                Error = Err,
+                Error = MqttError<Err>,
                 InitError = InitErr,
             > + 'static,
         T: ServiceFactory<
@@ -131,17 +144,16 @@ where
                 Error = DispatcherError<E>,
                 InitError = Err,
             > + 'static,
-        M: Middleware<T::Service, SharedCfg>,
+        M: Middleware<T::Service, (SharedCfg, St)>,
         M::Service: Service<Request<Codec>, Response = Response<Codec>, Error = DispatcherError<E>>
             + 'static,
         C: ServiceFactory<
                 Control<E>,
                 St,
                 Response = Response<Codec>,
-                Error = H::Error,
-                InitError = H::Error,
+                Error = Err,
+                InitError = Err,
             > + 'static,
-        E: fmt::Debug + 'static,
         Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError> + Clone + 'static,
     {
         MqttServer { svc_v3: self.svc_v3, svc_v5: service, _t: marker::PhantomData }

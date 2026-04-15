@@ -323,7 +323,7 @@ mod tests {
     use ntex_util::time::{Seconds, sleep};
 
     use super::*;
-    use crate::v3::{MqttSink, QoS, codec::Codec, codec::Decoded};
+    use crate::v3::{QoS, codec::Decoded};
 
     #[ntex::test]
     async fn test_dup_packet_id() {
@@ -337,12 +337,14 @@ mod tests {
                 sleep(Seconds(10)).await;
                 Ok(Either::Left(()))
             }),
-            fn_service(|_| Ready::Ok(ControlAck { result: ControlAckKind::Nothing })),
+            fn_service(|_| {
+                Ready::Ok(ProtocolMessageAck { result: ProtocolMessageKind::Nothing })
+            }),
             32 * 1024,
         ));
 
         let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
-            Box::pin(disp.call(DispatchItem::Item(Decoded::Publish(
+            Box::pin(disp.call(Decoded::Publish(
                 codec::Publish {
                     dup: false,
                     retain: false,
@@ -353,10 +355,10 @@ mod tests {
                 },
                 Bytes::new(),
                 999,
-            ))));
+            )));
         let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
 
-        let f = Box::pin(disp.call(DispatchItem::Item(Decoded::Publish(
+        let f = Box::pin(disp.call(Decoded::Publish(
             codec::Publish {
                 dup: false,
                 retain: false,
@@ -367,10 +369,10 @@ mod tests {
             },
             Bytes::new(),
             999,
-        ))));
+        )));
         let err = f.await.err().unwrap();
         match err {
-            MqttError::Handshake(HandshakeError::Protocol(msg)) => {
+            DispatcherError::Protocol(msg) => {
                 assert!(
                     format!("{msg}")
                         .contains("PUBLISH received with packet id that is already in use")
@@ -378,36 +380,5 @@ mod tests {
             }
             _ => panic!(),
         }
-    }
-
-    #[ntex::test]
-    async fn test_wr_backpressure() {
-        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
-        let codec = Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
-
-        let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
-            shared.clone(),
-            fn_service(|_| Ready::Ok(Either::Left(()))),
-            fn_service(|_| Ready::Ok(ControlAck { result: ControlAckKind::Nothing })),
-            32 * 1024,
-        ));
-
-        let sink = MqttSink::new(shared.clone());
-        assert!(!sink.is_ready());
-        shared.set_cap(1);
-        assert!(sink.is_ready());
-        assert!(shared.wait_readiness().is_none());
-
-        disp.call(DispatchItem::Control(DispControl::WBackPressureEnabled)).await.unwrap();
-        assert!(!sink.is_ready());
-        let rx = shared.wait_readiness();
-        let rx2 = shared.wait_readiness().unwrap();
-        assert!(rx.is_some());
-
-        let rx = rx.unwrap();
-        disp.call(DispatchItem::Control(DispControl::WBackPressureDisabled)).await.unwrap();
-        assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
-        assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
     }
 }

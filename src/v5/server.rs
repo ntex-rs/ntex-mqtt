@@ -74,18 +74,6 @@ where
     P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
     C: ServiceFactory<Control<E>, Session<St>, Response = Option<Encoded>> + 'static,
 {
-    /// Remove all middlewares
-    pub fn reset_middlewares(self) -> MqttServer<St, E, H, P, C, Identity> {
-        MqttServer {
-            middleware: Identity,
-            handshake: self.handshake,
-            control: self.control,
-            protocol: self.protocol,
-            pool: self.pool,
-            _t: PhantomData,
-        }
-    }
-
     /// Registers middleware, in the form of a middleware component (type),
     /// that runs during inbound and/or outbound processing in the request
     /// lifecycle (request -> response), modifying request/response as

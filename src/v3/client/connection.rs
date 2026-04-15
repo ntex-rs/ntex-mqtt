@@ -100,7 +100,7 @@ impl Client {
             fn_service(|_: ProtocolMessage| Ready::<_, ()>::Ok(ProtocolMessage::disconnect())),
         );
         let control = ControlService::new(
-            control::DefaultControlService::<Session<()>, (), Rc<MqttShared>>::default(),
+            control::DefaultControlService::<Session<()>, (), codec::Encoded>::default(),
             self.shared.clone(),
         );
 
@@ -127,7 +127,7 @@ impl Client {
             service.into_service(),
         );
         let control = ControlService::new(
-            control::DefaultControlService::<Session<()>, E, Rc<MqttShared>>::default(),
+            control::DefaultControlService::<Session<()>, E, codec::Encoded>::default(),
             self.shared.clone(),
         );
 
@@ -196,7 +196,7 @@ where
             fn_service(|_: ProtocolMessage| Ready::<_, Err>::Ok(ProtocolMessage::disconnect())),
         );
         let control = ControlService::new(
-            control::DefaultControlService::<Session<()>, Err, Rc<MqttShared>>::default(),
+            control::DefaultControlService::<Session<()>, Err, codec::Encoded>::default(),
             self.shared.clone(),
         );
 
@@ -222,7 +222,7 @@ where
             service.into_service(),
         );
         let control = ControlService::new(
-            control::DefaultControlService::<Session<()>, Err, Rc<MqttShared>>::default(),
+            control::DefaultControlService::<Session<()>, Err, codec::Encoded>::default(),
             self.shared.clone(),
         );
 

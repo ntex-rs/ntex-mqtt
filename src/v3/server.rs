@@ -43,35 +43,37 @@ use super::{MqttSink, Publish, Session, codec as mqtt};
 /// the client, in case of error connection get closed. Control service receives all
 /// other packets, like `Subscribe`, `Unsubscribe` etc. Also control service receives
 /// errors from publish service and connection disconnect.
-pub struct MqttServer<St, H, P, C, M = Identity> {
+pub struct MqttServer<St, E, H, P, C, M = Identity> {
     handshake: H,
     protocol: P,
     control: C,
     middleware: M,
     pub(super) pool: Rc<MqttSinkPool>,
-    _t: PhantomData<St>,
+    _t: PhantomData<(St, E)>,
 }
 
-impl<St, H, P, C, M> fmt::Debug for MqttServer<St, H, P, C, M> {
+impl<St, E, H, P, C, M> fmt::Debug for MqttServer<St, E, H, P, C, M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("v3::MqttServer").finish()
     }
 }
 
-impl<St, H>
+impl<St, E, H>
     MqttServer<
         St,
+        E,
         H,
-        DefaultControlService<St, H::Error>,
+        DefaultControlService<Session<St>, E>,
         ControlFactory<
-            control::DefaultControlService<Session<St>, H::Error, mqtt::Codec>,
+            control::DefaultControlService<Session<St>, E, mqtt::Codec, H::Error>,
             St,
-            H::Error,
+            E,
         >,
         InFlightService,
     >
 where
     St: 'static,
+    E: From<H::Error> + fmt::Debug,
     H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
     H::Error: fmt::Debug,
 {
@@ -91,36 +93,16 @@ where
     }
 }
 
-impl<St, H, P, C, M> MqttServer<St, H, P, C, M>
+impl<St, E, H, P, C, M> MqttServer<St, E, H, P, C, M>
 where
     St: 'static,
+    E: From<H::Error> + fmt::Debug,
     H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
     P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
     C: ServiceFactory<Control<H::Error>, Session<St>, Response = Option<mqtt::Packet>>
         + 'static,
     H::Error: From<P::Error> + From<P::InitError> + fmt::Debug,
 {
-    /// Service to handle protocol control messages.
-    ///
-    /// All control messages are processed sequentially, max number of buffered
-    /// control packets is 16.
-    pub fn protocol<F, Srv>(self, service: F) -> MqttServer<St, H, Srv, C, M>
-    where
-        F: IntoServiceFactory<Srv, ProtocolMessage, Session<St>>,
-        Srv: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck>
-            + 'static,
-        H::Error: From<Srv::Error> + From<Srv::InitError>,
-    {
-        MqttServer {
-            handshake: self.handshake,
-            protocol: service.into_factory(),
-            middleware: self.middleware,
-            control: self.control,
-            pool: self.pool,
-            _t: PhantomData,
-        }
-    }
-
     /// Registers middleware, in the form of a middleware component (type),
     /// that runs during inbound and/or outbound processing in the request
     /// lifecycle (request -> response), modifying request/response as
@@ -128,7 +110,7 @@ where
     ///
     /// Use middleware when you need to read or modify *every* request or
     /// response in some way.
-    pub fn middleware<U>(self, mw: U) -> MqttServer<St, H, P, C, Stack<M, U>> {
+    pub fn middleware<U>(self, mw: U) -> MqttServer<St, E, H, P, C, Stack<M, U>> {
         MqttServer {
             middleware: Stack::new(self.middleware, mw),
             handshake: self.handshake,
@@ -140,7 +122,7 @@ where
     }
 
     /// Replace middlewares
-    pub fn replace_middlewares<U>(self, mw: U) -> MqttServer<St, H, P, C, U> {
+    pub fn replace_middlewares<U>(self, mw: U) -> MqttServer<St, E, H, P, C, U> {
         MqttServer {
             middleware: mw,
             handshake: self.handshake,
@@ -151,22 +133,59 @@ where
         }
     }
 
+    /// Service to handle protocol control messages.
+    ///
+    /// All control messages are processed sequentially, max number of buffered
+    /// control packets is 16.
+    pub fn protocol<F, Srv>(self, service: F) -> MqttServer<St, E, H, Srv, C, M>
+    where
+        F: IntoServiceFactory<Srv, ProtocolMessage, Session<St>>,
+        Srv: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck>
+            + 'static,
+        E: From<Srv::Error>,
+        H::Error: From<Srv::InitError>,
+    {
+        MqttServer {
+            handshake: self.handshake,
+            protocol: service.into_factory(),
+            middleware: self.middleware,
+            control: self.control,
+            pool: self.pool,
+            _t: PhantomData,
+        }
+    }
+
     /// Service to handle connection control messages
     pub fn control<F, Srv>(
         self,
         service: F,
-    ) -> MqttServer<St, H, P, ControlFactory<Srv, St, H::Error>, M>
+    ) -> MqttServer<
+        St,
+        E,
+        H,
+        P,
+        impl ServiceFactory<
+            Control<E>,
+            Session<St>,
+            Response = Option<mqtt::Encoded>,
+            Error = H::Error,
+            InitError = H::Error,
+        >,
+        M,
+    >
     where
-        F: IntoServiceFactory<Srv, Control<H::Error>, Session<St>>,
-        Srv: ServiceFactory<Control<H::Error>, Session<St>, Response = Option<mqtt::Packet>>
-            + 'static,
+        F: IntoServiceFactory<Srv, Control<E>, Session<St>>,
+        Srv:
+            ServiceFactory<Control<E>, Session<St>, Response = Option<mqtt::Encoded>> + 'static,
         H::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         MqttServer {
             handshake: self.handshake,
             protocol: self.protocol,
-            control: ControlFactory::new(service.into_factory()),
             middleware: self.middleware,
+            control: ControlFactory::new(service.into_factory())
+                .map_err(H::Error::from)
+                .map_init_err(H::Error::from),
             pool: self.pool,
             _t: PhantomData,
         }
@@ -178,22 +197,22 @@ where
         publish: F,
     ) -> service::MqttServer<
         Session<St>,
+        E,
+        H::Error,
         impl ServiceFactory<
             IoBoxed,
             SharedCfg,
             Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds),
             Error = MqttError<H::Error>,
-            InitError = H::InitError,
         >,
         impl ServiceFactory<
             mqtt::Decoded,
             (SharedCfg, Session<St>),
             Response = Option<mqtt::Encoded>,
             Error = DispatcherError<H::Error>,
-            InitError = MqttError<H::Error>,
+            InitError = H::Error,
         >,
         M,
-        H::Error,
         C,
         Rc<MqttShared>,
     >
@@ -213,7 +232,7 @@ where
                 pool: self.pool.clone(),
                 _t: PhantomData,
             },
-            factory(publish.into_factory(), self.protocol),
+            factory(publish.into_factory().map_init_err(H::Error::from), self.protocol),
             self.middleware,
             self.control,
         )
@@ -357,16 +376,13 @@ where
 #[cfg(test)]
 mod tests {
     use ntex_service::fn_factory;
-    use ntex_util::future::Ready;
 
     use super::*;
 
     #[test]
     fn test_debug() {
-        let server = MqttServer::new(fn_factory(|| async {
-            Ok::<_, ()>(ntex_service::fn_service(|h: Handshake| {
-                Ready::<HandshakeAck<()>, ()>::Ok(h.ack((), false))
-            }))
+        let server = MqttServer::<(), (), _, _, _, _>::new(fn_factory(|| async {
+            Ok::<_, ()>(ntex_service::fn_service(async |_: Handshake| todo!()))
         }));
         assert!(format!("{server:?}").contains("v3::MqttServer"));
     }
