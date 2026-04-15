@@ -1,5 +1,5 @@
 //! Control message for connection management service
-use std::{fmt, io, marker::PhantomData};
+use std::{io, marker::PhantomData};
 
 use ntex_service::{Service, ServiceCtx, ServiceFactory};
 
@@ -116,15 +116,13 @@ impl PeerGone {
 #[derive(Debug)]
 pub struct DefaultControlService<S, E, R, Err = ()>(PhantomData<(S, E, R, Err)>);
 
-impl<S, E: fmt::Debug, R, Err> Default for DefaultControlService<S, E, R, Err> {
+impl<S, E, R, Err> Default for DefaultControlService<S, E, R, Err> {
     fn default() -> Self {
         DefaultControlService(PhantomData)
     }
 }
 
-impl<S, E: fmt::Debug, R, Err> ServiceFactory<Control<E>, S>
-    for DefaultControlService<S, E, R, Err>
-{
+impl<S, E, R, Err> ServiceFactory<Control<E>, S> for DefaultControlService<S, E, R, Err> {
     type Response = Option<R>;
     type Error = E;
     type InitError = Err;
@@ -135,16 +133,16 @@ impl<S, E: fmt::Debug, R, Err> ServiceFactory<Control<E>, S>
     }
 }
 
-impl<S, E: fmt::Debug, R> Service<Control<E>> for DefaultControlService<S, E, R, ()> {
+impl<S, E, R> Service<Control<E>> for DefaultControlService<S, E, R, ()> {
     type Response = Option<R>;
     type Error = E;
 
     async fn call(
         &self,
-        pkt: Control<E>,
+        _: Control<E>,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        log::warn!("MQTT5 Control service is not configured, pkt: {pkt:?}");
+        log::warn!("MQTT5 Control service is not configured");
         Ok(None)
     }
 }

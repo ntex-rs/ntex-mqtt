@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData};
+use std::marker::PhantomData;
 
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory};
@@ -11,13 +11,13 @@ use super::{Session, control::ProtocolMessage, control::ProtocolMessageAck};
 #[derive(Debug)]
 pub struct DefaultProtocolService<S, E>(PhantomData<(S, E)>);
 
-impl<S, E: fmt::Debug> Default for DefaultProtocolService<S, E> {
+impl<S, E> Default for DefaultProtocolService<S, E> {
     fn default() -> Self {
         DefaultProtocolService(PhantomData)
     }
 }
 
-impl<S, E: fmt::Debug> ServiceFactory<ProtocolMessage, S> for DefaultProtocolService<S, E> {
+impl<S, E> ServiceFactory<ProtocolMessage, S> for DefaultProtocolService<S, E> {
     type Response = ProtocolMessageAck;
     type Error = E;
     type InitError = E;
@@ -28,7 +28,7 @@ impl<S, E: fmt::Debug> ServiceFactory<ProtocolMessage, S> for DefaultProtocolSer
     }
 }
 
-impl<S, E: fmt::Debug> Service<ProtocolMessage> for DefaultProtocolService<S, E> {
+impl<S, E> Service<ProtocolMessage> for DefaultProtocolService<S, E> {
     type Response = ProtocolMessageAck;
     type Error = E;
 

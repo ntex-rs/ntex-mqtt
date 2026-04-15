@@ -47,7 +47,7 @@ impl<St, E, H>
         InFlightService,
     >
 where
-    E: From<H::Error> + fmt::Debug,
+    E: From<H::Error>,
     H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>>,
 {
     /// Create server factory and provide handshake service
@@ -69,7 +69,7 @@ where
 impl<St, E, H, P, C, M> MqttServer<St, E, H, P, C, M>
 where
     St: 'static,
-    E: From<H::Error> + fmt::Debug,
+    E: From<H::Error>,
     H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
     P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
     C: ServiceFactory<Control<E>, Session<St>, Response = Option<Encoded>> + 'static,
@@ -190,11 +190,8 @@ where
     >
     where
         F: IntoServiceFactory<Srv, Publish, Session<St>>,
-        H::Error: From<P::InitError>
-            + From<C::Error>
-            + From<C::InitError>
-            + From<Srv::InitError>
-            + fmt::Debug,
+        H::Error:
+            From<P::InitError> + From<C::Error> + From<C::InitError> + From<Srv::InitError>,
         E: From<P::Error> + 'static,
         Srv: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
         Srv::Error: ToPublishAck<Error = E>,
@@ -217,7 +214,6 @@ struct HandshakeFactory<St, H> {
 impl<St, H> ServiceFactory<IoBoxed, SharedCfg> for HandshakeFactory<St, H>
 where
     H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
-    H::Error: fmt::Debug,
 {
     type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;
@@ -245,7 +241,6 @@ struct HandshakeService<St, H> {
 impl<St, H> Service<IoBoxed> for HandshakeService<St, H>
 where
     H: Service<Handshake, Response = HandshakeAck<St>> + 'static,
-    H::Error: fmt::Debug,
 {
     type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;

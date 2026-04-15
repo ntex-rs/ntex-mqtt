@@ -73,9 +73,8 @@ impl<St, E, H>
     >
 where
     St: 'static,
-    E: From<H::Error> + fmt::Debug,
+    E: From<H::Error>,
     H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
-    H::Error: fmt::Debug,
 {
     /// Create server factory and provide handshake service
     pub fn new<F>(handshake: F) -> Self
@@ -96,12 +95,12 @@ where
 impl<St, E, H, P, C, M> MqttServer<St, E, H, P, C, M>
 where
     St: 'static,
-    E: From<H::Error> + fmt::Debug,
+    E: From<H::Error>,
     H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
     P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
     C: ServiceFactory<Control<H::Error>, Session<St>, Response = Option<mqtt::Encoded>>
         + 'static,
-    H::Error: From<P::Error> + From<P::InitError> + fmt::Debug,
+    H::Error: From<P::Error> + From<P::InitError>,
 {
     /// Registers middleware, in the form of a middleware component (type),
     /// that runs during inbound and/or outbound processing in the request
@@ -217,14 +216,10 @@ where
         Rc<MqttShared>,
     >
     where
-        H::Error: From<P::Error>
-            + From<P::InitError>
-            + From<Srv::Error>
-            + From<Srv::InitError>
-            + fmt::Debug,
+        H::Error: From<P::Error> + From<P::InitError> + From<Srv::Error> + From<Srv::InitError>,
         F: IntoServiceFactory<Srv, Publish, Session<St>>,
         Srv: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
-        H::Error: From<Srv::Error> + From<Srv::InitError> + fmt::Debug,
+        H::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         service::MqttServer::new(
             HandshakeFactory {
@@ -248,7 +243,6 @@ struct HandshakeFactory<St, H> {
 impl<St, H> ServiceFactory<IoBoxed, SharedCfg> for HandshakeFactory<St, H>
 where
     H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
-    H::Error: fmt::Debug,
 {
     type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;
@@ -276,7 +270,6 @@ struct HandshakeService<St, H> {
 impl<St, H> Service<IoBoxed> for HandshakeService<St, H>
 where
     H: Service<Handshake, Response = HandshakeAck<St>> + 'static,
-    H::Error: fmt::Debug,
 {
     type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;

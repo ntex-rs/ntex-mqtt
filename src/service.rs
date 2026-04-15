@@ -182,10 +182,7 @@ where
         let tag = req.tag();
         let handshake = ctx.call(&self.handshake, req).await;
 
-        let (io, codec, session, keepalive) = handshake.map_err(|e| {
-            // log::trace!("{tag}: Connection handshake failed: {e:?}");
-            e
-        })?;
+        let (io, codec, session, keepalive) = handshake?;
         log::trace!("{tag}: Connection handshake succeeded");
 
         let control = self.control.create(session.clone()).await.map_err(MqttError::Service)?;
