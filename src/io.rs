@@ -251,6 +251,9 @@ where
         let inner = this.inner;
         inner.state.waker.register(cx.waker());
 
+        // check control service readiness
+        ready!(inner.control.poll_ready(cx))?;
+
         // handle service response future
         if let Some(mut fut) = inner.state.response.take() {
             if let Poll::Ready(item) = Pin::new(&mut fut).poll(cx) {
@@ -275,7 +278,7 @@ where
                                 Ok(decoded) => {
                                     inner.update_timer(&decoded);
                                     if let Some(el) = decoded.item {
-                                        inner.call_service(cx, el, true);
+                                        inner.call_service(cx, el);
                                     } else {
                                         return Poll::Pending;
                                     }
@@ -386,12 +389,8 @@ where
         self.st = IoDispatcherState::Stop(Some(fut));
     }
 
-    fn call_service(&mut self, cx: &mut Context<'_>, item: Request<U>, nowait: bool) {
-        let mut fut = if nowait {
-            self.service.call_nowait(item)
-        } else {
-            self.service.call(item)
-        };
+    fn call_service(&mut self, cx: &mut Context<'_>, item: Request<U>) {
+        let mut fut = self.service.call_nowait(item);
         let mut queue = self.state.queue.borrow_mut();
 
         // optimize first call
