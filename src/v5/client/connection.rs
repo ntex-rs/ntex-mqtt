@@ -7,10 +7,10 @@ use ntex_service::{IntoService, Pipeline, Service, boxed, cfg::Cfg, fn_service};
 use ntex_util::time::{Millis, Seconds, sleep};
 use ntex_util::{HashMap, future::Either, future::Ready};
 
-use crate::v5::dispatcher::ControlService;
+use crate::v5::default::ControlService;
 use crate::v5::publish::{Publish, PublishAck};
 use crate::v5::{ProtocolMessageAck, Session, codec, shared::MqttShared, sink::MqttSink};
-use crate::{MqttServiceConfig, control, io::Dispatcher};
+use crate::{MqttServiceConfig, control, error::MqttError, io::Dispatcher};
 
 use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
 
@@ -126,7 +126,7 @@ impl Client {
     }
 
     /// Run client with provided control messages handler
-    pub async fn start<F, S, E>(self, service: F) -> Result<(), E>
+    pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
     where
         E: fmt::Debug + 'static,
         F: IntoService<S, ProtocolMessage> + 'static,
@@ -225,7 +225,7 @@ where
     }
 
     /// Run client and handle control messages
-    pub async fn start<F, S>(self, service: F) -> Result<(), Err>
+    pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
         F: IntoService<S, ProtocolMessage>,
         S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err> + 'static,

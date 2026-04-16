@@ -6,8 +6,9 @@ use ntex_service::{Pipeline, PipelineSvc, Service, ServiceCtx, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
-use crate::control::{Control, Reason};
-use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
+use crate::error::{
+    DecodeError, DispatcherError, MqttError, PayloadError, ProtocolError, SpecViolation,
+};
 use crate::payload::{Payload, PayloadStatus};
 use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
@@ -18,22 +19,22 @@ use super::control::{
 use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
-pub(super) fn factory<St, T, C, E>(
+pub(super) fn factory<St, T, P, E, InitErr>(
     publish: T,
-    control: C,
+    control: P,
 ) -> impl ServiceFactory<
     Decoded,
     (SharedCfg, Session<St>),
     Response = Option<Encoded>,
     Error = DispatcherError<E>,
-    InitError = T::InitError,
+    InitError = MqttError<InitErr>,
 >
 where
     St: 'static,
     T: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
-    C: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
-    E: From<C::Error> + From<T::Error> + From<T::InitError> + 'static,
-    T::InitError: From<C::InitError>,
+    P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
+    E: From<T::Error> + From<P::Error> + 'static,
+    InitErr: From<T::InitError> + From<P::InitError>,
 {
     let factories = Rc::new((publish, control));
 
@@ -44,10 +45,10 @@ where
             let fut = join(factories.0.create(session.clone()), factories.1.create(session));
             let (publish, control) = fut.await;
 
-            let publish = publish?;
+            let publish = publish.map_err(|e| MqttError::Service(InitErr::from(e)))?;
             let control = Pipeline::new(
                 control
-                    .map_err(<T::InitError>::from)?
+                    .map_err(|e| MqttError::Service(InitErr::from(e)))?
                     .map_err(|e| DispatcherError::Service(e.into())),
             );
 
@@ -66,7 +67,7 @@ where
             );
 
             let cfg: Cfg<MqttServiceConfig> = cfg.get();
-            Ok(Dispatcher::<_, _, E>::new(sink, publish, control, cfg))
+            Ok(Dispatcher::new(sink, publish, control, cfg))
         },
     )
 }
@@ -429,94 +430,6 @@ impl<C> Inner<C> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ControlService<S, E> {
-    svc: S,
-    shared: Rc<MqttShared>,
-    _t: PhantomData<E>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ControlFactory<S, St, E> {
-    svc: S,
-    _t: PhantomData<(E, St)>,
-}
-
-impl<S, E> ControlService<S, E>
-where
-    S: Service<Control<E>>,
-{
-    pub(super) fn new(svc: S, shared: Rc<MqttShared>) -> Self {
-        Self { svc, shared, _t: PhantomData }
-    }
-}
-
-impl<S, St, E> ControlFactory<S, St, E>
-where
-    S: ServiceFactory<Control<E>, Session<St>>,
-{
-    pub(super) fn new(svc: S) -> Self {
-        Self { svc, _t: PhantomData }
-    }
-}
-
-impl<S, St, E> ServiceFactory<Control<E>, Session<St>> for ControlFactory<S, St, E>
-where
-    S: ServiceFactory<Control<E>, Session<St>>,
-{
-    type Response = Option<Encoded>;
-    type Error = S::Error;
-    type InitError = S::InitError;
-    type Service = ControlService<S::Service, E>;
-
-    async fn create(&self, cfg: Session<St>) -> Result<Self::Service, Self::InitError> {
-        Ok(ControlService {
-            shared: cfg.sink().shared(),
-            svc: self.svc.create(cfg).await?,
-            _t: PhantomData,
-        })
-    }
-}
-
-impl<S, E> Service<Control<E>> for ControlService<S, E>
-where
-    S: Service<Control<E>>,
-{
-    type Response = Option<Encoded>;
-    type Error = S::Error;
-
-    async fn call(
-        &self,
-        req: Control<E>,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
-        match &req {
-            Control::Stop(Reason::Error(_)) => {
-                self.shared.drop_payload(&PayloadError::Service);
-            }
-            Control::Stop(Reason::Protocol(err)) => {
-                self.shared.drop_payload(err.get_ref());
-            }
-            Control::Stop(Reason::PeerGone(_)) => {
-                self.shared.drop_payload(&PayloadError::Disconnected);
-            }
-            Control::WrBackpressure(status) => {
-                if status.enabled() {
-                    self.shared.enable_wr_backpressure();
-                } else {
-                    self.shared.disable_wr_backpressure();
-                }
-            }
-        }
-
-        ctx.call(&self.svc, req).await.map(|_| None)
-    }
-
-    ntex_service::forward_ready!(svc);
-    ntex_service::forward_poll!(svc);
-    ntex_service::forward_shutdown!(svc);
-}
-
 #[cfg(test)]
 mod tests {
     use std::{future::Future, pin::Pin};
@@ -527,7 +440,7 @@ mod tests {
     use ntex_util::{future::lazy, time::Seconds, time::sleep};
 
     use super::*;
-    use crate::{control, error, v3::MqttSink, v3::codec};
+    use crate::{error, v3::codec};
 
     #[ntex::test]
     async fn test_dup_packet_id() {
@@ -588,37 +501,5 @@ mod tests {
             err.inner,
             error::ViolationInner::Spec(error::SpecViolation::PacketId_2_2_1_3_Pub)
         );
-    }
-
-    #[ntex::test]
-    async fn test_wr_backpressure() {
-        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
-        let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
-        let sink = MqttSink::new(shared.clone());
-        let ses = Session::new((), sink.clone());
-
-        let disp = ControlFactory::<_, (), ()>::new(control::DefaultControlService::<
-            _,
-            (),
-            codec::Codec,
-        >::default());
-        let svc = disp.pipeline(ses).await.unwrap();
-
-        assert!(!sink.is_ready());
-        shared.set_cap(1);
-        assert!(sink.is_ready());
-        assert!(shared.wait_readiness().is_none());
-
-        svc.call(Control::wr(true)).await.unwrap();
-        assert!(!sink.is_ready());
-        let rx = shared.wait_readiness();
-        let rx2 = shared.wait_readiness().unwrap();
-        assert!(rx.is_some());
-
-        let rx = rx.unwrap();
-        svc.call(Control::wr(false)).await.unwrap();
-        assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
-        assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
     }
 }

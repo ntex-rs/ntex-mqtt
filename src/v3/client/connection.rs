@@ -8,8 +8,8 @@ use ntex_util::future::{Either, Ready};
 use ntex_util::time::{Millis, Seconds, sleep};
 
 use crate::v3::{ProtocolMessageAck, Publish, codec, shared::MqttShared, sink::MqttSink};
-use crate::v3::{Session, dispatcher::ControlService};
-use crate::{control, io::Dispatcher};
+use crate::v3::{Session, default::ControlService};
+use crate::{control, error::MqttError, io::Dispatcher};
 
 use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
 
@@ -108,7 +108,7 @@ impl Client {
     }
 
     /// Run client with provided control messages handler
-    pub async fn start<F, S, E>(self, service: F) -> Result<(), E>
+    pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
     where
         E: fmt::Debug + 'static,
         F: IntoService<S, ProtocolMessage> + 'static,
@@ -204,7 +204,7 @@ where
     }
 
     /// Run client and handle control messages
-    pub async fn start<F, S>(self, service: F) -> Result<(), Err>
+    pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
         F: IntoService<S, ProtocolMessage>,
         S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err> + 'static,

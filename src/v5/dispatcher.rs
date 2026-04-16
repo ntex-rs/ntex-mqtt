@@ -7,8 +7,9 @@ use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::services::inflight::InFlightService;
 use ntex_util::{HashMap, HashSet, future::join};
 
-use crate::control::{Control, Reason};
-use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
+use crate::error::{
+    DecodeError, DispatcherError, MqttError, PayloadError, ProtocolError, SpecViolation,
+};
 use crate::payload::{Payload, PayloadStatus};
 use crate::{MqttServiceConfig, types::QoS};
 
@@ -18,7 +19,7 @@ use super::publish::{Publish, PublishAck};
 use super::{Session, ToPublishAck, shared::Ack, shared::MqttShared};
 
 /// MQTT 5 protocol dispatcher
-pub(super) fn factory<St, T, P, E>(
+pub(super) fn factory<St, T, P, E, InitErr>(
     publish: T,
     control: P,
 ) -> impl ServiceFactory<
@@ -26,15 +27,15 @@ pub(super) fn factory<St, T, P, E>(
     (SharedCfg, Session<St>),
     Response = Option<Encoded>,
     Error = DispatcherError<E>,
-    InitError = T::InitError,
+    InitError = MqttError<InitErr>,
 >
 where
     St: 'static,
     E: From<P::Error> + 'static,
     T: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
     T::Error: ToPublishAck<Error = E>,
-    T::InitError: From<P::InitError>,
     P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
+    InitErr: From<T::InitError> + From<P::InitError>,
 {
     let factories = Rc::new((publish, control));
 
@@ -46,9 +47,9 @@ where
         let (publish, control) =
             join(factories.0.create(ses.clone()), factories.1.create(ses)).await;
 
-        let publish = publish?;
+        let publish = publish.map_err(|e| MqttError::Service(InitErr::from(e)))?;
         let control = control
-            .map_err(<T::InitError>::from)?
+            .map_err(|e| MqttError::Service(InitErr::from(e)))?
             .map_err(|e| DispatcherError::Service(e.into()));
 
         let control = Pipeline::new(
@@ -540,177 +541,5 @@ where
         Ok(Some(Encoded::Packet(ack)))
     } else {
         Ok(None)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ControlService<S, E> {
-    svc: S,
-    shared: Rc<MqttShared>,
-    _t: PhantomData<E>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ControlFactory<S, St, E> {
-    svc: S,
-    _t: PhantomData<(E, St)>,
-}
-
-impl<S, E> ControlService<S, E>
-where
-    S: Service<Control<E>>,
-{
-    pub(super) fn new(svc: S, shared: Rc<MqttShared>) -> Self {
-        Self { svc, shared, _t: PhantomData }
-    }
-}
-
-impl<S, St, E> ControlFactory<S, St, E>
-where
-    S: ServiceFactory<Control<E>, Session<St>>,
-{
-    pub(super) fn new(svc: S) -> Self {
-        Self { svc, _t: PhantomData }
-    }
-}
-
-impl<S, St, E> ServiceFactory<Control<E>, Session<St>> for ControlFactory<S, St, E>
-where
-    S: ServiceFactory<Control<E>, Session<St>, Response = Option<Encoded>>,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-    type InitError = S::InitError;
-    type Service = ControlService<S::Service, E>;
-
-    async fn create(&self, cfg: Session<St>) -> Result<Self::Service, Self::InitError> {
-        Ok(ControlService {
-            shared: cfg.sink().shared(),
-            svc: self.svc.create(cfg).await?,
-            _t: PhantomData,
-        })
-    }
-}
-
-impl<S, E> Service<Control<E>> for ControlService<S, E>
-where
-    S: Service<Control<E>, Response = Option<Encoded>>,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-
-    async fn call(
-        &self,
-        req: Control<E>,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
-        let mut proto_error = false;
-        let disconnect = match &req {
-            Control::Stop(Reason::Error(_)) => {
-                self.shared.drop_payload(&PayloadError::Service);
-                Some(
-                    codec::Packet::from(codec::Disconnect::new(
-                        codec::DisconnectReasonCode::ImplementationSpecificError,
-                    ))
-                    .into(),
-                )
-            }
-            Control::Stop(Reason::Protocol(err)) => {
-                self.shared.drop_payload(err.get_ref());
-                proto_error = true;
-                Some(
-                    codec::Packet::from(codec::Disconnect::from_proto_error(err.get_ref()))
-                        .into(),
-                )
-            }
-            Control::Stop(Reason::PeerGone(_)) => {
-                self.shared.drop_payload(&PayloadError::Disconnected);
-                None
-            }
-            Control::WrBackpressure(status) => {
-                if status.enabled() {
-                    self.shared.enable_wr_backpressure();
-                } else {
-                    self.shared.disable_wr_backpressure();
-                }
-                None
-            }
-        };
-
-        match ctx.call(&self.svc, req).await {
-            Ok(Some(val)) => {
-                if (proto_error || !self.shared.is_disconnect_recv())
-                    && !self.shared.is_disconnect_sent()
-                {
-                    Ok(Some(val))
-                } else {
-                    Ok(None)
-                }
-            }
-            Ok(None) => {
-                if disconnect.is_some() && !self.shared.is_disconnect_sent() {
-                    Ok(disconnect)
-                } else {
-                    Ok(None)
-                }
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    ntex_service::forward_ready!(svc);
-    ntex_service::forward_poll!(svc);
-    ntex_service::forward_shutdown!(svc);
-}
-
-#[cfg(test)]
-mod tests {
-    use ntex_io::{Io, testing::IoTest};
-    use ntex_util::future::lazy;
-
-    use super::*;
-    use crate::{control, v5::MqttSink};
-
-    #[derive(Debug)]
-    struct TestError;
-
-    impl TryFrom<TestError> for PublishAck {
-        type Error = TestError;
-
-        fn try_from(err: TestError) -> Result<Self, Self::Error> {
-            Err(err)
-        }
-    }
-
-    #[ntex::test]
-    async fn test_wr_backpressure() {
-        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
-        let codec = codec::Codec::default();
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
-        let sink = MqttSink::new(shared.clone());
-        let ses = Session::new((), sink.clone());
-
-        let disp = ControlFactory::<_, (), ()>::new(control::DefaultControlService::<
-            Session<()>,
-            (),
-            codec::Encoded,
-        >::default());
-        let svc = disp.pipeline(ses).await.unwrap();
-
-        assert!(!sink.is_ready());
-        shared.set_cap(1);
-        assert!(sink.is_ready());
-        assert!(shared.wait_readiness().is_none());
-
-        svc.call(Control::wr(true)).await.unwrap();
-        assert!(!sink.is_ready());
-        let rx = shared.wait_readiness();
-        let rx2 = shared.wait_readiness().unwrap();
-        assert!(rx.is_some());
-
-        let rx = rx.unwrap();
-        svc.call(Control::wr(false)).await.unwrap();
-        assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
-        assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
     }
 }
