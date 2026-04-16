@@ -26,11 +26,6 @@ impl<T, St> Session<T, St> {
     pub fn sink(&self) -> &T {
         &self.0.sink
     }
-
-    #[inline]
-    pub fn state(&self) -> &St {
-        &self.0.st
-    }
 }
 
 impl<T, St> Deref for Session<T, St> {
@@ -53,8 +48,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_debug() {
+    fn test_session() {
         let s = Session::new(42u32, "sink");
+        assert_eq!(s.sink(), &"sink");
+        assert_eq!(*s, 42u32);
         assert_eq!(format!("{s:?}"), "Session");
     }
 }
