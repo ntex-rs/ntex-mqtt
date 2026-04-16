@@ -7,11 +7,12 @@ use ntex_service::{IntoService, Pipeline, Service, boxed, cfg::Cfg, fn_service};
 use ntex_util::time::{Millis, Seconds, sleep};
 use ntex_util::{HashMap, future::Either, future::Ready};
 
+use crate::v5::default::ControlService;
 use crate::v5::publish::{Publish, PublishAck};
-use crate::v5::{ControlAck, codec, shared::MqttShared, sink::MqttSink};
-use crate::{MqttServiceConfig, error::MqttError, io::Dispatcher};
+use crate::v5::{ProtocolMessageAck, Session, codec, shared::MqttShared, sink::MqttSink};
+use crate::{MqttServiceConfig, control, error::MqttError, io::Dispatcher};
 
-use super::{control::Control, dispatcher::create_dispatcher};
+use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
 
 /// Mqtt client
 pub struct Client {
@@ -109,23 +110,27 @@ impl Client {
         let dispatcher = create_dispatcher(
             self.shared.clone(),
             fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
-            fn_service(|msg: Control<()>| {
+            fn_service(|msg: ProtocolMessage| {
                 Ready::Ok(msg.disconnect(codec::Disconnect::default()))
             }),
             self.max_receive,
             16,
             self.cfg,
         );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, (), codec::Encoded>::default(),
+            self.shared.clone(),
+        );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
 
     /// Run client with provided control messages handler
     pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
     where
-        E: 'static,
-        F: IntoService<S, Control<E>> + 'static,
-        S: Service<Control<E>, Response = ControlAck, Error = E> + 'static,
+        E: fmt::Debug + 'static,
+        F: IntoService<S, ProtocolMessage> + 'static,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
     {
         if self.keepalive.non_zero() {
             ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
@@ -139,8 +144,12 @@ impl Client {
             16,
             self.cfg,
         );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, E, codec::Encoded>::default(),
+            self.shared.clone(),
+        );
 
-        Dispatcher::new(self.io, self.shared, dispatcher).await
+        Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 
     /// Get negotiated io stream and codec
@@ -174,9 +183,9 @@ impl<Err, PErr> fmt::Debug for ClientRouter<Err, PErr> {
 
 impl<Err, PErr> ClientRouter<Err, PErr>
 where
-    Err: From<PErr> + 'static,
+    Err: From<PErr> + fmt::Debug + 'static,
     PublishAck: TryFrom<PErr, Error = Err>,
-    PErr: 'static,
+    PErr: fmt::Debug + 'static,
 {
     #[must_use]
     /// Configure mqtt resource for a specific topic
@@ -200,22 +209,26 @@ where
         let dispatcher = create_dispatcher(
             self.shared.clone(),
             dispatch(self.builder.finish(), self.handlers),
-            fn_service(|msg: Control<Err>| {
+            fn_service(|msg: ProtocolMessage| {
                 Ready::Ok(msg.disconnect(codec::Disconnect::default()))
             }),
             self.max_receive,
             16,
             self.cfg,
         );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, Err, codec::Encoded>::default(),
+            self.shared.clone(),
+        );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
 
     /// Run client and handle control messages
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
-        F: IntoService<S, Control<Err>>,
-        S: Service<Control<Err>, Response = ControlAck, Error = Err> + 'static,
+        F: IntoService<S, ProtocolMessage>,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err> + 'static,
     {
         if self.keepalive.non_zero() {
             ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
@@ -229,8 +242,12 @@ where
             16,
             self.cfg,
         );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, Err, codec::Encoded>::default(),
+            self.shared.clone(),
+        );
 
-        Dispatcher::new(self.io, self.shared, dispatcher).await
+        Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 
     /// Get negotiated io stream and codec

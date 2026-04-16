@@ -1,4 +1,4 @@
-use ntex::util::{ByteString, Bytes, Ready};
+use ntex::util::{ByteString, Bytes};
 use ntex::{ServiceFactory, SharedCfg, server};
 
 use ntex_mqtt::{MqttServer, v3, v5};
@@ -26,14 +26,14 @@ impl TryFrom<TestError> for v5::PublishAck {
 async fn test_simple() -> std::io::Result<()> {
     let srv = server::test_server(async || {
         MqttServer::new()
-            .v3(v3::MqttServer::new(|con: v3::Handshake| {
-                Ready::Ok::<_, TestError>(con.ack(St, false))
+            .v3(v3::MqttServer::new(async move |con: v3::Handshake| {
+                Ok::<_, TestError>(con.ack(St, false))
             })
-            .publish(|_| Ready::Ok::<_, TestError>(())))
-            .v5(v5::MqttServer::new(|con: v5::Handshake| {
-                Ready::Ok::<_, TestError>(con.ack(St))
+            .publish(async |_| Ok::<_, TestError>(())))
+            .v5(v5::MqttServer::new(async move |con: v5::Handshake| {
+                Ok::<_, TestError>(con.ack(St))
             })
-            .publish(|p: v5::Publish| Ready::Ok::<_, TestError>(p.ack())))
+            .publish(async move |p: v5::Publish| Ok::<_, TestError>(p.ack())))
     });
 
     // connect to v5 server

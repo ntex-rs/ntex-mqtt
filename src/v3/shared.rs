@@ -6,9 +6,9 @@ use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
 use ntex_util::{HashSet, channel::pool};
 
-use crate::error::{DecodeError, EncodeError, ProtocolError, SendPacketError};
-use crate::types::packet_type;
+use crate::error::{DecodeError, EncodeError, PayloadError, ProtocolError, SendPacketError};
 use crate::v3::codec::{self, Encoded, Publish};
+use crate::{payload::PlSender, types::packet_type};
 
 #[derive(Debug)]
 pub(super) enum Ack {
@@ -42,12 +42,12 @@ impl Default for MqttSinkPool {
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct Flags: u8 {
-        const CLIENT         = 0b0000_0001;
-        const WRB_ENABLED    = 0b0000_0010; // write-backpressure
-        const ON_PUBLISH_ACK = 0b0000_0100; // on-publish-ack callback
+        const CLIENT          = 0b0000_0001;
+        const WRB_ENABLED     = 0b0000_0010; // write-backpressure
+        const ON_PUBLISH_ACK  = 0b0000_0100; // on-publish-ack callback
 
-        const DISCONNECT     = 0b0100_0000; // Disconnect frame is sent
-        const STOPPED        = 0b1000_0000; // DispatchItem::Stop() is sent
+        const DISCONNECT      = 0b0010_0000; // Disconnect frame is sent
+        const STOPPED         = 0b1000_0000; // DispatchItem::Stop() is sent
     }
 }
 
@@ -61,6 +61,7 @@ pub struct MqttShared {
     streaming_waiter: Cell<Option<pool::Sender<()>>>,
     streaming_remaining: Cell<Option<num::NonZeroU32>>,
     on_publish_ack: Cell<Option<Box<dyn Fn(num::NonZeroU16, bool)>>>,
+    pub(super) payload: Cell<Option<PlSender>>,
     pub(super) codec: codec::Codec,
     pub(super) pool: Rc<MqttSinkPool>,
 }
@@ -103,6 +104,7 @@ impl MqttShared {
             streaming_waiter: Cell::new(None),
             streaming_remaining: Cell::new(None),
             on_publish_ack: Cell::new(None),
+            payload: Cell::new(None),
         }
     }
 
@@ -128,6 +130,16 @@ impl MqttShared {
         self.encode_error.set(Some(EncodeError::PublishIncomplete));
     }
 
+    pub(super) fn drop_payload<E>(&self, err: &E)
+    where
+        E: Clone,
+        PayloadError: From<E>,
+    {
+        if let Some(pl) = self.payload.take() {
+            pl.set_error(err.clone().into());
+        }
+    }
+
     pub(super) fn is_streaming(&self) -> bool {
         self.streaming_remaining.get().is_some()
     }
@@ -148,16 +160,6 @@ impl MqttShared {
             self.flags.set(flags);
         }
         sent
-    }
-
-    pub(super) fn is_dispatcher_stopped(&self) -> bool {
-        let mut flags = self.flags.get();
-        let stopped = flags.contains(Flags::STOPPED);
-        if !stopped {
-            flags.insert(Flags::STOPPED);
-            self.flags.set(flags);
-        }
-        stopped
     }
 
     pub(super) fn credit(&self) -> usize {

@@ -1,6 +1,11 @@
 # Changes
 
-## [8.0.0] - 2026-04-xx
+## [8.0.0-beta.1] - 2026-04-18
+
+* Introduce new control service only for network level messages
+
+* Split control messages to protocol control messages and
+  connection control messages.
 
 * v5: MqttSink::close_with_no_reason() propery close io
 

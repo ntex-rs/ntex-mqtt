@@ -1,33 +1,15 @@
+use std::{fmt, marker::PhantomData, num::NonZeroU16, ptr};
+
 use ntex_bytes::ByteString;
-use std::{fmt, io, marker::PhantomData, num::NonZeroU16, ptr};
 
-use crate::{error, types::QoS, v3::codec};
+use crate::{types::QoS, v3::codec};
 
-/// Server control messages
+/// MQTT protocol–related messages.
+///
+/// The control service is always called with these messages one at a time.
+/// Unhandled messages are stored in a buffer.
 #[derive(Debug)]
-pub enum Control<E> {
-    /// MQTT protocol–related messages.
-    ///
-    /// The control service is always called with these messages one at a time.
-    /// Unhandled messages are stored in a buffer. Other types of messages may be
-    /// handled out of order.
-    Protocol(CtlFrame),
-    /// Control messages
-    Flow(CtlFlow),
-    /// Dispatcher is preparing for shutdown.
-    ///
-    /// The control service will receive this message only once. The next message
-    /// after `Disconnect` is `Shutdown`.
-    Stop(CtlReason<E>),
-    /// Underlying pipeline is shutting down.
-    ///
-    /// This is the last message the control service receives.
-    Shutdown(Shutdown),
-}
-
-/// MQTT protocol–related messages
-#[derive(Debug)]
-pub enum CtlFrame {
+pub enum ProtocolMessage {
     /// Publish release
     PublishRelease(PublishRelease),
     /// Subscribe packet
@@ -36,35 +18,17 @@ pub enum CtlFrame {
     Unsubscribe(Unsubscribe),
     /// Disconnect packet
     Disconnect(Disconnect),
-}
-
-/// Dispatcher flow–related messages
-#[derive(Debug)]
-pub enum CtlFlow {
     /// Ping packet from a client
     Ping(Ping),
-    /// Write back-pressure is enabled/disabled
-    WrBackpressure(WrBackpressure),
-}
-
-/// Dispatcher stop reasons
-#[derive(Debug)]
-pub enum CtlReason<E> {
-    /// Unhandled application level error from handshake, publish and control services
-    Error(Error<E>),
-    /// Protocol level error
-    ProtocolError(ProtocolError),
-    /// Peer is gone
-    PeerGone(PeerGone),
 }
 
 #[derive(Debug)]
-pub struct ControlAck {
-    pub(crate) result: ControlAckKind,
+pub struct ProtocolMessageAck {
+    pub(crate) result: ProtocolMessageKind,
 }
 
 #[derive(Debug)]
-pub(crate) enum ControlAckKind {
+pub(crate) enum ProtocolMessageKind {
     Nothing,
     PublishAck(NonZeroU16),
     PublishRelease(NonZeroU16),
@@ -72,101 +36,58 @@ pub(crate) enum ControlAckKind {
     Disconnect,
     Subscribe(SubscribeResult),
     Unsubscribe(UnsubscribeResult),
-    Closed,
 }
 
-impl<E> Control<E> {
+impl ProtocolMessage {
     pub(crate) fn pubrel(packet_id: NonZeroU16) -> Self {
-        Control::Protocol(CtlFrame::PublishRelease(PublishRelease { packet_id }))
+        ProtocolMessage::PublishRelease(PublishRelease { packet_id })
     }
 
     /// Create a new PING `Control` message.
     #[doc(hidden)]
     pub fn ping() -> Self {
-        Control::Flow(CtlFlow::Ping(Ping))
+        ProtocolMessage::Ping(Ping)
     }
 
     /// Create a new `Control` message from SUBSCRIBE packet.
     #[doc(hidden)]
     pub fn subscribe(pkt: Subscribe) -> Self {
-        Control::Protocol(CtlFrame::Subscribe(pkt))
+        ProtocolMessage::Subscribe(pkt)
     }
 
     /// Create a new `Control` message from UNSUBSCRIBE packet.
     #[doc(hidden)]
     pub fn unsubscribe(pkt: Unsubscribe) -> Self {
-        Control::Protocol(CtlFrame::Unsubscribe(pkt))
+        ProtocolMessage::Unsubscribe(pkt)
     }
 
     /// Create a new `Control` message from DISCONNECT packet.
     #[doc(hidden)]
     pub fn remote_disconnect() -> Self {
-        Control::Protocol(CtlFrame::Disconnect(Disconnect))
-    }
-
-    pub(super) const fn shutdown() -> Self {
-        Control::Shutdown(Shutdown)
-    }
-
-    pub(super) const fn wr_backpressure(enabled: bool) -> Self {
-        Control::Flow(CtlFlow::WrBackpressure(WrBackpressure(enabled)))
-    }
-
-    pub(super) fn error(err: E) -> Self {
-        Control::Stop(CtlReason::Error(Error::new(err)))
-    }
-
-    pub(super) fn spec(err: error::SpecViolation) -> Self {
-        Control::Stop(CtlReason::ProtocolError(ProtocolError::new(error::ProtocolError::spec(
-            err,
-        ))))
-    }
-
-    pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        Control::Stop(CtlReason::ProtocolError(ProtocolError::new(err)))
-    }
-
-    /// Create a new `Control` message from DISCONNECT packet.
-    pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        Control::Stop(CtlReason::PeerGone(PeerGone(err)))
+        ProtocolMessage::Disconnect(Disconnect)
     }
 
     #[inline]
     /// Disconnects the client by sending DISCONNECT packet.
-    pub fn disconnect(&self) -> ControlAck {
-        ControlAck { result: ControlAckKind::Disconnect }
+    pub fn disconnect(&self) -> ProtocolMessageAck {
+        ProtocolMessageAck { result: ProtocolMessageKind::Disconnect }
     }
 
     #[inline]
     /// Ack control message
-    pub fn ack(self) -> ControlAck {
+    pub fn ack(self) -> ProtocolMessageAck {
         match self {
-            Control::Protocol(CtlFrame::PublishRelease(msg)) => msg.ack(),
-            Control::Protocol(CtlFrame::Disconnect(msg)) => msg.ack(),
-            Control::Protocol(CtlFrame::Subscribe(_)) => {
+            ProtocolMessage::PublishRelease(msg) => msg.ack(),
+            ProtocolMessage::Disconnect(msg) => msg.ack(),
+            ProtocolMessage::Subscribe(_) => {
                 log::warn!("Subscribe is not supported");
-                ControlAck { result: ControlAckKind::Disconnect }
+                ProtocolMessageAck { result: ProtocolMessageKind::Disconnect }
             }
-            Control::Protocol(CtlFrame::Unsubscribe(_)) => {
+            ProtocolMessage::Unsubscribe(_) => {
                 log::warn!("Unsubscribe is not supported");
-                ControlAck { result: ControlAckKind::Disconnect }
+                ProtocolMessageAck { result: ProtocolMessageKind::Disconnect }
             }
-            Control::Flow(CtlFlow::Ping(msg)) => msg.ack(),
-            Control::Flow(CtlFlow::WrBackpressure(msg)) => msg.ack(),
-            Control::Stop(CtlReason::Error(msg)) => msg.ack(),
-            Control::Stop(CtlReason::ProtocolError(msg)) => msg.ack(),
-            Control::Stop(CtlReason::PeerGone(msg)) => msg.ack(),
-            Control::Shutdown(msg) => msg.ack(),
-        }
-    }
-}
-
-impl CtlFlow {
-    /// Ack control flow message
-    pub fn ack(self) -> ControlAck {
-        match self {
-            CtlFlow::Ping(msg) => msg.ack(),
-            CtlFlow::WrBackpressure(msg) => msg.ack(),
+            ProtocolMessage::Ping(msg) => msg.ack(),
         }
     }
 }
@@ -186,8 +107,8 @@ impl PublishRelease {
 
     #[inline]
     /// convert packet to a result
-    pub fn ack(self) -> ControlAck {
-        ControlAck { result: ControlAckKind::PublishRelease(self.packet_id) }
+    pub fn ack(self) -> ProtocolMessageAck {
+        ProtocolMessageAck { result: ProtocolMessageKind::PublishRelease(self.packet_id) }
     }
 }
 
@@ -196,8 +117,8 @@ pub struct Ping;
 
 impl Ping {
     #[inline]
-    pub fn ack(self) -> ControlAck {
-        ControlAck { result: ControlAckKind::Ping }
+    pub fn ack(self) -> ProtocolMessageAck {
+        ProtocolMessageAck { result: ProtocolMessageKind::Ping }
     }
 }
 
@@ -206,70 +127,8 @@ pub struct Disconnect;
 
 impl Disconnect {
     #[inline]
-    pub fn ack(self) -> ControlAck {
-        ControlAck { result: ControlAckKind::Disconnect }
-    }
-}
-
-/// Service level error
-#[derive(Debug)]
-pub struct Error<E> {
-    err: E,
-}
-
-impl<E> Error<E> {
-    #[inline]
-    pub fn new(err: E) -> Self {
-        Self { err }
-    }
-
-    #[inline]
-    /// Returns reference to mqtt error
-    pub fn get_ref(&self) -> &E {
-        &self.err
-    }
-
-    #[inline]
-    /// Ack service error, return disconnect packet and close connection.
-    pub fn ack(self) -> ControlAck {
-        ControlAck { result: ControlAckKind::Disconnect }
-    }
-
-    #[inline]
-    /// Ack service error, return disconnect packet and close connection.
-    pub fn ack_and_error(self) -> (ControlAck, E) {
-        (ControlAck { result: ControlAckKind::Disconnect }, self.err)
-    }
-}
-
-/// Protocol level error
-#[derive(Debug, Clone)]
-pub struct ProtocolError {
-    err: error::ProtocolError,
-}
-
-impl ProtocolError {
-    #[inline]
-    pub fn new(err: error::ProtocolError) -> Self {
-        Self { err }
-    }
-
-    #[inline]
-    /// Returns reference to a protocol error
-    pub fn get_ref(&self) -> &error::ProtocolError {
-        &self.err
-    }
-
-    #[inline]
-    /// Ack protocol error, return disconnect packet and close connection.
-    pub fn ack(self) -> ControlAck {
-        ControlAck { result: ControlAckKind::Disconnect }
-    }
-
-    #[inline]
-    /// Ack protocol error, return disconnect packet and close connection.
-    pub fn ack_and_error(self) -> (ControlAck, error::ProtocolError) {
-        (ControlAck { result: ControlAckKind::Disconnect }, self.err)
+    pub fn ack(self) -> ProtocolMessageAck {
+        ProtocolMessageAck { result: ProtocolMessageKind::Disconnect }
     }
 }
 
@@ -319,9 +178,9 @@ impl Subscribe {
 
     #[inline]
     /// convert subscription to a result
-    pub fn ack(self) -> ControlAck {
-        ControlAck {
-            result: ControlAckKind::Subscribe(SubscribeResult {
+    pub fn ack(self) -> ProtocolMessageAck {
+        ProtocolMessageAck {
+            result: ProtocolMessageKind::Subscribe(SubscribeResult {
                 codes: self.codes,
                 packet_id: self.packet_id,
             }),
@@ -456,65 +315,12 @@ impl Unsubscribe {
 
     #[inline]
     /// Ack control message
-    pub fn ack(self) -> ControlAck {
-        ControlAck {
-            result: ControlAckKind::Unsubscribe(UnsubscribeResult {
+    pub fn ack(self) -> ProtocolMessageAck {
+        ProtocolMessageAck {
+            result: ProtocolMessageKind::Unsubscribe(UnsubscribeResult {
                 packet_id: self.packet_id,
             }),
         }
-    }
-}
-
-/// Write back-pressure message
-#[derive(Debug, Copy, Clone)]
-pub struct WrBackpressure(bool);
-
-impl WrBackpressure {
-    #[inline]
-    /// Is write back-pressure enabled
-    pub fn enabled(&self) -> bool {
-        self.0
-    }
-
-    #[inline]
-    /// Ack control message
-    pub fn ack(self) -> ControlAck {
-        ControlAck { result: ControlAckKind::Nothing }
-    }
-}
-
-/// Connection closed message
-#[derive(Debug, Copy, Clone)]
-pub struct Shutdown;
-
-impl Shutdown {
-    #[inline]
-    /// Ack shutdown control message
-    pub fn ack(self) -> ControlAck {
-        ControlAck { result: ControlAckKind::Closed }
-    }
-}
-
-#[derive(Debug)]
-pub struct PeerGone(pub(super) Option<io::Error>);
-
-impl PeerGone {
-    #[inline]
-    /// Returns error reference
-    pub fn err(&self) -> Option<&io::Error> {
-        self.0.as_ref()
-    }
-
-    #[inline]
-    /// Take error
-    pub fn take(&mut self) -> Option<io::Error> {
-        self.0.take()
-    }
-
-    #[inline]
-    /// Ack control message
-    pub fn ack(self) -> ControlAck {
-        ControlAck { result: ControlAckKind::Nothing }
     }
 }
 
@@ -549,8 +355,5 @@ mod tests {
         // Ping, Disconnect, WrBackpressure, Shutdown, PeerGone
         assert!(format!("{Ping:?}").contains("Ping"));
         assert!(format!("{Disconnect:?}").contains("Disconnect"));
-        assert!(format!("{:?}", WrBackpressure(true)).contains("WrBackpressure"));
-        assert!(format!("{Shutdown:?}").contains("Shutdown"));
-        assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
     }
 }

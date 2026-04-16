@@ -7,10 +7,11 @@ use ntex_service::{IntoService, Pipeline, Service, boxed, fn_service};
 use ntex_util::future::{Either, Ready};
 use ntex_util::time::{Millis, Seconds, sleep};
 
-use crate::v3::{ControlAck, Publish, codec, shared::MqttShared, sink::MqttSink};
-use crate::{error::MqttError, io::Dispatcher};
+use crate::v3::{ProtocolMessageAck, Publish, codec, shared::MqttShared, sink::MqttSink};
+use crate::v3::{Session, default::ControlService};
+use crate::{control, error::MqttError, io::Dispatcher};
 
-use super::{control::Control, dispatcher::create_dispatcher};
+use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
 
 /// Mqtt client
 pub struct Client {
@@ -96,18 +97,22 @@ impl Client {
             self.max_receive,
             self.max_buffer_size,
             fn_service(|pkt| Ready::Ok(Either::Right(pkt))),
-            fn_service(|_: Control<()>| Ready::<_, ()>::Ok(Control::<()>::disconnect())),
+            fn_service(|_: ProtocolMessage| Ready::<_, ()>::Ok(ProtocolMessage::disconnect())),
+        );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, (), codec::Encoded>::default(),
+            self.shared.clone(),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
 
     /// Run client with provided control messages handler
     pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
     where
-        E: 'static,
-        F: IntoService<S, Control<E>> + 'static,
-        S: Service<Control<E>, Response = ControlAck, Error = E> + 'static,
+        E: fmt::Debug + 'static,
+        F: IntoService<S, ProtocolMessage> + 'static,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =
@@ -121,8 +126,12 @@ impl Client {
             fn_service(|pkt| Ready::Ok(Either::Right(pkt))),
             service.into_service(),
         );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, E, codec::Encoded>::default(),
+            self.shared.clone(),
+        );
 
-        Dispatcher::new(self.io, self.shared.clone(), dispatcher).await
+        Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 
     /// Get negotiated io stream and codec
@@ -156,7 +165,7 @@ impl<Err, PErr> fmt::Debug for ClientRouter<Err, PErr> {
 
 impl<Err, PErr> ClientRouter<Err, PErr>
 where
-    Err: From<PErr> + 'static,
+    Err: From<PErr> + fmt::Debug + 'static,
     PErr: 'static,
 {
     #[must_use]
@@ -184,17 +193,21 @@ where
             self.max_receive,
             self.max_buffer_size,
             dispatch(self.builder.finish(), self.handlers),
-            fn_service(|_: Control<Err>| Ready::<_, Err>::Ok(Control::<Err>::disconnect())),
+            fn_service(|_: ProtocolMessage| Ready::<_, Err>::Ok(ProtocolMessage::disconnect())),
+        );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, Err, codec::Encoded>::default(),
+            self.shared.clone(),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared.clone(), dispatcher).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
 
     /// Run client and handle control messages
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
-        F: IntoService<S, Control<Err>>,
-        S: Service<Control<Err>, Response = ControlAck, Error = Err> + 'static,
+        F: IntoService<S, ProtocolMessage>,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err> + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =
@@ -208,8 +221,12 @@ where
             dispatch(self.builder.finish(), self.handlers),
             service.into_service(),
         );
+        let control = ControlService::new(
+            control::DefaultControlService::<Session<()>, Err, codec::Encoded>::default(),
+            self.shared.clone(),
+        );
 
-        Dispatcher::new(self.io, self.shared.clone(), dispatcher).await
+        Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 }
 

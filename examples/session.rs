@@ -42,13 +42,13 @@ async fn publish_v3(
 ) -> Result<(), MyServerError> {
     log::info!(
         "incoming publish ({:?}): {:?} -> {:?}",
-        session.state(),
+        &*session,
         publish.id(),
         publish.topic()
     );
 
     // example: only "my-client-id" may publish
-    if session.state().client_id == "my-client-id" {
+    if session.client_id == "my-client-id" {
         Ok(())
     } else {
         // with MQTTv3 we can only close the connection
@@ -72,13 +72,13 @@ async fn publish_v5(
 ) -> Result<v5::PublishAck, MyServerError> {
     log::info!(
         "incoming publish ({:?}) : {:?} -> {:?}",
-        session.state(),
+        &*session,
         publish.id(),
         publish.topic()
     );
 
     // example: only "my-client-id" may publish
-    if session.state().client_id == "my-client-id" {
+    if session.client_id == "my-client-id" {
         Ok(publish.ack())
     } else {
         Ok(publish.ack().reason_code(PublishAckReason::NotAuthorized))

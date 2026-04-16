@@ -18,7 +18,7 @@ pub type Session<St> = crate::Session<MqttSink, St>;
 use ntex_error::Error;
 use std::num::NonZeroU16;
 
-pub use self::control::{Control, ControlAck, CtlFlow, CtlFrame, CtlReason};
+pub use self::control::{ProtocolMessage, ProtocolMessageAck};
 pub use self::handshake::{Handshake, HandshakeAck};
 pub use self::publish::{Publish, PublishAck};
 pub use self::router::Router;
@@ -26,15 +26,14 @@ pub use self::server::MqttServer;
 pub use self::sink::{MqttSink, SubscribeBuilder, UnsubscribeBuilder};
 pub use self::sink::{PublishBuilder, StreamingPayload};
 
-pub use crate::topic::{TopicFilter, TopicFilterError};
-pub use crate::{error, types::QoS};
+pub use crate::{error, topic::TopicFilter, topic::TopicFilterError, types::QoS};
 
 const RECEIVE_MAX_DEFAULT: NonZeroU16 = NonZeroU16::new(65_535).unwrap();
 
-fn disconnect(msg: &'static str) -> ControlAck {
+fn disconnect(msg: &'static str) -> ProtocolMessageAck {
     log::error!("{msg}");
 
-    ControlAck {
+    ProtocolMessageAck {
         packet: control::Pkt::Disconnect(codec::Disconnect::new(
             codec::DisconnectReasonCode::ImplementationSpecificError,
         )),

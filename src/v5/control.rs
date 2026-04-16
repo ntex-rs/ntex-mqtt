@@ -1,35 +1,16 @@
-use std::{fmt, io, marker::PhantomData, ptr};
+use std::{fmt, marker::PhantomData, ptr};
 
 use ntex_bytes::ByteString;
 
-use super::codec::{self, DisconnectReasonCode, QoS, UserProperties};
-use crate::error;
+use crate::{error, types::QoS, v5::codec};
 
-/// Server control messages
+/// MQTT protocol–related messages.
+///
+/// The control service is always called with these frames one at a time.
+/// Unhandled messages are stored in a buffer. Other types of messages may be
+/// handled out of order.
 #[derive(Debug)]
-pub enum Control<E> {
-    /// MQTT protocol–related frames.
-    ///
-    /// The control service is always called with these frames one at a time.
-    /// Unhandled messages are stored in a buffer. Other types of messages may be
-    /// handled out of order.
-    Protocol(CtlFrame),
-    /// Control flow messages
-    Flow(CtlFlow),
-    /// Dispatcher is preparing for shutdown.
-    ///
-    /// The control service will receive this message only once. The next message
-    /// after `Disconnect` is `Shutdown`.
-    Stop(CtlReason<E>),
-    /// Underlying pipeline is shutting down.
-    ///
-    /// This is the last message the control service receives.
-    Shutdown(Shutdown),
-}
-
-/// MQTT protocol–related frames
-#[derive(Debug)]
-pub enum CtlFrame {
+pub enum ProtocolMessage {
     /// `Auth` packet from a client
     Auth(Auth),
     /// `PublishRelease` packet from a client
@@ -40,26 +21,8 @@ pub enum CtlFrame {
     Unsubscribe(Unsubscribe),
     /// `Disconnect` packet from a client
     Disconnect(Disconnect),
-}
-
-/// Dispatcher flow–related messages
-#[derive(Debug)]
-pub enum CtlFlow {
     /// `Ping` packet from a client
     Ping(Ping),
-    /// Write back-pressure is enabled/disabled
-    WrBackpressure(WrBackpressure),
-}
-
-/// Dispatcher stop reasons
-#[derive(Debug)]
-pub enum CtlReason<E> {
-    /// Unhandled application level error from handshake, publish and control services
-    Error(Error<E>),
-    /// Protocol level error
-    ProtocolError(ProtocolError),
-    /// Peer is gone
-    PeerGone(PeerGone),
 }
 
 #[derive(Debug)]
@@ -69,81 +32,51 @@ pub(crate) enum Pkt {
     Packet(codec::Packet),
 }
 
-/// Control message handling result
+/// Protocol message handling result
 #[derive(Debug)]
-pub struct ControlAck {
+pub struct ProtocolMessageAck {
     pub(crate) packet: Pkt,
     pub(crate) disconnect: bool,
 }
 
-impl<E> Control<E> {
-    pub(crate) fn is_protocol(&self) -> bool {
-        matches!(self, Control::Protocol(_))
-    }
-
-    /// Create a new `Control` from AUTH packet.
+impl ProtocolMessage {
+    /// Create a new message from AUTH packet.
     #[doc(hidden)]
     pub fn auth(pkt: codec::Auth, size: u32) -> Self {
-        Control::Protocol(CtlFrame::Auth(Auth { pkt, size }))
+        ProtocolMessage::Auth(Auth { pkt, size })
     }
 
     pub(crate) fn pubrel(pkt: codec::PublishAck2, size: u32) -> Self {
-        Control::Protocol(CtlFrame::PublishRelease(PublishRelease::new(pkt, size)))
+        ProtocolMessage::PublishRelease(PublishRelease::new(pkt, size))
     }
 
-    /// Create a new `Control` from SUBSCRIBE packet.
+    /// Create a new message from SUBSCRIBE packet.
     #[doc(hidden)]
     pub fn subscribe(pkt: codec::Subscribe, size: u32) -> Self {
-        Control::Protocol(CtlFrame::Subscribe(Subscribe::new(pkt, size)))
+        ProtocolMessage::Subscribe(Subscribe::new(pkt, size))
     }
 
-    /// Create a new `Control` from UNSUBSCRIBE packet.
+    /// Create a new message from UNSUBSCRIBE packet.
     #[doc(hidden)]
     pub fn unsubscribe(pkt: codec::Unsubscribe, size: u32) -> Self {
-        Control::Protocol(CtlFrame::Unsubscribe(Unsubscribe::new(pkt, size)))
+        ProtocolMessage::Unsubscribe(Unsubscribe::new(pkt, size))
     }
 
-    /// Create a new PING `Control`.
+    /// Create a new PING message.
     #[doc(hidden)]
     pub fn ping() -> Self {
-        Control::Flow(CtlFlow::Ping(Ping))
+        ProtocolMessage::Ping(Ping)
     }
 
-    /// Create a new `Control` from DISCONNECT packet.
+    /// Create a new message from DISCONNECT packet.
     #[doc(hidden)]
     pub fn remote_disconnect(pkt: codec::Disconnect, size: u32) -> Self {
-        Control::Protocol(CtlFrame::Disconnect(Disconnect(pkt, size)))
-    }
-
-    pub(super) const fn wr_backpressure(enabled: bool) -> Self {
-        Control::Flow(CtlFlow::WrBackpressure(WrBackpressure(enabled)))
-    }
-
-    pub(super) fn error(err: E) -> Self {
-        Control::Stop(CtlReason::Error(Error::new(err)))
-    }
-
-    pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        Control::Stop(CtlReason::PeerGone(PeerGone(err)))
-    }
-
-    pub(super) fn spec(err: error::SpecViolation) -> Self {
-        Control::Stop(CtlReason::ProtocolError(ProtocolError::new(error::ProtocolError::spec(
-            err,
-        ))))
-    }
-
-    pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        Control::Stop(CtlReason::ProtocolError(ProtocolError::new(err)))
-    }
-
-    pub(super) const fn shutdown() -> Self {
-        Control::Shutdown(Shutdown)
+        ProtocolMessage::Disconnect(Disconnect(pkt, size))
     }
 
     /// Disconnects the client by sending DISCONNECT packet
     /// with `NormalDisconnection` reason code.
-    pub fn disconnect(&self) -> ControlAck {
+    pub fn disconnect(&self) -> ProtocolMessageAck {
         let pkt = codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::NormalDisconnection,
             session_expiry_interval_secs: None,
@@ -151,42 +84,24 @@ impl<E> Control<E> {
             reason_string: None,
             user_properties: Vec::default(),
         };
-        ControlAck { packet: Pkt::Disconnect(pkt), disconnect: true }
+        ProtocolMessageAck { packet: Pkt::Disconnect(pkt), disconnect: true }
     }
 
     /// Disconnects the client by sending DISCONNECT packet
     /// with provided reason code.
-    pub fn disconnect_with(&self, pkt: codec::Disconnect) -> ControlAck {
-        ControlAck { packet: Pkt::Disconnect(pkt), disconnect: true }
+    pub fn disconnect_with(&self, pkt: codec::Disconnect) -> ProtocolMessageAck {
+        ProtocolMessageAck { packet: Pkt::Disconnect(pkt), disconnect: true }
     }
 
     /// Ack control message
-    pub fn ack(self) -> ControlAck {
+    pub fn ack(self) -> ProtocolMessageAck {
         match self {
-            Control::Protocol(CtlFrame::Auth(_)) => super::disconnect(error::ERR_AUTH_NOT_SUP),
-            Control::Protocol(CtlFrame::PublishRelease(msg)) => msg.ack(),
-            Control::Protocol(CtlFrame::Subscribe(msg)) => msg.ack(),
-            Control::Protocol(CtlFrame::Unsubscribe(msg)) => msg.ack(),
-            Control::Protocol(CtlFrame::Disconnect(msg)) => msg.ack(),
-
-            Control::Flow(CtlFlow::Ping(msg)) => msg.ack(),
-            Control::Flow(CtlFlow::WrBackpressure(msg)) => msg.ack(),
-
-            Control::Stop(CtlReason::Error(_)) => super::disconnect(error::ERR_CTL_NOT_SUP),
-            Control::Stop(CtlReason::ProtocolError(msg)) => msg.ack(),
-            Control::Stop(CtlReason::PeerGone(msg)) => msg.ack(),
-
-            Control::Shutdown(msg) => msg.ack(),
-        }
-    }
-}
-
-impl CtlFlow {
-    /// Ack control flow message
-    pub fn ack(self) -> ControlAck {
-        match self {
-            CtlFlow::Ping(msg) => msg.ack(),
-            CtlFlow::WrBackpressure(msg) => msg.ack(),
+            ProtocolMessage::Auth(_) => super::disconnect(error::ERR_AUTH_NOT_SUP),
+            ProtocolMessage::PublishRelease(msg) => msg.ack(),
+            ProtocolMessage::Subscribe(msg) => msg.ack(),
+            ProtocolMessage::Unsubscribe(msg) => msg.ack(),
+            ProtocolMessage::Disconnect(msg) => msg.ack(),
+            ProtocolMessage::Ping(msg) => msg.ack(),
         }
     }
 }
@@ -208,8 +123,11 @@ impl Auth {
         self.size
     }
 
-    pub fn ack(self, response: codec::Auth) -> ControlAck {
-        ControlAck { packet: Pkt::Packet(codec::Packet::Auth(response)), disconnect: false }
+    pub fn ack(self, response: codec::Auth) -> ProtocolMessageAck {
+        ProtocolMessageAck {
+            packet: Pkt::Packet(codec::Packet::Auth(response)),
+            disconnect: false,
+        }
     }
 }
 
@@ -265,8 +183,8 @@ impl PublishRelease {
     }
 
     /// Ack publish release
-    pub fn ack(self) -> ControlAck {
-        ControlAck {
+    pub fn ack(self) -> ProtocolMessageAck {
+        ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::PublishComplete(self.result)),
             disconnect: false,
         }
@@ -277,8 +195,11 @@ impl PublishRelease {
 pub struct Ping;
 
 impl Ping {
-    pub fn ack(self) -> ControlAck {
-        ControlAck { packet: Pkt::Packet(codec::Packet::PingResponse), disconnect: false }
+    pub fn ack(self) -> ProtocolMessageAck {
+        ProtocolMessageAck {
+            packet: Pkt::Packet(codec::Packet::PingResponse),
+            disconnect: false,
+        }
     }
 }
 
@@ -297,8 +218,8 @@ impl Disconnect {
     }
 
     /// Ack disconnect message
-    pub fn ack(self) -> ControlAck {
-        ControlAck { packet: Pkt::None, disconnect: true }
+    pub fn ack(self) -> ProtocolMessageAck {
+        ProtocolMessageAck { packet: Pkt::None, disconnect: true }
     }
 }
 
@@ -356,8 +277,8 @@ impl Subscribe {
 
     #[inline]
     /// Ack Subscribe packet
-    pub fn ack(self) -> ControlAck {
-        ControlAck {
+    pub fn ack(self) -> ProtocolMessageAck {
+        ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::SubscribeAck(self.result)),
             disconnect: false,
         }
@@ -539,8 +460,8 @@ impl Unsubscribe {
 
     #[inline]
     /// convert packet to a result
-    pub fn ack(self) -> ControlAck {
-        ControlAck {
+    pub fn ack(self) -> ProtocolMessageAck {
+        ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::UnsubscribeAck(self.result)),
             disconnect: false,
         }
@@ -634,222 +555,6 @@ impl<'a> UnsubscribeItem<'a> {
     }
 }
 
-/// Write back-pressure `CtlFrame` message
-#[derive(Debug, Copy, Clone)]
-pub struct WrBackpressure(bool);
-
-impl WrBackpressure {
-    #[inline]
-    /// Is write back-pressure enabled
-    pub fn enabled(&self) -> bool {
-        self.0
-    }
-
-    #[inline]
-    /// convert packet to a result
-    pub fn ack(self) -> ControlAck {
-        ControlAck { packet: Pkt::None, disconnect: false }
-    }
-}
-
-/// Pipeline shutdown
-#[derive(Debug, Copy, Clone)]
-pub struct Shutdown;
-
-impl Shutdown {
-    #[inline]
-    /// convert packet to a result
-    pub fn ack(self) -> ControlAck {
-        ControlAck { packet: Pkt::None, disconnect: false }
-    }
-}
-
-/// Service level error
-#[derive(Debug, Clone)]
-pub struct Error<E> {
-    err: E,
-    pkt: codec::Disconnect,
-}
-
-impl<E> Error<E> {
-    pub fn new(err: E) -> Self {
-        Self {
-            err,
-            pkt: codec::Disconnect {
-                session_expiry_interval_secs: None,
-                server_reference: None,
-                reason_string: None,
-                user_properties: UserProperties::default(),
-                reason_code: DisconnectReasonCode::ImplementationSpecificError,
-            },
-        }
-    }
-
-    #[inline]
-    /// Returns reference to mqtt error
-    pub fn get_ref(&self) -> &E {
-        &self.err
-    }
-
-    #[inline]
-    #[must_use]
-    /// Set reason string for disconnect packet
-    pub fn reason_string(mut self, reason: ByteString) -> Self {
-        self.pkt.reason_string = Some(reason);
-        self
-    }
-
-    #[inline]
-    #[must_use]
-    /// Set server reference for disconnect packet
-    pub fn server_reference(mut self, reference: ByteString) -> Self {
-        self.pkt.server_reference = Some(reference);
-        self
-    }
-
-    #[inline]
-    #[must_use]
-    /// Update disconnect packet properties
-    pub fn properties<F>(mut self, f: F) -> Self
-    where
-        F: FnOnce(&mut codec::UserProperties),
-    {
-        f(&mut self.pkt.user_properties);
-        self
-    }
-
-    #[inline]
-    /// Ack service error, return disconnect packet and close connection.
-    pub fn ack(mut self, reason: DisconnectReasonCode) -> ControlAck {
-        self.pkt.reason_code = reason;
-        ControlAck { packet: Pkt::Disconnect(self.pkt), disconnect: true }
-    }
-
-    #[inline]
-    /// Ack service error, return disconnect packet and close connection.
-    pub fn ack_with<F>(self, f: F) -> ControlAck
-    where
-        F: FnOnce(E, codec::Disconnect) -> codec::Disconnect,
-    {
-        let pkt = f(self.err, self.pkt);
-        ControlAck { packet: Pkt::Disconnect(pkt), disconnect: true }
-    }
-}
-
-/// Protocol level error
-#[derive(Debug, Clone)]
-pub struct ProtocolError {
-    err: error::ProtocolError,
-    pkt: codec::Disconnect,
-}
-
-impl ProtocolError {
-    pub fn new(err: error::ProtocolError) -> Self {
-        Self {
-            pkt: codec::Disconnect {
-                session_expiry_interval_secs: None,
-                server_reference: None,
-                reason_string: None,
-                user_properties: UserProperties::default(),
-                reason_code: match err {
-                    error::ProtocolError::Decode(error::DecodeError::InvalidLength) => {
-                        DisconnectReasonCode::MalformedPacket
-                    }
-                    error::ProtocolError::Decode(error::DecodeError::MaxSizeExceeded) => {
-                        DisconnectReasonCode::PacketTooLarge
-                    }
-                    error::ProtocolError::KeepAliveTimeout => {
-                        DisconnectReasonCode::KeepAliveTimeout
-                    }
-                    error::ProtocolError::ProtocolViolation(ref e) => e.reason(),
-                    error::ProtocolError::Encode(_) => {
-                        DisconnectReasonCode::ImplementationSpecificError
-                    }
-                    _ => DisconnectReasonCode::ImplementationSpecificError,
-                },
-            },
-            err,
-        }
-    }
-
-    #[inline]
-    /// Returns reference to a protocol error
-    pub fn get_ref(&self) -> &error::ProtocolError {
-        &self.err
-    }
-
-    #[inline]
-    #[must_use]
-    /// Set reason code for disconnect packet
-    pub fn reason_code(mut self, reason: DisconnectReasonCode) -> Self {
-        self.pkt.reason_code = reason;
-        self
-    }
-
-    #[inline]
-    #[must_use]
-    /// Set reason string for disconnect packet
-    pub fn reason_string(mut self, reason: ByteString) -> Self {
-        self.pkt.reason_string = Some(reason);
-        self
-    }
-
-    #[inline]
-    #[must_use]
-    /// Set server reference for disconnect packet
-    pub fn server_reference(mut self, reference: ByteString) -> Self {
-        self.pkt.server_reference = Some(reference);
-        self
-    }
-
-    #[inline]
-    #[must_use]
-    /// Update disconnect packet properties
-    pub fn properties<F>(mut self, f: F) -> Self
-    where
-        F: FnOnce(&mut codec::UserProperties),
-    {
-        f(&mut self.pkt.user_properties);
-        self
-    }
-
-    #[inline]
-    /// Ack protocol error, return disconnect packet and close connection.
-    pub fn ack(self) -> ControlAck {
-        ControlAck { packet: Pkt::Disconnect(self.pkt), disconnect: true }
-    }
-
-    #[inline]
-    /// Ack protocol error, return disconnect packet and close connection.
-    pub fn ack_and_error(self) -> (ControlAck, error::ProtocolError) {
-        (ControlAck { packet: Pkt::Disconnect(self.pkt), disconnect: true }, self.err)
-    }
-}
-
-#[derive(Debug)]
-/// Peer gone control message
-pub struct PeerGone(pub(crate) Option<io::Error>);
-
-impl PeerGone {
-    #[inline]
-    /// Returns error reference
-    pub fn err(&self) -> Option<&io::Error> {
-        self.0.as_ref()
-    }
-
-    #[inline]
-    /// Take error
-    pub fn take(&mut self) -> Option<io::Error> {
-        self.0.take()
-    }
-
-    #[inline]
-    /// Ack `PeerGone` message `CtlFrame`
-    pub fn ack(self) -> ControlAck {
-        ControlAck { packet: Pkt::None, disconnect: true }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU16;
@@ -894,10 +599,7 @@ mod tests {
         let uiter = unsub.iter_mut();
         assert!(format!("{uiter:?}").contains("UnsubscribeIter"));
 
-        // Ping, WrBackpressure, Shutdown, PeerGone
+        // Ping
         assert!(format!("{Ping:?}").contains("Ping"));
-        assert!(format!("{:?}", WrBackpressure(false)).contains("WrBackpressure"));
-        assert!(format!("{Shutdown:?}").contains("Shutdown"));
-        assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
     }
 }

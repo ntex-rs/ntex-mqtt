@@ -12,7 +12,7 @@ mod dispatcher;
 
 pub use self::connection::{Client, ClientRouter};
 pub use self::connector::{MqttConnector, MqttConnectorService};
-pub use self::control::{Control, ControlAck, CtlFrame, CtlReason};
+pub use self::control::{ProtocolMessage, ProtocolMessageAck};
 
 pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;

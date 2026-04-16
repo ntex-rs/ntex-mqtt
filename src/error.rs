@@ -6,7 +6,6 @@ use crate::v5::codec::DisconnectReasonCode;
 
 pub(crate) const ERR_PUB_NOT_SUP: &str = "Publish control message is not supported";
 pub(crate) const ERR_AUTH_NOT_SUP: &str = "Auth control message is not supported";
-pub(crate) const ERR_CTL_NOT_SUP: &str = "Error control message is not supported";
 
 /// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +33,23 @@ pub enum HandshakeError<E> {
     /// Peer disconnect
     #[error("Peer is disconnected, error: {:?}", _0)]
     Disconnected(Option<io::Error>),
+}
+
+/// Errors related to protocol dispatcher
+#[derive(Debug, thiserror::Error)]
+pub enum DispatcherError<E> {
+    /// Publish handler service error
+    #[error("Service error")]
+    Service(E),
+    /// Protocol violations error
+    #[error("Protocol violations error: {}", _0)]
+    Protocol(#[from] ProtocolError),
+}
+
+impl<E> From<SpecViolation> for DispatcherError<E> {
+    fn from(spec: SpecViolation) -> Self {
+        DispatcherError::Protocol(ProtocolError::spec(spec))
+    }
 }
 
 /// Errors related to payload processing
@@ -76,11 +92,11 @@ pub enum ProtocolError {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(transparent)]
 pub struct ProtocolViolationError {
-    inner: ViolationInner,
+    pub(crate) inner: ViolationInner,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
-enum ViolationInner {
+pub(crate) enum ViolationInner {
     #[error("{0}")]
     Spec(SpecViolation),
     #[error("{message}")]

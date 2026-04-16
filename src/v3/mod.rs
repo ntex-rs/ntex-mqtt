@@ -14,7 +14,7 @@ mod sink;
 
 pub type Session<St> = crate::Session<MqttSink, St>;
 
-pub use self::control::{Control, ControlAck, CtlFlow, CtlFrame, CtlReason};
+pub use self::control::{ProtocolMessage, ProtocolMessageAck};
 pub use self::handshake::{Handshake, HandshakeAck};
 pub use self::publish::Publish;
 pub use self::router::Router;

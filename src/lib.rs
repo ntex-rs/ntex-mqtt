@@ -1,11 +1,5 @@
 //! MQTT Client/Server framework
-#![deny(
-    rust_2018_idioms,
-    warnings,
-    unreachable_pub,
-    missing_debug_implementations,
-    clippy::pedantic
-)]
+#![deny(rust_2018_idioms, unreachable_pub, missing_debug_implementations, clippy::pedantic)]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::missing_fields_in_debug,
@@ -18,6 +12,7 @@ mod topic;
 #[macro_use]
 mod utils;
 
+pub mod control;
 pub mod error;
 pub mod v3;
 pub mod v5;
@@ -33,6 +28,7 @@ mod types;
 mod version;
 
 pub use self::config::MqttServiceConfig;
+pub use self::control::{Control, Reason};
 pub use self::error::{HandshakeError, MqttError, ProtocolError};
 pub use self::inflight::SizedRequest;
 pub use self::payload::Payload;
@@ -40,8 +36,6 @@ pub use self::server::MqttServer;
 pub use self::session::Session;
 pub use self::topic::{TopicFilter, TopicFilterError, TopicFilterLevel};
 pub use self::types::QoS;
-
-pub use ntex_dispatcher::{Control, DispatchItem, Reason};
 
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
 pub const TCP_PORT: u16 = 1883;

@@ -7,7 +7,7 @@ use ntex_io::IoRef;
 use ntex_util::{HashSet, channel::pool};
 
 use crate::v5::codec::{self, Decoded, Encoded, Packet, Publish};
-use crate::{QoS, error, error::SendPacketError, types::packet_type};
+use crate::{QoS, error, error::SendPacketError, payload::PlSender, types::packet_type};
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -20,7 +20,8 @@ bitflags::bitflags! {
 
         const ZERO_SES_EXPIRY = 0b0001_0000; // Session expiry is zero in Connect
 
-        const DISCONNECT      = 0b0100_0000; // Disconnect frame is sent
+        const DISCONNECT      = 0b0010_0000; // Disconnect frame is sent
+        const DISCONNECT_RECV = 0b0100_0000; // Disconnect frame is received
         const STOPPED         = 0b1000_0000; // DispatchItem::Stop() is sent
     }
 }
@@ -36,6 +37,7 @@ pub struct MqttShared {
     streaming_waiter: Cell<Option<pool::Sender<()>>>,
     streaming_remaining: Cell<Option<num::NonZeroU32>>,
     on_publish_ack: Cell<Option<Box<dyn Fn(codec::PublishAck, bool)>>>,
+    pub(super) payload: Cell<Option<PlSender>>,
     pub(super) flags: Cell<Flags>,
     pub(super) pool: Rc<MqttSinkPool>,
     pub(super) codec: codec::Codec,
@@ -83,6 +85,7 @@ impl MqttShared {
             topic_alias_max: Cell::new(0),
             inflight_idx: Cell::new(0),
             flags: Cell::new(Flags::QOS_ATLEAST),
+            payload: Cell::new(None),
             on_publish_ack: Cell::new(None),
             encode_error: Cell::new(None),
             streaming_waiter: Cell::new(None),
@@ -92,6 +95,10 @@ impl MqttShared {
 
     pub(super) fn tag(&self) -> &'static str {
         self.io.tag()
+    }
+
+    pub(super) fn credit(&self) -> usize {
+        self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
     }
 
     pub(super) fn receive_max(&self) -> u16 {
@@ -180,22 +187,8 @@ impl MqttShared {
         self.streaming_remaining.get().is_some()
     }
 
-    pub(super) fn credit(&self) -> usize {
-        self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
-    }
-
     pub(super) fn is_ready(&self) -> bool {
         self.credit() > 0 && !self.flags.get().contains(Flags::WRB_ENABLED)
-    }
-
-    pub(super) fn is_dispatcher_stopped(&self) -> bool {
-        let mut flags = self.flags.get();
-        let stopped = flags.contains(Flags::STOPPED);
-        if !stopped {
-            flags.insert(Flags::STOPPED);
-            self.flags.set(flags);
-        }
-        stopped
     }
 
     pub(super) fn is_disconnect_sent(&self) -> bool {
@@ -206,6 +199,16 @@ impl MqttShared {
             self.flags.set(flags);
         }
         disconnect
+    }
+
+    pub(super) fn set_disconnect_recv(&self) {
+        let mut flags = self.flags.get();
+        flags.insert(Flags::DISCONNECT_RECV);
+        self.flags.set(flags);
+    }
+
+    pub(super) fn is_disconnect_recv(&self) -> bool {
+        self.flags.get().contains(Flags::DISCONNECT_RECV)
     }
 
     /// publish packet id
@@ -258,6 +261,16 @@ impl MqttShared {
     pub(super) fn drop_sink(&self) {
         self.clear_queues();
         self.io.close();
+    }
+
+    pub(super) fn drop_payload<E>(&self, err: &E)
+    where
+        E: Clone,
+        error::PayloadError: From<E>,
+    {
+        if let Some(pl) = self.payload.take() {
+            pl.set_error(err.clone().into());
+        }
     }
 
     fn clear_queues(&self) {
