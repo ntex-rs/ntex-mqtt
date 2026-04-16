@@ -101,7 +101,7 @@ pub(crate) enum ViolationInner {
     Spec(SpecViolation),
     #[error("{message}")]
     Common { reason: DisconnectReasonCode, message: &'static str },
-    #[error("{message}; received packet with type `{packet_type:b}`")]
+    #[error("{message}; received packet with type `{packet_type:08b}`")]
     UnexpectedPacket { packet_type: u8, message: &'static str },
 }
 
@@ -430,7 +430,7 @@ mod tests {
         assert_eq!(violation.message(), "unexpected");
         assert_eq!(
             err.to_string(),
-            "Protocol violation: unexpected; received packet with type `110000`"
+            "Protocol violation: unexpected; received packet with type `00110000`"
         );
     }
 
