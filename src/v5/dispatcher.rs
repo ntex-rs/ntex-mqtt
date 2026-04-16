@@ -672,9 +672,9 @@ mod tests {
         let ses = Session::new((), sink.clone());
 
         let disp = ControlFactory::<_, (), ()>::new(control::DefaultControlService::<
-            _,
+            Session<()>,
             (),
-            codec::Codec,
+            codec::Encoded,
         >::default());
         let svc = disp.pipeline(ses).await.unwrap();
 
