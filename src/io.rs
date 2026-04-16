@@ -592,7 +592,7 @@ mod tests {
     use ntex_service::{IntoService, ServiceCtx, cfg::SharedCfg, fn_service};
     use ntex_util::channel::condition::Condition;
     use ntex_util::time::{Millis, sleep};
-    use rand::Rng;
+    use rand::RngExt;
 
     use super::*;
     use crate::{control::Reason, error::DecodeError, error::EncodeError};
