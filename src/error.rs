@@ -387,3 +387,110 @@ impl<T: fmt::Debug> From<Either<DecodeError, std::io::Error>> for ClientError<T>
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::*;
+
+    #[test]
+    fn test_spec_violation_reason_and_message() {
+        let err = ProtocolError::spec(SpecViolation::Connack_3_2_2_11);
+        let ProtocolError::ProtocolViolation(violation) = err else {
+            panic!("expected protocol violation");
+        };
+
+        assert_eq!(violation.reason(), DisconnectReasonCode::QosNotSupported);
+        assert_eq!(
+            violation.message(),
+            "[MQTT-3.2.2-11] PUBLISH packet at a QoS level exceeding the Maximum QoS level specified in CONNACK"
+        );
+    }
+
+    #[test]
+    fn test_generic_violation_reason_and_message() {
+        let err = ProtocolError::generic_violation("broken");
+        let ProtocolError::ProtocolViolation(violation) = err else {
+            panic!("expected protocol violation");
+        };
+
+        assert_eq!(violation.reason(), DisconnectReasonCode::ProtocolError);
+        assert_eq!(violation.message(), "broken");
+    }
+
+    #[test]
+    fn test_unexpected_packet_reason_and_message() {
+        let err = ProtocolError::unexpected_packet(0b0011_0000, "unexpected");
+        let ProtocolError::ProtocolViolation(violation) = err else {
+            panic!("expected protocol violation");
+        };
+
+        assert_eq!(violation.reason(), DisconnectReasonCode::ProtocolError);
+        assert_eq!(violation.message(), "unexpected");
+        assert_eq!(
+            err.to_string(),
+            "Protocol violation: unexpected; received packet with type `110000`"
+        );
+    }
+
+    #[test]
+    fn test_mqtt_error_from_io_and_encode() {
+        let io_err = io::Error::other("io");
+        let err: MqttError<()> = io_err.into();
+        match err {
+            MqttError::Handshake(HandshakeError::Disconnected(Some(err))) => {
+                assert_eq!(err.kind(), io::ErrorKind::Other);
+            }
+            _ => panic!("expected disconnected handshake error"),
+        }
+
+        let err: MqttError<()> = EncodeError::MalformedPacket.into();
+        assert!(matches!(
+            err,
+            MqttError::Handshake(HandshakeError::Protocol(ProtocolError::Encode(
+                EncodeError::MalformedPacket
+            )))
+        ));
+    }
+
+    #[test]
+    fn test_handshake_error_from_decode_or_io() {
+        let err: HandshakeError<()> = Either::Left(DecodeError::MalformedPacket).into();
+        assert!(matches!(
+            err,
+            HandshakeError::Protocol(ProtocolError::Decode(DecodeError::MalformedPacket))
+        ));
+
+        let err: HandshakeError<()> = Either::Right(io::Error::other("peer")).into();
+        match err {
+            HandshakeError::Disconnected(Some(err)) => {
+                assert_eq!(err.kind(), io::ErrorKind::Other);
+            }
+            _ => panic!("expected disconnected handshake error"),
+        }
+    }
+
+    #[test]
+    fn test_client_error_from_decode_or_io_and_encode() {
+        let err: ClientError<()> = Either::Left(DecodeError::InvalidLength).into();
+        assert!(matches!(
+            err,
+            ClientError::Protocol(ProtocolError::Decode(DecodeError::InvalidLength))
+        ));
+
+        let err: ClientError<()> = Either::Right(io::Error::other("peer")).into();
+        match err {
+            ClientError::Disconnected(Some(err)) => {
+                assert_eq!(err.kind(), io::ErrorKind::Other);
+            }
+            _ => panic!("expected disconnected client error"),
+        }
+
+        let err: ClientError<()> = EncodeError::UnexpectedPayload.into();
+        assert!(matches!(
+            err,
+            ClientError::Protocol(ProtocolError::Encode(EncodeError::UnexpectedPayload))
+        ));
+    }
+}
