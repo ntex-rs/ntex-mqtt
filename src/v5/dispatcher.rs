@@ -604,18 +604,28 @@ where
         req: Control<E>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        let proto_err = match &req {
+        let mut proto_error = false;
+        let disconnect = match &req {
             Control::Stop(Reason::Error(_)) => {
                 self.shared.drop_payload(&PayloadError::Service);
-                false
+                Some(
+                    codec::Packet::from(codec::Disconnect::new(
+                        codec::DisconnectReasonCode::ImplementationSpecificError,
+                    ))
+                    .into(),
+                )
             }
             Control::Stop(Reason::Protocol(err)) => {
                 self.shared.drop_payload(err.get_ref());
-                true
+                proto_error = true;
+                Some(
+                    codec::Packet::from(codec::Disconnect::from_proto_error(err.get_ref()))
+                        .into(),
+                )
             }
             Control::Stop(Reason::PeerGone(_)) => {
                 self.shared.drop_payload(&PayloadError::Disconnected);
-                false
+                None
             }
             Control::WrBackpressure(status) => {
                 if status.enabled() {
@@ -623,19 +633,28 @@ where
                 } else {
                     self.shared.disable_wr_backpressure();
                 }
-                false
+                None
             }
         };
 
         match ctx.call(&self.svc, req).await {
             Ok(Some(val)) => {
-                if proto_err || !self.shared.is_disconnect_recv() {
+                if (proto_error || !self.shared.is_disconnect_recv())
+                    && !self.shared.is_disconnect_sent()
+                {
                     Ok(Some(val))
                 } else {
                     Ok(None)
                 }
             }
-            res => res,
+            Ok(None) => {
+                if disconnect.is_some() && !self.shared.is_disconnect_sent() {
+                    Ok(disconnect)
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(err) => Err(err),
         }
     }
 

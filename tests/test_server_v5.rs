@@ -451,10 +451,8 @@ async fn test_disconnect_after_control_error() -> std::io::Result<()> {
     .await
     .unwrap();
 
-    //let result = io.recv(&codec).await.unwrap().unwrap();
-    //assert!(matches!(packet(result), Packet::Disconnect(_)));
-    let result = io.recv(&codec).await.unwrap();
-    assert!(result.is_none());
+    let result = io.recv(&codec).await.unwrap().unwrap();
+    assert!(matches!(packet(result), Packet::Disconnect(_)));
     Ok(())
 }
 
@@ -1966,9 +1964,7 @@ async fn protocol_error_session_expiry() -> std::io::Result<()> {
         let val = val2.clone();
         MqttServer::new(handshake)
             .control(async move |msg| {
-                println!("========= {msg:?}");
                 if let Control::Stop(Reason::Protocol(err)) = msg {
-                    println!("---------");
                     val.store(true, Relaxed);
                     let _ = tx.lock().unwrap().take().unwrap().send(());
                     Ok(Some(
