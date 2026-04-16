@@ -451,8 +451,10 @@ async fn test_disconnect_after_control_error() -> std::io::Result<()> {
     .await
     .unwrap();
 
-    let result = io.recv(&codec).await.unwrap().unwrap();
-    assert!(matches!(packet(result), Packet::Disconnect(_)));
+    //let result = io.recv(&codec).await.unwrap().unwrap();
+    //assert!(matches!(packet(result), Packet::Disconnect(_)));
+    let result = io.recv(&codec).await.unwrap();
+    assert!(result.is_none());
     Ok(())
 }
 
@@ -1507,12 +1509,17 @@ async fn test_max_qos() -> std::io::Result<()> {
         let violated = violated2.clone();
         MqttServer::new(handshake)
             .control(async move |msg| {
-                if let Control::Stop(Reason::Protocol(msg)) = msg
-                    && let error::ProtocolError::ProtocolViolation(_) = msg.get_ref()
+                if let Control::Stop(Reason::Protocol(err)) = msg
+                    && let error::ProtocolError::ProtocolViolation(_) = err.get_ref()
                 {
                     violated.store(true, Relaxed);
+                    Ok(Some(
+                        codec::Packet::from(codec::Disconnect::from_proto_error(err.get_ref()))
+                            .into(),
+                    ))
+                } else {
+                    Ok::<_, TestError>(None)
                 }
-                Ok::<_, TestError>(None)
             })
             .publish(|p: Publish| Ready::Ok::<_, TestError>(p.ack()))
     })
@@ -1959,11 +1966,18 @@ async fn protocol_error_session_expiry() -> std::io::Result<()> {
         let val = val2.clone();
         MqttServer::new(handshake)
             .control(async move |msg| {
-                if let Control::Stop(Reason::Protocol(_)) = msg {
+                println!("========= {msg:?}");
+                if let Control::Stop(Reason::Protocol(err)) = msg {
+                    println!("---------");
                     val.store(true, Relaxed);
                     let _ = tx.lock().unwrap().take().unwrap().send(());
+                    Ok(Some(
+                        codec::Packet::from(codec::Disconnect::from_proto_error(err.get_ref()))
+                            .into(),
+                    ))
+                } else {
+                    Ok::<_, TestError>(None)
                 }
-                Ok::<_, TestError>(None)
             })
             .publish(async |p: Publish| Ok::<_, TestError>(p.ack()))
     });
@@ -1995,6 +2009,7 @@ async fn protocol_error_session_expiry() -> std::io::Result<()> {
     .unwrap();
 
     let result = io.recv(&codec).await;
+    println!("=== {result:?}");
 
     assert!(
         matches!(result, Ok(Some(codec::Decoded::Packet(codec::Packet::Disconnect(ref d), _)))

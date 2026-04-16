@@ -20,7 +20,8 @@ bitflags::bitflags! {
 
         const ZERO_SES_EXPIRY = 0b0001_0000; // Session expiry is zero in Connect
 
-        const DISCONNECT      = 0b0100_0000; // Disconnect frame is sent
+        const DISCONNECT      = 0b0010_0000; // Disconnect frame is sent
+        const DISCONNECT_RECV = 0b0100_0000; // Disconnect frame is received
         const STOPPED         = 0b1000_0000; // DispatchItem::Stop() is sent
     }
 }
@@ -94,6 +95,10 @@ impl MqttShared {
 
     pub(super) fn tag(&self) -> &'static str {
         self.io.tag()
+    }
+
+    pub(super) fn credit(&self) -> usize {
+        self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
     }
 
     pub(super) fn receive_max(&self) -> u16 {
@@ -182,10 +187,6 @@ impl MqttShared {
         self.streaming_remaining.get().is_some()
     }
 
-    pub(super) fn credit(&self) -> usize {
-        self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
-    }
-
     pub(super) fn is_ready(&self) -> bool {
         self.credit() > 0 && !self.flags.get().contains(Flags::WRB_ENABLED)
     }
@@ -198,6 +199,16 @@ impl MqttShared {
             self.flags.set(flags);
         }
         disconnect
+    }
+
+    pub(super) fn set_disconnect_recv(&self) {
+        let mut flags = self.flags.get();
+        flags.insert(Flags::DISCONNECT_RECV);
+        self.flags.set(flags);
+    }
+
+    pub(super) fn is_disconnect_recv(&self) -> bool {
+        self.flags.get().contains(Flags::DISCONNECT_RECV)
     }
 
     /// publish packet id

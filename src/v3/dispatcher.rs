@@ -464,7 +464,7 @@ impl<S, St, E> ServiceFactory<Control<E>, Session<St>> for ControlFactory<S, St,
 where
     S: ServiceFactory<Control<E>, Session<St>>,
 {
-    type Response = S::Response;
+    type Response = Option<Encoded>;
     type Error = S::Error;
     type InitError = S::InitError;
     type Service = ControlService<S::Service, E>;
@@ -482,7 +482,7 @@ impl<S, E> Service<Control<E>> for ControlService<S, E>
 where
     S: Service<Control<E>>,
 {
-    type Response = S::Response;
+    type Response = Option<Encoded>;
     type Error = S::Error;
 
     async fn call(
@@ -509,7 +509,7 @@ where
             }
         }
 
-        ctx.call(&self.svc, req).await
+        ctx.call(&self.svc, req).await.map(|_| None)
     }
 
     ntex_service::forward_ready!(svc);

@@ -352,6 +352,8 @@ where
                 self.inner.control(ProtocolMessage::ping()).await
             }
             Decoded::Packet(Packet::Disconnect(pkt), size) => {
+                self.inner.sink.set_disconnect_recv();
+
                 // Check session expiry
                 if let Some(val) = pkt.session_expiry_interval_secs
                     && val > 0
@@ -574,7 +576,7 @@ where
 
 impl<S, St, E> ServiceFactory<Control<E>, Session<St>> for ControlFactory<S, St, E>
 where
-    S: ServiceFactory<Control<E>, Session<St>>,
+    S: ServiceFactory<Control<E>, Session<St>, Response = Option<Encoded>>,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -592,7 +594,7 @@ where
 
 impl<S, E> Service<Control<E>> for ControlService<S, E>
 where
-    S: Service<Control<E>>,
+    S: Service<Control<E>, Response = Option<Encoded>>,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -602,15 +604,18 @@ where
         req: Control<E>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        match &req {
+        let proto_err = match &req {
             Control::Stop(Reason::Error(_)) => {
                 self.shared.drop_payload(&PayloadError::Service);
+                false
             }
             Control::Stop(Reason::Protocol(err)) => {
                 self.shared.drop_payload(err.get_ref());
+                true
             }
             Control::Stop(Reason::PeerGone(_)) => {
                 self.shared.drop_payload(&PayloadError::Disconnected);
+                false
             }
             Control::WrBackpressure(status) => {
                 if status.enabled() {
@@ -618,10 +623,20 @@ where
                 } else {
                     self.shared.disable_wr_backpressure();
                 }
+                false
             }
-        }
+        };
 
-        ctx.call(&self.svc, req).await
+        match ctx.call(&self.svc, req).await {
+            Ok(Some(val)) => {
+                if proto_err || !self.shared.is_disconnect_recv() {
+                    Ok(Some(val))
+                } else {
+                    Ok(None)
+                }
+            }
+            res => res,
+        }
     }
 
     ntex_service::forward_ready!(svc);

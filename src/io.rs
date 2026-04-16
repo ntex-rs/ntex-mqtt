@@ -185,6 +185,7 @@ where
         io: &IoRef,
         codec: &U,
     ) -> bool {
+        let err = item.is_err();
         let mut queue = self.queue.borrow_mut();
         let idx = response_idx.wrapping_sub(self.base.get());
 
@@ -221,10 +222,14 @@ where
                 }
             }
 
-            queue.is_empty()
+            err || queue.is_empty()
         } else {
-            queue[idx] = ServiceResult::Ready(item);
-            false
+            if let Err(err) = item {
+                self.error.set(Some(IoDispatcherError::Service(err)));
+            } else {
+                queue[idx] = ServiceResult::Ready(item);
+            }
+            err
         }
     }
 }

@@ -32,6 +32,12 @@ impl MqttSink {
     }
 
     #[inline]
+    /// Check if Disconnect packet is received
+    pub fn is_disconnect_recv(&self) -> bool {
+        self.0.is_disconnect_recv()
+    }
+
+    #[inline]
     /// Check if sink is ready
     pub fn is_ready(&self) -> bool {
         if self.0.is_closed() {
