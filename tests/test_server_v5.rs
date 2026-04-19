@@ -1769,7 +1769,7 @@ async fn test_publish_sink_disconnect() -> std::io::Result<()> {
 }
 
 #[ntex::test]
-async fn test_peergone_after_sink_disconenct() -> std::io::Result<()> {
+async fn test_peergone_after_sink_disconnect() -> std::io::Result<()> {
     let val = Arc::new(AtomicBool::new(false));
     let val2 = val.clone();
     let (tx, rx) = oneshot::channel();
@@ -1818,7 +1818,7 @@ async fn test_peergone_after_sink_disconenct() -> std::io::Result<()> {
 }
 
 #[ntex::test]
-async fn test_disconenct_once() -> std::io::Result<()> {
+async fn test_disconnect_once() -> std::io::Result<()> {
     let srv = server::test_server(async move || {
         MqttServer::new(handshake)
             .control(fn_factory_with_config(async move |session: Session<St>| {

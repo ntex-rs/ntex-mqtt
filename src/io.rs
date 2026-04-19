@@ -585,7 +585,8 @@ where
 #[allow(clippy::items_after_statements)]
 mod tests {
     use std::cell::Cell;
-    use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use ntex_bytes::{Bytes, BytesMut};
     use ntex_io::{self as nio, IoConfig, testing::IoTest as Io};
@@ -1347,5 +1348,68 @@ mod tests {
         sleep(Millis(250)).await;
 
         assert!(&data.load(Ordering::Relaxed));
+    }
+
+    /// Handle peer gone while publish service is not ready
+    #[ntex::test]
+    async fn peer_gone_while_service_is_not_ready() {
+        #[derive(Clone)]
+        struct OnDrop(Arc<AtomicUsize>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                let cnt = self.0.load(Ordering::Relaxed) + 1;
+                self.0.store(cnt, Ordering::Relaxed);
+            }
+        }
+
+        let data = Arc::new(AtomicUsize::new(0));
+        let data2 = OnDrop(data.clone());
+
+        struct Srv(Cell<bool>, OnDrop);
+
+        impl Service<Bytes> for Srv {
+            type Response = Option<Bytes>;
+            type Error = DispatcherError<()>;
+
+            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+                if self.0.get() {
+                    sleep(Millis(999999)).await;
+                }
+                Ok(())
+            }
+
+            async fn call(
+                &self,
+                _: Bytes,
+                _: ServiceCtx<'_, Self>,
+            ) -> Result<Option<Bytes>, Self::Error> {
+                let _data = self.1.clone();
+                self.0.set(true);
+                sleep(Millis(999999)).await;
+                Ok(None)
+            }
+        }
+
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG")),
+            BytesCodec,
+            Srv(Cell::new(false), data2),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
+        );
+        let (tx, rx) = ntex::channel::oneshot::channel();
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+            let _ = tx.send(());
+        });
+
+        client.write("1");
+        client.close().await;
+        let _ = rx.await;
+
+        let cnt = data.load(Ordering::Relaxed);
+        assert_eq!(cnt, 2);
     }
 }
