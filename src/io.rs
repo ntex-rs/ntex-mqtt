@@ -1373,7 +1373,7 @@ mod tests {
 
             async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
                 if self.0.get() {
-                    sleep(Millis(999999)).await;
+                    sleep(Millis(999_999)).await;
                 }
                 Ok(())
             }
@@ -1385,7 +1385,7 @@ mod tests {
             ) -> Result<Option<Bytes>, Self::Error> {
                 let _data = self.1.clone();
                 self.0.set(true);
-                sleep(Millis(999999)).await;
+                sleep(Millis(999_999)).await;
                 Ok(None)
             }
         }
