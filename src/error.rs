@@ -124,8 +124,8 @@ pub enum SpecViolation {
     Connack_3_2_2_14,
     #[error("[MQTT-3.2.2-17] Topic alias is greater than max allowed")]
     Connack_3_2_2_17,
-    #[error("[MQTT-3.2.2-*] Subscription Identifiers are not supported")]
-    Connack_3_2_2_21,
+    #[error("[MQTT-3.2.2-3.12] Subscription Identifiers are not supported")]
+    Connack_3_2_2_3_12,
     #[error("[MQTT-3.3.2-2] PUBLISH packet's topic name contains wildcard character")]
     Pub_3_3_2_2,
     #[error("[MQTT-3.3.4-7] Number of in-flight messages exceeds set maximum")]
@@ -150,7 +150,7 @@ impl SpecViolation {
             }
             SpecViolation::Connack_3_2_2_11 => DisconnectReasonCode::QosNotSupported,
             SpecViolation::Connack_3_2_2_14 => DisconnectReasonCode::RetainNotSupported,
-            SpecViolation::Connack_3_2_2_21 => {
+            SpecViolation::Connack_3_2_2_3_12 => {
                 DisconnectReasonCode::SubscriptionIdentifiersNotSupported
             }
             SpecViolation::PacketId_2_2_1_3_Pub
@@ -186,8 +186,8 @@ impl SpecViolation {
             SpecViolation::Connack_3_2_2_17 => {
                 "[MQTT-3.2.2-17] Topic alias is greater than max allowed"
             }
-            SpecViolation::Connack_3_2_2_21 => {
-                "[MQTT-3.2.2-*] Subscription Identifiers are not supported"
+            SpecViolation::Connack_3_2_2_3_12 => {
+                "[MQTT-3.2.2-3.12] Subscription Identifiers are not supported"
             }
             SpecViolation::Pub_3_3_2_2 => {
                 "[MQTT-3.3.2-2] PUBLISH packet's topic name contains wildcard character"

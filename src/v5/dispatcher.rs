@@ -345,9 +345,10 @@ where
             }
             Decoded::Packet(Packet::Auth(pkt), size) => {
                 if self.inner.sink.is_closed() {
-                    return Ok(None);
+                    Ok(None)
+                } else {
+                    self.inner.control(ProtocolMessage::auth(pkt, size)).await
                 }
-                self.inner.control(ProtocolMessage::auth(pkt, size)).await
             }
             Decoded::Packet(Packet::PingRequest, _) => {
                 self.inner.control(ProtocolMessage::ping()).await
@@ -369,23 +370,16 @@ where
             }
             Decoded::Packet(Packet::Subscribe(pkt), size) => {
                 if self.inner.sink.is_closed() {
-                    return Ok(None);
-                }
-
-                if pkt.topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
-                    return Err(SpecViolation::Subs_4_7_1.into());
-                }
-
-                if pkt.id.is_some() && !self.inner.sink.codec.sub_ids_available() {
+                    Ok(None)
+                } else if pkt.topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
+                    Err(SpecViolation::Subs_4_7_1.into())
+                } else if pkt.id.is_some() && !self.inner.sink.codec.sub_ids_available() {
                     log::trace!(
                         "{}: Subscription Identifiers are not supported but was set",
                         self.tag()
                     );
-                    return Err(SpecViolation::Connack_3_2_2_21.into());
-                }
-
-                // register inflight packet id
-                if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
+                    Err(SpecViolation::Connack_3_2_2_3_12.into())
+                } else if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id
                     let _ = self.inner.sink.encode_packet(codec::Packet::SubscribeAck(
                         codec::SubscribeAck {
@@ -399,22 +393,20 @@ where
                             reason_string: None,
                         },
                     ));
-                    return Ok(None);
+                    Ok(None)
+                } else {
+                    let id = pkt.packet_id;
+                    self.inner
+                        .control_pkt(ProtocolMessage::subscribe(pkt, size), id.get())
+                        .await
                 }
-                let id = pkt.packet_id;
-                self.inner.control_pkt(ProtocolMessage::subscribe(pkt, size), id.get()).await
             }
             Decoded::Packet(Packet::Unsubscribe(pkt), size) => {
                 if self.inner.sink.is_closed() {
-                    return Ok(None);
-                }
-
-                if pkt.topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
-                    return Err(SpecViolation::Subs_4_7_1.into());
-                }
-
-                // register inflight packet id
-                if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
+                    Ok(None)
+                } else if pkt.topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
+                    Err(SpecViolation::Subs_4_7_1.into())
+                } else if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id
                     let _ = self.inner.sink.encode_packet(codec::Packet::UnsubscribeAck(
                         codec::UnsubscribeAck {
@@ -428,10 +420,13 @@ where
                             reason_string: None,
                         },
                     ));
-                    return Ok(None);
+                    Ok(None)
+                } else {
+                    let id = pkt.packet_id;
+                    self.inner
+                        .control_pkt(ProtocolMessage::unsubscribe(pkt, size), id.get())
+                        .await
                 }
-                let id = pkt.packet_id;
-                self.inner.control_pkt(ProtocolMessage::unsubscribe(pkt, size), id.get()).await
             }
             Decoded::Packet(_, _) => Ok(None),
         }
@@ -541,5 +536,211 @@ where
         Ok(Some(Encoded::Packet(ack)))
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::{NonZeroU16, NonZeroU32};
+
+    use ntex_bytes::{ByteString, Bytes};
+    use ntex_io::{Io, testing::IoTest};
+    use ntex_service::{cfg::SharedCfg, fn_service};
+
+    use super::*;
+    use crate::{error, v5::codec};
+
+    #[derive(Debug)]
+    struct TestError;
+
+    impl From<()> for TestError {
+        fn from((): ()) -> Self {
+            TestError
+        }
+    }
+
+    impl TryFrom<TestError> for PublishAck {
+        type Error = TestError;
+
+        fn try_from(err: TestError) -> Result<Self, Self::Error> {
+            Err(err)
+        }
+    }
+
+    #[ntex::test]
+    async fn test_spec_violations() {
+        let cfg: SharedCfg = SharedCfg::new("DBG")
+            .add(MqttServiceConfig::new().set_max_qos(QoS::AtLeastOnce))
+            .into();
+
+        let io = Io::new(IoTest::create().0, cfg.clone());
+        let codec = codec::Codec::default();
+        codec.set_retain_available(false);
+        codec.set_sub_ids_available(false);
+        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
+        shared.set_topic_alias_max(1);
+
+        let disp = Pipeline::new(Dispatcher::new(
+            shared.clone(),
+            fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
+            Pipeline::new(fn_service(async |msg: ProtocolMessage| {
+                Ok::<_, DispatcherError<TestError>>(msg.ack())
+            })),
+            cfg.get(),
+        ));
+
+        // retain not available
+        let err = disp
+            .call(Decoded::Publish(
+                codec::Publish {
+                    retain: true,
+                    qos: QoS::AtLeastOnce,
+                    packet_id: NonZeroU16::new(1),
+                    ..Default::default()
+                },
+                Bytes::new(),
+                999,
+            ))
+            .await
+            .err()
+            .unwrap();
+
+        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+            panic!()
+        };
+        assert_eq!(
+            err.inner,
+            error::ViolationInner::Spec(error::SpecViolation::Connack_3_2_2_14)
+        );
+
+        // topic aliases
+        let mut pkt = codec::Publish::default();
+        pkt.properties.topic_alias = NonZeroU16::new(1);
+
+        let err = disp.call(Decoded::Publish(pkt, Bytes::new(), 999)).await.err().unwrap();
+        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+            panic!()
+        };
+        assert_eq!(
+            err.inner,
+            error::ViolationInner::Common {
+                reason: DisconnectReasonCode::TopicAliasInvalid,
+                message: "Unknown topic alias"
+            }
+        );
+
+        // add topic aliase
+        let mut pkt = codec::Publish {
+            packet_id: NonZeroU16::new(1),
+            topic: ByteString::from_static("test"),
+            ..Default::default()
+        };
+        pkt.properties.topic_alias = NonZeroU16::new(1);
+        let res = disp.call(Decoded::Publish(pkt, Bytes::new(), 999)).await;
+        assert!(res.is_ok());
+
+        // new topic alias
+        let mut pkt = codec::Publish {
+            packet_id: NonZeroU16::new(2),
+            topic: ByteString::from_static("test2"),
+            ..Default::default()
+        };
+        pkt.properties.topic_alias = NonZeroU16::new(2);
+
+        let err = disp.call(Decoded::Publish(pkt, Bytes::new(), 999)).await.err().unwrap();
+        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+            panic!()
+        };
+        assert_eq!(
+            err.inner,
+            error::ViolationInner::Spec(error::SpecViolation::Connack_3_2_2_17)
+        );
+
+        // unknown PublishRelease
+        let pkt = disp
+            .call(Decoded::Packet(
+                Packet::PublishRelease(codec::PublishAck2 {
+                    packet_id: NonZeroU16::new(100).unwrap(),
+                    reason_code: codec::PublishAck2Reason::Success,
+                    properties: codec::UserProperties::default(),
+                    reason_string: None,
+                }),
+                999,
+            ))
+            .await
+            .ok()
+            .unwrap()
+            .unwrap();
+
+        let Encoded::Packet(Packet::PublishComplete(pkt)) = pkt else { panic!() };
+        assert_eq!(pkt.reason_code, codec::PublishAck2Reason::PacketIdNotFound);
+
+        // subscribe invalid topic
+        let err = disp
+            .call(Decoded::Packet(
+                Packet::Subscribe(codec::Subscribe {
+                    packet_id: NonZeroU16::new(1).unwrap(),
+                    id: None,
+                    user_properties: codec::UserProperties::default(),
+                    topic_filters: vec![(
+                        ByteString::new(),
+                        codec::SubscriptionOptions::default(),
+                    )],
+                }),
+                999,
+            ))
+            .await
+            .err()
+            .unwrap();
+
+        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+            panic!()
+        };
+        assert_eq!(err.inner, error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1));
+
+        // subscribe sub id not available
+        let err = disp
+            .call(Decoded::Packet(
+                Packet::Subscribe(codec::Subscribe {
+                    packet_id: NonZeroU16::new(1).unwrap(),
+                    id: NonZeroU32::new(1),
+                    user_properties: codec::UserProperties::default(),
+                    topic_filters: vec![(
+                        ByteString::from_static("test"),
+                        codec::SubscriptionOptions::default(),
+                    )],
+                }),
+                999,
+            ))
+            .await
+            .err()
+            .unwrap();
+
+        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+            panic!()
+        };
+        assert_eq!(
+            err.inner,
+            error::ViolationInner::Spec(error::SpecViolation::Connack_3_2_2_3_12)
+        );
+
+        // unsubscribe invalid topic
+        let err = disp
+            .call(Decoded::Packet(
+                Packet::Unsubscribe(codec::Unsubscribe {
+                    packet_id: NonZeroU16::new(1).unwrap(),
+                    user_properties: codec::UserProperties::default(),
+                    topic_filters: vec![ByteString::new()],
+                }),
+                999,
+            ))
+            .await
+            .err()
+            .unwrap();
+
+        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+            panic!()
+        };
+        assert_eq!(err.inner, error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1));
     }
 }

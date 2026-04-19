@@ -34,6 +34,20 @@ pub struct PublishProperties {
     pub subscription_ids: Vec<NonZeroU32>,
 }
 
+impl Default for Publish {
+    fn default() -> Publish {
+        Publish {
+            dup: false,
+            retain: false,
+            qos: QoS::AtMostOnce,
+            packet_id: None,
+            topic: ByteString::new(),
+            payload_size: 0,
+            properties: PublishProperties::default(),
+        }
+    }
+}
+
 impl Publish {
     pub(crate) fn decode(
         src: &mut Bytes,
