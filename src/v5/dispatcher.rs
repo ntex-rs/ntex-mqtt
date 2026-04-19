@@ -554,7 +554,7 @@ mod tests {
     struct TestError;
 
     impl From<()> for TestError {
-        fn from(_: ()) -> Self {
+        fn from((): ()) -> Self {
             TestError
         }
     }

@@ -14,9 +14,8 @@ use ntex_mqtt::{Control, MqttServiceConfig, QoS, Reason, error::ProtocolError};
 
 struct St;
 
-async fn handshake(mut packet: Handshake) -> Result<HandshakeAck<St>, ()> {
+async fn handshake(packet: Handshake) -> Result<HandshakeAck<St>, ()> {
     packet.packet();
-    packet.packet_mut();
     packet.io();
     packet.sink();
     Ok(packet.ack(St, false).idle_timeout(Seconds(16)))
