@@ -45,7 +45,7 @@ prim_enum! {
         SharedSubscriptionNotSupported = 158,
         ConnectionRateExceeded = 159,
         MaximumConnectTime = 160,
-        SubscriptionIdentifiersNotSupported = 161,
+        SubscriptionIdentifiersNotSupported = 0xa1,
         WildcardSubscriptionsNotSupported = 162
     }
 }
