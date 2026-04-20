@@ -15,15 +15,15 @@ rust-version = "1.88"
 features = ["ntex-net/tokio"]
 
 [dependencies]
-ntex-error = "2.1"
+ntex-error = "2.2"
 ntex-io = "3.9"
-ntex-net = "3.8"
+ntex-net = "3.9"
 ntex-util = "3.5"
 ntex-service = "4.6"
 ntex-bytes = "1.5"
 ntex-codec = "1.1"
 ntex-router = "1"
-ntex-rt = "3.10"
+ntex-rt = "3.12"
 bitflags = "2"
 log = "0.4"
 pin-project-lite = "0.2"
@@ -38,4 +38,4 @@ ntex-tls = "3"
 openssl = "0.10"
 oneshot = { version = "0.2.1", features = ["std", "async"] }
 test-case = "3.2"
-ntex = { version = "3.7.0", features = ["openssl"] }
+ntex = { version = "3.7.2", features = ["openssl"] }
