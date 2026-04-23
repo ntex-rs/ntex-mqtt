@@ -27,6 +27,11 @@ impl Handshake {
     }
 
     #[inline]
+    pub fn packet_mut(&mut self) -> &mut codec::Connect {
+        &mut self.pkt
+    }
+
+    #[inline]
     pub fn packet_size(&self) -> u32 {
         self.size
     }
