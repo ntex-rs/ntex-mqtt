@@ -74,6 +74,12 @@ impl<E> Error<E> {
     pub fn get_ref(&self) -> &E {
         &self.err
     }
+
+    #[inline]
+    /// Return inner error
+    pub fn into(self) -> E {
+        self.err
+    }
 }
 
 /// Protocol level error
@@ -92,6 +98,12 @@ impl ProtocolError {
     pub fn get_ref(&self) -> &error::ProtocolError {
         &self.err
     }
+
+    #[inline]
+    /// Return inner error
+    pub fn into(self) -> error::ProtocolError {
+        self.err
+    }
 }
 
 #[derive(Debug)]
@@ -107,8 +119,8 @@ impl PeerGone {
 
     #[inline]
     /// Take error
-    pub fn take(&mut self) -> Option<io::Error> {
-        self.0.take()
+    pub fn into(self) -> Option<io::Error> {
+        self.0
     }
 }
 

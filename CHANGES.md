@@ -1,5 +1,9 @@
 # Changes
 
+## [8.0.0-beta.2] - 2026-04-24
+
+* Restore Handshake::packet_mut()
+
 ## [8.0.0-beta.1] - 2026-04-18
 
 * Introduce new control service only for network level messages

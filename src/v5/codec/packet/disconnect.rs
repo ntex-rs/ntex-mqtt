@@ -83,8 +83,8 @@ impl Disconnect {
     #[inline]
     #[must_use]
     /// Set reason string for disconnect packet
-    pub fn reason_string(mut self, reason: ByteString) -> Self {
-        self.reason_string = Some(reason);
+    pub fn reason_string(mut self, reason: Option<ByteString>) -> Self {
+        self.reason_string = reason;
         self
     }
 
