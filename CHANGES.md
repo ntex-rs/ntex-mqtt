@@ -1,5 +1,9 @@
 # Changes
 
+## [8.0.0-beta.3] - 2026-04-24
+
+* Add control service support for client
+
 ## [8.0.0-beta.2] - 2026-04-24
 
 * Restore Handshake::packet_mut()
