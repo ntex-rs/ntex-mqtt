@@ -153,7 +153,11 @@ impl Client {
     }
 
     /// Run client with provided control messages handler
-    pub async fn start_with_control<F, S, C, E>(self, service: F, control: C) -> Result<(), MqttError<C::Error>>
+    pub async fn start_with_control<F, S, C, E>(
+        self,
+        service: F,
+        control: C,
+    ) -> Result<(), MqttError<C::Error>>
     where
         E: fmt::Debug + 'static,
         F: IntoService<S, ProtocolMessage> + 'static,
@@ -172,10 +176,7 @@ impl Client {
             16,
             self.cfg,
         );
-        let control = ControlService::new(
-            control,
-            self.shared.clone(),
-        );
+        let control = ControlService::new(control, self.shared.clone());
 
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
