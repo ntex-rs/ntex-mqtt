@@ -152,6 +152,35 @@ impl Client {
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 
+    /// Run client with provided control messages handler
+    pub async fn start_with_control<F, S, C, E>(
+        self,
+        service: F,
+        control: C,
+    ) -> Result<(), MqttError<C::Error>>
+    where
+        E: fmt::Debug + 'static,
+        F: IntoService<S, ProtocolMessage> + 'static,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
+        C: Service<control::Control<E>, Response = Option<codec::Encoded>> + 'static,
+    {
+        if self.keepalive.non_zero() {
+            ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+        }
+
+        let dispatcher = create_dispatcher(
+            self.shared.clone(),
+            fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
+            service.into_service(),
+            self.max_receive,
+            16,
+            self.cfg,
+        );
+        let control = ControlService::new(control, self.shared.clone());
+
+        Dispatcher::new(self.io, self.shared, dispatcher, control).await
+    }
+
     /// Get negotiated io stream and codec
     pub fn into_inner(self) -> (IoBoxed, codec::Codec) {
         (self.io, self.shared.codec.clone())
