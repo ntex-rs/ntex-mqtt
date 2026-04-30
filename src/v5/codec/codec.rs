@@ -145,7 +145,10 @@ impl Decoder for Codec {
                                 log::debug!(
                                     "MaxSizeExceeded max-size: {max_in_size}, remaining: {remaining_length}"
                                 );
-                                return Err(DecodeError::MaxSizeExceeded);
+                                return Err(DecodeError::MaxSizeExceeded {
+                                    size: remaining_length,
+                                    max_size: max_in_size,
+                                });
                             }
                             src.advance(consumed + 1);
 
@@ -395,6 +398,9 @@ mod tests {
         codec.set_max_inbound_size(5);
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"\0\x09");
-        assert_eq!(codec.decode(&mut buf).err(), Some(DecodeError::MaxSizeExceeded));
+        assert_eq!(
+            codec.decode(&mut buf).err(),
+            Some(DecodeError::MaxSizeExceeded { size: 9, max_size: 5 })
+        );
     }
 }
