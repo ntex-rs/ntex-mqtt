@@ -304,8 +304,8 @@ pub enum DecodeError {
     // MQTT v3 only
     #[error("Packet id is required")]
     PacketIdRequired,
-    #[error("Max size exceeded")]
-    MaxSizeExceeded,
+    #[error("Max size exceeded size:{size} max-size:{max_size}")]
+    MaxSizeExceeded { size: u32, max_size: u32 },
     #[error("utf8 error")]
     Utf8Error,
     #[error("Unexpected payload")]

@@ -1,5 +1,9 @@
 # Changes
 
+## [8.0.0-beta.4] - 2026-04-30
+
+* Include MaxSize error parameters
+
 ## [8.0.0-beta.3] - 2026-04-24
 
 * Add control service support for client

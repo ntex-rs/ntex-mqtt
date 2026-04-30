@@ -69,7 +69,7 @@ impl Disconnect {
                 ProtocolError::Decode(DecodeError::InvalidLength) => {
                     DisconnectReasonCode::MalformedPacket
                 }
-                ProtocolError::Decode(DecodeError::MaxSizeExceeded) => {
+                ProtocolError::Decode(DecodeError::MaxSizeExceeded { .. }) => {
                     DisconnectReasonCode::PacketTooLarge
                 }
                 ProtocolError::KeepAliveTimeout => DisconnectReasonCode::KeepAliveTimeout,
