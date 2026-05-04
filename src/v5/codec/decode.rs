@@ -1,6 +1,6 @@
 use ntex_bytes::{ByteString, Bytes};
 
-use super::{packet, packet::Packet, UserProperty};
+use super::{UserProperty, packet, packet::Packet};
 use crate::{error::DecodeError, types::packet_type, utils::Decode};
 
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {

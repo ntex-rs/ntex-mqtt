@@ -1,8 +1,8 @@
 use ntex_bytes::{BufMut, BytePages, ByteString};
 
 use crate::error::EncodeError;
-use crate::types::{packet_type, ConnectFlags, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
-use crate::utils::{write_variable_length, Encode};
+use crate::types::{ConnectFlags, MQTT, MQTT_LEVEL_3, QoS, WILL_QOS_SHIFT, packet_type};
+use crate::utils::{Encode, write_variable_length};
 
 use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
 

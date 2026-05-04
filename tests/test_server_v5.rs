@@ -5,7 +5,7 @@ use std::{future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 
 use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_factory_with_config, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
-use ntex::util::{ByteString, Bytes, Ready, BytePages, lazy};
+use ntex::util::{BytePages, ByteString, Bytes, Ready, lazy};
 use ntex::{codec::Encoder, io::Framed, io::IoConfig, rt, server};
 
 use ntex_mqtt::v5::codec::{self, Decoded, Encoded, Packet};

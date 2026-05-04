@@ -3,7 +3,7 @@ use std::{cell::RefCell, future::Future, num::NonZeroU16, pin::Pin, rc::Rc, time
 
 use ntex::service::{Pipeline, ServiceFactory, cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
-use ntex::util::{ByteString, Bytes, Ready, BytePages, join_all, lazy};
+use ntex::util::{BytePages, ByteString, Bytes, Ready, join_all, lazy};
 use ntex::{codec::Encoder, io::IoConfig, server, service::chain_factory};
 
 use ntex_mqtt::v3::codec::{self, Decoded, Encoded, Packet};
