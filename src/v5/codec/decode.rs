@@ -1,6 +1,6 @@
 use ntex_bytes::{ByteString, Bytes};
 
-use super::{UserProperty, packet, packet::Packet};
+use super::{packet, packet::Packet, UserProperty};
 use crate::{error::DecodeError, types::packet_type, utils::Decode};
 
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
@@ -51,7 +51,7 @@ impl Decode for UserProperty {
 
 #[cfg(test)]
 mod tests {
-    use ntex_bytes::BytesMut;
+    use ntex_bytes::{BytePages, BytesMut};
     use std::num::{NonZeroU16, NonZeroU32};
 
     use super::*;
@@ -67,8 +67,8 @@ mod tests {
         let fixed = bytes[0];
         let (_len, consumed) = decode_variable_length(&bytes[1..]).unwrap().unwrap();
         let cur = Bytes::copy_from_slice(&bytes[consumed + 1..]);
-        let mut tmp = BytesMut::with_capacity(4096);
-        ntex_codec::Encoder::encode(
+        let mut tmp = BytePages::default();
+        ntex_codec::Encoder::encodev(
             &crate::v5::codec::Codec::new(),
             Encoded::Packet(res.clone()),
             &mut tmp,
@@ -81,13 +81,13 @@ mod tests {
             "decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}",
             res,
             decoded,
-            tmp.as_ref()
+            tmp
         );
     }
 
     fn assert_decode_publish<B: AsRef<[u8]>>(bytes: B, res: &Publish, pl: &Bytes) {
-        let mut tmp = BytesMut::with_capacity(4096);
-        ntex_codec::Encoder::encode(
+        let mut tmp = BytePages::default();
+        ntex_codec::Encoder::encodev(
             &crate::v5::codec::Codec::new(),
             Encoded::Publish(res.clone(), Some(pl.clone())),
             &mut tmp,
@@ -107,7 +107,7 @@ mod tests {
             "decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}",
             res,
             decoded,
-            tmp.as_ref()
+            tmp
         );
     }
 

@@ -3,7 +3,7 @@ use std::{cell::RefCell, future::Future, num::NonZeroU16, pin::Pin, rc::Rc, time
 
 use ntex::service::{Pipeline, ServiceFactory, cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
-use ntex::util::{ByteString, Bytes, BytesMut, Ready, join_all, lazy};
+use ntex::util::{ByteString, Bytes, Ready, BytePages, join_all, lazy};
 use ntex::{codec::Encoder, io::IoConfig, server, service::chain_factory};
 
 use ntex_mqtt::v3::codec::{self, Decoded, Encoded, Packet};
@@ -1151,18 +1151,19 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
         Some(Bytes::from(vec![b'*'; 270 * 1024])),
     );
 
-    let mut buf = BytesMut::new();
-    codec.encode(p, &mut buf).unwrap();
+    let mut buf = BytePages::default();
+    codec.encodev(p, &mut buf).unwrap();
+    let mut buf = buf.freeze();
 
-    io.write(&buf[..5]).unwrap();
+    io.encode_slice(&buf[..5]).unwrap();
     buf.advance_to(5);
     sleep(Millis(100)).await;
-    io.write(&buf[..10]).unwrap();
+    io.encode_slice(&buf[..10]).unwrap();
     buf.advance_to(10);
     sleep(Millis(1000)).await;
     assert!(!check.load(Relaxed));
 
-    io.write(&buf[..12]).unwrap();
+    io.encode_slice(&buf[..12]).unwrap();
     buf.advance_to(12);
     sleep(Millis(1000)).await;
     assert!(!check.load(Relaxed));

@@ -1,5 +1,9 @@
 # Changes
 
+## [8.0.0-beta.5] - 2026-05-05
+
+* Use new codec api with BytePages support
+
 ## [8.0.0-beta.4] - 2026-04-30
 
 * Include MaxSize error parameters

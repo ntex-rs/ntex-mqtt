@@ -1,8 +1,8 @@
-use ntex_bytes::{BufMut, ByteString, BytesMut};
+use ntex_bytes::{BufMut, BytePages, ByteString};
 
 use crate::error::EncodeError;
-use crate::types::{ConnectFlags, MQTT, MQTT_LEVEL_3, QoS, WILL_QOS_SHIFT, packet_type};
-use crate::utils::{Encode, write_variable_length};
+use crate::types::{packet_type, ConnectFlags, QoS, MQTT, MQTT_LEVEL_3, WILL_QOS_SHIFT};
+use crate::utils::{write_variable_length, Encode};
 
 use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
 
@@ -68,7 +68,7 @@ pub(crate) fn get_encoded_size(packet: &Packet) -> usize {
 
 pub(crate) fn encode(
     packet: &Packet,
-    dst: &mut BytesMut,
+    dst: &mut BytePages,
     content_size: u32,
 ) -> Result<(), EncodeError> {
     match packet {
@@ -150,7 +150,7 @@ pub(crate) fn encode(
 
 pub(super) fn encode_publish(
     publish: &Publish,
-    dst: &mut BytesMut,
+    dst: &mut BytePages,
     content_size: u32,
 ) -> Result<(), EncodeError> {
     dst.put_u8(
@@ -171,7 +171,7 @@ pub(super) fn encode_publish(
     Ok(())
 }
 
-fn encode_connect(connect: &Connect, dst: &mut BytesMut) -> Result<(), EncodeError> {
+fn encode_connect(connect: &Connect, dst: &mut BytePages) -> Result<(), EncodeError> {
     let Connect {
         clean_session,
         keep_alive,
@@ -240,14 +240,14 @@ mod tests {
 
     #[test]
     fn test_encode_fixed_header() {
-        let mut v = BytesMut::with_capacity(271);
+        let mut v = BytePages::default();
         let p = Packet::PingRequest;
 
         assert_eq!(get_encoded_size(&p), 0);
         encode(&p, &mut v, 0).unwrap();
-        assert_eq!(v, b"\xc0\x00".as_ref());
+        assert_eq!(v.freeze(), b"\xc0\x00".as_ref());
 
-        v.clear();
+        let mut v = BytePages::default();
 
         let p = Publish {
             dup: true,
@@ -260,22 +260,22 @@ mod tests {
 
         assert_eq!(get_encoded_publish_size(&p), 264);
         encode_publish(&p, &mut v, 264).unwrap();
-        assert_eq!(&v[0..3], b"\x3d\x88\x02".as_ref());
+        assert_eq!(&v.freeze()[0..3], b"\x3d\x88\x02".as_ref());
     }
 
     fn assert_encode_packet(packet: &Packet, expected: &[u8]) {
-        let mut v = BytesMut::with_capacity(1024);
+        let mut v = BytePages::default();
         encode(packet, &mut v, get_encoded_size(packet) as u32).unwrap();
         assert_eq!(expected.len(), v.len());
-        assert_eq!(expected, &v[..]);
+        assert_eq!(expected, &v.freeze()[..]);
     }
 
     fn assert_encode_publish(packet: &Publish, pl: &[u8], expected: &[u8]) {
-        let mut v = BytesMut::with_capacity(1024);
+        let mut v = BytePages::default();
         encode_publish(packet, &mut v, get_encoded_publish_size(packet) as u32).unwrap();
         v.extend_from_slice(pl);
         assert_eq!(expected.len(), v.len());
-        assert_eq!(expected, &v[..]);
+        assert_eq!(expected, &v.freeze()[..]);
     }
 
     #[test]

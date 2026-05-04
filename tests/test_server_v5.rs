@@ -5,7 +5,7 @@ use std::{future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 
 use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_factory_with_config, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
-use ntex::util::{ByteString, Bytes, BytesMut, Ready, lazy};
+use ntex::util::{ByteString, Bytes, Ready, BytePages, lazy};
 use ntex::{codec::Encoder, io::Framed, io::IoConfig, rt, server};
 
 use ntex_mqtt::v5::codec::{self, Decoded, Encoded, Packet};
@@ -1040,13 +1040,13 @@ async fn test_keepalive3() {
     .unwrap();
     sleep(Duration::from_millis(500)).await;
 
-    let mut buf = BytesMut::new();
+    let mut buf = BytePages::default();
     let pkt = Encoded::Publish(
         codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() },
         None,
     );
-    codec.encode(pkt, &mut buf).unwrap();
-    io.write(&buf[..5]).unwrap();
+    codec.encodev(pkt, &mut buf).unwrap();
+    io.encode_slice(&buf.freeze()[..5]).unwrap();
     sleep(Duration::from_millis(2000)).await;
 
     assert!(ka.load(Relaxed));
@@ -1690,18 +1690,19 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
         Some(Bytes::from(vec![b'*'; 270 * 1024])),
     );
 
-    let mut buf = BytesMut::new();
-    codec.encode(p, &mut buf).unwrap();
+    let mut buf = BytePages::default();
+    codec.encodev(p, &mut buf).unwrap();
+    let mut buf = buf.freeze();
 
-    io.write(&buf[..50]).unwrap();
+    io.encode_slice(&buf[..50]).unwrap();
     buf.advance_to(50);
     sleep(Millis(100)).await;
-    io.write(&buf[..10]).unwrap();
+    io.encode_slice(&buf[..10]).unwrap();
     buf.advance_to(10);
     sleep(Millis(1000)).await;
     assert!(!check.load(Relaxed));
 
-    io.write(&buf[..12]).unwrap();
+    io.encode_slice(&buf[..12]).unwrap();
     buf.advance_to(12);
     sleep(Millis(1000)).await;
     assert!(!check.load(Relaxed));

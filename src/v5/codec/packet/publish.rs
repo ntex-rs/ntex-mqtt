@@ -1,6 +1,6 @@
 use std::{num::NonZeroU16, num::NonZeroU32};
 
-use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes, BytesMut};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{QoS, packet_type};
@@ -153,7 +153,7 @@ impl encode::EncodeLtd for Publish {
             + self.payload_size as usize
     }
 
-    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
         // publish fixed headers
         buf.put_u8(
             packet_type::PUBLISH_START
@@ -197,7 +197,7 @@ impl encode::EncodeLtd for PublishProperties {
         prop_len + encode::var_int_len(prop_len) as usize
     }
 
-    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
         let prop_len = encode::var_int_len_from_size(size);
         utils::write_variable_length(prop_len, buf);
         encode::encode_property(&self.topic_alias, pt::TOPIC_ALIAS, buf)?;

@@ -1,13 +1,13 @@
 use std::{cell::Cell, cmp::min, num::NonZeroU32};
 
-use ntex_bytes::{Buf, Bytes, BytesMut};
+use ntex_bytes::{Buf, BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{FixedHeader, QoS, packet_type};
+use crate::types::{packet_type, FixedHeader, QoS};
 use crate::utils::decode_variable_length;
 
-use super::{Decoded, Encoded, Publish, decode, encode};
+use super::{decode, encode, Decoded, Encoded, Publish};
 
 #[derive(Debug, Clone)]
 /// Mqtt v3.1.1 protocol codec
@@ -195,11 +195,10 @@ impl Encoder for Codec {
     type Item = Encoded;
     type Error = EncodeError;
 
-    fn encode(&self, item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encodev(&self, item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
         match item {
             Encoded::Packet(pkt) => {
                 let content_size = encode::get_encoded_size(&pkt);
-                dst.reserve(content_size + 5);
                 encode::encode(&pkt, dst, content_size as u32)?;
                 Ok(())
             }
@@ -214,14 +213,12 @@ impl Encoder for Codec {
                     return Err(EncodeError::OverMaxPacketSize);
                 }
 
-                let current_size = content_size - pkt.payload_size
-                    + buf.as_ref().map_or(0, |b| b.len() as u32);
-                dst.reserve((current_size + 5) as usize);
                 encode::encode_publish(&pkt, dst, content_size)?; // safe: max_size <= u32 max value
 
                 let remaining = if let Some(buf) = buf {
-                    dst.extend_from_slice(&buf);
-                    pkt.payload_size - buf.len() as u32
+                    let remaining = pkt.payload_size - buf.len() as u32;
+                    dst.append(buf);
+                    remaining
                 } else {
                     pkt.payload_size
                 };
@@ -234,7 +231,7 @@ impl Encoder for Codec {
                     if len > remaining.get() {
                         Err(EncodeError::OverPublishSize)
                     } else {
-                        dst.extend_from_slice(&chunk);
+                        dst.append(chunk);
                         self.encoding_payload.set(NonZeroU32::new(remaining.get() - len));
                         Ok(())
                     }
@@ -267,7 +264,7 @@ mod tests {
     #[test]
     fn test_packet() {
         let codec = Codec::new();
-        let mut buf = BytesMut::new();
+        let mut buf = BytePages::default();
 
         let pkt = Publish {
             dup: false,
@@ -278,9 +275,11 @@ mod tests {
             payload_size: 260 * 1024,
         };
         let payload = Bytes::from(Vec::from("a".repeat(260 * 1024)));
-        codec.encode(Encoded::Publish(pkt.clone(), Some(payload)), &mut buf).unwrap();
+        codec.encodev(Encoded::Publish(pkt.clone(), Some(payload)), &mut buf).unwrap();
 
-        let Decoded::Publish(pkt2, _, _) = codec.decode(&mut buf).unwrap().unwrap() else {
+        let Decoded::Publish(pkt2, _, _) =
+            codec.decode(&mut BytesMut::from(buf.freeze())).unwrap().unwrap()
+        else {
             panic!()
         };
         assert_eq!(pkt, pkt2);

@@ -1,4 +1,4 @@
-use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes};
 
 use crate::error::{DecodeError, EncodeError, ProtocolError};
 use crate::utils::{self, Decode, Property};
@@ -173,7 +173,7 @@ impl encode::EncodeLtd for Disconnect {
         HEADER_LEN + encode::var_int_len(prop_len) as usize + prop_len
     }
 
-    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
         let start_len = buf.len();
         buf.put_u8(self.reason_code.into());
 

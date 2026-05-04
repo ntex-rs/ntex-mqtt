@@ -1,6 +1,6 @@
 use std::num::NonZeroU16;
 
-use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes};
 
 use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
@@ -125,7 +125,7 @@ impl encode::EncodeLtd for PublishAck {
         HEADER_LEN as usize + prop_len
     }
 
-    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
         self.packet_id.get().encode(buf)?;
         buf.put_u8(self.reason_code.into());
         ack_props::encode(&self.properties, &self.reason_string, buf, size - HEADER_LEN)?;
@@ -144,7 +144,7 @@ impl encode::EncodeLtd for PublishAck2 {
         HEADER_LEN as usize + prop_len
     }
 
-    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
         self.packet_id.get().encode(buf)?;
         buf.put_u8(self.reason_code.into());
         ack_props::encode(&self.properties, &self.reason_string, buf, size - 3)?;

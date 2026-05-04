@@ -1,6 +1,6 @@
 use std::num::{NonZeroU16, NonZeroU32};
 
-use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{ConnectFlags, MQTT, MQTT_LEVEL_5, QoS, WILL_QOS_SHIFT};
@@ -261,7 +261,7 @@ impl encode::EncodeLtd for Connect {
             + self.password.as_ref().map_or(0, Encode::encoded_size)
     }
 
-    fn encode(&self, buf: &mut BytesMut, _size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, _size: u32) -> Result<(), EncodeError> {
         b"MQTT".as_ref().encode(buf)?;
 
         let mut flags = ConnectFlags::empty();
