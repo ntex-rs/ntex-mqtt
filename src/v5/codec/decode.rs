@@ -78,10 +78,8 @@ mod tests {
         let res = Ok(res);
         assert!(
             decoded.as_ref() == res,
-            "decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}",
-            res,
-            decoded,
-            tmp
+            "decoded packet does not match expectations.\nexpected: {res:?}\nactual: {decoded:?}\nencoding output for expected: {:X?}",
+            tmp.freeze().as_ref()
         );
     }
 
@@ -104,10 +102,8 @@ mod tests {
 
         assert!(
             &pkt == res,
-            "decoded packet does not match expectations.\nexpected: {:?}\nactual: {:?}\nencoding output for expected: {:X?}",
-            res,
-            decoded,
-            tmp
+            "decoded packet does not match expectations.\nexpected: {res:?}\nactual: {decoded:?}\nencoding output for expected: {:X?}",
+            tmp.freeze().as_ref()
         );
     }
 
