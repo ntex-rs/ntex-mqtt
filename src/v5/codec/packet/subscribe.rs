@@ -1,6 +1,6 @@
 use std::num::{NonZeroU16, NonZeroU32};
 
-use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes};
 
 use super::ack_props;
 use crate::error::{DecodeError, EncodeError};
@@ -199,7 +199,7 @@ impl encode::EncodeLtd for Subscribe {
             + payload_len
     }
 
-    fn encode(&self, buf: &mut BytesMut, _: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, _: u32) -> Result<(), EncodeError> {
         self.packet_id.encode(buf)?;
 
         // encode properties
@@ -243,7 +243,8 @@ impl Encode for SubscriptionOptions {
     fn encoded_size(&self) -> usize {
         1
     }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         buf.put_u8(
             u8::from(self.qos)
                 | (u8::from(self.no_local) << 2)
@@ -268,7 +269,7 @@ impl encode::EncodeLtd for SubscribeAck {
         ) + len
     }
 
-    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
         self.packet_id.encode(buf)?;
         let len = self.status.len() as u32; // safe: max size checked already
         ack_props::encode(&self.properties, &self.reason_string, buf, size - 2 - len)?;
@@ -287,7 +288,7 @@ impl encode::EncodeLtd for Unsubscribe {
             + self.topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
     }
 
-    fn encode(&self, buf: &mut BytesMut, _size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, _size: u32) -> Result<(), EncodeError> {
         self.packet_id.encode(buf)?;
 
         // properties
@@ -315,7 +316,7 @@ impl encode::EncodeLtd for UnsubscribeAck {
             )
     }
 
-    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
         self.packet_id.encode(buf)?;
         let len = self.status.len() as u32;
 
@@ -352,10 +353,10 @@ mod tests {
         };
 
         let size = pkt.encoded_size(99999);
-        let mut buf = BytesMut::with_capacity(size);
+        let mut buf = BytePages::default();
         pkt.encode(&mut buf, size as u32).unwrap();
         assert_eq!(buf.len(), size);
-        assert_eq!(pkt, Subscribe::decode(&mut buf.freeze()).unwrap());
+        assert_eq!(pkt, Subscribe::decode(&mut buf.take().unwrap().freeze()).unwrap());
 
         let pkt = Unsubscribe {
             packet_id: 12.try_into().unwrap(),
@@ -364,10 +365,10 @@ mod tests {
         };
 
         let size = pkt.encoded_size(99999);
-        let mut buf = BytesMut::with_capacity(size);
+        let mut buf = BytePages::default();
         pkt.encode(&mut buf, size as u32).unwrap();
         assert_eq!(buf.len(), size);
-        assert_eq!(pkt, Unsubscribe::decode(&mut buf.freeze()).unwrap());
+        assert_eq!(pkt, Unsubscribe::decode(&mut buf.take().unwrap().freeze()).unwrap());
     }
 
     #[test]
@@ -380,10 +381,13 @@ mod tests {
         });
         let codec = Codec::new();
 
-        let mut buf = BytesMut::new();
-        codec.encode(pkt.clone().into(), &mut buf).unwrap();
+        let mut buf = BytePages::default();
+        codec.encodev(pkt.clone().into(), &mut buf).unwrap();
 
-        assert_eq!(pkt, packet(codec.decode(&mut buf).unwrap().unwrap()));
+        assert_eq!(
+            pkt,
+            packet(codec.decode(&mut buf.take().unwrap().into()).unwrap().unwrap())
+        );
     }
 
     #[test]
@@ -396,9 +400,9 @@ mod tests {
         };
 
         let size = ack.encoded_size(99999);
-        let mut buf = BytesMut::with_capacity(size);
+        let mut buf = BytePages::default();
         ack.encode(&mut buf, size as u32).unwrap();
-        assert_eq!(ack, SubscribeAck::decode(&mut buf.freeze()).unwrap());
+        assert_eq!(ack, SubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap());
 
         let ack = SubscribeAck {
             packet_id: NonZeroU16::new(1).unwrap(),
@@ -407,9 +411,9 @@ mod tests {
             status: vec![SubscribeAckReason::GrantedQos0],
         };
         let size = ack.encoded_size(99999);
-        let mut buf = BytesMut::with_capacity(size);
+        let mut buf = BytePages::default();
         ack.encode(&mut buf, size as u32).unwrap();
-        assert_eq!(ack, SubscribeAck::decode(&mut buf.freeze()).unwrap());
+        assert_eq!(ack, SubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap());
 
         let ack = UnsubscribeAck {
             packet_id: NonZeroU16::new(1).unwrap(),
@@ -417,10 +421,10 @@ mod tests {
             reason_string: Some("some reason".into()),
             status: Vec::new(),
         };
-        let mut buf = BytesMut::new();
+        let mut buf = BytePages::default();
         let size = ack.encoded_size(99999);
         ack.encode(&mut buf, size as u32).unwrap();
-        assert_eq!(ack, UnsubscribeAck::decode(&mut buf.freeze()).unwrap());
+        assert_eq!(ack, UnsubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap());
 
         let ack = UnsubscribeAck {
             packet_id: NonZeroU16::new(1).unwrap(),
@@ -429,8 +433,8 @@ mod tests {
             status: vec![UnsubscribeAckReason::Success],
         };
         let size = ack.encoded_size(99999);
-        let mut buf = BytesMut::with_capacity(size);
+        let mut buf = BytePages::default();
         ack.encode(&mut buf, size as u32).unwrap();
-        assert_eq!(ack, UnsubscribeAck::decode(&mut buf.freeze()).unwrap());
+        assert_eq!(ack, UnsubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap());
     }
 }

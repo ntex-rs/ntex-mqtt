@@ -1,7 +1,7 @@
 #![allow(clippy::type_complexity)]
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, num, rc::Rc};
 
-use ntex_bytes::{Bytes, BytesMut};
+use ntex_bytes::{BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
 use ntex_util::{HashSet, channel::pool};
@@ -511,8 +511,8 @@ impl Encoder for MqttShared {
     type Error = EncodeError;
 
     #[inline]
-    fn encode(&self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        self.codec.encode(item, dst)
+    fn encodev(&self, item: Self::Item, dst: &mut BytePages) -> Result<(), Self::Error> {
+        self.codec.encodev(item, dst)
     }
 }
 

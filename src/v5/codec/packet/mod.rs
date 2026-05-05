@@ -1,5 +1,5 @@
 #![allow(clippy::struct_excessive_bools)]
-use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes};
 
 pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};
 
@@ -196,7 +196,7 @@ mod ack_props {
     pub(crate) fn encode(
         properties: &[UserProperty],
         reason_string: &Option<ByteString>,
-        buf: &mut BytesMut,
+        buf: &mut BytePages,
         size: u32,
     ) -> Result<(), EncodeError> {
         debug_assert!(size > 0); // formalize in signature?

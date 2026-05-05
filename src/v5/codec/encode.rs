@@ -1,5 +1,5 @@
 #![allow(clippy::ref_option, clippy::needless_pass_by_value)]
-use ntex_bytes::{BufMut, ByteString, BytesMut};
+use ntex_bytes::{BufMut, BytePages, ByteString};
 
 use super::packet::{Packet, property_type as pt};
 use super::{UserProperties, UserProperty};
@@ -10,7 +10,7 @@ use crate::utils::{Encode, write_variable_length};
 pub(crate) trait EncodeLtd {
     fn encoded_size(&self, limit: u32) -> usize;
 
-    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError>;
+    fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError>;
 }
 
 impl EncodeLtd for Packet {
@@ -33,7 +33,7 @@ impl EncodeLtd for Packet {
         }
     }
 
-    fn encode(&self, buf: &mut BytesMut, check_size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, check_size: u32) -> Result<(), EncodeError> {
         match self {
             Packet::Connect(connect) => {
                 buf.put_u8(packet_type::CONNECT);
@@ -135,7 +135,7 @@ pub(crate) fn encoded_size_opt_props(
 pub(crate) fn encode_opt_props(
     user_props: &[UserProperty],
     reason_str: &Option<ByteString>,
-    buf: &mut BytesMut,
+    buf: &mut BytePages,
     mut size: u32,
 ) -> Result<(), EncodeError> {
     for up in user_props {
@@ -175,7 +175,7 @@ pub(super) fn encoded_property_size_default<T: Encode + PartialEq>(v: &T, defaul
 pub(super) fn encode_property<T: Encode>(
     v: &Option<T>,
     prop_type: u8,
-    buf: &mut BytesMut,
+    buf: &mut BytePages,
 ) -> Result<(), EncodeError> {
     if let Some(v) = v {
         buf.put_u8(prop_type);
@@ -189,7 +189,7 @@ pub(super) fn encode_property_default<T: Encode + PartialEq>(
     v: &T,
     default: T,
     prop_type: u8,
-    buf: &mut BytesMut,
+    buf: &mut BytePages,
 ) -> Result<(), EncodeError> {
     if *v == default {
         Ok(())
@@ -243,7 +243,7 @@ impl Encode for UserProperties {
         }
         len
     }
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         for prop in self {
             buf.put_u8(pt::USER);
             prop.encode(buf)?;
@@ -274,14 +274,14 @@ mod tests {
 
     #[test]
     fn test_encode_fixed_header() {
-        let mut v = BytesMut::with_capacity(270);
+        let mut v = BytePages::default();
         let p = Packet::PingRequest;
 
         assert_eq!(p.encoded_size(MAX_PACKET_SIZE), 0);
         p.encode(&mut v, 0).unwrap();
-        assert_eq!(&v[..2], b"\xc0\x00".as_ref());
+        assert_eq!(&v.freeze()[..2], b"\xc0\x00".as_ref());
 
-        v.clear();
+        let mut v = BytePages::default();
 
         let p = Publish {
             dup: true,
@@ -295,22 +295,22 @@ mod tests {
 
         //assert_eq!(p.encoded_size(MAX_PACKET_SIZE), 265);
         p.encode(&mut v, 265).unwrap();
-        assert_eq!(&v[..3], b"\x3d\x89\x02".as_ref());
+        assert_eq!(&v.freeze()[..3], b"\x3d\x89\x02".as_ref());
     }
 
     fn assert_encode_packet(packet: &Packet, expected: &[u8]) {
-        let mut v = BytesMut::with_capacity(1024);
+        let mut v = BytePages::default();
         packet.encode(&mut v, packet.encoded_size(1024) as u32).unwrap();
         assert_eq!(expected.len(), v.len());
-        assert_eq!(expected, &v[..]);
+        assert_eq!(expected, &v.freeze()[..]);
     }
 
     fn assert_encode_publish(packet: &Publish, pl: &[u8], expected: &[u8]) {
-        let mut v = BytesMut::with_capacity(1024);
+        let mut v = BytePages::default();
         packet.encode(&mut v, packet.encoded_size(1024) as u32).unwrap();
         v.extend_from_slice(pl);
         assert_eq!(expected.len(), v.len());
-        assert_eq!(expected, &v[..]);
+        assert_eq!(expected, &v.freeze()[..]);
     }
 
     #[test]

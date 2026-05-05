@@ -1,6 +1,6 @@
 use std::num::NonZeroU16;
 
-use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{ConnectAckFlags, QoS};
@@ -219,7 +219,7 @@ impl encode::EncodeLtd for ConnectAck {
         HEADER_LEN + encode::var_int_len(prop_len) as usize + prop_len
     }
 
-    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
         let start_len = buf.len();
 
         buf.put_slice(&[u8::from(self.session_present), self.reason_code.into()]);

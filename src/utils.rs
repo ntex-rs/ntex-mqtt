@@ -1,6 +1,6 @@
 use std::{io::Cursor, num::NonZeroU16, num::NonZeroU32};
 
-use ntex_bytes::{Buf, BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes};
 
 use crate::error::{DecodeError, EncodeError};
 
@@ -154,7 +154,7 @@ pub(crate) fn decode_variable_length_cursor<B: Buf>(src: &mut B) -> Result<u32, 
 pub(crate) trait Encode {
     fn encoded_size(&self) -> usize;
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError>;
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError>;
 }
 
 impl<T: Encode> Encode for Option<T> {
@@ -162,7 +162,7 @@ impl<T: Encode> Encode for Option<T> {
         if let Some(v) = self { v.encoded_size() } else { 0 }
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         if let Some(v) = self { v.encode(buf) } else { Ok(()) }
     }
 }
@@ -172,7 +172,7 @@ impl Encode for bool {
         1
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         if *self {
             buf.put_u8(0x1);
         } else {
@@ -187,7 +187,7 @@ impl Encode for u16 {
         2
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         buf.put_u16(*self);
         Ok(())
     }
@@ -198,7 +198,7 @@ impl Encode for NonZeroU16 {
         2
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         self.get().encode(buf)
     }
 }
@@ -208,7 +208,7 @@ impl Encode for u32 {
         4
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         buf.put_u32(*self);
         Ok(())
     }
@@ -219,7 +219,7 @@ impl Encode for NonZeroU32 {
         4
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         self.get().encode(buf)
     }
 }
@@ -229,10 +229,10 @@ impl Encode for Bytes {
         2 + self.len()
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         let len = u16::try_from(self.len()).map_err(|_| EncodeError::InvalidLength)?;
         buf.put_u16(len);
-        buf.extend_from_slice(self.as_ref());
+        buf.append(self.clone());
         Ok(())
     }
 }
@@ -242,7 +242,7 @@ impl Encode for ByteString {
         self.as_bytes().encoded_size()
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         self.as_bytes().encode(buf)
     }
 }
@@ -252,7 +252,7 @@ impl Encode for (ByteString, ByteString) {
         self.0.encoded_size() + self.1.encoded_size()
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         self.0.encode(buf)?;
         self.1.encode(buf)
     }
@@ -263,7 +263,7 @@ impl Encode for &[u8] {
         2 + self.len()
     }
 
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError> {
         let len = u16::try_from(self.len()).map_err(|_| EncodeError::InvalidLength)?;
         buf.put_u16(len);
         buf.extend_from_slice(self);
@@ -271,7 +271,7 @@ impl Encode for &[u8] {
     }
 }
 
-pub(crate) fn write_variable_length(len: u32, dst: &mut BytesMut) {
+pub(crate) fn write_variable_length(len: u32, dst: &mut BytePages) {
     match len {
         0..=127 => dst.put_u8(len as u8),
         128..=16_383 => {
@@ -327,30 +327,22 @@ mod tests {
 
     #[test]
     fn test_encode_variable_length() {
-        let mut v = BytesMut::new();
+        let mut v = BytePages::default();
 
         write_variable_length(123, &mut v);
-        assert_eq!(v, [123].as_ref());
-
-        v.clear();
+        assert_eq!(v.take().unwrap().freeze(), [123].as_ref());
 
         write_variable_length(129, &mut v);
-        assert_eq!(v, b"\x81\x01".as_ref());
-
-        v.clear();
+        assert_eq!(v.take().unwrap().freeze(), b"\x81\x01".as_ref());
 
         write_variable_length(16_383, &mut v);
-        assert_eq!(v, b"\xff\x7f".as_ref());
-
-        v.clear();
+        assert_eq!(v.take().unwrap().freeze(), b"\xff\x7f".as_ref());
 
         write_variable_length(2_097_151, &mut v);
-        assert_eq!(v, b"\xff\xff\x7f".as_ref());
-
-        v.clear();
+        assert_eq!(v.take().unwrap().freeze(), b"\xff\xff\x7f".as_ref());
 
         write_variable_length(268_435_455, &mut v);
-        assert_eq!(v, b"\xff\xff\xff\x7f".as_ref());
+        assert_eq!(v.take().unwrap().freeze(), b"\xff\xff\xff\x7f".as_ref());
 
         // assert!(v.write_variable_length(MAX_VARIABLE_LENGTH + 1).is_err())
     }

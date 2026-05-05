@@ -1,6 +1,6 @@
 use std::{cell::Cell, cmp::min, fmt, num::NonZeroU32};
 
-use ntex_bytes::{Buf, Bytes, BytesMut};
+use ntex_bytes::{Buf, BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
@@ -265,7 +265,7 @@ impl Encoder for Codec {
     type Item = Encoded;
     type Error = EncodeError;
 
-    fn encode(&self, mut item: Self::Item, dst: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encodev(&self, mut item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
         // handle [MQTT 3.1.2.11.7]
         if self.flags.get().contains(CodecFlags::NO_PROBLEM_INFO) {
             match item {
@@ -319,7 +319,6 @@ impl Encoder for Codec {
                     if content_size > max_size as usize {
                         Err(EncodeError::OverMaxPacketSize)
                     } else {
-                        dst.reserve(content_size + 5);
                         pkt.encode(dst, content_size as u32)?; // safe: max_size <= u32 max value
                         Ok(())
                     }
@@ -331,14 +330,12 @@ impl Encoder for Codec {
                     return Err(EncodeError::OverMaxPacketSize);
                 }
 
-                let total_size = content_size - pkt.payload_size
-                    + buf.as_ref().map_or(0, |b| b.len() as u32);
-                dst.reserve((total_size + 5) as usize);
                 pkt.encode(dst, content_size)?; // safe: max_size <= u32 max value
 
                 let remaining = if let Some(buf) = buf {
-                    dst.extend_from_slice(&buf);
-                    pkt.payload_size - buf.len() as u32
+                    let remaining = pkt.payload_size - buf.len() as u32;
+                    dst.append(buf);
+                    remaining
                 } else {
                     pkt.payload_size
                 };
@@ -351,7 +348,7 @@ impl Encoder for Codec {
                     if len > remaining.get() {
                         Err(EncodeError::OverPublishSize)
                     } else {
-                        dst.extend_from_slice(&chunk);
+                        dst.append(chunk);
                         self.encoding_payload.set(NonZeroU32::new(remaining.get() - len));
                         Ok(())
                     }
