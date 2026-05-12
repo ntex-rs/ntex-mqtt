@@ -414,7 +414,7 @@ where
                     }
                 };
                 if empty_q {
-                    st.wake();
+                    st.notify_dispatcher();
                 }
             });
         } else if let Poll::Ready(res) = Pin::new(&mut fut).poll(cx) {
@@ -445,7 +445,7 @@ where
     fn poll_service(&mut self, cx: &mut Context<'_>) -> Poll<PollService> {
         // check for errors
         if let Some(err) = self.state.error.take() {
-            log::trace!("{}: Error occured, stopping dispatcher", self.io.tag());
+            log::trace!("{}: Error occurred, stopping dispatcher", self.io.tag());
             let item = match err {
                 IoDispatcherError::Encoder(err) => Control::proto(ProtocolError::Encode(err)),
                 IoDispatcherError::Service(DispatcherError::Service(err)) => Control::err(err),
@@ -588,7 +588,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use ntex_bytes::{Bytes, BytesMut};
+    use ntex_bytes::{BytePages, Bytes, BytesMut};
     use ntex_io::{self as nio, IoConfig, testing::IoTest as Io};
     use ntex_service::{IntoService, ServiceCtx, cfg::SharedCfg, fn_service};
     use ntex_util::channel::condition::Condition;
@@ -606,8 +606,8 @@ mod tests {
         type Error = EncodeError;
 
         #[inline]
-        fn encode(&self, item: Bytes, dst: &mut BytesMut) -> Result<(), Self::Error> {
-            dst.extend_from_slice(&item[..]);
+        fn encodev(&self, item: Bytes, dst: &mut BytePages) -> Result<(), Self::Error> {
+            dst.append(item);
             Ok(())
         }
     }

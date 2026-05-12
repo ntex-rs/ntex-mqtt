@@ -173,7 +173,7 @@ where
     async fn shutdown(&self) {
         log::trace!("{}: Shutdown v5 dispatcher", self.tag());
         self.inner.sink.drop_payload(&PayloadError::Disconnected);
-        self.inner.sink.drop_sink();
+        self.inner.sink.drop_sink(true);
 
         self.publish.shutdown().await;
         self.inner.control.shutdown().await;
@@ -460,7 +460,7 @@ impl<C> Inner<C> {
                 result
             }
             Err(err) => {
-                self.sink.drop_sink();
+                self.sink.drop_sink(false);
                 self.sink.drop_payload(&PayloadError::Service);
                 return Err(err);
             }
@@ -479,7 +479,7 @@ impl<C> Inner<C> {
         };
 
         if result.disconnect {
-            self.sink.drop_sink();
+            self.sink.drop_sink(true);
             self.sink.drop_payload(&PayloadError::Service);
         }
         response

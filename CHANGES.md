@@ -1,5 +1,9 @@
 # Changes
 
+## [8.0.0] - 2026-05-12
+
+* Update to ntex-io 3.11
+
 ## [8.0.0-beta.5] - 2026-05-05
 
 * Use new codec api with BytePages support

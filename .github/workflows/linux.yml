@@ -16,7 +16,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - uses: taiki-e/install-action@nextest
 
       - name: Install ${{ matrix.version }}
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -31,29 +32,21 @@ jobs:
         uses: Swatinem/rust-cache@v1.0.1
 
       - name: Run tests [tokio]
-        uses: actions-rs/cargo@v1
-        timeout-minutes: 15
-        with:
-          command: test
-          args: --all --features=ntex/tokio
+        timeout-minutes: 10
+        run: |
+          cargo nextest run --retries=3 --all --features="ntex/tokio"
 
       - name: Run tests [neon-polling]
-        uses: actions-rs/cargo@v1
-        timeout-minutes: 15
-        with:
-          command: test
-          args: --all --features=ntex/neon-polling
+        timeout-minutes: 10
+        run: |
+          cargo nextest run --retries=3 --all --features="ntex/neon-polling"
 
       - name: Run tests [neon-uring]
-        uses: actions-rs/cargo@v1
-        timeout-minutes: 15
-        with:
-          command: test
-          args: --all --features=ntex/neon-uring
+        timeout-minutes: 10
+        run: |
+          cargo nextest run --retries=3 --all --features="ntex/neon-uring"
 
-      - name: Run tests [compio]
-        uses: actions-rs/cargo@v1
-        timeout-minutes: 15
-        with:
-          command: test
-          args: --all --features=ntex/compio
+      - name: Run tests [neon-uring]
+        timeout-minutes: 10
+        run: |
+          cargo nextest run --retries=3 --all --features="ntex/compio"

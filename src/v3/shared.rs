@@ -121,7 +121,7 @@ impl MqttShared {
     }
 
     pub(super) fn force_close(&self) {
-        self.io.force_close();
+        self.io.terminate();
         self.clear_queues();
     }
 
