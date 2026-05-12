@@ -46,7 +46,7 @@ jobs:
         run: |
           cargo nextest run --retries=3 --all --features="ntex/neon-uring"
 
-      - name: Run tests [neon-uring]
+      - name: Run tests [compio]
         timeout-minutes: 10
         run: |
           cargo nextest run --retries=3 --all --features="ntex/compio"
