@@ -170,7 +170,7 @@ impl MqttShared {
     }
 
     pub(super) fn force_close(&self) {
-        self.io.force_close();
+        self.io.terminate();
         self.clear_queues();
     }
 
@@ -258,9 +258,11 @@ impl MqttShared {
     }
 
     /// Close mqtt connection, dont send disconnect message
-    pub(super) fn drop_sink(&self) {
+    pub(super) fn drop_sink(&self, io: bool) {
         self.clear_queues();
-        self.io.close();
+        if io {
+            self.io.close();
+        }
     }
 
     pub(super) fn drop_payload<E>(&self, err: &E)

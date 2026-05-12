@@ -810,10 +810,10 @@ async fn handle_or_drop_publish_after_disconnect(
     .unwrap();
     io.encode(Encoded::Packet(Packet::Disconnect), &codec).unwrap();
     io.flush(true).await.unwrap();
-    sleep(Millis(1750)).await;
+    sleep(Millis(250)).await;
     io.close();
     drop(io);
-    sleep(Millis(750)).await;
+    sleep(Millis(250)).await;
 
     assert!(disconnect.load(Relaxed));
 

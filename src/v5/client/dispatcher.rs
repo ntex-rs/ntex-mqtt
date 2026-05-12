@@ -101,7 +101,7 @@ where
 
     async fn shutdown(&self) {
         self.inner.sink.drop_payload(&PayloadError::Disconnected);
-        self.inner.sink.drop_sink();
+        self.inner.sink.drop_sink(true);
         self.publish.shutdown().await;
         self.inner.control.shutdown().await;
     }
@@ -359,7 +359,7 @@ impl<C> Inner<C> {
             Err(err) => {
                 // do not handle nested error
                 self.sink.drop_payload(&PayloadError::Service);
-                self.sink.drop_sink();
+                self.sink.drop_sink(false);
                 return Err(err);
             }
         };
@@ -377,7 +377,7 @@ impl<C> Inner<C> {
         };
         if result.disconnect {
             self.sink.drop_payload(&PayloadError::Service);
-            self.sink.drop_sink();
+            self.sink.drop_sink(true);
         }
         response
     }
