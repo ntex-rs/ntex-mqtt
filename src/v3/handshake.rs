@@ -73,49 +73,29 @@ impl Handshake {
 
     /// Create connect ack object with `identifier rejected` return code
     pub fn identifier_rejected<St>(self) -> HandshakeAck<St> {
-        HandshakeAck {
-            io: self.io,
-            shared: self.shared,
-            session: None,
-            session_present: false,
-            keepalive: DEFAULT_KEEPALIVE,
-            max_send: None,
-            max_packet_size: None,
-            return_code: mqtt::ConnectAckReason::IdentifierRejected,
-        }
+        self.failed(mqtt::ConnectAckReason::IdentifierRejected)
     }
 
     /// Create connect ack object with `bad user name or password` return code
     pub fn bad_username_or_pwd<St>(self) -> HandshakeAck<St> {
-        HandshakeAck {
-            io: self.io,
-            shared: self.shared,
-            session: None,
-            session_present: false,
-            max_send: None,
-            max_packet_size: None,
-            keepalive: DEFAULT_KEEPALIVE,
-            return_code: mqtt::ConnectAckReason::BadUserNameOrPassword,
-        }
+        self.failed(mqtt::ConnectAckReason::BadUserNameOrPassword)
     }
 
     /// Create connect ack object with `not authorized` return code
     pub fn not_authorized<St>(self) -> HandshakeAck<St> {
-        HandshakeAck {
-            io: self.io,
-            shared: self.shared,
-            session: None,
-            session_present: false,
-            max_send: None,
-            max_packet_size: None,
-            keepalive: DEFAULT_KEEPALIVE,
-            return_code: mqtt::ConnectAckReason::NotAuthorized,
-        }
+        self.failed(mqtt::ConnectAckReason::NotAuthorized)
     }
 
     /// Create connect ack object with `service unavailable` return code
     pub fn service_unavailable<St>(self) -> HandshakeAck<St> {
+        self.failed(mqtt::ConnectAckReason::ServiceUnavailable)
+    }
+
+    #[inline]
+    /// Create handshake ack object with error
+    pub fn failed<St>(self, return_code: mqtt::ConnectAckReason) -> HandshakeAck<St> {
         HandshakeAck {
+            return_code,
             io: self.io,
             shared: self.shared,
             session: None,
@@ -123,7 +103,6 @@ impl Handshake {
             max_send: None,
             max_packet_size: None,
             keepalive: DEFAULT_KEEPALIVE,
-            return_code: mqtt::ConnectAckReason::ServiceUnavailable,
         }
     }
 }
