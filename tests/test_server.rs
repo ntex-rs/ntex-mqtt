@@ -1173,3 +1173,39 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[ntex::test]
+async fn test_handshake_fail() -> std::io::Result<()> {
+    let srv = server::test_server(async || {
+        MqttServer::new(fn_service(|packet: Handshake| async move {
+            Ok::<_, ()>(
+                packet.failed::<St>(codec::ConnectAckReason::UnacceptableProtocolVersion),
+            )
+        }))
+        .publish(|_| Ready::Ok(()))
+    });
+
+    // connect to server
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let ack = io.recv(&codec).await.unwrap().unwrap();
+
+    assert_eq!(
+        ack,
+        codec::Decoded::Packet(
+            codec::Packet::ConnectAck(codec::ConnectAck {
+                return_code: codec::ConnectAckReason::UnacceptableProtocolVersion,
+                session_present: false
+            }),
+            2
+        )
+    );
+
+    Ok(())
+}

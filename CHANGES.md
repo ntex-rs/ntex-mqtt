@@ -1,5 +1,9 @@
 # Changes
 
+## [8.1.0] - 2026-06-05
+
+* Allow to specify ConnectAckReason for failed v3 handshake
+
 ## [8.0.0] - 2026-05-12
 
 * Update to ntex-io 3.11
