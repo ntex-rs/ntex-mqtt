@@ -1428,7 +1428,9 @@ mod tests {
             type Error = DispatcherError<()>;
 
             async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-                if self.0.get() && let Some(rx) = self.1.take() {
+                if self.0.get()
+                    && let Some(rx) = self.1.take()
+                {
                     let _ = rx.await;
                 }
                 Ok(())
