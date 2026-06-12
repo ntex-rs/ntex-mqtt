@@ -108,6 +108,7 @@ pub(crate) enum IoDispatcherError<S> {
     Service(S),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum PollService {
     Continue,
     Ready,
@@ -311,16 +312,11 @@ where
                 IoDispatcherState::Backpressure => {
                     if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
                         inner.stop(inner.control.call(Control::peer_gone(Some(err))));
-                    } else {
-                        match ready!(inner.poll_service(cx)) {
-                            PollService::Ready => (),
-                            PollService::Continue => continue,
-                        }
+                    } else if ready!(inner.poll_service(cx)) == PollService::Ready {
                         inner.st = IoDispatcherState::Processing;
                         spawn(inner.control.call(Control::wr(false)));
                     }
                 }
-
                 // drain service responses and shutdown io
                 IoDispatcherState::Stop(ref mut stop) => {
                     // service may relay on poll_ready for response results
