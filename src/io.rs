@@ -108,6 +108,7 @@ pub(crate) enum IoDispatcherError<S> {
     Service(S),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum PollService {
     Continue,
     Ready,
@@ -309,19 +310,13 @@ where
                 }
                 // handle write back-pressure
                 IoDispatcherState::Backpressure => {
-                    match ready!(inner.poll_service(cx)) {
-                        PollService::Ready => (),
-                        PollService::Continue => continue,
-                    }
-
                     if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
                         inner.stop(inner.control.call(Control::peer_gone(Some(err))));
-                    } else {
+                    } else if ready!(inner.poll_service(cx)) == PollService::Ready {
                         inner.st = IoDispatcherState::Processing;
                         spawn(inner.control.call(Control::wr(false)));
                     }
                 }
-
                 // drain service responses and shutdown io
                 IoDispatcherState::Stop(ref mut stop) => {
                     // service may relay on poll_ready for response results
@@ -462,7 +457,11 @@ where
             Poll::Ready(Ok(())) => Poll::Ready(PollService::Ready),
             // pause io read task
             Poll::Pending => {
-                log::trace!("{}: Service is not ready, pause read task", self.io.tag());
+                log::trace!(
+                    "{}: Service is not ready, pause read task {:?}",
+                    self.io.tag(),
+                    self.io.flags()
+                );
 
                 // remove timers
                 self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
@@ -591,7 +590,7 @@ mod tests {
     use ntex_bytes::{BytePages, Bytes, BytesMut};
     use ntex_io::{self as nio, IoConfig, testing::IoTest as Io};
     use ntex_service::{IntoService, ServiceCtx, cfg::SharedCfg, fn_service};
-    use ntex_util::channel::condition::Condition;
+    use ntex_util::channel::{condition::Condition, oneshot};
     use ntex_util::time::{Millis, sleep};
     use rand::RngExt;
 
@@ -1411,5 +1410,62 @@ mod tests {
 
         let cnt = data.load(Ordering::Relaxed);
         assert_eq!(cnt, 2);
+    }
+
+    /// Service becomes not ready and write backpressure is enabled
+    #[ntex::test]
+    async fn service_is_not_ready_and_backpressure() {
+        let (ctx, rx) = oneshot::channel();
+
+        struct Srv(Cell<bool>, Cell<Option<oneshot::Receiver<()>>>);
+
+        impl Service<Bytes> for Srv {
+            type Response = Option<Bytes>;
+            type Error = DispatcherError<()>;
+
+            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+                if self.0.get()
+                    && let Some(rx) = self.1.take()
+                {
+                    let _ = rx.await;
+                }
+                Ok(())
+            }
+
+            async fn call(
+                &self,
+                msg: Bytes,
+                _: ServiceCtx<'_, Self>,
+            ) -> Result<Option<Bytes>, Self::Error> {
+                self.0.set(true);
+                Ok(Some(msg))
+            }
+        }
+
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(
+                server,
+                SharedCfg::new("DBG").add(IoConfig::new().set_write_buf(2, 1, 128)),
+            ),
+            BytesCodec,
+            Srv(Cell::new(false), Cell::new(Some(rx))),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
+        );
+        let (tx, rx) = ntex::channel::oneshot::channel();
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+            let _ = tx.send(());
+        });
+
+        client.write("123456789");
+        client.remote_buffer_cap(16);
+        let res = client.read().await;
+        assert_eq!(res.unwrap(), Bytes::from_static(b"123456789"));
+        client.close().await;
+        let _ = ctx.send(());
+        let _ = rx.await;
     }
 }

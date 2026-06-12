@@ -1,5 +1,9 @@
 # Changes
 
+## [8.2.0] - 2026-06-13
+
+* Fix tight loop when service is not ready and write back-pressure is enabled
+
 ## [8.1.0] - 2026-06-05
 
 * Allow to specify ConnectAckReason for failed v3 handshake
