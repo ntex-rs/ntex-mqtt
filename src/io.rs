@@ -142,9 +142,9 @@ where
                 state,
                 keepalive_timeout,
                 flags: if keepalive_timeout.is_zero() {
-                    Flags::KA_ENABLED
-                } else {
                     Flags::empty()
+                } else {
+                    Flags::KA_ENABLED
                 },
                 service: Pipeline::new(service).bind(),
                 control: Pipeline::new(control).bind(),

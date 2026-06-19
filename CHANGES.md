@@ -1,5 +1,9 @@
 # Changes
 
+## [8.2.1] - 2026-06-18
+
+* Fix keep-alive flag setting #253
+
 ## [8.2.0] - 2026-06-13
 
 * Fix tight loop when service is not ready and write back-pressure is enabled
