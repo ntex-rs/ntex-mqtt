@@ -28,11 +28,13 @@ pub(super) fn factory<St, T, P, E, InitErr>(
     Response = Option<Encoded>,
     Error = DispatcherError<E>,
     InitError = MqttError<InitErr>,
+    Data = (),
 >
 where
     St: 'static,
-    T: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
-    P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
+    T: ServiceFactory<Publish, Session<St>, Response = (), Data = ()> + 'static,
+    P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck, Data = ()>
+        + 'static,
     E: From<T::Error> + From<P::Error> + 'static,
     InitErr: From<T::InitError> + From<P::InitError>,
 {
@@ -42,14 +44,28 @@ where
         async move |(cfg, session): (SharedCfg, Session<St>)| {
             // create services
             let sink = session.sink().shared();
+            let publish_data = factories
+                .0
+                .map_data(&session, &())
+                .await
+                .map_err(|e| MqttError::Service(InitErr::from(e)))?;
+            let control_data = factories
+                .1
+                .map_data(&session, &())
+                .await
+                .map_err(|e| MqttError::Service(InitErr::from(e)))?;
             let fut = join(factories.0.create(session.clone()), factories.1.create(session));
             let (publish, control) = fut.await;
 
-            let publish = publish.map_err(|e| MqttError::Service(InitErr::from(e)))?;
+            let publish = Pipeline::new(
+                publish.map_err(|e| MqttError::Service(InitErr::from(e)))?,
+                publish_data,
+            );
             let control = Pipeline::new(
                 control
                     .map_err(|e| MqttError::Service(InitErr::from(e)))?
                     .map_err(|e| DispatcherError::Service(e.into())),
+                control_data,
             );
 
             let control = Pipeline::new(
@@ -64,6 +80,7 @@ where
                         DispatcherError::Protocol(ProtocolError::ReadTimeout)
                     }
                 }),
+                (),
             );
 
             let cfg: Cfg<MqttServiceConfig> = cfg.get();
@@ -91,15 +108,15 @@ impl crate::inflight::SizedRequest for Decoded {
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C, E> {
-    publish: T,
+pub(crate) struct Dispatcher<T: Service<Publish>, C: Service<ProtocolMessage>, E> {
+    publish: Pipeline<T, T::Data>,
     inner: Rc<Inner<C>>,
     cfg: Cfg<MqttServiceConfig>,
     _t: PhantomData<E>,
 }
 
-struct Inner<C> {
-    control: Pipeline<C>,
+struct Inner<C: Service<ProtocolMessage>> {
+    control: Pipeline<C, C::Data>,
     sink: Rc<MqttShared>,
     inflight: RefCell<HashSet<NonZeroU16>>,
 }
@@ -112,8 +129,8 @@ where
 {
     pub(crate) fn new(
         sink: Rc<MqttShared>,
-        publish: T,
-        control: Pipeline<C>,
+        publish: Pipeline<T, T::Data>,
+        control: Pipeline<C, C::Data>,
         cfg: Cfg<MqttServiceConfig>,
     ) -> Self {
         Self {
@@ -138,10 +155,11 @@ where
 {
     type Response = Option<Encoded>;
     type Error = DispatcherError<E>;
+    type Data = ();
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
+    async fn ready(&self, _: &Self::Data, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        let (res1, res2) = join(self.publish.ready(), self.inner.control.ready()).await;
         if (res1.is_err() || res2.is_err())
             && let Some(pl) = self.inner.sink.payload.take()
         {
@@ -156,12 +174,12 @@ where
         Ok(())
     }
 
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+    fn poll(&self, _: &Self::Data, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         self.publish.poll(cx).map_err(|e| DispatcherError::Service(e.into()))?;
         self.inner.control.poll(cx)
     }
 
-    async fn shutdown(&self) {
+    async fn shutdown(&self, _: &Self::Data) {
         self.inner.sink.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.close();
         self.publish.shutdown().await;
@@ -172,7 +190,8 @@ where
     async fn call(
         &self,
         req: Decoded,
-        ctx: ServiceCtx<'_, Self>,
+        _: &Self::Data,
+        _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::trace!("{}; Dispatch v3 packet: {:#?}", self.tag(), req);
 
@@ -231,7 +250,6 @@ where
                     Publish::new(publish, payload, size),
                     packet_id,
                     inner,
-                    ctx,
                 )
                 .await
             }
@@ -338,11 +356,10 @@ where
 
 /// Publish service response future
 async fn publish_fn<'f, T, C, E>(
-    svc: &'f T,
+    svc: &'f Pipeline<T, T::Data>,
     pkt: Publish,
     packet_id: Option<NonZeroU16>,
     inner: &'f Inner<C>,
-    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
 ) -> Result<Option<Encoded>, DispatcherError<E>>
 where
     E: From<T::Error>,
@@ -350,7 +367,7 @@ where
     C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
     let qos2 = pkt.qos() == QoS::ExactlyOnce;
-    match ctx.call(svc, pkt).await {
+    match svc.call(pkt).await {
         Ok(()) => {
             log::trace!(
                 "{}: Publish result for packet {:?} is ready",
@@ -373,7 +390,7 @@ where
     }
 }
 
-impl<C> Inner<C> {
+impl<C: Service<ProtocolMessage>> Inner<C> {
     async fn control<E>(
         &self,
         pkt: ProtocolMessage,
@@ -443,17 +460,26 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
-        let disp = Pipeline::new(Dispatcher::new(
-            shared.clone(),
-            fn_service(async |_| {
-                sleep(Seconds(10)).await;
-                Ok(())
-            }),
-            Pipeline::new(fn_service(async |msg: ProtocolMessage| {
-                Ok::<_, DispatcherError<()>>(msg.ack())
-            })),
-            cfg.get(),
-        ));
+        let disp = Pipeline::new(
+            Dispatcher::new(
+                shared.clone(),
+                Pipeline::new(
+                    fn_service(async |_| {
+                        sleep(Seconds(10)).await;
+                        Ok(())
+                    }),
+                    (),
+                ),
+                Pipeline::new(
+                    fn_service(async |msg: ProtocolMessage| {
+                        Ok::<_, DispatcherError<()>>(msg.ack())
+                    }),
+                    (),
+                ),
+                cfg.get(),
+            ),
+            (),
+        );
 
         let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
             Box::pin(disp.call(Decoded::Publish(
@@ -504,14 +530,20 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
-        let disp = Pipeline::new(Dispatcher::new(
-            shared.clone(),
-            fn_service(async |_: Publish| Ok::<_, ()>(())),
-            Pipeline::new(fn_service(async |msg: ProtocolMessage| {
-                Ok::<_, DispatcherError<()>>(msg.ack())
-            })),
-            cfg.get(),
-        ));
+        let disp = Pipeline::new(
+            Dispatcher::new(
+                shared.clone(),
+                Pipeline::new(fn_service(async |_: Publish| Ok::<_, ()>(())), ()),
+                Pipeline::new(
+                    fn_service(async |msg: ProtocolMessage| {
+                        Ok::<_, DispatcherError<()>>(msg.ack())
+                    }),
+                    (),
+                ),
+                cfg.get(),
+            ),
+            (),
+        );
 
         // unknown PublishAck
         let err = disp

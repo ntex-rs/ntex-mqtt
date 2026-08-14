@@ -28,13 +28,15 @@ pub(super) fn factory<St, T, P, E, InitErr>(
     Response = Option<Encoded>,
     Error = DispatcherError<E>,
     InitError = MqttError<InitErr>,
+    Data = (),
 >
 where
     St: 'static,
     E: From<P::Error> + 'static,
-    T: ServiceFactory<Publish, Session<St>, Response = PublishAck> + 'static,
+    T: ServiceFactory<Publish, Session<St>, Response = PublishAck, Data = ()> + 'static,
     T::Error: ToPublishAck<Error = E>,
-    P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
+    P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck, Data = ()>
+        + 'static,
     InitErr: From<T::InitError> + From<P::InitError>,
 {
     let factories = Rc::new((publish, control));
@@ -44,10 +46,23 @@ where
 
         // create services
         let sink = ses.sink().shared();
+        let publish_data = factories
+            .0
+            .map_data(&ses, &())
+            .await
+            .map_err(|e| MqttError::Service(InitErr::from(e)))?;
+        let control_data = factories
+            .1
+            .map_data(&ses, &())
+            .await
+            .map_err(|e| MqttError::Service(InitErr::from(e)))?;
         let (publish, control) =
             join(factories.0.create(ses.clone()), factories.1.create(ses)).await;
 
-        let publish = publish.map_err(|e| MqttError::Service(InitErr::from(e)))?;
+        let publish = Pipeline::new(
+            publish.map_err(|e| MqttError::Service(InitErr::from(e)))?,
+            publish_data,
+        );
         let control = control
             .map_err(|e| MqttError::Service(InitErr::from(e)))?
             .map_err(|e| DispatcherError::Service(e.into()));
@@ -64,6 +79,7 @@ where
                     DispatcherError::Protocol(ProtocolError::ReadTimeout)
                 }
             }),
+            control_data,
         );
 
         Ok(Dispatcher::new(sink, publish, control, cfg))
@@ -89,15 +105,15 @@ impl crate::inflight::SizedRequest for Decoded {
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C, E> {
-    publish: T,
+pub(crate) struct Dispatcher<T: Service<Publish>, C: Service<ProtocolMessage>, E> {
+    publish: Pipeline<T, T::Data>,
     inner: Rc<Inner<C>>,
     cfg: Cfg<MqttServiceConfig>,
     _t: PhantomData<E>,
 }
 
-struct Inner<C> {
-    control: Pipeline<C>,
+struct Inner<C: Service<ProtocolMessage>> {
+    control: Pipeline<C, C::Data>,
     sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
 }
@@ -115,8 +131,8 @@ where
 {
     fn new(
         sink: Rc<MqttShared>,
-        publish: T,
-        control: Pipeline<C>,
+        publish: Pipeline<T, T::Data>,
+        control: Pipeline<C, C::Data>,
         cfg: Cfg<MqttServiceConfig>,
     ) -> Self {
         Self {
@@ -148,9 +164,10 @@ where
 {
     type Response = Option<Encoded>;
     type Error = DispatcherError<E>;
+    type Data = ();
 
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
+    async fn ready(&self, _: &Self::Data, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        let (res1, res2) = join(self.publish.ready(), self.inner.control.ready()).await;
         if (res1.is_err() || res2.is_err())
             && let Some(pl) = self.inner.sink.payload.take()
         {
@@ -165,12 +182,12 @@ where
         Ok(())
     }
 
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+    fn poll(&self, _: &Self::Data, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         self.publish.poll(cx).map_err(|e| DispatcherError::Service(e.into_error()))?;
         self.inner.control.poll(cx)
     }
 
-    async fn shutdown(&self) {
+    async fn shutdown(&self, _: &Self::Data) {
         log::trace!("{}: Shutdown v5 dispatcher", self.tag());
         self.inner.sink.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink(true);
@@ -183,7 +200,8 @@ where
     async fn call(
         &self,
         request: Decoded,
-        ctx: ServiceCtx<'_, Self>,
+        _: &Self::Data,
+        _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::trace!("{}: Dispatch v5 packet: {:#?}", self.tag(), request);
 
@@ -300,7 +318,6 @@ where
                     Publish::new(publish, payload, size),
                     packet_id.map_or(0, num::NonZero::get),
                     info,
-                    ctx,
                 )
                 .await
             }
@@ -433,7 +450,7 @@ where
     }
 }
 
-impl<C> Inner<C> {
+impl<C: Service<ProtocolMessage>> Inner<C> {
     async fn control<E>(
         &self,
         pkt: ProtocolMessage,
@@ -488,11 +505,10 @@ impl<C> Inner<C> {
 
 /// Publish service response future
 async fn publish_fn<'f, T, C, E>(
-    publish: &T,
+    publish: &Pipeline<T, T::Data>,
     pkt: Publish,
     packet_id: u16,
     inner: &'f Inner<C>,
-    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
 ) -> Result<Option<Encoded>, DispatcherError<E>>
 where
     T: Service<Publish, Response = PublishAck>,
@@ -500,7 +516,7 @@ where
     C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
     let qos2 = pkt.qos() == QoS::ExactlyOnce;
-    let ack = match ctx.call(publish, pkt).await {
+    let ack = match publish.call(pkt).await {
         Ok(ack) => ack,
         Err(e) => {
             if packet_id != 0 {
@@ -580,14 +596,23 @@ mod tests {
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
         shared.set_topic_alias_max(1);
 
-        let disp = Pipeline::new(Dispatcher::new(
-            shared.clone(),
-            fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
-            Pipeline::new(fn_service(async |msg: ProtocolMessage| {
-                Ok::<_, DispatcherError<TestError>>(msg.ack())
-            })),
-            cfg.get(),
-        ));
+        let disp = Pipeline::new(
+            Dispatcher::new(
+                shared.clone(),
+                Pipeline::new(
+                    fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
+                    (),
+                ),
+                Pipeline::new(
+                    fn_service(async |msg: ProtocolMessage| {
+                        Ok::<_, DispatcherError<TestError>>(msg.ack())
+                    }),
+                    (),
+                ),
+                cfg.get(),
+            ),
+            (),
+        );
 
         // retain not available
         let err = disp

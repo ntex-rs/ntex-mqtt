@@ -34,8 +34,15 @@ where
     pub fn new<F, U>(default_service: F) -> Self
     where
         F: IntoServiceFactory<U, Publish, Session<S>>,
-        U: ServiceFactory<Publish, Session<S>, Response = (), Error = Err, InitError = Err>
-            + 'static,
+        U: ServiceFactory<
+                Publish,
+                Session<S>,
+                Response = (),
+                Error = Err,
+                InitError = Err,
+                Data = (),
+            > + 'static,
+        U::Service: Service<Publish, Data = ()>,
     {
         Router {
             router: ntex_router::Router::build(),
@@ -50,7 +57,8 @@ where
     where
         T: IntoPattern,
         F: IntoServiceFactory<U, Publish, Session<S>>,
-        U: ServiceFactory<Publish, Session<S>, Response = (), Error = Err> + 'static,
+        U: ServiceFactory<Publish, Session<S>, Response = (), Error = Err, Data = ()> + 'static,
+        U::Service: Service<Publish, Data = ()>,
         Err: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
@@ -94,6 +102,7 @@ where
     type Error = Err;
     type InitError = Err;
     type Service = RouterService<Err>;
+    type Data = ();
 
     async fn create(&self, session: Session<S>) -> Result<Self::Service, Self::Error> {
         let fut: Vec<_> = self.handlers.iter().map(|h| h.create(session.clone())).collect();
@@ -108,6 +117,10 @@ where
             router: self.router.clone(),
             default: self.default.create(session).await?,
         })
+    }
+
+    async fn map_data(&self, _: &Session<S>, _: &Self::Data) -> Result<(), Self::InitError> {
+        Ok(())
     }
 }
 
@@ -126,33 +139,39 @@ impl<Err> fmt::Debug for RouterService<Err> {
 impl<Err> Service<Publish> for RouterService<Err> {
     type Response = ();
     type Error = Err;
+    type Data = ();
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+    async fn ready(
+        &self,
+        data: &Self::Data,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<(), Self::Error> {
         for hnd in &self.handlers {
-            ctx.ready(hnd).await?;
+            ctx.ready(hnd, data).await?;
         }
-        ctx.ready(&self.default).await
+        ctx.ready(&self.default, data).await
     }
 
     #[inline]
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+    fn poll(&self, data: &Self::Data, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         for hnd in &self.handlers {
-            hnd.poll(cx)?;
+            hnd.poll(data, cx)?;
         }
-        self.default.poll(cx)
+        self.default.poll(data, cx)
     }
 
     #[inline]
     async fn call(
         &self,
         mut req: Publish,
+        data: &Self::Data,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
-            ctx.call(&self.handlers[*idx], req).await
+            ctx.call(&self.handlers[*idx], req, data).await
         } else {
-            ctx.call(&self.default, req).await
+            ctx.call(&self.default, req, data).await
         }
     }
 }

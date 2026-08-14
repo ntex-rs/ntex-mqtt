@@ -65,11 +65,11 @@ impl Client {
     where
         T: IntoPattern,
         F: IntoService<U, Publish>,
-        U: Service<Publish, Response = ()> + 'static,
+        U: Service<Publish, Response = (), Data = ()> + 'static,
     {
         let mut builder = Router::build();
         builder.path(address, 0);
-        let handlers = vec![Pipeline::new(boxed::service(service.into_service()))];
+        let handlers = vec![Pipeline::new(boxed::service(service.into_service()), ())];
 
         ClientRouter {
             builder,
@@ -104,7 +104,7 @@ impl Client {
             self.shared.clone(),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, (), control, ()).await;
     }
 
     /// Run client with provided control messages handler
@@ -112,7 +112,8 @@ impl Client {
     where
         E: fmt::Debug + 'static,
         F: IntoService<S, ProtocolMessage> + 'static,
-        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E, Data = ()>
+            + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =
@@ -131,7 +132,7 @@ impl Client {
             self.shared.clone(),
         );
 
-        Dispatcher::new(self.io, self.shared, dispatcher, control).await
+        Dispatcher::new(self.io, self.shared, dispatcher, (), control, ()).await
     }
 
     /// Run client with provided protocol and control handlers
@@ -143,8 +144,9 @@ impl Client {
     where
         E: fmt::Debug + 'static,
         F: IntoService<S, ProtocolMessage> + 'static,
-        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
-        C: Service<control::Control<E>, Response = Option<codec::Encoded>> + 'static,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E, Data = ()>
+            + 'static,
+        C: Service<control::Control<E>, Response = Option<codec::Encoded>, Data = ()> + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =
@@ -160,7 +162,7 @@ impl Client {
         );
         let control = ControlService::new(control, self.shared.clone());
 
-        Dispatcher::new(self.io, self.shared, dispatcher, control).await
+        Dispatcher::new(self.io, self.shared, dispatcher, (), control, ()).await
     }
 
     /// Get negotiated io stream and codec
@@ -174,7 +176,7 @@ type Handler<E> = boxed::BoxService<Publish, (), E>;
 /// Mqtt client with routing capabilities
 pub struct ClientRouter<Err, PErr> {
     builder: RouterBuilder<usize>,
-    handlers: Vec<Pipeline<Handler<PErr>>>,
+    handlers: Vec<Pipeline<Handler<PErr>, ()>>,
     io: IoBoxed,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
@@ -203,10 +205,10 @@ where
     where
         T: IntoPattern,
         F: IntoService<S, Publish>,
-        S: Service<Publish, Response = (), Error = PErr> + 'static,
+        S: Service<Publish, Response = (), Error = PErr, Data = ()> + 'static,
     {
         self.builder.path(address, self.handlers.len());
-        self.handlers.push(Pipeline::new(boxed::service(service.into_service())));
+        self.handlers.push(Pipeline::new(boxed::service(service.into_service()), ()));
         self
     }
 
@@ -229,14 +231,15 @@ where
             self.shared.clone(),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, (), control, ()).await;
     }
 
     /// Run client and handle control messages
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
         F: IntoService<S, ProtocolMessage>,
-        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err> + 'static,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err, Data = ()>
+            + 'static,
     {
         if self.keepalive.non_zero() {
             let _ =
@@ -255,14 +258,14 @@ where
             self.shared.clone(),
         );
 
-        Dispatcher::new(self.io, self.shared, dispatcher, control).await
+        Dispatcher::new(self.io, self.shared, dispatcher, (), control, ()).await
     }
 }
 
 fn dispatch<Err, PErr>(
     router: Router<usize>,
-    handlers: Vec<Pipeline<Handler<PErr>>>,
-) -> impl Service<Publish, Response = Either<(), Publish>, Error = Err>
+    handlers: Vec<Pipeline<Handler<PErr>, ()>>,
+) -> impl Service<Publish, Response = Either<(), Publish>, Error = Err, Data = ()>
 where
     PErr: 'static,
     Err: From<PErr>,
@@ -281,9 +284,12 @@ where
     })
 }
 
-async fn call<S, Err, PErr>(req: Publish, srv: Pipeline<S>) -> Result<Either<(), Publish>, Err>
+async fn call<S, Err, PErr>(
+    req: Publish,
+    srv: Pipeline<S, ()>,
+) -> Result<Either<(), Publish>, Err>
 where
-    S: Service<Publish, Response = (), Error = PErr>,
+    S: Service<Publish, Response = (), Error = PErr, Data = ()>,
     Err: From<PErr>,
 {
     match srv.call(req).await {

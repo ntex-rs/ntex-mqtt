@@ -42,18 +42,28 @@ where
 {
     type Response = S::Response;
     type Error = S::Error;
+    type Data = S::Data;
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), S::Error> {
+    async fn ready(
+        &self,
+        data: &Self::Data,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<(), S::Error> {
         if self.publish.get() || self.count.is_available() {
-            ctx.ready(&self.service).await
+            ctx.ready(&self.service, data).await
         } else {
-            join(self.count.available(), ctx.ready(&self.service)).await.1
+            join(self.count.available(), ctx.ready(&self.service, data)).await.1
         }
     }
 
     #[inline]
-    async fn call(&self, req: R, ctx: ServiceCtx<'_, Self>) -> Result<S::Response, S::Error> {
+    async fn call(
+        &self,
+        req: R,
+        data: &Self::Data,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<S::Response, S::Error> {
         // process payload chunks
         if self.publish.get() && !req.is_chunk() {
             self.publish.set(false);
@@ -64,7 +74,7 @@ where
 
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
         let task_guard = self.count.get(size);
-        let result = ctx.call(&self.service, req).await;
+        let result = ctx.call(&self.service, req, data).await;
         drop(task_guard);
         result
     }
@@ -178,8 +188,14 @@ mod tests {
     impl Service<()> for SleepService {
         type Response = ();
         type Error = ();
+        type Data = ();
 
-        async fn call(&self, _r: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+        async fn call(
+            &self,
+            _r: (),
+            _: &Self::Data,
+            _: ServiceCtx<'_, Self>,
+        ) -> Result<(), ()> {
             sleep(self.0).await;
             Ok::<_, ()>(())
         }
@@ -203,7 +219,8 @@ mod tests {
     async fn test_inflight() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightServiceImpl::new(1, 0, SleepService(wait_time))).bind();
+        let srv =
+            Pipeline::new(InFlightServiceImpl::new(1, 0, SleepService(wait_time)), ()).bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
@@ -223,7 +240,7 @@ mod tests {
         let wait_time = Duration::from_millis(50);
 
         let srv =
-            Pipeline::new(InFlightServiceImpl::new(0, 10, SleepService(wait_time))).bind();
+            Pipeline::new(InFlightServiceImpl::new(0, 10, SleepService(wait_time)), ()).bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
@@ -246,8 +263,9 @@ mod tests {
     impl Service<()> for Srv2 {
         type Response = ();
         type Error = ();
+        type Data = ();
 
-        async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+        async fn ready(&self, _: &Self::Data, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
             poll_fn(|cx| {
                 if self.cnt.get() {
                     self.waker.register(cx.waker());
@@ -259,7 +277,12 @@ mod tests {
             .await
         }
 
-        async fn call(&self, _r: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+        async fn call(
+            &self,
+            _r: (),
+            _: &Self::Data,
+            _: ServiceCtx<'_, Self>,
+        ) -> Result<(), ()> {
             let fut = sleep(self.dur);
             self.cnt.set(true);
             self.waker.wake();
@@ -278,11 +301,14 @@ mod tests {
     async fn test_inflight3() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightServiceImpl::new(
-            1,
-            10,
-            Srv2 { dur: wait_time, cnt: Cell::new(false), waker: LocalWaker::new() },
-        ))
+        let srv = Pipeline::new(
+            InFlightServiceImpl::new(
+                1,
+                10,
+                Srv2 { dur: wait_time, cnt: Cell::new(false), waker: LocalWaker::new() },
+            ),
+            (),
+        )
         .bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
@@ -311,7 +337,13 @@ mod tests {
         impl Service<Req> for NoopSvc {
             type Response = ();
             type Error = ();
-            async fn call(&self, _: Req, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+            type Data = ();
+            async fn call(
+                &self,
+                _: Req,
+                _: &Self::Data,
+                _: ServiceCtx<'_, Self>,
+            ) -> Result<(), ()> {
                 Ok(())
             }
         }

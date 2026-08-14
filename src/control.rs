@@ -139,19 +139,26 @@ impl<S, E, R, Err> ServiceFactory<Control<E>, S> for DefaultControlService<S, E,
     type Error = E;
     type InitError = Err;
     type Service = DefaultControlService<S, E, R, ()>;
+    type Data = ();
 
     async fn create(&self, _: S) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService(PhantomData))
+    }
+
+    async fn map_data(&self, _: &S, _: &Self::Data) -> Result<(), Self::InitError> {
+        Ok(())
     }
 }
 
 impl<S, E, R> Service<Control<E>> for DefaultControlService<S, E, R, ()> {
     type Response = Option<R>;
     type Error = E;
+    type Data = ();
 
     async fn call(
         &self,
         _: Control<E>,
+        _: &Self::Data,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::warn!("MQTT5 Control service is not configured");

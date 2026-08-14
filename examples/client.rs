@@ -27,7 +27,7 @@ async fn main() -> std::io::Result<()> {
 
     // connect to server
     let client = v5::client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
+        .pipeline(SharedCfg::default(), &())
         .await
         .unwrap()
         .call(

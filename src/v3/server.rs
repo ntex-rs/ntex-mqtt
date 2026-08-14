@@ -93,14 +93,16 @@ where
 impl<St, E, H, P, C, M> MqttServer<St, E, H, P, C, M>
 where
     St: 'static,
-    H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
-    P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
+    H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>, Data = ()> + 'static,
+    P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck, Data = ()>
+        + 'static,
     C: ServiceFactory<
             Control<H::Error>,
             Session<St>,
             Response = Option<mqtt::Encoded>,
             Error = MqttError<H::Error>,
             InitError = MqttError<H::Error>,
+            Data = (),
         > + 'static,
 {
     /// Registers middleware, in the form of a middleware component (type),
@@ -140,8 +142,12 @@ where
     pub fn protocol<F, Srv>(self, service: F) -> MqttServer<St, E, H, Srv, C, M>
     where
         F: IntoServiceFactory<Srv, ProtocolMessage, Session<St>>,
-        Srv: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck>
-            + 'static,
+        Srv: ServiceFactory<
+                ProtocolMessage,
+                Session<St>,
+                Response = ProtocolMessageAck,
+                Data = (),
+            > + 'static,
         E: From<Srv::Error>,
         H::Error: From<Srv::InitError>,
     {
@@ -170,13 +176,14 @@ where
             Response = Option<mqtt::Encoded>,
             Error = MqttError<H::Error>,
             InitError = MqttError<H::Error>,
+            Data = (),
         >,
         M,
     >
     where
         F: IntoServiceFactory<Srv, Control<E>, Session<St>>,
-        Srv:
-            ServiceFactory<Control<E>, Session<St>, Response = Option<mqtt::Encoded>> + 'static,
+        Srv: ServiceFactory<Control<E>, Session<St>, Response = Option<mqtt::Encoded>, Data = ()>
+            + 'static,
         H::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         MqttServer {
@@ -204,6 +211,7 @@ where
             Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds),
             Error = MqttError<H::Error>,
             InitError = H::InitError,
+            Data = (),
         >,
         impl ServiceFactory<
             mqtt::Decoded,
@@ -211,6 +219,7 @@ where
             Response = Option<mqtt::Encoded>,
             Error = DispatcherError<E>,
             InitError = MqttError<H::Error>,
+            Data = (),
         >,
         M,
         C,
@@ -218,7 +227,7 @@ where
     >
     where
         F: IntoServiceFactory<Srv, Publish, Session<St>>,
-        Srv: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
+        Srv: ServiceFactory<Publish, Session<St>, Response = (), Data = ()> + 'static,
         E: From<P::Error> + From<Srv::Error> + 'static,
         H::Error: From<P::InitError> + From<Srv::InitError>,
     {
@@ -250,6 +259,7 @@ where
 
     type Service = HandshakeService<St, H::Service>;
     type InitError = H::InitError;
+    type Data = H::Data;
 
     async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
         Ok(HandshakeService {
@@ -258,6 +268,14 @@ where
             service: self.factory.create(cfg).await?,
             _t: PhantomData,
         })
+    }
+
+    async fn map_data(
+        &self,
+        cfg: &SharedCfg,
+        data: &Self::Data,
+    ) -> Result<<Self::Service as Service<IoBoxed>>::Data, Self::InitError> {
+        self.factory.map_data(cfg, data).await
     }
 }
 
@@ -274,6 +292,7 @@ where
 {
     type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;
+    type Data = H::Data;
 
     ntex_service::forward_ready!(service, MqttError::Service);
     ntex_service::forward_poll!(service, MqttError::Service);
@@ -282,6 +301,7 @@ where
     async fn call(
         &self,
         io: IoBoxed,
+        data: &Self::Data,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::trace!("Starting mqtt v3 handshake");
@@ -308,7 +328,7 @@ where
             mqtt::Decoded::Packet(mqtt::Packet::Connect(connect), size) => {
                 // authenticate mqtt connection
                 let ack = ctx
-                    .call(&self.service, Handshake::new(connect, size, io, shared))
+                    .call(&self.service, Handshake::new(connect, size, io, shared), data)
                     .await
                     .map_err(MqttError::Service)?;
 

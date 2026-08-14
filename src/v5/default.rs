@@ -26,19 +26,26 @@ impl<S, E> ServiceFactory<ProtocolMessage, S> for DefaultProtocolService<S, E> {
     type Error = E;
     type InitError = E;
     type Service = DefaultProtocolService<S, E>;
+    type Data = ();
 
     async fn create(&self, _: S) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultProtocolService(PhantomData))
+    }
+
+    async fn map_data(&self, _: &S, _: &Self::Data) -> Result<(), Self::InitError> {
+        Ok(())
     }
 }
 
 impl<S, E> Service<ProtocolMessage> for DefaultProtocolService<S, E> {
     type Response = ProtocolMessageAck;
     type Error = E;
+    type Data = ();
 
     async fn call(
         &self,
         pkt: ProtocolMessage,
+        _: &Self::Data,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         match pkt {
@@ -109,6 +116,7 @@ where
     type Error = MqttError<S::Error>;
     type InitError = MqttError<S::InitError>;
     type Service = ControlService<S::Service, E>;
+    type Data = S::Data;
 
     async fn create(&self, cfg: Session<St>) -> Result<Self::Service, Self::InitError> {
         Ok(ControlService {
@@ -116,6 +124,14 @@ where
             svc: self.svc.create(cfg).await.map_err(MqttError::Service)?,
             _t: PhantomData,
         })
+    }
+
+    async fn map_data(
+        &self,
+        cfg: &Session<St>,
+        data: &Self::Data,
+    ) -> Result<<Self::Service as Service<Control<E>>>::Data, Self::InitError> {
+        self.svc.map_data(cfg, data).await.map_err(MqttError::Service)
     }
 }
 
@@ -125,10 +141,12 @@ where
 {
     type Response = S::Response;
     type Error = MqttError<S::Error>;
+    type Data = S::Data;
 
     async fn call(
         &self,
         req: Control<E>,
+        data: &Self::Data,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         let mut proto_error = false;
@@ -164,7 +182,7 @@ where
             }
         };
 
-        match ctx.call(&self.svc, req).await {
+        match ctx.call(&self.svc, req, data).await {
             Ok(Some(val)) => {
                 if (proto_error || !self.shared.is_disconnect_recv())
                     && !self.shared.is_disconnect_sent()
@@ -222,7 +240,7 @@ mod tests {
             (),
             codec::Encoded,
         >::default());
-        let svc = disp.pipeline(ses).await.unwrap();
+        let svc = disp.pipeline(ses, &()).await.unwrap();
 
         assert!(!sink.is_ready());
         shared.set_cap(1);

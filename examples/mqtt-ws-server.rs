@@ -3,7 +3,7 @@ use std::{error::Error, io};
 
 use ntex::http::{self, HttpService, Request, Response, h1};
 use ntex::io::{Filter, Io, Layer};
-use ntex::service::{Pipeline, ServiceFactory, chain_factory, fn_factory, fn_service};
+use ntex::service::{Service, ServiceFactory, chain_factory, fn_factory, fn_service};
 use ntex::{SharedCfg, util::Ready, util::variant, ws};
 use ntex_mqtt::{HandshakeError, MqttError, MqttServer, ProtocolError, v3, v5};
 use ntex_tls::openssl::SslAcceptor;
@@ -30,9 +30,15 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 }
 
 /// Mqtt server factory
-fn mqtt_server<F: Filter>()
--> impl ServiceFactory<Io<F>, SharedCfg, Response = (), Error = Box<dyn Error>, InitError = ()>
-{
+fn mqtt_server<F: Filter>() -> impl ServiceFactory<
+    Io<F>,
+    SharedCfg,
+    Response = (),
+    Error = Box<dyn Error>,
+    InitError = (),
+    Data = (),
+    Service = impl Service<Io<F>, Response = (), Error = Box<dyn Error>, Data = ()>,
+> {
     MqttServer::new()
         .v3(v3::MqttServer::new(|handshake: v3::Handshake| async move {
             log::info!("new mqtt v3 connection: {:?}", handshake);
@@ -62,30 +68,44 @@ pub fn ws<F: Filter>() -> impl ServiceFactory<
     Response = Io<Layer<ws::WsTransport, F>>,
     Error = Box<dyn Error>,
     InitError = (),
+    Data = (),
+    Service = impl Service<
+        (Request, Io<F>, h1::Codec),
+        Response = Io<Layer<ws::WsTransport, F>>,
+        Error = Box<dyn Error>,
+        Data = (),
+    >,
 > {
-    ntex::fn_service(move |(req, io, codec): (Request, Io<F>, h1::Codec)| async move {
-        log::trace!("Got http request: {:?}", req);
+    fn_factory(move || async {
+        Ok::<_, ()>(fn_service(
+            move |(req, io, codec): (Request, Io<F>, h1::Codec)| async move {
+                log::trace!("Got http request: {:?}", req);
 
-        match ws::handshake(req.head()) {
-            Err(e) => {
-                // invalid WebSocket handshake request
-                log::info!("WebSocket negotiation failed: {:?}", e);
-                Err(Box::<dyn Error>::from(e))
-            }
-            Ok(mut res) => {
-                // send success http response and switch to ws codec
-                io.send(
-                    h1::Message::Item((res.finish().drop_body(), http::body::BodySize::Empty)),
-                    &codec,
-                )
-                .await
-                .map_err(Box::<dyn Error>::from)?;
+                match ws::handshake(req.head()) {
+                    Err(e) => {
+                        // invalid WebSocket handshake request
+                        log::info!("WebSocket negotiation failed: {:?}", e);
+                        Err(Box::<dyn Error>::from(e))
+                    }
+                    Ok(mut res) => {
+                        // send success http response and switch to ws codec
+                        io.send(
+                            h1::Message::Item((
+                                res.finish().drop_body(),
+                                http::body::BodySize::Empty,
+                            )),
+                            &codec,
+                        )
+                        .await
+                        .map_err(Box::<dyn Error>::from)?;
 
-                log::trace!("WebSocket handshake is completed");
+                        log::trace!("WebSocket handshake is completed");
 
-                Ok(ws::WsTransport::create(io, ws::Codec::new()))
-            }
-        }
+                        Ok(ws::WsTransport::create(io, ws::Codec::new()))
+                    }
+                }
+            },
+        ))
     })
 }
 
@@ -170,12 +190,10 @@ async fn main() -> std::io::Result<()> {
                         // websocket handler, we need to verify websocket handshake
                         // and then switch to websokets streaming
                         .h1_control(fn_factory(move || async move {
-                            let ws_svc = Pipeline::new(
-                                chain_factory(ws())
-                                    .and_then(mqtt_server())
-                                    .create(SharedCfg::default())
-                                    .await?,
-                            );
+                            let ws_svc = chain_factory(ws())
+                                .and_then(mqtt_server())
+                                .pipeline(SharedCfg::default(), &())
+                                .await?;
 
                             Ok::<_, ()>(fn_service(move |msg: h1::Control<_, _>| {
                                 let ack = match msg {

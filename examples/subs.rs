@@ -76,6 +76,7 @@ fn protocol_service_factory() -> impl ServiceFactory<
     Response = v5::ProtocolMessageAck,
     Error = MyServerError,
     InitError = MyServerError,
+    Data = (),
 > {
     fn_factory_with_config(async move |session: Session<MySession>| {
         Ok(fn_service(async move |msg| match msg {
@@ -103,6 +104,7 @@ fn control_service_factory() -> impl ServiceFactory<
     Response = Option<v5::codec::Encoded>,
     Error = MyServerError,
     InitError = MyServerError,
+    Data = (),
 > {
     fn_factory_with_config(async move |_: Session<MySession>| {
         Ok(fn_service(async move |control| match control {

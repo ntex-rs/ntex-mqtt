@@ -79,13 +79,13 @@ impl Client {
     where
         T: IntoPattern,
         F: IntoService<U, Publish>,
-        U: Service<Publish, Response = PublishAck> + 'static,
+        U: Service<Publish, Response = PublishAck, Data = ()> + 'static,
         E: From<U::Error>,
         PublishAck: TryFrom<U::Error, Error = E>,
     {
         let mut builder = Router::build();
         builder.path(address, 0);
-        let handlers = vec![Pipeline::new(boxed::service(service.into_service()))];
+        let handlers = vec![Pipeline::new(boxed::service(service.into_service()), ())];
 
         ClientRouter {
             builder,
@@ -122,7 +122,7 @@ impl Client {
             self.shared.clone(),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, (), control, ()).await;
     }
 
     /// Run client with provided control messages handler
@@ -130,7 +130,8 @@ impl Client {
     where
         E: fmt::Debug + 'static,
         F: IntoService<S, ProtocolMessage> + 'static,
-        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E, Data = ()>
+            + 'static,
     {
         if self.keepalive.non_zero() {
             ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
@@ -149,7 +150,7 @@ impl Client {
             self.shared.clone(),
         );
 
-        Dispatcher::new(self.io, self.shared, dispatcher, control).await
+        Dispatcher::new(self.io, self.shared, dispatcher, (), control, ()).await
     }
 
     /// Run client with provided control messages handler
@@ -161,8 +162,9 @@ impl Client {
     where
         E: fmt::Debug + 'static,
         F: IntoService<S, ProtocolMessage> + 'static,
-        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
-        C: Service<control::Control<E>, Response = Option<codec::Encoded>> + 'static,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E, Data = ()>
+            + 'static,
+        C: Service<control::Control<E>, Response = Option<codec::Encoded>, Data = ()> + 'static,
     {
         if self.keepalive.non_zero() {
             ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
@@ -178,7 +180,7 @@ impl Client {
         );
         let control = ControlService::new(control, self.shared.clone());
 
-        Dispatcher::new(self.io, self.shared, dispatcher, control).await
+        Dispatcher::new(self.io, self.shared, dispatcher, (), control, ()).await
     }
 
     /// Get negotiated io stream and codec
@@ -193,7 +195,7 @@ type Handler<E> = boxed::BoxService<Publish, PublishAck, E>;
 pub struct ClientRouter<Err, PErr> {
     io: IoBoxed,
     builder: RouterBuilder<usize>,
-    handlers: Vec<Pipeline<Handler<PErr>>>,
+    handlers: Vec<Pipeline<Handler<PErr>, ()>>,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     max_receive: usize,
@@ -222,10 +224,10 @@ where
     where
         T: IntoPattern,
         F: IntoService<S, Publish>,
-        S: Service<Publish, Response = PublishAck, Error = PErr> + 'static,
+        S: Service<Publish, Response = PublishAck, Error = PErr, Data = ()> + 'static,
     {
         self.builder.path(address, self.handlers.len());
-        self.handlers.push(Pipeline::new(boxed::service(service.into_service())));
+        self.handlers.push(Pipeline::new(boxed::service(service.into_service()), ()));
         self
     }
 
@@ -250,14 +252,15 @@ where
             self.shared.clone(),
         );
 
-        let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
+        let _ = Dispatcher::new(self.io, self.shared, dispatcher, (), control, ()).await;
     }
 
     /// Run client and handle control messages
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
         F: IntoService<S, ProtocolMessage>,
-        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err> + 'static,
+        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err, Data = ()>
+            + 'static,
     {
         if self.keepalive.non_zero() {
             ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
@@ -276,7 +279,7 @@ where
             self.shared.clone(),
         );
 
-        Dispatcher::new(self.io, self.shared, dispatcher, control).await
+        Dispatcher::new(self.io, self.shared, dispatcher, (), control, ()).await
     }
 
     /// Get negotiated io stream and codec
@@ -287,8 +290,8 @@ where
 
 fn dispatch<Err, PErr>(
     router: Router<usize>,
-    handlers: Vec<Pipeline<Handler<PErr>>>,
-) -> impl Service<Publish, Response = Either<Publish, PublishAck>, Error = Err>
+    handlers: Vec<Pipeline<Handler<PErr>, ()>>,
+) -> impl Service<Publish, Response = Either<Publish, PublishAck>, Error = Err, Data = ()>
 where
     PErr: 'static,
     PublishAck: TryFrom<PErr, Error = Err>,
@@ -332,10 +335,10 @@ where
 
 async fn call<S, Err>(
     req: Publish,
-    srv: Pipeline<S>,
+    srv: Pipeline<S, ()>,
 ) -> Result<Either<Publish, PublishAck>, Err>
 where
-    S: Service<Publish, Response = PublishAck>,
+    S: Service<Publish, Response = PublishAck, Data = ()>,
     PublishAck: TryFrom<S::Error, Error = Err>,
 {
     match srv.call(req).await {

@@ -22,11 +22,11 @@ pub(super) fn create_dispatcher<T, C, E>(
     max_receive: usize,
     max_topic_alias: u16,
     cfg: Cfg<MqttServiceConfig>,
-) -> impl Service<Decoded, Response = Option<Encoded>, Error = DispatcherError<E>>
+) -> impl Service<Decoded, Response = Option<Encoded>, Error = DispatcherError<E>, Data = ()>
 where
     E: From<T::Error> + 'static,
-    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E> + 'static,
-    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
+    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E, Data = ()> + 'static,
+    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E, Data = ()> + 'static,
 {
     Dispatcher {
         cfg,
@@ -35,7 +35,7 @@ where
         max_topic_alias,
         inner: Rc::new(Inner {
             sink,
-            control: Pipeline::new(control.map_err(DispatcherError::Service)),
+            control: Pipeline::new(control.map_err(DispatcherError::Service), ()),
             info: RefCell::new(PublishInfo {
                 aliases: HashMap::default(),
                 inflight: HashSet::default(),
@@ -46,7 +46,7 @@ where
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C, E> {
+pub(crate) struct Dispatcher<T, C: Service<ProtocolMessage>, E> {
     publish: T,
     inner: Rc<Inner<C>>,
     max_receive: usize,
@@ -55,8 +55,8 @@ pub(crate) struct Dispatcher<T, C, E> {
     _t: PhantomData<E>,
 }
 
-struct Inner<C> {
-    control: Pipeline<C>,
+struct Inner<C: Service<ProtocolMessage>> {
+    control: Pipeline<C, C::Data>,
     sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
 }
@@ -69,16 +69,26 @@ struct PublishInfo {
 impl<T, C, E> Service<Decoded> for Dispatcher<T, C, E>
 where
     E: 'static,
-    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E> + 'static,
-    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>
-        + 'static,
+    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E, Data = ()> + 'static,
+    C: Service<
+            ProtocolMessage,
+            Response = ProtocolMessageAck,
+            Error = DispatcherError<E>,
+            Data = (),
+        > + 'static,
 {
     type Response = Option<Encoded>;
     type Error = DispatcherError<E>;
+    type Data = ();
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
+    async fn ready(
+        &self,
+        _: &Self::Data,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<(), Self::Error> {
+        let (res1, res2) =
+            join(ctx.ready(&self.publish, &()), self.inner.control.ready()).await;
         if (res1.is_err() || res2.is_err())
             && let Some(pl) = self.inner.sink.payload.take()
         {
@@ -94,15 +104,15 @@ where
     }
 
     #[inline]
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        self.publish.poll(cx).map_err(DispatcherError::Service)?;
+    fn poll(&self, _: &Self::Data, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+        self.publish.poll(&(), cx).map_err(DispatcherError::Service)?;
         self.inner.control.poll(cx)
     }
 
-    async fn shutdown(&self) {
+    async fn shutdown(&self, _: &Self::Data) {
         self.inner.sink.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink(true);
-        self.publish.shutdown().await;
+        self.publish.shutdown(&()).await;
         self.inner.control.shutdown().await;
     }
 
@@ -110,6 +120,7 @@ where
     async fn call(
         &self,
         request: Decoded,
+        _: &Self::Data,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::trace!("Dispatch packet: {request:#?}");
@@ -302,10 +313,10 @@ async fn publish_fn<'f, T, C, E>(
     ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
 ) -> Result<Option<Encoded>, DispatcherError<E>>
 where
-    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
+    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E, Data = ()>,
     C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
-    let ack = match ctx.call(svc, pkt).await.map_err(DispatcherError::Service)? {
+    let ack = match ctx.call(svc, pkt, &()).await.map_err(DispatcherError::Service)? {
         Either::Right(ack) => ack,
         Either::Left(pkt) => {
             let (pkt, payload) = pkt.into_inner();
@@ -330,7 +341,7 @@ where
     }
 }
 
-impl<C> Inner<C> {
+impl<C: Service<ProtocolMessage>> Inner<C> {
     async fn control<E>(
         &self,
         pkt: ProtocolMessage,

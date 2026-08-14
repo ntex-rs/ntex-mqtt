@@ -78,6 +78,7 @@ where
     type Error = ClientError<Box<codec::ConnectAck>>;
     type InitError = T::InitError;
     type Service = MqttConnectorService<A, T::Service>;
+    type Data = T::Data;
 
     async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
         Ok(MqttConnectorService {
@@ -86,6 +87,14 @@ where
             pool: self.pool.clone(),
             _t: PhantomData,
         })
+    }
+
+    async fn map_data(
+        &self,
+        cfg: &SharedCfg,
+        data: &Self::Data,
+    ) -> Result<<Self::Service as Service<Connect<A>>>::Data, Self::InitError> {
+        self.connector.map_data(cfg, data).await
     }
 }
 
@@ -97,6 +106,7 @@ where
 {
     type Response = Client;
     type Error = ClientError<Box<codec::ConnectAck>>;
+    type Data = T::Data;
 
     ntex_service::forward_ready!(connector);
     ntex_service::forward_poll!(connector);
@@ -106,10 +116,11 @@ where
     async fn call(
         &self,
         req: Connect<A>,
+        data: &Self::Data,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Client, Self::Error> {
         let (addr, pkt) = req.into_parts();
-        timeout_checked(self.cfg.handshake_timeout, self.connect_inner(addr, pkt, ctx))
+        timeout_checked(self.cfg.handshake_timeout, self.connect_inner(addr, pkt, data, ctx))
             .await
             .map_err(|()| ClientError::HandshakeTimeout)
             .and_then(|res| res)
@@ -126,9 +137,11 @@ where
         &self,
         addr: A,
         pkt: codec::Connect,
+        data: &T::Data,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
-        let io: IoBoxed = ctx.call(&self.connector, connect::Connect::new(addr)).await?.into();
+        let io: IoBoxed =
+            ctx.call(&self.connector, connect::Connect::new(addr), data).await?.into();
         let keep_alive = pkt.keep_alive;
         let max_packet_size = pkt.max_packet_size.map_or(0, NonZero::get);
         let max_receive = pkt.receive_max.map_or(65535, NonZero::get);

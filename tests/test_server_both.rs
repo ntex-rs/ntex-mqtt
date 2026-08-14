@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use ntex::util::{ByteString, Bytes};
 use ntex::{ServiceFactory, SharedCfg, server};
 
@@ -38,7 +40,7 @@ async fn test_simple() -> std::io::Result<()> {
 
     // connect to v5 server
     let client = v5::client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
+        .pipeline(SharedCfg::default(), &())
         .await
         .unwrap()
         .call(v5::client::Connect::new(srv.addr()).client_id("user"))
@@ -54,7 +56,7 @@ async fn test_simple() -> std::io::Result<()> {
 
     // connect to v3 server
     let client = v3::client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
+        .pipeline(SharedCfg::default(), &())
         .await
         .unwrap()
         .call(v3::client::Connect::new(srv.addr()).client_id("user"))

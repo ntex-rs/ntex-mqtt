@@ -42,7 +42,7 @@ async fn main() -> std::io::Result<()> {
                     .into_transport())
             }
         })
-        .pipeline(SharedCfg::default())
+        .pipeline(SharedCfg::default(), &())
         .await
         .unwrap()
         .call(

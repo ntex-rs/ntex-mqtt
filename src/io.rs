@@ -124,7 +124,14 @@ where
     E: 'static,
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
-    pub(crate) fn new(io: IoBoxed, codec: U, service: P, control: C) -> Self {
+    pub(crate) fn new(
+        io: IoBoxed,
+        codec: U,
+        service: P,
+        service_data: P::Data,
+        control: C,
+        control_data: C::Data,
+    ) -> Self {
         let state = Rc::new(DispatcherState {
             error: Cell::new(None),
             base: Cell::new(0),
@@ -146,8 +153,8 @@ where
                 } else {
                     Flags::KA_ENABLED
                 },
-                service: Pipeline::new(service).bind(),
-                control: Pipeline::new(control).bind(),
+                service: Pipeline::new(service, service_data).bind(),
+                control: Pipeline::new(control, control_data).bind(),
                 st: IoDispatcherState::Processing,
                 stopping: Condition::new(),
                 read_remains: 0,
@@ -626,9 +633,13 @@ mod tests {
 
     impl<P, C, U, E> Dispatcher<P, C, U, E>
     where
-        P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>
-            + 'static,
-        C: Service<Control<E>, Response = Option<Response<U>>> + 'static,
+        P: Service<
+                Request<U>,
+                Response = Option<Response<U>>,
+                Error = DispatcherError<E>,
+                Data = (),
+            > + 'static,
+        C: Service<Control<E>, Response = Option<Response<U>>, Data = ()> + 'static,
         U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
         E: 'static,
     {
@@ -658,8 +669,8 @@ mod tests {
                         state,
                         keepalive_timeout,
                         stopping: Condition::new(),
-                        service: Pipeline::new(service.into_service()).bind(),
-                        control: Pipeline::new(control).bind(),
+                        service: Pipeline::new(service.into_service(), ()).bind(),
+                        control: Pipeline::new(control, ()).bind(),
                         io: IoBoxed::from(io),
                         st: IoDispatcherState::Processing,
                         flags: if keepalive_timeout.is_zero() {
@@ -961,8 +972,13 @@ mod tests {
         impl Service<Bytes> for Srv {
             type Response = Option<Bytes>;
             type Error = DispatcherError<()>;
+            type Data = ();
 
-            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+            async fn ready(
+                &self,
+                _: &Self::Data,
+                _: ServiceCtx<'_, Self>,
+            ) -> Result<(), Self::Error> {
                 self.0.set(self.0.get() + 1);
                 Err(DispatcherError::Service(()))
             }
@@ -970,6 +986,7 @@ mod tests {
             async fn call(
                 &self,
                 _: Bytes,
+                _: &Self::Data,
                 _: ServiceCtx<'_, Self>,
             ) -> Result<Option<Bytes>, Self::Error> {
                 Ok(None)
@@ -1369,8 +1386,13 @@ mod tests {
         impl Service<Bytes> for Srv {
             type Response = Option<Bytes>;
             type Error = DispatcherError<()>;
+            type Data = ();
 
-            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+            async fn ready(
+                &self,
+                _: &Self::Data,
+                _: ServiceCtx<'_, Self>,
+            ) -> Result<(), Self::Error> {
                 if self.0.get() {
                     sleep(Millis(999_999)).await;
                 }
@@ -1380,6 +1402,7 @@ mod tests {
             async fn call(
                 &self,
                 _: Bytes,
+                _: &Self::Data,
                 _: ServiceCtx<'_, Self>,
             ) -> Result<Option<Bytes>, Self::Error> {
                 let _data = self.1.clone();
@@ -1422,8 +1445,13 @@ mod tests {
         impl Service<Bytes> for Srv {
             type Response = Option<Bytes>;
             type Error = DispatcherError<()>;
+            type Data = ();
 
-            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+            async fn ready(
+                &self,
+                _: &Self::Data,
+                _: ServiceCtx<'_, Self>,
+            ) -> Result<(), Self::Error> {
                 if self.0.get()
                     && let Some(rx) = self.1.take()
                 {
@@ -1435,6 +1463,7 @@ mod tests {
             async fn call(
                 &self,
                 msg: Bytes,
+                _: &Self::Data,
                 _: ServiceCtx<'_, Self>,
             ) -> Result<Option<Bytes>, Self::Error> {
                 self.0.set(true);

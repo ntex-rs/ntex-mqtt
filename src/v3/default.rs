@@ -24,19 +24,26 @@ impl<S, E: fmt::Debug> ServiceFactory<ProtocolMessage, S> for DefaultProtocolSer
     type Error = E;
     type InitError = E;
     type Service = DefaultProtocolService<S, E>;
+    type Data = ();
 
     async fn create(&self, _: S) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultProtocolService(PhantomData))
+    }
+
+    async fn map_data(&self, _: &S, _: &Self::Data) -> Result<(), Self::InitError> {
+        Ok(())
     }
 }
 
 impl<S, E: fmt::Debug> Service<ProtocolMessage> for DefaultProtocolService<S, E> {
     type Response = ProtocolMessageAck;
     type Error = E;
+    type Data = ();
 
     async fn call(
         &self,
         pkt: ProtocolMessage,
+        _: &Self::Data,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::warn!("MQTT3 Subscribe is not supported");
@@ -107,6 +114,7 @@ where
     type Error = MqttError<S::Error>;
     type InitError = MqttError<S::InitError>;
     type Service = ControlService<S::Service, E>;
+    type Data = S::Data;
 
     async fn create(&self, cfg: Session<St>) -> Result<Self::Service, Self::InitError> {
         Ok(ControlService {
@@ -114,6 +122,14 @@ where
             svc: self.svc.create(cfg).await.map_err(MqttError::Service)?,
             _t: PhantomData,
         })
+    }
+
+    async fn map_data(
+        &self,
+        cfg: &Session<St>,
+        data: &Self::Data,
+    ) -> Result<<Self::Service as Service<Control<E>>>::Data, Self::InitError> {
+        self.svc.map_data(cfg, data).await.map_err(MqttError::Service)
     }
 }
 
@@ -123,10 +139,12 @@ where
 {
     type Response = Option<Encoded>;
     type Error = MqttError<S::Error>;
+    type Data = S::Data;
 
     async fn call(
         &self,
         req: Control<E>,
+        data: &Self::Data,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         match &req {
@@ -148,7 +166,7 @@ where
             }
         }
 
-        ctx.call(&self.svc, req).await.map(|_| None).map_err(MqttError::Service)
+        ctx.call(&self.svc, req, data).await.map(|_| None).map_err(MqttError::Service)
     }
 
     ntex_service::forward_ready!(svc, MqttError::Service);
@@ -178,7 +196,7 @@ mod tests {
             (),
             codec::Codec,
         >::default());
-        let svc = disp.pipeline(ses).await.unwrap();
+        let svc = disp.pipeline(ses, &()).await.unwrap();
 
         assert!(!sink.is_ready());
         shared.set_cap(1);
