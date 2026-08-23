@@ -4,7 +4,8 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin:
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Decoded, IoBoxed, IoRef, IoStatusUpdate, RecvError};
-use ntex_service::{Pipeline, PipelineBinding, PipelineCall, Service};
+use ntex_service::Service;
+use ntex_service::pipeline::{Pipeline, PipelineCall};
 use ntex_util::channel::condition::Condition;
 use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
 
@@ -17,18 +18,15 @@ type Queue<T, E> = RefCell<VecDeque<ServiceResult<Result<T, E>>>>;
 
 pin_project_lite::pin_project! {
     /// Dispatcher for mqtt protocol
-    pub(crate) struct Dispatcher<P, C, U, E>
+    pub(crate) struct Dispatcher<U, E, Err>
     where
-        P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>,
-        P: 'static,
-        C: Service<Control<E>, Response = Option<Response<U>>>,
-        C: 'static,
         U: Encoder,
         U: Decoder,
         U: 'static,
-        E: 'static
+        E: 'static,
+        Err: 'static,
     {
-        inner: DispatcherInner<P, C, U, E>
+        inner: DispatcherInner<U, E, Err>
     }
 }
 
@@ -45,20 +43,19 @@ bitflags::bitflags! {
     }
 }
 
-struct DispatcherInner<P, C, U, E>
+struct DispatcherInner<U, E, Err>
 where
-    P: Service<Request<U>>,
-    C: Service<Control<E>>,
     U: Encoder + Decoder + 'static,
     E: 'static,
+    Err: 'static,
 {
     io: IoBoxed,
     flags: Flags,
     codec: U,
-    service: PipelineBinding<P, Request<U>>,
-    control: PipelineBinding<C, Control<E>>,
-    st: IoDispatcherState<C, E>,
-    state: Rc<DispatcherState<P, U>>,
+    service: Pipeline<Request<U>, Option<Response<U>>, DispatcherError<E>>,
+    control: Pipeline<Control<E>, Option<Response<U>>, Err>,
+    st: IoDispatcherState<U, E, Err>,
+    state: Rc<DispatcherState<U, E>>,
     stopping: Condition,
     read_remains: u32,
     read_remains_prev: u32,
@@ -66,16 +63,16 @@ where
     keepalive_timeout: Seconds,
 }
 
-struct DispatcherState<P, U>
+struct DispatcherState<U, E>
 where
-    P: Service<Request<U>>,
     U: Encoder + Decoder + 'static,
+    E: 'static,
 {
-    error: Cell<Option<IoDispatcherError<P::Error>>>,
+    error: Cell<Option<IoDispatcherError<DispatcherError<E>>>>,
     base: Cell<usize>,
-    queue: Queue<P::Response, P::Error>,
+    queue: Queue<Option<Response<U>>, DispatcherError<E>>,
     waker: LocalWaker,
-    response: Cell<Option<PipelineCall<P, Request<U>>>>,
+    response: Cell<Option<PipelineCall<Request<U>, Option<Response<U>>, DispatcherError<E>>>>,
     response_idx: Cell<usize>,
 }
 
@@ -95,12 +92,12 @@ impl<T> ServiceResult<T> {
 }
 
 #[derive(Debug)]
-enum IoDispatcherState<C: Service<Control<E>>, E: 'static> {
+enum IoDispatcherState<U: Encoder + Decoder, E: 'static, Err: 'static> {
     Processing,
     Backpressure,
-    Stop(Option<PipelineCall<C, Control<E>>>),
-    Shutdown(Option<Result<(), C::Error>>),
-    ShutdownIo(Option<Result<(), C::Error>>),
+    Stop(Option<PipelineCall<Control<E>, Option<Response<U>>, Err>>),
+    Shutdown(Option<Result<(), Err>>),
+    ShutdownIo(Option<Result<(), Err>>),
 }
 
 pub(crate) enum IoDispatcherError<S> {
@@ -114,17 +111,18 @@ enum PollService {
     Ready,
 }
 
-impl<P, C, U, E> Dispatcher<P, C, U, E>
+impl<U, E, Err> Dispatcher<U, E, Err>
 where
-    P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>
-        + 'static,
-    C: Service<Control<E>, Response = Option<Response<U>>> + 'static,
     U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
     <U as Encoder>::Item: 'static,
     E: 'static,
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
-    pub(crate) fn new(io: IoBoxed, codec: U, service: P, control: C) -> Self {
+    pub(crate) fn new<P, C>(io: IoBoxed, codec: U, service: P, control: C) -> Self
+    where
+        P: Service<(), Request<U>, Res = Option<Response<U>>, Error = DispatcherError<E>> + 'static,
+        C: Service<(), Control<E>, Res = Option<Response<U>>, Error = Err> + 'static,
+    {
         let state = Rc::new(DispatcherState {
             error: Cell::new(None),
             base: Cell::new(0),
@@ -146,8 +144,8 @@ where
                 } else {
                     Flags::KA_ENABLED
                 },
-                service: Pipeline::new(service).bind(),
-                control: Pipeline::new(control).bind(),
+                service: Pipeline::new(service),
+                control: Pipeline::new(control),
                 st: IoDispatcherState::Processing,
                 stopping: Condition::new(),
                 read_remains: 0,
@@ -173,15 +171,14 @@ where
     }
 }
 
-impl<P, U> DispatcherState<P, U>
+impl<U, E> DispatcherState<U, E>
 where
-    P: Service<Request<U>, Response = Option<Response<U>>> + 'static,
     U: Encoder<Error = EncodeError> + Decoder<Error = DecodeError>,
     <U as Encoder>::Item: 'static,
 {
     fn handle_result(
         &self,
-        item: Result<P::Response, P::Error>,
+        item: Result<Option<Response<U>>, DispatcherError<E>>,
         response_idx: usize,
         io: &IoRef,
         codec: &U,
@@ -235,16 +232,14 @@ where
     }
 }
 
-impl<P, C, U, E> Future for Dispatcher<P, C, U, E>
+impl<U, E, Err> Future for Dispatcher<U, E, Err>
 where
-    P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>
-        + 'static,
-    C: Service<Control<E>, Response = Option<Response<U>>> + 'static,
     U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
     <U as Encoder>::Item: 'static,
     E: 'static,
+    Err: 'static,
 {
-    type Output = Result<(), C::Error>;
+    type Output = Result<(), Err>;
 
     #[allow(clippy::too_many_lines)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -286,22 +281,22 @@ where
                                 }
                                 Err(RecvError::KeepAlive) => {
                                     if let Err(err) = inner.handle_timeout() {
-                                        inner.stop(inner.control.call(Control::proto(err)));
+                                        inner.stop(inner.control.call_static(Control::proto(err)));
                                     }
                                 }
                                 Err(RecvError::WriteBackpressure) => {
                                     inner.st = IoDispatcherState::Backpressure;
-                                    spawn(inner.control.call(Control::wr(true)));
+                                    spawn(inner.control.call_static(Control::wr(true)));
                                 }
                                 Err(RecvError::Decoder(err)) => {
                                     inner.stop(
-                                        inner
-                                            .control
-                                            .call(Control::proto(ProtocolError::Decode(err))),
+                                        inner.control.call_static(Control::proto(
+                                            ProtocolError::Decode(err),
+                                        )),
                                     );
                                 }
                                 Err(RecvError::PeerGone(err)) => {
-                                    inner.stop(inner.control.call(Control::peer_gone(err)));
+                                    inner.stop(inner.control.call_static(Control::peer_gone(err)));
                                 }
                             }
                         }
@@ -311,10 +306,10 @@ where
                 // handle write back-pressure
                 IoDispatcherState::Backpressure => {
                     if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
-                        inner.stop(inner.control.call(Control::peer_gone(Some(err))));
+                        inner.stop(inner.control.call_static(Control::peer_gone(Some(err))));
                     } else if ready!(inner.poll_service(cx)) == PollService::Ready {
                         inner.st = IoDispatcherState::Processing;
-                        spawn(inner.control.call(Control::wr(false)));
+                        spawn(inner.control.call_static(Control::wr(false)));
                     }
                 }
                 // drain service responses and shutdown io
@@ -370,16 +365,14 @@ where
     }
 }
 
-impl<P, C, U, E> DispatcherInner<P, C, U, E>
+impl<U, E, Err> DispatcherInner<U, E, Err>
 where
-    P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>
-        + 'static,
-    C: Service<Control<E>, Response = Option<Response<U>>> + 'static,
     U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
     <U as Encoder>::Item: 'static,
     E: 'static,
+    Err: 'static,
 {
-    fn stop(&mut self, fut: PipelineCall<C, Control<E>>) {
+    fn stop(&mut self, fut: PipelineCall<Control<E>, Option<Response<U>>, Err>) {
         self.io.stop_timer();
         self.st = IoDispatcherState::Stop(Some(fut));
     }
@@ -404,9 +397,7 @@ where
             spawn(async move {
                 let empty_q = match select(fut, stopping).await {
                     Either::Left(item) => state.handle_result(item, response_idx, &st, &codec),
-                    Either::Right(()) => {
-                        state.handle_result(Ok(None), response_idx, &st, &codec)
-                    }
+                    Either::Right(()) => state.handle_result(Ok(None), response_idx, &st, &codec),
                 };
                 if empty_q {
                     st.notify_dispatcher();
@@ -428,11 +419,15 @@ where
                 }
             } else {
                 queue.push_back(ServiceResult::Ready(res));
-                self.state.response_idx.set(self.state.base.get().wrapping_add(queue.len()));
+                self.state
+                    .response_idx
+                    .set(self.state.base.get().wrapping_add(queue.len()));
             }
         } else {
             self.state.response.set(Some(fut));
-            self.state.response_idx.set(self.state.base.get().wrapping_add(queue.len()));
+            self.state
+                .response_idx
+                .set(self.state.base.get().wrapping_add(queue.len()));
             queue.push_back(ServiceResult::Pending);
         }
     }
@@ -444,11 +439,9 @@ where
             let item = match err {
                 IoDispatcherError::Encoder(err) => Control::proto(ProtocolError::Encode(err)),
                 IoDispatcherError::Service(DispatcherError::Service(err)) => Control::err(err),
-                IoDispatcherError::Service(DispatcherError::Protocol(err)) => {
-                    Control::proto(err)
-                }
+                IoDispatcherError::Service(DispatcherError::Protocol(err)) => Control::proto(err),
             };
-            self.stop(self.control.call(item));
+            self.stop(self.control.call_static(item));
             return Poll::Ready(PollService::Continue);
         }
 
@@ -474,7 +467,8 @@ where
                             self.io.tag()
                         );
                         self.stop(
-                            self.control.call(Control::proto(ProtocolError::KeepAliveTimeout)),
+                            self.control
+                                .call_static(Control::proto(ProtocolError::KeepAliveTimeout)),
                         );
                         Poll::Ready(PollService::Continue)
                     }
@@ -484,26 +478,29 @@ where
                             self.io.tag(),
                             err
                         );
-                        self.stop(self.control.call(Control::peer_gone(err)));
+                        self.stop(self.control.call_static(Control::peer_gone(err)));
                         Poll::Ready(PollService::Continue)
                     }
                     IoStatusUpdate::WriteBackpressure => {
                         self.st = IoDispatcherState::Backpressure;
-                        spawn(self.control.call(Control::wr(true)));
+                        spawn(self.control.call_static(Control::wr(true)));
                         Poll::Ready(PollService::Continue)
                     }
                 }
             }
             // handle service readiness error
             Poll::Ready(Err(DispatcherError::Service(err))) => {
-                log::error!("{}: Service readiness check failed, stopping", self.io.tag());
+                log::error!(
+                    "{}: Service readiness check failed, stopping",
+                    self.io.tag()
+                );
                 self.flags.insert(Flags::READY_ERR);
-                self.stop(self.control.call(Control::err(err)));
+                self.stop(self.control.call_static(Control::err(err)));
                 Poll::Ready(PollService::Continue)
             }
             // handle protocol violations
             Poll::Ready(Err(DispatcherError::Protocol(err))) => {
-                self.stop(self.control.call(Control::proto(err)));
+                self.stop(self.control.call_static(Control::proto(err)));
                 Poll::Ready(PollService::Continue)
             }
         }
@@ -519,8 +516,7 @@ where
             self.read_remains = decoded.remains as u32;
         } else if self.read_remains == 0 && decoded.remains == 0 {
             // no new data, start keep-alive timer
-            if self.flags.contains(Flags::KA_ENABLED) && !self.flags.contains(Flags::KA_TIMEOUT)
-            {
+            if self.flags.contains(Flags::KA_ENABLED) && !self.flags.contains(Flags::KA_TIMEOUT) {
                 log::trace!(
                     "{}: Start keep-alive timer {:?}",
                     self.io.tag(),
@@ -539,7 +535,11 @@ where
             self.read_max_timeout = params.max_timeout;
             self.io.start_timer(params.timeout);
 
-            log::trace!("{}: Start frame read timer {:?}", self.io.tag(), params.timeout);
+            log::trace!(
+                "{}: Start frame read timer {:?}",
+                self.io.tag(),
+                params.timeout
+            );
         }
     }
 
@@ -589,7 +589,7 @@ mod tests {
 
     use ntex_bytes::{BytePages, Bytes, BytesMut};
     use ntex_io::{self as nio, IoConfig, testing::IoTest as Io};
-    use ntex_service::{IntoService, ServiceCtx, cfg::SharedCfg, fn_service};
+    use ntex_service::{Ctx, IntoService, cfg::SharedCfg, fn_service};
     use ntex_util::channel::{condition::Condition, oneshot};
     use ntex_util::time::{Millis, sleep};
     use rand::RngExt;
@@ -626,9 +626,8 @@ mod tests {
 
     impl<P, C, U, E> Dispatcher<P, C, U, E>
     where
-        P: Service<Request<U>, Response = Option<Response<U>>, Error = DispatcherError<E>>
-            + 'static,
-        C: Service<Control<E>, Response = Option<Response<U>>> + 'static,
+        P: Service<Request<U>, Res = Option<Response<U>>, Error = DispatcherError<E>> + 'static,
+        C: Service<Control<E>, Res = Option<Response<U>>> + 'static,
         U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
         E: 'static,
     {
@@ -929,16 +928,15 @@ mod tests {
         let (disp, io) = Dispatcher::new_debug(
             nio::Io::new(server, SharedCfg::new("DBG")),
             BytesCodec,
-            fn_service(async move |_: Bytes| {
-                Err::<Option<Bytes>, _>(DispatcherError::Service(()))
-            }),
+            fn_service(async move |_: Bytes| Err::<Option<Bytes>, _>(DispatcherError::Service(()))),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         ntex_util::spawn(async move {
             let _ = disp.await;
         });
 
-        io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec).unwrap();
+        io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec)
+            .unwrap();
 
         // buffer should be flushed
         client.remote_buffer_cap(1024);
@@ -959,19 +957,15 @@ mod tests {
         struct Srv(Rc<Cell<usize>>);
 
         impl Service<Bytes> for Srv {
-            type Response = Option<Bytes>;
+            type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
 
-            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+            async fn ready(&self, _: Ctx<'_, Self>) -> Result<(), Self::Error> {
                 self.0.set(self.0.get() + 1);
                 Err(DispatcherError::Service(()))
             }
 
-            async fn call(
-                &self,
-                _: Bytes,
-                _: ServiceCtx<'_, Self>,
-            ) -> Result<Option<Bytes>, Self::Error> {
+            async fn call(&self, _: Bytes, _: Ctx<'_, Self>) -> Result<Option<Bytes>, Self::Error> {
                 Ok(None)
             }
         }
@@ -988,7 +982,8 @@ mod tests {
             Srv(counter.clone()),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
-        io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec).unwrap();
+        io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec)
+            .unwrap();
         ntex_util::spawn(async move {
             let _ = disp.await;
         });
@@ -1022,7 +1017,9 @@ mod tests {
         let data3 = data.clone();
 
         let config = SharedCfg::new("DBG").add(
-            IoConfig::new().set_read_buf(8 * 1024, 1024, 16).set_write_buf(32 * 1024, 1024, 16),
+            IoConfig::new()
+                .set_read_buf(8 * 1024, 1024, 16)
+                .set_write_buf(32 * 1024, 1024, 16),
         );
 
         let (disp, io) = Dispatcher::new_debug(
@@ -1209,11 +1206,9 @@ mod tests {
         let data3 = data.clone();
 
         let config = SharedCfg::new("BDG").add(
-            IoConfig::new().set_keepalive_timeout(Seconds(0)).set_frame_read_rate(
-                Seconds(1),
-                Seconds(2),
-                2,
-            ),
+            IoConfig::new()
+                .set_keepalive_timeout(Seconds(0))
+                .set_frame_read_rate(Seconds(1), Seconds(2), 2),
         );
 
         let (disp, _) = Dispatcher::new_debug(
@@ -1256,11 +1251,9 @@ mod tests {
         let data3 = data.clone();
 
         let config = SharedCfg::new("DBG").add(
-            IoConfig::new().set_keepalive_timeout(Seconds::ZERO).set_frame_read_rate(
-                Seconds(1),
-                Seconds(2),
-                2,
-            ),
+            IoConfig::new()
+                .set_keepalive_timeout(Seconds::ZERO)
+                .set_frame_read_rate(Seconds(1), Seconds(2), 2),
         );
 
         let (disp, state) = Dispatcher::new_debug(
@@ -1320,11 +1313,9 @@ mod tests {
         let data2 = OnDrop(data.clone());
 
         let config = SharedCfg::new("DBG").add(
-            IoConfig::new().set_keepalive_timeout(Seconds(0)).set_frame_read_rate(
-                Seconds(1),
-                Seconds(2),
-                2,
-            ),
+            IoConfig::new()
+                .set_keepalive_timeout(Seconds(0))
+                .set_frame_read_rate(Seconds(1), Seconds(2), 2),
         );
 
         let (disp, _) = Dispatcher::new_debug(
@@ -1367,21 +1358,17 @@ mod tests {
         struct Srv(Cell<bool>, OnDrop);
 
         impl Service<Bytes> for Srv {
-            type Response = Option<Bytes>;
+            type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
 
-            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+            async fn ready(&self, _: Ctx<'_, Self>) -> Result<(), Self::Error> {
                 if self.0.get() {
                     sleep(Millis(999_999)).await;
                 }
                 Ok(())
             }
 
-            async fn call(
-                &self,
-                _: Bytes,
-                _: ServiceCtx<'_, Self>,
-            ) -> Result<Option<Bytes>, Self::Error> {
+            async fn call(&self, _: Bytes, _: Ctx<'_, Self>) -> Result<Option<Bytes>, Self::Error> {
                 let _data = self.1.clone();
                 self.0.set(true);
                 sleep(Millis(999_999)).await;
@@ -1420,10 +1407,10 @@ mod tests {
         struct Srv(Cell<bool>, Cell<Option<oneshot::Receiver<()>>>);
 
         impl Service<Bytes> for Srv {
-            type Response = Option<Bytes>;
+            type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
 
-            async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+            async fn ready(&self, _: Ctx<'_, Self>) -> Result<(), Self::Error> {
                 if self.0.get()
                     && let Some(rx) = self.1.take()
                 {
@@ -1435,7 +1422,7 @@ mod tests {
             async fn call(
                 &self,
                 msg: Bytes,
-                _: ServiceCtx<'_, Self>,
+                _: Ctx<'_, Self>,
             ) -> Result<Option<Bytes>, Self::Error> {
                 self.0.set(true);
                 Ok(Some(msg))

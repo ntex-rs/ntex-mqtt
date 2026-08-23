@@ -137,7 +137,10 @@ impl Disconnect {
                     session_expiry_interval_secs: session_exp_secs,
                 }
             } else {
-                Self { reason_code, ..Default::default() }
+                Self {
+                    reason_code,
+                    ..Default::default()
+                }
             }
         } else {
             Self::default()

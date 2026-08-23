@@ -106,8 +106,8 @@ impl ConnectAckReason {
 impl ConnectAck {
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
-        let flags = ConnectAckFlags::from_bits(src.get_u8())
-            .ok_or(DecodeError::ConnAckReservedFlagSet)?;
+        let flags =
+            ConnectAckFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnAckReservedFlagSet)?;
 
         let reason_code = src.get_u8().try_into()?;
 
@@ -192,14 +192,8 @@ impl encode::EncodeLtd for ConnectAck {
             + encode::encoded_property_size(&self.max_packet_size)
             + encode::encoded_property_size(&self.assigned_client_id)
             + encode::encoded_property_size_default(&self.retain_available, true)
-            + encode::encoded_property_size_default(
-                &self.wildcard_subscription_available,
-                true,
-            )
-            + encode::encoded_property_size_default(
-                &self.subscription_identifiers_available,
-                true,
-            )
+            + encode::encoded_property_size_default(&self.wildcard_subscription_available, true)
+            + encode::encoded_property_size_default(&self.subscription_identifiers_available, true)
             + encode::encoded_property_size_default(&self.shared_subscription_available, true)
             + encode::encoded_property_size(&self.server_keepalive_sec)
             + encode::encoded_property_size(&self.response_info)

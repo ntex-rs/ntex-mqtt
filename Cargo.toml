@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "8.2.1"
+version = "9.0.0-beta.0"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -9,21 +9,22 @@ categories = ["network-programming"]
 keywords = ["MQTT", "IoT", "messaging"]
 license = "MIT OR Apache-2.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 
 [package.metadata.docs.rs]
 features = ["ntex-net/tokio"]
 
 [dependencies]
-ntex-error = "2.2"
-ntex-io = "3.12.2"
-ntex-net = "3.12"
-ntex-service = "4.6"
-ntex-bytes = "1.7.0"
-ntex-codec = "1.2.1"
+ntex-bytes = "1.9.0"
+ntex-codec = "1.2"
+ntex-error = "2.4"
+ntex-io = "4.0.0-beta.0"
+ntex-net = "4.0.0-beta.0"
+ntex-service = "5.0.0-beta.0"
 ntex-router = "1"
-ntex-rt = "3.14"
-ntex-util = "3.6.1"
+ntex-rt = "3.17"
+ntex-util = "4.0.0-beta.0"
+
 bitflags = "2"
 log = "0.4"
 pin-project-lite = "0.2"
@@ -34,8 +35,20 @@ thiserror = "2"
 [dev-dependencies]
 rand = "0.10"
 env_logger = "0.11"
-ntex-tls = "3.6.1"
+ntex-tls = "4.0.0-beta.0"
 openssl = "0.10"
 oneshot = { version = "0.2.1", features = ["std", "async"] }
 test-case = "3.2"
-ntex = { version = "3.9.6", features = ["openssl"] }
+ntex = { version = "4.0.0-beta.0", features = ["openssl"] }
+
+[patch.crates-io]
+ntex = { path = "../../ntex/ntex" }
+ntex-h2 = { path = "../ntex-h2" }
+ntex-dispatcher = { path = "../../ntex/ntex-dispatcher" }
+ntex-io = { path = "../../ntex/ntex-io" }
+ntex-macros = { path = "../../ntex/ntex-macros" }
+ntex-net = { path = "../../ntex/ntex-net" }
+ntex-service = { path = "../../ntex/ntex-service" }
+ntex-tls = { path = "../../ntex/ntex-tls" }
+ntex-util = { path = "../../ntex/ntex-util" }
+ntex-server = { path = "../../ntex/ntex-server" }

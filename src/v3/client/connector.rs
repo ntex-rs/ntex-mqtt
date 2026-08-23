@@ -3,7 +3,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 use ntex_io::IoBoxed;
 use ntex_net::connect::{self, Address, Connector};
 use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
 use ntex_util::time::{Seconds, timeout_checked};
 
 use super::{Connect, connection::Client, error::ClientError, error::ProtocolError};
@@ -59,26 +59,31 @@ where
     /// Use custom connector
     pub fn connector<U, F>(self, connector: F) -> MqttConnector<A, U>
     where
-        F: IntoServiceFactory<U, connect::Connect<A>, SharedCfg>,
-        U: ServiceFactory<connect::Connect<A>, SharedCfg, Error = connect::ConnectError>,
-        IoBoxed: From<U::Response>,
+        F: IntoServiceFactory<U, (), connect::Connect<A>, SharedCfg>,
+        U: ServiceFactory<(), connect::Connect<A>, SharedCfg, Error = connect::ConnectError>,
+        IoBoxed: From<U::Res>,
     {
-        MqttConnector { connector: connector.into_factory(), pool: self.pool, _t: PhantomData }
+        MqttConnector {
+            connector: connector.into_factory(),
+            pool: self.pool,
+            _t: PhantomData,
+        }
     }
 }
 
-impl<A, T> ServiceFactory<Connect<A>, SharedCfg> for MqttConnector<A, T>
+impl<A, T> ServiceFactory<(), Connect<A>, SharedCfg> for MqttConnector<A, T>
 where
     A: Address,
-    T: ServiceFactory<connect::Connect<A>, SharedCfg, Error = connect::ConnectError>,
-    IoBoxed: From<T::Response>,
+    T: ServiceFactory<(), connect::Connect<A>, SharedCfg, Error = connect::ConnectError>,
+    IoBoxed: From<T::Res>,
 {
-    type Response = Client;
+    type Res = Client;
     type Error = ClientError<codec::ConnectAck>;
+
     type Service = MqttConnectorService<A, T::Service>;
     type InitError = T::InitError;
 
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &SharedCfg) -> Result<Self::Service, Self::InitError> {
         Ok(MqttConnectorService {
             cfg: cfg.get(),
             connector: self.connector.create(cfg).await?,
@@ -88,47 +93,48 @@ where
     }
 }
 
-impl<A, T> Service<Connect<A>> for MqttConnectorService<A, T>
+impl<A, T> Service<(), Connect<A>> for MqttConnectorService<A, T>
 where
     A: Address,
-    T: Service<connect::Connect<A>, Error = connect::ConnectError>,
-    IoBoxed: From<T::Response>,
+    T: Service<(), connect::Connect<A>, Error = connect::ConnectError>,
+    IoBoxed: From<T::Res>,
 {
-    type Response = Client;
+    type Res = Client;
     type Error = ClientError<codec::ConnectAck>;
 
-    ntex_service::forward_ready!(connector);
-    ntex_service::forward_poll!(connector);
-    ntex_service::forward_shutdown!(connector);
+    ntex_service::forward_ready!((), connector);
+    ntex_service::forward_shutdown!((), connector);
 
     /// Connect to mqtt server
-    async fn call(
-        &self,
-        req: Connect<A>,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Client, Self::Error> {
+    async fn call(&self, req: Connect<A>, ctx: Ctx<'_, Self, ()>) -> Result<Client, Self::Error> {
         let (addr, pkt) = req.into_parts();
 
-        timeout_checked(self.cfg.handshake_timeout, self.connect_inner(addr, pkt, ctx))
-            .await
-            .map_err(|()| ClientError::HandshakeTimeout)
-            .and_then(|res| res)
+        timeout_checked(
+            self.cfg.handshake_timeout,
+            self.connect_inner(addr, pkt, ctx),
+        )
+        .await
+        .map_err(|()| ClientError::HandshakeTimeout)
+        .and_then(|res| res)
     }
 }
 
 impl<A, T> MqttConnectorService<A, T>
 where
     A: Address,
-    T: Service<connect::Connect<A>, Error = connect::ConnectError>,
-    IoBoxed: From<T::Response>,
+    T: Service<(), connect::Connect<A>, Error = connect::ConnectError>,
+    IoBoxed: From<T::Res>,
 {
     async fn connect_inner(
         &self,
         addr: A,
         pkt: codec::Connect,
-        ctx: ServiceCtx<'_, Self>,
+        ctx: Ctx<'_, Self, ()>,
     ) -> Result<Client, ClientError<codec::ConnectAck>> {
-        let io: IoBoxed = ctx.call(&self.connector, connect::Connect::new(addr)).await?.into();
+        let io: IoBoxed = ctx
+            .call(&self.connector, connect::Connect::new(addr))
+            .await?
+            .into();
         let pool = self.pool.clone();
         let keepalive_timeout = pkt.keep_alive;
         let codec = codec::Codec::new();
@@ -137,10 +143,14 @@ where
 
         io.encode(Encoded::Packet(pkt.into()), &codec)?;
 
-        let packet = io.recv(&codec).await.map_err(ClientError::from)?.ok_or_else(|| {
-            log::trace!("Mqtt server is disconnected during handshake");
-            ClientError::Disconnected(None)
-        })?;
+        let packet = io
+            .recv(&codec)
+            .await
+            .map_err(ClientError::from)?
+            .ok_or_else(|| {
+                log::trace!("Mqtt server is disconnected during handshake");
+                ClientError::Disconnected(None)
+            })?;
 
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, true, pool));
 

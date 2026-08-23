@@ -23,27 +23,31 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
     }
 }
 
-async fn handshake_v3(
-    handshake: v3::Handshake,
-) -> Result<v3::HandshakeAck<Session>, ServerError> {
+async fn handshake_v3(handshake: v3::Handshake) -> Result<v3::HandshakeAck<Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session, false))
 }
 
 async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
-    log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
+    log::info!(
+        "incoming publish: {:?} -> {:?}",
+        publish.id(),
+        publish.topic()
+    );
     Ok(())
 }
 
-async fn handshake_v5(
-    handshake: v5::Handshake,
-) -> Result<v5::HandshakeAck<Session>, ServerError> {
+async fn handshake_v5(handshake: v5::Handshake) -> Result<v5::HandshakeAck<Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session))
 }
 
 async fn publish_v5(publish: v5::Publish) -> Result<v5::PublishAck, ServerError> {
-    log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
+    log::info!(
+        "incoming publish: {:?} -> {:?}",
+        publish.id(),
+        publish.topic()
+    );
     Ok(publish.ack())
 }
 
@@ -56,8 +60,12 @@ async fn main() -> std::io::Result<()> {
     //   openssl req -x509 -nodes -subj '/CN=localhost' -newkey rsa:4096 -keyout examples/key8.pem -out examples/cert.pem -days 365 -keyform PEM
     //   openssl rsa -in examples/key8.pem -out examples/key.pem
     let mut builder = ssl::SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-    builder.set_private_key_file("./tests/key.pem", SslFiletype::PEM).unwrap();
-    builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
+    builder
+        .set_private_key_file("./tests/key.pem", SslFiletype::PEM)
+        .unwrap();
+    builder
+        .set_certificate_chain_file("./tests/cert.pem")
+        .unwrap();
     let acceptor = builder.build();
 
     ntex::server::build()

@@ -57,10 +57,7 @@ impl TopicFilterLevel {
     }
 }
 
-fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(
-    superset: &TopicFilter,
-    subset: L,
-) -> bool {
+fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(superset: &TopicFilter, subset: L) -> bool {
     let mut superset = superset.0.iter();
 
     for (index, subset_level) in subset.enumerate() {
@@ -97,11 +94,14 @@ impl TopicFilter {
             .iter()
             .position(|level| !level.is_valid())
             .or_else(|| {
-                self.0.iter().enumerate().position(|(pos, level)| match *level {
-                    TopicFilterLevel::MultiWildcard => pos != self.0.len() - 1,
-                    TopicFilterLevel::System(_) => pos != 0,
-                    _ => false,
-                })
+                self.0
+                    .iter()
+                    .enumerate()
+                    .position(|(pos, level)| match *level {
+                        TopicFilterLevel::MultiWildcard => pos != self.0.len() - 1,
+                        TopicFilterLevel::System(_) => pos != 0,
+                        _ => false,
+                    })
             })
             .is_none()
     }
@@ -241,9 +241,7 @@ impl std::str::FromStr for TopicFilter {
 impl fmt::Display for TopicFilterLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TopicFilterLevel::Normal(s) | TopicFilterLevel::System(s) => {
-                f.write_str(s.as_str())
-            }
+            TopicFilterLevel::Normal(s) | TopicFilterLevel::System(s) => f.write_str(s.as_str()),
             TopicFilterLevel::Blank => Ok(()),
             TopicFilterLevel::SingleWildcard => f.write_char('+'),
             TopicFilterLevel::MultiWildcard => f.write_char('#'),
@@ -305,9 +303,7 @@ fn is_system<T: AsRef<str>>(s: T) -> bool {
 }
 
 fn recover_bstr(superset: &ByteString, subset: &str) -> ByteString {
-    unsafe {
-        ByteString::from_bytes_unchecked(superset.as_bytes().slice_ref(subset.as_bytes()))
-    }
+    unsafe { ByteString::from_bytes_unchecked(superset.as_bytes().slice_ref(subset.as_bytes())) }
 }
 
 #[cfg(test)]

@@ -21,13 +21,10 @@ async fn main() -> std::io::Result<()> {
 
     // we need custom connector that would open ws connection and enable ws transport
     let ws_client = Rc::new(
-        ws::WsClient::with_connector(
-            "https://127.0.0.1:8883",
-            SslConnector::new(builder.build()),
-        )
-        .build(SharedCfg::default())
-        .await
-        .unwrap(),
+        ws::WsClient::with_connector("https://127.0.0.1:8883", SslConnector::new(builder.build()))
+            .build(SharedCfg::default())
+            .await
+            .unwrap(),
     );
 
     // connect to server
@@ -69,7 +66,10 @@ async fn main() -> std::io::Result<()> {
     });
     ntex::rt::spawn(router.start_default());
 
-    sink.publish("test-topic").send_at_least_once(Bytes::from_static(b"data")).await.unwrap();
+    sink.publish("test-topic")
+        .send_at_least_once(Bytes::from_static(b"data"))
+        .await
+        .unwrap();
     println!("ack is received");
 
     sleep(Millis(10_000)).await;

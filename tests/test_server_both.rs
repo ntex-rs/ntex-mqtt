@@ -47,8 +47,10 @@ async fn test_simple() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("topic"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
     sink.close();
 
@@ -63,8 +65,10 @@ async fn test_simple() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("topic"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
     sink.close();
 

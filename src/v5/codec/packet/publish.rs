@@ -172,10 +172,14 @@ impl encode::EncodeLtd for Publish {
                 return Err(EncodeError::MalformedPacket); // packet id must not be set
             }
         } else {
-            self.packet_id.ok_or(EncodeError::PacketIdRequired)?.encode(buf)?;
+            self.packet_id
+                .ok_or(EncodeError::PacketIdRequired)?
+                .encode(buf)?;
         }
-        self.properties
-            .encode(buf, size - (buf.len() - start_len + self.payload_size as usize) as u32)?;
+        self.properties.encode(
+            buf,
+            size - (buf.len() - start_len + self.payload_size as usize) as u32,
+        )?;
 
         Ok(())
     }
@@ -189,10 +193,9 @@ impl encode::EncodeLtd for PublishProperties {
             + encode::encoded_property_size(&self.content_type)
             + encode::encoded_property_size_default(&self.is_utf8_payload, false)
             + encode::encoded_property_size(&self.response_topic)
-            + self
-                .subscription_ids
-                .iter()
-                .fold(0, |acc, id| acc + 1 + encode::var_int_len(id.get() as usize) as usize)
+            + self.subscription_ids.iter().fold(0, |acc, id| {
+                acc + 1 + encode::var_int_len(id.get() as usize) as usize
+            })
             + self.user_properties.encoded_size();
         prop_len + encode::var_int_len(prop_len) as usize
     }

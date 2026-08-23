@@ -14,21 +14,13 @@ pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, De
         packet_type::CONNECT => decode_connect_packet(&mut src),
         packet_type::CONNACK => decode_connect_ack_packet(&mut src),
         packet_type::PUBACK => decode_ack(src, |packet_id| Packet::PublishAck { packet_id }),
-        packet_type::PUBREC => {
-            decode_ack(src, |packet_id| Packet::PublishReceived { packet_id })
-        }
-        packet_type::PUBREL => {
-            decode_ack(src, |packet_id| Packet::PublishRelease { packet_id })
-        }
-        packet_type::PUBCOMP => {
-            decode_ack(src, |packet_id| Packet::PublishComplete { packet_id })
-        }
+        packet_type::PUBREC => decode_ack(src, |packet_id| Packet::PublishReceived { packet_id }),
+        packet_type::PUBREL => decode_ack(src, |packet_id| Packet::PublishRelease { packet_id }),
+        packet_type::PUBCOMP => decode_ack(src, |packet_id| Packet::PublishComplete { packet_id }),
         packet_type::SUBSCRIBE => decode_subscribe_packet(&mut src),
         packet_type::SUBACK => decode_subscribe_ack_packet(&mut src),
         packet_type::UNSUBSCRIBE => decode_unsubscribe_packet(&mut src),
-        packet_type::UNSUBACK => {
-            decode_ack(src, |packet_id| Packet::UnsubscribeAck { packet_id })
-        }
+        packet_type::UNSUBACK => decode_ack(src, |packet_id| Packet::UnsubscribeAck { packet_id }),
         packet_type::PINGREQ => Ok(Packet::PingRequest),
         packet_type::PINGRESP => Ok(Packet::PingResponse),
         packet_type::DISCONNECT => Ok(Packet::Disconnect),
@@ -47,14 +39,16 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
     let len = src.get_u16();
 
-    ensure!(len == 4 && &src.as_ref()[0..4] == MQTT, DecodeError::InvalidProtocol);
+    ensure!(
+        len == 4 && &src.as_ref()[0..4] == MQTT,
+        DecodeError::InvalidProtocol
+    );
     src.advance(4);
 
     let level = src.get_u8();
     ensure!(level == MQTT_LEVEL_3, DecodeError::UnsupportedProtocolLevel);
 
-    let flags =
-        ConnectFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnectReservedFlagSet)?;
+    let flags = ConnectFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnectReservedFlagSet)?;
 
     let keep_alive = u16::decode(src)?;
     let client_id = ByteString::decode(src)?;
@@ -157,7 +151,10 @@ fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
         topic_filters.push((topic, qos));
     }
 
-    Ok(Packet::Subscribe { packet_id, topic_filters })
+    Ok(Packet::Subscribe {
+        packet_id,
+        topic_filters,
+    })
 }
 
 fn decode_subscribe_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
@@ -179,7 +176,10 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     while src.remaining() > 0 {
         topic_filters.push(ByteString::decode(src)?);
     }
-    Ok(Packet::Unsubscribe { packet_id, topic_filters })
+    Ok(Packet::Unsubscribe {
+        packet_id,
+        topic_filters,
+    })
 }
 
 #[cfg(test)]
@@ -329,19 +329,27 @@ mod tests {
 
         assert_decode_packet!(
             b"\x40\x02\x43\x21",
-            Packet::PublishAck { packet_id: packet_id(0x4321) }
+            Packet::PublishAck {
+                packet_id: packet_id(0x4321)
+            }
         );
         assert_decode_packet!(
             b"\x50\x02\x43\x21",
-            Packet::PublishReceived { packet_id: packet_id(0x4321) }
+            Packet::PublishReceived {
+                packet_id: packet_id(0x4321)
+            }
         );
         assert_decode_packet!(
             b"\x62\x02\x43\x21",
-            Packet::PublishRelease { packet_id: packet_id(0x4321) }
+            Packet::PublishRelease {
+                packet_id: packet_id(0x4321)
+            }
         );
         assert_decode_packet!(
             b"\x70\x02\x43\x21",
-            Packet::PublishComplete { packet_id: packet_id(0x4321) }
+            Packet::PublishComplete {
+                packet_id: packet_id(0x4321)
+            }
         );
     }
 
@@ -350,7 +358,10 @@ mod tests {
         let p = Packet::Subscribe {
             packet_id: packet_id(0x1234),
             topic_filters: vec![
-                (ByteString::try_from(Bytes::from_static(b"test")).unwrap(), QoS::AtLeastOnce),
+                (
+                    ByteString::try_from(Bytes::from_static(b"test")).unwrap(),
+                    QoS::AtLeastOnce,
+                ),
                 (
                     ByteString::try_from(Bytes::from_static(b"filter")).unwrap(),
                     QoS::ExactlyOnce,
@@ -399,7 +410,9 @@ mod tests {
 
         assert_decode_packet!(
             b"\xb0\x02\x43\x21",
-            Packet::UnsubscribeAck { packet_id: packet_id(0x4321) }
+            Packet::UnsubscribeAck {
+                packet_id: packet_id(0x4321)
+            }
         );
     }
 

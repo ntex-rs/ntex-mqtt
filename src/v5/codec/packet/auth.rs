@@ -48,9 +48,18 @@ impl Auth {
                     ensure!(!src.has_remaining(), DecodeError::InvalidLength);
                 }
 
-                Self { reason_code, auth_method, auth_data, reason_string, user_properties }
+                Self {
+                    reason_code,
+                    auth_method,
+                    auth_data,
+                    reason_string,
+                    user_properties,
+                }
             } else {
-                Self { reason_code, ..Default::default() }
+                Self {
+                    reason_code,
+                    ..Default::default()
+                }
             }
         } else {
             Self::default()

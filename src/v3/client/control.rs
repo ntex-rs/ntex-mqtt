@@ -29,7 +29,9 @@ impl ProtocolMessage {
     #[inline]
     /// Initiate clean disconnect
     pub(super) fn disconnect() -> ProtocolMessageAck {
-        ProtocolMessageAck { result: ProtocolMessageKind::Disconnect }
+        ProtocolMessageAck {
+            result: ProtocolMessageKind::Disconnect,
+        }
     }
 
     /// Ack control message
@@ -85,18 +87,32 @@ impl Publish {
     #[inline]
     pub fn ack(self) -> ProtocolMessageAck {
         if let Some(id) = self.0.packet_id {
-            ProtocolMessageAck { result: ProtocolMessageKind::PublishAck(id) }
+            ProtocolMessageAck {
+                result: ProtocolMessageKind::PublishAck(id),
+            }
         } else {
-            ProtocolMessageAck { result: ProtocolMessageKind::Nothing }
+            ProtocolMessageAck {
+                result: ProtocolMessageKind::Nothing,
+            }
         }
     }
 
     #[inline]
     pub fn into_inner(self) -> (ProtocolMessageAck, codec::Publish) {
         if let Some(id) = self.0.packet_id {
-            (ProtocolMessageAck { result: ProtocolMessageKind::PublishAck(id) }, self.0)
+            (
+                ProtocolMessageAck {
+                    result: ProtocolMessageKind::PublishAck(id),
+                },
+                self.0,
+            )
         } else {
-            (ProtocolMessageAck { result: ProtocolMessageKind::Nothing }, self.0)
+            (
+                ProtocolMessageAck {
+                    result: ProtocolMessageKind::Nothing,
+                },
+                self.0,
+            )
         }
     }
 }

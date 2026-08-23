@@ -76,11 +76,16 @@ async fn test_simple() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("test")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("test"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
 
-    let res = sink.publish(ByteString::from_static("#")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("#"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_err());
 
     sink.close();
@@ -121,7 +126,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(10);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -133,7 +140,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     // pkt 2
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(5);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(5);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"22")).await.unwrap();
@@ -145,7 +154,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     // pkt 3
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(2);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(2);
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"33")).await.unwrap();
     });
@@ -159,7 +170,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
         .await;
     assert!(res.is_ok());
 
-    let (fut, _) = sink.publish(ByteString::from_static("#")).stream_at_least_once(12);
+    let (fut, _) = sink
+        .publish(ByteString::from_static("#"))
+        .stream_at_least_once(12);
     let res = fut.await;
     assert!(res.is_err());
 
@@ -219,8 +232,10 @@ async fn test_simple_streaming2() {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (fut, payload) =
-        sink.publish(ByteString::from_static("test")).retain(true).stream_at_least_once(10);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .retain(true)
+        .stream_at_least_once(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -231,7 +246,10 @@ async fn test_simple_streaming2() {
     let res = fut.await;
     assert!(res.is_ok());
 
-    assert_eq!(&chunks.lock().unwrap()[..], vec![Bytes::from_static(b"1111111111"),]);
+    assert_eq!(
+        &chunks.lock().unwrap()[..],
+        vec![Bytes::from_static(b"1111111111"),]
+    );
 }
 
 #[ntex::test]
@@ -289,7 +307,10 @@ async fn test_disconnect() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
-    let res = sink.publish(ByteString::from_static("#")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("#"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_err());
 
     Ok(())
@@ -327,7 +348,10 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
-    let res = sink.publish(ByteString::from_static("#")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("#"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_err());
 
     Ok(())
@@ -354,13 +378,18 @@ async fn test_nested_errors_handling() -> std::io::Result<()> {
     // connect to server
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     // disconnect
-    io.send(Encoded::Packet(codec::Disconnect::default().into()), &codec).await.unwrap();
+    io.send(Encoded::Packet(codec::Disconnect::default().into()), &codec)
+        .await
+        .unwrap();
     assert!(io.recv(&codec).await.unwrap().is_none());
 
     Ok(())
@@ -394,13 +423,18 @@ async fn test_disconnect_on_error() -> std::io::Result<()> {
     // connect to server
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     // disconnect
-    io.send(Encoded::Packet(codec::Disconnect::default().into()), &codec).await.unwrap();
+    io.send(Encoded::Packet(codec::Disconnect::default().into()), &codec)
+        .await
+        .unwrap();
     let res = io.recv(&codec).await.unwrap();
     assert!(res.is_none());
 
@@ -478,9 +512,12 @@ async fn test_qos2() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::new();
-    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     let id = NonZeroU16::new(1).unwrap();
@@ -604,12 +641,17 @@ async fn test_ping() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::new();
-    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
-    io.send(Encoded::Packet(Packet::PingRequest), &codec).await.unwrap();
+    io.send(Encoded::Packet(Packet::PingRequest), &codec)
+        .await
+        .unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(packet(pkt), Packet::PingResponse);
     assert!(ping.load(Relaxed));
@@ -640,14 +682,20 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
         Encoded::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() },
+            codec::Publish {
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                ..pkt_publish()
+            },
             None,
         ),
         &codec,
@@ -714,7 +762,12 @@ async fn test_dups() {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(codec::Connect::default().client_id("user").receive_max(2).into()),
+        Encoded::Packet(
+            codec::Connect::default()
+                .client_id("user")
+                .receive_max(2)
+                .into(),
+        ),
         &codec,
     )
     .await
@@ -723,7 +776,10 @@ async fn test_dups() {
 
     io.send(
         Encoded::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() },
+            codec::Publish {
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                ..pkt_publish()
+            },
             None,
         ),
         &codec,
@@ -734,7 +790,10 @@ async fn test_dups() {
     // send packet_id dup
     io.send(
         Encoded::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() },
+            codec::Publish {
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                ..pkt_publish()
+            },
             None,
         ),
         &codec,
@@ -843,7 +902,9 @@ async fn test_max_receive() {
     })
     .config(
         SharedCfg::new("MQTT").add(
-            MqttServiceConfig::new().set_max_receive(1).set_max_qos(codec::QoS::AtLeastOnce),
+            MqttServiceConfig::new()
+                .set_max_receive(1)
+                .set_max_qos(codec::QoS::AtLeastOnce),
         ),
     )
     .start();
@@ -871,7 +932,10 @@ async fn test_max_receive() {
 
     io.send(
         Encoded::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() },
+            codec::Publish {
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                ..pkt_publish()
+            },
             None,
         ),
         &codec,
@@ -880,7 +944,10 @@ async fn test_max_receive() {
     .unwrap();
     io.send(
         Encoded::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() },
+            codec::Publish {
+                packet_id: Some(NonZeroU16::new(2).unwrap()),
+                ..pkt_publish()
+            },
             None,
         ),
         &codec,
@@ -908,19 +975,19 @@ async fn test_keepalive() {
     let srv = server::test_server(async move || {
         let ka = ka2.clone();
 
-        MqttServer::new(async move |con: Handshake| {
-            Ok::<_, TestError>(con.ack(St).keep_alive(1))
-        })
-        .control(async move |msg| match msg {
-            Control::Stop(Reason::Protocol(msg)) => {
-                if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
-                    ka.store(true, Relaxed);
+        MqttServer::new(async move |con: Handshake| Ok::<_, TestError>(con.ack(St).keep_alive(1)))
+            .control(async move |msg| match msg {
+                Control::Stop(Reason::Protocol(msg)) => {
+                    if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
+                        ka.store(true, Relaxed);
+                    }
+                    Ok::<_, TestError>(None)
                 }
-                Ok::<_, TestError>(None)
-            }
-            _ => Ok(Some(codec::Packet::from(codec::Disconnect::default()).into())),
-        })
-        .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
+                _ => Ok(Some(
+                    codec::Packet::from(codec::Disconnect::default()).into(),
+                )),
+            })
+            .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
     });
 
     // connect to server
@@ -950,9 +1017,9 @@ async fn test_keepalive2() {
     let srv = server::test_server(async move || {
         let ka = ka2.clone();
 
-        MqttServer::new(|con: Handshake| async move {
-            Ok::<_, TestError>(con.ack(St).keep_alive(1))
-        })
+        MqttServer::new(
+            |con: Handshake| async move { Ok::<_, TestError>(con.ack(St).keep_alive(1)) },
+        )
         .control(async move |msg| match msg {
             Control::Stop(Reason::Protocol(msg)) => {
                 if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
@@ -960,7 +1027,9 @@ async fn test_keepalive2() {
                 }
                 Ok::<_, TestError>(None)
             }
-            _ => Ok(Some(codec::Packet::from(codec::Disconnect::default()).into())),
+            _ => Ok(Some(
+                codec::Packet::from(codec::Disconnect::default()).into(),
+            )),
         })
         .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
     });
@@ -979,12 +1048,16 @@ async fn test_keepalive2() {
     ntex::rt::spawn(client.start_default());
 
     assert!(sink.is_open());
-    let res =
-        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("topic"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
     sleep(Duration::from_millis(500)).await;
-    let res =
-        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("topic"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
     sleep(Duration::from_millis(2000)).await;
 
@@ -1000,9 +1073,9 @@ async fn test_keepalive3() {
     let srv = server::TestServerBuilder::new(async move || {
         let ka = ka2.clone();
 
-        MqttServer::new(|con: Handshake| async move {
-            Ok::<_, TestError>(con.ack(St).keep_alive(1))
-        })
+        MqttServer::new(
+            |con: Handshake| async move { Ok::<_, TestError>(con.ack(St).keep_alive(1)) },
+        )
         .control(async move |msg| match msg {
             Control::Stop(Reason::Protocol(msg)) => {
                 if let &error::ProtocolError::ReadTimeout = msg.get_ref() {
@@ -1010,28 +1083,38 @@ async fn test_keepalive3() {
                 }
                 Ok::<_, TestError>(None)
             }
-            _ => Ok(Some(codec::Packet::from(codec::Disconnect::default()).into())),
+            _ => Ok(Some(
+                codec::Packet::from(codec::Disconnect::default()).into(),
+            )),
         })
         .publish(|p: Publish| async move { Ok::<_, TestError>(p.ack()) })
     })
-    .config(SharedCfg::new("MQTT").add(IoConfig::new().set_frame_read_rate(
-        Seconds(1),
-        Seconds(5),
-        256,
-    )))
+    .config(
+        SharedCfg::new("MQTT").add(IoConfig::new().set_frame_read_rate(
+            Seconds(1),
+            Seconds(5),
+            256,
+        )),
+    )
     .start();
 
     // connect to server
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
         Encoded::Publish(
-            codec::Publish { packet_id: Some(NonZeroU16::new(1).unwrap()), ..pkt_publish() },
+            codec::Publish {
+                packet_id: Some(NonZeroU16::new(1).unwrap()),
+                ..pkt_publish()
+            },
             None,
         ),
         &codec,
@@ -1042,7 +1125,10 @@ async fn test_keepalive3() {
 
     let mut buf = BytePages::default();
     let pkt = Encoded::Publish(
-        codec::Publish { packet_id: Some(NonZeroU16::new(2).unwrap()), ..pkt_publish() },
+        codec::Publish {
+            packet_id: Some(NonZeroU16::new(2).unwrap()),
+            ..pkt_publish()
+        },
         None,
     );
     codec.encodev(pkt, &mut buf).unwrap();
@@ -1066,7 +1152,9 @@ async fn test_sink_encoder_error_pub_qos1() {
                 let res = builder.send_at_least_once(Bytes::new()).await;
                 assert_eq!(
                     res,
-                    Err(error::SendPacketError::Encode(error::EncodeError::OverMaxPacketSize))
+                    Err(error::SendPacketError::Encode(
+                        error::EncodeError::OverMaxPacketSize
+                    ))
                 );
             });
             Ok::<_, TestError>(con.ack(St))
@@ -1075,7 +1163,9 @@ async fn test_sink_encoder_error_pub_qos1() {
             if let Control::Stop(Reason::Protocol(_)) = msg {
                 Ok::<_, TestError>(None)
             } else {
-                Ok(Some(codec::Packet::from(codec::Disconnect::default()).into()))
+                Ok(Some(
+                    codec::Packet::from(codec::Disconnect::default()).into(),
+                ))
             }
         })
         .publish(|p: Publish| async move {
@@ -1089,7 +1179,11 @@ async fn test_sink_encoder_error_pub_qos1() {
         .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .call(client::Connect::new(srv.addr()).client_id("user").max_packet_size(30))
+        .call(
+            client::Connect::new(srv.addr())
+                .client_id("user")
+                .max_packet_size(30),
+        )
         .await
         .unwrap();
 
@@ -1097,8 +1191,10 @@ async fn test_sink_encoder_error_pub_qos1() {
 
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("topic"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
 }
 
@@ -1115,7 +1211,9 @@ async fn test_sink_encoder_error_pub_qos0() {
             let res = builder.send_at_most_once(Bytes::new());
             assert_eq!(
                 res,
-                Err(error::SendPacketError::Encode(error::EncodeError::OverMaxPacketSize))
+                Err(error::SendPacketError::Encode(
+                    error::EncodeError::OverMaxPacketSize
+                ))
             );
             Ok::<_, TestError>(con.ack(St))
         })
@@ -1123,7 +1221,9 @@ async fn test_sink_encoder_error_pub_qos0() {
             if let Control::Stop(Reason::Protocol(_)) = msg {
                 Ok::<_, TestError>(None)
             } else {
-                Ok(Some(codec::Packet::from(codec::Disconnect::default()).into()))
+                Ok(Some(
+                    codec::Packet::from(codec::Disconnect::default()).into(),
+                ))
             }
         })
         .publish(|p: Publish| async move {
@@ -1137,7 +1237,11 @@ async fn test_sink_encoder_error_pub_qos0() {
         .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .call(client::Connect::new(srv.addr()).client_id("user").max_packet_size(30))
+        .call(
+            client::Connect::new(srv.addr())
+                .client_id("user")
+                .max_packet_size(30),
+        )
         .await
         .unwrap();
 
@@ -1145,8 +1249,10 @@ async fn test_sink_encoder_error_pub_qos0() {
 
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("topic"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
 }
 
@@ -1172,7 +1278,9 @@ async fn test_sink_success_after_encoder_error_qos1() {
                 let res = builder.send_at_least_once(Bytes::new()).await;
                 assert_eq!(
                     res,
-                    Err(error::SendPacketError::Encode(error::EncodeError::OverMaxPacketSize))
+                    Err(error::SendPacketError::Encode(
+                        error::EncodeError::OverMaxPacketSize
+                    ))
                 );
 
                 let res = sink.publish("test").send_at_least_once(Bytes::new()).await;
@@ -1185,7 +1293,9 @@ async fn test_sink_success_after_encoder_error_qos1() {
             if let Control::Stop(Reason::Protocol(_)) = msg {
                 Ok::<_, TestError>(None)
             } else {
-                Ok(Some(codec::Packet::from(codec::Disconnect::default()).into()))
+                Ok(Some(
+                    codec::Packet::from(codec::Disconnect::default()).into(),
+                ))
             }
         })
         .publish(async move |p: Publish| {
@@ -1199,7 +1309,11 @@ async fn test_sink_success_after_encoder_error_qos1() {
         .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .call(client::Connect::new(srv.addr()).client_id("user").max_packet_size(30))
+        .call(
+            client::Connect::new(srv.addr())
+                .client_id("user")
+                .max_packet_size(30),
+        )
         .await
         .unwrap();
 
@@ -1212,8 +1326,10 @@ async fn test_sink_success_after_encoder_error_qos1() {
     let router = client.resource("test", publish);
     ntex::rt::spawn(router.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("topic")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("topic"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
     assert!(success.load(Relaxed));
 }
@@ -1355,7 +1471,8 @@ async fn test_handle_incoming() -> std::io::Result<()> {
         &codec,
     )
     .unwrap();
-    io.encode(Encoded::Publish(pkt_publish(), Some(Bytes::new())), &codec).unwrap();
+    io.encode(Encoded::Publish(pkt_publish(), Some(Bytes::new())), &codec)
+        .unwrap();
     io.encode(
         Packet::Disconnect(codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::ReceiveMaximumExceeded,
@@ -1527,13 +1644,16 @@ async fn test_max_qos() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.encode(
-        Encoded::Packet(Packet::Connect(Box::new(codec::Connect::default().client_id("user")))),
+        Encoded::Packet(Packet::Connect(Box::new(
+            codec::Connect::default().client_id("user"),
+        ))),
         &codec,
     )
     .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
-    io.encode(Encoded::Publish(pkt_publish(), None), &codec).unwrap();
+    io.encode(Encoded::Publish(pkt_publish(), None), &codec)
+        .unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         packet(pkt),
@@ -1561,7 +1681,9 @@ async fn test_sink_ready() -> std::io::Result<()> {
             ntex::rt::spawn(async move {
                 sink.ready().await;
                 assert!(sink.is_ready());
-                sink.publish("/test").send_at_most_once(Bytes::from_static(b"body")).unwrap();
+                sink.publish("/test")
+                    .send_at_most_once(Bytes::from_static(b"body"))
+                    .unwrap();
             });
 
             Ok::<_, TestError>(packet.ack(St))
@@ -1573,7 +1695,9 @@ async fn test_sink_ready() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.encode(
-        Encoded::Packet(Packet::Connect(Box::new(codec::Connect::default().client_id("user")))),
+        Encoded::Packet(Packet::Connect(Box::new(
+            codec::Connect::default().client_id("user"),
+        ))),
         &codec,
     )
     .unwrap();
@@ -1631,11 +1755,16 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
         .send_at_least_once_no_block(Bytes::new());
     assert!(res.is_ok());
 
-    let res =
-        sink.publish(ByteString::from_static("test3")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("test3"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
 
-    assert_eq!(*results.borrow(), &[NonZeroU16::new(1).unwrap(), NonZeroU16::new(2).unwrap()]);
+    assert_eq!(
+        *results.borrow(),
+        &[NonZeroU16::new(1).unwrap(), NonZeroU16::new(2).unwrap()]
+    );
 
     sink.close();
     Ok(())
@@ -1673,8 +1802,11 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     io.recv(&codec).await.unwrap();
 
     let p = Encoded::Publish(
@@ -1760,8 +1892,10 @@ async fn test_publish_sink_disconnect() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
-    let _ =
-        sink.publish(ByteString::from_static("test1")).send_at_least_once(Bytes::new()).await;
+    let _ = sink
+        .publish(ByteString::from_static("test1"))
+        .send_at_least_once(Bytes::new())
+        .await;
 
     let _ = rx.await;
     assert!(val.load(Relaxed));
@@ -1793,7 +1927,9 @@ async fn test_peergone_after_sink_disconnect() -> std::io::Result<()> {
                     sleep(Seconds(1)).await;
                     sink.close();
                 });
-                Ok::<_, ()>(fn_service(async move |p: Publish| Ok::<_, TestError>(p.ack())))
+                Ok::<_, ()>(fn_service(async move |p: Publish| {
+                    Ok::<_, TestError>(p.ack())
+                }))
             }))
     });
 
@@ -1809,8 +1945,10 @@ async fn test_peergone_after_sink_disconnect() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
-    let _ =
-        sink.publish(ByteString::from_static("test1")).send_at_least_once(Bytes::new()).await;
+    let _ = sink
+        .publish(ByteString::from_static("test1"))
+        .send_at_least_once(Bytes::new())
+        .await;
 
     let _ = rx.await;
     assert!(val.load(Relaxed));
@@ -1904,7 +2042,11 @@ async fn test_max_outbound() -> std::io::Result<()> {
         .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .call(client::Connect::new(srv.addr()).client_id("user").max_receive(100))
+        .call(
+            client::Connect::new(srv.addr())
+                .client_id("user")
+                .max_receive(100),
+        )
         .await
         .unwrap();
 
@@ -1912,8 +2054,10 @@ async fn test_max_outbound() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("test")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("test"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
 
     sink.close();
@@ -1936,7 +2080,11 @@ async fn test_max_outbound2() -> std::io::Result<()> {
         .pipeline(SharedCfg::default())
         .await
         .unwrap()
-        .call(client::Connect::new(srv.addr()).client_id("user").max_receive(100))
+        .call(
+            client::Connect::new(srv.addr())
+                .client_id("user")
+                .max_receive(100),
+        )
         .await
         .unwrap();
 
@@ -1944,8 +2092,10 @@ async fn test_max_outbound2() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("test")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("test"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
 
     sink.close();
@@ -1984,9 +2134,12 @@ async fn protocol_error_session_expiry() -> std::io::Result<()> {
     let codec = codec::Codec::default();
     io.send(
         Encoded::Packet(
-            codec::Connect { session_expiry_interval_secs: 0, ..Default::default() }
-                .client_id("user")
-                .into(),
+            codec::Connect {
+                session_expiry_interval_secs: 0,
+                ..Default::default()
+            }
+            .client_id("user")
+            .into(),
         ),
         &codec,
     )
@@ -1997,8 +2150,11 @@ async fn protocol_error_session_expiry() -> std::io::Result<()> {
     // disconnect, session expiry is not zero
     io.send(
         Encoded::Packet(
-            codec::Disconnect { session_expiry_interval_secs: Some(10), ..Default::default() }
-                .into(),
+            codec::Disconnect {
+                session_expiry_interval_secs: Some(10),
+                ..Default::default()
+            }
+            .into(),
         ),
         &codec,
     )
@@ -2063,8 +2219,10 @@ async fn test_sink_close_with_no_reason() -> std::io::Result<()> {
     let sink = client.sink();
     ntex::rt::spawn(client.start_default());
 
-    let _ =
-        sink.publish(ByteString::from_static("test1")).send_at_least_once(Bytes::new()).await;
+    let _ = sink
+        .publish(ByteString::from_static("test1"))
+        .send_at_least_once(Bytes::new())
+        .await;
 
     let _ = rx.await;
     assert!(val.load(Relaxed));

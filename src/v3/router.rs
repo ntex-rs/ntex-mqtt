@@ -1,13 +1,13 @@
-use std::{fmt, rc::Rc, task::Context};
+use std::{fmt, rc::Rc};
 
 use ntex_router::{IntoPattern, RouterBuilder};
 use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
-use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
 
 use super::{Session, publish::Publish};
 
-type Handler<S, E> = BoxServiceFactory<Session<S>, Publish, (), E, E>;
-type HandlerService<E> = BoxService<Publish, (), E>;
+type Handler<S, E> = BoxServiceFactory<(), Publish, (), E, Session<S>, E>;
+type HandlerService<E> = BoxService<(), Publish, (), E>;
 
 /// Router - structure that follows the builder pattern
 /// for building publish packet router instances for mqtt server.
@@ -33,8 +33,8 @@ where
     /// Default service to be used if no matching resource could be found.
     pub fn new<F, U>(default_service: F) -> Self
     where
-        F: IntoServiceFactory<U, Publish, Session<S>>,
-        U: ServiceFactory<Publish, Session<S>, Response = (), Error = Err, InitError = Err>
+        F: IntoServiceFactory<U, (), Publish, Session<S>>,
+        U: ServiceFactory<(), Publish, Session<S>, Res = (), Error = Err, InitError = Err>
             + 'static,
     {
         Router {
@@ -49,17 +49,19 @@ where
     pub fn resource<T, F, U>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoServiceFactory<U, Publish, Session<S>>,
-        U: ServiceFactory<Publish, Session<S>, Response = (), Error = Err> + 'static,
+        F: IntoServiceFactory<U, (), Publish, Session<S>>,
+        U: ServiceFactory<(), Publish, Session<S>, Res = (), Error = Err> + 'static,
         Err: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
-        self.handlers.push(boxed::factory(service.into_factory().map_init_err(Err::from)));
+        self.handlers.push(boxed::factory(
+            service.into_factory().map_init_err(Err::from),
+        ));
         self
     }
 }
 
-impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, Publish, Session<S>> for Router<S, Err>
+impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, (), Publish, Session<S>> for Router<S, Err>
 where
     S: 'static,
     Err: 'static,
@@ -85,18 +87,19 @@ impl<S, Err> fmt::Debug for RouterFactory<S, Err> {
     }
 }
 
-impl<S, Err> ServiceFactory<Publish, Session<S>> for RouterFactory<S, Err>
+impl<S, Err> ServiceFactory<(), Publish, Session<S>> for RouterFactory<S, Err>
 where
     S: 'static,
     Err: 'static,
 {
-    type Response = ();
+    type Res = ();
     type Error = Err;
-    type InitError = Err;
-    type Service = RouterService<Err>;
 
-    async fn create(&self, session: Session<S>) -> Result<Self::Service, Self::Error> {
-        let fut: Vec<_> = self.handlers.iter().map(|h| h.create(session.clone())).collect();
+    type Service = RouterService<Err>;
+    type InitError = Err;
+
+    async fn create(&self, session: &Session<S>) -> Result<Self::Service, Self::Error> {
+        let fut: Vec<_> = self.handlers.iter().map(|h| h.create(session)).collect();
 
         let mut handlers = Vec::new();
         for handler in fut {
@@ -123,12 +126,12 @@ impl<Err> fmt::Debug for RouterService<Err> {
     }
 }
 
-impl<Err> Service<Publish> for RouterService<Err> {
-    type Response = ();
+impl<Err> Service<(), Publish> for RouterService<Err> {
+    type Res = ();
     type Error = Err;
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+    async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
         for hnd in &self.handlers {
             ctx.ready(hnd).await?;
         }
@@ -136,19 +139,11 @@ impl<Err> Service<Publish> for RouterService<Err> {
     }
 
     #[inline]
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        for hnd in &self.handlers {
-            hnd.poll(cx)?;
-        }
-        self.default.poll(cx)
-    }
-
-    #[inline]
     async fn call(
         &self,
         mut req: Publish,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
+        ctx: Ctx<'_, Self, ()>,
+    ) -> Result<Self::Res, Self::Error> {
         if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
             ctx.call(&self.handlers[*idx], req).await
         } else {
@@ -167,7 +162,9 @@ mod tests {
     #[test]
     fn test_debug() {
         let router: Router<(), ()> = Router::new(fn_factory(|| async {
-            Ok::<_, ()>(ntex_service::fn_service(|_: Publish| Ready::<_, ()>::Ok(())))
+            Ok::<_, ()>(ntex_service::fn_service(
+                |_: Publish| Ready::<_, ()>::Ok(()),
+            ))
         }));
         assert!(format!("{router:?}").contains("v3::Router"));
     }

@@ -18,7 +18,12 @@ impl std::convert::TryFrom<Error> for v5::PublishAck {
 async fn publish(pkt: v5::Publish) -> Result<v5::PublishAck, Error> {
     let pl = pkt.read_all().await;
 
-    log::info!("incoming publish: {:?} -> {:?} payload {:?}", pkt.id(), pkt.topic(), pl);
+    log::info!(
+        "incoming publish: {:?} -> {:?} payload {:?}",
+        pkt.id(),
+        pkt.topic(),
+        pl
+    );
     Ok(pkt.ack())
 }
 
@@ -51,7 +56,10 @@ async fn main() -> std::io::Result<()> {
     let router = client.resource("response", publish);
     ntex::rt::spawn(router.start_default());
 
-    sink.publish("test-topic").send_at_least_once("Publish data".into()).await.unwrap();
+    sink.publish("test-topic")
+        .send_at_least_once("Publish data".into())
+        .await
+        .unwrap();
 
     sleep(Millis(10_000)).await;
 

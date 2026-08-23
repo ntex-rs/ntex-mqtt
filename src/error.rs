@@ -100,9 +100,15 @@ pub(crate) enum ViolationInner {
     #[error("{0}")]
     Spec(SpecViolation),
     #[error("{message}")]
-    Common { reason: DisconnectReasonCode, message: &'static str },
+    Common {
+        reason: DisconnectReasonCode,
+        message: &'static str,
+    },
     #[error("{message}; received packet with type `{packet_type:08b}`")]
-    UnexpectedPacket { packet_type: u8, message: &'static str },
+    UnexpectedPacket {
+        packet_type: u8,
+        message: &'static str,
+    },
 }
 
 #[allow(non_camel_case_types)]
@@ -134,9 +140,7 @@ pub enum SpecViolation {
     Pub_3_3_4_9,
     #[error("[MQTT-4.7.1-*] Topic filter is malformed")]
     Subs_4_7_1,
-    #[error(
-        "[MQTT-3.14.2-*] The Session Expiry Interval must not be set on DISCONNECT by Server"
-    )]
+    #[error("[MQTT-3.14.2-*] The Session Expiry Interval must not be set on DISCONNECT by Server")]
     Disconnect_3_14_2_21,
     #[error("[MQTT-3.14.2-*] Non-Zero Session Expiry Interval is set on DISCONNECT")]
     Disconnect_3_14_2_22,
@@ -237,7 +241,9 @@ impl ProtocolError {
     }
 
     pub fn spec(err: SpecViolation) -> Self {
-        Self::ProtocolViolation(ProtocolViolationError { inner: ViolationInner::Spec(err) })
+        Self::ProtocolViolation(ProtocolViolationError {
+            inner: ViolationInner::Spec(err),
+        })
     }
 
     pub fn generic_violation(message: &'static str) -> Self {
@@ -246,7 +252,10 @@ impl ProtocolError {
 
     pub(crate) fn unexpected_packet(packet_type: u8, message: &'static str) -> ProtocolError {
         Self::ProtocolViolation(ProtocolViolationError {
-            inner: ViolationInner::UnexpectedPacket { packet_type, message },
+            inner: ViolationInner::UnexpectedPacket {
+                packet_type,
+                message,
+            },
         })
     }
     pub(crate) fn packet_id_mismatch() -> Self {

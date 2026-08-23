@@ -1,8 +1,8 @@
-use std::{fmt, io, marker, task::Context};
+use std::{fmt, io, marker};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Filter, Io, IoBoxed};
-use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory, cfg::Cfg, cfg::SharedCfg};
+use ntex_service::{Ctx, Middleware, Service, ServiceFactory, cfg::Cfg, cfg::SharedCfg};
 use ntex_util::future::{Either, join, select};
 use ntex_util::time::{Deadline, Seconds};
 
@@ -60,16 +60,18 @@ impl<Err, InitErr> Default
 impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr>
 where
     V3: ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (),
+            Res = (),
             Error = MqttError<Err>,
             InitError = InitErr,
         >,
     V5: ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (),
+            Res = (),
             Error = MqttError<Err>,
             InitError = InitErr,
         >,
@@ -80,9 +82,10 @@ where
         service: service::MqttServer<St, E, H, T, M, C, Codec>,
     ) -> MqttServer<
         impl ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (),
+            Res = (),
             Error = MqttError<Err>,
             InitError = InitErr,
         >,
@@ -94,32 +97,39 @@ where
         St: Clone + 'static,
         E: 'static,
         H: ServiceFactory<
+                (),
                 IoBoxed,
                 SharedCfg,
-                Response = (IoBoxed, Codec, St, Seconds),
+                Res = (IoBoxed, Codec, St, Seconds),
                 Error = MqttError<Err>,
                 InitError = InitErr,
             > + 'static,
         T: ServiceFactory<
+                (),
                 Request<Codec>,
                 (SharedCfg, St),
-                Response = Response<Codec>,
+                Res = Response<Codec>,
                 Error = DispatcherError<E>,
                 InitError = MqttError<Err>,
             > + 'static,
         M: Middleware<T::Service, (SharedCfg, St)>,
-        M::Service: Service<Request<Codec>, Response = Response<Codec>, Error = DispatcherError<E>>
+        M::Service: Service<(), Request<Codec>, Res = Response<Codec>, Error = DispatcherError<E>>
             + 'static,
         C: ServiceFactory<
+                (),
                 Control<E>,
                 St,
-                Response = Response<Codec>,
+                Res = Response<Codec>,
                 Error = MqttError<Err>,
                 InitError = MqttError<Err>,
             > + 'static,
         Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError> + Clone + 'static,
     {
-        MqttServer { svc_v3: service, svc_v5: self.svc_v5, _t: marker::PhantomData }
+        MqttServer {
+            svc_v3: service,
+            svc_v5: self.svc_v5,
+            _t: marker::PhantomData,
+        }
     }
 
     /// Service to handle v5 protocol
@@ -129,9 +139,10 @@ where
     ) -> MqttServer<
         V3,
         impl ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (),
+            Res = (),
             Error = MqttError<Err>,
             InitError = InitErr,
         >,
@@ -142,121 +153,139 @@ where
         St: Clone + 'static,
         E: 'static,
         H: ServiceFactory<
+                (),
                 IoBoxed,
                 SharedCfg,
-                Response = (IoBoxed, Codec, St, Seconds),
+                Res = (IoBoxed, Codec, St, Seconds),
                 Error = MqttError<Err>,
                 InitError = InitErr,
             > + 'static,
         T: ServiceFactory<
+                (),
                 Request<Codec>,
                 (SharedCfg, St),
-                Response = Response<Codec>,
+                Res = Response<Codec>,
                 Error = DispatcherError<E>,
                 InitError = MqttError<Err>,
             > + 'static,
         M: Middleware<T::Service, (SharedCfg, St)>,
-        M::Service: Service<Request<Codec>, Response = Response<Codec>, Error = DispatcherError<E>>
+        M::Service: Service<(), Request<Codec>, Res = Response<Codec>, Error = DispatcherError<E>>
             + 'static,
         C: ServiceFactory<
+                (),
                 Control<E>,
                 St,
-                Response = Response<Codec>,
+                Res = Response<Codec>,
                 Error = MqttError<Err>,
                 InitError = MqttError<Err>,
             > + 'static,
         Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError> + Clone + 'static,
     {
-        MqttServer { svc_v3: self.svc_v3, svc_v5: service, _t: marker::PhantomData }
+        MqttServer {
+            svc_v3: self.svc_v3,
+            svc_v5: service,
+            _t: marker::PhantomData,
+        }
     }
 }
 
 impl<V3, V5, Err, InitErr> MqttServer<V3, V5, Err, InitErr>
 where
     V3: ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (),
+            Res = (),
             Error = MqttError<Err>,
             InitError = InitErr,
         >,
     V5: ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (),
+            Res = (),
             Error = MqttError<Err>,
             InitError = InitErr,
         >,
 {
     async fn create_service(
         &self,
-        cfg: SharedCfg,
+        cfg: &SharedCfg,
     ) -> Result<MqttServerImpl<V3::Service, V5::Service, Err>, InitErr> {
-        let (v3, v5) =
-            join(self.svc_v3.create(cfg.clone()), self.svc_v5.create(cfg.clone())).await;
+        let (v3, v5) = join(self.svc_v3.create(cfg), self.svc_v5.create(cfg)).await;
         let v3 = v3?;
         let v5 = v5?;
-        Ok(MqttServerImpl { handlers: (v3, v5), cfg: cfg.get(), _t: marker::PhantomData })
+        Ok(MqttServerImpl {
+            handlers: (v3, v5),
+            cfg: cfg.get(),
+            _t: marker::PhantomData,
+        })
     }
 }
 
-impl<V3, V5, Err, InitErr> ServiceFactory<IoBoxed, SharedCfg>
+impl<V3, V5, Err, InitErr> ServiceFactory<(), IoBoxed, SharedCfg>
     for MqttServer<V3, V5, Err, InitErr>
 where
     V3: ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (),
+            Res = (),
             Error = MqttError<Err>,
             InitError = InitErr,
         > + 'static,
     V5: ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (),
+            Res = (),
             Error = MqttError<Err>,
             InitError = InitErr,
         > + 'static,
     Err: 'static,
     InitErr: 'static,
 {
-    type Response = ();
+    type Res = ();
     type Error = MqttError<Err>;
+
     type Service = MqttServerImpl<V3::Service, V5::Service, Err>;
     type InitError = InitErr;
 
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &SharedCfg) -> Result<Self::Service, Self::InitError> {
         self.create_service(cfg).await
     }
 }
 
-impl<F, V3, V5, Err, InitErr> ServiceFactory<Io<F>, SharedCfg>
+impl<F, V3, V5, Err, InitErr> ServiceFactory<(), Io<F>, SharedCfg>
     for MqttServer<V3, V5, Err, InitErr>
 where
     F: Filter,
     V3: ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (),
+            Res = (),
             Error = MqttError<Err>,
             InitError = InitErr,
         > + 'static,
     V5: ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (),
+            Res = (),
             Error = MqttError<Err>,
             InitError = InitErr,
         > + 'static,
     Err: 'static,
     InitErr: 'static,
 {
-    type Response = ();
+    type Res = ();
     type Error = MqttError<Err>;
+
     type Service = MqttServerImpl<V3::Service, V5::Service, Err>;
     type InitError = InitErr;
 
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &SharedCfg) -> Result<Self::Service, Self::InitError> {
         self.create_service(cfg).await
     }
 }
@@ -274,40 +303,23 @@ impl<V3, V5, Err> fmt::Debug for MqttServerImpl<V3, V5, Err> {
     }
 }
 
-impl<V3, V5, Err> Service<IoBoxed> for MqttServerImpl<V3, V5, Err>
+impl<V3, V5, Err> Service<(), IoBoxed> for MqttServerImpl<V3, V5, Err>
 where
-    V3: Service<IoBoxed, Response = (), Error = MqttError<Err>>,
-    V5: Service<IoBoxed, Response = (), Error = MqttError<Err>>,
+    V3: Service<(), IoBoxed, Res = (), Error = MqttError<Err>>,
+    V5: Service<(), IoBoxed, Res = (), Error = MqttError<Err>>,
 {
-    type Response = ();
+    type Res = ();
     type Error = MqttError<Err>;
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        let (ready1, ready2) =
-            join(ctx.ready(&self.handlers.0), ctx.ready(&self.handlers.1)).await;
+    async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
+        let (ready1, ready2) = join(ctx.ready(&self.handlers.0), ctx.ready(&self.handlers.1)).await;
         ready1?;
         ready2
     }
 
     #[inline]
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        self.handlers.0.poll(cx)?;
-        self.handlers.1.poll(cx)
-    }
-
-    #[inline]
-    async fn shutdown(&self) {
-        self.handlers.0.shutdown().await;
-        self.handlers.1.shutdown().await;
-    }
-
-    #[inline]
-    async fn call(
-        &self,
-        io: IoBoxed,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn call(&self, io: IoBoxed, ctx: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
         // try to read Version, buffer may already contain info
         let res = io
             .decode(&VersionCodec)
@@ -343,39 +355,37 @@ where
             }
         }
     }
+
+    #[inline]
+    async fn shutdown(&self, ctx: Ctx<'_, Self, ()>) {
+        ctx.shutdown(&self.handlers.0).await;
+        ctx.shutdown(&self.handlers.1).await;
+    }
 }
 
-impl<F, V3, V5, Err> Service<Io<F>> for MqttServerImpl<V3, V5, Err>
+impl<F, V3, V5, Err> Service<(), Io<F>> for MqttServerImpl<V3, V5, Err>
 where
     F: Filter,
-    V3: Service<IoBoxed, Response = (), Error = MqttError<Err>>,
-    V5: Service<IoBoxed, Response = (), Error = MqttError<Err>>,
+    V3: Service<(), IoBoxed, Res = (), Error = MqttError<Err>>,
+    V5: Service<(), IoBoxed, Res = (), Error = MqttError<Err>>,
 {
-    type Response = ();
+    type Res = ();
     type Error = MqttError<Err>;
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        Service::<IoBoxed>::ready(self, ctx).await
+    async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
+        Service::<(), IoBoxed>::ready(self, ctx).await
     }
 
     #[inline]
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        Service::<IoBoxed>::poll(self, cx)
+    async fn shutdown(&self, ctx: Ctx<'_, Self, ()>) {
+        ctx.shutdown(&self.handlers.0).await;
+        ctx.shutdown(&self.handlers.1).await;
     }
 
     #[inline]
-    async fn shutdown(&self) {
-        Service::<IoBoxed>::shutdown(self).await;
-    }
-
-    #[inline]
-    async fn call(
-        &self,
-        io: Io<F>,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
-        Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx).await
+    async fn call(&self, io: Io<F>, ctx: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+        Service::<(), IoBoxed>::call(self, IoBoxed::from(io), ctx).await
     }
 }
 
@@ -386,39 +396,44 @@ pub struct DefaultProtocolServer<Err, InitErr> {
 
 impl<Err, InitErr> fmt::Debug for DefaultProtocolServer<Err, InitErr> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DefaultProtocolServer").field("ver", &self.ver).finish()
+        f.debug_struct("DefaultProtocolServer")
+            .field("ver", &self.ver)
+            .finish()
     }
 }
 
 impl<Err, InitErr> DefaultProtocolServer<Err, InitErr> {
     fn new(ver: ProtocolVersion) -> Self {
-        Self { ver, _t: marker::PhantomData }
+        Self {
+            ver,
+            _t: marker::PhantomData,
+        }
     }
 }
 
-impl<Err, InitErr> ServiceFactory<IoBoxed, SharedCfg> for DefaultProtocolServer<Err, InitErr> {
-    type Response = ();
+impl<Err, InitErr> ServiceFactory<(), IoBoxed, SharedCfg> for DefaultProtocolServer<Err, InitErr> {
+    type Res = ();
     type Error = MqttError<Err>;
+
     type Service = DefaultProtocolServer<Err, InitErr>;
     type InitError = InitErr;
 
-    async fn create(&self, _: SharedCfg) -> Result<Self::Service, Self::InitError> {
-        Ok(DefaultProtocolServer { ver: self.ver, _t: marker::PhantomData })
+    async fn create(&self, _: &SharedCfg) -> Result<Self::Service, Self::InitError> {
+        Ok(DefaultProtocolServer {
+            ver: self.ver,
+            _t: marker::PhantomData,
+        })
     }
 }
 
-impl<Err, InitErr> Service<IoBoxed> for DefaultProtocolServer<Err, InitErr> {
-    type Response = ();
+impl<Err, InitErr> Service<(), IoBoxed> for DefaultProtocolServer<Err, InitErr> {
+    type Res = ();
     type Error = MqttError<Err>;
 
-    async fn call(
-        &self,
-        _: IoBoxed,
-        _: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
-        Err(MqttError::Handshake(HandshakeError::Disconnected(Some(io::Error::other(
-            format!("Protocol is not supported: {:?}", self.ver),
-        )))))
+    async fn call(&self, _: IoBoxed, _: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+        Err(MqttError::Handshake(HandshakeError::Disconnected(Some(
+            io::Error::other(format!("Protocol is not supported: {:?}", self.ver)),
+        ))))
     }
 }
 

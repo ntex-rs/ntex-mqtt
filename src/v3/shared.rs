@@ -15,7 +15,10 @@ pub(super) enum Ack {
     Publish(num::NonZeroU16),
     Receive(num::NonZeroU16),
     Complete(num::NonZeroU16),
-    Subscribe { packet_id: num::NonZeroU16, status: Vec<codec::SubscribeReturnCode> },
+    Subscribe {
+        packet_id: num::NonZeroU16,
+        status: Vec<codec::SubscribeReturnCode>,
+    },
     Unsubscribe(num::NonZeroU16),
 }
 
@@ -35,7 +38,10 @@ pub(super) struct MqttSinkPool {
 
 impl Default for MqttSinkPool {
     fn default() -> Self {
-        Self { queue: pool::new(), waiters: pool::new() }
+        Self {
+            queue: pool::new(),
+            waiters: pool::new(),
+        }
     }
 }
 
@@ -163,7 +169,9 @@ impl MqttShared {
     }
 
     pub(super) fn credit(&self) -> usize {
-        self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
+        self.cap
+            .get()
+            .saturating_sub(self.queues.borrow().inflight.len())
     }
 
     pub(super) fn next_id(&self) -> num::NonZeroU16 {
@@ -233,8 +241,10 @@ impl MqttShared {
                 self.force_close();
                 Err(EncodeError::OverPublishSize)
             } else {
-                self.io.encode(Encoded::PayloadChunk(payload), &self.codec)?;
-                self.streaming_remaining.set(num::NonZeroU32::new(remaining.get() - len));
+                self.io
+                    .encode(Encoded::PayloadChunk(payload), &self.codec)?;
+                self.streaming_remaining
+                    .set(num::NonZeroU32::new(remaining.get() - len));
                 Ok(self.streaming_remaining.get().is_some())
             }
         } else {
@@ -317,7 +327,8 @@ impl MqttShared {
 
     fn enable_streaming(&self, pkt: &Publish, payload: Option<&Bytes>) {
         let len = payload.map_or(0, Bytes::len);
-        self.streaming_remaining.set(num::NonZeroU32::new(pkt.payload_size - len as u32));
+        self.streaming_remaining
+            .set(num::NonZeroU32::new(pkt.payload_size - len as u32));
     }
 
     pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), ProtocolError> {
@@ -347,7 +358,9 @@ impl MqttShared {
                 }
                 let (tx, rx) = self.pool.queue.channel();
                 queues.rx = Some(rx);
-                queues.inflight.push_back((idx, Some(tx), AckType::Complete));
+                queues
+                    .inflight
+                    .push_back((idx, Some(tx), AckType::Complete));
                 Ok(())
             } else if matches!(pkt, Ack::Complete(_)) {
                 // get publish ack channel
@@ -389,7 +402,10 @@ impl MqttShared {
                     Ok(())
                 } else {
                     log::trace!("MQTT protocol error, unexpected packet");
-                    Err(ProtocolError::unexpected_packet(pkt.packet_type(), tp.expected_str()))
+                    Err(ProtocolError::unexpected_packet(
+                        pkt.packet_type(),
+                        tp.expected_str(),
+                    ))
                 }
             }
         } else {
@@ -477,8 +493,7 @@ impl MqttShared {
     pub(super) fn wait_readiness(&self) -> Option<pool::Receiver<()>> {
         let mut queues = self.queues.borrow_mut();
 
-        if queues.inflight.len() >= self.cap.get()
-            || self.flags.get().contains(Flags::WRB_ENABLED)
+        if queues.inflight.len() >= self.cap.get() || self.flags.get().contains(Flags::WRB_ENABLED)
         {
             let (tx, rx) = self.pool.waiters.channel();
             queues.waiters.push_back(tx);
@@ -540,9 +555,7 @@ impl Ack {
     pub(super) fn packet_id(&self) -> num::NonZeroU16 {
         match self {
             Ack::Subscribe { packet_id, .. } => *packet_id,
-            Ack::Publish(id) | Ack::Receive(id) | Ack::Complete(id) | Ack::Unsubscribe(id) => {
-                *id
-            }
+            Ack::Publish(id) | Ack::Receive(id) | Ack::Complete(id) | Ack::Unsubscribe(id) => *id,
         }
     }
 

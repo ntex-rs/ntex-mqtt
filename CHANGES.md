@@ -1,5 +1,9 @@
 # Changes
 
+## [9.0.0-beta.0] - 2026-08-23
+
+* Update to ntex-service 5.0
+
 ## [8.2.1] - 2026-06-18
 
 * Fix keep-alive flag setting #253

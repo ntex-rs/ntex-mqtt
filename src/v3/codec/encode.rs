@@ -16,11 +16,15 @@ pub(crate) fn get_encoded_publish_size(p: &Publish) -> usize {
 }
 
 pub(crate) fn get_encoded_subscribe_size(topic_filters: &[(ByteString, QoS)]) -> usize {
-    2 + topic_filters.iter().fold(0, |acc, (filter, _)| acc + 2 + filter.len() + 1)
+    2 + topic_filters
+        .iter()
+        .fold(0, |acc, (filter, _)| acc + 2 + filter.len() + 1)
 }
 
 pub(crate) fn get_encoded_unsubscribe_size(topic_filters: &[ByteString]) -> usize {
-    2 + topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
+    2 + topic_filters
+        .iter()
+        .fold(0, |acc, filter| acc + 2 + filter.len())
 }
 
 pub(crate) fn get_encoded_size(packet: &Packet) -> usize {
@@ -105,7 +109,10 @@ pub(crate) fn encode(
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;
         }
-        Packet::Subscribe { packet_id, topic_filters } => {
+        Packet::Subscribe {
+            packet_id,
+            topic_filters,
+        } => {
             dst.put_u8(packet_type::SUBSCRIBE);
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;
@@ -127,7 +134,10 @@ pub(crate) fn encode(
                 .collect();
             dst.put_slice(&buf);
         }
-        Packet::Unsubscribe { packet_id, topic_filters } => {
+        Packet::Unsubscribe {
+            packet_id,
+            topic_filters,
+        } => {
             dst.put_u8(packet_type::UNSUBSCRIBE);
             write_variable_length(content_size, dst);
             packet_id.encode(dst)?;
@@ -166,7 +176,10 @@ pub(super) fn encode_publish(
             return Err(EncodeError::MalformedPacket); // packet id must not be set
         }
     } else {
-        publish.packet_id.ok_or(EncodeError::PacketIdRequired)?.encode(dst)?;
+        publish
+            .packet_id
+            .ok_or(EncodeError::PacketIdRequired)?
+            .encode(dst)?;
     }
     Ok(())
 }
@@ -212,7 +225,12 @@ fn encode_connect(connect: &Connect, dst: &mut BytePages) -> Result<(), EncodeEr
     dst.put_u16(keep_alive);
     client_id.encode(dst)?;
 
-    if let Some(LastWill { ref topic, ref message, .. }) = *last_will {
+    if let Some(LastWill {
+        ref topic,
+        ref message,
+        ..
+    }) = *last_will
+    {
         topic.encode(dst)?;
         message.encode(dst)?;
     }
@@ -380,7 +398,9 @@ mod tests {
         );
 
         assert_encode_packet(
-            &Packet::UnsubscribeAck { packet_id: packet_id(0x4321) },
+            &Packet::UnsubscribeAck {
+                packet_id: packet_id(0x4321),
+            },
             b"\xb0\x02\x43\x21",
         );
     }

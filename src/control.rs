@@ -1,7 +1,7 @@
 //! Control message for connection management service
 use std::{io, marker::PhantomData};
 
-use ntex_service::{Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Ctx, Service, ServiceFactory};
 
 use crate::error;
 
@@ -134,26 +134,22 @@ impl<S, E, R, Err> Default for DefaultControlService<S, E, R, Err> {
     }
 }
 
-impl<S, E, R, Err> ServiceFactory<Control<E>, S> for DefaultControlService<S, E, R, Err> {
-    type Response = Option<R>;
+impl<S, E, R, Err> ServiceFactory<(), Control<E>, S> for DefaultControlService<S, E, R, Err> {
+    type Res = Option<R>;
     type Error = E;
     type InitError = Err;
     type Service = DefaultControlService<S, E, R, ()>;
 
-    async fn create(&self, _: S) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, _: &S) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService(PhantomData))
     }
 }
 
-impl<S, E, R> Service<Control<E>> for DefaultControlService<S, E, R, ()> {
-    type Response = Option<R>;
+impl<S, E, R> Service<(), Control<E>> for DefaultControlService<S, E, R, ()> {
+    type Res = Option<R>;
     type Error = E;
 
-    async fn call(
-        &self,
-        _: Control<E>,
-        _: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn call(&self, _: Control<E>, _: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
         log::warn!("MQTT5 Control service is not configured");
         Ok(None)
     }

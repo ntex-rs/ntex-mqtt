@@ -26,7 +26,10 @@ impl<A: Address> Connect<A> {
     #[inline]
     /// Construct new connect message
     pub fn new(addr: A) -> Self {
-        Self { addr, pkt: codec::Connect::default() }
+        Self {
+            addr,
+            pkt: codec::Connect::default(),
+        }
     }
 
     #[inline]

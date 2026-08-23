@@ -3,7 +3,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_io::IoBoxed;
 use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Identity, IntoServiceFactory, Service, ServiceCtx, ServiceFactory, Stack};
+use ntex_service::{Ctx, Identity, IntoServiceFactory, Service, ServiceFactory, Stack};
 use ntex_util::time::{Seconds, timeout_checked};
 
 use crate::error::{DispatcherError, HandshakeError, MqttError, ProtocolError};
@@ -72,12 +72,12 @@ impl<St, E, H>
     >
 where
     St: 'static,
-    H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
+    H: ServiceFactory<(), Handshake, SharedCfg, Res = HandshakeAck<St>> + 'static,
 {
     /// Create server factory and provide handshake service
     pub fn new<F>(handshake: F) -> Self
     where
-        F: IntoServiceFactory<H, Handshake, SharedCfg>,
+        F: IntoServiceFactory<H, (), Handshake, SharedCfg>,
     {
         MqttServer {
             handshake: handshake.into_factory(),
@@ -93,12 +93,13 @@ where
 impl<St, E, H, P, C, M> MqttServer<St, E, H, P, C, M>
 where
     St: 'static,
-    H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
-    P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
+    H: ServiceFactory<(), Handshake, SharedCfg, Res = HandshakeAck<St>> + 'static,
+    P: ServiceFactory<(), ProtocolMessage, Session<St>, Res = ProtocolMessageAck> + 'static,
     C: ServiceFactory<
+            (),
             Control<H::Error>,
             Session<St>,
-            Response = Option<mqtt::Encoded>,
+            Res = Option<mqtt::Encoded>,
             Error = MqttError<H::Error>,
             InitError = MqttError<H::Error>,
         > + 'static,
@@ -139,9 +140,8 @@ where
     /// control packets is 16.
     pub fn protocol<F, Srv>(self, service: F) -> MqttServer<St, E, H, Srv, C, M>
     where
-        F: IntoServiceFactory<Srv, ProtocolMessage, Session<St>>,
-        Srv: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck>
-            + 'static,
+        F: IntoServiceFactory<Srv, (), ProtocolMessage, Session<St>>,
+        Srv: ServiceFactory<(), ProtocolMessage, Session<St>, Res = ProtocolMessageAck> + 'static,
         E: From<Srv::Error>,
         H::Error: From<Srv::InitError>,
     {
@@ -165,18 +165,18 @@ where
         H,
         P,
         impl ServiceFactory<
+            (),
             Control<E>,
             Session<St>,
-            Response = Option<mqtt::Encoded>,
+            Res = Option<mqtt::Encoded>,
             Error = MqttError<H::Error>,
             InitError = MqttError<H::Error>,
         >,
         M,
     >
     where
-        F: IntoServiceFactory<Srv, Control<E>, Session<St>>,
-        Srv:
-            ServiceFactory<Control<E>, Session<St>, Response = Option<mqtt::Encoded>> + 'static,
+        F: IntoServiceFactory<Srv, (), Control<E>, Session<St>>,
+        Srv: ServiceFactory<(), Control<E>, Session<St>, Res = Option<mqtt::Encoded>> + 'static,
         H::Error: From<Srv::Error> + From<Srv::InitError>,
     {
         MqttServer {
@@ -184,7 +184,10 @@ where
             protocol: self.protocol,
             middleware: self.middleware,
             control: ControlFactory::new(
-                service.into_factory().map_err(H::Error::from).map_init_err(H::Error::from),
+                service
+                    .into_factory()
+                    .map_err(H::Error::from)
+                    .map_init_err(H::Error::from),
             ),
             pool: self.pool,
             _t: PhantomData,
@@ -199,16 +202,18 @@ where
         Session<St>,
         E,
         impl ServiceFactory<
+            (),
             IoBoxed,
             SharedCfg,
-            Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds),
+            Res = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds),
             Error = MqttError<H::Error>,
             InitError = H::InitError,
         >,
         impl ServiceFactory<
+            (),
             mqtt::Decoded,
             (SharedCfg, Session<St>),
-            Response = Option<mqtt::Encoded>,
+            Res = Option<mqtt::Encoded>,
             Error = DispatcherError<E>,
             InitError = MqttError<H::Error>,
         >,
@@ -217,8 +222,8 @@ where
         Rc<MqttShared>,
     >
     where
-        F: IntoServiceFactory<Srv, Publish, Session<St>>,
-        Srv: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
+        F: IntoServiceFactory<Srv, (), Publish, Session<St>>,
+        Srv: ServiceFactory<(), Publish, Session<St>, Res = ()> + 'static,
         E: From<P::Error> + From<Srv::Error> + 'static,
         H::Error: From<P::InitError> + From<Srv::InitError>,
     {
@@ -241,17 +246,17 @@ struct HandshakeFactory<St, H> {
     _t: PhantomData<St>,
 }
 
-impl<St, H> ServiceFactory<IoBoxed, SharedCfg> for HandshakeFactory<St, H>
+impl<St, H> ServiceFactory<(), IoBoxed, SharedCfg> for HandshakeFactory<St, H>
 where
-    H: ServiceFactory<Handshake, SharedCfg, Response = HandshakeAck<St>> + 'static,
+    H: ServiceFactory<(), Handshake, SharedCfg, Res = HandshakeAck<St>> + 'static,
 {
-    type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
+    type Res = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;
 
     type Service = HandshakeService<St, H::Service>;
     type InitError = H::InitError;
 
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &SharedCfg) -> Result<Self::Service, Self::InitError> {
         Ok(HandshakeService {
             cfg: cfg.get(),
             pool: self.pool.clone(),
@@ -268,28 +273,28 @@ struct HandshakeService<St, H> {
     _t: PhantomData<St>,
 }
 
-impl<St, H> Service<IoBoxed> for HandshakeService<St, H>
+impl<St, H> Service<(), IoBoxed> for HandshakeService<St, H>
 where
-    H: Service<Handshake, Response = HandshakeAck<St>> + 'static,
+    H: Service<(), Handshake, Res = HandshakeAck<St>> + 'static,
 {
-    type Response = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
+    type Res = (IoBoxed, Rc<MqttShared>, Session<St>, Seconds);
     type Error = MqttError<H::Error>;
 
-    ntex_service::forward_ready!(service, MqttError::Service);
-    ntex_service::forward_poll!(service, MqttError::Service);
-    ntex_service::forward_shutdown!(service);
+    ntex_service::forward_ready!((), service, MqttError::Service);
+    ntex_service::forward_shutdown!((), service);
 
-    async fn call(
-        &self,
-        io: IoBoxed,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn call(&self, io: IoBoxed, ctx: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
         log::trace!("Starting mqtt v3 handshake");
 
         let codec = mqtt::Codec::default();
         codec.set_max_size(self.cfg.max_size);
         codec.set_min_chunk_size(self.cfg.min_chunk_size);
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, self.pool.clone()));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec,
+            false,
+            self.pool.clone(),
+        ));
 
         // read first packet
         let packet = timeout_checked(self.cfg.connect_timeout, io.recv(&shared.codec))
@@ -320,11 +325,13 @@ where
 
                     log::trace!("Sending success handshake ack: {pkt:#?}");
 
-                    ack.shared.set_cap(ack.max_send.unwrap_or(self.cfg.max_send) as usize);
+                    ack.shared
+                        .set_cap(ack.max_send.unwrap_or(self.cfg.max_send) as usize);
                     if let Some(max_packet_size) = ack.max_packet_size {
                         ack.shared.codec.set_max_size(max_packet_size.get());
                     }
-                    ack.io.encode(mqtt::Encoded::Packet(pkt), &ack.shared.codec)?;
+                    ack.io
+                        .encode(mqtt::Encoded::Packet(pkt), &ack.shared.codec)?;
                     Ok((
                         ack.io,
                         ack.shared.clone(),
@@ -338,7 +345,8 @@ where
                     });
 
                     log::trace!("Sending failed handshake ack: {pkt:#?}");
-                    ack.io.encode(mqtt::Encoded::Packet(pkt), &ack.shared.codec)?;
+                    ack.io
+                        .encode(mqtt::Encoded::Packet(pkt), &ack.shared.codec)?;
                     let _ = ack.io.shutdown().await;
 
                     Err(MqttError::Handshake(HandshakeError::Disconnected(None)))

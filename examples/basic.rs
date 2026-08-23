@@ -20,27 +20,31 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
     }
 }
 
-async fn handshake_v3(
-    handshake: v3::Handshake,
-) -> Result<v3::HandshakeAck<Session>, ServerError> {
+async fn handshake_v3(handshake: v3::Handshake) -> Result<v3::HandshakeAck<Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session, false))
 }
 
 async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
-    log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
+    log::info!(
+        "incoming publish: {:?} -> {:?}",
+        publish.id(),
+        publish.topic()
+    );
     Ok(())
 }
 
-async fn handshake_v5(
-    handshake: v5::Handshake,
-) -> Result<v5::HandshakeAck<Session>, ServerError> {
+async fn handshake_v5(handshake: v5::Handshake) -> Result<v5::HandshakeAck<Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session))
 }
 
 async fn publish_v5(publish: v5::Publish) -> Result<v5::PublishAck, ServerError> {
-    log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
+    log::info!(
+        "incoming publish: {:?} -> {:?}",
+        publish.id(),
+        publish.topic()
+    );
     Ok(publish.ack())
 }
 

@@ -1,5 +1,10 @@
 //! MQTT Client/Server framework
-#![deny(rust_2018_idioms, unreachable_pub, missing_debug_implementations, clippy::pedantic)]
+#![deny(
+    rust_2018_idioms,
+    unreachable_pub,
+    missing_debug_implementations,
+    clippy::pedantic
+)]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::missing_fields_in_debug,

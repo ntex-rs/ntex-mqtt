@@ -1,8 +1,8 @@
-use std::cell::RefCell;
-use std::{marker::PhantomData, num::NonZeroU16, rc::Rc, task::Context};
+use std::{cell::RefCell, num::NonZeroU16, rc::Rc};
 
 use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Pipeline, PipelineSvc, Service, ServiceCtx, ServiceFactory};
+use ntex_service::pipeline::{Pipeline, PipelineWithState};
+use ntex_service::{Ctx, Service, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
@@ -23,53 +23,50 @@ pub(super) fn factory<St, T, P, E, InitErr>(
     publish: T,
     control: P,
 ) -> impl ServiceFactory<
+    (),
     Decoded,
     (SharedCfg, Session<St>),
-    Response = Option<Encoded>,
+    Res = Option<Encoded>,
     Error = DispatcherError<E>,
     InitError = MqttError<InitErr>,
 >
 where
     St: 'static,
-    T: ServiceFactory<Publish, Session<St>, Response = ()> + 'static,
-    P: ServiceFactory<ProtocolMessage, Session<St>, Response = ProtocolMessageAck> + 'static,
+    T: ServiceFactory<(), Publish, Session<St>, Res = ()> + 'static,
+    P: ServiceFactory<(), ProtocolMessage, Session<St>, Res = ProtocolMessageAck> + 'static,
     E: From<T::Error> + From<P::Error> + 'static,
     InitErr: From<T::InitError> + From<P::InitError>,
 {
     let factories = Rc::new((publish, control));
 
-    ntex_service::fn_factory_with_config(
-        async move |(cfg, session): (SharedCfg, Session<St>)| {
-            // create services
-            let sink = session.sink().shared();
-            let fut = join(factories.0.create(session.clone()), factories.1.create(session));
-            let (publish, control) = fut.await;
+    ntex_service::fn_factory_with_config(async move |(cfg, session): &(SharedCfg, Session<St>)| {
+        // create services
+        let sink = session.sink().shared();
+        let fut = join(factories.0.create(&session), factories.1.create(&session));
+        let (publish, control) = fut.await;
 
-            let publish = publish.map_err(|e| MqttError::Service(InitErr::from(e)))?;
-            let control = Pipeline::new(
-                control
-                    .map_err(|e| MqttError::Service(InitErr::from(e)))?
-                    .map_err(|e| DispatcherError::Service(e.into())),
-            );
+        let publish = publish.map_err(|e| MqttError::Service(InitErr::from(e)))?;
+        let control = control
+            .map_err(|e| MqttError::Service(InitErr::from(e)))?
+            .map_err(|e| DispatcherError::Service(e.into()));
 
-            let control = Pipeline::new(
-                BufferService::new(
-                    16,
-                    // limit number of in-flight messages
-                    InFlightService::new(1, PipelineSvc::new(control.clone())),
-                )
-                .map_err(|err| match err {
-                    BufferServiceError::Service(e) => e,
-                    BufferServiceError::RequestCanceled => {
-                        DispatcherError::Protocol(ProtocolError::ReadTimeout)
-                    }
-                }),
-            );
+        let control = Pipeline::new(
+            BufferService::new(
+                16,
+                // limit number of in-flight messages
+                PipelineWithState::new(InFlightService::new(1, control)),
+            )
+            .map_err(|err| match err {
+                BufferServiceError::Service(e) => e,
+                BufferServiceError::RequestCanceled => {
+                    DispatcherError::Protocol(ProtocolError::ReadTimeout)
+                }
+            }),
+        );
 
-            let cfg: Cfg<MqttServiceConfig> = cfg.get();
-            Ok(Dispatcher::new(sink, publish, control, cfg))
-        },
-    )
+        let cfg: Cfg<MqttServiceConfig> = cfg.get();
+        Ok(Dispatcher::new(sink, publish, control, cfg))
+    })
 }
 
 impl crate::inflight::SizedRequest for Decoded {
@@ -91,36 +88,37 @@ impl crate::inflight::SizedRequest for Decoded {
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C, E> {
+pub(crate) struct Dispatcher<T, E> {
     publish: T,
-    inner: Rc<Inner<C>>,
+    inner: Rc<Inner<E>>,
     cfg: Cfg<MqttServiceConfig>,
-    _t: PhantomData<E>,
 }
 
-struct Inner<C> {
-    control: Pipeline<C>,
+struct Inner<E> {
+    control: Pipeline<ProtocolMessage, ProtocolMessageAck, DispatcherError<E>>,
     sink: Rc<MqttShared>,
     inflight: RefCell<HashSet<NonZeroU16>>,
 }
 
-impl<T, C, E> Dispatcher<T, C, E>
+impl<T, E> Dispatcher<T, E>
 where
     E: From<T::Error>,
-    T: Service<Publish, Response = ()>,
-    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
+    T: Service<(), Publish, Res = ()>,
 {
     pub(crate) fn new(
         sink: Rc<MqttShared>,
         publish: T,
-        control: Pipeline<C>,
+        control: Pipeline<ProtocolMessage, ProtocolMessageAck, DispatcherError<E>>,
         cfg: Cfg<MqttServiceConfig>,
     ) -> Self {
         Self {
             cfg,
             publish,
-            inner: Rc::new(Inner { sink, control, inflight: RefCell::new(HashSet::default()) }),
-            _t: PhantomData,
+            inner: Rc::new(Inner {
+                sink,
+                control,
+                inflight: RefCell::new(HashSet::default()),
+            }),
         }
     }
 
@@ -129,18 +127,16 @@ where
     }
 }
 
-impl<T, C, E> Service<Decoded> for Dispatcher<T, C, E>
+impl<T, E> Service<(), Decoded> for Dispatcher<T, E>
 where
     E: From<T::Error> + 'static,
-    T: Service<Publish, Response = ()> + 'static,
-    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>
-        + 'static,
+    T: Service<(), Publish, Res = ()> + 'static,
 {
-    type Response = Option<Encoded>;
+    type Res = Option<Encoded>;
     type Error = DispatcherError<E>;
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+    async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
         let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
         if (res1.is_err() || res2.is_err())
             && let Some(pl) = self.inner.sink.payload.take()
@@ -156,24 +152,16 @@ where
         Ok(())
     }
 
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        self.publish.poll(cx).map_err(|e| DispatcherError::Service(e.into()))?;
-        self.inner.control.poll(cx)
-    }
-
-    async fn shutdown(&self) {
+    async fn shutdown(&self, ctx: Ctx<'_, Self, ()>) {
         self.inner.sink.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.close();
-        self.publish.shutdown().await;
         self.inner.control.shutdown().await;
+
+        ctx.shutdown(&self.publish).await;
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn call(
-        &self,
-        req: Decoded,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn call(&self, req: Decoded, ctx: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
         log::trace!("{}; Dispatch v3 packet: {:#?}", self.tag(), req);
 
         match req {
@@ -283,10 +271,19 @@ where
             Decoded::Packet(Packet::PingRequest, _) => {
                 self.inner.control(ProtocolMessage::ping()).await
             }
-            Decoded::Packet(Packet::Subscribe { packet_id, topic_filters }, size) => {
+            Decoded::Packet(
+                Packet::Subscribe {
+                    packet_id,
+                    topic_filters,
+                },
+                size,
+            ) => {
                 if self.inner.sink.is_closed() {
                     Ok(None)
-                } else if topic_filters.iter().any(|(tf, _)| !crate::topic::is_valid(tf)) {
+                } else if topic_filters
+                    .iter()
+                    .any(|(tf, _)| !crate::topic::is_valid(tf))
+                {
                     Err(SpecViolation::Subs_4_7_1.into())
                 } else if !self.inner.inflight.borrow_mut().insert(packet_id) {
                     log::trace!(
@@ -305,7 +302,13 @@ where
                         .await
                 }
             }
-            Decoded::Packet(Packet::Unsubscribe { packet_id, topic_filters }, size) => {
+            Decoded::Packet(
+                Packet::Unsubscribe {
+                    packet_id,
+                    topic_filters,
+                },
+                size,
+            ) => {
                 if self.inner.sink.is_closed() {
                     Ok(None)
                 } else if topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
@@ -329,7 +332,9 @@ where
             }
             Decoded::Packet(Packet::Disconnect, _) => {
                 self.inner.sink.is_disconnect_sent();
-                self.inner.control(ProtocolMessage::remote_disconnect()).await
+                self.inner
+                    .control(ProtocolMessage::remote_disconnect())
+                    .await
             }
             Decoded::Packet(..) => Ok(None),
         }
@@ -337,17 +342,16 @@ where
 }
 
 /// Publish service response future
-async fn publish_fn<'f, T, C, E>(
+async fn publish_fn<'f, T, E>(
     svc: &'f T,
     pkt: Publish,
     packet_id: Option<NonZeroU16>,
-    inner: &'f Inner<C>,
-    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+    inner: &'f Inner<E>,
+    ctx: Ctx<'f, Dispatcher<T, E>>,
 ) -> Result<Option<Encoded>, DispatcherError<E>>
 where
     E: From<T::Error>,
-    T: Service<Publish, Response = ()>,
-    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
+    T: Service<(), Publish, Res = ()>,
 {
     let qos2 = pkt.qos() == QoS::ExactlyOnce;
     match ctx.call(svc, pkt).await {
@@ -373,14 +377,8 @@ where
     }
 }
 
-impl<C> Inner<C> {
-    async fn control<E>(
-        &self,
-        pkt: ProtocolMessage,
-    ) -> Result<Option<Encoded>, DispatcherError<E>>
-    where
-        C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
-    {
+impl<E: 'static> Inner<E> {
+    async fn control(&self, pkt: ProtocolMessage) -> Result<Option<Encoded>, DispatcherError<E>> {
         match self.control.call(pkt).await {
             Ok(item) => {
                 let packet = match item.result {
@@ -516,7 +514,9 @@ mod tests {
         // unknown PublishAck
         let err = disp
             .call(Decoded::Packet(
-                Packet::PublishAck { packet_id: NonZeroU16::new(100).unwrap() },
+                Packet::PublishAck {
+                    packet_id: NonZeroU16::new(100).unwrap(),
+                },
                 999,
             ))
             .await
@@ -525,13 +525,20 @@ mod tests {
         let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
-        let error::ViolationInner::Common { reason, .. } = err.inner else { panic!() };
-        assert_eq!(reason, crate::v5::codec::DisconnectReasonCode::ProtocolError);
+        let error::ViolationInner::Common { reason, .. } = err.inner else {
+            panic!()
+        };
+        assert_eq!(
+            reason,
+            crate::v5::codec::DisconnectReasonCode::ProtocolError
+        );
 
         // unknown PublishReceived
         let err = disp
             .call(Decoded::Packet(
-                Packet::PublishReceived { packet_id: NonZeroU16::new(100).unwrap() },
+                Packet::PublishReceived {
+                    packet_id: NonZeroU16::new(100).unwrap(),
+                },
                 999,
             ))
             .await
@@ -540,13 +547,20 @@ mod tests {
         let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
-        let error::ViolationInner::Common { reason, .. } = err.inner else { panic!() };
-        assert_eq!(reason, crate::v5::codec::DisconnectReasonCode::ProtocolError);
+        let error::ViolationInner::Common { reason, .. } = err.inner else {
+            panic!()
+        };
+        assert_eq!(
+            reason,
+            crate::v5::codec::DisconnectReasonCode::ProtocolError
+        );
 
         // unknown PublishRelease
         let err = disp
             .call(Decoded::Packet(
-                Packet::PublishRelease { packet_id: NonZeroU16::new(100).unwrap() },
+                Packet::PublishRelease {
+                    packet_id: NonZeroU16::new(100).unwrap(),
+                },
                 999,
             ))
             .await
@@ -563,7 +577,9 @@ mod tests {
         // unknown PublishComplete
         let err = disp
             .call(Decoded::Packet(
-                Packet::PublishComplete { packet_id: NonZeroU16::new(100).unwrap() },
+                Packet::PublishComplete {
+                    packet_id: NonZeroU16::new(100).unwrap(),
+                },
                 999,
             ))
             .await
@@ -572,8 +588,13 @@ mod tests {
         let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
-        let error::ViolationInner::Common { reason, .. } = err.inner else { panic!() };
-        assert_eq!(reason, crate::v5::codec::DisconnectReasonCode::ProtocolError);
+        let error::ViolationInner::Common { reason, .. } = err.inner else {
+            panic!()
+        };
+        assert_eq!(
+            reason,
+            crate::v5::codec::DisconnectReasonCode::ProtocolError
+        );
 
         // subscribe invalid topic
         let err = disp
@@ -590,7 +611,10 @@ mod tests {
         let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
-        assert_eq!(err.inner, error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1));
+        assert_eq!(
+            err.inner,
+            error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1)
+        );
 
         // unsubscribe invalid topic
         let err = disp
@@ -608,6 +632,9 @@ mod tests {
         let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
-        assert_eq!(err.inner, error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1));
+        assert_eq!(
+            err.inner,
+            error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1)
+        );
     }
 }

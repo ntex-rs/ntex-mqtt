@@ -1,15 +1,15 @@
-use std::{cell::RefCell, fmt, num::NonZeroU16, rc::Rc, task::Context};
+use std::{cell::RefCell, fmt, num::NonZeroU16, rc::Rc};
 
 use ntex_bytes::ByteString;
 use ntex_router::{IntoPattern, Path, RouterBuilder};
 use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
-use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
 use ntex_util::HashMap;
 
 use super::{Session, publish::Publish, publish::PublishAck};
 
-type Handler<S, E> = BoxServiceFactory<Session<S>, Publish, PublishAck, E, E>;
-type HandlerService<E> = BoxService<Publish, PublishAck, E>;
+type Handler<S, E> = BoxServiceFactory<(), Publish, PublishAck, E, Session<S>, E>;
+type HandlerService<E> = BoxService<(), Publish, PublishAck, E>;
 
 /// Router - structure that follows the builder pattern
 /// for building publish packet router instances for mqtt server.
@@ -35,14 +35,9 @@ where
     /// Default service to be used if no matching resource could be found.
     pub fn new<F, U>(default_service: F) -> Self
     where
-        F: IntoServiceFactory<U, Publish, Session<S>>,
-        U: ServiceFactory<
-                Publish,
-                Session<S>,
-                Response = PublishAck,
-                Error = Err,
-                InitError = Err,
-            > + 'static,
+        F: IntoServiceFactory<U, (), Publish, Session<S>>,
+        U: ServiceFactory<(), Publish, Session<S>, Res = PublishAck, Error = Err, InitError = Err>
+            + 'static,
     {
         Router {
             router: ntex_router::Router::build(),
@@ -56,12 +51,14 @@ where
     pub fn resource<T, F, U>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoServiceFactory<U, Publish, Session<S>>,
-        U: ServiceFactory<Publish, Session<S>, Response = PublishAck, Error = Err> + 'static,
+        F: IntoServiceFactory<U, (), Publish, Session<S>>,
+        U: ServiceFactory<(), Publish, Session<S>, Res = PublishAck, Error = Err> + 'static,
         Err: From<U::InitError>,
     {
         self.router.path(address, self.handlers.len());
-        self.handlers.push(boxed::factory(service.into_factory().map_init_err(Err::from)));
+        self.handlers.push(boxed::factory(
+            service.into_factory().map_init_err(Err::from),
+        ));
         self
     }
 
@@ -81,7 +78,7 @@ where
     }
 }
 
-impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, Publish, Session<S>> for Router<S, Err>
+impl<S, Err> IntoServiceFactory<RouterFactory<S, Err>, (), Publish, Session<S>> for Router<S, Err>
 where
     S: 'static,
     Err: 'static,
@@ -103,22 +100,22 @@ impl<S, Err> fmt::Debug for RouterFactory<S, Err> {
     }
 }
 
-impl<S, Err> ServiceFactory<Publish, Session<S>> for RouterFactory<S, Err>
+impl<S, Err> ServiceFactory<(), Publish, Session<S>> for RouterFactory<S, Err>
 where
     S: 'static,
     Err: 'static,
 {
-    type Response = PublishAck;
+    type Res = PublishAck;
     type Error = Err;
     type InitError = Err;
     type Service = RouterService<Err>;
 
-    async fn create(&self, session: Session<S>) -> Result<Self::Service, Err> {
-        let default = self.default.create(session.clone()).await?;
+    async fn create(&self, session: &Session<S>) -> Result<Self::Service, Err> {
+        let default = self.default.create(session).await?;
 
         let mut handlers = Vec::with_capacity(self.handlers.len());
         for f in self.handlers.as_ref() {
-            handlers.push(f.create(session.clone()).await?);
+            handlers.push(f.create(session).await?);
         }
 
         Ok(RouterService {
@@ -143,37 +140,31 @@ impl<Err> fmt::Debug for RouterService<Err> {
     }
 }
 
-impl<Err: 'static> Service<Publish> for RouterService<Err> {
-    type Response = PublishAck;
+impl<Err: 'static> Service<(), Publish> for RouterService<Err> {
+    type Res = PublishAck;
     type Error = Err;
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+    async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
         for hnd in &self.handlers {
             ctx.ready(hnd).await?;
         }
         ctx.ready(&self.default).await
     }
 
-    #[inline]
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        for hnd in &self.handlers {
-            hnd.poll(cx)?;
-        }
-        self.default.poll(cx)
-    }
-
     #[allow(clippy::await_holding_refcell_ref)]
     async fn call(
         &self,
         mut req: Publish,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
+        ctx: Ctx<'_, Self, ()>,
+    ) -> Result<Self::Res, Self::Error> {
         if !req.publish_topic().is_empty() {
             if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
                 // save info for topic alias
                 if let Some(alias) = req.packet().properties.topic_alias {
-                    self.aliases.borrow_mut().insert(alias, (*idx, req.topic().clone()));
+                    self.aliases
+                        .borrow_mut()
+                        .insert(alias, (*idx, req.topic().clone()));
                 }
                 return ctx.call(&self.handlers[*idx], req).await;
             }

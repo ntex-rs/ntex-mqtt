@@ -34,8 +34,8 @@ async fn main() -> std::io::Result<()> {
     let sink = client.sink();
 
     // handle incoming publishes
-    ntex::rt::spawn(client.start(fn_service(async move |msg: v5::client::ProtocolMessage| {
-        match msg {
+    ntex::rt::spawn(client.start(fn_service(
+        async move |msg: v5::client::ProtocolMessage| match msg {
             v5::client::ProtocolMessage::Publish(publish) => {
                 let pl = publish.read_all().await;
                 log::info!(
@@ -52,8 +52,8 @@ async fn main() -> std::io::Result<()> {
                 Ok::<_, ()>(msg.ack())
             }
             _ => Ok(msg.ack()),
-        }
-    })));
+        },
+    )));
 
     // subscribe to topic
     sink.subscribe(None)
@@ -71,7 +71,11 @@ async fn main() -> std::io::Result<()> {
         .unwrap();
 
     log::info!("sending client publish");
-    let ack = sink.publish("topic1").send_at_least_once("Hello world!".into()).await.unwrap();
+    let ack = sink
+        .publish("topic1")
+        .send_at_least_once("Hello world!".into())
+        .await
+        .unwrap();
     log::info!("ack received: {:?}", ack);
 
     sleep(Millis(1_000)).await;

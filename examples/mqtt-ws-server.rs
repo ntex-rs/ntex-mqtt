@@ -31,15 +31,18 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 
 /// Mqtt server factory
 fn mqtt_server<F: Filter>()
--> impl ServiceFactory<Io<F>, SharedCfg, Response = (), Error = Box<dyn Error>, InitError = ()>
-{
+-> impl ServiceFactory<Io<F>, SharedCfg, Res = (), Error = Box<dyn Error>, InitError = ()> {
     MqttServer::new()
         .v3(v3::MqttServer::new(|handshake: v3::Handshake| async move {
             log::info!("new mqtt v3 connection: {:?}", handshake);
             Ok(handshake.ack(Session, false))
         })
         .publish(|publish: v3::Publish| async move {
-            log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
+            log::info!(
+                "incoming publish: {:?} -> {:?}",
+                publish.id(),
+                publish.topic()
+            );
             Ok::<_, ServerError>(())
         }))
         .v5(v5::MqttServer::new(|handshake: v5::Handshake| async move {
@@ -47,7 +50,11 @@ fn mqtt_server<F: Filter>()
             Ok(handshake.ack(Session))
         })
         .publish(|publish: v5::Publish| async move {
-            log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
+            log::info!(
+                "incoming publish: {:?} -> {:?}",
+                publish.id(),
+                publish.topic()
+            );
             Ok::<_, ServerError>(publish.ack())
         }))
         .map_err(Box::<dyn Error>::from)
@@ -59,34 +66,36 @@ fn mqtt_server<F: Filter>()
 pub fn ws<F: Filter>() -> impl ServiceFactory<
     (Request, Io<F>, h1::Codec),
     SharedCfg,
-    Response = Io<Layer<ws::WsTransport, F>>,
+    Res = Io<Layer<ws::WsTransport, F>>,
     Error = Box<dyn Error>,
     InitError = (),
 > {
-    ntex::fn_service(move |(req, io, codec): (Request, Io<F>, h1::Codec)| async move {
-        log::trace!("Got http request: {:?}", req);
+    ntex::fn_service(
+        move |(req, io, codec): (Request, Io<F>, h1::Codec)| async move {
+            log::trace!("Got http request: {:?}", req);
 
-        match ws::handshake(req.head()) {
-            Err(e) => {
-                // invalid WebSocket handshake request
-                log::info!("WebSocket negotiation failed: {:?}", e);
-                Err(Box::<dyn Error>::from(e))
+            match ws::handshake(req.head()) {
+                Err(e) => {
+                    // invalid WebSocket handshake request
+                    log::info!("WebSocket negotiation failed: {:?}", e);
+                    Err(Box::<dyn Error>::from(e))
+                }
+                Ok(mut res) => {
+                    // send success http response and switch to ws codec
+                    io.send(
+                        h1::Message::Item((res.finish().drop_body(), http::body::BodySize::Empty)),
+                        &codec,
+                    )
+                    .await
+                    .map_err(Box::<dyn Error>::from)?;
+
+                    log::trace!("WebSocket handshake is completed");
+
+                    Ok(ws::WsTransport::create(io, ws::Codec::new()))
+                }
             }
-            Ok(mut res) => {
-                // send success http response and switch to ws codec
-                io.send(
-                    h1::Message::Item((res.finish().drop_body(), http::body::BodySize::Empty)),
-                    &codec,
-                )
-                .await
-                .map_err(Box::<dyn Error>::from)?;
-
-                log::trace!("WebSocket handshake is completed");
-
-                Ok(ws::WsTransport::create(io, ws::Codec::new()))
-            }
-        }
-    })
+        },
+    )
 }
 
 enum Protocol {
@@ -104,8 +113,12 @@ async fn main() -> std::io::Result<()> {
     //   openssl req -x509 -nodes -subj '/CN=localhost' -newkey rsa:4096 -keyout examples/key8.pem -out examples/cert.pem -days 365 -keyform PEM
     //   openssl rsa -in examples/key8.pem -out examples/key.pem
     let mut builder = ssl::SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-    builder.set_private_key_file("./tests/key.pem", SslFiletype::PEM).unwrap();
-    builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
+    builder
+        .set_private_key_file("./tests/key.pem", SslFiletype::PEM)
+        .unwrap();
+    builder
+        .set_certificate_chain_file("./tests/cert.pem")
+        .unwrap();
     let acceptor = builder.build();
 
     ntex::server::Server::builder()

@@ -32,26 +32,26 @@ async fn main() -> std::io::Result<()> {
                     Ok(())
                 })
                 // this handler can handle topic1, topic2 and topic3 topics
-                .resource(["topic1", "topic2", "topic3"], |p: v3::Publish| async move {
-                    log::info!("incoming publish for {:?} -> {:?}", p.topic(), p.id());
-                    Ok(())
-                })
-                // this handler can handle topic with dynamic section
-                // ie `topic4/id1/files`, `topic4/id100/files`, etc
                 .resource(
-                    ["topic4/{id}/files"],
+                    ["topic1", "topic2", "topic3"],
                     |p: v3::Publish| async move {
-                        // get dynamic section from topic
-                        let id = p.topic().get("id").unwrap();
-                        log::info!(
-                            "incoming publish for {:?} -> {:?} ({:?})",
-                            p.topic(),
-                            p.id(),
-                            id
-                        );
+                        log::info!("incoming publish for {:?} -> {:?}", p.topic(), p.id());
                         Ok(())
                     },
-                ),
+                )
+                // this handler can handle topic with dynamic section
+                // ie `topic4/id1/files`, `topic4/id100/files`, etc
+                .resource(["topic4/{id}/files"], |p: v3::Publish| async move {
+                    // get dynamic section from topic
+                    let id = p.topic().get("id").unwrap();
+                    log::info!(
+                        "incoming publish for {:?} -> {:?} ({:?})",
+                        p.topic(),
+                        p.id(),
+                        id
+                    );
+                    Ok(())
+                }),
             )
         })?
         .workers(1)

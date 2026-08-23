@@ -1,8 +1,7 @@
-use std::cell::RefCell;
-use std::{marker::PhantomData, num::NonZero, num::NonZeroU16, rc::Rc, task::Context};
+use std::{cell::RefCell, num::NonZero, num::NonZeroU16, rc::Rc};
 
 use ntex_bytes::ByteString;
-use ntex_service::{Pipeline, Service, ServiceCtx, cfg::Cfg};
+use ntex_service::{Ctx, Pipeline, Service, cfg::Cfg};
 use ntex_util::{HashMap, HashSet, future::Either, future::join};
 
 use crate::error::{DispatcherError, PayloadError, ProtocolError, SpecViolation};
@@ -22,11 +21,11 @@ pub(super) fn create_dispatcher<T, C, E>(
     max_receive: usize,
     max_topic_alias: u16,
     cfg: Cfg<MqttServiceConfig>,
-) -> impl Service<Decoded, Response = Option<Encoded>, Error = DispatcherError<E>>
+) -> impl Service<(), Decoded, Res = Option<Encoded>, Error = DispatcherError<E>>
 where
     E: From<T::Error> + 'static,
-    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E> + 'static,
-    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
+    T: Service<(), Publish, Res = Either<Publish, PublishAck>, Error = E> + 'static,
+    C: Service<(), ProtocolMessage, Res = ProtocolMessageAck, Error = E> + 'static,
 {
     Dispatcher {
         cfg,
@@ -41,22 +40,20 @@ where
                 inflight: HashSet::default(),
             }),
         }),
-        _t: PhantomData,
     }
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, C, E> {
+pub(crate) struct Dispatcher<T, E> {
     publish: T,
-    inner: Rc<Inner<C>>,
+    inner: Rc<Inner<E>>,
     max_receive: usize,
     max_topic_alias: u16,
     cfg: Cfg<MqttServiceConfig>,
-    _t: PhantomData<E>,
 }
 
-struct Inner<C> {
-    control: Pipeline<C>,
+struct Inner<E> {
+    control: Pipeline<ProtocolMessage, ProtocolMessageAck, DispatcherError<E>>,
     sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
 }
@@ -66,18 +63,16 @@ struct PublishInfo {
     aliases: HashMap<NonZeroU16, ByteString>,
 }
 
-impl<T, C, E> Service<Decoded> for Dispatcher<T, C, E>
+impl<T, E> Service<(), Decoded> for Dispatcher<T, E>
 where
     E: 'static,
-    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E> + 'static,
-    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>
-        + 'static,
+    T: Service<(), Publish, Res = Either<Publish, PublishAck>, Error = E> + 'static,
 {
-    type Response = Option<Encoded>;
+    type Res = Option<Encoded>;
     type Error = DispatcherError<E>;
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+    async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
         let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
         if (res1.is_err() || res2.is_err())
             && let Some(pl) = self.inner.sink.payload.take()
@@ -93,28 +88,19 @@ where
         Ok(())
     }
 
-    #[inline]
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        self.publish.poll(cx).map_err(DispatcherError::Service)?;
-        self.inner.control.poll(cx)
-    }
-
-    async fn shutdown(&self) {
+    async fn shutdown(&self, ctx: Ctx<'_, Self, ()>) {
         self.inner.sink.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink(true);
-        self.publish.shutdown().await;
+
+        ctx.shutdown(&self.publish).await;
         self.inner.control.shutdown().await;
     }
 
     #[allow(clippy::too_many_lines, clippy::await_holding_refcell_ref)]
-    async fn call(
-        &self,
-        request: Decoded,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
-        log::trace!("Dispatch packet: {request:#?}");
+    async fn call(&self, req: Decoded, ctx: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+        log::trace!("Dispatch packet: {req:#?}");
 
-        match request {
+        match req {
             Decoded::Publish(mut publish, payload, size) => {
                 let info = self.inner.as_ref();
                 let packet_id = publish.packet_id;
@@ -293,24 +279,26 @@ where
 }
 
 /// Publish service response future
-async fn publish_fn<'f, T, C, E>(
+async fn publish_fn<'f, T, E: 'static>(
     svc: &'f T,
     pkt: Publish,
     packet_id: u16,
     packet_size: u32,
-    inner: &'f Inner<C>,
-    ctx: ServiceCtx<'f, Dispatcher<T, C, E>>,
+    inner: &'f Inner<E>,
+    ctx: Ctx<'f, Dispatcher<T, E>, ()>,
 ) -> Result<Option<Encoded>, DispatcherError<E>>
 where
-    T: Service<Publish, Response = Either<Publish, PublishAck>, Error = E>,
-    C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
+    T: Service<(), Publish, Res = Either<Publish, PublishAck>, Error = E>,
 {
     let ack = match ctx.call(svc, pkt).await.map_err(DispatcherError::Service)? {
         Either::Right(ack) => ack,
         Either::Left(pkt) => {
             let (pkt, payload) = pkt.into_inner();
             return inner
-                .control_pkt(ProtocolMessage::publish(pkt, payload, packet_size), packet_id)
+                .control_pkt(
+                    ProtocolMessage::publish(pkt, payload, packet_size),
+                    packet_id,
+                )
                 .await;
         }
     };
@@ -330,25 +318,16 @@ where
     }
 }
 
-impl<C> Inner<C> {
-    async fn control<E>(
-        &self,
-        pkt: ProtocolMessage,
-    ) -> Result<Option<Encoded>, DispatcherError<E>>
-    where
-        C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
-    {
+impl<E: 'static> Inner<E> {
+    async fn control(&self, pkt: ProtocolMessage) -> Result<Option<Encoded>, DispatcherError<E>> {
         self.control_pkt(pkt, 0).await
     }
 
-    async fn control_pkt<E>(
+    async fn control_pkt(
         &self,
         pkt: ProtocolMessage,
         packet_id: u16,
-    ) -> Result<Option<Encoded>, DispatcherError<E>>
-    where
-        C: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = DispatcherError<E>>,
-    {
+    ) -> Result<Option<Encoded>, DispatcherError<E>> {
         let result = match self.control.call(pkt).await {
             Ok(result) => {
                 if let Some(id) = NonZeroU16::new(packet_id) {

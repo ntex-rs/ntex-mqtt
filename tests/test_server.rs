@@ -23,8 +23,7 @@ async fn handshake(packet: Handshake) -> Result<HandshakeAck<St>, ()> {
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    let srv =
-        server::test_server(async || MqttServer::new(handshake).publish(|_t| Ready::Ok(())));
+    let srv = server::test_server(async || MqttServer::new(handshake).publish(|_t| Ready::Ok(())));
 
     // connect to server
     let client = client::MqttConnector::new()
@@ -39,11 +38,16 @@ async fn test_simple() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("test")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("test"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
 
-    let res = sink.publish(ByteString::from_static("#")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("#"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_err());
 
     sink.close();
@@ -84,7 +88,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(10);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -96,7 +102,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     // pkt 2
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(5);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(5);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"22")).await.unwrap();
@@ -108,7 +116,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     // pkt 3
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(2);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(2);
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"33")).await.unwrap();
     });
@@ -122,7 +132,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
         .await;
     assert!(res.is_ok());
 
-    let (fut, _) = sink.publish(ByteString::from_static("#")).stream_at_least_once(12);
+    let (fut, _) = sink
+        .publish(ByteString::from_static("#"))
+        .stream_at_least_once(12);
     let res = fut.await;
     assert!(res.is_err());
 
@@ -184,7 +196,9 @@ async fn test_simple_streaming2() {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(10);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -195,7 +209,10 @@ async fn test_simple_streaming2() {
     let res = fut.await;
     assert!(res.is_ok());
 
-    assert_eq!(&chunks.lock().unwrap()[..], vec![Bytes::from_static(b"1111111111"),]);
+    assert_eq!(
+        &chunks.lock().unwrap()[..],
+        vec![Bytes::from_static(b"1111111111"),]
+    );
 }
 
 #[ntex::test]
@@ -233,7 +250,9 @@ async fn test_disconnect_while_streaming() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(10);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -244,7 +263,10 @@ async fn test_disconnect_while_streaming() -> std::io::Result<()> {
     assert!(res.is_err());
     sleep(Millis(150)).await;
 
-    assert_eq!(&chunks.lock().unwrap()[..], vec![Ok(Some(Bytes::from_static(b"1111")))]);
+    assert_eq!(
+        &chunks.lock().unwrap()[..],
+        vec![Ok(Some(Bytes::from_static(b"1111")))]
+    );
     Ok(())
 }
 
@@ -263,7 +285,11 @@ async fn test_connect_fail() -> std::io::Result<()> {
         .await
         .err()
         .unwrap();
-    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
+    if let client::ClientError::Ack(codec::ConnectAck {
+        session_present,
+        return_code,
+    }) = err
+    {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::BadUserNameOrPassword);
     }
@@ -281,7 +307,11 @@ async fn test_connect_fail() -> std::io::Result<()> {
         .await
         .err()
         .unwrap();
-    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
+    if let client::ClientError::Ack(codec::ConnectAck {
+        session_present,
+        return_code,
+    }) = err
+    {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::IdentifierRejected);
     }
@@ -299,7 +329,11 @@ async fn test_connect_fail() -> std::io::Result<()> {
         .await
         .err()
         .unwrap();
-    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
+    if let client::ClientError::Ack(codec::ConnectAck {
+        session_present,
+        return_code,
+    }) = err
+    {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::NotAuthorized);
     }
@@ -317,7 +351,11 @@ async fn test_connect_fail() -> std::io::Result<()> {
         .await
         .err()
         .unwrap();
-    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
+    if let client::ClientError::Ack(codec::ConnectAck {
+        session_present,
+        return_code,
+    }) = err
+    {
         assert!(!session_present);
         assert_eq!(return_code, codec::ConnectAckReason::ServiceUnavailable);
     }
@@ -349,7 +387,9 @@ async fn test_qos2() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
         &codec,
     )
     .await
@@ -375,11 +415,22 @@ async fn test_qos2() -> std::io::Result<()> {
     .unwrap();
 
     let result = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(result, Decoded::Packet(Packet::PublishReceived { packet_id: id }, 2));
+    assert_eq!(
+        result,
+        Decoded::Packet(Packet::PublishReceived { packet_id: id }, 2)
+    );
 
-    io.send(Encoded::Packet(Packet::PublishRelease { packet_id: id }), &codec).await.unwrap();
+    io.send(
+        Encoded::Packet(Packet::PublishRelease { packet_id: id }),
+        &codec,
+    )
+    .await
+    .unwrap();
     let result = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(result, Decoded::Packet(Packet::PublishComplete { packet_id: id }, 2));
+    assert_eq!(
+        result,
+        Decoded::Packet(Packet::PublishComplete { packet_id: id }, 2)
+    );
 
     assert!(release.load(Relaxed));
     Ok(())
@@ -449,14 +500,18 @@ async fn test_ping() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
         &codec,
     )
     .await
     .unwrap();
     io.recv(&codec).await.unwrap().unwrap();
 
-    io.send(Encoded::Packet(codec::Packet::PingRequest), &codec).await.unwrap();
+    io.send(Encoded::Packet(codec::Packet::PingRequest), &codec)
+        .await
+        .unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(pkt, Decoded::Packet(Packet::PingResponse, 0));
     assert!(ping.load(Relaxed));
@@ -488,9 +543,12 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
@@ -538,7 +596,12 @@ async fn test_ack_order() -> std::io::Result<()> {
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
-        Decoded::Packet(Packet::PublishAck { packet_id: NonZeroU16::new(1).unwrap() }, 2)
+        Decoded::Packet(
+            Packet::PublishAck {
+                packet_id: NonZeroU16::new(1).unwrap()
+            },
+            2
+        )
     );
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
@@ -556,7 +619,12 @@ async fn test_ack_order() -> std::io::Result<()> {
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
-        Decoded::Packet(Packet::PublishAck { packet_id: NonZeroU16::new(3).unwrap() }, 2)
+        Decoded::Packet(
+            Packet::PublishAck {
+                packet_id: NonZeroU16::new(3).unwrap()
+            },
+            2
+        )
     );
 
     Ok(())
@@ -584,9 +652,15 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     let topic = ByteString::from_static("test");
-    let fut1 = sink.publish(topic.clone()).send_at_least_once(Bytes::from_static(b"pkt1"));
-    let fut2 = sink.publish(topic.clone()).send_at_least_once(Bytes::from_static(b"pkt2"));
-    let fut3 = sink.publish(topic.clone()).send_at_least_once(Bytes::from_static(b"pkt3"));
+    let fut1 = sink
+        .publish(topic.clone())
+        .send_at_least_once(Bytes::from_static(b"pkt1"));
+    let fut2 = sink
+        .publish(topic.clone())
+        .send_at_least_once(Bytes::from_static(b"pkt2"));
+    let fut3 = sink
+        .publish(topic.clone())
+        .send_at_least_once(Bytes::from_static(b"pkt3"));
 
     let res = join_all(vec![fut1, fut2, fut3]).await;
     assert!(res[0].is_ok());
@@ -625,7 +699,10 @@ async fn test_disconnect() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
-    let res = sink.publish(ByteString::from_static("#")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("#"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_err());
 
     Ok(())
@@ -649,7 +726,9 @@ async fn test_client_disconnect() -> std::io::Result<()> {
                 }
             })
             .publish(ntex::service::fn_factory_with_config(|_: Session<St>| {
-                Ready::Ok(ntex::service::fn_service(move |_: Publish| async { Ok(()) }))
+                Ready::Ok(ntex::service::fn_service(move |_: Publish| async {
+                    Ok(())
+                }))
             }))
     });
 
@@ -666,8 +745,10 @@ async fn test_client_disconnect() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("test")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("test"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
     sink.close();
     sleep(Millis(50)).await;
@@ -704,8 +785,11 @@ async fn test_handle_incoming() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     io.encode(
         Encoded::Publish(
             codec::Publish {
@@ -721,7 +805,8 @@ async fn test_handle_incoming() -> std::io::Result<()> {
         &codec,
     )
     .unwrap();
-    io.encode(Encoded::Packet(Packet::Disconnect), &codec).unwrap();
+    io.encode(Encoded::Packet(Packet::Disconnect), &codec)
+        .unwrap();
     io.flush(true).await.unwrap();
     sleep(Millis(50)).await;
     drop(io);
@@ -791,8 +876,11 @@ async fn handle_or_drop_publish_after_disconnect(
     };
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     io.encode(
         Encoded::Publish(
             codec::Publish {
@@ -808,7 +896,8 @@ async fn handle_or_drop_publish_after_disconnect(
         &codec,
     )
     .unwrap();
-    io.encode(Encoded::Packet(Packet::Disconnect), &codec).unwrap();
+    io.encode(Encoded::Packet(Packet::Disconnect), &codec)
+        .unwrap();
     io.flush(true).await.unwrap();
     sleep(Millis(250)).await;
     io.close();
@@ -863,13 +952,18 @@ async fn test_nested_errors() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     // disconnect
-    io.send(Encoded::Packet(Packet::Disconnect), &codec).await.unwrap();
+    io.send(Encoded::Packet(Packet::Disconnect), &codec)
+        .await
+        .unwrap();
     assert!(io.recv(&codec).await.unwrap().is_none());
 
     Ok(())
@@ -877,14 +971,16 @@ async fn test_nested_errors() -> std::io::Result<()> {
 
 #[ntex::test]
 async fn test_large_publish() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
-        MqttServer::new(handshake).publish(|_| Ready::Ok(()))
-    });
+    let srv =
+        server::test_server(async move || MqttServer::new(handshake).publish(|_| Ready::Ok(())));
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     let _ = io.recv(&codec).await;
 
     let p = Encoded::Publish(
@@ -911,8 +1007,12 @@ fn ssl_acceptor() -> openssl::ssl::SslAcceptor {
 
     // load ssl keys
     let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-    builder.set_private_key_file("./tests/key.pem", SslFiletype::PEM).unwrap();
-    builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
+    builder
+        .set_private_key_file("./tests/key.pem", SslFiletype::PEM)
+        .unwrap();
+    builder
+        .set_certificate_chain_file("./tests/cert.pem")
+        .unwrap();
     builder.build()
 }
 
@@ -921,13 +1021,12 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
     use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 
     let srv = server::test_server(async move || {
-        chain_factory(server::openssl::SslAcceptor::new(ssl_acceptor()).map_err(|_| ()))
-            .and_then(
-                MqttServer::new(handshake)
-                    .publish(|_| Ready::Ok(()))
-                    .map_err(|_| ())
-                    .map_init_err(|_| ()),
-            )
+        chain_factory(server::openssl::SslAcceptor::new(ssl_acceptor()).map_err(|_| ())).and_then(
+            MqttServer::new(handshake)
+                .publish(|_| Ready::Ok(()))
+                .map_err(|_| ())
+                .map_init_err(|_| ()),
+        )
     });
 
     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
@@ -942,8 +1041,11 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
     let io = con.call(addr.into()).await.unwrap();
 
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     let _ = io.recv(&codec).await;
 
     let p = Encoded::Publish(
@@ -989,7 +1091,9 @@ async fn test_max_qos() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
         &codec,
     )
     .await
@@ -1029,7 +1133,9 @@ async fn test_sink_ready() -> std::io::Result<()> {
             ntex::rt::spawn(async move {
                 sink.ready().await;
                 assert!(sink.is_ready());
-                sink.publish("/test").send_at_most_once(Bytes::from_static(b"body")).unwrap();
+                sink.publish("/test")
+                    .send_at_most_once(Bytes::from_static(b"body"))
+                    .unwrap();
             });
 
             Ok::<_, ()>(packet.ack(St, false).idle_timeout(Seconds(16)))
@@ -1041,7 +1147,9 @@ async fn test_sink_ready() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
         &codec,
     )
     .await
@@ -1056,9 +1164,8 @@ async fn test_sink_ready() -> std::io::Result<()> {
 
 #[ntex::test]
 async fn test_sink_publish_noblock() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
-        MqttServer::new(handshake).publish(|_| Ready::Ok(()))
-    });
+    let srv =
+        server::test_server(async move || MqttServer::new(handshake).publish(|_| Ready::Ok(())));
 
     // connect to server
     let client = client::MqttConnector::new()
@@ -1091,11 +1198,16 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
         .send_at_least_once_no_block(Bytes::new());
     assert!(res.is_ok());
 
-    let res =
-        sink.publish(ByteString::from_static("test3")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("test3"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
 
-    assert_eq!(*results.borrow(), &[NonZeroU16::new(1).unwrap(), NonZeroU16::new(2).unwrap()]);
+    assert_eq!(
+        *results.borrow(),
+        &[NonZeroU16::new(1).unwrap(), NonZeroU16::new(2).unwrap()]
+    );
 
     sink.close();
     Ok(())
@@ -1135,8 +1247,11 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     io.recv(&codec).await.unwrap();
 
     let p = Encoded::Publish(
@@ -1178,9 +1293,7 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
 async fn test_handshake_fail() -> std::io::Result<()> {
     let srv = server::test_server(async || {
         MqttServer::new(fn_service(|packet: Handshake| async move {
-            Ok::<_, ()>(
-                packet.failed::<St>(codec::ConnectAckReason::UnacceptableProtocolVersion),
-            )
+            Ok::<_, ()>(packet.failed::<St>(codec::ConnectAckReason::UnacceptableProtocolVersion))
         }))
         .publish(|_| Ready::Ok(()))
     });
@@ -1189,7 +1302,9 @@ async fn test_handshake_fail() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
         &codec,
     )
     .await

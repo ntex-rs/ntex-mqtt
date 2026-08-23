@@ -2,7 +2,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Filter, Io, IoBoxed};
-use ntex_service::{Middleware, Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
+use ntex_service::{Ctx, Middleware, Service, ServiceFactory, cfg::SharedCfg};
 use ntex_util::time::Seconds;
 
 use crate::error::{DecodeError, DispatcherError, EncodeError};
@@ -39,18 +39,18 @@ impl<St, E, H, T, M, C, Codec> MqttServer<St, E, H, T, M, C, Codec> {
 
 impl<St, E, H, T, M, C, Codec> MqttServer<St, E, H, T, M, C, Codec>
 where
-    H: ServiceFactory<IoBoxed, SharedCfg, Response = (IoBoxed, Codec, St, Seconds)>,
+    H: ServiceFactory<(), IoBoxed, SharedCfg, Res = (IoBoxed, Codec, St, Seconds)>,
 {
     async fn create_service(
         &self,
-        cfg: SharedCfg,
+        cfg: &SharedCfg,
     ) -> Result<MqttHandler<St, E, H::Service, T, M, C, Codec>, H::InitError> {
-        let handshake = self.handshake.create(cfg.clone()).await?;
+        let handshake = self.handshake.create(cfg).await?;
 
         // create connect service and then create service impl
         Ok(MqttHandler {
-            cfg,
             handshake,
+            cfg: cfg.clone(),
             handler: self.handler.clone(),
             middleware: self.middleware.clone(),
             control: self.control.clone(),
@@ -59,73 +59,79 @@ where
     }
 }
 
-impl<St, E, H, T, M, C, Codec> ServiceFactory<IoBoxed, SharedCfg>
+impl<St, E, H, T, M, C, Codec> ServiceFactory<(), IoBoxed, SharedCfg>
     for MqttServer<St, E, H, T, M, C, Codec>
 where
     St: Clone + 'static,
     E: 'static,
-    H: ServiceFactory<IoBoxed, SharedCfg, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
+    H: ServiceFactory<(), IoBoxed, SharedCfg, Res = (IoBoxed, Codec, St, Seconds)> + 'static,
     T: ServiceFactory<
+            (),
             Request<Codec>,
             (SharedCfg, St),
-            Response = Response<Codec>,
+            Res = Response<Codec>,
             Error = DispatcherError<E>,
             InitError = H::Error,
         > + 'static,
     M: Middleware<T::Service, (SharedCfg, St)>,
-    M::Service: Service<Request<Codec>, Response = Response<Codec>, Error = DispatcherError<E>>
-        + 'static,
+    M::Service:
+        Service<(), Request<Codec>, Res = Response<Codec>, Error = DispatcherError<E>> + 'static,
     C: ServiceFactory<
+            (),
             Control<E>,
             St,
-            Response = Response<Codec>,
+            Res = Response<Codec>,
             Error = H::Error,
             InitError = H::Error,
         > + 'static,
     Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
 {
-    type Response = ();
+    type Res = ();
     type Error = H::Error;
-    type InitError = H::InitError;
-    type Service = MqttHandler<St, E, H::Service, T, M, C, Codec>;
 
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+    type Service = MqttHandler<St, E, H::Service, T, M, C, Codec>;
+    type InitError = H::InitError;
+
+    async fn create(&self, cfg: &SharedCfg) -> Result<Self::Service, Self::InitError> {
         self.create_service(cfg).await
     }
 }
 
-impl<F, St, E, H, T, M, C, Codec> ServiceFactory<Io<F>, SharedCfg>
+impl<F, St, E, H, T, M, C, Codec> ServiceFactory<(), Io<F>, SharedCfg>
     for MqttServer<St, E, H, T, M, C, Codec>
 where
     F: Filter,
     St: Clone + 'static,
     E: 'static,
-    H: ServiceFactory<IoBoxed, SharedCfg, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
+    H: ServiceFactory<(), IoBoxed, SharedCfg, Res = (IoBoxed, Codec, St, Seconds)> + 'static,
     T: ServiceFactory<
+            (),
             Request<Codec>,
             (SharedCfg, St),
-            Response = Response<Codec>,
+            Res = Response<Codec>,
             Error = DispatcherError<E>,
             InitError = H::Error,
         > + 'static,
     M: Middleware<T::Service, (SharedCfg, St)>,
-    M::Service: Service<Request<Codec>, Response = Response<Codec>, Error = DispatcherError<E>>
-        + 'static,
+    M::Service:
+        Service<(), Request<Codec>, Res = Response<Codec>, Error = DispatcherError<E>> + 'static,
     C: ServiceFactory<
+            (),
             Control<E>,
             St,
-            Response = Response<Codec>,
+            Res = Response<Codec>,
             Error = H::Error,
             InitError = H::Error,
         > + 'static,
     Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
 {
-    type Response = ();
+    type Res = ();
     type Error = H::Error;
-    type InitError = H::InitError;
-    type Service = MqttHandler<St, E, H::Service, T, M, C, Codec>;
 
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+    type Service = MqttHandler<St, E, H::Service, T, M, C, Codec>;
+    type InitError = H::InitError;
+
+    async fn create(&self, cfg: &SharedCfg) -> Result<Self::Service, Self::InitError> {
         self.create_service(cfg).await
     }
 }
@@ -145,52 +151,57 @@ impl<St, E, H, T, M, C, Codec> fmt::Debug for MqttHandler<St, E, H, T, M, C, Cod
     }
 }
 
-impl<St, E, H, T, M, C, Codec> Service<IoBoxed> for MqttHandler<St, E, H, T, M, C, Codec>
+impl<St, E, H, T, M, C, Codec> Service<(), IoBoxed> for MqttHandler<St, E, H, T, M, C, Codec>
 where
     St: Clone + 'static,
     E: 'static,
-    H: Service<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
+    H: Service<(), IoBoxed, Res = (IoBoxed, Codec, St, Seconds)> + 'static,
     T: ServiceFactory<
+            (),
             Request<Codec>,
             (SharedCfg, St),
-            Response = Response<Codec>,
+            Res = Response<Codec>,
             Error = DispatcherError<E>,
             InitError = H::Error,
         > + 'static,
     M: Middleware<T::Service, (SharedCfg, St)>,
-    M::Service: Service<Request<Codec>, Response = Response<Codec>, Error = DispatcherError<E>>
-        + 'static,
+    M::Service:
+        Service<(), Request<Codec>, Res = Response<Codec>, Error = DispatcherError<E>> + 'static,
     C: ServiceFactory<
+            (),
             Control<E>,
             St,
-            Response = Response<Codec>,
+            Res = Response<Codec>,
             Error = H::Error,
             InitError = H::Error,
         > + 'static,
     Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
 {
-    type Response = ();
+    type Res = ();
     type Error = H::Error;
 
-    ntex_service::forward_ready!(handshake);
-    ntex_service::forward_poll!(handshake);
-    ntex_service::forward_shutdown!(handshake);
+    ntex_service::forward_ready!((), handshake);
+    ntex_service::forward_shutdown!((), handshake);
 
-    async fn call(&self, req: IoBoxed, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+    async fn call(&self, req: IoBoxed, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
         let tag = req.tag();
         let handshake = ctx.call(&self.handshake, req).await;
 
         let (io, codec, session, keepalive) = handshake?;
         log::trace!("{tag}: Connection handshake succeeded");
 
-        let control = self.control.create(session.clone()).await?;
-        let handler = self.handler.create((self.cfg.clone(), session.clone())).await?;
+        let control = self.control.create(&session).await?;
+        let handler = self
+            .handler
+            .create(&(self.cfg.clone(), session.clone()))
+            .await?;
         log::trace!("{tag}: Connection handler is created, starting dispatcher");
 
         Dispatcher::new(
             io,
             codec,
-            self.middleware.create(handler, (self.cfg.clone(), session)),
+            self.middleware
+                .create(handler, &(self.cfg.clone(), session)),
             control,
         )
         .keepalive_timeout(keepalive)
@@ -198,40 +209,41 @@ where
     }
 }
 
-impl<F, St, E, H, T, M, C, Codec> Service<Io<F>> for MqttHandler<St, E, H, T, M, C, Codec>
+impl<F, St, E, H, T, M, C, Codec> Service<(), Io<F>> for MqttHandler<St, E, H, T, M, C, Codec>
 where
     F: Filter,
     St: Clone + 'static,
     E: 'static,
-    H: Service<IoBoxed, Response = (IoBoxed, Codec, St, Seconds)> + 'static,
+    H: Service<(), IoBoxed, Res = (IoBoxed, Codec, St, Seconds)> + 'static,
     T: ServiceFactory<
+            (),
             Request<Codec>,
             (SharedCfg, St),
-            Response = Response<Codec>,
+            Res = Response<Codec>,
             Error = DispatcherError<E>,
             InitError = H::Error,
         > + 'static,
     M: Middleware<T::Service, (SharedCfg, St)>,
-    M::Service: Service<Request<Codec>, Response = Response<Codec>, Error = DispatcherError<E>>
-        + 'static,
+    M::Service:
+        Service<(), Request<Codec>, Res = Response<Codec>, Error = DispatcherError<E>> + 'static,
     C: ServiceFactory<
+            (),
             Control<E>,
             St,
-            Response = Response<Codec>,
+            Res = Response<Codec>,
             Error = H::Error,
             InitError = H::Error,
         > + 'static,
     Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
 {
-    type Response = ();
+    type Res = ();
     type Error = H::Error;
 
-    ntex_service::forward_ready!(handshake);
-    ntex_service::forward_poll!(handshake);
-    ntex_service::forward_shutdown!(handshake);
-
     #[inline]
-    async fn call(&self, io: Io<F>, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        Service::<IoBoxed>::call(self, IoBoxed::from(io), ctx).await
+    async fn call(&self, io: Io<F>, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
+        Service::<(), IoBoxed>::call(self, IoBoxed::from(io), ctx).await
     }
+
+    ntex_service::forward_ready!((), handshake);
+    ntex_service::forward_shutdown!((), handshake);
 }

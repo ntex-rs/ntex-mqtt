@@ -1,7 +1,7 @@
 //! Service that limits number of in-flight async requests.
 use std::{cell::Cell, fmt, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
-use ntex_service::{Service, ServiceCtx};
+use ntex_service::{Ctx, Service};
 use ntex_util::{future::join, task::LocalWaker};
 
 /// Trait for types that could be sized
@@ -35,25 +35,27 @@ impl<S> InFlightServiceImpl<S> {
     }
 }
 
-impl<S, R> Service<R> for InFlightServiceImpl<S>
+impl<S, St, Req> Service<St, Req> for InFlightServiceImpl<S>
 where
-    S: Service<R>,
-    R: SizedRequest + 'static,
+    S: Service<St, Req>,
+    Req: SizedRequest + 'static,
 {
-    type Response = S::Response;
+    type Res = S::Res;
     type Error = S::Error;
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), S::Error> {
+    async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), S::Error> {
         if self.publish.get() || self.count.is_available() {
             ctx.ready(&self.service).await
         } else {
-            join(self.count.available(), ctx.ready(&self.service)).await.1
+            join(self.count.available(), ctx.ready(&self.service))
+                .await
+                .1
         }
     }
 
     #[inline]
-    async fn call(&self, req: R, ctx: ServiceCtx<'_, Self>) -> Result<S::Response, S::Error> {
+    async fn call(&self, req: Req, ctx: Ctx<'_, Self, St>) -> Result<S::Res, S::Error> {
         // process payload chunks
         if self.publish.get() && !req.is_chunk() {
             self.publish.set(false);
@@ -69,8 +71,7 @@ where
         result
     }
 
-    ntex_service::forward_poll!(service);
-    ntex_service::forward_shutdown!(service);
+    ntex_service::forward_shutdown!(St, service);
 }
 
 struct Counter(Rc<CounterInner>);
@@ -176,10 +177,10 @@ mod tests {
     struct SleepService(Duration);
 
     impl Service<()> for SleepService {
-        type Response = ();
+        type Res = ();
         type Error = ();
 
-        async fn call(&self, _r: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+        async fn call(&self, _r: (), _: Ctx<'_, Self>) -> Result<(), ()> {
             sleep(self.0).await;
             Ok::<_, ()>(())
         }
@@ -222,8 +223,7 @@ mod tests {
     async fn test_inflight2() {
         let wait_time = Duration::from_millis(50);
 
-        let srv =
-            Pipeline::new(InFlightServiceImpl::new(0, 10, SleepService(wait_time))).bind();
+        let srv = Pipeline::new(InFlightServiceImpl::new(0, 10, SleepService(wait_time))).bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.clone();
@@ -244,10 +244,10 @@ mod tests {
     }
 
     impl Service<()> for Srv2 {
-        type Response = ();
+        type Res = ();
         type Error = ();
 
-        async fn ready(&self, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+        async fn ready(&self, _: Ctx<'_, Self>) -> Result<(), ()> {
             poll_fn(|cx| {
                 if self.cnt.get() {
                     self.waker.register(cx.waker());
@@ -259,7 +259,7 @@ mod tests {
             .await
         }
 
-        async fn call(&self, _r: (), _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+        async fn call(&self, _r: (), _: Ctx<'_, Self>) -> Result<(), ()> {
             let fut = sleep(self.dur);
             self.cnt.set(true);
             self.waker.wake();
@@ -281,7 +281,11 @@ mod tests {
         let srv = Pipeline::new(InFlightServiceImpl::new(
             1,
             10,
-            Srv2 { dur: wait_time, cnt: Cell::new(false), waker: LocalWaker::new() },
+            Srv2 {
+                dur: wait_time,
+                cnt: Cell::new(false),
+                waker: LocalWaker::new(),
+            },
         ))
         .bind();
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
@@ -309,9 +313,9 @@ mod tests {
         struct NoopSvc;
         struct Req;
         impl Service<Req> for NoopSvc {
-            type Response = ();
+            type Res = ();
             type Error = ();
-            async fn call(&self, _: Req, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+            async fn call(&self, _: Req, _: Ctx<'_, Self>) -> Result<(), ()> {
                 Ok(())
             }
         }
