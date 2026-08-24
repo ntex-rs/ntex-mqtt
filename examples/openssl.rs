@@ -1,4 +1,4 @@
-use ntex::service::chain_factory;
+use ntex::{Service, SharedCfg};
 use ntex_mqtt::{MqttError, MqttServer, v3, v5};
 use ntex_tls::openssl::SslAcceptor;
 use openssl::ssl::{self, SslFiletype, SslMethod};
@@ -69,15 +69,20 @@ async fn main() -> std::io::Result<()> {
     let acceptor = builder.build();
 
     ntex::server::build()
-        .bind("mqtt", "127.0.0.1:8883", async move |_| {
-            chain_factory(SslAcceptor::new(acceptor.clone()))
-                .map_err(|_err| MqttError::Service(ServerError {}))
-                .and_then(
-                    MqttServer::new()
-                        .v3(v3::MqttServer::new(handshake_v3).publish(publish_v3))
-                        .v5(v5::MqttServer::new(handshake_v5).publish(publish_v5)),
-                )
-        })?
+        .bind(
+            "mqtt",
+            "127.0.0.1:8883",
+            SharedCfg::default(),
+            async move |_| {
+                SslAcceptor::new(acceptor.clone())
+                    .map_err(|_err| MqttError::Service(ServerError {}))
+                    .and_then(
+                        MqttServer::new()
+                            .v3(v3::MqttServer::new(handshake_v3).publish(publish_v3))
+                            .v5(v5::MqttServer::new(handshake_v5).publish(publish_v5)),
+                    )
+            },
+        )?
         .workers(1)
         .run()
         .await

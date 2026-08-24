@@ -31,9 +31,9 @@ pub(super) fn factory<St, T, P, E>(
 where
     St: 'static,
     T: ServiceFactory<(), Publish, Session<St>, Res = ()> + 'static,
-    T::InitError: Error + 'static,
+    T::InitError: Into<Box<dyn Error>> + 'static,
     P: ServiceFactory<(), ProtocolMessage, Session<St>, Res = ProtocolMessageAck> + 'static,
-    P::InitError: Error + 'static,
+    P::InitError: Into<Box<dyn Error>> + 'static,
     E: From<T::Error> + From<P::Error> + 'static,
 {
     let factories = Rc::new((publish, control));
@@ -44,8 +44,8 @@ where
         let fut = join(factories.0.create(session), factories.1.create(session));
         let (publish, control) = fut.await;
 
-        let publish = publish.map_err(Box::new)?;
-        let control = control.map_err(Box::new)?;
+        let publish = publish.map_err(Into::into)?;
+        let control = control.map_err(Into::into)?;
 
         let control = Pipeline::new(
             BufferService::new(

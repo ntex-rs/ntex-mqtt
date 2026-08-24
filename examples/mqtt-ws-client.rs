@@ -3,7 +3,7 @@ use std::{io, rc::Rc};
 
 use ntex::connect::{Connect, ConnectError, openssl::SslConnector};
 use ntex::time::{Millis, Seconds, sleep};
-use ntex::{ServiceFactory, SharedCfg, util::Bytes, ws};
+use ntex::{Pipeline, SharedCfg, util::Bytes, ws};
 use ntex_mqtt::v3;
 use openssl::ssl;
 
@@ -21,15 +21,14 @@ async fn main() -> std::io::Result<()> {
 
     // we need custom connector that would open ws connection and enable ws transport
     let ws_client = Rc::new(
-        ws::WsClient::with_connector("https://127.0.0.1:8883", SslConnector::new(builder.build()))
-            .build(SharedCfg::default())
-            .await
-            .unwrap(),
+        ws::WsClient::new("https://127.0.0.1:8883", SharedCfg::default())
+            .unwrap()
+            .connector(SslConnector::new(builder.build())),
     );
 
     // connect to server
-    let client = v3::client::MqttConnector::new()
-        .connector(move |_: Connect<&str>| {
+    let client = Pipeline::new(v3::client::MqttConnector::new().connector(
+        move |_: Connect<&str>| {
             let client = ws_client.clone();
             async move {
                 Ok(client
@@ -38,17 +37,15 @@ async fn main() -> std::io::Result<()> {
                     .map_err(|e| ConnectError::Io(io::Error::other(e)))?
                     .into_transport())
             }
-        })
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
-        .call(
-            v3::client::Connect::new("127.0.0.1:8883")
-                .client_id("user")
-                .keep_alive(Seconds::ONE),
-        )
-        .await
-        .unwrap();
+        },
+    ))
+    .call(
+        v3::client::Connect::new("127.0.0.1:8883")
+            .client_id("user")
+            .keep_alive(Seconds::ONE),
+    )
+    .await
+    .unwrap();
 
     let sink = client.sink();
 

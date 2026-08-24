@@ -206,7 +206,7 @@ where
     where
         E: From<P::Error> + From<Srv::Error> + 'static,
         Srv: ServiceFactory<(), Publish, Session<AppSt>, Res = ()> + 'static,
-        Srv::InitError: Error + 'static,
+        Srv::InitError: Into<Box<dyn Error>> + 'static,
     {
         service::MqttServer::new(
             self.handshake,

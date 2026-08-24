@@ -183,7 +183,7 @@ where
         E: From<P::Error> + 'static,
         Srv: ServiceFactory<(), Publish, Session<AppSt>, Res = PublishAck> + 'static,
         Srv::Error: ToPublishAck<Error = E>,
-        Srv::InitError: Error + 'static,
+        Srv::InitError: Into<Box<dyn Error>> + 'static,
     {
         service::MqttServer::new(
             self.handshake,

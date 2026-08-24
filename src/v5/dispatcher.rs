@@ -34,9 +34,9 @@ where
     E: From<Ctl::Error> + 'static,
     T: ServiceFactory<(), Publish, Session<St>, Res = PublishAck> + 'static,
     T::Error: ToPublishAck<Error = E>,
-    T::InitError: Error,
+    T::InitError: Into<Box<dyn Error>> + 'static,
     Ctl: ServiceFactory<(), ProtocolMessage, Session<St>, Res = ProtocolMessageAck> + 'static,
-    Ctl::InitError: Error,
+    Ctl::InitError: Into<Box<dyn Error>> + 'static,
 {
     let factories = Rc::new((publish, control));
 
@@ -47,8 +47,8 @@ where
         let sink = ses.sink().shared();
         let (publish, control) = join(factories.0.create(ses), factories.1.create(ses)).await;
 
-        let publish = publish.map_err(Box::new)?;
-        let control = control.map_err(Box::new)?;
+        let publish = publish.map_err(Into::into)?;
+        let control = control.map_err(Into::into)?;
 
         let control = Pipeline::new(
             BufferService::new(

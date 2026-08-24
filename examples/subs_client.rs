@@ -1,4 +1,4 @@
-use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_service};
+use ntex::service::Pipeline;
 use ntex::time::{Millis, Seconds, sleep};
 use ntex_mqtt::v5;
 
@@ -19,10 +19,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     // connect to server
-    let client = v5::client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(v5::client::MqttConnector::new())
         .call(
             v5::client::Connect::new("127.0.0.1:1883")
                 .client_id("my-client-id")
@@ -34,8 +31,8 @@ async fn main() -> std::io::Result<()> {
     let sink = client.sink();
 
     // handle incoming publishes
-    ntex::rt::spawn(client.start(fn_service(
-        async move |msg: v5::client::ProtocolMessage| match msg {
+    ntex::rt::spawn(
+        client.start(async move |msg: v5::client::ProtocolMessage| match msg {
             v5::client::ProtocolMessage::Publish(publish) => {
                 let pl = publish.read_all().await;
                 log::info!(
@@ -52,8 +49,8 @@ async fn main() -> std::io::Result<()> {
                 Ok::<_, ()>(msg.ack())
             }
             _ => Ok(msg.ack()),
-        },
-    )));
+        }),
+    );
 
     // subscribe to topic
     sink.subscribe(None)

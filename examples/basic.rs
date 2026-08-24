@@ -1,3 +1,4 @@
+use ntex::SharedCfg;
 use ntex_mqtt::{MqttServer, v3, v5};
 
 #[derive(Clone)]
@@ -54,7 +55,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     ntex::server::build()
-        .bind("mqtt", "127.0.0.1:1883", async |_| {
+        .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
             MqttServer::new()
                 .v3(v3::MqttServer::new(handshake_v3).publish(publish_v3))
                 .v5(v5::MqttServer::new(handshake_v5).publish(publish_v5))

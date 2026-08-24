@@ -1,6 +1,6 @@
+use ntex::Pipeline;
 use ntex::connect::openssl::SslConnector;
 use ntex::time::{Millis, Seconds, sleep};
-use ntex::{ServiceFactory, SharedCfg};
 use ntex_mqtt::v5;
 use openssl::ssl;
 
@@ -37,19 +37,17 @@ async fn main() -> std::io::Result<()> {
     builder.set_verify(ssl::SslVerifyMode::NONE);
 
     // connect to server
-    let client = v5::client::MqttConnector::new()
-        .connector(SslConnector::new(builder.build()))
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
-        .call(
-            v5::client::Connect::new("127.0.0.1:8883")
-                .client_id("user")
-                .keep_alive(Seconds::ONE)
-                .max_packet_size(30),
-        )
-        .await
-        .unwrap();
+    let client = Pipeline::new(
+        v5::client::MqttConnector::new().connector(SslConnector::new(builder.build())),
+    )
+    .call(
+        v5::client::Connect::new("127.0.0.1:8883")
+            .client_id("user")
+            .keep_alive(Seconds::ONE)
+            .max_packet_size(30),
+    )
+    .await
+    .unwrap();
 
     let sink = client.sink();
 
