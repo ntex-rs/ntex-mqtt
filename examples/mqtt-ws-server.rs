@@ -1,4 +1,5 @@
 //! Mqtt-over-WS server
+#![recursion_limit = "256"]
 use std::{error::Error, io};
 
 use ntex::http::{self, HttpService, Request, Response, h1};
