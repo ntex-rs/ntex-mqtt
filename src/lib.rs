@@ -7,7 +7,8 @@
     clippy::must_use_candidate,
     clippy::struct_field_names,
     clippy::type_complexity,
-    clippy::unused_async
+    clippy::unused_async,
+    clippy::unused_async_trait_impl
 )]
 use ntex_io::IoBoxed;
 use ntex_service::pipeline::Pipeline;
