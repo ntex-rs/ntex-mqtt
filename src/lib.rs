@@ -6,7 +6,8 @@
     clippy::missing_errors_doc,
     clippy::must_use_candidate,
     clippy::struct_field_names,
-    clippy::type_complexity
+    clippy::type_complexity,
+    clippy::unused_async
 )]
 use ntex_io::IoBoxed;
 use ntex_service::pipeline::Pipeline;
