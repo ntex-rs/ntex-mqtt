@@ -1,6 +1,7 @@
-use ntex::util::{ByteString, Bytes};
-use ntex::{ServiceFactory, SharedCfg, server};
+use std::convert::Infallible;
 
+use ntex::util::{ByteString, Bytes};
+use ntex::{Pipeline, server};
 use ntex_mqtt::{MqttServer, v3, v5};
 
 struct St;
@@ -8,8 +9,8 @@ struct St;
 #[derive(Debug)]
 struct TestError;
 
-impl From<()> for TestError {
-    fn from(_: ()) -> Self {
+impl From<Infallible> for TestError {
+    fn from(_: Infallible) -> Self {
         TestError
     }
 }
@@ -37,10 +38,7 @@ async fn test_simple() -> std::io::Result<()> {
     });
 
     // connect to v5 server
-    let client = v5::client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(v5::client::MqttConnector::new())
         .call(v5::client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -55,10 +53,7 @@ async fn test_simple() -> std::io::Result<()> {
     sink.close();
 
     // connect to v3 server
-    let client = v3::client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(v3::client::MqttConnector::new())
         .call(v3::client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();

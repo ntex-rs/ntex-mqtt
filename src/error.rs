@@ -1,4 +1,4 @@
-use std::{fmt, io, num::NonZeroU16};
+use std::{error::Error, fmt, io, num::NonZeroU16};
 
 use ntex_util::future::Either;
 
@@ -16,6 +16,9 @@ pub enum MqttError<E> {
     /// Handshake error
     #[error("Mqtt handshake error: {}", _0)]
     Handshake(#[from] HandshakeError<E>),
+    /// Handler initialization error
+    #[error("Mqtt handler initialization error: {}", _0)]
+    HandlerInit(#[from] Box<dyn Error>),
 }
 
 /// Errors which can occur during mqtt connection handshake.

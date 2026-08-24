@@ -1,4 +1,4 @@
-use std::{cell::RefCell, num::NonZeroU16, rc::Rc};
+use std::{cell::RefCell, error::Error, num::NonZeroU16, rc::Rc};
 
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::pipeline::{Pipeline, PipelineWithState};
@@ -6,9 +6,7 @@ use ntex_service::{Ctx, Service, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
-use crate::error::{
-    DecodeError, DispatcherError, MqttError, PayloadError, ProtocolError, SpecViolation,
-};
+use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
 use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
@@ -19,7 +17,7 @@ use super::control::{
 use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
-pub(super) fn factory<St, T, P, E, InitErr>(
+pub(super) fn factory<St, T, P, E>(
     publish: T,
     control: P,
 ) -> impl ServiceFactory<
@@ -28,27 +26,26 @@ pub(super) fn factory<St, T, P, E, InitErr>(
     (SharedCfg, Session<St>),
     Res = Option<Encoded>,
     Error = DispatcherError<E>,
-    InitError = MqttError<InitErr>,
+    InitError = Box<dyn Error>,
 >
 where
     St: 'static,
     T: ServiceFactory<(), Publish, Session<St>, Res = ()> + 'static,
+    T::InitError: Error + 'static,
     P: ServiceFactory<(), ProtocolMessage, Session<St>, Res = ProtocolMessageAck> + 'static,
+    P::InitError: Error + 'static,
     E: From<T::Error> + From<P::Error> + 'static,
-    InitErr: From<T::InitError> + From<P::InitError>,
 {
     let factories = Rc::new((publish, control));
 
     ntex_service::fn_factory_with_config(async move |(cfg, session): &(SharedCfg, Session<St>)| {
         // create services
         let sink = session.sink().shared();
-        let fut = join(factories.0.create(&session), factories.1.create(&session));
+        let fut = join(factories.0.create(session), factories.1.create(session));
         let (publish, control) = fut.await;
 
-        let publish = publish.map_err(|e| MqttError::Service(InitErr::from(e)))?;
-        let control = control
-            .map_err(|e| MqttError::Service(InitErr::from(e)))?
-            .map_err(|e| DispatcherError::Service(e.into()));
+        let publish = publish.map_err(Box::new)?;
+        let control = control.map_err(Box::new)?;
 
         let control = Pipeline::new(
             BufferService::new(
@@ -57,7 +54,7 @@ where
                 PipelineWithState::new(InFlightService::new(1, control)),
             )
             .map_err(|err| match err {
-                BufferServiceError::Service(e) => e,
+                BufferServiceError::Service(e) => DispatcherError::Service(e.into()),
                 BufferServiceError::RequestCanceled => {
                     DispatcherError::Protocol(ProtocolError::ReadTimeout)
                 }
@@ -447,9 +444,10 @@ mod tests {
                 sleep(Seconds(10)).await;
                 Ok(())
             }),
-            Pipeline::new(fn_service(async |msg: ProtocolMessage| {
-                Ok::<_, DispatcherError<()>>(msg.ack())
-            })),
+            Pipeline::with(
+                (),
+                fn_service(async |msg: ProtocolMessage| Ok::<_, DispatcherError<()>>(msg.ack())),
+            ),
             cfg.get(),
         ));
 
@@ -505,9 +503,10 @@ mod tests {
         let disp = Pipeline::new(Dispatcher::new(
             shared.clone(),
             fn_service(async |_: Publish| Ok::<_, ()>(())),
-            Pipeline::new(fn_service(async |msg: ProtocolMessage| {
-                Ok::<_, DispatcherError<()>>(msg.ack())
-            })),
+            Pipeline::with(
+                (),
+                fn_service(async |msg: ProtocolMessage| Ok::<_, DispatcherError<()>>(msg.ack())),
+            ),
             cfg.get(),
         ));
 

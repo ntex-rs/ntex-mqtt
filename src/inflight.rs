@@ -176,11 +176,11 @@ mod tests {
 
     struct SleepService(Duration);
 
-    impl Service<()> for SleepService {
+    impl Service<(), ()> for SleepService {
         type Res = ();
         type Error = ();
 
-        async fn call(&self, _r: (), _: Ctx<'_, Self>) -> Result<(), ()> {
+        async fn call(&self, _r: (), _: Ctx<'_, Self, ()>) -> Result<(), ()> {
             sleep(self.0).await;
             Ok::<_, ()>(())
         }
@@ -204,10 +204,10 @@ mod tests {
     async fn test_inflight() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightServiceImpl::new(1, 0, SleepService(wait_time))).bind();
+        let srv = Pipeline::new(InFlightServiceImpl::new(1, 0, SleepService(wait_time)));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
-        let srv2 = srv.clone();
+        let srv2 = srv.bind();
         ntex_util::spawn(async move {
             let _ = srv2.call(()).await;
         });
@@ -223,10 +223,10 @@ mod tests {
     async fn test_inflight2() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightServiceImpl::new(0, 10, SleepService(wait_time))).bind();
+        let srv = Pipeline::new(InFlightServiceImpl::new(0, 10, SleepService(wait_time)));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
-        let srv2 = srv.clone();
+        let srv2 = srv.bind();
         ntex_util::spawn(async move {
             let _ = srv2.call(()).await;
         });
@@ -243,11 +243,11 @@ mod tests {
         waker: LocalWaker,
     }
 
-    impl Service<()> for Srv2 {
+    impl Service<(), ()> for Srv2 {
         type Res = ();
         type Error = ();
 
-        async fn ready(&self, _: Ctx<'_, Self>) -> Result<(), ()> {
+        async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
             poll_fn(|cx| {
                 if self.cnt.get() {
                     self.waker.register(cx.waker());
@@ -259,7 +259,7 @@ mod tests {
             .await
         }
 
-        async fn call(&self, _r: (), _: Ctx<'_, Self>) -> Result<(), ()> {
+        async fn call(&self, _r: (), _: Ctx<'_, Self, ()>) -> Result<(), ()> {
             let fut = sleep(self.dur);
             self.cnt.set(true);
             self.waker.wake();
@@ -286,24 +286,23 @@ mod tests {
                 cnt: Cell::new(false),
                 waker: LocalWaker::new(),
             },
-        ))
-        .bind();
+        ));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
-        let srv2 = srv.clone();
+        let srv2 = srv.bind();
         ntex_util::spawn(async move {
             let _ = srv2.call(()).await;
         });
         ntex_util::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
-        let srv2 = srv.clone();
+        let srv2 = srv.bind();
         let (tx, rx) = ntex_util::channel::oneshot::channel();
         ntex_util::spawn(async move {
-            let _ = poll_fn(|cx| srv2.poll_ready(cx)).await;
+            let _ = srv2.ready().await;
             let _ = tx.send(());
         });
-        assert_eq!(poll_fn(|cx| srv.poll_ready(cx)).await, Ok(()));
+        assert_eq!(srv.ready().await, Ok(()));
 
         let _ = rx.await;
     }
@@ -312,10 +311,10 @@ mod tests {
     fn test_debug() {
         struct NoopSvc;
         struct Req;
-        impl Service<Req> for NoopSvc {
+        impl Service<(), Req> for NoopSvc {
             type Res = ();
             type Error = ();
-            async fn call(&self, _: Req, _: Ctx<'_, Self>) -> Result<(), ()> {
+            async fn call(&self, _: Req, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
                 Ok(())
             }
         }

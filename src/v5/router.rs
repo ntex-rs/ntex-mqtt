@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fmt, num::NonZeroU16, rc::Rc};
+use std::{cell::RefCell, error::Error, fmt, num::NonZeroU16, rc::Rc};
 
 use ntex_bytes::ByteString;
 use ntex_router::{IntoPattern, Path, RouterBuilder};
@@ -8,7 +8,7 @@ use ntex_util::HashMap;
 
 use super::{Session, publish::Publish, publish::PublishAck};
 
-type Handler<S, E> = BoxServiceFactory<(), Publish, PublishAck, E, Session<S>, E>;
+type Handler<S, E> = BoxServiceFactory<(), Publish, PublishAck, E, Session<S>, Box<dyn Error>>;
 type HandlerService<E> = BoxService<(), Publish, PublishAck, E>;
 
 /// Router - structure that follows the builder pattern
@@ -33,16 +33,19 @@ where
     /// Create mqtt application router.
     ///
     /// Default service to be used if no matching resource could be found.
-    pub fn new<F, U>(default_service: F) -> Self
+    pub fn new<U>(default: impl IntoServiceFactory<U, (), Publish, Session<S>>) -> Self
     where
-        F: IntoServiceFactory<U, (), Publish, Session<S>>,
-        U: ServiceFactory<(), Publish, Session<S>, Res = PublishAck, Error = Err, InitError = Err>
-            + 'static,
+        U: ServiceFactory<(), Publish, Session<S>, Res = PublishAck, Error = Err> + 'static,
+        U::InitError: Error + 'static,
     {
         Router {
             router: ntex_router::Router::build(),
             handlers: Vec::new(),
-            default: boxed::factory(default_service.into_factory()),
+            default: boxed::factory(
+                default
+                    .into_factory()
+                    .map_init_err(|e| Box::new(e) as Box<dyn Error>),
+            ),
         }
     }
 
@@ -53,11 +56,13 @@ where
         T: IntoPattern,
         F: IntoServiceFactory<U, (), Publish, Session<S>>,
         U: ServiceFactory<(), Publish, Session<S>, Res = PublishAck, Error = Err> + 'static,
-        Err: From<U::InitError>,
+        U::InitError: Error + 'static,
     {
         self.router.path(address, self.handlers.len());
         self.handlers.push(boxed::factory(
-            service.into_factory().map_init_err(Err::from),
+            service
+                .into_factory()
+                .map_init_err(|e| Box::new(e) as Box<dyn Error>),
         ));
         self
     }
@@ -107,10 +112,11 @@ where
 {
     type Res = PublishAck;
     type Error = Err;
-    type InitError = Err;
-    type Service = RouterService<Err>;
 
-    async fn create(&self, session: &Session<S>) -> Result<Self::Service, Err> {
+    type Service = RouterService<Err>;
+    type InitError = Box<dyn Error>;
+
+    async fn create(&self, session: &Session<S>) -> Result<Self::Service, Self::InitError> {
         let default = self.default.create(session).await?;
 
         let mut handlers = Vec::with_capacity(self.handlers.len());
@@ -186,19 +192,13 @@ impl<Err: 'static> Service<(), Publish> for RouterService<Err> {
 
 #[cfg(test)]
 mod tests {
-    use ntex_service::fn_factory;
-    use ntex_util::future::Ready;
-
     use super::*;
     use crate::v5::codec::PublishAckReason;
 
     #[test]
     fn test_debug() {
-        let router: Router<(), ()> = Router::new(fn_factory(|| async {
-            Ok::<_, ()>(ntex_service::fn_service(|_: Publish| {
-                Ready::<PublishAck, ()>::Ok(PublishAck::new(PublishAckReason::Success))
-            }))
-        }));
+        let router: Router<(), ()> =
+            Router::new(async |_: Publish| Ok::<_, ()>(PublishAck::new(PublishAckReason::Success)));
         assert!(format!("{router:?}").contains("v5::Router"));
     }
 }

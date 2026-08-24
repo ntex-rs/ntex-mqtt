@@ -1,5 +1,5 @@
 //! Control message for connection management service
-use std::{io, marker::PhantomData};
+use std::{convert::Infallible, io, marker::PhantomData};
 
 use ntex_service::{Ctx, Service, ServiceFactory};
 
@@ -126,26 +126,27 @@ impl PeerGone {
 
 /// Default control service
 #[derive(Debug)]
-pub struct DefaultControlService<S, E, R, Err = ()>(PhantomData<(S, E, R, Err)>);
+pub struct DefaultControlService<S, E, R>(PhantomData<(S, E, R)>);
 
-impl<S, E, R, Err> Default for DefaultControlService<S, E, R, Err> {
+impl<S, E, R> Default for DefaultControlService<S, E, R> {
     fn default() -> Self {
         DefaultControlService(PhantomData)
     }
 }
 
-impl<S, E, R, Err> ServiceFactory<(), Control<E>, S> for DefaultControlService<S, E, R, Err> {
+impl<S, E, R> ServiceFactory<(), Control<E>, S> for DefaultControlService<S, E, R> {
     type Res = Option<R>;
     type Error = E;
-    type InitError = Err;
-    type Service = DefaultControlService<S, E, R, ()>;
+
+    type Service = DefaultControlService<S, E, R>;
+    type InitError = Infallible;
 
     async fn create(&self, _: &S) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService(PhantomData))
     }
 }
 
-impl<S, E, R> Service<(), Control<E>> for DefaultControlService<S, E, R, ()> {
+impl<S, E, R> Service<(), Control<E>> for DefaultControlService<S, E, R> {
     type Res = Option<R>;
     type Error = E;
 

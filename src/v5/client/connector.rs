@@ -1,5 +1,6 @@
 use std::{fmt, marker::PhantomData, num::NonZero, rc::Rc};
 
+use ntex_error::Error;
 use ntex_io::IoBoxed;
 use ntex_net::connect::{self, Address, Connector};
 use ntex_service::cfg::{Cfg, SharedCfg};
@@ -47,7 +48,7 @@ where
     pub fn connector<U, F>(self, connector: F) -> MqttConnector<A, U>
     where
         F: IntoService<U, SharedCfg, connect::Connect<A>>,
-        U: Service<SharedCfg, connect::Connect<A>, Error = connect::ConnectError>,
+        U: Service<SharedCfg, connect::Connect<A>, Error = Error<connect::ConnectError>>,
         IoBoxed: From<U::Res>,
     {
         MqttConnector {
@@ -61,13 +62,13 @@ where
 impl<A, S> Service<SharedCfg, Connect<A>> for MqttConnector<A, S>
 where
     A: Address,
-    S: Service<SharedCfg, connect::Connect<A>, Error = connect::ConnectError>,
+    S: Service<SharedCfg, connect::Connect<A>, Error = Error<connect::ConnectError>>,
     IoBoxed: From<S::Res>,
 {
     type Res = Client;
-    type Error = ClientError<Box<codec::ConnectAck>>;
+    type Error = Error<ClientError<Box<codec::ConnectAck>>>;
 
-    ntex_service::forward_ready!(SharedCfg, connector);
+    ntex_service::forward_ready!(SharedCfg, connector, Error::map_err);
     ntex_service::forward_shutdown!(SharedCfg, connector);
 
     /// Connect to mqtt server
@@ -76,14 +77,15 @@ where
         req: Connect<A>,
         ctx: Ctx<'_, Self, SharedCfg>,
     ) -> Result<Client, Self::Error> {
-        let cfg = ctx.st().get::<MqttServiceConfig>();
         let (addr, pkt) = req.into_parts();
+        let cfg = ctx.st().get::<MqttServiceConfig>();
+
         timeout_checked(
             cfg.handshake_timeout,
             self.connect_inner(addr, pkt, ctx, cfg),
         )
         .await
-        .map_err(|()| ClientError::HandshakeTimeout)
+        .map_err(|()| Error::from(ClientError::HandshakeTimeout))
         .and_then(|res| res)
     }
 }
@@ -91,7 +93,7 @@ where
 impl<A, S> MqttConnector<A, S>
 where
     A: Address,
-    S: Service<SharedCfg, connect::Connect<A>, Error = connect::ConnectError>,
+    S: Service<SharedCfg, connect::Connect<A>, Error = Error<connect::ConnectError>>,
     IoBoxed: From<S::Res>,
 {
     async fn connect_inner(
@@ -100,10 +102,11 @@ where
         pkt: codec::Connect,
         ctx: Ctx<'_, Self, SharedCfg>,
         cfg: Cfg<MqttServiceConfig>,
-    ) -> Result<Client, ClientError<Box<codec::ConnectAck>>> {
+    ) -> Result<Client, Error<ClientError<Box<codec::ConnectAck>>>> {
         let io: IoBoxed = ctx
             .call(&self.connector, connect::Connect::new(addr))
-            .await?
+            .await
+            .map_err(Error::map_err)?
             .into();
         let keep_alive = pkt.keep_alive;
         let max_packet_size = pkt.max_packet_size.map_or(0, NonZero::get);
@@ -114,7 +117,8 @@ where
         codec.set_max_inbound_size(max_packet_size);
         codec.set_min_chunk_size(cfg.min_chunk_size);
 
-        io.encode(Encoded::Packet(Packet::Connect(Box::new(pkt))), &codec)?;
+        io.encode(Encoded::Packet(Packet::Connect(Box::new(pkt))), &codec)
+            .map_err(Error::from_err)?;
 
         let packet = io
             .recv(&codec)
@@ -148,18 +152,20 @@ where
                         cfg,
                     ))
                 } else {
-                    Err(ClientError::Ack(pkt))
+                    Err(ClientError::Ack(pkt).into())
                 }
             }
-            Decoded::Packet(packet, ..) => Err(ProtocolError::unexpected_packet(
-                packet.packet_type(),
-                "CONNACK packet expected from server first [MQTT-3.2.0-1]",
-            )
-            .into()),
-            Decoded::Publish(..) => Err(ProtocolError::unexpected_packet(
+            Decoded::Packet(packet, ..) => {
+                Err(ClientError::from(ProtocolError::unexpected_packet(
+                    packet.packet_type(),
+                    "CONNACK packet expected from server first [MQTT-3.2.0-1]",
+                ))
+                .into())
+            }
+            Decoded::Publish(..) => Err(ClientError::from(ProtocolError::unexpected_packet(
                 crate::types::packet_type::PUBLISH_START,
                 "CONNACK packet expected from server first [MQTT-3.2.0-1]",
-            )
+            ))
             .into()),
             Decoded::PayloadChunk(..) => unreachable!(),
         }

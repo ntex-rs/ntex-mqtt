@@ -314,7 +314,7 @@ mod tests {
     use ntex_bytes::{ByteString, Bytes};
     use ntex_io::{Io, testing::IoTest};
     use ntex_service::{cfg::SharedCfg, fn_service};
-    use ntex_util::future::{Ready, lazy};
+    use ntex_util::future::lazy;
     use ntex_util::time::{Seconds, sleep};
 
     use super::*;
@@ -326,14 +326,14 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
-        let disp = Pipeline::new(Dispatcher::<_, _, ()>::new(
+        let disp = Pipeline::new(Dispatcher::new(
             shared.clone(),
             fn_service(|_| async {
                 sleep(Seconds(10)).await;
                 Ok(Either::Left(()))
             }),
-            fn_service(|_| {
-                Ready::Ok(ProtocolMessageAck {
+            fn_service(async |_| {
+                Ok(ProtocolMessageAck {
                     result: ProtocolMessageKind::Nothing,
                 })
             }),

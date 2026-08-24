@@ -624,20 +624,24 @@ mod tests {
         }
     }
 
-    impl<P, C, U, E> Dispatcher<P, C, U, E>
+    impl<U, E, Err> Dispatcher<U, E, Err>
     where
-        P: Service<Request<U>, Res = Option<Response<U>>, Error = DispatcherError<E>> + 'static,
-        C: Service<Control<E>, Res = Option<Response<U>>> + 'static,
         U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
         E: 'static,
+        Err: 'static,
     {
         /// Construct new `Dispatcher` instance
-        pub(crate) fn new_debug<F: IntoService<P, Request<U>>>(
+        pub(crate) fn new_debug<P, C, F: IntoService<P, (), Request<U>>>(
             io: nio::Io,
             codec: U,
             service: F,
             control: C,
-        ) -> (Self, nio::IoRef) {
+        ) -> (Self, nio::IoRef)
+        where
+            P: Service<(), Request<U>, Res = Option<Response<U>>, Error = DispatcherError<E>>
+                + 'static,
+            C: Service<(), Control<E>, Res = Option<Response<U>>, Error = Err> + 'static,
+        {
             let keepalive_timeout = io.cfg().keepalive_timeout();
             let rio = io.get_ref();
 
@@ -657,8 +661,8 @@ mod tests {
                         state,
                         keepalive_timeout,
                         stopping: Condition::new(),
-                        service: Pipeline::new(service.into_service()).bind(),
-                        control: Pipeline::new(control).bind(),
+                        service: Pipeline::new(service.into_service()),
+                        control: Pipeline::new(control),
                         io: IoBoxed::from(io),
                         st: IoDispatcherState::Processing,
                         flags: if keepalive_timeout.is_zero() {
@@ -956,16 +960,20 @@ mod tests {
     async fn test_err_in_service_ready() {
         struct Srv(Rc<Cell<usize>>);
 
-        impl Service<Bytes> for Srv {
+        impl Service<(), Bytes> for Srv {
             type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
 
-            async fn ready(&self, _: Ctx<'_, Self>) -> Result<(), Self::Error> {
+            async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
                 self.0.set(self.0.get() + 1);
                 Err(DispatcherError::Service(()))
             }
 
-            async fn call(&self, _: Bytes, _: Ctx<'_, Self>) -> Result<Option<Bytes>, Self::Error> {
+            async fn call(
+                &self,
+                _: Bytes,
+                _: Ctx<'_, Self, ()>,
+            ) -> Result<Option<Bytes>, Self::Error> {
                 Ok(None)
             }
         }
@@ -1357,18 +1365,22 @@ mod tests {
 
         struct Srv(Cell<bool>, OnDrop);
 
-        impl Service<Bytes> for Srv {
+        impl Service<(), Bytes> for Srv {
             type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
 
-            async fn ready(&self, _: Ctx<'_, Self>) -> Result<(), Self::Error> {
+            async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
                 if self.0.get() {
                     sleep(Millis(999_999)).await;
                 }
                 Ok(())
             }
 
-            async fn call(&self, _: Bytes, _: Ctx<'_, Self>) -> Result<Option<Bytes>, Self::Error> {
+            async fn call(
+                &self,
+                _: Bytes,
+                _: Ctx<'_, Self, ()>,
+            ) -> Result<Option<Bytes>, Self::Error> {
                 let _data = self.1.clone();
                 self.0.set(true);
                 sleep(Millis(999_999)).await;
@@ -1406,11 +1418,11 @@ mod tests {
 
         struct Srv(Cell<bool>, Cell<Option<oneshot::Receiver<()>>>);
 
-        impl Service<Bytes> for Srv {
+        impl Service<(), Bytes> for Srv {
             type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
 
-            async fn ready(&self, _: Ctx<'_, Self>) -> Result<(), Self::Error> {
+            async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
                 if self.0.get()
                     && let Some(rx) = self.1.take()
                 {
@@ -1422,7 +1434,7 @@ mod tests {
             async fn call(
                 &self,
                 msg: Bytes,
-                _: Ctx<'_, Self>,
+                _: Ctx<'_, Self, ()>,
             ) -> Result<Option<Bytes>, Self::Error> {
                 self.0.set(true);
                 Ok(Some(msg))

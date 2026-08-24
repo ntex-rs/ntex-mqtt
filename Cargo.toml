@@ -17,7 +17,7 @@ features = ["ntex-net/tokio"]
 [dependencies]
 ntex-bytes = "1.9.0"
 ntex-codec = "1.2"
-ntex-error = "2.4"
+ntex-error = "2.5"
 ntex-io = "4.0.0-beta.0"
 ntex-net = "4.0.0-beta.0"
 ntex-service = "5.0.0-beta.0"
@@ -42,13 +42,13 @@ test-case = "3.2"
 ntex = { version = "4.0.0-beta.0", features = ["openssl"] }
 
 [patch.crates-io]
-ntex = { path = "../../ntex/ntex" }
-ntex-h2 = { path = "../ntex-h2" }
-ntex-dispatcher = { path = "../../ntex/ntex-dispatcher" }
-ntex-io = { path = "../../ntex/ntex-io" }
-ntex-macros = { path = "../../ntex/ntex-macros" }
-ntex-net = { path = "../../ntex/ntex-net" }
-ntex-service = { path = "../../ntex/ntex-service" }
-ntex-tls = { path = "../../ntex/ntex-tls" }
-ntex-util = { path = "../../ntex/ntex-util" }
-ntex-server = { path = "../../ntex/ntex-server" }
+ntex = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-h2 = { git = "https://github.com/ntex-rs/ntex-h2.git", branch = "service-state" }
+ntex-dispatcher = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-macros = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-net = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-service = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-tls = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-util = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-server = { git = "https://github.com/ntex-rs/ntex.git" }

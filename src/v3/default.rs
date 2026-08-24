@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData, rc::Rc};
+use std::{convert::Infallible, error::Error, fmt, marker::PhantomData, rc::Rc};
 
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{Ctx, Middleware, Service, ServiceFactory};
@@ -22,8 +22,9 @@ impl<S, E> Default for DefaultProtocolService<S, E> {
 impl<S, E: fmt::Debug> ServiceFactory<(), ProtocolMessage, S> for DefaultProtocolService<S, E> {
     type Res = ProtocolMessageAck;
     type Error = E;
-    type InitError = E;
+
     type Service = DefaultProtocolService<S, E>;
+    type InitError = Infallible;
 
     async fn create(&self, _: &S) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultProtocolService(PhantomData))
@@ -76,9 +77,9 @@ pub struct ControlService<S, E> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ControlFactory<S, St, E> {
+pub struct ControlFactory<AppSt, S, E> {
     svc: S,
-    _t: PhantomData<(E, St)>,
+    _t: PhantomData<(E, AppSt)>,
 }
 
 impl<S, E> ControlService<S, E>
@@ -94,9 +95,9 @@ where
     }
 }
 
-impl<S, St, E> ControlFactory<S, St, E>
+impl<AppSt, S, E> ControlFactory<AppSt, S, E>
 where
-    S: ServiceFactory<(), Control<E>, Session<St>>,
+    S: ServiceFactory<(), Control<E>, Session<AppSt>, Res = Option<Encoded>>,
 {
     pub(super) fn new(svc: S) -> Self {
         Self {
@@ -106,20 +107,22 @@ where
     }
 }
 
-impl<S, St, E> ServiceFactory<(), Control<E>, Session<St>> for ControlFactory<S, St, E>
+impl<AppSt, S, E> ServiceFactory<(), Control<E>, Session<AppSt>> for ControlFactory<AppSt, S, E>
 where
-    S: ServiceFactory<(), Control<E>, Session<St>>,
+    S: ServiceFactory<(), Control<E>, Session<AppSt>, Res = Option<Encoded>>,
+    S::InitError: Error + 'static,
+    E: From<S::Error>,
 {
     type Res = Option<Encoded>;
     type Error = MqttError<S::Error>;
 
     type Service = ControlService<S::Service, E>;
-    type InitError = MqttError<S::InitError>;
+    type InitError = Box<dyn Error>;
 
-    async fn create(&self, cfg: &Session<St>) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &Session<AppSt>) -> Result<Self::Service, Self::InitError> {
         Ok(ControlService {
             shared: cfg.sink().shared(),
-            svc: self.svc.create(cfg).await.map_err(MqttError::Service)?,
+            svc: self.svc.create(cfg).await.map_err(Box::new)?,
             _t: PhantomData,
         })
     }
@@ -169,7 +172,7 @@ where
 #[cfg(test)]
 mod tests {
     use ntex_io::{Io, testing::IoTest};
-    use ntex_service::cfg::SharedCfg;
+    use ntex_service::{Pipeline, cfg::SharedCfg};
     use ntex_util::future::lazy;
 
     use super::*;
@@ -183,11 +186,16 @@ mod tests {
         let sink = MqttSink::new(shared.clone());
         let ses = Session::new((), sink.clone());
 
-        let disp =
-            ControlFactory::<_, (), ()>::new(
-                control::DefaultControlService::<_, (), codec::Codec>::default(),
-            );
-        let svc = disp.pipeline(ses).await.unwrap();
+        let disp = ControlFactory::new(control::DefaultControlService::<
+            Session<()>,
+            (),
+            codec::Encoded,
+        >::default())
+        .create(&ses)
+        .await
+        .unwrap();
+
+        let svc = Pipeline::with((), disp);
 
         assert!(!sink.is_ready());
         shared.set_cap(1);
