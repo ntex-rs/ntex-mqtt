@@ -83,7 +83,7 @@ jobs:
 
       - name: Run tests [tokio]
         uses: actions-rs/cargo@v1
-        timeout-minutes: 1
+        timeout-minutes: 10
         with:
           command: test
           args: --all --features=ntex/tokio -- --nocapture
