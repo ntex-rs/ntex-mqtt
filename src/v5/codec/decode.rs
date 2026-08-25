@@ -9,34 +9,30 @@ pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, De
         packet_type::PINGREQ => Ok(Packet::PingRequest),
         packet_type::PINGRESP => Ok(Packet::PingResponse),
         packet_type::SUBSCRIBE => Ok(Packet::Subscribe(packet::Subscribe::decode(&mut src)?)),
-        packet_type::SUBACK => {
-            Ok(Packet::SubscribeAck(packet::SubscribeAck::decode(&mut src)?))
-        }
-        packet_type::UNSUBSCRIBE => {
-            Ok(Packet::Unsubscribe(packet::Unsubscribe::decode(&mut src)?))
-        }
-        packet_type::UNSUBACK => {
-            Ok(Packet::UnsubscribeAck(packet::UnsubscribeAck::decode(&mut src)?))
-        }
-        packet_type::CONNECT => {
-            Ok(Packet::Connect(Box::new(packet::Connect::decode(&mut src)?)))
-        }
-        packet_type::CONNACK => {
-            Ok(Packet::ConnectAck(Box::new(packet::ConnectAck::decode(&mut src)?)))
-        }
-        packet_type::DISCONNECT => {
-            Ok(Packet::Disconnect(packet::Disconnect::decode(&mut src)?))
-        }
+        packet_type::SUBACK => Ok(Packet::SubscribeAck(packet::SubscribeAck::decode(
+            &mut src,
+        )?)),
+        packet_type::UNSUBSCRIBE => Ok(Packet::Unsubscribe(packet::Unsubscribe::decode(&mut src)?)),
+        packet_type::UNSUBACK => Ok(Packet::UnsubscribeAck(packet::UnsubscribeAck::decode(
+            &mut src,
+        )?)),
+        packet_type::CONNECT => Ok(Packet::Connect(Box::new(packet::Connect::decode(
+            &mut src,
+        )?))),
+        packet_type::CONNACK => Ok(Packet::ConnectAck(Box::new(packet::ConnectAck::decode(
+            &mut src,
+        )?))),
+        packet_type::DISCONNECT => Ok(Packet::Disconnect(packet::Disconnect::decode(&mut src)?)),
         packet_type::AUTH => Ok(Packet::Auth(packet::Auth::decode(&mut src)?)),
-        packet_type::PUBREC => {
-            Ok(Packet::PublishReceived(packet::PublishAck::decode(&mut src)?))
-        }
-        packet_type::PUBREL => {
-            Ok(Packet::PublishRelease(packet::PublishAck2::decode(&mut src)?))
-        }
-        packet_type::PUBCOMP => {
-            Ok(Packet::PublishComplete(packet::PublishAck2::decode(&mut src)?))
-        }
+        packet_type::PUBREC => Ok(Packet::PublishReceived(packet::PublishAck::decode(
+            &mut src,
+        )?)),
+        packet_type::PUBREL => Ok(Packet::PublishRelease(packet::PublishAck2::decode(
+            &mut src,
+        )?)),
+        packet_type::PUBCOMP => Ok(Packet::PublishComplete(packet::PublishAck2::decode(
+            &mut src,
+        )?)),
         _ => Err(DecodeError::UnsupportedPacketType),
     }
 }
@@ -94,7 +90,9 @@ mod tests {
 
         let mut bytes = BytesMut::copy_from_slice(bytes.as_ref());
         let codec = crate::v5::codec::Codec::new();
-        let decoded = ntex_codec::Decoder::decode(&codec, &mut bytes).unwrap().unwrap();
+        let decoded = ntex_codec::Decoder::decode(&codec, &mut bytes)
+            .unwrap()
+            .unwrap();
         let (pkt, _) = match decoded {
             Decoded::Publish(ref pkt, ref body, _) => (pkt.clone(), body.clone()),
             _ => panic!(),
@@ -176,7 +174,9 @@ mod tests {
             Err(DecodeError::InvalidProtocol),
         );
         assert_eq!(
-            Connect::decode(&mut Bytes::from_static(b"\x00\x04MQTT\x0300000000000000000000")),
+            Connect::decode(&mut Bytes::from_static(
+                b"\x00\x04MQTT\x0300000000000000000000"
+            )),
             Err(DecodeError::UnsupportedProtocolLevel),
         );
         assert_eq!(
@@ -324,7 +324,10 @@ mod tests {
             user_properties: Vec::new(),
         });
 
-        assert_decode_packet(b"\x82\x13\x12\x34\x00\x00\x04test\x01\x00\x06filter\x02", &p);
+        assert_decode_packet(
+            b"\x82\x13\x12\x34\x00\x00\x04test\x01\x00\x06filter\x02",
+            &p,
+        );
 
         let p = Packet::Subscribe(Subscribe {
             packet_id: packet_id(0x1234),

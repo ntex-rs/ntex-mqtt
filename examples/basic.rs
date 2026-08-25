@@ -1,3 +1,4 @@
+use ntex::SharedCfg;
 use ntex_mqtt::{MqttServer, v3, v5};
 
 #[derive(Clone)]
@@ -20,27 +21,31 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
     }
 }
 
-async fn handshake_v3(
-    handshake: v3::Handshake,
-) -> Result<v3::HandshakeAck<Session>, ServerError> {
+async fn handshake_v3(handshake: v3::Handshake) -> Result<v3::HandshakeAck<Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session, false))
 }
 
 async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
-    log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
+    log::info!(
+        "incoming publish: {:?} -> {:?}",
+        publish.id(),
+        publish.topic()
+    );
     Ok(())
 }
 
-async fn handshake_v5(
-    handshake: v5::Handshake,
-) -> Result<v5::HandshakeAck<Session>, ServerError> {
+async fn handshake_v5(handshake: v5::Handshake) -> Result<v5::HandshakeAck<Session>, ServerError> {
     log::info!("new connection: {:?}", handshake);
     Ok(handshake.ack(Session))
 }
 
 async fn publish_v5(publish: v5::Publish) -> Result<v5::PublishAck, ServerError> {
-    log::info!("incoming publish: {:?} -> {:?}", publish.id(), publish.topic());
+    log::info!(
+        "incoming publish: {:?} -> {:?}",
+        publish.id(),
+        publish.topic()
+    );
     Ok(publish.ack())
 }
 
@@ -50,7 +55,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     ntex::server::build()
-        .bind("mqtt", "127.0.0.1:1883", async |_| {
+        .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
             MqttServer::new()
                 .v3(v3::MqttServer::new(handshake_v3).publish(publish_v3))
                 .v5(v5::MqttServer::new(handshake_v5).publish(publish_v5))

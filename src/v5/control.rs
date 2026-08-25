@@ -84,13 +84,19 @@ impl ProtocolMessage {
             reason_string: None,
             user_properties: Vec::default(),
         };
-        ProtocolMessageAck { packet: Pkt::Disconnect(pkt), disconnect: true }
+        ProtocolMessageAck {
+            packet: Pkt::Disconnect(pkt),
+            disconnect: true,
+        }
     }
 
     /// Disconnects the client by sending DISCONNECT packet
     /// with provided reason code.
     pub fn disconnect_with(&self, pkt: codec::Disconnect) -> ProtocolMessageAck {
-        ProtocolMessageAck { packet: Pkt::Disconnect(pkt), disconnect: true }
+        ProtocolMessageAck {
+            packet: Pkt::Disconnect(pkt),
+            disconnect: true,
+        }
     }
 
     /// Ack control message
@@ -219,7 +225,10 @@ impl Disconnect {
 
     /// Ack disconnect message
     pub fn ack(self) -> ProtocolMessageAck {
-        ProtocolMessageAck { packet: Pkt::None, disconnect: true }
+        ProtocolMessageAck {
+            packet: Pkt::None,
+            disconnect: true,
+        }
     }
 }
 
@@ -246,14 +255,22 @@ impl Subscribe {
             reason_string: None,
         };
 
-        Self { packet, result, size }
+        Self {
+            packet,
+            result,
+            size,
+        }
     }
 
     #[inline]
     #[must_use]
     /// returns iterator over subscription topics
     pub fn iter_mut(&mut self) -> SubscribeIter<'_> {
-        SubscribeIter { subs: ptr::from_ref(self).cast_mut(), entry: 0, lt: PhantomData }
+        SubscribeIter {
+            subs: ptr::from_ref(self).cast_mut(),
+            entry: 0,
+            lt: PhantomData,
+        }
     }
 
     #[inline]
@@ -414,7 +431,11 @@ impl Unsubscribe {
             reason_string: None,
         };
 
-        Self { packet, result, size }
+        Self {
+            packet,
+            result,
+            size,
+        }
     }
 
     #[inline]

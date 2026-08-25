@@ -35,8 +35,7 @@ impl Decoder for VersionCodec {
                         return Ok(None);
                     }
 
-                    let len =
-                        u16::from_be_bytes(src[consumed..consumed + 2].try_into().unwrap());
+                    let len = u16::from_be_bytes(src[consumed..consumed + 2].try_into().unwrap());
                     ensure!(
                         len == 4 && &src[consumed + 2..consumed + 6] == MQTT,
                         DecodeError::InvalidProtocol
@@ -75,18 +74,30 @@ mod tests {
             b"\x10\x7f\x7f\x00\x04MQTT\x06\xC0\x00\x3C\x00\x0512345\x00\x04user\x00\x04pass"
                 .as_ref(),
         );
-        assert_eq!(Err(DecodeError::InvalidProtocol), VersionCodec.decode(&mut buf));
+        assert_eq!(
+            Err(DecodeError::InvalidProtocol),
+            VersionCodec.decode(&mut buf)
+        );
 
         let mut buf =
             BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x04\xc0\0\x0f\0\x02d1\0|testhub.".as_ref());
-        assert_eq!(ProtocolVersion::MQTT3, VersionCodec.decode(&mut buf).unwrap().unwrap());
+        assert_eq!(
+            ProtocolVersion::MQTT3,
+            VersionCodec.decode(&mut buf).unwrap().unwrap()
+        );
 
         let mut buf =
             BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x05\xc0\0\x0f\0\x02d1\0|testhub.".as_ref());
-        assert_eq!(ProtocolVersion::MQTT5, VersionCodec.decode(&mut buf).unwrap().unwrap());
+        assert_eq!(
+            ProtocolVersion::MQTT5,
+            VersionCodec.decode(&mut buf).unwrap().unwrap()
+        );
 
         let mut buf = BytesMut::from(b"\x10\x98\x02\0\x04MQTT\x05".as_ref());
-        assert_eq!(ProtocolVersion::MQTT5, VersionCodec.decode(&mut buf).unwrap().unwrap());
+        assert_eq!(
+            ProtocolVersion::MQTT5,
+            VersionCodec.decode(&mut buf).unwrap().unwrap()
+        );
 
         let mut buf = BytesMut::from(b"\x10\x98\x02\0\x04".as_ref());
         assert_eq!(None, VersionCodec.decode(&mut buf).unwrap());

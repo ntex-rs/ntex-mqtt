@@ -119,11 +119,8 @@ impl Decoder for Codec {
                         }
                         let payload_len = fixed.remaining_length - hdr_len;
                         let mut buf = src.split_to(hdr_len as usize);
-                        let publish = decode::decode_publish_packet(
-                            &mut buf,
-                            fixed.first_byte,
-                            payload_len,
-                        )?;
+                        let publish =
+                            decode::decode_publish_packet(&mut buf, fixed.first_byte, payload_len)?;
 
                         let len = src.len() as u32;
                         let min_chunk_size = self.min_chunk_size.get();
@@ -157,9 +154,7 @@ impl Decoder for Codec {
                     let len = src.len() as u32;
                     let min_chunk_size = self.min_chunk_size.get();
 
-                    return if (len >= remaining)
-                        || (min_chunk_size != 0 && len >= min_chunk_size)
-                    {
+                    return if (len >= remaining) || (min_chunk_size != 0 && len >= min_chunk_size) {
                         let payload = src.split_to(min(src.len(), remaining as usize));
                         let remaining = remaining - payload.len() as u32;
 
@@ -232,7 +227,8 @@ impl Encoder for Codec {
                         Err(EncodeError::OverPublishSize)
                     } else {
                         dst.append(chunk);
-                        self.encoding_payload.set(NonZeroU32::new(remaining.get() - len));
+                        self.encoding_payload
+                            .set(NonZeroU32::new(remaining.get() - len));
                         Ok(())
                     }
                 } else {
@@ -257,7 +253,10 @@ mod tests {
         buf.extend_from_slice(b"\0\x09");
         assert_eq!(
             codec.decode(&mut buf),
-            Err(DecodeError::MaxSizeExceeded { size: 9, max_size: 5 })
+            Err(DecodeError::MaxSizeExceeded {
+                size: 9,
+                max_size: 5
+            })
         );
     }
 
@@ -275,10 +274,14 @@ mod tests {
             payload_size: 260 * 1024,
         };
         let payload = Bytes::from(Vec::from("a".repeat(260 * 1024)));
-        codec.encodev(Encoded::Publish(pkt.clone(), Some(payload)), &mut buf).unwrap();
+        codec
+            .encodev(Encoded::Publish(pkt.clone(), Some(payload)), &mut buf)
+            .unwrap();
 
-        let Decoded::Publish(pkt2, _, _) =
-            codec.decode(&mut BytesMut::from(buf.freeze())).unwrap().unwrap()
+        let Decoded::Publish(pkt2, _, _) = codec
+            .decode(&mut BytesMut::from(buf.freeze()))
+            .unwrap()
+            .unwrap()
         else {
             panic!()
         };

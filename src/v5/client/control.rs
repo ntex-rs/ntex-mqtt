@@ -90,7 +90,10 @@ impl Publish {
 
     #[inline]
     pub fn ack_qos0(self) -> ProtocolMessageAck {
-        ProtocolMessageAck { packet: Pkt::None, disconnect: false }
+        ProtocolMessageAck {
+            packet: Pkt::None,
+            disconnect: false,
+        }
     }
 
     #[inline]

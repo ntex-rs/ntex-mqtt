@@ -134,7 +134,12 @@ impl Subscribe {
             topic_filters.push((topic, opts));
         }
 
-        Ok(Self { packet_id, id: sub_id, user_properties, topic_filters })
+        Ok(Self {
+            packet_id,
+            id: sub_id,
+            user_properties,
+            topic_filters,
+        })
     }
 }
 
@@ -146,7 +151,12 @@ impl SubscribeAck {
         for code in src.as_ref().iter().copied() {
             status.push(code.try_into()?);
         }
-        Ok(Self { packet_id, properties, reason_string, status })
+        Ok(Self {
+            packet_id,
+            properties,
+            reason_string,
+            status,
+        })
     }
 }
 
@@ -169,7 +179,11 @@ impl Unsubscribe {
             topic_filters.push(ByteString::decode(src)?);
         }
 
-        Ok(Self { packet_id, user_properties, topic_filters })
+        Ok(Self {
+            packet_id,
+            user_properties,
+            topic_filters,
+        })
     }
 }
 
@@ -181,7 +195,12 @@ impl UnsubscribeAck {
         for code in src.as_ref().iter().copied() {
             status.push(code.try_into()?);
         }
-        Ok(Self { packet_id, properties, reason_string, status })
+        Ok(Self {
+            packet_id,
+            properties,
+            reason_string,
+            status,
+        })
     }
 }
 
@@ -203,7 +222,9 @@ impl encode::EncodeLtd for Subscribe {
         self.packet_id.encode(buf)?;
 
         // encode properties
-        let prop_len = self.id.map_or(0, |v| 1 + encode::var_int_len(v.get() as usize))
+        let prop_len = self
+            .id
+            .map_or(0, |v| 1 + encode::var_int_len(v.get() as usize))
             + self.user_properties.encoded_size() as u32; // safe: size was already checked against maximum
         utils::write_variable_length(prop_len, buf);
 
@@ -285,7 +306,10 @@ impl encode::EncodeLtd for Unsubscribe {
         let prop_len = self.user_properties.encoded_size();
         2 + encode::var_int_len(prop_len) as usize
             + prop_len
-            + self.topic_filters.iter().fold(0, |acc, filter| acc + 2 + filter.len())
+            + self
+                .topic_filters
+                .iter()
+                .fold(0, |acc, filter| acc + 2 + filter.len())
     }
 
     fn encode(&self, buf: &mut BytePages, _size: u32) -> Result<(), EncodeError> {
@@ -356,7 +380,10 @@ mod tests {
         let mut buf = BytePages::default();
         pkt.encode(&mut buf, size as u32).unwrap();
         assert_eq!(buf.len(), size);
-        assert_eq!(pkt, Subscribe::decode(&mut buf.take().unwrap().freeze()).unwrap());
+        assert_eq!(
+            pkt,
+            Subscribe::decode(&mut buf.take().unwrap().freeze()).unwrap()
+        );
 
         let pkt = Unsubscribe {
             packet_id: 12.try_into().unwrap(),
@@ -368,7 +395,10 @@ mod tests {
         let mut buf = BytePages::default();
         pkt.encode(&mut buf, size as u32).unwrap();
         assert_eq!(buf.len(), size);
-        assert_eq!(pkt, Unsubscribe::decode(&mut buf.take().unwrap().freeze()).unwrap());
+        assert_eq!(
+            pkt,
+            Unsubscribe::decode(&mut buf.take().unwrap().freeze()).unwrap()
+        );
     }
 
     #[test]
@@ -386,7 +416,12 @@ mod tests {
 
         assert_eq!(
             pkt,
-            packet(codec.decode(&mut buf.take().unwrap().into()).unwrap().unwrap())
+            packet(
+                codec
+                    .decode(&mut buf.take().unwrap().into())
+                    .unwrap()
+                    .unwrap()
+            )
         );
     }
 
@@ -402,18 +437,27 @@ mod tests {
         let size = ack.encoded_size(99999);
         let mut buf = BytePages::default();
         ack.encode(&mut buf, size as u32).unwrap();
-        assert_eq!(ack, SubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap());
+        assert_eq!(
+            ack,
+            SubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap()
+        );
 
         let ack = SubscribeAck {
             packet_id: NonZeroU16::new(1).unwrap(),
-            properties: vec![("prop1".into(), "val1".into()), ("prop2".into(), "val2".into())],
+            properties: vec![
+                ("prop1".into(), "val1".into()),
+                ("prop2".into(), "val2".into()),
+            ],
             reason_string: None,
             status: vec![SubscribeAckReason::GrantedQos0],
         };
         let size = ack.encoded_size(99999);
         let mut buf = BytePages::default();
         ack.encode(&mut buf, size as u32).unwrap();
-        assert_eq!(ack, SubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap());
+        assert_eq!(
+            ack,
+            SubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap()
+        );
 
         let ack = UnsubscribeAck {
             packet_id: NonZeroU16::new(1).unwrap(),
@@ -424,17 +468,26 @@ mod tests {
         let mut buf = BytePages::default();
         let size = ack.encoded_size(99999);
         ack.encode(&mut buf, size as u32).unwrap();
-        assert_eq!(ack, UnsubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap());
+        assert_eq!(
+            ack,
+            UnsubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap()
+        );
 
         let ack = UnsubscribeAck {
             packet_id: NonZeroU16::new(1).unwrap(),
-            properties: vec![("prop1".into(), "val1".into()), ("prop2".into(), "val2".into())],
+            properties: vec![
+                ("prop1".into(), "val1".into()),
+                ("prop2".into(), "val2".into()),
+            ],
             reason_string: None,
             status: vec![UnsubscribeAckReason::Success],
         };
         let size = ack.encoded_size(99999);
         let mut buf = BytePages::default();
         ack.encode(&mut buf, size as u32).unwrap();
-        assert_eq!(ack, UnsubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap());
+        assert_eq!(
+            ack,
+            UnsubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap()
+        );
     }
 }

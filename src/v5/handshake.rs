@@ -18,7 +18,12 @@ impl Handshake {
         io: IoBoxed,
         shared: Rc<MqttShared>,
     ) -> Self {
-        Self { io, pkt, size, shared }
+        Self {
+            io,
+            pkt,
+            size,
+            shared,
+        }
     }
 
     #[inline]
@@ -65,14 +70,23 @@ impl Handshake {
             ..codec::ConnectAck::default()
         };
 
-        let Handshake { io, shared, pkt, .. } = self;
+        let Handshake {
+            io, shared, pkt, ..
+        } = self;
         // [MQTT-3.1.2-22]
         let keepalive = if pkt.keep_alive != 0 {
             (pkt.keep_alive >> 1).saturating_add(pkt.keep_alive)
         } else {
             30
         };
-        HandshakeAck { io, shared, keepalive, packet, session: Some(st), max_send: None }
+        HandshakeAck {
+            io,
+            shared,
+            keepalive,
+            packet,
+            session: Some(st),
+            max_send: None,
+        }
     }
 
     #[inline]
@@ -84,7 +98,10 @@ impl Handshake {
             session: None,
             keepalive: 30,
             max_send: None,
-            packet: codec::ConnectAck { reason_code, ..codec::ConnectAck::default() },
+            packet: codec::ConnectAck {
+                reason_code,
+                ..codec::ConnectAck::default()
+            },
         }
     }
 

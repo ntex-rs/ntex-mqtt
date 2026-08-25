@@ -194,8 +194,7 @@ impl Decoder for Codec {
 
                     let len = src.len() as u32;
                     let min_chunk_size = self.min_chunk_size.get();
-                    return if len >= payload_len || min_chunk_size == 0 || len >= min_chunk_size
-                    {
+                    return if len >= payload_len || min_chunk_size == 0 || len >= min_chunk_size {
                         let payload = src.split_to(min(src.len(), payload_len as usize));
                         let remaining = payload_len - payload.len() as u32;
 
@@ -206,7 +205,11 @@ impl Decoder for Codec {
                             src.reserve(5); // enough to fix 1 fixed header byte + 4 bytes max variable packet length
                         }
 
-                        Ok(Some(Decoded::Publish(publish, payload, fixed.remaining_length)))
+                        Ok(Some(Decoded::Publish(
+                            publish,
+                            payload,
+                            fixed.remaining_length,
+                        )))
                     } else {
                         self.state.set(DecodeState::PublishPayload(payload_len));
                         Ok(Some(Decoded::Publish(
@@ -220,9 +223,7 @@ impl Decoder for Codec {
                     let len = src.len() as u32;
                     let min_chunk_size = self.min_chunk_size.get();
 
-                    return if (len >= remaining)
-                        || (min_chunk_size != 0 && len >= min_chunk_size)
-                    {
+                    return if (len >= remaining) || (min_chunk_size != 0 && len >= min_chunk_size) {
                         let payload = src.split_to(min(src.len(), remaining as usize));
                         let remaining = remaining - payload.len() as u32;
 
@@ -349,7 +350,8 @@ impl Encoder for Codec {
                         Err(EncodeError::OverPublishSize)
                     } else {
                         dst.append(chunk);
-                        self.encoding_payload.set(NonZeroU32::new(remaining.get() - len));
+                        self.encoding_payload
+                            .set(NonZeroU32::new(remaining.get() - len));
                         Ok(())
                     }
                 } else {
@@ -397,7 +399,10 @@ mod tests {
         buf.extend_from_slice(b"\0\x09");
         assert_eq!(
             codec.decode(&mut buf).err(),
-            Some(DecodeError::MaxSizeExceeded { size: 9, max_size: 5 })
+            Some(DecodeError::MaxSizeExceeded {
+                size: 9,
+                max_size: 5
+            })
         );
     }
 }

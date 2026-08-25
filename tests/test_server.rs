@@ -1,10 +1,11 @@
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering::Relaxed};
 use std::{cell::RefCell, future::Future, num::NonZeroU16, pin::Pin, rc::Rc, time::Duration};
 
-use ntex::service::{Pipeline, ServiceFactory, cfg::SharedCfg, fn_service};
+use ntex::service::{Pipeline, Service, cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
-use ntex::util::{BytePages, ByteString, Bytes, Ready, join_all, lazy};
-use ntex::{codec::Encoder, io::IoConfig, server, service::chain_factory};
+use ntex::util::{BytePages, ByteString, Bytes, join_all, lazy};
+use ntex::{codec::Encoder, io::IoConfig, server};
 
 use ntex_mqtt::v3::codec::{self, Decoded, Encoded, Packet};
 use ntex_mqtt::v3::{
@@ -23,14 +24,10 @@ async fn handshake(packet: Handshake) -> Result<HandshakeAck<St>, ()> {
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    let srv =
-        server::test_server(async || MqttServer::new(handshake).publish(|_t| Ready::Ok(())));
+    let srv = server::test_server(async || MqttServer::new(handshake).publish(async |_t| Ok(())));
 
     // connect to server
-    let client = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -39,11 +36,16 @@ async fn test_simple() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("test")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("test"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
 
-    let res = sink.publish(ByteString::from_static("#")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("#"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_err());
 
     sink.close();
@@ -71,10 +73,7 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     .start();
 
     // connect to server
-    let client = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -84,7 +83,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(10);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -96,7 +97,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     // pkt 2
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(5);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(5);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"22")).await.unwrap();
@@ -108,7 +111,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     assert!(res.is_ok());
 
     // pkt 3
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(2);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(2);
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"33")).await.unwrap();
     });
@@ -122,7 +127,9 @@ async fn test_simple_streaming() -> std::io::Result<()> {
         .await;
     assert!(res.is_ok());
 
-    let (fut, _) = sink.publish(ByteString::from_static("#")).stream_at_least_once(12);
+    let (fut, _) = sink
+        .publish(ByteString::from_static("#"))
+        .stream_at_least_once(12);
     let res = fut.await;
     assert!(res.is_err());
 
@@ -172,10 +179,7 @@ async fn test_simple_streaming2() {
     .start();
 
     // connect to server
-    let client = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -184,7 +188,9 @@ async fn test_simple_streaming2() {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(10);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -195,7 +201,10 @@ async fn test_simple_streaming2() {
     let res = fut.await;
     assert!(res.is_ok());
 
-    assert_eq!(&chunks.lock().unwrap()[..], vec![Bytes::from_static(b"1111111111"),]);
+    assert_eq!(
+        &chunks.lock().unwrap()[..],
+        vec![Bytes::from_static(b"1111111111"),]
+    );
 }
 
 #[ntex::test]
@@ -221,10 +230,7 @@ async fn test_disconnect_while_streaming() -> std::io::Result<()> {
     .start();
 
     // connect to server
-    let client = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -233,7 +239,9 @@ async fn test_disconnect_while_streaming() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     // pkt 1
-    let (fut, payload) = sink.publish(ByteString::from_static("test")).stream_at_least_once(10);
+    let (fut, payload) = sink
+        .publish(ByteString::from_static("test"))
+        .stream_at_least_once(10);
 
     ntex_rt::spawn(async move {
         payload.send(Bytes::from_static(b"1111")).await.unwrap();
@@ -244,7 +252,10 @@ async fn test_disconnect_while_streaming() -> std::io::Result<()> {
     assert!(res.is_err());
     sleep(Millis(150)).await;
 
-    assert_eq!(&chunks.lock().unwrap()[..], vec![Ok(Some(Bytes::from_static(b"1111")))]);
+    assert_eq!(
+        &chunks.lock().unwrap()[..],
+        vec![Ok(Some(Bytes::from_static(b"1111")))]
+    );
     Ok(())
 }
 
@@ -252,74 +263,78 @@ async fn test_disconnect_while_streaming() -> std::io::Result<()> {
 async fn test_connect_fail() -> std::io::Result<()> {
     // bad user name or password
     let srv = server::test_server(async || {
-        MqttServer::new(|conn: Handshake| Ready::Ok::<_, ()>(conn.bad_username_or_pwd::<St>()))
-            .publish(|_t| Ready::Ok(()))
+        MqttServer::new(async |conn: Handshake| Ok::<_, ()>(conn.bad_username_or_pwd::<St>()))
+            .publish(async |_t| Ok(()))
     });
-    let err = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let err = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .err()
         .unwrap();
-    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
+    if let client::ClientError::Ack(codec::ConnectAck {
+        session_present,
+        return_code,
+    }) = &*err
+    {
         assert!(!session_present);
-        assert_eq!(return_code, codec::ConnectAckReason::BadUserNameOrPassword);
+        assert_eq!(return_code, &codec::ConnectAckReason::BadUserNameOrPassword);
     }
 
     // identifier rejected
     let srv = server::test_server(async || {
-        MqttServer::new(|conn: Handshake| Ready::Ok::<_, ()>(conn.identifier_rejected::<St>()))
-            .publish(|_t| Ready::Ok(()))
+        MqttServer::new(async |conn: Handshake| Ok::<_, ()>(conn.identifier_rejected::<St>()))
+            .publish(async |_t| Ok(()))
     });
-    let err = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let err = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .err()
         .unwrap();
-    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
+    if let client::ClientError::Ack(codec::ConnectAck {
+        session_present,
+        return_code,
+    }) = &*err
+    {
         assert!(!session_present);
-        assert_eq!(return_code, codec::ConnectAckReason::IdentifierRejected);
+        assert_eq!(return_code, &codec::ConnectAckReason::IdentifierRejected);
     }
 
     // not authorized
     let srv = server::test_server(async || {
-        MqttServer::new(|conn: Handshake| Ready::Ok::<_, ()>(conn.not_authorized::<St>()))
-            .publish(|_t| Ready::Ok(()))
+        MqttServer::new(async |conn: Handshake| Ok::<_, ()>(conn.not_authorized::<St>()))
+            .publish(async |_| Ok(()))
     });
-    let err = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let err = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .err()
         .unwrap();
-    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
+    if let client::ClientError::Ack(codec::ConnectAck {
+        session_present,
+        return_code,
+    }) = &*err
+    {
         assert!(!session_present);
-        assert_eq!(return_code, codec::ConnectAckReason::NotAuthorized);
+        assert_eq!(return_code, &codec::ConnectAckReason::NotAuthorized);
     }
 
     // service unavailable
     let srv = server::test_server(async || {
-        MqttServer::new(|conn: Handshake| Ready::Ok::<_, ()>(conn.service_unavailable::<St>()))
-            .publish(|_t| Ready::Ok(()))
+        MqttServer::new(async |conn: Handshake| Ok::<_, ()>(conn.service_unavailable::<St>()))
+            .publish(async |_| Ok(()))
     });
-    let err = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let err = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .err()
         .unwrap();
-    if let client::ClientError::Ack(codec::ConnectAck { session_present, return_code }) = err {
+    if let client::ClientError::Ack(codec::ConnectAck {
+        session_present,
+        return_code,
+    }) = &*err
+    {
         assert!(!session_present);
-        assert_eq!(return_code, codec::ConnectAckReason::ServiceUnavailable);
+        assert_eq!(return_code, &codec::ConnectAckReason::ServiceUnavailable);
     }
 
     Ok(())
@@ -349,7 +364,9 @@ async fn test_qos2() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
         &codec,
     )
     .await
@@ -375,11 +392,22 @@ async fn test_qos2() -> std::io::Result<()> {
     .unwrap();
 
     let result = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(result, Decoded::Packet(Packet::PublishReceived { packet_id: id }, 2));
+    assert_eq!(
+        result,
+        Decoded::Packet(Packet::PublishReceived { packet_id: id }, 2)
+    );
 
-    io.send(Encoded::Packet(Packet::PublishRelease { packet_id: id }), &codec).await.unwrap();
+    io.send(
+        Encoded::Packet(Packet::PublishRelease { packet_id: id }),
+        &codec,
+    )
+    .await
+    .unwrap();
     let result = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(result, Decoded::Packet(Packet::PublishComplete { packet_id: id }, 2));
+    assert_eq!(
+        result,
+        Decoded::Packet(Packet::PublishComplete { packet_id: id }, 2)
+    );
 
     assert!(release.load(Relaxed));
     Ok(())
@@ -393,23 +421,20 @@ async fn test_qos2_client() -> std::io::Result<()> {
     let srv = server::TestServerBuilder::new(async move || {
         let release = release2.clone();
         MqttServer::new(handshake)
-            .protocol(move |msg| match msg {
+            .protocol(async move |msg| match msg {
                 ProtocolMessage::PublishRelease(msg) => {
                     release.store(true, Relaxed);
-                    Ready::Ok(msg.ack())
+                    Ok(msg.ack())
                 }
-                _ => Ready::Ok(msg.disconnect()),
+                _ => Ok(msg.disconnect()),
             })
-            .publish(|_| Ready::Ok(()))
+            .publish(async |_| Ok(()))
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_qos(QoS::ExactlyOnce)))
     .start();
 
     // connect to server
-    let client = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -449,14 +474,18 @@ async fn test_ping() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
         &codec,
     )
     .await
     .unwrap();
     io.recv(&codec).await.unwrap().unwrap();
 
-    io.send(Encoded::Packet(codec::Packet::PingRequest), &codec).await.unwrap();
+    io.send(Encoded::Packet(codec::Packet::PingRequest), &codec)
+        .await
+        .unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(pkt, Decoded::Packet(Packet::PingResponse, 0));
     assert!(ping.load(Relaxed));
@@ -488,9 +517,12 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     io.send(
@@ -538,7 +570,12 @@ async fn test_ack_order() -> std::io::Result<()> {
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
-        Decoded::Packet(Packet::PublishAck { packet_id: NonZeroU16::new(1).unwrap() }, 2)
+        Decoded::Packet(
+            Packet::PublishAck {
+                packet_id: NonZeroU16::new(1).unwrap()
+            },
+            2
+        )
     );
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
@@ -556,7 +593,12 @@ async fn test_ack_order() -> std::io::Result<()> {
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
-        Decoded::Packet(Packet::PublishAck { packet_id: NonZeroU16::new(3).unwrap() }, 2)
+        Decoded::Packet(
+            Packet::PublishAck {
+                packet_id: NonZeroU16::new(3).unwrap()
+            },
+            2
+        )
     );
 
     Ok(())
@@ -572,10 +614,7 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
     });
 
     // connect to server
-    let client = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -584,9 +623,15 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
     ntex::rt::spawn(client.start_default());
 
     let topic = ByteString::from_static("test");
-    let fut1 = sink.publish(topic.clone()).send_at_least_once(Bytes::from_static(b"pkt1"));
-    let fut2 = sink.publish(topic.clone()).send_at_least_once(Bytes::from_static(b"pkt2"));
-    let fut3 = sink.publish(topic.clone()).send_at_least_once(Bytes::from_static(b"pkt3"));
+    let fut1 = sink
+        .publish(topic.clone())
+        .send_at_least_once(Bytes::from_static(b"pkt1"));
+    let fut2 = sink
+        .publish(topic.clone())
+        .send_at_least_once(Bytes::from_static(b"pkt2"));
+    let fut3 = sink
+        .publish(topic.clone())
+        .send_at_least_once(Bytes::from_static(b"pkt3"));
 
     let res = join_all(vec![fut1, fut2, fut3]).await;
     assert!(res[0].is_ok());
@@ -600,23 +645,19 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
 async fn test_disconnect() -> std::io::Result<()> {
     let srv = server::test_server(async || {
         MqttServer::new(handshake).publish(ntex::service::fn_factory_with_config(
-            |session: Session<St>| {
-                Ready::Ok(ntex::service::fn_service(move |_: Publish| {
+            async |session: &Session<St>| {
+                let session = session.clone();
+                Ok::<_, Infallible>(fn_service(async move |_: Publish| {
                     session.sink().force_close();
-                    async {
-                        sleep(Duration::from_millis(100)).await;
-                        Ok(())
-                    }
+                    sleep(Duration::from_millis(100)).await;
+                    Ok(())
                 }))
             },
         ))
     });
 
     // connect to server
-    let client = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -625,7 +666,10 @@ async fn test_disconnect() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
-    let res = sink.publish(ByteString::from_static("#")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("#"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_err());
 
     Ok(())
@@ -648,16 +692,15 @@ async fn test_client_disconnect() -> std::io::Result<()> {
                     Ok(msg.disconnect())
                 }
             })
-            .publish(ntex::service::fn_factory_with_config(|_: Session<St>| {
-                Ready::Ok(ntex::service::fn_service(move |_: Publish| async { Ok(()) }))
-            }))
+            .publish(ntex::service::fn_factory_with_config(
+                async |_: &Session<St>| {
+                    Ok::<_, Infallible>(fn_service(async move |_: Publish| Ok(())))
+                },
+            ))
     });
 
     // connect to server
-    let client = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -666,8 +709,10 @@ async fn test_client_disconnect() -> std::io::Result<()> {
 
     ntex::rt::spawn(client.start_default());
 
-    let res =
-        sink.publish(ByteString::from_static("test")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("test"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
     sink.close();
     sleep(Millis(50)).await;
@@ -704,8 +749,11 @@ async fn test_handle_incoming() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     io.encode(
         Encoded::Publish(
             codec::Publish {
@@ -721,7 +769,8 @@ async fn test_handle_incoming() -> std::io::Result<()> {
         &codec,
     )
     .unwrap();
-    io.encode(Encoded::Packet(Packet::Disconnect), &codec).unwrap();
+    io.encode(Encoded::Packet(Packet::Disconnect), &codec)
+        .unwrap();
     io.flush(true).await.unwrap();
     sleep(Millis(50)).await;
     drop(io);
@@ -768,12 +817,10 @@ async fn handle_or_drop_publish_after_disconnect(
                     Ok(msg.disconnect())
                 }
             })
-            .publish(move |_| {
+            .publish(async move |_| {
                 publish.store(true, Relaxed);
-                async {
-                    sleep(Duration::from_millis(100)).await;
-                    Ok(())
-                }
+                sleep(Duration::from_millis(100)).await;
+                Ok(())
             })
     })
     .config(
@@ -791,8 +838,11 @@ async fn handle_or_drop_publish_after_disconnect(
     };
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     io.encode(
         Encoded::Publish(
             codec::Publish {
@@ -808,7 +858,8 @@ async fn handle_or_drop_publish_after_disconnect(
         &codec,
     )
     .unwrap();
-    io.encode(Encoded::Packet(Packet::Disconnect), &codec).unwrap();
+    io.encode(Encoded::Packet(Packet::Disconnect), &codec)
+        .unwrap();
     io.flush(true).await.unwrap();
     sleep(Millis(250)).await;
     io.close();
@@ -858,18 +909,23 @@ async fn test_nested_errors() -> std::io::Result<()> {
                     Ok(msg.disconnect())
                 }
             })
-            .publish(|_| Ready::Ok(()))
+            .publish(async |_| Ok(()))
     });
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.send(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .await
-        .unwrap();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
     let _ = io.recv(&codec).await.unwrap().unwrap();
 
     // disconnect
-    io.send(Encoded::Packet(Packet::Disconnect), &codec).await.unwrap();
+    io.send(Encoded::Packet(Packet::Disconnect), &codec)
+        .await
+        .unwrap();
     assert!(io.recv(&codec).await.unwrap().is_none());
 
     Ok(())
@@ -877,14 +933,16 @@ async fn test_nested_errors() -> std::io::Result<()> {
 
 #[ntex::test]
 async fn test_large_publish() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
-        MqttServer::new(handshake).publish(|_| Ready::Ok(()))
-    });
+    let srv =
+        server::test_server(async move || MqttServer::new(handshake).publish(async |_| Ok(())));
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     let _ = io.recv(&codec).await;
 
     let p = Encoded::Publish(
@@ -911,8 +969,12 @@ fn ssl_acceptor() -> openssl::ssl::SslAcceptor {
 
     // load ssl keys
     let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-    builder.set_private_key_file("./tests/key.pem", SslFiletype::PEM).unwrap();
-    builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
+    builder
+        .set_private_key_file("./tests/key.pem", SslFiletype::PEM)
+        .unwrap();
+    builder
+        .set_certificate_chain_file("./tests/cert.pem")
+        .unwrap();
     builder.build()
 }
 
@@ -921,29 +983,27 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
     use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 
     let srv = server::test_server(async move || {
-        chain_factory(server::openssl::SslAcceptor::new(ssl_acceptor()).map_err(|_| ()))
+        server::openssl::SslAcceptor::new(ssl_acceptor())
+            .map_err(|_| ())
             .and_then(
                 MqttServer::new(handshake)
-                    .publish(|_| Ready::Ok(()))
-                    .map_err(|_| ())
-                    .map_init_err(|_| ()),
+                    .publish(async |_| Ok(()))
+                    .map_err(|_| ()),
             )
     });
 
     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
     builder.set_verify(SslVerifyMode::NONE);
-    let con = Pipeline::new(
-        ntex::connect::openssl::SslConnector::new(builder.build())
-            .create(SharedCfg::default())
-            .await
-            .unwrap(),
-    );
+    let con = Pipeline::new(ntex::connect::openssl::SslConnector::new(builder.build()));
     let addr = format!("127.0.0.1:{}", srv.addr().port());
     let io = con.call(addr.into()).await.unwrap();
 
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     let _ = io.recv(&codec).await;
 
     let p = Encoded::Publish(
@@ -989,7 +1049,9 @@ async fn test_max_qos() -> std::io::Result<()> {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
         &codec,
     )
     .await
@@ -1029,19 +1091,23 @@ async fn test_sink_ready() -> std::io::Result<()> {
             ntex::rt::spawn(async move {
                 sink.ready().await;
                 assert!(sink.is_ready());
-                sink.publish("/test").send_at_most_once(Bytes::from_static(b"body")).unwrap();
+                sink.publish("/test")
+                    .send_at_most_once(Bytes::from_static(b"body"))
+                    .unwrap();
             });
 
             Ok::<_, ()>(packet.ack(St, false).idle_timeout(Seconds(16)))
         }))
-        .publish(|_| Ready::Ok(()))
+        .publish(async |_| Ok(()))
     });
 
     // connect to server
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
         &codec,
     )
     .await
@@ -1056,15 +1122,11 @@ async fn test_sink_ready() -> std::io::Result<()> {
 
 #[ntex::test]
 async fn test_sink_publish_noblock() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
-        MqttServer::new(handshake).publish(|_| Ready::Ok(()))
-    });
+    let srv =
+        server::test_server(async move || MqttServer::new(handshake).publish(async |_| Ok(())));
 
     // connect to server
-    let client = client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -1091,11 +1153,16 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
         .send_at_least_once_no_block(Bytes::new());
     assert!(res.is_ok());
 
-    let res =
-        sink.publish(ByteString::from_static("test3")).send_at_least_once(Bytes::new()).await;
+    let res = sink
+        .publish(ByteString::from_static("test3"))
+        .send_at_least_once(Bytes::new())
+        .await;
     assert!(res.is_ok());
 
-    assert_eq!(*results.borrow(), &[NonZeroU16::new(1).unwrap(), NonZeroU16::new(2).unwrap()]);
+    assert_eq!(
+        *results.borrow(),
+        &[NonZeroU16::new(1).unwrap(), NonZeroU16::new(2).unwrap()]
+    );
 
     sink.close();
     Ok(())
@@ -1123,8 +1190,6 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
                 let _ = p.read_all().await;
                 Ok(())
             })
-            .map_err(|_| ())
-            .map_init_err(|_| ())
     })
     .config(
         SharedCfg::new("MQTT")
@@ -1135,8 +1200,11 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
-    io.encode(Encoded::Packet(codec::Connect::default().client_id("user").into()), &codec)
-        .unwrap();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
     io.recv(&codec).await.unwrap();
 
     let p = Encoded::Publish(
@@ -1177,19 +1245,19 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_handshake_fail() -> std::io::Result<()> {
     let srv = server::test_server(async || {
-        MqttServer::new(fn_service(|packet: Handshake| async move {
-            Ok::<_, ()>(
-                packet.failed::<St>(codec::ConnectAckReason::UnacceptableProtocolVersion),
-            )
-        }))
-        .publish(|_| Ready::Ok(()))
+        MqttServer::new(async move |packet: Handshake| {
+            Ok::<_, ()>(packet.failed::<St>(codec::ConnectAckReason::UnacceptableProtocolVersion))
+        })
+        .publish(fn_service(async |_| Ok(())))
     });
 
     // connect to server
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
     io.send(
-        Encoded::Packet(Packet::Connect(codec::Connect::default().client_id("user").into())),
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
         &codec,
     )
     .await

@@ -106,7 +106,10 @@ impl Connect {
         ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
         let len = src.get_u16();
 
-        ensure!(len == 4 && &src.as_ref()[0..4] == MQTT, DecodeError::InvalidProtocol);
+        ensure!(
+            len == 4 && &src.as_ref()[0..4] == MQTT,
+            DecodeError::InvalidProtocol
+        );
         src.advance(4);
 
         let level = src.get_u8();
@@ -302,12 +305,7 @@ impl encode::EncodeLtd for Connect {
         )?;
         encode::encode_property(&self.auth_method, pt::AUTH_METHOD, buf)?;
         encode::encode_property(&self.auth_data, pt::AUTH_DATA, buf)?;
-        encode::encode_property_default(
-            &self.request_problem_info,
-            true,
-            pt::REQ_PROB_INFO,
-            buf,
-        )?; // 3.1.2.11.7 Request Problem Information
+        encode::encode_property_default(&self.request_problem_info, true, pt::REQ_PROB_INFO, buf)?; // 3.1.2.11.7 Request Problem Information
         encode::encode_property_default(
             &self.request_response_info,
             false,

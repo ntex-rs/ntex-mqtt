@@ -17,13 +17,17 @@ pub struct Payload {
 
 impl Default for Payload {
     fn default() -> Self {
-        Payload { pl: Either::Left(Cell::new(None)) }
+        Payload {
+            pl: Either::Left(Cell::new(None)),
+        }
     }
 }
 
 impl Payload {
     pub fn from_bytes(buf: Bytes) -> Payload {
-        Payload { pl: Either::Left(Cell::new(Some(buf))) }
+        Payload {
+            pl: Either::Left(Cell::new(Some(buf))),
+        }
     }
 
     pub(crate) fn from_stream(buf: Bytes, buf_size: usize) -> (Payload, PlSender) {
@@ -32,7 +36,12 @@ impl Payload {
         if !buf.is_empty() {
             tx.feed_data(buf);
         }
-        (Payload { pl: Either::Right(rx) }, tx)
+        (
+            Payload {
+                pl: Either::Right(rx),
+            },
+            tx,
+        )
     }
 
     /// Check if payload is fixed
@@ -64,7 +73,9 @@ impl Payload {
 
     #[must_use]
     pub fn take(&mut self) -> Payload {
-        Payload { pl: mem::replace(&mut self.pl, Either::Left(Cell::new(None))) }
+        Payload {
+            pl: mem::replace(&mut self.pl, Either::Left(Cell::new(None))),
+        }
     }
 }
 

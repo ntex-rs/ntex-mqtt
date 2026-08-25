@@ -1,7 +1,7 @@
 use std::{cell::Cell, fmt, future::Future, future::ready, num::NonZeroU16, rc::Rc};
 
 use ntex_bytes::{ByteString, Bytes};
-use ntex_util::{channel::pool, future::Either, future::Ready};
+use ntex_util::{channel::pool, future::Either};
 
 use crate::v3::shared::{Ack, AckType, MqttShared};
 use crate::v3::{codec, error::SendPacketError};
@@ -98,7 +98,10 @@ impl MqttSink {
     #[inline]
     /// Create publish builder with publish packet.
     pub fn publish_pkt(&self, packet: codec::Publish) -> PublishBuilder {
-        PublishBuilder { packet, shared: self.0.clone() }
+        PublishBuilder {
+            packet,
+            shared: self.0.clone(),
+        }
     }
 
     /// Set publish ack callback.
@@ -117,13 +120,21 @@ impl MqttSink {
     ///
     /// panics if id is 0
     pub fn subscribe(&self) -> SubscribeBuilder {
-        SubscribeBuilder { id: None, topic_filters: Vec::new(), shared: self.0.clone() }
+        SubscribeBuilder {
+            id: None,
+            topic_filters: Vec::new(),
+            shared: self.0.clone(),
+        }
     }
 
     #[inline]
     /// Create unsubscribe packet builder
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
-        UnsubscribeBuilder { id: None, topic_filters: Vec::new(), shared: self.0.clone() }
+        UnsubscribeBuilder {
+            id: None,
+            topic_filters: Vec::new(),
+            shared: self.0.clone(),
+        }
     }
 }
 
@@ -140,7 +151,9 @@ pub struct PublishBuilder {
 
 impl fmt::Debug for PublishBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PublishBuilder").field("packet", &self.packet).finish()
+        f.debug_struct("PublishBuilder")
+            .field("packet", &self.packet)
+            .finish()
     }
 }
 
@@ -201,10 +214,7 @@ impl PublishBuilder {
     }
 
     /// Send publish packet with `QoS 0`
-    pub fn stream_at_most_once(
-        mut self,
-        size: u32,
-    ) -> Result<StreamingPayload, SendPacketError> {
+    pub fn stream_at_most_once(mut self, size: u32) -> Result<StreamingPayload, SendPacketError> {
         if self.shared.is_closed() {
             log::error!("Mqtt sink is disconnected");
             Err(SendPacketError::Disconnected)
@@ -227,26 +237,21 @@ impl PublishBuilder {
     }
 
     /// Send publish packet with `QoS 1`
-    pub fn send_at_least_once(
-        mut self,
-        payload: Bytes,
-    ) -> impl Future<Output = Result<(), SendPacketError>> {
+    pub async fn send_at_least_once(mut self, payload: Bytes) -> Result<(), SendPacketError> {
         if self.shared.is_closed() {
-            Either::Right(Ready::Err(SendPacketError::Disconnected))
+            Err(SendPacketError::Disconnected)
         } else {
             self.packet.qos = codec::QoS::AtLeastOnce;
             self.packet.payload_size = payload.len() as u32;
 
             // handle client receive maximum
             if let Some(rx) = self.shared.wait_readiness() {
-                Either::Left(Either::Left(async move {
-                    if rx.await.is_err() {
-                        return Err(SendPacketError::Disconnected);
-                    }
-                    self.send_at_least_once_inner(payload).await
-                }))
+                if rx.await.is_err() {
+                    return Err(SendPacketError::Disconnected);
+                }
+                self.send_at_least_once_inner(payload).await
             } else {
-                Either::Left(Either::Right(self.send_at_least_once_inner(payload)))
+                self.send_at_least_once_inner(payload).await
             }
         }
     }
@@ -256,10 +261,7 @@ impl PublishBuilder {
     /// # Panics
     ///
     /// Panics if sink is not ready or publish ack callback is not set
-    pub fn send_at_least_once_no_block(
-        mut self,
-        payload: Bytes,
-    ) -> Result<(), SendPacketError> {
+    pub fn send_at_least_once_no_block(mut self, payload: Bytes) -> Result<(), SendPacketError> {
         if self.shared.is_closed() {
             Err(SendPacketError::Disconnected)
         } else {
@@ -281,72 +283,65 @@ impl PublishBuilder {
         }
     }
 
-    fn send_at_least_once_inner(
-        mut self,
-        payload: Bytes,
-    ) -> impl Future<Output = Result<(), SendPacketError>> {
+    async fn send_at_least_once_inner(mut self, payload: Bytes) -> Result<(), SendPacketError> {
         let idx = self.shared.set_publish_id(&mut self.packet);
         log::trace!("Publish (QoS1) to {:#?}", self.packet);
 
-        let rx = self.shared.wait_publish_response(
-            idx,
-            AckType::Publish,
-            self.packet,
-            Some(payload),
-        );
-        async move { rx?.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected) }
+        self.shared
+            .wait_publish_response(idx, AckType::Publish, self.packet, Some(payload))?
+            .await
+            .map(|_| ())
+            .map_err(|_| SendPacketError::Disconnected)
     }
 
     /// Send publish packet with `QoS 2`
-    pub fn send_exactly_once(
+    pub async fn send_exactly_once(
         mut self,
         payload: Bytes,
-    ) -> impl Future<Output = Result<PublishReceived, SendPacketError>> {
+    ) -> Result<PublishReceived, SendPacketError> {
         if self.shared.is_closed() {
-            Either::Right(Ready::Err(SendPacketError::Disconnected))
+            Err(SendPacketError::Disconnected)
         } else {
             self.packet.qos = codec::QoS::ExactlyOnce;
             self.packet.payload_size = payload.len() as u32;
 
             // handle client receive maximum
             if let Some(rx) = self.shared.wait_readiness() {
-                Either::Left(Either::Left(async move {
-                    if rx.await.is_err() {
-                        return Err(SendPacketError::Disconnected);
-                    }
-                    self.send_exactly_once_inner(payload).await
-                }))
+                if rx.await.is_err() {
+                    return Err(SendPacketError::Disconnected);
+                }
+                self.send_exactly_once_inner(payload).await
             } else {
-                Either::Left(Either::Right(self.send_exactly_once_inner(payload)))
+                self.send_exactly_once_inner(payload).await
             }
         }
     }
 
-    fn send_exactly_once_inner(
+    async fn send_exactly_once_inner(
         mut self,
         payload: Bytes,
-    ) -> impl Future<Output = Result<PublishReceived, SendPacketError>> {
+    ) -> Result<PublishReceived, SendPacketError> {
         let idx = self.shared.set_publish_id(&mut self.packet);
         log::trace!("Publish (QoS2) to {:#?}", self.packet);
 
-        let rx = self.shared.wait_publish_response(
-            idx,
-            AckType::Receive,
-            self.packet,
-            Some(payload),
-        );
-        async move {
-            rx?.await
-                .map(move |_| PublishReceived { packet_id: Some(idx), shared: self.shared })
-                .map_err(|_| SendPacketError::Disconnected)
-        }
+        self.shared
+            .wait_publish_response(idx, AckType::Receive, self.packet, Some(payload))?
+            .await
+            .map(move |_| PublishReceived {
+                packet_id: Some(idx),
+                shared: self.shared,
+            })
+            .map_err(|_| SendPacketError::Disconnected)
     }
 
     /// Send publish packet with `QoS 1`
     pub fn stream_at_least_once(
         mut self,
         size: u32,
-    ) -> (impl Future<Output = Result<(), SendPacketError>>, StreamingPayload) {
+    ) -> (
+        impl Future<Output = Result<(), SendPacketError>>,
+        StreamingPayload,
+    ) {
         let (tx, rx) = self.shared.pool.waiters.channel();
         let stream = StreamingPayload {
             rx: Cell::new(Some(rx)),
@@ -355,7 +350,10 @@ impl PublishBuilder {
         };
 
         if self.shared.is_closed() {
-            (Either::Right(Ready::Err(SendPacketError::Disconnected)), stream)
+            (
+                Either::Right(async { Err(SendPacketError::Disconnected) }),
+                stream,
+            )
         } else {
             self.packet.qos = QoS::AtLeastOnce;
             self.packet.payload_size = size;
@@ -388,11 +386,14 @@ impl PublishBuilder {
         if tx.is_canceled() {
             Err(SendPacketError::StreamingCancelled)
         } else {
-            let rx =
-                self.shared.wait_publish_response(idx, AckType::Publish, self.packet, None);
+            let rx = self
+                .shared
+                .wait_publish_response(idx, AckType::Publish, self.packet, None);
             let _ = tx.send(());
 
-            rx?.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
+            rx?.await
+                .map(|_| ())
+                .map_err(|_| SendPacketError::Disconnected)
         }
     }
 }
@@ -405,16 +406,22 @@ pub struct PublishReceived {
 
 impl fmt::Debug for PublishReceived {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PublishReceived").field("packet_id", &self.packet_id).finish()
+        f.debug_struct("PublishReceived")
+            .field("packet_id", &self.packet_id)
+            .finish()
     }
 }
 
 impl PublishReceived {
     /// Release publish
     pub async fn release(mut self) -> Result<(), SendPacketError> {
-        let rx = self.shared.release_publish(self.packet_id.take().unwrap())?;
+        let rx = self
+            .shared
+            .release_publish(self.packet_id.take().unwrap())?;
 
-        rx.await.map(|_| ()).map_err(|_| SendPacketError::Disconnected)
+        rx.await
+            .map(|_| ())
+            .map_err(|_| SendPacketError::Disconnected)
     }
 }
 
@@ -500,7 +507,9 @@ impl SubscribeBuilder {
             }) {
                 Ok(()) => {
                     // wait ack from peer
-                    rx.await.map_err(|_| SendPacketError::Disconnected).map(Ack::subscribe)
+                    rx.await
+                        .map_err(|_| SendPacketError::Disconnected)
+                        .map(Ack::subscribe)
                 }
                 Err(err) => Err(SendPacketError::Encode(err)),
             }
@@ -582,7 +591,9 @@ impl UnsubscribeBuilder {
             }) {
                 Ok(()) => {
                     // wait ack from peer
-                    rx.await.map_err(|_| SendPacketError::Disconnected).map(|_| ())
+                    rx.await
+                        .map_err(|_| SendPacketError::Disconnected)
+                        .map(|_| ())
                 }
                 Err(err) => Err(SendPacketError::Encode(err)),
             }

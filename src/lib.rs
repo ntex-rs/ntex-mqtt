@@ -1,12 +1,18 @@
 //! MQTT Client/Server framework
-#![deny(rust_2018_idioms, unreachable_pub, missing_debug_implementations, clippy::pedantic)]
+#![deny(clippy::pedantic)]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::missing_fields_in_debug,
-    clippy::must_use_candidate,
     clippy::missing_errors_doc,
-    clippy::struct_field_names
+    clippy::must_use_candidate,
+    clippy::struct_field_names,
+    clippy::type_complexity,
+    clippy::unused_async,
+    clippy::unused_async_trait_impl
 )]
+use ntex_io::IoBoxed;
+use ntex_service::pipeline::Pipeline;
+use ntex_util::time::Seconds;
 
 mod topic;
 #[macro_use]
@@ -40,3 +46,6 @@ pub use self::types::QoS;
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
 pub const TCP_PORT: u16 = 1883;
 pub const TLS_PORT: u16 = 8883;
+
+pub(crate) type HandshakePipeline<AppSt, Codec, Err> =
+    Pipeline<IoBoxed, (IoBoxed, Codec, AppSt, Seconds), Err>;

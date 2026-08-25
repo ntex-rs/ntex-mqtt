@@ -1,5 +1,5 @@
+use ntex::Pipeline;
 use ntex::time::{Millis, Seconds, sleep};
-use ntex::{ServiceFactory, SharedCfg};
 use ntex_mqtt::v5;
 
 #[derive(Debug)]
@@ -16,7 +16,12 @@ impl std::convert::TryFrom<Error> for v5::PublishAck {
 async fn publish(pkt: v5::Publish) -> Result<v5::PublishAck, Error> {
     let payload = pkt.read_all().await;
 
-    log::info!("incoming publish: {:?} -> {:?} payload {:?}", pkt.id(), pkt.topic(), payload);
+    log::info!(
+        "incoming publish: {:?} -> {:?} payload {:?}",
+        pkt.id(),
+        pkt.topic(),
+        payload
+    );
     Ok(pkt.ack())
 }
 
@@ -26,10 +31,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     // connect to server
-    let client = v5::client::MqttConnector::new()
-        .pipeline(SharedCfg::default())
-        .await
-        .unwrap()
+    let client = Pipeline::new(v5::client::MqttConnector::new())
         .call(
             v5::client::Connect::new("127.0.0.1:1883")
                 .client_id("user")

@@ -5,7 +5,7 @@ use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex_service::{IntoService, Pipeline, Service, boxed, cfg::Cfg, fn_service};
 use ntex_util::time::{Millis, Seconds, sleep};
-use ntex_util::{HashMap, future::Either, future::Ready};
+use ntex_util::{HashMap, future::Either};
 
 use crate::v5::default::ControlService;
 use crate::v5::publish::{Publish, PublishAck};
@@ -45,7 +45,14 @@ impl Client {
         keepalive: Seconds,
         cfg: Cfg<MqttServiceConfig>,
     ) -> Self {
-        Client { io, pkt, shared, cfg, keepalive, max_receive: max_receive as usize }
+        Client {
+            io,
+            pkt,
+            shared,
+            cfg,
+            keepalive,
+            max_receive: max_receive as usize,
+        }
     }
 }
 
@@ -78,8 +85,8 @@ impl Client {
     pub fn resource<T, F, U, E>(self, address: T, service: F) -> ClientRouter<E, U::Error>
     where
         T: IntoPattern,
-        F: IntoService<U, Publish>,
-        U: Service<Publish, Response = PublishAck> + 'static,
+        F: IntoService<U, (), Publish>,
+        U: Service<(), Publish, Res = PublishAck> + 'static,
         E: From<U::Error>,
         PublishAck: TryFrom<U::Error, Error = E>,
     {
@@ -104,14 +111,17 @@ impl Client {
     /// Default handler closes connection on any control message.
     pub async fn start_default(self) {
         if self.keepalive.non_zero() {
-            ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            ntex_util::spawn(keepalive(
+                MqttSink::new(self.shared.clone()),
+                self.keepalive,
+            ));
         }
 
         let dispatcher = create_dispatcher(
             self.shared.clone(),
-            fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
-            fn_service(|msg: ProtocolMessage| {
-                Ready::Ok(msg.disconnect(codec::Disconnect::default()))
+            fn_service(async |pkt| Ok(Either::Left(pkt))),
+            fn_service(async |msg: ProtocolMessage| {
+                Ok(msg.disconnect(codec::Disconnect::default()))
             }),
             self.max_receive,
             16,
@@ -129,16 +139,19 @@ impl Client {
     pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
     where
         E: fmt::Debug + 'static,
-        F: IntoService<S, ProtocolMessage> + 'static,
-        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
+        F: IntoService<S, (), ProtocolMessage> + 'static,
+        S: Service<(), ProtocolMessage, Res = ProtocolMessageAck, Error = E> + 'static,
     {
         if self.keepalive.non_zero() {
-            ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            ntex_util::spawn(keepalive(
+                MqttSink::new(self.shared.clone()),
+                self.keepalive,
+            ));
         }
 
         let dispatcher = create_dispatcher(
             self.shared.clone(),
-            fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
+            fn_service(async |pkt| Ok(Either::Left(pkt))),
             service.into_service(),
             self.max_receive,
             16,
@@ -160,17 +173,20 @@ impl Client {
     ) -> Result<(), MqttError<C::Error>>
     where
         E: fmt::Debug + 'static,
-        F: IntoService<S, ProtocolMessage> + 'static,
-        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = E> + 'static,
-        C: Service<control::Control<E>, Response = Option<codec::Encoded>> + 'static,
+        F: IntoService<S, (), ProtocolMessage> + 'static,
+        S: Service<(), ProtocolMessage, Res = ProtocolMessageAck, Error = E> + 'static,
+        C: Service<(), control::Control<E>, Res = Option<codec::Encoded>> + 'static,
     {
         if self.keepalive.non_zero() {
-            ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            ntex_util::spawn(keepalive(
+                MqttSink::new(self.shared.clone()),
+                self.keepalive,
+            ));
         }
 
         let dispatcher = create_dispatcher(
             self.shared.clone(),
-            fn_service(|pkt| Ready::Ok(Either::Left(pkt))),
+            fn_service(async |pkt| Ok(Either::Left(pkt))),
             service.into_service(),
             self.max_receive,
             16,
@@ -187,18 +203,16 @@ impl Client {
     }
 }
 
-type Handler<E> = boxed::BoxService<Publish, PublishAck, E>;
-
 /// Mqtt client with routing capabilities
 pub struct ClientRouter<Err, PErr> {
     io: IoBoxed,
     builder: RouterBuilder<usize>,
-    handlers: Vec<Pipeline<Handler<PErr>>>,
+    handlers: Vec<Pipeline<Publish, PublishAck, PErr>>,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     max_receive: usize,
     cfg: Cfg<MqttServiceConfig>,
-    _t: marker::PhantomData<Err>,
+    _t: marker::PhantomData<(Err, PErr)>,
 }
 
 impl<Err, PErr> fmt::Debug for ClientRouter<Err, PErr> {
@@ -221,25 +235,29 @@ where
     pub fn resource<T, F, S>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoService<S, Publish>,
-        S: Service<Publish, Response = PublishAck, Error = PErr> + 'static,
+        F: IntoService<S, (), Publish>,
+        S: Service<(), Publish, Res = PublishAck, Error = PErr> + 'static,
     {
         self.builder.path(address, self.handlers.len());
-        self.handlers.push(Pipeline::new(boxed::service(service.into_service())));
+        self.handlers
+            .push(Pipeline::new(boxed::service(service.into_service())));
         self
     }
 
     /// Run client with default control messages handler
     pub async fn start_default(self) {
         if self.keepalive.non_zero() {
-            ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            ntex_util::spawn(keepalive(
+                MqttSink::new(self.shared.clone()),
+                self.keepalive,
+            ));
         }
 
         let dispatcher = create_dispatcher(
             self.shared.clone(),
             dispatch(self.builder.finish(), self.handlers),
-            fn_service(|msg: ProtocolMessage| {
-                Ready::Ok(msg.disconnect(codec::Disconnect::default()))
+            fn_service(async |msg: ProtocolMessage| {
+                Ok(msg.disconnect(codec::Disconnect::default()))
             }),
             self.max_receive,
             16,
@@ -256,11 +274,14 @@ where
     /// Run client and handle control messages
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
-        F: IntoService<S, ProtocolMessage>,
-        S: Service<ProtocolMessage, Response = ProtocolMessageAck, Error = Err> + 'static,
+        F: IntoService<S, (), ProtocolMessage>,
+        S: Service<(), ProtocolMessage, Res = ProtocolMessageAck, Error = Err> + 'static,
     {
         if self.keepalive.non_zero() {
-            ntex_util::spawn(keepalive(MqttSink::new(self.shared.clone()), self.keepalive));
+            ntex_util::spawn(keepalive(
+                MqttSink::new(self.shared.clone()),
+                self.keepalive,
+            ));
         }
 
         let dispatcher = create_dispatcher(
@@ -287,8 +308,8 @@ where
 
 fn dispatch<Err, PErr>(
     router: Router<usize>,
-    handlers: Vec<Pipeline<Handler<PErr>>>,
-) -> impl Service<Publish, Response = Either<Publish, PublishAck>, Error = Err>
+    handlers: Vec<Pipeline<Publish, PublishAck, PErr>>,
+) -> impl Service<(), Publish, Res = Either<Publish, PublishAck>, Error = Err>
 where
     PErr: 'static,
     PublishAck: TryFrom<PErr, Error = Err>,
@@ -298,16 +319,18 @@ where
         RefCell::new(HashMap::default());
     let handlers = Rc::new(handlers);
 
-    fn_service(move |mut req: Publish| {
+    fn_service(async move |mut req: Publish| {
         let idx = if !req.publish_topic().is_empty() {
             if let Some((idx, _info)) = router.recognize(req.topic_mut()) {
                 // save info for topic alias
                 if let Some(alias) = req.packet().properties.topic_alias {
-                    aliases.borrow_mut().insert(alias, (*idx, req.topic().clone()));
+                    aliases
+                        .borrow_mut()
+                        .insert(alias, (*idx, req.topic().clone()));
                 }
                 *idx
             } else {
-                return Either::Right(Ready::<_, Err>::Ok(Either::Left(req)));
+                return Ok::<_, Err>(Either::Left(req));
             }
         }
         // handle publish with topic alias
@@ -318,33 +341,21 @@ where
                 item.0
             } else {
                 log::error!("Unknown topic alias: {alias:?}");
-                return Either::Right(Ready::<_, Err>::Ok(Either::Left(req)));
+                return Ok(Either::Left(req));
             }
         } else {
-            return Either::Right(Ready::<_, Err>::Ok(Either::Left(req)));
+            return Ok(Either::Left(req));
         };
 
         // exec handler
-        let handlers = handlers.clone();
-        Either::Left(async move { call(req, handlers[idx].clone()).await })
-    })
-}
-
-async fn call<S, Err>(
-    req: Publish,
-    srv: Pipeline<S>,
-) -> Result<Either<Publish, PublishAck>, Err>
-where
-    S: Service<Publish, Response = PublishAck>,
-    PublishAck: TryFrom<S::Error, Error = Err>,
-{
-    match srv.call(req).await {
-        Ok(ack) => Ok(Either::Right(ack)),
-        Err(err) => match PublishAck::try_from(err) {
+        match handlers[idx].call(req).await {
             Ok(ack) => Ok(Either::Right(ack)),
-            Err(err) => Err(err),
-        },
-    }
+            Err(err) => match PublishAck::try_from(err) {
+                Ok(ack) => Ok(Either::Right(ack)),
+                Err(err) => Err(err),
+            },
+        }
+    })
 }
 
 async fn keepalive(sink: MqttSink, timeout: Seconds) {

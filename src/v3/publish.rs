@@ -19,7 +19,12 @@ impl Publish {
     /// packet
     #[doc(hidden)]
     pub fn new(pkt: codec::Publish, payload: Payload, pkt_size: u32) -> Self {
-        Self { topic: Path::new(pkt.topic.clone()), pkt, pkt_size, payload }
+        Self {
+            topic: Path::new(pkt.topic.clone()),
+            pkt,
+            pkt_size,
+            payload,
+        }
     }
 
     #[inline]

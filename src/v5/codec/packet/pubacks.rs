@@ -61,12 +61,24 @@ impl PublishAck {
             if src.has_remaining() {
                 let (properties, reason_string) = ack_props::decode(src)?;
                 ensure!(!src.has_remaining(), DecodeError::InvalidLength); // no data should be left in src
-                Self { packet_id, reason_code, properties, reason_string }
+                Self {
+                    packet_id,
+                    reason_code,
+                    properties,
+                    reason_string,
+                }
             } else {
-                Self { packet_id, reason_code, ..Default::default() }
+                Self {
+                    packet_id,
+                    reason_code,
+                    ..Default::default()
+                }
             }
         } else {
-            Self { packet_id, ..Default::default() }
+            Self {
+                packet_id,
+                ..Default::default()
+            }
         };
 
         Ok(ack)
@@ -92,12 +104,24 @@ impl PublishAck2 {
             if src.has_remaining() {
                 let (properties, reason_string) = ack_props::decode(src)?;
                 ensure!(!src.has_remaining(), DecodeError::InvalidLength); // no data should be left in src
-                Self { packet_id, reason_code, properties, reason_string }
+                Self {
+                    packet_id,
+                    reason_code,
+                    properties,
+                    reason_string,
+                }
             } else {
-                Self { packet_id, reason_code, ..Default::default() }
+                Self {
+                    packet_id,
+                    reason_code,
+                    ..Default::default()
+                }
             }
         } else {
-            Self { packet_id, ..Default::default() }
+            Self {
+                packet_id,
+                ..Default::default()
+            }
         };
 
         Ok(ack)
@@ -128,7 +152,12 @@ impl encode::EncodeLtd for PublishAck {
     fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
         self.packet_id.get().encode(buf)?;
         buf.put_u8(self.reason_code.into());
-        ack_props::encode(&self.properties, &self.reason_string, buf, size - HEADER_LEN)?;
+        ack_props::encode(
+            &self.properties,
+            &self.reason_string,
+            buf,
+            size - HEADER_LEN,
+        )?;
         Ok(())
     }
 }
@@ -177,7 +206,10 @@ mod tests {
             Ok(PublishAck {
                 packet_id: packet_id.try_into().unwrap(),
                 reason_code,
-                properties: properties.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+                properties: properties
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v.into()))
+                    .collect(),
                 reason_string: reason_string.map(Into::into)
             })
         );

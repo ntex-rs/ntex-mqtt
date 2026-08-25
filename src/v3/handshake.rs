@@ -22,7 +22,12 @@ impl Handshake {
         io: IoBoxed,
         shared: Rc<MqttShared>,
     ) -> Self {
-        Self { io, pkt, pkt_size, shared }
+        Self {
+            io,
+            pkt,
+            pkt_size,
+            shared,
+        }
     }
 
     #[inline]
@@ -52,7 +57,9 @@ impl Handshake {
 
     /// Ack handshake message and set state
     pub fn ack<St>(self, st: St, session_present: bool) -> HandshakeAck<St> {
-        let Handshake { io, shared, pkt, .. } = self;
+        let Handshake {
+            io, shared, pkt, ..
+        } = self;
         // [MQTT-3.1.2-24].
         let keepalive = if pkt.keep_alive != 0 {
             Seconds((pkt.keep_alive >> 1).saturating_add(pkt.keep_alive))

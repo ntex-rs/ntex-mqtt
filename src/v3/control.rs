@@ -70,7 +70,9 @@ impl ProtocolMessage {
     #[inline]
     /// Disconnects the client by sending DISCONNECT packet.
     pub fn disconnect(&self) -> ProtocolMessageAck {
-        ProtocolMessageAck { result: ProtocolMessageKind::Disconnect }
+        ProtocolMessageAck {
+            result: ProtocolMessageKind::Disconnect,
+        }
     }
 
     #[inline]
@@ -81,11 +83,15 @@ impl ProtocolMessage {
             ProtocolMessage::Disconnect(msg) => msg.ack(),
             ProtocolMessage::Subscribe(_) => {
                 log::warn!("Subscribe is not supported");
-                ProtocolMessageAck { result: ProtocolMessageKind::Disconnect }
+                ProtocolMessageAck {
+                    result: ProtocolMessageKind::Disconnect,
+                }
             }
             ProtocolMessage::Unsubscribe(_) => {
                 log::warn!("Unsubscribe is not supported");
-                ProtocolMessageAck { result: ProtocolMessageKind::Disconnect }
+                ProtocolMessageAck {
+                    result: ProtocolMessageKind::Disconnect,
+                }
             }
             ProtocolMessage::Ping(msg) => msg.ack(),
         }
@@ -108,7 +114,9 @@ impl PublishRelease {
     #[inline]
     /// convert packet to a result
     pub fn ack(self) -> ProtocolMessageAck {
-        ProtocolMessageAck { result: ProtocolMessageKind::PublishRelease(self.packet_id) }
+        ProtocolMessageAck {
+            result: ProtocolMessageKind::PublishRelease(self.packet_id),
+        }
     }
 }
 
@@ -118,7 +126,9 @@ pub struct Ping;
 impl Ping {
     #[inline]
     pub fn ack(self) -> ProtocolMessageAck {
-        ProtocolMessageAck { result: ProtocolMessageKind::Ping }
+        ProtocolMessageAck {
+            result: ProtocolMessageKind::Ping,
+        }
     }
 }
 
@@ -128,7 +138,9 @@ pub struct Disconnect;
 impl Disconnect {
     #[inline]
     pub fn ack(self) -> ProtocolMessageAck {
-        ProtocolMessageAck { result: ProtocolMessageKind::Disconnect }
+        ProtocolMessageAck {
+            result: ProtocolMessageKind::Disconnect,
+        }
     }
 }
 
@@ -153,15 +165,16 @@ impl Subscribe {
     /// Create a new `Subscribe` control message from packet id and
     /// a list of topics.
     #[doc(hidden)]
-    pub fn new(
-        packet_id: NonZeroU16,
-        packet_size: u32,
-        topics: Vec<(ByteString, QoS)>,
-    ) -> Self {
+    pub fn new(packet_id: NonZeroU16, packet_size: u32, topics: Vec<(ByteString, QoS)>) -> Self {
         let mut codes = Vec::with_capacity(topics.len());
         (0..topics.len()).for_each(|_| codes.push(codec::SubscribeReturnCode::Failure));
 
-        Self { packet_id, packet_size, topics, codes }
+        Self {
+            packet_id,
+            packet_size,
+            topics,
+            codes,
+        }
     }
 
     #[inline]
@@ -173,7 +186,11 @@ impl Subscribe {
     #[inline]
     /// returns iterator over subscription topics
     pub fn iter_mut(&mut self) -> SubscribeIter<'_> {
-        SubscribeIter { subs: ptr::from_ref(self).cast_mut(), entry: 0, lt: PhantomData }
+        SubscribeIter {
+            subs: ptr::from_ref(self).cast_mut(),
+            entry: 0,
+            lt: PhantomData,
+        }
     }
 
     #[inline]
@@ -298,7 +315,11 @@ impl Unsubscribe {
     /// a list of topics.
     #[doc(hidden)]
     pub fn new(packet_id: NonZeroU16, packet_size: u32, topics: Vec<ByteString>) -> Self {
-        Self { packet_id, packet_size, topics }
+        Self {
+            packet_id,
+            packet_size,
+            topics,
+        }
     }
 
     #[inline]

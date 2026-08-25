@@ -9,7 +9,7 @@ pub mod control;
 mod dispatcher;
 
 pub use self::connection::{Client, ClientRouter};
-pub use self::connector::{MqttConnector, MqttConnectorService};
+pub use self::connector::MqttConnector;
 pub use self::control::{ProtocolMessage, ProtocolMessageAck};
 
 pub use crate::topic::{TopicFilter, TopicFilterError};
@@ -26,7 +26,10 @@ impl<A: Address> Connect<A> {
     #[inline]
     /// Construct new connect message
     pub fn new(addr: A) -> Self {
-        Self { addr, pkt: codec::Connect::default() }
+        Self {
+            addr,
+            pkt: codec::Connect::default(),
+        }
     }
 
     #[inline]

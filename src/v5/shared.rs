@@ -64,7 +64,10 @@ pub(super) struct MqttSinkPool {
 
 impl Default for MqttSinkPool {
     fn default() -> Self {
-        Self { queue: pool::new(), waiters: pool::new() }
+        Self {
+            queue: pool::new(),
+            waiters: pool::new(),
+        }
     }
 }
 
@@ -98,7 +101,9 @@ impl MqttShared {
     }
 
     pub(super) fn credit(&self) -> usize {
-        self.cap.get().saturating_sub(self.queues.borrow().inflight.len())
+        self.cap
+            .get()
+            .saturating_sub(self.queues.borrow().inflight.len())
     }
 
     pub(super) fn receive_max(&self) -> u16 {
@@ -162,7 +167,9 @@ impl MqttShared {
             if let Some(pkt) = pkt
                 && !self.is_disconnect_sent()
             {
-                let _ = self.io.encode(Encoded::Packet(Packet::Disconnect(pkt)), &self.codec);
+                let _ = self
+                    .io
+                    .encode(Encoded::Packet(Packet::Disconnect(pkt)), &self.codec);
             }
             self.io.close();
         }
@@ -176,7 +183,8 @@ impl MqttShared {
 
     pub(super) fn streaming_dropped(&self) {
         self.force_close();
-        self.encode_error.set(Some(error::EncodeError::PublishIncomplete));
+        self.encode_error
+            .set(Some(error::EncodeError::PublishIncomplete));
     }
 
     pub(super) fn is_closed(&self) -> bool {
@@ -282,7 +290,13 @@ impl MqttShared {
         if let Some(cb) = self.on_publish_ack.take() {
             for (idx, tx, _) in queues.inflight.drain(..) {
                 if tx.is_none() {
-                    (*cb)(codec::PublishAck { packet_id: idx, ..Default::default() }, true);
+                    (*cb)(
+                        codec::PublishAck {
+                            packet_id: idx,
+                            ..Default::default()
+                        },
+                        true,
+                    );
                 }
             }
         } else {
@@ -350,7 +364,8 @@ impl MqttShared {
 
     fn enable_streaming(&self, pkt: &Publish, payload: Option<&Bytes>) {
         let len = payload.map_or(0, Bytes::len);
-        self.streaming_remaining.set(num::NonZeroU32::new(pkt.payload_size - len as u32));
+        self.streaming_remaining
+            .set(num::NonZeroU32::new(pkt.payload_size - len as u32));
     }
 
     pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), error::EncodeError> {
@@ -378,8 +393,10 @@ impl MqttShared {
                 self.force_close();
                 Err(error::EncodeError::OverPublishSize)
             } else {
-                self.io.encode(Encoded::PayloadChunk(payload), &self.codec)?;
-                self.streaming_remaining.set(num::NonZeroU32::new(remaining.get() - len));
+                self.io
+                    .encode(Encoded::PayloadChunk(payload), &self.codec)?;
+                self.streaming_remaining
+                    .set(num::NonZeroU32::new(remaining.get() - len));
                 Ok(self.streaming_remaining.get().is_some())
             }
         } else {
@@ -417,7 +434,9 @@ impl MqttShared {
                 }
                 let (tx, rx) = self.pool.queue.channel();
                 queues.rx = Some(rx);
-                queues.inflight.push_back((idx, Some(tx), AckType::Complete));
+                queues
+                    .inflight
+                    .push_back((idx, Some(tx), AckType::Complete));
                 Ok(())
             } else if matches!(pkt, Ack::Complete(_)) {
                 // get publish ack channel
@@ -547,8 +566,7 @@ impl MqttShared {
     pub(super) fn wait_readiness(&self) -> Option<pool::Receiver<()>> {
         let mut queues = self.queues.borrow_mut();
 
-        if queues.inflight.len() >= self.cap.get()
-            || self.flags.get().contains(Flags::WRB_ENABLED)
+        if queues.inflight.len() >= self.cap.get() || self.flags.get().contains(Flags::WRB_ENABLED)
         {
             let (tx, rx) = self.pool.waiters.channel();
             queues.waiters.push_back(tx);
@@ -567,7 +585,10 @@ impl MqttShared {
             return Err(SendPacketError::UnexpectedRelease);
         };
 
-        match self.io.encode(Encoded::Packet(codec::Packet::PublishRelease(pkt)), &self.codec) {
+        match self.io.encode(
+            Encoded::Packet(codec::Packet::PublishRelease(pkt)),
+            &self.codec,
+        ) {
             Ok(()) => Ok(rx),
             Err(e) => Err(SendPacketError::Encode(e)),
         }

@@ -20,9 +20,7 @@ impl EncodeLtd for Packet {
             Packet::Connect(connect) => connect.encoded_size(limit),
             Packet::ConnectAck(ack) => ack.encoded_size(limit),
             Packet::PublishAck(ack) | Packet::PublishReceived(ack) => ack.encoded_size(limit),
-            Packet::PublishRelease(ack) | Packet::PublishComplete(ack) => {
-                ack.encoded_size(limit)
-            }
+            Packet::PublishRelease(ack) | Packet::PublishComplete(ack) => ack.encoded_size(limit),
             Packet::Subscribe(sub) => sub.encoded_size(limit),
             Packet::SubscribeAck(ack) => ack.encoded_size(limit),
             Packet::Unsubscribe(unsub) => unsub.encoded_size(limit),
@@ -205,14 +203,14 @@ pub(crate) fn var_int_len(val: usize) -> u32 {
     panic!("16-bit platforms are not supported");
     #[cfg(target_pointer_width = "32")]
     const MAP: [u32; 33] = [
-        5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1,
-        1, 1, 1, 1,
+        5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1,
+        1, 1, 1,
     ];
     #[cfg(target_pointer_width = "64")]
     const MAP: [u32; 65] = [
-        10, 9, 9, 9, 9, 9, 9, 9, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6,
-        5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 1,
-        1, 1, 1, 1, 1, 1, 1,
+        10, 9, 9, 9, 9, 9, 9, 9, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 5,
+        5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1,
+        1, 1, 1, 1, 1,
     ];
     let zeros = val.leading_zeros();
     unsafe { *MAP.get_unchecked(zeros as usize) } // safety: zeros will never be more than 65 by definition.
@@ -221,8 +219,8 @@ pub(crate) fn var_int_len(val: usize) -> u32 {
 /// Calculates length of variable length integer based on its value
 pub(crate) fn var_int_len_u32(val: u32) -> u32 {
     const MAP: [u32; 33] = [
-        5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1,
-        1, 1, 1, 1,
+        5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1,
+        1, 1, 1,
     ];
     let zeros = val.leading_zeros();
     unsafe { *MAP.get_unchecked(zeros as usize) } // safety: zeros will never be more than 32 by definition.
@@ -300,14 +298,18 @@ mod tests {
 
     fn assert_encode_packet(packet: &Packet, expected: &[u8]) {
         let mut v = BytePages::default();
-        packet.encode(&mut v, packet.encoded_size(1024) as u32).unwrap();
+        packet
+            .encode(&mut v, packet.encoded_size(1024) as u32)
+            .unwrap();
         assert_eq!(expected.len(), v.len());
         assert_eq!(expected, &v.freeze()[..]);
     }
 
     fn assert_encode_publish(packet: &Publish, pl: &[u8], expected: &[u8]) {
         let mut v = BytePages::default();
-        packet.encode(&mut v, packet.encoded_size(1024) as u32).unwrap();
+        packet
+            .encode(&mut v, packet.encoded_size(1024) as u32)
+            .unwrap();
         v.extend_from_slice(pl);
         assert_eq!(expected.len(), v.len());
         assert_eq!(expected, &v.freeze()[..]);

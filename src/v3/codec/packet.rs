@@ -208,7 +208,10 @@ mod tests {
 
     #[test]
     fn test_ack_reason() {
-        assert_eq!(ConnectAckReason::ConnectionAccepted.reason(), "Connection Accepted");
+        assert_eq!(
+            ConnectAckReason::ConnectionAccepted.reason(),
+            "Connection Accepted"
+        );
         assert_eq!(
             ConnectAckReason::UnacceptableProtocolVersion.reason(),
             "Connection Refused, unacceptable protocol version"
