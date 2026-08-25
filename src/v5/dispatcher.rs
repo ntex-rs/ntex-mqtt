@@ -6,7 +6,7 @@ use ntex_service::pipeline::{Pipeline, PipelineWithState};
 use ntex_service::{self as service, Ctx, Service, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::services::inflight::InFlightService;
-use ntex_util::{HashMap, HashSet, future::join};
+use ntex_util::{HashMap, HashSet, future::join, hash_map};
 
 use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
@@ -242,14 +242,14 @@ where
                         } else {
                             // record new alias
                             match inner.aliases.entry(alias) {
-                                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                hash_map::Entry::Occupied(mut entry) => {
                                     if entry.get().as_str() != publish.topic.as_str() {
                                         let mut topic = publish.topic.clone();
                                         topic.trimdown();
                                         entry.insert(topic);
                                     }
                                 }
-                                std::collections::hash_map::Entry::Vacant(entry) => {
+                                hash_map::Entry::Vacant(entry) => {
                                     if alias.get() > state.topic_alias_max() {
                                         return Err(SpecViolation::Connack_3_2_2_17.into());
                                     }

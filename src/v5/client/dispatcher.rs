@@ -2,7 +2,7 @@ use std::{cell::RefCell, num::NonZero, num::NonZeroU16, rc::Rc};
 
 use ntex_bytes::ByteString;
 use ntex_service::{Ctx, Pipeline, Service, cfg::Cfg};
-use ntex_util::{HashMap, HashSet, future::Either, future::join};
+use ntex_util::{HashMap, HashSet, future::Either, future::join, hash_map};
 
 use crate::error::{DispatcherError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
@@ -148,14 +148,14 @@ where
                         } else {
                             // record new alias
                             match inner.aliases.entry(alias) {
-                                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                hash_map::Entry::Occupied(mut entry) => {
                                     if entry.get().as_str() != publish.topic.as_str() {
                                         let mut topic = publish.topic.clone();
                                         topic.trimdown();
                                         entry.insert(topic);
                                     }
                                 }
-                                std::collections::hash_map::Entry::Vacant(entry) => {
+                                hash_map::Entry::Vacant(entry) => {
                                     if alias.get() > self.max_topic_alias {
                                         return Err(SpecViolation::Connect_3_1_2_26.into());
                                     }
