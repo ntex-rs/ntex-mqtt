@@ -74,9 +74,16 @@ jobs:
           Get-ChildItem C:\vcpkg\installed\x64-windows\bin
           Get-ChildItem C:\vcpkg\installed\x64-windows\lib
 
-      - name: Run tests
+      - name: Run tests [neon]
         uses: actions-rs/cargo@v1
-        timeout-minutes: 15
+        timeout-minutes: 10
+        with:
+          command: test
+          args: --all --features=ntex/neon-iocp -- --nocapture
+
+      - name: Run tests [tokio]
+        uses: actions-rs/cargo@v1
+        timeout-minutes: 1
         with:
           command: test
           args: --all --features=ntex/tokio -- --nocapture
