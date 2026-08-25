@@ -20,10 +20,10 @@ ntex-codec = "1.2"
 ntex-error = "2.5"
 ntex-io = "4.0.0-beta.0"
 ntex-net = "4.0.0-beta.0"
-ntex-service = "5.0.0-beta.0"
+ntex-service = "5.0.0-beta.2"
 ntex-router = "1"
 ntex-rt = "3.17"
-ntex-util = "4.0.0-beta.0"
+ntex-util = "4.0.0-beta.1"
 
 bitflags = "2"
 log = "0.4"
@@ -33,22 +33,11 @@ serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]
+ntex = { version = "4.0.0-beta.0", features = ["openssl"] }
+ntex-tls = "4.0.0-beta.0"
+
 rand = "0.10"
 env_logger = "0.11"
-ntex-tls = "4.0.0-beta.0"
 openssl = "0.10"
 oneshot = { version = "0.2.1", features = ["std", "async"] }
 test-case = "3.2"
-ntex = { version = "4.0.0-beta.0", features = ["openssl"] }
-
-[patch.crates-io]
-ntex = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-h2 = { git = "https://github.com/ntex-rs/ntex-h2.git", branch = "service-state" }
-ntex-dispatcher = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-macros = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-net = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-service = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-tls = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-util = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-server = { git = "https://github.com/ntex-rs/ntex.git" }

@@ -1,6 +1,6 @@
 # Changes
 
-## [9.0.0-beta.0] - 2026-08-23
+## [9.0.0-beta.0] - 2026-08-25
 
 * Update to ntex-service 5.0
 
