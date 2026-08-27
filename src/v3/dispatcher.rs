@@ -17,9 +17,9 @@ use super::control::{
 use super::{Connection, Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
-pub(super) fn factory<St, AppSt, Sf, P, E>(
+pub(super) fn factory<St, AppSt, Sf, Ctl, E>(
     publish: Sf,
-    control: P,
+    control: Ctl,
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
@@ -31,12 +31,14 @@ pub(super) fn factory<St, AppSt, Sf, P, E>(
 where
     St: 'static,
     AppSt: 'static,
+    E: 'static,
     Sf: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = ()> + 'static,
+    Sf::Error: Into<E>,
     Sf::InitError: Into<Box<dyn Error>> + 'static,
-    P: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<St>, Res = ProtocolMessageAck>
+    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<St>, Res = ProtocolMessageAck>
         + 'static,
-    P::InitError: Into<Box<dyn Error>> + 'static,
-    E: From<Sf::Error> + From<P::Error> + 'static,
+    Ctl::Error: Into<E>,
+    Ctl::InitError: Into<Box<dyn Error>> + 'static,
 {
     let factories = Rc::new((publish, control));
 
@@ -46,7 +48,7 @@ where
         let fut = join(factories.0.create(st), factories.1.create(st));
         let (publish, control) = fut.await;
 
-        let publish = publish.map_err(Into::into)?;
+        let publish = publish.map_err(Into::into)?.map_err(Into::into);
         let control = control.map_err(Into::into)?;
 
         let control = BufferService::new(
@@ -100,8 +102,7 @@ struct Inner<C> {
 
 impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
-    E: From<T::Error>,
-    T: Service<St, Publish, Res = ()>,
+    T: Service<St, Publish, Res = (), Error = E>,
     C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>> + 'static,
 {
     pub(crate) fn new(
@@ -129,8 +130,8 @@ where
 
 impl<St, T, C, E> Service<St, Decoded> for Dispatcher<St, T, C, E>
 where
-    E: From<T::Error> + 'static,
-    T: Service<St, Publish, Res = ()> + 'static,
+    E: 'static,
+    T: Service<St, Publish, Res = (), Error = E> + 'static,
     C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>> + 'static,
 {
     type Res = Option<Encoded>;
@@ -359,8 +360,7 @@ async fn publish_fn<'f, St, T, C, E>(
     ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
 ) -> Result<Option<Encoded>, DispatcherError<E>>
 where
-    E: From<T::Error>,
-    T: Service<St, Publish, Res = ()>,
+    T: Service<St, Publish, Res = (), Error = E>,
     C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
     let qos2 = pkt.qos() == QoS::ExactlyOnce;
@@ -383,7 +383,7 @@ where
                 Ok(None)
             }
         }
-        Err(e) => Err(DispatcherError::Service(e.into())),
+        Err(e) => Err(DispatcherError::Service(e)),
     }
 }
 
@@ -442,11 +442,11 @@ mod tests {
 
     use ntex_bytes::{ByteString, Bytes};
     use ntex_io::{Io, testing::IoTest};
-    use ntex_service::{cfg::SharedCfg, fn_service};
+    use ntex_service::{Pipeline, cfg::SharedCfg, fn_service};
     use ntex_util::{future::lazy, time::Seconds, time::sleep};
 
     use super::*;
-    use crate::{error, v3::codec};
+    use crate::{error, v3::MqttSink, v3::codec};
 
     #[ntex::test]
     async fn test_dup_packet_id() {
@@ -458,18 +458,18 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
-        let disp = Pipeline::new(Dispatcher::new(
-            shared.clone(),
-            fn_service(async |_| {
-                sleep(Seconds(10)).await;
-                Ok(())
-            }),
-            Pipeline::with(
-                (),
+        let disp = Pipeline::with(
+            Session::new((), MqttSink::new(shared.clone())),
+            Dispatcher::new(
+                shared.clone(),
+                fn_service(async |_| {
+                    sleep(Seconds(10)).await;
+                    Ok(())
+                }),
                 fn_service(async |msg: ProtocolMessage| Ok::<_, DispatcherError<()>>(msg.ack())),
+                cfg.get(),
             ),
-            cfg.get(),
-        ));
+        );
 
         let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
             Box::pin(disp.call(Decoded::Publish(
@@ -520,15 +520,15 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
-        let disp = Pipeline::new(Dispatcher::new(
-            shared.clone(),
-            fn_service(async |_: Publish| Ok::<_, ()>(())),
-            Pipeline::with(
-                (),
+        let disp = Pipeline::with(
+            Session::new((), MqttSink::new(shared.clone())),
+            Dispatcher::new(
+                shared.clone(),
+                fn_service(async |_: Publish| Ok::<_, ()>(())),
                 fn_service(async |msg: ProtocolMessage| Ok::<_, DispatcherError<()>>(msg.ack())),
+                cfg.get(),
             ),
-            cfg.get(),
-        ));
+        );
 
         // unknown PublishAck
         let err = disp

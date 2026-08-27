@@ -330,12 +330,12 @@ mod tests {
 
     use ntex_bytes::{ByteString, Bytes};
     use ntex_io::{Io, testing::IoTest};
-    use ntex_service::{cfg::SharedCfg, fn_service};
+    use ntex_service::{Pipeline, cfg::SharedCfg, fn_service};
     use ntex_util::future::lazy;
     use ntex_util::time::{Seconds, sleep};
 
     use super::*;
-    use crate::v3::{QoS, codec::Decoded};
+    use crate::v3::{MqttSink, QoS, codec::Decoded};
 
     #[ntex::test]
     async fn test_dup_packet_id() {
@@ -343,19 +343,22 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
-        let disp = Pipeline::new(Dispatcher::new(
-            shared.clone(),
-            fn_service(|_| async {
-                sleep(Seconds(10)).await;
-                Ok(Either::Left(()))
-            }),
-            fn_service(async |_| {
-                Ok(ProtocolMessageAck {
-                    result: ProtocolMessageKind::Nothing,
-                })
-            }),
-            32 * 1024,
-        ));
+        let disp = Pipeline::with(
+            Session::new((), MqttSink::new(shared.clone())),
+            Dispatcher::new(
+                shared.clone(),
+                fn_service(|_| async {
+                    sleep(Seconds(10)).await;
+                    Ok(Either::Left(()))
+                }),
+                fn_service(async |_| {
+                    Ok(ProtocolMessageAck {
+                        result: ProtocolMessageKind::Nothing,
+                    })
+                }),
+                32 * 1024,
+            ),
+        );
 
         let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
             Box::pin(disp.call(Decoded::Publish(

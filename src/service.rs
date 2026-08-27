@@ -2,7 +2,7 @@ use std::{error::Error, fmt, marker::PhantomData};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Filter, Io, IoBoxed};
-use ntex_service::pipeline::Pipeline;
+use ntex_service::pipeline::{Pipeline, PipelineFactory};
 use ntex_service::{Ctx, Middleware, Service, ServiceFactory};
 
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttError};
@@ -11,28 +11,37 @@ use crate::{Connection, HandshakePipeline, Session, control::Control, io::Dispat
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = Option<<U as Encoder>::Item>;
 
-pub struct MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M, C> {
+type ControlPipeline<St, AppSt, Codec, Cfg, Err, E> = PipelineFactory<
+    Session<Cfg, AppSt>,
+    Control<E>,
+    Response<Codec>,
+    MqttError<Err>,
+    Connection<Cfg, St>,
+    Box<dyn Error>,
+>;
+
+pub struct MqttServer<St, AppSt, Codec: Encoder, Cfg, Err, E, T, M> {
     handshake: HandshakePipeline<St, AppSt, Codec, Cfg, MqttError<Err>>,
     handler: T,
     middleware: M,
-    control: C,
+    control: ControlPipeline<St, AppSt, Codec, Cfg, Err, E>,
     _t: PhantomData<(E, Cfg)>,
 }
 
-impl<St, AppSt, Codec, Cfg, Err, E, T, M, C> fmt::Debug
-    for MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M, C>
+impl<St, AppSt, Codec: Encoder, Cfg, Err, E, T, M> fmt::Debug
+    for MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MqttServer").finish()
     }
 }
 
-impl<St, AppSt, Codec, Cfg, Err, E, T, M, C> MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M, C> {
+impl<St, AppSt, Codec: Encoder, Cfg, Err, E, T, M> MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M> {
     pub(crate) fn new(
         handshake: HandshakePipeline<St, AppSt, Codec, Cfg, MqttError<Err>>,
         service: T,
         mw: M,
-        control: C,
+        control: ControlPipeline<St, AppSt, Codec, Cfg, Err, E>,
     ) -> Self {
         MqttServer {
             handshake,
@@ -44,11 +53,11 @@ impl<St, AppSt, Codec, Cfg, Err, E, T, M, C> MqttServer<St, AppSt, Codec, Cfg, E
     }
 }
 
-impl<St, AppSt, Codec, Cfg, Err, E, T, M, C> Service<St, IoBoxed>
-    for MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M, C>
+impl<St, AppSt, Codec, Cfg, Err, E, T, M> Service<St, IoBoxed>
+    for MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M>
 where
     St: Clone + 'static,
-    AppSt: Clone + 'static,
+    AppSt: 'static,
     Cfg: 'static,
     Err: 'static,
     E: 'static,
@@ -66,14 +75,6 @@ where
             Request<Codec>,
             Res = Response<Codec>,
             Error = DispatcherError<E>,
-        > + 'static,
-    C: ServiceFactory<
-            Session<Cfg, AppSt>,
-            Control<E>,
-            Connection<Cfg, St>,
-            Res = Response<Codec>,
-            Error = MqttError<Err>,
-            InitError = Box<dyn Error>,
         > + 'static,
     Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
 {
@@ -88,7 +89,7 @@ where
 
         let control = self
             .control
-            .create(&con)
+            .create(&con, &session)
             .await
             .map_err(MqttError::HandlerInit)?;
         let handler = self
@@ -99,14 +100,9 @@ where
         let hnd = self.middleware.create(handler, &con);
         log::trace!("{tag}: Connection handler is created, starting dispatcher");
 
-        Dispatcher::new(
-            io,
-            codec,
-            Pipeline::with(session.clone(), hnd),
-            Pipeline::with(session, control),
-        )
-        .keepalive_timeout(keepalive)
-        .await
+        Dispatcher::new(io, codec, Pipeline::with(session.clone(), hnd), control)
+            .keepalive_timeout(keepalive)
+            .await
     }
 
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
@@ -118,12 +114,12 @@ where
     }
 }
 
-impl<F, St, AppSt, Codec, Cfg, Err, E, T, M, C> Service<St, Io<F>>
-    for MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M, C>
+impl<F, St, AppSt, Codec, Cfg, Err, E, T, M> Service<St, Io<F>>
+    for MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M>
 where
     F: Filter,
     St: Clone + 'static,
-    AppSt: Clone + 'static,
+    AppSt: 'static,
     Cfg: 'static,
     Err: 'static,
     E: 'static,
@@ -141,14 +137,6 @@ where
             Request<Codec>,
             Res = Response<Codec>,
             Error = DispatcherError<E>,
-        > + 'static,
-    C: ServiceFactory<
-            Session<Cfg, AppSt>,
-            Control<E>,
-            Connection<Cfg, St>,
-            Res = Response<Codec>,
-            Error = MqttError<Err>,
-            InitError = Box<dyn Error>,
         > + 'static,
     Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
 {

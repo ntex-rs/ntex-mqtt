@@ -27,14 +27,12 @@ impl TryFrom<TestError> for v5::PublishAck {
 async fn test_simple() -> std::io::Result<()> {
     let srv = server::test_server(async || {
         MqttServer::new()
-            .v3(v3::MqttServer::new(async move |con: v3::Handshake| {
-                Ok::<_, TestError>(con.ack(St, false))
-            })
-            .publish(async |_| Ok::<_, TestError>(())))
-            .v5(v5::MqttServer::new(async move |con: v5::Handshake| {
-                Ok::<_, TestError>(con.ack(St))
-            })
-            .publish(async move |p: v5::Publish| Ok::<_, TestError>(p.ack())))
+            .v3(v3::MqttServer::new(async |_| Ok::<_, TestError>(()))
+                .build(async move |con: v3::Handshake| Ok::<_, TestError>(con.ack(St, false))))
+            .v5(
+                v5::MqttServer::new(async move |p: v5::Publish| Ok::<_, TestError>(p.ack()))
+                    .build(async move |con: v5::Handshake| Ok::<_, TestError>(con.ack(St))),
+            )
     });
 
     // connect to v5 server

@@ -19,6 +19,7 @@ type ServiceCall<Codec, E> =
     PipelineCall<Request<Codec>, Option<Response<Codec>>, DispatcherError<E>>;
 type ServicePipeline<Codec, E> =
     Pipeline<Request<Codec>, Option<Response<Codec>>, DispatcherError<E>>;
+
 type ControlCall<Codec, E, Err> = PipelineCall<Control<E>, Option<Response<Codec>>, Err>;
 type ControlPipeline<Codec, E, Err> = Pipeline<Control<E>, Option<Response<Codec>>, Err>;
 

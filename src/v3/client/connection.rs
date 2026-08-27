@@ -114,7 +114,7 @@ impl Client {
         let control = Pipeline::with(
             Session::new((), sink),
             ControlService::new(
-                control::DefaultControlService::<(), (), codec::Encoded>::default(),
+                control::DefaultControlService::<(), codec::Encoded>::default(),
                 self.shared.clone(),
             ),
         );
@@ -148,9 +148,10 @@ impl Client {
         let control = Pipeline::with(
             Session::new((), sink),
             ControlService::new(
-                control::DefaultControlService::<Session<()>, E, codec::Encoded>::default(),
+                control::DefaultControlService::<E, codec::Encoded>::default(),
                 self.shared.clone(),
-            ),
+            )
+            .map_err(MqttError::Service),
         );
 
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
@@ -186,7 +187,7 @@ impl Client {
         );
         let control = Pipeline::with(
             Session::new((), sink),
-            ControlService::new(control, self.shared.clone()),
+            ControlService::new(control, self.shared.clone()).map_err(MqttError::Service),
         );
 
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
@@ -258,7 +259,7 @@ where
         let control = Pipeline::with(
             Session::new((), sink),
             ControlService::new(
-                control::DefaultControlService::<PErr, Err, codec::Encoded>::default(),
+                control::DefaultControlService::<Err, codec::Encoded>::default(),
                 self.shared.clone(),
             ),
         );
@@ -291,9 +292,10 @@ where
         let control = Pipeline::with(
             Session::new((), sink),
             ControlService::new(
-                control::DefaultControlService::<PErr, Err, codec::Encoded>::default(),
+                control::DefaultControlService::<Err, codec::Encoded>::default(),
                 self.shared.clone(),
-            ),
+            )
+            .map_err(MqttError::Service),
         );
 
         Dispatcher::new(self.io, self.shared, dispatcher, control).await

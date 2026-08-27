@@ -1,9 +1,8 @@
-use std::{convert::Infallible, error::Error, fmt, marker::PhantomData, rc::Rc};
+use std::{convert::Infallible, error::Error, marker::PhantomData, rc::Rc};
 
-use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Ctx, Middleware, Service, ServiceFactory};
+use ntex_service::{Ctx, Middleware, Service, ServiceFactory, cfg::Cfg};
 
-use crate::error::{MqttError, PayloadError};
+use crate::error::PayloadError;
 use crate::{Control, MqttServiceConfig, Reason, inflight::InFlightServiceImpl};
 
 use super::control::{ProtocolMessage, ProtocolMessageAck};
@@ -11,34 +10,34 @@ use super::{Connection, Session, codec::Encoded, shared::MqttShared};
 
 /// Default control service
 #[derive(Debug)]
-pub struct DefaultProtocolService<S, E>(PhantomData<(S, E)>);
+pub struct DefaultProtocolService<E>(PhantomData<E>);
 
-impl<S, E> Default for DefaultProtocolService<S, E> {
+impl<E> Default for DefaultProtocolService<E> {
     fn default() -> Self {
         DefaultProtocolService(PhantomData)
     }
 }
 
-impl<S, E: fmt::Debug> ServiceFactory<(), ProtocolMessage, S> for DefaultProtocolService<S, E> {
+impl<St, E, Cfg> ServiceFactory<St, ProtocolMessage, Cfg> for DefaultProtocolService<E> {
     type Res = ProtocolMessageAck;
     type Error = E;
 
-    type Service = DefaultProtocolService<S, E>;
+    type Service = DefaultProtocolService<E>;
     type InitError = Infallible;
 
-    async fn create(&self, _: &S) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, _: &Cfg) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultProtocolService(PhantomData))
     }
 }
 
-impl<S, E: fmt::Debug> Service<(), ProtocolMessage> for DefaultProtocolService<S, E> {
+impl<St, E> Service<St, ProtocolMessage> for DefaultProtocolService<E> {
     type Res = ProtocolMessageAck;
     type Error = E;
 
     async fn call(
         &self,
         pkt: ProtocolMessage,
-        _: Ctx<'_, Self, ()>,
+        _: Ctx<'_, Self, St>,
     ) -> Result<Self::Res, Self::Error> {
         log::warn!("MQTT3 Subscribe is not supported");
 
@@ -59,12 +58,12 @@ impl<S, E: fmt::Debug> Service<(), ProtocolMessage> for DefaultProtocolService<S
 /// Default is 16 in-flight messages and 64kb size
 pub struct InFlightService;
 
-impl<S, St> Middleware<S, (SharedCfg, Session<St>)> for InFlightService {
+impl<S, St> Middleware<S, Connection<St>> for InFlightService {
     type Service = InFlightServiceImpl<S>;
 
     #[inline]
-    fn create(&self, service: S, cfg: &(SharedCfg, Session<St>)) -> Self::Service {
-        let cfg: Cfg<MqttServiceConfig> = cfg.0.get();
+    fn create(&self, service: S, con: &Connection<St>) -> Self::Service {
+        let cfg: Cfg<MqttServiceConfig> = con.cfg();
         InFlightServiceImpl::new(cfg.max_receive, cfg.max_receive_size, service)
     }
 }
@@ -108,7 +107,7 @@ where
     S::InitError: Error + 'static,
 {
     type Res = Option<Encoded>;
-    type Error = MqttError<S::Error>;
+    type Error = S::Error;
 
     type Service = ControlService<S::Service, E>;
     type InitError = Box<dyn Error>;
@@ -127,7 +126,7 @@ where
     S: Service<Session<AppSt>, Control<E>>,
 {
     type Res = Option<Encoded>;
-    type Error = MqttError<S::Error>;
+    type Error = S::Error;
 
     async fn call(
         &self,
@@ -153,13 +152,10 @@ where
             }
         }
 
-        ctx.call(&self.svc, req)
-            .await
-            .map(|_| None)
-            .map_err(MqttError::Service)
+        ctx.call(&self.svc, req).await.map(|_| None)
     }
 
-    ntex_service::forward_ready!(Session<AppSt>, svc, MqttError::Service);
+    ntex_service::forward_ready!(Session<AppSt>, svc);
     ntex_service::forward_shutdown!(Session<AppSt>, svc);
 }
 
@@ -179,17 +175,17 @@ mod tests {
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
         let sink = MqttSink::new(shared.clone());
         let ses = Session::new((), sink.clone());
+        let con = Connection::new((), sink.clone(), SharedCfg::new("DBG").build());
 
-        let disp = ControlFactory::new(control::DefaultControlService::<
-            Session<()>,
+        let disp = ControlFactory::<(), (), _, ()>::new(control::DefaultControlService::<
             (),
             codec::Encoded,
         >::default())
-        .create(&ses)
+        .create(&con)
         .await
         .unwrap();
 
-        let svc = Pipeline::with((), disp);
+        let svc = Pipeline::with(ses, disp);
 
         assert!(!sink.is_ready());
         shared.set_cap(1);

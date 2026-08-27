@@ -16,36 +16,34 @@ use super::publish::{Publish, PublishAck};
 use super::{Connection, Session, ToPublishAck, shared::Ack, shared::MqttShared};
 
 /// MQTT 5 protocol dispatcher
-pub(super) fn factory<St, AppSt, T, Ctl, E>(
-    publish: T,
+pub(super) fn factory<St, AppSt, Pub, Ctl>(
+    publish: Pub,
     control: Ctl,
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
     Connection<St>,
     Res = Option<Encoded>,
-    Error = DispatcherError<E>,
+    Error = DispatcherError<Pub::Error>,
     InitError = Box<dyn Error>,
 >
 where
     St: 'static,
     AppSt: 'static,
-    E: From<Ctl::Error> + 'static,
-    T: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = PublishAck> + 'static,
-    T::Error: ToPublishAck<Error = E>,
-    T::InitError: Into<Box<dyn Error>> + 'static,
+    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = PublishAck> + 'static,
+    Pub::Error: ToPublishAck<Error = Pub::Error>,
+    Pub::InitError: Into<Box<dyn Error>> + 'static,
     Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<St>, Res = ProtocolMessageAck>
         + 'static,
+    Ctl::Error: Into<Pub::Error>,
     Ctl::InitError: Into<Box<dyn Error>> + 'static,
 {
-    let factories = Rc::new((publish, control));
-
     fn_factory_with_config(async move |con: &Connection<St>| {
         let cfg: Cfg<MqttServiceConfig> = con.cfg();
 
         // create services
         let sink = con.sink().shared();
-        let (publish, control) = join(factories.0.create(con), factories.1.create(con)).await;
+        let (publish, control) = join(publish.create(con), control.create(con)).await;
 
         let publish = publish.map_err(Into::into)?;
         let control = control.map_err(Into::into)?;
@@ -543,10 +541,10 @@ mod tests {
 
     use ntex_bytes::{ByteString, Bytes};
     use ntex_io::{Io, testing::IoTest};
-    use ntex_service::{cfg::SharedCfg, fn_service};
+    use ntex_service::{Pipeline, cfg::SharedCfg, fn_service};
 
     use super::*;
-    use crate::{error, v5::codec};
+    use crate::{error, v5::MqttSink, v5::codec};
 
     #[derive(Debug)]
     struct TestError;
@@ -578,17 +576,17 @@ mod tests {
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
         shared.set_topic_alias_max(1);
 
-        let disp = Pipeline::new(Dispatcher::new(
-            shared.clone(),
-            fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
-            Pipeline::with(
-                (),
+        let disp = Pipeline::with(
+            Session::new((), MqttSink::new(shared.clone())),
+            Dispatcher::new(
+                shared.clone(),
+                fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
                 fn_service(async |msg: ProtocolMessage| {
                     Ok::<_, DispatcherError<TestError>>(msg.ack())
                 }),
+                cfg.get(),
             ),
-            cfg.get(),
-        ));
+        );
 
         // retain not available
         let err = disp

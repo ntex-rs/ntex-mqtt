@@ -1,8 +1,10 @@
 use std::cell::RefCell;
 
-use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_factory_with_config, fn_service};
+use ntex::service::{
+    ServiceFactory, cfg::SharedCfg, fn_factory_with_config, fn_service, fn_service_st,
+};
 use ntex::util::ByteString;
-use ntex_mqtt::v5::{self, MqttServer, Publish, PublishAck, Session};
+use ntex_mqtt::v5::{self, Connection, MqttServer, Publish, PublishAck, Session};
 use ntex_mqtt::{Control, Reason};
 
 #[derive(Clone, Debug)]
@@ -74,43 +76,44 @@ async fn publish(
 }
 
 fn protocol_service_factory() -> impl ServiceFactory<
-    (),
-    v5::ProtocolMessage,
     Session<MySession>,
+    v5::ProtocolMessage,
+    Connection<()>,
     Res = v5::ProtocolMessageAck,
     Error = MyServerError,
     InitError = MyServerError,
 > {
-    fn_factory_with_config(async move |session: &Session<MySession>| {
-        let session = session.clone();
-        Ok(fn_service(async move |msg| match msg {
-            v5::ProtocolMessage::Auth(a) => Ok(a.ack(v5::codec::Auth::default())),
-            v5::ProtocolMessage::Disconnect(d) => Ok(d.ack()),
-            v5::ProtocolMessage::Subscribe(mut s) => {
-                // store subscribed topics in session, publish service uses this list for echos
-                s.iter_mut().for_each(|mut s| {
-                    session.subscriptions.borrow_mut().push(s.topic().clone());
-                    s.confirm(v5::QoS::AtLeastOnce);
-                });
+    fn_factory_with_config(async move |_: &Connection<()>| {
+        Ok(fn_service_st(
+            async move |st: &Session<MySession>, msg| match msg {
+                v5::ProtocolMessage::Auth(a) => Ok(a.ack(v5::codec::Auth::default())),
+                v5::ProtocolMessage::Disconnect(d) => Ok(d.ack()),
+                v5::ProtocolMessage::Subscribe(mut s) => {
+                    // store subscribed topics in session, publish service uses this list for echos
+                    s.iter_mut().for_each(|mut s| {
+                        st.subscriptions.borrow_mut().push(s.topic().clone());
+                        s.confirm(v5::QoS::AtLeastOnce);
+                    });
 
-                Ok(s.ack())
-            }
-            v5::ProtocolMessage::Unsubscribe(s) => Ok(s.ack()),
-            v5::ProtocolMessage::Ping(p) => Ok(p.ack()),
-            _ => Ok(msg.ack()),
-        }))
+                    Ok(s.ack())
+                }
+                v5::ProtocolMessage::Unsubscribe(s) => Ok(s.ack()),
+                v5::ProtocolMessage::Ping(p) => Ok(p.ack()),
+                _ => Ok(msg.ack()),
+            },
+        ))
     })
 }
 
 fn control_service_factory() -> impl ServiceFactory<
-    (),
-    Control<MyServerError>,
     Session<MySession>,
+    Control<MyServerError>,
+    Connection<()>,
     Res = Option<v5::codec::Encoded>,
     Error = MyServerError,
     InitError = MyServerError,
 > {
-    fn_factory_with_config(async move |_: &Session<MySession>| {
+    fn_factory_with_config(async move |_: &Connection<()>| {
         Ok(fn_service(async move |control| match control {
             Control::Stop(Reason::Error(_)) => Ok(Some(
                 v5::codec::Packet::from(v5::codec::Disconnect {
@@ -133,17 +136,12 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
-            MqttServer::new(handshake)
-                .control(control_service_factory())
-                .protocol(protocol_service_factory())
-                .publish(fn_factory_with_config(
-                    async |session: &Session<MySession>| {
-                        let session = session.clone();
-                        Ok::<_, MyServerError>(fn_service(async move |req| {
-                            publish(&session, req).await
-                        }))
-                    },
-                ))
+            MqttServer::new(fn_service_st(async |ses: &Session<MySession>, req| {
+                publish(ses, req).await
+            }))
+            .control(control_service_factory())
+            .protocol(protocol_service_factory())
+            .build(handshake)
         })?
         .workers(1)
         .run()

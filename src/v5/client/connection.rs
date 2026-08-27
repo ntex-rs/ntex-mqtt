@@ -123,7 +123,7 @@ impl Client {
                 self.shared.clone(),
                 fn_service(async |pkt| Ok(Either::Left(pkt))),
                 fn_service(async |msg: ProtocolMessage| {
-                    Ok(msg.disconnect(codec::Disconnect::default()))
+                    Ok::<_, ()>(msg.disconnect(codec::Disconnect::default()))
                 }),
                 self.max_receive,
                 16,
@@ -133,7 +133,7 @@ impl Client {
         let control = Pipeline::with(
             Session::new((), sink),
             ControlService::new(
-                control::DefaultControlService::<(), (), codec::Encoded>::default(),
+                control::DefaultControlService::<(), codec::Encoded>::default(),
                 self.shared.clone(),
             ),
         );
@@ -142,11 +142,10 @@ impl Client {
     }
 
     /// Run client with provided control messages handler
-    pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
+    pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<()>>
     where
-        E: fmt::Debug + 'static,
         F: IntoService<S, Session<()>, ProtocolMessage> + 'static,
-        S: Service<Session<()>, ProtocolMessage, Res = ProtocolMessageAck, Error = E> + 'static,
+        S: Service<Session<()>, ProtocolMessage, Res = ProtocolMessageAck, Error = ()> + 'static,
     {
         let sink = MqttSink::new(self.shared.clone());
 
@@ -168,7 +167,7 @@ impl Client {
         let control = Pipeline::with(
             Session::new((), sink),
             ControlService::new(
-                control::DefaultControlService::<(), E, codec::Encoded>::default(),
+                control::DefaultControlService::<(), codec::Encoded>::default(),
                 self.shared.clone(),
             ),
         );
@@ -242,7 +241,7 @@ impl<Err, PErr> fmt::Debug for ClientRouter<Err, PErr> {
 impl<Err, PErr> ClientRouter<Err, PErr>
 where
     Err: From<PErr> + fmt::Debug + 'static,
-    PublishAck: TryFrom<PErr, Error = Err>,
+    PublishAck: TryFrom<PErr, Error = PErr>,
     PErr: fmt::Debug + 'static,
 {
     #[must_use]
@@ -282,7 +281,7 @@ where
         let control = Pipeline::with(
             Session::new((), sink),
             ControlService::new(
-                control::DefaultControlService::<PErr, Err, codec::Encoded>::default(),
+                control::DefaultControlService::<Err, codec::Encoded>::default(),
                 self.shared.clone(),
             ),
         );
@@ -294,7 +293,7 @@ where
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
         F: IntoService<S, Session<()>, ProtocolMessage>,
-        S: Service<Session<()>, ProtocolMessage, Res = ProtocolMessageAck, Error = Err> + 'static,
+        S: Service<Session<()>, ProtocolMessage, Res = ProtocolMessageAck, Error = PErr> + 'static,
     {
         let sink = MqttSink::new(self.shared.clone());
         if self.keepalive.non_zero() {
@@ -315,7 +314,7 @@ where
         let control = Pipeline::with(
             Session::new((), sink),
             ControlService::new(
-                control::DefaultControlService::<PErr, Err, codec::Encoded>::default(),
+                control::DefaultControlService::<Err, codec::Encoded>::default(),
                 self.shared.clone(),
             ),
         );
@@ -329,13 +328,13 @@ where
     }
 }
 
-fn dispatch<Err, PErr>(
+fn dispatch<PErr>(
     router: Router<usize>,
     handlers: Vec<PipelineWithState<Session<()>, Publish, PublishAck, PErr>>,
-) -> impl Service<Session<()>, Publish, Res = Either<Publish, PublishAck>, Error = Err>
+) -> impl Service<Session<()>, Publish, Res = Either<Publish, PublishAck>, Error = PErr>
 where
     PErr: 'static,
-    PublishAck: TryFrom<PErr, Error = Err>,
+    PublishAck: TryFrom<PErr, Error = PErr>,
 {
     // let handlers =
     let aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>> =
@@ -353,7 +352,7 @@ where
                 }
                 *idx
             } else {
-                return Ok::<_, Err>(Either::Left(req));
+                return Ok::<_, PErr>(Either::Left(req));
             }
         }
         // handle publish with topic alias

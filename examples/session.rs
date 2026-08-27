@@ -1,6 +1,5 @@
-use ntex::service::{cfg::SharedCfg, fn_factory_with_config, fn_service};
-use ntex_mqtt::v5::codec::PublishAckReason;
-use ntex_mqtt::{MqttServer, v3, v5};
+use ntex::service::{cfg::SharedCfg, fn_factory_with_config, fn_service_st};
+use ntex_mqtt::{MqttServer, v3, v5, v5::codec::PublishAckReason};
 
 #[derive(Clone, Debug)]
 struct MySession {
@@ -100,25 +99,25 @@ async fn main() -> std::io::Result<()> {
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
             MqttServer::new()
                 .v3(
-                    v3::MqttServer::new(handshake_v3).publish(fn_factory_with_config(
-                        async |session: &v3::Session<MySession>| {
-                            let session = session.clone();
-                            Ok::<_, MyServerError>(fn_service(async move |req| {
-                                publish_v3(&session, req).await
-                            }))
-                        },
-                    )),
+                    v3::MqttServer::new(fn_factory_with_config(async |_: &v3::Connection<()>| {
+                        Ok::<_, MyServerError>(fn_service_st(
+                            async move |ses: &v3::Session<MySession>, req| {
+                                publish_v3(ses, req).await
+                            },
+                        ))
+                    }))
+                    .build(handshake_v3),
                 )
-                .v5(
-                    v5::MqttServer::new(handshake_v5).publish(fn_factory_with_config(
-                        async |session: &v5::Session<MySession>| {
-                            let session = session.clone();
-                            Ok::<_, MyServerError>(fn_service(async move |req| {
-                                publish_v5(&session, req).await
-                            }))
-                        },
-                    )),
-                )
+                .v5(v5::MqttServer::new(fn_factory_with_config(
+                    async |_con: &v5::Connection<()>| {
+                        Ok::<_, MyServerError>(fn_service_st(
+                            async move |ses: &v5::Session<MySession>, req| {
+                                publish_v5(ses, req).await
+                            },
+                        ))
+                    },
+                ))
+                .build(handshake_v5))
         })?
         .workers(1)
         .run()

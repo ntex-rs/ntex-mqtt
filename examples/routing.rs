@@ -22,11 +22,7 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
-            v3::MqttServer::new(async move |handshake: v3::Handshake| {
-                log::info!("new mqtt v3 connection: {:?}", handshake);
-                Ok::<_, ServerError>(handshake.ack(Session, false))
-            })
-            .publish(
+            v3::MqttServer::new(
                 // create router with default publish handler, default service handles
                 // all topics that are not recognized by router
                 v3::Router::new(async move |p: v3::Publish| {
@@ -55,6 +51,10 @@ async fn main() -> std::io::Result<()> {
                     Ok(())
                 }),
             )
+            .build(async move |handshake: v3::Handshake| {
+                log::info!("new mqtt v3 connection: {:?}", handshake);
+                Ok::<_, ServerError>(handshake.ack(Session, false))
+            })
         })?
         .workers(1)
         .run()
