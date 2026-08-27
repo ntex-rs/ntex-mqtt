@@ -31,11 +31,7 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
-            v5::MqttServer::new(async move |handshake: v5::Handshake| {
-                log::info!("new mqtt v3 connection: {:?}", handshake);
-                Ok::<_, ServerError>(handshake.ack(MySession))
-            })
-            .publish(
+            v5::MqttServer::new(
                 // create router with default publish handler, default service handles
                 // all topics that are not recognized by router
                 v5::Router::new(async move |p: v5::Publish| {
@@ -45,7 +41,7 @@ async fn main() -> std::io::Result<()> {
                 // this handler can handle topic1, topic2 and topic3 topics
                 .resource(
                     ["topic1", "topic2", "topic3"],
-                    fn_factory_with_config(async |_: &v5::Session<MySession>| {
+                    fn_factory_with_config(async |_: &v5::Connection<()>| {
                         Ok::<_, ServerError>(fn_service(async move |p: v5::Publish| {
                             log::info!("incoming publish for {:?} -> {:?}", p.topic(), p.id());
                             Ok(p.ack())
@@ -66,6 +62,10 @@ async fn main() -> std::io::Result<()> {
                     Ok(p.ack())
                 }),
             )
+            .build(async move |handshake: v5::Handshake| {
+                log::info!("new mqtt v3 connection: {:?}", handshake);
+                Ok::<_, ServerError>(handshake.ack(MySession))
+            })
         })?
         .workers(1)
         .run()

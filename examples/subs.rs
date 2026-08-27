@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, convert::Infallible};
 
 use ntex::service::{
     ServiceFactory, cfg::SharedCfg, fn_factory_with_config, fn_service, fn_service_st,
@@ -136,8 +136,10 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
-            MqttServer::new(fn_service_st(async |ses: &Session<MySession>, req| {
-                publish(ses, req).await
+            MqttServer::new(fn_factory_with_config(async |_| {
+                Ok::<_, Infallible>(fn_service_st(async |ses: &Session<MySession>, req| {
+                    publish(ses, req).await
+                }))
             }))
             .control(control_service_factory())
             .protocol(protocol_service_factory())
