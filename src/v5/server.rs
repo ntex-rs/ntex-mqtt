@@ -49,7 +49,7 @@ where
     AppSt: 'static,
     Err: 'static,
 {
-    /// Create server factory and provide handshake service
+    /// Create mqtt v5 server and provide handshake service
     pub fn new<H>(handshake: impl IntoService<H, (), Handshake>) -> Self
     where
         H: Service<(), Handshake, Res = HandshakeAck<AppSt>, Error = Err> + 'static,
