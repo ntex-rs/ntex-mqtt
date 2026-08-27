@@ -20,7 +20,7 @@ ntex-codec = "1.2"
 ntex-error = "2.5"
 ntex-io = "4.0.0-beta.0"
 ntex-net = "4.0.0-beta.0"
-ntex-service = "5.0.0-beta.2"
+ntex-service = "5.0.0-beta.3"
 ntex-router = "1"
 ntex-rt = "3.17"
 ntex-util = "4.0.0-beta.2"
@@ -33,7 +33,7 @@ serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]
-ntex = { version = "4.0.0-beta.0", features = ["openssl"] }
+ntex = { version = "4.0.0-beta.1", features = ["openssl"] }
 ntex-tls = "4.0.0-beta.0"
 ntex-server = "4.0.0-beta.2"
 
@@ -44,4 +44,6 @@ oneshot = { version = "0.2.1", features = ["std", "async"] }
 test-case = "3.2"
 
 [patch.crates-io]
+ntex = { path = "../../ntex/ntex" }
 ntex-server = { path = "../../ntex/ntex-server" }
+ntex-service = { path = "../../ntex/ntex-service" }

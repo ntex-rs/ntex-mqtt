@@ -11,7 +11,7 @@
     clippy::unused_async_trait_impl
 )]
 use ntex_io::IoBoxed;
-use ntex_service::pipeline::Pipeline;
+use ntex_service::pipeline::PipelineWithState;
 use ntex_util::time::Seconds;
 
 mod topic;
@@ -47,5 +47,5 @@ pub use self::types::QoS;
 pub const TCP_PORT: u16 = 1883;
 pub const TLS_PORT: u16 = 8883;
 
-pub(crate) type HandshakePipeline<AppSt, Codec, Err> =
-    Pipeline<IoBoxed, (IoBoxed, Codec, AppSt, Seconds), Err>;
+pub(crate) type HandshakePipeline<St, AppSt, Codec, Err> =
+    PipelineWithState<St, IoBoxed, (IoBoxed, Codec, AppSt, Seconds), Err>;

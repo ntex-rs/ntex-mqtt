@@ -20,8 +20,8 @@ use super::shared::{MqttShared, MqttSinkPool};
 use super::{MqttSink, Session, ToPublishAck, dispatcher::factory};
 
 /// Mqtt Server
-pub struct MqttServer<AppSt, Err, E, P, C, M = Identity> {
-    handshake: HandshakePipeline<Session<AppSt>, Rc<MqttShared>, MqttError<Err>>,
+pub struct MqttServer<St, AppSt, Err, E, P, C, M = Identity> {
+    handshake: HandshakePipeline<St, Session<AppSt>, Rc<MqttShared>, MqttError<Err>>,
     control: C,
     protocol: P,
     middleware: M,
@@ -29,7 +29,7 @@ pub struct MqttServer<AppSt, Err, E, P, C, M = Identity> {
     _t: PhantomData<E>,
 }
 
-impl<AppSt, Err, E, P, C, M> fmt::Debug for MqttServer<AppSt, Err, E, P, C, M> {
+impl<St, AppSt, Err, E, P, C, M> fmt::Debug for MqttServer<St, AppSt, Err, E, P, C, M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("v5::MqttServer").finish()
     }
@@ -37,6 +37,7 @@ impl<AppSt, Err, E, P, C, M> fmt::Debug for MqttServer<AppSt, Err, E, P, C, M> {
 
 impl<AppSt, Err, E>
     MqttServer<
+        (),
         AppSt,
         Err,
         E,
@@ -71,7 +72,7 @@ where
     }
 }
 
-impl<AppSt, Err, E, P, C, M> MqttServer<AppSt, Err, E, P, C, M>
+impl<St, AppSt, Err, E, P, C, M> MqttServer<St, AppSt, Err, E, P, C, M>
 where
     AppSt: 'static,
     P: ServiceFactory<(), ProtocolMessage, Session<AppSt>, Res = ProtocolMessageAck> + 'static,
@@ -92,7 +93,7 @@ where
     ///
     /// Use middleware when you need to read or modify *every* request or
     /// response in some way.
-    pub fn middleware<U>(self, mw: U) -> MqttServer<AppSt, Err, E, P, C, Stack<M, U>> {
+    pub fn middleware<U>(self, mw: U) -> MqttServer<St, AppSt, Err, E, P, C, Stack<M, U>> {
         MqttServer {
             middleware: Stack::new(self.middleware, mw),
             handshake: self.handshake,
@@ -104,7 +105,7 @@ where
     }
 
     /// Replace middlewares
-    pub fn replace_middlewares<U>(self, mw: U) -> MqttServer<AppSt, Err, E, P, C, U> {
+    pub fn replace_middlewares<U>(self, mw: U) -> MqttServer<St, AppSt, Err, E, P, C, U> {
         MqttServer {
             middleware: mw,
             handshake: self.handshake,
@@ -119,7 +120,7 @@ where
     ///
     /// All control packets are processed sequentially, max number of buffered
     /// control packets is 16.
-    pub fn protocol<F, Srv>(self, service: F) -> MqttServer<AppSt, Err, E, Srv, C, M>
+    pub fn protocol<F, Srv>(self, service: F) -> MqttServer<St, AppSt, Err, E, Srv, C, M>
     where
         F: IntoServiceFactory<Srv, (), ProtocolMessage, Session<AppSt>>,
         E: From<Srv::Error>,
@@ -141,7 +142,7 @@ where
     pub fn control<Srv>(
         self,
         f: impl IntoServiceFactory<Srv, (), Control<E>, Session<AppSt>>,
-    ) -> MqttServer<AppSt, Err, E, P, ControlFactory<AppSt, Srv, E>, M>
+    ) -> MqttServer<St, AppSt, Err, E, P, ControlFactory<AppSt, Srv, E>, M>
     where
         Srv: ServiceFactory<(), Control<E>, Session<AppSt>, Res = Option<Encoded>> + 'static,
         Err: From<Srv::Error>,
@@ -164,6 +165,7 @@ where
         self,
         publish: impl IntoServiceFactory<Srv, (), Publish, Session<AppSt>>,
     ) -> service::MqttServer<
+        St,
         Session<AppSt>,
         Rc<MqttShared>,
         Err,
@@ -200,18 +202,18 @@ struct HandshakeService<AppSt, H> {
     _t: PhantomData<AppSt>,
 }
 
-impl<AppSt, H> Service<(), IoBoxed> for HandshakeService<AppSt, H>
+impl<St, AppSt, H> Service<St, IoBoxed> for HandshakeService<AppSt, H>
 where
-    H: Service<(), Handshake, Res = HandshakeAck<AppSt>> + 'static,
+    H: Service<St, Handshake, Res = HandshakeAck<AppSt>> + 'static,
 {
     type Res = (IoBoxed, Rc<MqttShared>, Session<AppSt>, Seconds);
     type Error = MqttError<H::Error>;
 
-    ntex_service::forward_ready!((), svc, MqttError::Service);
-    ntex_service::forward_shutdown!((), svc);
+    ntex_service::forward_ready!(St, svc, MqttError::Service);
+    ntex_service::forward_shutdown!(St, svc);
 
     #[allow(clippy::too_many_lines)]
-    async fn call(&self, io: IoBoxed, ctx: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+    async fn call(&self, io: IoBoxed, ctx: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
         log::trace!("Starting mqtt v5 handshake");
 
         let cfg = io.cfg().ctx().get::<MqttServiceConfig>();
