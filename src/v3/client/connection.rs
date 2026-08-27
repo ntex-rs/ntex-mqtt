@@ -7,8 +7,8 @@ use ntex_service::{IntoService, Pipeline, Service, boxed, fn_service};
 use ntex_util::future::Either;
 use ntex_util::time::{Millis, Seconds, sleep};
 
-use crate::v3::{ProtocolMessageAck, Publish, codec, shared::MqttShared, sink::MqttSink};
-use crate::v3::{Session, default::ControlService};
+use crate::v3::default::ControlService;
+use crate::v3::{ProtocolMessageAck, Publish, Session, codec, shared::MqttShared, sink::MqttSink};
 use crate::{control, error::MqttError, io::Dispatcher};
 
 use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
@@ -101,17 +101,17 @@ impl Client {
             ));
         }
 
-        let dispatcher = create_dispatcher(
+        let dispatcher = Pipeline::new(create_dispatcher(
             self.shared.clone(),
             self.max_receive,
             self.max_buffer_size,
             fn_service(async |pkt| Ok(Either::Right(pkt))),
             fn_service(async |_: ProtocolMessage| Ok::<_, ()>(ProtocolMessage::disconnect())),
-        );
-        let control = ControlService::new(
-            control::DefaultControlService::<Session<()>, (), codec::Encoded>::default(),
+        ));
+        let control = Pipeline::new(ControlService::new(
+            control::DefaultControlService::<(), (), codec::Encoded>::default(),
             self.shared.clone(),
-        );
+        ));
 
         let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
@@ -130,17 +130,17 @@ impl Client {
             ));
         }
 
-        let dispatcher = create_dispatcher(
+        let dispatcher = Pipeline::new(create_dispatcher(
             self.shared.clone(),
             self.max_receive,
             self.max_buffer_size,
             fn_service(async |pkt| Ok(Either::Right(pkt))),
             service.into_service(),
-        );
-        let control = ControlService::new(
+        ));
+        let control = Pipeline::new(ControlService::new(
             control::DefaultControlService::<Session<()>, E, codec::Encoded>::default(),
             self.shared.clone(),
-        );
+        ));
 
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
@@ -164,14 +164,14 @@ impl Client {
             ));
         }
 
-        let dispatcher = create_dispatcher(
+        let dispatcher = Pipeline::new(create_dispatcher(
             self.shared.clone(),
             self.max_receive,
             self.max_buffer_size,
             fn_service(async |pkt| Ok(Either::Right(pkt))),
             service.into_service(),
-        );
-        let control = ControlService::new(control, self.shared.clone());
+        ));
+        let control = Pipeline::new(ControlService::new(control, self.shared.clone()));
 
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
@@ -231,17 +231,17 @@ where
             ));
         }
 
-        let dispatcher = create_dispatcher(
+        let dispatcher = Pipeline::new(create_dispatcher(
             self.shared.clone(),
             self.max_receive,
             self.max_buffer_size,
             dispatch(self.builder.finish(), self.handlers),
             fn_service(async |_: ProtocolMessage| Ok::<_, Err>(ProtocolMessage::disconnect())),
-        );
-        let control = ControlService::new(
-            control::DefaultControlService::<Session<()>, Err, codec::Encoded>::default(),
+        ));
+        let control = Pipeline::new(ControlService::new(
+            control::DefaultControlService::<PErr, Err, codec::Encoded>::default(),
             self.shared.clone(),
-        );
+        ));
 
         let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
@@ -259,17 +259,17 @@ where
             ));
         }
 
-        let dispatcher = create_dispatcher(
+        let dispatcher = Pipeline::new(create_dispatcher(
             self.shared.clone(),
             self.max_receive,
             self.max_buffer_size,
             dispatch(self.builder.finish(), self.handlers),
             service.into_service(),
-        );
-        let control = ControlService::new(
+        ));
+        let control = Pipeline::new(ControlService::new(
             control::DefaultControlService::<Session<()>, Err, codec::Encoded>::default(),
             self.shared.clone(),
-        );
+        ));
 
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }

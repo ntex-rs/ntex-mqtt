@@ -111,7 +111,6 @@ impl<AppSt, S, E> ServiceFactory<(), Control<E>, Session<AppSt>> for ControlFact
 where
     S: ServiceFactory<(), Control<E>, Session<AppSt>, Res = Option<Encoded>>,
     S::InitError: Error + 'static,
-    E: From<S::Error>,
 {
     type Res = Option<Encoded>;
     type Error = MqttError<S::Error>;

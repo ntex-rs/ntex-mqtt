@@ -1,7 +1,8 @@
-use std::{error::Error, fmt, marker::PhantomData, rc::Rc};
+use std::{error::Error, fmt, marker::PhantomData};
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Filter, Io, IoBoxed};
+use ntex_service::pipeline::Pipeline;
 use ntex_service::{Ctx, Middleware, Service, ServiceFactory, cfg::SharedCfg};
 
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttError};
@@ -12,9 +13,9 @@ type Response<U> = Option<<U as Encoder>::Item>;
 
 pub struct MqttServer<AppSt, Codec, Err, E, T, M, C> {
     handshake: HandshakePipeline<AppSt, Codec, MqttError<Err>>,
-    handler: Rc<T>,
-    middleware: Rc<M>,
-    control: Rc<C>,
+    handler: T,
+    middleware: M,
+    control: C,
     _t: PhantomData<E>,
 }
 
@@ -33,9 +34,9 @@ impl<AppSt, Codec, Err, E, T, M, C> MqttServer<AppSt, Codec, Err, E, T, M, C> {
     ) -> Self {
         MqttServer {
             handshake,
-            handler: Rc::new(service),
-            middleware: Rc::new(mw),
-            control: Rc::new(control),
+            handler: service,
+            middleware: mw,
+            control,
             _t: PhantomData,
         }
     }
@@ -90,7 +91,7 @@ where
         let hnd = self.middleware.create(handler, &(io.shared(), session));
         log::trace!("{tag}: Connection handler is created, starting dispatcher");
 
-        Dispatcher::new(io, codec, hnd, control)
+        Dispatcher::new(io, codec, Pipeline::new(hnd), Pipeline::new(control))
             .keepalive_timeout(keepalive)
             .await
     }

@@ -1,18 +1,13 @@
-use std::{error::Error, fmt, io, marker};
+use std::{fmt, io, marker};
 
-use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Filter, Io, IoBoxed};
-use ntex_service::cfg::{Configuration, SharedCfg};
-use ntex_service::{Ctx, Middleware, Service, ServiceFactory};
+use ntex_service::{Ctx, IntoService, Service, cfg::Configuration};
 use ntex_util::future::{Either, join, select};
 use ntex_util::time::Deadline;
 
-use crate::error::{DecodeError, DispatcherError, EncodeError, HandshakeError, MqttError};
+use crate::MqttServiceConfig;
+use crate::error::{HandshakeError, MqttError};
 use crate::version::{ProtocolVersion, VersionCodec};
-use crate::{MqttServiceConfig, control::Control, service};
-
-type Request<U> = <U as Decoder>::Item;
-type Response<U> = Option<<U as Encoder>::Item>;
 
 /// Mqtt Server
 pub struct MqttServer<V3, V5, Err> {
@@ -50,75 +45,25 @@ where
     V5: Service<(), IoBoxed, Res = (), Error = MqttError<Err>>,
 {
     /// Service to handle v3 protocol
-    pub fn v3<AppSt, Codec, E, T, M, C>(
-        self,
-        service: service::MqttServer<AppSt, Codec, Err, E, T, M, C>,
-    ) -> MqttServer<service::MqttServer<AppSt, Codec, Err, E, T, M, C>, V5, Err>
+    pub fn v3<S>(self, service: impl IntoService<S, (), IoBoxed>) -> MqttServer<S, V5, Err>
     where
-        AppSt: Clone + 'static,
-        Err: 'static,
-        E: 'static,
-        T: ServiceFactory<
-                (),
-                Request<Codec>,
-                (SharedCfg, AppSt),
-                Res = Response<Codec>,
-                Error = DispatcherError<E>,
-                InitError = Box<dyn Error>,
-            > + 'static,
-        M: Middleware<T::Service, (SharedCfg, AppSt)>,
-        M::Service: Service<(), Request<Codec>, Res = Response<Codec>, Error = DispatcherError<E>>
-            + 'static,
-        C: ServiceFactory<
-                (),
-                Control<E>,
-                AppSt,
-                Res = Response<Codec>,
-                Error = MqttError<Err>,
-                InitError = Box<dyn Error>,
-            > + 'static,
-        Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError> + Clone + 'static,
+        S: Service<(), IoBoxed, Res = (), Error = MqttError<Err>>,
     {
         MqttServer {
-            v3: service,
+            v3: service.into_service(),
             v5: self.v5,
             _t: marker::PhantomData,
         }
     }
 
     /// Service to handle v5 protocol
-    pub fn v5<AppSt, Codec, E, T, M, C>(
-        self,
-        service: service::MqttServer<AppSt, Codec, Err, E, T, M, C>,
-    ) -> MqttServer<V3, service::MqttServer<AppSt, Codec, Err, E, T, M, C>, Err>
+    pub fn v5<S>(self, service: impl IntoService<S, (), IoBoxed>) -> MqttServer<V3, S, Err>
     where
-        AppSt: Clone + 'static,
-        Err: 'static,
-        E: 'static,
-        T: ServiceFactory<
-                (),
-                Request<Codec>,
-                (SharedCfg, AppSt),
-                Res = Response<Codec>,
-                Error = DispatcherError<E>,
-                InitError = Box<dyn Error>,
-            > + 'static,
-        M: Middleware<T::Service, (SharedCfg, AppSt)>,
-        M::Service: Service<(), Request<Codec>, Res = Response<Codec>, Error = DispatcherError<E>>
-            + 'static,
-        C: ServiceFactory<
-                (),
-                Control<E>,
-                AppSt,
-                Res = Response<Codec>,
-                Error = MqttError<Err>,
-                InitError = Box<dyn Error>,
-            > + 'static,
-        Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError> + Clone + 'static,
+        S: Service<(), IoBoxed, Res = (), Error = MqttError<Err>>,
     {
         MqttServer {
             v3: self.v3,
-            v5: service,
+            v5: service.into_service(),
             _t: marker::PhantomData,
         }
     }

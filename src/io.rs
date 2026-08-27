@@ -4,7 +4,6 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin:
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Decoded, IoBoxed, IoRef, IoStatusUpdate, RecvError};
-use ntex_service::Service;
 use ntex_service::pipeline::{Pipeline, PipelineCall};
 use ntex_util::channel::condition::Condition;
 use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
@@ -15,6 +14,13 @@ use crate::error::{DecodeError, DispatcherError, EncodeError, ProtocolError};
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = <U as Encoder>::Item;
 type Queue<T, E> = RefCell<VecDeque<ServiceResult<Result<T, E>>>>;
+
+type ServiceCall<Codec, E> =
+    PipelineCall<Request<Codec>, Option<Response<Codec>>, DispatcherError<E>>;
+type ServicePipeline<Codec, E> =
+    Pipeline<Request<Codec>, Option<Response<Codec>>, DispatcherError<E>>;
+type ControlCall<Codec, E, Err> = PipelineCall<Control<E>, Option<Response<Codec>>, Err>;
+type ControlPipeline<Codec, E, Err> = Pipeline<Control<E>, Option<Response<Codec>>, Err>;
 
 pin_project_lite::pin_project! {
     /// Dispatcher for mqtt protocol
@@ -43,19 +49,19 @@ bitflags::bitflags! {
     }
 }
 
-struct DispatcherInner<U, E, Err>
+struct DispatcherInner<Codec, E, Err>
 where
-    U: Encoder + Decoder + 'static,
+    Codec: Encoder + Decoder + 'static,
     E: 'static,
     Err: 'static,
 {
     io: IoBoxed,
     flags: Flags,
-    codec: U,
-    service: Pipeline<Request<U>, Option<Response<U>>, DispatcherError<E>>,
-    control: Pipeline<Control<E>, Option<Response<U>>, Err>,
-    st: IoDispatcherState<U, E, Err>,
-    state: Rc<DispatcherState<U, E>>,
+    codec: Codec,
+    service: ServicePipeline<Codec, E>,
+    control: ControlPipeline<Codec, E, Err>,
+    st: IoDispatcherState<Codec, E, Err>,
+    state: Rc<DispatcherState<Codec, E>>,
     stopping: Condition,
     read_remains: u32,
     read_remains_prev: u32,
@@ -63,16 +69,16 @@ where
     keepalive_timeout: Seconds,
 }
 
-struct DispatcherState<U, E>
+struct DispatcherState<Codec, E>
 where
-    U: Encoder + Decoder + 'static,
+    Codec: Encoder + Decoder + 'static,
     E: 'static,
 {
     error: Cell<Option<IoDispatcherError<DispatcherError<E>>>>,
     base: Cell<usize>,
-    queue: Queue<Option<Response<U>>, DispatcherError<E>>,
+    queue: Queue<Option<Response<Codec>>, DispatcherError<E>>,
     waker: LocalWaker,
-    response: Cell<Option<PipelineCall<Request<U>, Option<Response<U>>, DispatcherError<E>>>>,
+    response: Cell<Option<ServiceCall<Codec, E>>>,
     response_idx: Cell<usize>,
 }
 
@@ -92,10 +98,10 @@ impl<T> ServiceResult<T> {
 }
 
 #[derive(Debug)]
-enum IoDispatcherState<U: Encoder + Decoder, E: 'static, Err: 'static> {
+enum IoDispatcherState<Codec: Encoder + Decoder, E: 'static, Err: 'static> {
     Processing,
     Backpressure,
-    Stop(Option<PipelineCall<Control<E>, Option<Response<U>>, Err>>),
+    Stop(Option<ControlCall<Codec, E, Err>>),
     Shutdown(Option<Result<(), Err>>),
     ShutdownIo(Option<Result<(), Err>>),
 }
@@ -111,18 +117,19 @@ enum PollService {
     Ready,
 }
 
-impl<U, E, Err> Dispatcher<U, E, Err>
+impl<Codec, E, Err> Dispatcher<Codec, E, Err>
 where
-    U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
-    <U as Encoder>::Item: 'static,
+    Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
+    <Codec as Encoder>::Item: 'static,
     E: 'static,
 {
     /// Construct new `Dispatcher` instance with outgoing messages stream.
-    pub(crate) fn new<P, C>(io: IoBoxed, codec: U, service: P, control: C) -> Self
-    where
-        P: Service<(), Request<U>, Res = Option<Response<U>>, Error = DispatcherError<E>> + 'static,
-        C: Service<(), Control<E>, Res = Option<Response<U>>, Error = Err> + 'static,
-    {
+    pub(crate) fn new(
+        io: IoBoxed,
+        codec: Codec,
+        service: ServicePipeline<Codec, E>,
+        control: ControlPipeline<Codec, E, Err>,
+    ) -> Self {
         let state = Rc::new(DispatcherState {
             error: Cell::new(None),
             base: Cell::new(0),
@@ -138,14 +145,14 @@ where
                 io,
                 codec,
                 state,
+                control,
+                service,
                 keepalive_timeout,
                 flags: if keepalive_timeout.is_zero() {
                     Flags::empty()
                 } else {
                     Flags::KA_ENABLED
                 },
-                service: Pipeline::new(service),
-                control: Pipeline::new(control),
                 st: IoDispatcherState::Processing,
                 stopping: Condition::new(),
                 read_remains: 0,
@@ -171,17 +178,17 @@ where
     }
 }
 
-impl<U, E> DispatcherState<U, E>
+impl<Codec, E> DispatcherState<Codec, E>
 where
-    U: Encoder<Error = EncodeError> + Decoder<Error = DecodeError>,
-    <U as Encoder>::Item: 'static,
+    Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError>,
+    <Codec as Encoder>::Item: 'static,
 {
     fn handle_result(
         &self,
-        item: Result<Option<Response<U>>, DispatcherError<E>>,
+        item: Result<Option<Response<Codec>>, DispatcherError<E>>,
         response_idx: usize,
         io: &IoRef,
-        codec: &U,
+        codec: &Codec,
     ) -> bool {
         let err = item.is_err();
         let mut queue = self.queue.borrow_mut();
@@ -232,10 +239,10 @@ where
     }
 }
 
-impl<U, E, Err> Future for Dispatcher<U, E, Err>
+impl<Codec, E, Err> Future for Dispatcher<Codec, E, Err>
 where
-    U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
-    <U as Encoder>::Item: 'static,
+    Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
+    <Codec as Encoder>::Item: 'static,
     E: 'static,
     Err: 'static,
 {
@@ -365,19 +372,19 @@ where
     }
 }
 
-impl<U, E, Err> DispatcherInner<U, E, Err>
+impl<Codec, E, Err> DispatcherInner<Codec, E, Err>
 where
-    U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
-    <U as Encoder>::Item: 'static,
+    Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
+    <Codec as Encoder>::Item: 'static,
     E: 'static,
     Err: 'static,
 {
-    fn stop(&mut self, fut: PipelineCall<Control<E>, Option<Response<U>>, Err>) {
+    fn stop(&mut self, fut: ControlCall<Codec, E, Err>) {
         self.io.stop_timer();
         self.st = IoDispatcherState::Stop(Some(fut));
     }
 
-    fn call_service(&mut self, cx: &mut Context<'_>, item: Request<U>) {
+    fn call_service(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
         let mut fut = self.service.call_nowait(item);
         let mut queue = self.state.queue.borrow_mut();
 
@@ -506,7 +513,7 @@ where
         }
     }
 
-    fn update_timer(&mut self, decoded: &Decoded<<U as Decoder>::Item>) {
+    fn update_timer(&mut self, decoded: &Decoded<<Codec as Decoder>::Item>) {
         // got parsed frame
         if decoded.item.is_some() {
             self.read_remains = 0;
@@ -589,7 +596,7 @@ mod tests {
 
     use ntex_bytes::{BytePages, Bytes, BytesMut};
     use ntex_io::{self as nio, IoConfig, testing::IoTest as Io};
-    use ntex_service::{Ctx, IntoService, cfg::SharedCfg, fn_service};
+    use ntex_service::{Ctx, IntoService, Service, cfg::SharedCfg, fn_service};
     use ntex_util::channel::{condition::Condition, oneshot};
     use ntex_util::time::{Millis, sleep};
     use rand::RngExt;
