@@ -149,7 +149,7 @@ where
             }
         }
 
-        res1.map_err(|e| DispatcherError::Service(e.into()))?;
+        res1.map_err(DispatcherError::Service)?;
         res2?;
         Ok(())
     }
@@ -388,10 +388,10 @@ where
 }
 
 impl<C> Inner<C> {
-    async fn control<'f, St, T, E>(
+    async fn control<St, T, E>(
         &self,
         pkt: ProtocolMessage,
-        ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
+        ctx: Ctx<'_, Dispatcher<St, T, C, E>, St>,
     ) -> Result<Option<Encoded>, DispatcherError<E>>
     where
         C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,

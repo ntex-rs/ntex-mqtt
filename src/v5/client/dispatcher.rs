@@ -329,10 +329,10 @@ where
 }
 
 impl<C> Inner<C> {
-    async fn control<'f, St, T, E>(
+    async fn control<St, T, E>(
         &self,
         pkt: ProtocolMessage,
-        ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
+        ctx: Ctx<'_, Dispatcher<St, T, C, E>, St>,
     ) -> Result<Option<Encoded>, DispatcherError<E>>
     where
         C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
@@ -340,11 +340,11 @@ impl<C> Inner<C> {
         self.control_pkt(pkt, 0, ctx).await
     }
 
-    async fn control_pkt<'f, St, T, E>(
+    async fn control_pkt<St, T, E>(
         &self,
         pkt: ProtocolMessage,
         packet_id: u16,
-        ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
+        ctx: Ctx<'_, Dispatcher<St, T, C, E>, St>,
     ) -> Result<Option<Encoded>, DispatcherError<E>>
     where
         C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,

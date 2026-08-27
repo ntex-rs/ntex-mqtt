@@ -25,9 +25,7 @@ impl From<Infallible> for TestError {
 }
 
 impl From<TestError> for () {
-    fn from(_: TestError) -> Self {
-        ()
-    }
+    fn from(_: TestError) {}
 }
 
 impl From<()> for TestError {

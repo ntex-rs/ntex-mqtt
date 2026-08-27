@@ -171,7 +171,8 @@ mod tests {
 
     #[test]
     fn test_debug() {
-        let router: Router<(), ()> = Router::new(fn_service(async |_: Publish| Ok::<_, ()>(())));
+        let router: Router<(), (), ()> =
+            Router::new(fn_service(async |_: Publish| Ok::<_, ()>(())));
         assert!(format!("{router:?}").contains("v3::Router"));
     }
 }

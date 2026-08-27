@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_debug() {
-        let router: Router<(), ()> =
+        let router: Router<(), (), ()> =
             Router::new(async |_: Publish| Ok::<_, ()>(PublishAck::new(PublishAckReason::Success)));
         assert!(format!("{router:?}").contains("v5::Router"));
     }

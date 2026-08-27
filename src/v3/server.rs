@@ -88,6 +88,24 @@ where
     where
         I: IntoServiceFactory<Pub, Session<AppSt>, Publish, Connection<()>>,
     {
+        Self::with_state(publish)
+    }
+}
+
+impl<St, AppSt, Err, Pub>
+    MqttServer<St, AppSt, Err, Pub, DefaultProtocolService<Pub::Error>, InFlightService>
+where
+    St: Clone + 'static,
+    AppSt: 'static,
+    Err: 'static,
+    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = ()> + 'static,
+    Pub::InitError: Into<Box<dyn Error>> + 'static,
+{
+    /// Create server builder with state
+    pub fn with_state<I>(publish: I) -> Self
+    where
+        I: IntoServiceFactory<Pub, Session<AppSt>, Publish, Connection<St>>,
+    {
         MqttServer {
             publish: publish.into_factory(),
             protocol: DefaultProtocolService::default(),
@@ -113,6 +131,7 @@ where
     P::Error: Into<Pub::Error>,
     P::InitError: Error,
 {
+    #[must_use]
     /// Registers middleware, in the form of a middleware component (type),
     /// that runs during inbound and/or outbound processing in the request
     /// lifecycle (request -> response), modifying request/response as
@@ -130,6 +149,7 @@ where
         }
     }
 
+    #[must_use]
     /// Replace middlewares
     pub fn replace_middlewares<U>(self, mw: U) -> MqttServer<St, AppSt, Err, Pub, P, U> {
         MqttServer {
@@ -141,6 +161,7 @@ where
         }
     }
 
+    #[must_use]
     /// Service to handle protocol control messages.
     ///
     /// All control messages are processed sequentially, max number of buffered
@@ -166,6 +187,7 @@ where
         }
     }
 
+    #[must_use]
     /// Service to handle connection control messages
     pub fn control<Srv>(
         self,

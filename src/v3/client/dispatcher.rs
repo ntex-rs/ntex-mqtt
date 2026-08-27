@@ -278,10 +278,10 @@ where
 }
 
 impl<C> Inner<C> {
-    async fn control<'f, St, T, E>(
+    async fn control<St, T, E>(
         &self,
         pkt: ProtocolMessage,
-        ctx: Ctx<'f, Dispatcher<St, T, C, E>, Session<St>>,
+        ctx: Ctx<'_, Dispatcher<St, T, C, E>, Session<St>>,
     ) -> Result<Option<Encoded>, DispatcherError<E>>
     where
         C: Service<
