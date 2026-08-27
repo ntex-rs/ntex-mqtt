@@ -39,7 +39,7 @@ pub use self::error::{HandshakeError, MqttError, ProtocolError};
 pub use self::inflight::SizedRequest;
 pub use self::payload::Payload;
 pub use self::server::MqttServer;
-pub use self::session::Session;
+pub use self::session::{Connection, Session};
 pub use self::topic::{TopicFilter, TopicFilterError, TopicFilterLevel};
 pub use self::types::QoS;
 
@@ -47,5 +47,15 @@ pub use self::types::QoS;
 pub const TCP_PORT: u16 = 1883;
 pub const TLS_PORT: u16 = 8883;
 
-pub(crate) type HandshakePipeline<St, AppSt, Codec, Err> =
-    PipelineWithState<St, IoBoxed, (IoBoxed, Codec, AppSt, Seconds), Err>;
+pub(crate) type HandshakePipeline<St, AppSt, Codec, Cfg, Err> = PipelineWithState<
+    St,
+    IoBoxed,
+    (
+        IoBoxed,
+        Codec,
+        Connection<Cfg, St>,
+        Session<Cfg, AppSt>,
+        Seconds,
+    ),
+    Err,
+>;

@@ -1,7 +1,7 @@
-use std::{cell::RefCell, error::Error, num::NonZeroU16, rc::Rc};
+use std::{cell::RefCell, error::Error, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
-use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::pipeline::{Pipeline, PipelineWithState};
+use ntex_service::cfg::Cfg;
+use ntex_service::pipeline::PipelineWithState;
 use ntex_service::{Ctx, Service, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
@@ -14,54 +14,54 @@ use super::codec::{Decoded, Encoded, Packet};
 use super::control::{
     ProtocolMessage, ProtocolMessageAck, ProtocolMessageKind, Subscribe, Unsubscribe,
 };
-use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
+use super::{Connection, Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
-pub(super) fn factory<St, T, P, E>(
-    publish: T,
+pub(super) fn factory<St, AppSt, Sf, P, E>(
+    publish: Sf,
     control: P,
 ) -> impl ServiceFactory<
-    (),
+    Session<AppSt>,
     Decoded,
-    (SharedCfg, Session<St>),
+    Connection<St>,
     Res = Option<Encoded>,
     Error = DispatcherError<E>,
     InitError = Box<dyn Error>,
 >
 where
     St: 'static,
-    T: ServiceFactory<(), Publish, Session<St>, Res = ()> + 'static,
-    T::InitError: Into<Box<dyn Error>> + 'static,
-    P: ServiceFactory<(), ProtocolMessage, Session<St>, Res = ProtocolMessageAck> + 'static,
+    AppSt: 'static,
+    Sf: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = ()> + 'static,
+    Sf::InitError: Into<Box<dyn Error>> + 'static,
+    P: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<St>, Res = ProtocolMessageAck>
+        + 'static,
     P::InitError: Into<Box<dyn Error>> + 'static,
-    E: From<T::Error> + From<P::Error> + 'static,
+    E: From<Sf::Error> + From<P::Error> + 'static,
 {
     let factories = Rc::new((publish, control));
 
-    ntex_service::fn_factory_with_config(async move |(cfg, session): &(SharedCfg, Session<St>)| {
+    ntex_service::fn_factory_with_config(async move |st: &Connection<St>| {
         // create services
-        let sink = session.sink().shared();
-        let fut = join(factories.0.create(session), factories.1.create(session));
+        let sink = st.sink().shared();
+        let fut = join(factories.0.create(st), factories.1.create(st));
         let (publish, control) = fut.await;
 
         let publish = publish.map_err(Into::into)?;
         let control = control.map_err(Into::into)?;
 
-        let control = Pipeline::new(
-            BufferService::new(
-                16,
-                // limit number of in-flight messages
-                PipelineWithState::new(InFlightService::new(1, control)),
-            )
-            .map_err(|err| match err {
-                BufferServiceError::Service(e) => DispatcherError::Service(e.into()),
-                BufferServiceError::RequestCanceled => {
-                    DispatcherError::Protocol(ProtocolError::ReadTimeout)
-                }
-            }),
-        );
+        let control = BufferService::new(
+            16,
+            // limit number of in-flight messages
+            PipelineWithState::new(InFlightService::new(1, control)),
+        )
+        .map_err(|err| match err {
+            BufferServiceError::Service(e) => DispatcherError::Service(e.into()),
+            BufferServiceError::RequestCanceled => {
+                DispatcherError::Protocol(ProtocolError::ReadTimeout)
+            }
+        });
 
-        let cfg: Cfg<MqttServiceConfig> = cfg.get();
+        let cfg: Cfg<MqttServiceConfig> = st.cfg();
         Ok(Dispatcher::new(sink, publish, control, cfg))
     })
 }
@@ -85,37 +85,40 @@ impl crate::inflight::SizedRequest for Decoded {
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, E> {
+pub(crate) struct Dispatcher<St, T, C, E> {
     publish: T,
-    inner: Rc<Inner<E>>,
+    inner: Inner<C>,
     cfg: Cfg<MqttServiceConfig>,
+    st: PhantomData<(St, E)>,
 }
 
-struct Inner<E> {
-    control: Pipeline<ProtocolMessage, ProtocolMessageAck, DispatcherError<E>>,
+struct Inner<C> {
+    control: C,
     sink: Rc<MqttShared>,
     inflight: RefCell<HashSet<NonZeroU16>>,
 }
 
-impl<T, E> Dispatcher<T, E>
+impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
     E: From<T::Error>,
-    T: Service<(), Publish, Res = ()>,
+    T: Service<St, Publish, Res = ()>,
+    C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>> + 'static,
 {
     pub(crate) fn new(
         sink: Rc<MqttShared>,
         publish: T,
-        control: Pipeline<ProtocolMessage, ProtocolMessageAck, DispatcherError<E>>,
+        control: C,
         cfg: Cfg<MqttServiceConfig>,
     ) -> Self {
         Self {
             cfg,
             publish,
-            inner: Rc::new(Inner {
+            inner: Inner {
                 sink,
                 control,
                 inflight: RefCell::new(HashSet::default()),
-            }),
+            },
+            st: PhantomData,
         }
     }
 
@@ -124,17 +127,18 @@ where
     }
 }
 
-impl<T, E> Service<(), Decoded> for Dispatcher<T, E>
+impl<St, T, C, E> Service<St, Decoded> for Dispatcher<St, T, C, E>
 where
     E: From<T::Error> + 'static,
-    T: Service<(), Publish, Res = ()> + 'static,
+    T: Service<St, Publish, Res = ()> + 'static,
+    C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>> + 'static,
 {
     type Res = Option<Encoded>;
     type Error = DispatcherError<E>;
 
     #[inline]
-    async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
+    async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
+        let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
         if (res1.is_err() || res2.is_err())
             && let Some(pl) = self.inner.sink.payload.take()
         {
@@ -149,16 +153,16 @@ where
         Ok(())
     }
 
-    async fn shutdown(&self, ctx: Ctx<'_, Self, ()>) {
+    async fn shutdown(&self, ctx: Ctx<'_, Self, St>) {
         self.inner.sink.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.close();
-        self.inner.control.shutdown().await;
 
+        ctx.shutdown(&self.inner.control).await;
         ctx.shutdown(&self.publish).await;
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn call(&self, req: Decoded, ctx: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+    async fn call(&self, req: Decoded, ctx: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
         log::trace!("{}; Dispatch v3 packet: {:#?}", self.tag(), req);
 
         match req {
@@ -167,7 +171,7 @@ where
                     return Err(SpecViolation::Pub_3_3_2_2.into());
                 }
 
-                let inner = self.inner.as_ref();
+                let inner = &self.inner;
                 let packet_id = publish.packet_id;
 
                 // check for duplicated packet id
@@ -249,7 +253,9 @@ where
             }
             Decoded::Packet(Packet::PublishRelease { packet_id }, _) => {
                 if self.inner.inflight.borrow().contains(&packet_id) {
-                    self.inner.control(ProtocolMessage::pubrel(packet_id)).await
+                    self.inner
+                        .control(ProtocolMessage::pubrel(packet_id), ctx)
+                        .await
                 } else {
                     Err(ProtocolError::unexpected_packet(
                         packet_type::PUBREL,
@@ -266,7 +272,7 @@ where
                 }
             }
             Decoded::Packet(Packet::PingRequest, _) => {
-                self.inner.control(ProtocolMessage::ping()).await
+                self.inner.control(ProtocolMessage::ping(), ctx).await
             }
             Decoded::Packet(
                 Packet::Subscribe {
@@ -291,11 +297,14 @@ where
                     Err(SpecViolation::PacketId_2_2_1_3_Sub.into())
                 } else {
                     self.inner
-                        .control(ProtocolMessage::subscribe(Subscribe::new(
-                            packet_id,
-                            size,
-                            topic_filters,
-                        )))
+                        .control(
+                            ProtocolMessage::subscribe(Subscribe::new(
+                                packet_id,
+                                size,
+                                topic_filters,
+                            )),
+                            ctx,
+                        )
                         .await
                 }
             }
@@ -319,18 +328,21 @@ where
                     Err(SpecViolation::PacketId_2_2_1_3_Unsub.into())
                 } else {
                     self.inner
-                        .control(ProtocolMessage::unsubscribe(Unsubscribe::new(
-                            packet_id,
-                            size,
-                            topic_filters,
-                        )))
+                        .control(
+                            ProtocolMessage::unsubscribe(Unsubscribe::new(
+                                packet_id,
+                                size,
+                                topic_filters,
+                            )),
+                            ctx,
+                        )
                         .await
                 }
             }
             Decoded::Packet(Packet::Disconnect, _) => {
                 self.inner.sink.is_disconnect_sent();
                 self.inner
-                    .control(ProtocolMessage::remote_disconnect())
+                    .control(ProtocolMessage::remote_disconnect(), ctx)
                     .await
             }
             Decoded::Packet(..) => Ok(None),
@@ -339,16 +351,17 @@ where
 }
 
 /// Publish service response future
-async fn publish_fn<'f, T, E>(
+async fn publish_fn<'f, St, T, C, E>(
     svc: &'f T,
     pkt: Publish,
     packet_id: Option<NonZeroU16>,
-    inner: &'f Inner<E>,
-    ctx: Ctx<'f, Dispatcher<T, E>>,
+    inner: &'f Inner<C>,
+    ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
 ) -> Result<Option<Encoded>, DispatcherError<E>>
 where
     E: From<T::Error>,
-    T: Service<(), Publish, Res = ()>,
+    T: Service<St, Publish, Res = ()>,
+    C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
     let qos2 = pkt.qos() == QoS::ExactlyOnce;
     match ctx.call(svc, pkt).await {
@@ -374,9 +387,16 @@ where
     }
 }
 
-impl<E: 'static> Inner<E> {
-    async fn control(&self, pkt: ProtocolMessage) -> Result<Option<Encoded>, DispatcherError<E>> {
-        match self.control.call(pkt).await {
+impl<C> Inner<C> {
+    async fn control<'f, St, T, E>(
+        &self,
+        pkt: ProtocolMessage,
+        ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
+    ) -> Result<Option<Encoded>, DispatcherError<E>>
+    where
+        C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
+    {
+        match ctx.call(&self.control, pkt).await {
             Ok(item) => {
                 let packet = match item.result {
                     ProtocolMessageKind::Ping => Some(Encoded::Packet(Packet::PingResponse)),

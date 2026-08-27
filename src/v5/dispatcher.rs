@@ -1,12 +1,10 @@
-use std::{cell::RefCell, error::Error, num, rc::Rc};
+use std::{cell::RefCell, error::Error, marker::PhantomData, num, rc::Rc};
 
 use ntex_bytes::ByteString;
-use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::pipeline::{Pipeline, PipelineWithState};
-use ntex_service::{self as service, Ctx, Service, ServiceFactory};
+use ntex_service::pipeline::PipelineWithState;
+use ntex_service::{Ctx, Service, ServiceFactory, cfg::Cfg, fn_factory_with_config};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
-use ntex_util::services::inflight::InFlightService;
-use ntex_util::{HashMap, HashSet, future::join, hash_map};
+use ntex_util::{HashMap, HashSet, future::join, hash_map, services::inflight::InFlightService};
 
 use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
@@ -15,54 +13,54 @@ use crate::{MqttServiceConfig, types::QoS};
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
 use super::control::{Pkt, ProtocolMessage, ProtocolMessageAck};
 use super::publish::{Publish, PublishAck};
-use super::{Session, ToPublishAck, shared::Ack, shared::MqttShared};
+use super::{Connection, Session, ToPublishAck, shared::Ack, shared::MqttShared};
 
 /// MQTT 5 protocol dispatcher
-pub(super) fn factory<St, T, Ctl, E>(
+pub(super) fn factory<St, AppSt, T, Ctl, E>(
     publish: T,
     control: Ctl,
 ) -> impl ServiceFactory<
-    (),
+    Session<AppSt>,
     Decoded,
-    (SharedCfg, Session<St>),
+    Connection<St>,
     Res = Option<Encoded>,
     Error = DispatcherError<E>,
     InitError = Box<dyn Error>,
 >
 where
     St: 'static,
+    AppSt: 'static,
     E: From<Ctl::Error> + 'static,
-    T: ServiceFactory<(), Publish, Session<St>, Res = PublishAck> + 'static,
+    T: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = PublishAck> + 'static,
     T::Error: ToPublishAck<Error = E>,
     T::InitError: Into<Box<dyn Error>> + 'static,
-    Ctl: ServiceFactory<(), ProtocolMessage, Session<St>, Res = ProtocolMessageAck> + 'static,
+    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<St>, Res = ProtocolMessageAck>
+        + 'static,
     Ctl::InitError: Into<Box<dyn Error>> + 'static,
 {
     let factories = Rc::new((publish, control));
 
-    service::fn_factory_with_config(async move |(cfg, ses): &(SharedCfg, Session<St>)| {
-        let cfg: Cfg<MqttServiceConfig> = cfg.get();
+    fn_factory_with_config(async move |con: &Connection<St>| {
+        let cfg: Cfg<MqttServiceConfig> = con.cfg();
 
         // create services
-        let sink = ses.sink().shared();
-        let (publish, control) = join(factories.0.create(ses), factories.1.create(ses)).await;
+        let sink = con.sink().shared();
+        let (publish, control) = join(factories.0.create(con), factories.1.create(con)).await;
 
         let publish = publish.map_err(Into::into)?;
         let control = control.map_err(Into::into)?;
 
-        let control = Pipeline::new(
-            BufferService::new(
-                16,
-                // limit number of in-flight messages
-                PipelineWithState::new(InFlightService::new(1, control)),
-            )
-            .map_err(|err| match err {
-                BufferServiceError::Service(e) => DispatcherError::Service(e.into()),
-                BufferServiceError::RequestCanceled => {
-                    DispatcherError::Protocol(ProtocolError::ReadTimeout)
-                }
-            }),
-        );
+        let control = BufferService::new(
+            16,
+            // limit number of in-flight messages
+            PipelineWithState::new(InFlightService::new(1, control)),
+        )
+        .map_err(|err| match err {
+            BufferServiceError::Service(e) => DispatcherError::Service(e.into()),
+            BufferServiceError::RequestCanceled => {
+                DispatcherError::Protocol(ProtocolError::ReadTimeout)
+            }
+        });
 
         Ok(Dispatcher::new(sink, publish, control, cfg))
     })
@@ -87,14 +85,15 @@ impl crate::inflight::SizedRequest for Decoded {
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, E> {
+pub(crate) struct Dispatcher<St, T, C, E> {
     publish: T,
-    inner: Rc<Inner<E>>,
+    inner: Inner<C>,
     cfg: Cfg<MqttServiceConfig>,
+    e: PhantomData<(St, E)>,
 }
 
-struct Inner<E> {
-    control: Pipeline<ProtocolMessage, ProtocolMessageAck, DispatcherError<E>>,
+struct Inner<C> {
+    control: C,
     sink: Rc<MqttShared>,
     info: RefCell<PublishInfo>,
 }
@@ -104,28 +103,25 @@ struct PublishInfo {
     aliases: HashMap<num::NonZeroU16, ByteString>,
 }
 
-impl<T, E> Dispatcher<T, E>
+impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
-    T: Service<(), Publish, Res = PublishAck>,
+    T: Service<St, Publish, Res = PublishAck>,
     T::Error: ToPublishAck<Error = E>,
+    C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
-    fn new(
-        sink: Rc<MqttShared>,
-        publish: T,
-        control: Pipeline<ProtocolMessage, ProtocolMessageAck, DispatcherError<E>>,
-        cfg: Cfg<MqttServiceConfig>,
-    ) -> Self {
+    fn new(sink: Rc<MqttShared>, publish: T, control: C, cfg: Cfg<MqttServiceConfig>) -> Self {
         Self {
             cfg,
             publish,
-            inner: Rc::new(Inner {
+            inner: Inner {
                 sink,
                 control,
                 info: RefCell::new(PublishInfo {
                     aliases: HashMap::default(),
                     inflight: HashSet::default(),
                 }),
-            }),
+            },
+            e: PhantomData,
         }
     }
 
@@ -134,17 +130,18 @@ where
     }
 }
 
-impl<T, E> Service<(), Decoded> for Dispatcher<T, E>
+impl<St, T, C, E> Service<St, Decoded> for Dispatcher<St, T, C, E>
 where
     E: 'static,
-    T: Service<(), Publish, Res = PublishAck> + 'static,
+    T: Service<St, Publish, Res = PublishAck> + 'static,
     T::Error: ToPublishAck<Error = E>,
+    C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
     type Res = Option<Encoded>;
     type Error = DispatcherError<E>;
 
-    async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
+    async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
+        let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
         if (res1.is_err() || res2.is_err())
             && let Some(pl) = self.inner.sink.payload.take()
         {
@@ -159,22 +156,22 @@ where
         Ok(())
     }
 
-    async fn shutdown(&self, ctx: Ctx<'_, Self, ()>) {
+    async fn shutdown(&self, ctx: Ctx<'_, Self, St>) {
         log::trace!("{}: Shutdown v5 dispatcher", self.tag());
         self.inner.sink.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.drop_sink(true);
 
         ctx.shutdown(&self.publish).await;
-        self.inner.control.shutdown().await;
+        ctx.shutdown(&self.inner.control).await;
     }
 
     #[allow(clippy::too_many_lines, clippy::await_holding_refcell_ref)]
-    async fn call(&self, req: Decoded, ctx: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+    async fn call(&self, req: Decoded, ctx: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
         log::trace!("{}: Dispatch v5 packet: {:#?}", self.tag(), req);
 
         match req {
             Decoded::Publish(mut publish, payload, size) => {
-                let info = self.inner.as_ref();
+                let info = &self.inner;
                 let packet_id = publish.packet_id;
 
                 if publish.topic.contains(['#', '+']) {
@@ -312,7 +309,9 @@ where
             }
             Decoded::Packet(Packet::PublishRelease(ack), size) => {
                 if self.inner.info.borrow().inflight.contains(&ack.packet_id) {
-                    self.inner.control(ProtocolMessage::pubrel(ack, size)).await
+                    self.inner
+                        .control(ProtocolMessage::pubrel(ack, size), ctx)
+                        .await
                 } else {
                     Ok(Some(Encoded::Packet(codec::Packet::PublishComplete(
                         codec::PublishAck2 {
@@ -332,11 +331,13 @@ where
                 if self.inner.sink.is_closed() {
                     Ok(None)
                 } else {
-                    self.inner.control(ProtocolMessage::auth(pkt, size)).await
+                    self.inner
+                        .control(ProtocolMessage::auth(pkt, size), ctx)
+                        .await
                 }
             }
             Decoded::Packet(Packet::PingRequest, _) => {
-                self.inner.control(ProtocolMessage::ping()).await
+                self.inner.control(ProtocolMessage::ping(), ctx).await
             }
             Decoded::Packet(Packet::Disconnect(pkt), size) => {
                 self.inner.sink.set_disconnect_recv();
@@ -351,7 +352,7 @@ where
                     self.inner.sink.is_disconnect_sent();
                     self.inner.sink.close(None);
                     self.inner
-                        .control(ProtocolMessage::remote_disconnect(pkt, size))
+                        .control(ProtocolMessage::remote_disconnect(pkt, size), ctx)
                         .await
                 }
             }
@@ -388,7 +389,7 @@ where
                 } else {
                     let id = pkt.packet_id;
                     self.inner
-                        .control_pkt(ProtocolMessage::subscribe(pkt, size), id.get())
+                        .control_pkt(ProtocolMessage::subscribe(pkt, size), id.get(), ctx)
                         .await
                 }
             }
@@ -419,7 +420,7 @@ where
                 } else {
                     let id = pkt.packet_id;
                     self.inner
-                        .control_pkt(ProtocolMessage::unsubscribe(pkt, size), id.get())
+                        .control_pkt(ProtocolMessage::unsubscribe(pkt, size), id.get(), ctx)
                         .await
                 }
             }
@@ -428,17 +429,28 @@ where
     }
 }
 
-impl<E: 'static> Inner<E> {
-    async fn control(&self, pkt: ProtocolMessage) -> Result<Option<Encoded>, DispatcherError<E>> {
-        self.control_pkt(pkt, 0).await
+impl<C> Inner<C> {
+    async fn control<'f, St, T, E>(
+        &self,
+        pkt: ProtocolMessage,
+        ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
+    ) -> Result<Option<Encoded>, DispatcherError<E>>
+    where
+        C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
+    {
+        self.control_pkt(pkt, 0, ctx).await
     }
 
-    async fn control_pkt(
+    async fn control_pkt<'f, St, T, E>(
         &self,
         pkt: ProtocolMessage,
         packet_id: u16,
-    ) -> Result<Option<Encoded>, DispatcherError<E>> {
-        let result = match self.control.call(pkt).await {
+        ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
+    ) -> Result<Option<Encoded>, DispatcherError<E>>
+    where
+        C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
+    {
+        let result = match ctx.call(&self.control, pkt).await {
             Ok(result) => {
                 if let Some(id) = num::NonZeroU16::new(packet_id) {
                     self.info.borrow_mut().inflight.remove(&id);
@@ -473,16 +485,17 @@ impl<E: 'static> Inner<E> {
 }
 
 /// Publish service response future
-async fn publish_fn<'f, T, E>(
+async fn publish_fn<'f, St, T, C, E>(
     publish: &T,
     pkt: Publish,
     packet_id: u16,
-    inner: &'f Inner<E>,
-    ctx: Ctx<'f, Dispatcher<T, E>, ()>,
+    inner: &'f Inner<C>,
+    ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
 ) -> Result<Option<Encoded>, DispatcherError<E>>
 where
-    T: Service<(), Publish, Res = PublishAck>,
+    T: Service<St, Publish, Res = PublishAck>,
     T::Error: ToPublishAck<Error = E>,
+    C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
     let qos2 = pkt.qos() == QoS::ExactlyOnce;
     let ack = match ctx.call(publish, pkt).await {

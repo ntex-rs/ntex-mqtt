@@ -134,7 +134,7 @@ impl<S, E, R> Default for DefaultControlService<S, E, R> {
     }
 }
 
-impl<S, E, R> ServiceFactory<(), Control<E>, S> for DefaultControlService<S, E, R> {
+impl<St, S, E, R> ServiceFactory<St, Control<E>, S> for DefaultControlService<S, E, R> {
     type Res = Option<R>;
     type Error = E;
 
@@ -146,11 +146,11 @@ impl<S, E, R> ServiceFactory<(), Control<E>, S> for DefaultControlService<S, E, 
     }
 }
 
-impl<S, E, R> Service<(), Control<E>> for DefaultControlService<S, E, R> {
+impl<St, S, E, R> Service<St, Control<E>> for DefaultControlService<S, E, R> {
     type Res = Option<R>;
     type Error = E;
 
-    async fn call(&self, _: Control<E>, _: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+    async fn call(&self, _: Control<E>, _: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
         log::warn!("MQTT5 Control service is not configured");
         Ok(None)
     }

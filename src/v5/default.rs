@@ -6,8 +6,8 @@ use ntex_service::{Ctx, Middleware, Service, ServiceFactory};
 use crate::error::{MqttError, PayloadError};
 use crate::{Control, MqttServiceConfig, Reason, inflight::InFlightServiceImpl};
 
-use super::codec::{self, Encoded};
-use super::{Session, control::ProtocolMessage, control::ProtocolMessageAck, shared::MqttShared};
+use super::control::{ProtocolMessage, ProtocolMessageAck};
+use super::{Connection, Session, codec, codec::Encoded, shared::MqttShared};
 
 /// Default control service
 #[derive(Debug)]
@@ -76,15 +76,12 @@ pub struct ControlService<S, E> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ControlFactory<AppSt, S, E> {
+pub struct ControlFactory<St, AppSt, S, E> {
     svc: S,
-    _t: PhantomData<(E, AppSt)>,
+    _t: PhantomData<(E, St, AppSt)>,
 }
 
-impl<S, E> ControlService<S, E>
-where
-    S: Service<(), Control<E>>,
-{
+impl<S, E> ControlService<S, E> {
     pub(super) fn new(svc: S, shared: Rc<MqttShared>) -> Self {
         Self {
             svc,
@@ -94,9 +91,9 @@ where
     }
 }
 
-impl<AppSt, S, E> ControlFactory<AppSt, S, E>
+impl<St, AppSt, S, E> ControlFactory<St, AppSt, S, E>
 where
-    S: ServiceFactory<(), Control<E>, Session<AppSt>>,
+    S: ServiceFactory<Session<AppSt>, Control<E>, Session<AppSt>>,
 {
     pub(super) fn new(svc: S) -> Self {
         Self {
@@ -106,9 +103,10 @@ where
     }
 }
 
-impl<AppSt, S, E> ServiceFactory<(), Control<E>, Session<AppSt>> for ControlFactory<AppSt, S, E>
+impl<AppSt, St, S, E> ServiceFactory<Session<AppSt>, Control<E>, Connection<St>>
+    for ControlFactory<AppSt, St, S, E>
 where
-    S: ServiceFactory<(), Control<E>, Session<AppSt>, Res = Option<Encoded>>,
+    S: ServiceFactory<Session<AppSt>, Control<E>, Connection<St>, Res = Option<Encoded>>,
     S::InitError: Error + 'static,
     E: From<S::Error>,
 {
@@ -118,7 +116,7 @@ where
     type Service = ControlService<S::Service, E>;
     type InitError = Box<dyn Error>;
 
-    async fn create(&self, cfg: &Session<AppSt>) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &Connection<St>) -> Result<Self::Service, Self::InitError> {
         Ok(ControlService {
             shared: cfg.sink().shared(),
             svc: self.svc.create(cfg).await.map_err(Box::new)?,
@@ -127,9 +125,9 @@ where
     }
 }
 
-impl<S, E> Service<(), Control<E>> for ControlService<S, E>
+impl<St, S, E> Service<St, Control<E>> for ControlService<S, E>
 where
-    S: Service<(), Control<E>, Res = Option<Encoded>>,
+    S: Service<St, Control<E>, Res = Option<Encoded>>,
 {
     type Res = S::Res;
     type Error = MqttError<S::Error>;
@@ -137,7 +135,7 @@ where
     async fn call(
         &self,
         req: Control<E>,
-        ctx: Ctx<'_, Self, ()>,
+        ctx: Ctx<'_, Self, St>,
     ) -> Result<Self::Res, Self::Error> {
         let mut proto_error = false;
         let disconnect = match &req {
@@ -190,8 +188,8 @@ where
         }
     }
 
-    ntex_service::forward_ready!((), svc, MqttError::Service);
-    ntex_service::forward_shutdown!((), svc);
+    ntex_service::forward_ready!(St, svc, MqttError::Service);
+    ntex_service::forward_shutdown!(St, svc);
 }
 
 #[cfg(test)]
