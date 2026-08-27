@@ -1,6 +1,38 @@
-use std::fmt;
-use std::ops::Deref;
-use std::rc::Rc;
+use std::{fmt, ops::Deref, rc::Rc};
+
+use ntex_service::cfg::{Cfg, Configuration, SharedCfg};
+
+pub struct Connection<T, St> {
+    st: St,
+    sink: T,
+    shared: SharedCfg,
+}
+
+impl<T, St> Connection<T, St> {
+    pub(crate) fn new(st: St, sink: T, shared: SharedCfg) -> Self {
+        Self { st, sink, shared }
+    }
+
+    #[inline]
+    pub fn st(&self) -> &St {
+        &self.st
+    }
+
+    #[inline]
+    pub fn sink(&self) -> &T {
+        &self.sink
+    }
+
+    #[inline]
+    pub fn shared(&self) -> SharedCfg {
+        self.shared.clone()
+    }
+
+    #[inline]
+    pub fn cfg<U: Configuration>(&self) -> Cfg<U> {
+        self.shared.get()
+    }
+}
 
 /// Mqtt connection session
 pub struct Session<T, St>(Rc<SessionInner<T, St>>);

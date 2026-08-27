@@ -57,8 +57,8 @@ async fn main() -> std::io::Result<()> {
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
             MqttServer::new()
-                .v3(v3::MqttServer::new(handshake_v3).publish(publish_v3))
-                .v5(v5::MqttServer::new(handshake_v5).publish(publish_v5))
+                .v3(v3::MqttServer::new(publish_v3).build(handshake_v3))
+                .v5(v5::MqttServer::new(publish_v5).build(handshake_v5))
         })?
         .workers(1)
         .run()

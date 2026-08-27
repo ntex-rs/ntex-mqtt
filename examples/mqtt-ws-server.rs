@@ -33,31 +33,31 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 /// Mqtt server factory
 fn mqtt_server<F: Filter>() -> impl Service<(), Io<F>, Res = (), Error = Box<dyn Error>> {
     MqttServer::new()
-        .v3(v3::MqttServer::new(|handshake: v3::Handshake| async move {
-            log::info!("new mqtt v3 connection: {:?}", handshake);
-            Ok(handshake.ack(Session, false))
-        })
-        .publish(|publish: v3::Publish| async move {
+        .v3(v3::MqttServer::new(async move |publish: v3::Publish| {
             log::info!(
                 "incoming publish: {:?} -> {:?}",
                 publish.id(),
                 publish.topic()
             );
             Ok::<_, ServerError>(())
-        }))
-        .v5(v5::MqttServer::new(|handshake: v5::Handshake| async move {
-            log::info!("new mqtt v5 connection: {:?}", handshake);
-            Ok(handshake.ack(Session))
         })
-        .publish(|publish: v5::Publish| async move {
+        .build(async move |handshake: v3::Handshake| {
+            log::info!("new mqtt v3 connection: {:?}", handshake);
+            Ok(handshake.ack(Session, false))
+        }))
+        .v5(v5::MqttServer::new(async move |publish: v5::Publish| {
             log::info!(
                 "incoming publish: {:?} -> {:?}",
                 publish.id(),
                 publish.topic()
             );
             Ok::<_, ServerError>(publish.ack())
+        })
+        .build(async move |handshake: v5::Handshake| {
+            log::info!("new mqtt v5 connection: {:?}", handshake);
+            Ok(handshake.ack(Session))
         }))
-        .map_err(|e| {
+        .map_err(|e: MqttError<ServerError>| {
             log::info!("Mqtt server error: {:?}", e);
             Box::<dyn Error>::from(e)
         })

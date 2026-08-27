@@ -126,31 +126,31 @@ impl PeerGone {
 
 /// Default control service
 #[derive(Debug)]
-pub struct DefaultControlService<S, E, R>(PhantomData<(S, E, R)>);
+pub struct DefaultControlService<E, R>(PhantomData<(E, R)>);
 
-impl<S, E, R> Default for DefaultControlService<S, E, R> {
+impl<E, R> Default for DefaultControlService<E, R> {
     fn default() -> Self {
         DefaultControlService(PhantomData)
     }
 }
 
-impl<S, E, R> ServiceFactory<(), Control<E>, S> for DefaultControlService<S, E, R> {
+impl<St, E, Req, R, Cfg> ServiceFactory<St, Req, Cfg> for DefaultControlService<E, R> {
     type Res = Option<R>;
     type Error = E;
 
-    type Service = DefaultControlService<S, E, R>;
+    type Service = DefaultControlService<E, R>;
     type InitError = Infallible;
 
-    async fn create(&self, _: &S) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, _: &Cfg) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService(PhantomData))
     }
 }
 
-impl<S, E, R> Service<(), Control<E>> for DefaultControlService<S, E, R> {
+impl<St, E, Req, R> Service<St, Req> for DefaultControlService<E, R> {
     type Res = Option<R>;
     type Error = E;
 
-    async fn call(&self, _: Control<E>, _: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+    async fn call(&self, _: Req, _: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
         log::warn!("MQTT5 Control service is not configured");
         Ok(None)
     }

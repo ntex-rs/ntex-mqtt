@@ -1,29 +1,30 @@
-use std::{cell::Cell, cell::RefCell, num::NonZeroU16, rc::Rc};
+use std::{cell::Cell, cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
-use ntex_service::{Ctx, Pipeline, Service};
+use ntex_service::{Ctx, Service};
 use ntex_util::future::{Either, join};
 use ntex_util::{HashSet, services::inflight::InFlightService};
 
 use crate::error::{DispatcherError, PayloadError, ProtocolError, SpecViolation};
+use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::v3::codec::{self, Decoded, Encoded, Packet};
 use crate::v3::shared::{Ack, MqttShared};
-use crate::v3::{control::ProtocolMessageKind, publish::Publish};
-use crate::{payload::Payload, payload::PayloadStatus, payload::PlSender};
+use crate::v3::{Session, control::ProtocolMessageKind, publish::Publish};
 
 use super::control::{ProtocolMessage, ProtocolMessageAck};
 
 /// mqtt3 protocol dispatcher
-pub(super) fn create_dispatcher<T, C, E>(
+pub(super) fn create_dispatcher<St, T, C, E>(
     sink: Rc<MqttShared>,
     inflight: usize,
     max_buffer_size: usize,
     publish: T,
     control: C,
-) -> impl Service<(), Decoded, Res = Option<Encoded>, Error = DispatcherError<E>>
+) -> impl Service<Session<St>, Decoded, Res = Option<Encoded>, Error = DispatcherError<E>>
 where
+    St: 'static,
     E: 'static,
-    T: Service<(), Publish, Res = Either<(), Publish>, Error = E> + 'static,
-    C: Service<(), ProtocolMessage, Res = ProtocolMessageAck, Error = E> + 'static,
+    T: Service<Session<St>, Publish, Res = Either<(), Publish>, Error = E> + 'static,
+    C: Service<Session<St>, ProtocolMessage, Res = ProtocolMessageAck, Error = E> + 'static,
 {
     // limit number of in-flight messages
     InFlightService::new(
@@ -38,48 +39,48 @@ where
 }
 
 /// Mqtt protocol dispatcher
-pub(crate) struct Dispatcher<T, E> {
+pub(crate) struct Dispatcher<St, T, C, E> {
     publish: T,
-    inner: Rc<Inner<E>>,
+    inner: Inner<C>,
     max_buffer_size: usize,
+    st: PhantomData<(St, E)>,
 }
 
-struct Inner<E> {
-    control: Pipeline<ProtocolMessage, ProtocolMessageAck, DispatcherError<E>>,
+struct Inner<C> {
+    control: C,
     sink: Rc<MqttShared>,
     payload: Cell<Option<PlSender>>,
     inflight: RefCell<HashSet<NonZeroU16>>,
 }
 
-impl<T, E> Dispatcher<T, E>
+impl<St, T, C, E> Dispatcher<St, T, C, E>
 where
-    T: Service<(), Publish, Res = Either<(), Publish>, Error = E>,
+    St: 'static,
+    T: Service<Session<St>, Publish, Res = Either<(), Publish>, Error = E>,
+    C: Service<Session<St>, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
     E: 'static,
 {
-    pub(crate) fn new<C>(
+    pub(crate) fn new(
         sink: Rc<MqttShared>,
         publish: T,
         control: C,
         max_buffer_size: usize,
-    ) -> Self
-    where
-        C: Service<(), ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>
-            + 'static,
-    {
+    ) -> Self {
         Self {
             publish,
             max_buffer_size,
-            inner: Rc::new(Inner {
+            inner: Inner {
                 sink,
+                control,
                 payload: Cell::new(None),
-                control: Pipeline::new(control),
                 inflight: RefCell::new(HashSet::default()),
-            }),
+            },
+            st: PhantomData,
         }
     }
 }
 
-impl<E> Inner<E> {
+impl<C> Inner<C> {
     fn drop_payload<PErr>(&self, err: &PErr)
     where
         PErr: Clone,
@@ -91,17 +92,19 @@ impl<E> Inner<E> {
     }
 }
 
-impl<T, E> Service<(), Decoded> for Dispatcher<T, E>
+impl<St, T, C, E> Service<Session<St>, Decoded> for Dispatcher<St, T, C, E>
 where
-    T: Service<(), Publish, Res = Either<(), Publish>, Error = E> + 'static,
+    St: 'static,
+    T: Service<Session<St>, Publish, Res = Either<(), Publish>, Error = E> + 'static,
+    C: Service<Session<St>, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
     E: 'static,
 {
     type Res = Option<Encoded>;
     type Error = DispatcherError<E>;
 
     #[inline]
-    async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(ctx.ready(&self.publish), self.inner.control.ready()).await;
+    async fn ready(&self, ctx: Ctx<'_, Self, Session<St>>) -> Result<(), Self::Error> {
+        let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
         if (res1.is_err() || res2.is_err())
             && let Some(pl) = self.inner.payload.take()
         {
@@ -116,11 +119,11 @@ where
         Ok(())
     }
 
-    async fn shutdown(&self, ctx: Ctx<'_, Self, ()>) {
+    async fn shutdown(&self, ctx: Ctx<'_, Self, Session<St>>) {
         self.inner.drop_payload(&PayloadError::Disconnected);
         self.inner.sink.close();
-        self.inner.control.shutdown().await;
 
+        ctx.shutdown(&self.inner.control).await;
         ctx.shutdown(&self.publish).await;
     }
 
@@ -128,13 +131,13 @@ where
     async fn call(
         &self,
         packet: Decoded,
-        ctx: Ctx<'_, Self, ()>,
+        ctx: Ctx<'_, Self, Session<St>>,
     ) -> Result<Self::Res, Self::Error> {
         log::trace!("Dispatch packet: {packet:#?}");
 
         match packet {
             Decoded::Publish(publish, payload, size) => {
-                let inner = self.inner.as_ref();
+                let inner = &self.inner;
                 let packet_id = publish.packet_id;
 
                 // check for duplicated packet id
@@ -195,7 +198,9 @@ where
             }
             Decoded::Packet(Packet::PublishRelease { packet_id }, _) => {
                 if self.inner.inflight.borrow().contains(&packet_id) {
-                    self.inner.control(ProtocolMessage::pubrel(packet_id)).await
+                    self.inner
+                        .control(ProtocolMessage::pubrel(packet_id), ctx)
+                        .await
                 } else {
                     log::warn!("Unknown packet-id in PublishRelease packet");
                     self.inner.sink.close();
@@ -239,16 +244,17 @@ where
     }
 }
 
-async fn publish_fn<'f, T, E>(
+async fn publish_fn<'f, St, T, C, E>(
     svc: &'f T,
     pkt: Publish,
     packet_id: Option<NonZeroU16>,
-    inner: &'f Inner<E>,
-    ctx: Ctx<'f, Dispatcher<T, E>>,
+    inner: &'f Inner<C>,
+    ctx: Ctx<'f, Dispatcher<St, T, C, E>, Session<St>>,
 ) -> Result<Option<Encoded>, DispatcherError<E>>
 where
     E: 'static,
-    T: Service<(), Publish, Res = Either<(), Publish>, Error = E>,
+    T: Service<Session<St>, Publish, Res = Either<(), Publish>, Error = E>,
+    C: Service<Session<St>, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
     let res = ctx.call(svc, pkt).await.map_err(DispatcherError::Service)?;
     match res {
@@ -265,17 +271,28 @@ where
         Either::Right(pkt) => {
             let (pkt, payload, size) = pkt.into_inner();
             inner
-                .control(ProtocolMessage::publish(pkt, payload, size))
+                .control(ProtocolMessage::publish(pkt, payload, size), ctx)
                 .await
         }
     }
 }
 
-impl<E: 'static> Inner<E> {
-    async fn control(&self, msg: ProtocolMessage) -> Result<Option<Encoded>, DispatcherError<E>> {
-        let packet = match self
-            .control
-            .call(msg)
+impl<C> Inner<C> {
+    async fn control<St, T, E>(
+        &self,
+        pkt: ProtocolMessage,
+        ctx: Ctx<'_, Dispatcher<St, T, C, E>, Session<St>>,
+    ) -> Result<Option<Encoded>, DispatcherError<E>>
+    where
+        C: Service<
+                Session<St>,
+                ProtocolMessage,
+                Res = ProtocolMessageAck,
+                Error = DispatcherError<E>,
+            >,
+    {
+        let packet = match ctx
+            .call(&self.control, pkt)
             .await
             .inspect_err(|_| {
                 self.drop_payload(&PayloadError::Service);
@@ -313,12 +330,12 @@ mod tests {
 
     use ntex_bytes::{ByteString, Bytes};
     use ntex_io::{Io, testing::IoTest};
-    use ntex_service::{cfg::SharedCfg, fn_service};
+    use ntex_service::{Pipeline, cfg::SharedCfg, fn_service};
     use ntex_util::future::lazy;
     use ntex_util::time::{Seconds, sleep};
 
     use super::*;
-    use crate::v3::{QoS, codec::Decoded};
+    use crate::v3::{MqttSink, QoS, codec::Decoded};
 
     #[ntex::test]
     async fn test_dup_packet_id() {
@@ -326,19 +343,22 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
-        let disp = Pipeline::new(Dispatcher::new(
-            shared.clone(),
-            fn_service(|_| async {
-                sleep(Seconds(10)).await;
-                Ok(Either::Left(()))
-            }),
-            fn_service(async |_| {
-                Ok(ProtocolMessageAck {
-                    result: ProtocolMessageKind::Nothing,
-                })
-            }),
-            32 * 1024,
-        ));
+        let disp = Pipeline::with(
+            Session::new((), MqttSink::new(shared.clone())),
+            Dispatcher::new(
+                shared.clone(),
+                fn_service(|_| async {
+                    sleep(Seconds(10)).await;
+                    Ok(Either::Left(()))
+                }),
+                fn_service(async |_| {
+                    Ok(ProtocolMessageAck {
+                        result: ProtocolMessageKind::Nothing,
+                    })
+                }),
+                32 * 1024,
+            ),
+        );
 
         let mut f: Pin<Box<dyn Future<Output = Result<_, _>>>> =
             Box::pin(disp.call(Decoded::Publish(
