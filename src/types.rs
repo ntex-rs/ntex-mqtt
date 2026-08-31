@@ -1,3 +1,7 @@
+use std::error::Error;
+
+use ntex_io::IoBoxed;
+
 pub(crate) const MQTT: &[u8] = b"MQTT";
 pub(crate) const MQTT_LEVEL_3: u8 = 4;
 pub(crate) const MQTT_LEVEL_5: u8 = 5;
@@ -80,4 +84,23 @@ pub(crate) struct FixedHeader {
     /// the number of bytes remaining within the current packet,
     /// including data in the variable header and the payload.
     pub(crate) remaining_length: u32,
+}
+
+pub trait InputMapper {
+    type Input;
+    type State: 'static;
+
+    fn map(&self, input: Self::Input) -> Result<(IoBoxed, Self::State), Box<dyn Error>>;
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct DefaultMapper;
+
+impl InputMapper for DefaultMapper {
+    type Input = IoBoxed;
+    type State = ();
+
+    fn map(&self, input: IoBoxed) -> Result<(IoBoxed, Self::State), Box<dyn Error>> {
+        Ok((input, ()))
+    }
 }

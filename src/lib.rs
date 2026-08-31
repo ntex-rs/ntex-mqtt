@@ -47,14 +47,14 @@ pub use self::types::QoS;
 pub const TCP_PORT: u16 = 1883;
 pub const TLS_PORT: u16 = 8883;
 
-pub(crate) type HandshakePipeline<St, AppSt, Codec, Cfg, Err> = PipelineState<
+pub(crate) type HandshakePipeline<St, ImSt, AppSt, Codec, Cfg, Err> = PipelineState<
     St,
-    IoBoxed,
+    (IoBoxed, ImSt),
     (
         IoBoxed,
         Codec,
         Session<Cfg, AppSt>,
-        Connection<Cfg, St, AppSt>,
+        Connection<Cfg, AppSt>,
         Seconds,
     ),
     Err,

@@ -8,22 +8,25 @@ use super::{Session, codec as mqtt, shared::MqttShared, sink::MqttSink};
 const DEFAULT_KEEPALIVE: Seconds = Seconds(30);
 
 /// Connect message
-pub struct Handshake {
+pub struct Handshake<St = ()> {
     io: IoBoxed,
+    st: St,
     pkt: Box<mqtt::Connect>,
     pkt_size: u32,
     shared: Rc<MqttShared>,
 }
 
-impl Handshake {
+impl<St> Handshake<St> {
     pub(crate) fn new(
         pkt: Box<mqtt::Connect>,
         pkt_size: u32,
         io: IoBoxed,
+        st: St,
         shared: Rc<MqttShared>,
     ) -> Self {
         Self {
             io,
+            st,
             pkt,
             pkt_size,
             shared,
@@ -50,13 +53,18 @@ impl Handshake {
         &self.io
     }
 
+    #[inline]
+    pub fn st(&self) -> &St {
+        &self.st
+    }
+
     /// Returns mqtt server sink
     pub fn sink(&self) -> MqttSink {
         MqttSink::new(self.shared.clone())
     }
 
     /// Ack handshake message and set state
-    pub fn ack<St>(self, st: St, session_present: bool) -> HandshakeAck<St> {
+    pub fn ack<AppSt>(self, st: AppSt, session_present: bool) -> HandshakeAck<AppSt> {
         let Handshake {
             io, shared, pkt, ..
         } = self;
@@ -81,28 +89,28 @@ impl Handshake {
     }
 
     /// Create connect ack object with `identifier rejected` return code
-    pub fn identifier_rejected<St>(self) -> HandshakeAck<St> {
+    pub fn identifier_rejected<AppSt>(self) -> HandshakeAck<AppSt> {
         self.failed(mqtt::ConnectAckReason::IdentifierRejected)
     }
 
     /// Create connect ack object with `bad user name or password` return code
-    pub fn bad_username_or_pwd<St>(self) -> HandshakeAck<St> {
+    pub fn bad_username_or_pwd<AppSt>(self) -> HandshakeAck<AppSt> {
         self.failed(mqtt::ConnectAckReason::BadUserNameOrPassword)
     }
 
     /// Create connect ack object with `not authorized` return code
-    pub fn not_authorized<St>(self) -> HandshakeAck<St> {
+    pub fn not_authorized<AppSt>(self) -> HandshakeAck<AppSt> {
         self.failed(mqtt::ConnectAckReason::NotAuthorized)
     }
 
     /// Create connect ack object with `service unavailable` return code
-    pub fn service_unavailable<St>(self) -> HandshakeAck<St> {
+    pub fn service_unavailable<AppSt>(self) -> HandshakeAck<AppSt> {
         self.failed(mqtt::ConnectAckReason::ServiceUnavailable)
     }
 
     #[inline]
     /// Create handshake ack object with error
-    pub fn failed<St>(self, return_code: mqtt::ConnectAckReason) -> HandshakeAck<St> {
+    pub fn failed<AppSt>(self, return_code: mqtt::ConnectAckReason) -> HandshakeAck<AppSt> {
         HandshakeAck {
             return_code,
             io: self.io,
@@ -116,7 +124,7 @@ impl Handshake {
     }
 }
 
-impl fmt::Debug for Handshake {
+impl<St> fmt::Debug for Handshake<St> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.pkt.fmt(f)
     }

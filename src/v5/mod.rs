@@ -14,7 +14,7 @@ mod shared;
 mod sink;
 
 pub type Session<St> = crate::Session<MqttSink, St>;
-pub type Connection<St, AppSt> = crate::Connection<MqttSink, St, AppSt>;
+pub type Connection<St> = crate::Connection<MqttSink, St>;
 
 use ntex_error::Error;
 use std::num::NonZeroU16;

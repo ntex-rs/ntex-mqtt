@@ -16,37 +16,32 @@ use super::publish::{Publish, PublishAck};
 use super::{Connection, Session, ToPublishAck, shared::Ack, shared::MqttShared};
 
 /// MQTT 5 protocol dispatcher
-pub(super) fn factory<St, AppSt, E, Pub, Ctl>(
+pub(super) fn factory<AppSt, E, Pub, Ctl>(
     publish: Pub,
     control: Ctl,
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
-    Connection<St, AppSt>,
+    Connection<AppSt>,
     Res = Option<Encoded>,
     Error = DispatcherError<E>,
     InitError = Box<dyn Error>,
 >
 where
-    St: 'static,
     AppSt: 'static,
-    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St, AppSt>, Res = PublishAck> + 'static,
+    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<AppSt>, Res = PublishAck> + 'static,
     Pub::Error: ToPublishAck<Error = E>,
     Pub::InitError: Into<Box<dyn Error>> + 'static,
-    Ctl: ServiceFactory<
-            Session<AppSt>,
-            ProtocolMessage,
-            Connection<St, AppSt>,
-            Res = ProtocolMessageAck,
-        > + 'static,
+    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<AppSt>, Res = ProtocolMessageAck>
+        + 'static,
     Ctl::InitError: Into<Box<dyn Error>> + 'static,
     E: From<Ctl::Error> + 'static,
 {
-    fn_factory_with_config(async move |con: &Connection<St, AppSt>| {
+    fn_factory_with_config(async move |con: &Connection<AppSt>| {
         let cfg: Cfg<MqttServiceConfig> = con.cfg();
 
         // create services
-        let sink = con.session().sink().shared();
+        let sink = con.st().sink().shared();
         let (publish, control) = join(publish.create(con), control.create(con)).await;
 
         let publish = publish.map_err(Into::into)?;

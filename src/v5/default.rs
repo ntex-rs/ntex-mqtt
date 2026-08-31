@@ -59,11 +59,11 @@ impl<St, E> Service<St, ProtocolMessage> for DefaultProtocolService<E> {
 /// Default is 64kb size
 pub struct InFlightService;
 
-impl<S, St, AppSt> Middleware<S, St, Connection<St, AppSt>> for InFlightService {
+impl<S, St, AppSt> Middleware<S, St, Connection<AppSt>> for InFlightService {
     type Service = InFlightServiceImpl<S>;
 
     #[inline]
-    fn create(&self, service: S, cfg: &Connection<St, AppSt>) -> Self::Service {
+    fn create(&self, service: S, cfg: &Connection<AppSt>) -> Self::Service {
         let cfg: Cfg<MqttServiceConfig> = cfg.cfg();
         InFlightServiceImpl::new(0, cfg.max_receive_size, service)
     }
@@ -77,9 +77,9 @@ pub struct ControlService<S, E> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ControlFactory<St, AppSt, Sf, E> {
+pub struct ControlFactory<AppSt, Sf, E> {
     svc: Sf,
-    _t: PhantomData<(E, St, AppSt)>,
+    _t: PhantomData<(E, AppSt)>,
 }
 
 impl<S, E> ControlService<S, E> {
@@ -92,9 +92,9 @@ impl<S, E> ControlService<S, E> {
     }
 }
 
-impl<St, AppSt, Sf, E> ControlFactory<St, AppSt, Sf, E>
+impl<AppSt, Sf, E> ControlFactory<AppSt, Sf, E>
 where
-    Sf: ServiceFactory<Session<AppSt>, Control<E>, Connection<St, AppSt>>,
+    Sf: ServiceFactory<Session<AppSt>, Control<E>, Connection<AppSt>>,
 {
     pub(super) fn new(svc: Sf) -> Self {
         Self {
@@ -104,10 +104,10 @@ where
     }
 }
 
-impl<St, AppSt, Sf, E> ServiceFactory<Session<AppSt>, Control<E>, Connection<St, AppSt>>
-    for ControlFactory<St, AppSt, Sf, E>
+impl<AppSt, Sf, E> ServiceFactory<Session<AppSt>, Control<E>, Connection<AppSt>>
+    for ControlFactory<AppSt, Sf, E>
 where
-    Sf: ServiceFactory<Session<AppSt>, Control<E>, Connection<St, AppSt>, Res = Option<Encoded>>,
+    Sf: ServiceFactory<Session<AppSt>, Control<E>, Connection<AppSt>, Res = Option<Encoded>>,
     Sf::InitError: Error + 'static,
 {
     type Res = Sf::Res;
@@ -116,9 +116,9 @@ where
     type Service = ControlService<Sf::Service, E>;
     type InitError = Box<dyn Error>;
 
-    async fn create(&self, cfg: &Connection<St, AppSt>) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &Connection<AppSt>) -> Result<Self::Service, Self::InitError> {
         Ok(ControlService {
-            shared: cfg.session().sink().shared(),
+            shared: cfg.st().sink().shared(),
             svc: self.svc.create(cfg).await.map_err(dyn_err)?,
             _t: PhantomData,
         })

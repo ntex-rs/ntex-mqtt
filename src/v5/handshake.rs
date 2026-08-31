@@ -4,22 +4,25 @@ use std::{fmt, num::NonZeroU16, rc::Rc};
 use super::{Session, codec, shared::MqttShared, sink::MqttSink};
 
 /// Handshake message
-pub struct Handshake {
+pub struct Handshake<St = ()> {
     io: IoBoxed,
+    st: St,
     pkt: Box<codec::Connect>,
     size: u32,
     pub(super) shared: Rc<MqttShared>,
 }
 
-impl Handshake {
+impl<St> Handshake<St> {
     pub(crate) fn new(
         pkt: Box<codec::Connect>,
         size: u32,
         io: IoBoxed,
+        st: St,
         shared: Rc<MqttShared>,
     ) -> Self {
         Self {
             io,
+            st,
             pkt,
             size,
             shared,
@@ -47,6 +50,11 @@ impl Handshake {
     }
 
     #[inline]
+    pub fn st(&self) -> &St {
+        &self.st
+    }
+
+    #[inline]
     /// Returns mqtt server sink
     pub fn sink(&self) -> MqttSink {
         MqttSink::new(self.shared.clone())
@@ -54,7 +62,7 @@ impl Handshake {
 
     #[inline]
     /// Ack handshake message and set state
-    pub fn ack<St>(self, st: St) -> HandshakeAck<St> {
+    pub fn ack<AppSt>(self, st: AppSt) -> HandshakeAck<AppSt> {
         let max_pkt_size = self.shared.codec.max_inbound_size();
         let receive_max = self.shared.receive_max();
         let packet = codec::ConnectAck {
@@ -70,9 +78,10 @@ impl Handshake {
             ..codec::ConnectAck::default()
         };
 
-        let Handshake {
-            io, shared, pkt, ..
-        } = self;
+        let io = self.io;
+        let pkt = self.pkt;
+        let shared = self.shared;
+
         // [MQTT-3.1.2-22]
         let keepalive = if pkt.keep_alive != 0 {
             (pkt.keep_alive >> 1).saturating_add(pkt.keep_alive)
@@ -93,7 +102,7 @@ impl Handshake {
 
     #[inline]
     /// Create handshake ack object with error
-    pub fn failed<St>(self, reason_code: codec::ConnectAckReason) -> HandshakeAck<St> {
+    pub fn failed<AppSt>(self, reason_code: codec::ConnectAckReason) -> HandshakeAck<AppSt> {
         HandshakeAck {
             io: self.io,
             shared: self.shared,
@@ -109,7 +118,7 @@ impl Handshake {
 
     #[inline]
     /// Create handshake ack object with provided `ConnectAck` packet
-    pub fn fail_with<St>(self, ack: codec::ConnectAck) -> HandshakeAck<St> {
+    pub fn fail_with<AppSt>(self, ack: codec::ConnectAck) -> HandshakeAck<AppSt> {
         HandshakeAck {
             io: self.io,
             shared: self.shared,

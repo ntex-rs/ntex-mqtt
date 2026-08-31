@@ -17,34 +17,29 @@ use super::control::{
 use super::{Connection, Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
-pub(super) fn factory<St, AppSt, Sf, Ctl, E>(
+pub(super) fn factory<AppSt, Sf, Ctl, E>(
     publish: Sf,
     control: Ctl,
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
-    Connection<St, AppSt>,
+    Connection<AppSt>,
     Res = Option<Encoded>,
     Error = DispatcherError<E>,
     InitError = Box<dyn Error>,
 >
 where
-    St: 'static,
     AppSt: 'static,
     E: From<Sf::Error> + From<Ctl::Error> + 'static,
-    Sf: ServiceFactory<Session<AppSt>, Publish, Connection<St, AppSt>, Res = ()> + 'static,
+    Sf: ServiceFactory<Session<AppSt>, Publish, Connection<AppSt>, Res = ()> + 'static,
     Sf::InitError: Into<Box<dyn Error>> + 'static,
-    Ctl: ServiceFactory<
-            Session<AppSt>,
-            ProtocolMessage,
-            Connection<St, AppSt>,
-            Res = ProtocolMessageAck,
-        > + 'static,
+    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<AppSt>, Res = ProtocolMessageAck>
+        + 'static,
     Ctl::InitError: Into<Box<dyn Error>> + 'static,
 {
-    ntex_service::fn_factory_with_config(async move |st: &Connection<St, AppSt>| {
+    ntex_service::fn_factory_with_config(async move |st: &Connection<AppSt>| {
         // create services
-        let sink = st.session().sink().shared();
+        let sink = st.st().sink().shared();
         let fut = join(publish.create(st), control.create(st));
         let (publish, control) = fut.await;
 
