@@ -16,7 +16,7 @@ type ControlPipeline<St, AppSt, Codec, Cfg, Err, E> = PipelineFactory<
     Control<E>,
     Response<Codec>,
     MqttError<Err>,
-    Connection<Cfg, St>,
+    Connection<Cfg, St, AppSt>,
     Box<dyn Error>,
 >;
 
@@ -53,6 +53,38 @@ impl<St, AppSt, Codec: Encoder, Cfg, Err, E, T, M> MqttServer<St, AppSt, Codec, 
     }
 }
 
+impl<St, AppSt, Codec, Cfg, Err, E, T, M> MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M>
+where
+    St: Clone + 'static,
+    AppSt: 'static,
+    Cfg: 'static,
+    Err: 'static,
+    E: 'static,
+    T: ServiceFactory<
+            Session<Cfg, AppSt>,
+            Request<Codec>,
+            Connection<Cfg, St, AppSt>,
+            Res = Response<Codec>,
+            Error = DispatcherError<E>,
+            InitError = Box<dyn Error>,
+        > + 'static,
+    M: Middleware<T::Service, Session<Cfg, AppSt>, Connection<Cfg, St, AppSt>>,
+    M::Service: Service<
+            Session<Cfg, AppSt>,
+            Request<Codec>,
+            Res = Response<Codec>,
+            Error = DispatcherError<E>,
+        > + 'static,
+    Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
+{
+    pub fn build(
+        self,
+    ) -> impl Service<St, IoBoxed, Res = (), Error = MqttError<Err>>
+    + use<St, AppSt, Codec, Cfg, Err, E, T, M> {
+        self
+    }
+}
+
 impl<St, AppSt, Codec, Cfg, Err, E, T, M> Service<St, IoBoxed>
     for MqttServer<St, AppSt, Codec, Cfg, Err, E, T, M>
 where
@@ -64,12 +96,12 @@ where
     T: ServiceFactory<
             Session<Cfg, AppSt>,
             Request<Codec>,
-            Connection<Cfg, St>,
+            Connection<Cfg, St, AppSt>,
             Res = Response<Codec>,
             Error = DispatcherError<E>,
             InitError = Box<dyn Error>,
         > + 'static,
-    M: Middleware<T::Service, Connection<Cfg, St>>,
+    M: Middleware<T::Service, Session<Cfg, AppSt>, Connection<Cfg, St, AppSt>>,
     M::Service: Service<
             Session<Cfg, AppSt>,
             Request<Codec>,
@@ -84,7 +116,7 @@ where
     async fn call(&self, req: IoBoxed, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
         let tag = req.tag();
 
-        let (io, codec, con, session, keepalive) = self.handshake.call(req, ctx.st()).await?;
+        let (io, codec, session, con, keepalive) = self.handshake.call(req, ctx.st()).await?;
         log::trace!("{tag}: Connection handshake succeeded");
 
         let control = self
@@ -126,12 +158,12 @@ where
     T: ServiceFactory<
             Session<Cfg, AppSt>,
             Request<Codec>,
-            Connection<Cfg, St>,
+            Connection<Cfg, St, AppSt>,
             Res = Response<Codec>,
             Error = DispatcherError<E>,
             InitError = Box<dyn Error>,
         > + 'static,
-    M: Middleware<T::Service, Connection<Cfg, St>>,
+    M: Middleware<T::Service, Session<Cfg, AppSt>, Connection<Cfg, St, AppSt>>,
     M::Service: Service<
             Session<Cfg, AppSt>,
             Request<Codec>,

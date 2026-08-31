@@ -8,8 +8,14 @@ use ntex_util::HashMap;
 
 use super::{Connection, Session, publish::Publish, publish::PublishAck};
 
-type Handler<St, AppSt, E> =
-    BoxServiceFactory<Session<AppSt>, Publish, PublishAck, E, Connection<St>, Box<dyn Error>>;
+type Handler<St, AppSt, E> = BoxServiceFactory<
+    Session<AppSt>,
+    Publish,
+    PublishAck,
+    E,
+    Connection<St, AppSt>,
+    Box<dyn Error>,
+>;
 type HandlerService<AppSt, E> = BoxService<Session<AppSt>, Publish, PublishAck, E>;
 
 /// Router - structure that follows the builder pattern
@@ -36,11 +42,16 @@ where
     ///
     /// Default service to be used if no matching resource could be found.
     pub fn new<U>(
-        default: impl IntoServiceFactory<U, Session<AppSt>, Publish, Connection<St>>,
+        default: impl IntoServiceFactory<U, Session<AppSt>, Publish, Connection<St, AppSt>>,
     ) -> Self
     where
-        U: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = PublishAck, Error = Err>
-            + 'static,
+        U: ServiceFactory<
+                Session<AppSt>,
+                Publish,
+                Connection<St, AppSt>,
+                Res = PublishAck,
+                Error = Err,
+            > + 'static,
         U::InitError: Error + 'static,
     {
         Router {
@@ -59,9 +70,14 @@ where
     pub fn resource<T, F, U>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoServiceFactory<U, Session<AppSt>, Publish, Connection<St>>,
-        U: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = PublishAck, Error = Err>
-            + 'static,
+        F: IntoServiceFactory<U, Session<AppSt>, Publish, Connection<St, AppSt>>,
+        U: ServiceFactory<
+                Session<AppSt>,
+                Publish,
+                Connection<St, AppSt>,
+                Res = PublishAck,
+                Error = Err,
+            > + 'static,
         U::InitError: Error + 'static,
     {
         self.router.path(address, self.handlers.len());
@@ -84,8 +100,12 @@ where
 }
 
 impl<St, AppSt, Err>
-    IntoServiceFactory<RouterFactory<St, AppSt, Err>, Session<AppSt>, Publish, Connection<St>>
-    for Router<St, AppSt, Err>
+    IntoServiceFactory<
+        RouterFactory<St, AppSt, Err>,
+        Session<AppSt>,
+        Publish,
+        Connection<St, AppSt>,
+    > for Router<St, AppSt, Err>
 where
     St: 'static,
     AppSt: 'static,
@@ -108,7 +128,7 @@ impl<St, AppSt, Err> fmt::Debug for RouterFactory<St, AppSt, Err> {
     }
 }
 
-impl<St, AppSt, Err> ServiceFactory<Session<AppSt>, Publish, Connection<St>>
+impl<St, AppSt, Err> ServiceFactory<Session<AppSt>, Publish, Connection<St, AppSt>>
     for RouterFactory<St, AppSt, Err>
 where
     St: 'static,
@@ -120,7 +140,7 @@ where
     type Service = RouterService<AppSt, Err>;
     type InitError = Box<dyn Error>;
 
-    async fn create(&self, cfg: &Connection<St>) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &Connection<St, AppSt>) -> Result<Self::Service, Self::InitError> {
         let default = self.default.create(cfg).await?;
 
         let mut handlers = Vec::with_capacity(self.handlers.len());

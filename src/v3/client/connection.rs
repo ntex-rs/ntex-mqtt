@@ -3,7 +3,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Router, RouterBuilder};
-use ntex_service::pipeline::{Pipeline, PipelineWithState};
+use ntex_service::pipeline::{Pipeline, PipelineState};
 use ntex_service::{IntoService, Service, fn_service, fn_service_st};
 use ntex_util::future::Either;
 use ntex_util::time::{Millis, Seconds, sleep};
@@ -77,7 +77,7 @@ impl Client {
     {
         let mut builder = Router::build();
         builder.path(address, 0);
-        let handlers = vec![PipelineWithState::new(service.into_service())];
+        let handlers = vec![PipelineState::new(service.into_service())];
 
         ClientRouter {
             builder,
@@ -202,7 +202,7 @@ impl Client {
 /// Mqtt client with routing capabilities
 pub struct ClientRouter<Err, PErr> {
     builder: RouterBuilder<usize>,
-    handlers: Vec<PipelineWithState<Session<()>, Publish, (), PErr>>,
+    handlers: Vec<PipelineState<Session<()>, Publish, (), PErr>>,
     io: IoBoxed,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
@@ -235,7 +235,7 @@ where
     {
         self.builder.path(address, self.handlers.len());
         self.handlers
-            .push(PipelineWithState::new(service.into_service()));
+            .push(PipelineState::new(service.into_service()));
         self
     }
 
@@ -304,7 +304,7 @@ where
 
 fn dispatch<Err, PErr>(
     router: Router<usize>,
-    handlers: Vec<PipelineWithState<Session<()>, Publish, (), PErr>>,
+    handlers: Vec<PipelineState<Session<()>, Publish, (), PErr>>,
 ) -> impl Service<Session<()>, Publish, Res = Either<(), Publish>, Error = Err>
 where
     PErr: 'static,

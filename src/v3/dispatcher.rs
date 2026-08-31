@@ -1,7 +1,7 @@
 use std::{cell::RefCell, error::Error, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
 use ntex_service::cfg::Cfg;
-use ntex_service::pipeline::PipelineWithState;
+use ntex_service::pipeline::PipelineState;
 use ntex_service::{Ctx, Service, ServiceFactory};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
@@ -23,7 +23,7 @@ pub(super) fn factory<St, AppSt, Sf, Ctl, E>(
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
-    Connection<St>,
+    Connection<St, AppSt>,
     Res = Option<Encoded>,
     Error = DispatcherError<E>,
     InitError = Box<dyn Error>,
@@ -31,21 +31,21 @@ pub(super) fn factory<St, AppSt, Sf, Ctl, E>(
 where
     St: 'static,
     AppSt: 'static,
-    E: 'static,
-    Sf: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = ()> + 'static,
-    Sf::Error: Into<E>,
+    E: From<Sf::Error> + From<Ctl::Error> + 'static,
+    Sf: ServiceFactory<Session<AppSt>, Publish, Connection<St, AppSt>, Res = ()> + 'static,
     Sf::InitError: Into<Box<dyn Error>> + 'static,
-    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<St>, Res = ProtocolMessageAck>
-        + 'static,
-    Ctl::Error: Into<E>,
+    Ctl: ServiceFactory<
+            Session<AppSt>,
+            ProtocolMessage,
+            Connection<St, AppSt>,
+            Res = ProtocolMessageAck,
+        > + 'static,
     Ctl::InitError: Into<Box<dyn Error>> + 'static,
 {
-    let factories = Rc::new((publish, control));
-
-    ntex_service::fn_factory_with_config(async move |st: &Connection<St>| {
+    ntex_service::fn_factory_with_config(async move |st: &Connection<St, AppSt>| {
         // create services
-        let sink = st.sink().shared();
-        let fut = join(factories.0.create(st), factories.1.create(st));
+        let sink = st.session().sink().shared();
+        let fut = join(publish.create(st), control.create(st));
         let (publish, control) = fut.await;
 
         let publish = publish.map_err(Into::into)?.map_err(Into::into);
@@ -54,7 +54,7 @@ where
         let control = BufferService::new(
             16,
             // limit number of in-flight messages
-            PipelineWithState::new(InFlightService::new(1, control)),
+            PipelineState::new(InFlightService::new(1, control)),
         )
         .map_err(|err| match err {
             BufferServiceError::Service(e) => DispatcherError::Service(e.into()),

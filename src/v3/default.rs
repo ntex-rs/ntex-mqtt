@@ -1,6 +1,7 @@
 use std::{convert::Infallible, error::Error, marker::PhantomData, rc::Rc};
 
 use ntex_service::{Ctx, Middleware, Service, ServiceFactory, cfg::Cfg};
+use ntex_util::dyn_err;
 
 use crate::error::PayloadError;
 use crate::{Control, MqttServiceConfig, Reason, inflight::InFlightServiceImpl};
@@ -58,11 +59,11 @@ impl<St, E> Service<St, ProtocolMessage> for DefaultProtocolService<E> {
 /// Default is 16 in-flight messages and 64kb size
 pub struct InFlightService;
 
-impl<S, St> Middleware<S, Connection<St>> for InFlightService {
+impl<S, St, AppSt> Middleware<S, St, Connection<St, AppSt>> for InFlightService {
     type Service = InFlightServiceImpl<S>;
 
     #[inline]
-    fn create(&self, service: S, con: &Connection<St>) -> Self::Service {
+    fn create(&self, service: S, con: &Connection<St, AppSt>) -> Self::Service {
         let cfg: Cfg<MqttServiceConfig> = con.cfg();
         InFlightServiceImpl::new(cfg.max_receive, cfg.max_receive_size, service)
     }
@@ -100,10 +101,10 @@ impl<St, AppSt, S, E> ControlFactory<St, AppSt, S, E> {
     }
 }
 
-impl<St, AppSt, S, E> ServiceFactory<Session<AppSt>, Control<E>, Connection<St>>
+impl<St, AppSt, S, E> ServiceFactory<Session<AppSt>, Control<E>, Connection<St, AppSt>>
     for ControlFactory<St, AppSt, S, E>
 where
-    S: ServiceFactory<Session<AppSt>, Control<E>, Connection<St>, Res = Option<Encoded>>,
+    S: ServiceFactory<Session<AppSt>, Control<E>, Connection<St, AppSt>, Res = Option<Encoded>>,
     S::InitError: Error + 'static,
 {
     type Res = Option<Encoded>;
@@ -112,10 +113,10 @@ where
     type Service = ControlService<S::Service, E>;
     type InitError = Box<dyn Error>;
 
-    async fn create(&self, cfg: &Connection<St>) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &Connection<St, AppSt>) -> Result<Self::Service, Self::InitError> {
         Ok(ControlService {
-            shared: cfg.sink().shared(),
-            svc: self.svc.create(cfg).await.map_err(Box::new)?,
+            shared: cfg.session().sink().shared(),
+            svc: self.svc.create(cfg).await.map_err(dyn_err)?,
             _t: PhantomData,
         })
     }

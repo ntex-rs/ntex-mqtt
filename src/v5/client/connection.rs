@@ -3,7 +3,7 @@ use std::{cell::RefCell, fmt, marker, num::NonZeroU16, rc::Rc};
 use ntex_bytes::ByteString;
 use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Path, Router, RouterBuilder};
-use ntex_service::pipeline::{Pipeline, PipelineWithState};
+use ntex_service::pipeline::{Pipeline, PipelineState};
 use ntex_service::{IntoService, Service, cfg::Cfg, fn_service, fn_service_st};
 use ntex_util::time::{Millis, Seconds, sleep};
 use ntex_util::{HashMap, future::Either};
@@ -93,7 +93,7 @@ impl Client {
     {
         let mut builder = Router::build();
         builder.path(address, 0);
-        let handlers = vec![PipelineWithState::new(service.into_service())];
+        let handlers = vec![PipelineState::new(service.into_service())];
 
         ClientRouter {
             builder,
@@ -221,7 +221,7 @@ impl Client {
 pub struct ClientRouter<Err, PErr> {
     io: IoBoxed,
     builder: RouterBuilder<usize>,
-    handlers: Vec<PipelineWithState<Session<()>, Publish, PublishAck, PErr>>,
+    handlers: Vec<PipelineState<Session<()>, Publish, PublishAck, PErr>>,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     max_receive: usize,
@@ -254,7 +254,7 @@ where
     {
         self.builder.path(address, self.handlers.len());
         self.handlers
-            .push(PipelineWithState::new(service.into_service()));
+            .push(PipelineState::new(service.into_service()));
         self
     }
 
@@ -330,7 +330,7 @@ where
 
 fn dispatch<PErr>(
     router: Router<usize>,
-    handlers: Vec<PipelineWithState<Session<()>, Publish, PublishAck, PErr>>,
+    handlers: Vec<PipelineState<Session<()>, Publish, PublishAck, PErr>>,
 ) -> impl Service<Session<()>, Publish, Res = Either<Publish, PublishAck>, Error = PErr>
 where
     PErr: 'static,

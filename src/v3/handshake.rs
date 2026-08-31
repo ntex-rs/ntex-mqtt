@@ -3,7 +3,7 @@ use std::{fmt, num::NonZeroU32, rc::Rc};
 use ntex_io::IoBoxed;
 use ntex_util::time::Seconds;
 
-use super::{codec as mqtt, shared::MqttShared, sink::MqttSink};
+use super::{Session, codec as mqtt, shared::MqttShared, sink::MqttSink};
 
 const DEFAULT_KEEPALIVE: Seconds = Seconds(30);
 
@@ -66,12 +66,14 @@ impl Handshake {
         } else {
             DEFAULT_KEEPALIVE
         };
+        let session = Session::new(st, MqttSink::new(shared.clone()));
+
         HandshakeAck {
             io,
             shared,
             keepalive,
             session_present,
-            session: Some(st),
+            session: Some(session),
             max_send: None,
             max_packet_size: None,
             return_code: mqtt::ConnectAckReason::ConnectionAccepted,
@@ -123,7 +125,7 @@ impl fmt::Debug for Handshake {
 /// Ack connect message
 pub struct HandshakeAck<St> {
     pub(crate) io: IoBoxed,
-    pub(crate) session: Option<St>,
+    pub(crate) session: Option<Session<St>>,
     pub(crate) session_present: bool,
     pub(crate) return_code: mqtt::ConnectAckReason,
     pub(crate) shared: Rc<MqttShared>,
@@ -145,6 +147,11 @@ impl<St> fmt::Debug for HandshakeAck<St> {
 }
 
 impl<St> HandshakeAck<St> {
+    /// Created session
+    pub fn session(&self) -> Option<&Session<St>> {
+        self.session.as_ref()
+    }
+
     #[must_use]
     /// Set idle time-out for the connection in seconds.
     ///

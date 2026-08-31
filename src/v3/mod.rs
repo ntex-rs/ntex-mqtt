@@ -12,7 +12,7 @@ mod shared;
 mod sink;
 
 pub type Session<St> = crate::Session<MqttSink, St>;
-pub type Connection<St> = crate::Connection<MqttSink, St>;
+pub type Connection<St, AppSt> = crate::Connection<MqttSink, St, AppSt>;
 
 pub use self::control::{ProtocolMessage, ProtocolMessageAck};
 pub use self::handshake::{Handshake, HandshakeAck};

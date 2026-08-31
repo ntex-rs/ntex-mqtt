@@ -7,7 +7,7 @@ use ntex_service::pipeline::PipelineFactory;
 use ntex_service::{
     Ctx, Identity, IntoService, IntoServiceFactory, Service, ServiceFactory, Stack,
 };
-use ntex_util::time::{Seconds, timeout_checked};
+use ntex_util::{time::Seconds, time::timeout_checked};
 
 use crate::error::{DispatcherError, HandshakeError, MqttError, ProtocolError};
 use crate::{HandshakePipeline, MqttServiceConfig, control, control::Control, service};
@@ -25,63 +25,59 @@ type ControlPipeline<St, AppSt, E, Err> = PipelineFactory<
     Control<E>,
     Option<Encoded>,
     MqttError<Err>,
-    Connection<St>,
+    Connection<St, AppSt>,
     Box<dyn Error>,
 >;
 
 /// Mqtt Server
-pub struct MqttServer<St, AppSt, Err, Pub, P, M = Identity>
-where
-    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St>>,
-{
+pub struct MqttServer<St, AppSt, Err, E, Pub, P, M = Identity> {
     publish: Pub,
     protocol: P,
     middleware: M,
-    control: ControlPipeline<St, AppSt, Pub::Error, Err>,
+    control: ControlPipeline<St, AppSt, E, Err>,
     pool: Rc<MqttSinkPool>,
 }
 
-impl<St, AppSt, Err, Pub, P, M> fmt::Debug for MqttServer<St, AppSt, Err, Pub, P, M>
-where
-    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St>>,
-{
+impl<St, AppSt, Err, E, Pub, P, M> fmt::Debug for MqttServer<St, AppSt, Err, E, Pub, P, M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("v5::MqttServer").finish()
     }
 }
 
-impl<AppSt, Err, Pub>
-    MqttServer<(), AppSt, Err, Pub, DefaultProtocolService<Pub::Error>, InFlightService>
+impl<AppSt, Err, E, Pub>
+    MqttServer<(), AppSt, Err, E, Pub, DefaultProtocolService<E>, InFlightService>
 where
     AppSt: 'static,
     Err: 'static,
-    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<()>, Res = PublishAck> + 'static,
-    Pub::Error: ToPublishAck<Error = Pub::Error>,
+    E: 'static,
+    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<(), AppSt>, Res = PublishAck> + 'static,
+    Pub::Error: ToPublishAck<Error = E>,
     Pub::InitError: Into<Box<dyn Error>> + 'static,
 {
     /// Create mqtt v5 server and provide publish service
     pub fn new<I>(publish: I) -> Self
     where
-        I: IntoServiceFactory<Pub, Session<AppSt>, Publish, Connection<()>>,
+        I: IntoServiceFactory<Pub, Session<AppSt>, Publish, Connection<(), AppSt>>,
     {
         Self::with_state(publish)
     }
 }
 
-impl<St, AppSt, Err, Pub>
-    MqttServer<St, AppSt, Err, Pub, DefaultProtocolService<Pub::Error>, InFlightService>
+impl<St, AppSt, Err, E, Pub>
+    MqttServer<St, AppSt, Err, E, Pub, DefaultProtocolService<E>, InFlightService>
 where
     St: Clone + 'static,
     AppSt: 'static,
     Err: 'static,
-    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = PublishAck> + 'static,
-    Pub::Error: ToPublishAck<Error = Pub::Error>,
+    E: 'static,
+    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St, AppSt>, Res = PublishAck> + 'static,
+    Pub::Error: ToPublishAck<Error = E>,
     Pub::InitError: Into<Box<dyn Error>> + 'static,
 {
     /// Create mqtt v5 server with state
     pub fn with_state<I>(publish: I) -> Self
     where
-        I: IntoServiceFactory<Pub, Session<AppSt>, Publish, Connection<St>>,
+        I: IntoServiceFactory<Pub, Session<AppSt>, Publish, Connection<St, AppSt>>,
     {
         MqttServer {
             publish: publish.into_factory(),
@@ -96,17 +92,21 @@ where
     }
 }
 
-impl<St, AppSt, Err, Pub, P, M> MqttServer<St, AppSt, Err, Pub, P, M>
+impl<St, AppSt, Err, E, Pub, P, M> MqttServer<St, AppSt, Err, E, Pub, P, M>
 where
     St: Clone + 'static,
     AppSt: 'static,
     Err: 'static,
-    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = PublishAck> + 'static,
-    Pub::Error: ToPublishAck<Error = Pub::Error>,
+    E: From<P::Error> + 'static,
+    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St, AppSt>, Res = PublishAck> + 'static,
+    Pub::Error: ToPublishAck<Error = E>,
     Pub::InitError: Into<Box<dyn Error>> + 'static,
-    P: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<St>, Res = ProtocolMessageAck>
-        + 'static,
-    P::Error: Into<Pub::Error>,
+    P: ServiceFactory<
+            Session<AppSt>,
+            ProtocolMessage,
+            Connection<St, AppSt>,
+            Res = ProtocolMessageAck,
+        > + 'static,
     P::InitError: Error,
 {
     #[must_use]
@@ -117,7 +117,7 @@ where
     ///
     /// Use middleware when you need to read or modify *every* request or
     /// response in some way.
-    pub fn middleware<U>(self, mw: U) -> MqttServer<St, AppSt, Err, Pub, P, Stack<M, U>> {
+    pub fn middleware<U>(self, mw: U) -> MqttServer<St, AppSt, Err, E, Pub, P, Stack<M, U>> {
         MqttServer {
             middleware: Stack::new(self.middleware, mw),
             publish: self.publish,
@@ -129,7 +129,7 @@ where
 
     #[must_use]
     /// Replace middlewares
-    pub fn replace_middlewares<U>(self, mw: U) -> MqttServer<St, AppSt, Err, Pub, P, U> {
+    pub fn replace_middlewares<U>(self, mw: U) -> MqttServer<St, AppSt, Err, E, Pub, P, U> {
         MqttServer {
             middleware: mw,
             publish: self.publish,
@@ -144,17 +144,17 @@ where
     ///
     /// All control packets are processed sequentially, max number of buffered
     /// control packets is 16.
-    pub fn protocol<F, Srv>(self, service: F) -> MqttServer<St, AppSt, Err, Pub, Srv, M>
+    pub fn protocol<F, Srv>(self, service: F) -> MqttServer<St, AppSt, Err, E, Pub, Srv, M>
     where
-        F: IntoServiceFactory<Srv, Session<AppSt>, ProtocolMessage, Connection<St>>,
+        F: IntoServiceFactory<Srv, Session<AppSt>, ProtocolMessage, Connection<St, AppSt>>,
         Srv: ServiceFactory<
                 Session<AppSt>,
                 ProtocolMessage,
-                Connection<St>,
+                Connection<St, AppSt>,
                 Res = ProtocolMessageAck,
             > + 'static,
-        Srv::Error: Into<Pub::Error>,
         Srv::InitError: Error,
+        E: From<Srv::Error> + 'static,
     {
         MqttServer {
             publish: self.publish,
@@ -169,15 +169,11 @@ where
     /// Service to handle connection control messages
     pub fn control<Srv>(
         self,
-        f: impl IntoServiceFactory<Srv, Session<AppSt>, Control<Pub::Error>, Connection<St>>,
-    ) -> MqttServer<St, AppSt, Err, Pub, P, M>
+        f: impl IntoServiceFactory<Srv, Session<AppSt>, Control<E>, Connection<St, AppSt>>,
+    ) -> MqttServer<St, AppSt, Err, E, Pub, P, M>
     where
-        Srv: ServiceFactory<
-                Session<AppSt>,
-                Control<Pub::Error>,
-                Connection<St>,
-                Res = Option<Encoded>,
-            > + 'static,
+        Srv: ServiceFactory<Session<AppSt>, Control<E>, Connection<St, AppSt>, Res = Option<Encoded>>
+            + 'static,
         Srv::Error: Into<Err>,
         Srv::InitError: Error + 'static,
     {
@@ -193,7 +189,7 @@ where
     }
 
     /// Set service to handle handshake and create mqtt server
-    pub fn build<H>(
+    pub fn connect<H>(
         self,
         handshake: impl IntoService<H, St, Handshake>,
     ) -> service::MqttServer<
@@ -202,13 +198,13 @@ where
         Rc<MqttShared>,
         MqttSink,
         Err,
-        Pub::Error,
+        E,
         impl ServiceFactory<
             Session<AppSt>,
             Decoded,
-            Connection<St>,
+            Connection<St, AppSt>,
             Res = Option<Encoded>,
-            Error = DispatcherError<Pub::Error>,
+            Error = DispatcherError<E>,
             InitError = Box<dyn Error>,
         >,
         M,
@@ -245,8 +241,8 @@ where
     type Res = (
         IoBoxed,
         Rc<MqttShared>,
-        Connection<St>,
         Session<AppSt>,
+        Connection<St, AppSt>,
         Seconds,
     );
     type Error = MqttError<H::Error>;
@@ -333,19 +329,9 @@ where
                         Encoded::Packet(Packet::ConnectAck(Box::new(ack.packet))),
                         &shared.codec,
                     )?;
-                    let con = Connection::new(
-                        ctx.st().clone(),
-                        MqttSink::new(shared.clone()),
-                        ack.io.shared(),
-                    );
+                    let con = Connection::new(ctx.st().clone(), session.clone(), ack.io.shared());
 
-                    Ok((
-                        ack.io,
-                        shared.clone(),
-                        con,
-                        Session::new(session, MqttSink::new(shared)),
-                        Seconds(ack.keepalive),
-                    ))
+                    Ok((ack.io, shared.clone(), session, con, Seconds(ack.keepalive)))
                 } else {
                     log::trace!("Failed to complete handshake: {:#?}", ack.packet);
 

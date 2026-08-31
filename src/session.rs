@@ -2,15 +2,19 @@ use std::{fmt, ops::Deref, rc::Rc};
 
 use ntex_service::cfg::{Cfg, Configuration, SharedCfg};
 
-pub struct Connection<T, St> {
+pub struct Connection<T, St, AppSt> {
     st: St,
-    sink: T,
     shared: SharedCfg,
+    session: Session<T, AppSt>,
 }
 
-impl<T, St> Connection<T, St> {
-    pub(crate) fn new(st: St, sink: T, shared: SharedCfg) -> Self {
-        Self { st, sink, shared }
+impl<T, St, AppSt> Connection<T, St, AppSt> {
+    pub(crate) fn new(st: St, session: Session<T, AppSt>, shared: SharedCfg) -> Self {
+        Self {
+            st,
+            shared,
+            session,
+        }
     }
 
     #[inline]
@@ -19,8 +23,8 @@ impl<T, St> Connection<T, St> {
     }
 
     #[inline]
-    pub fn sink(&self) -> &T {
-        &self.sink
+    pub fn session(&self) -> &Session<T, AppSt> {
+        &self.session
     }
 
     #[inline]

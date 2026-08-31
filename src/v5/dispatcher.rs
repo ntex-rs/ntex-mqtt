@@ -1,7 +1,7 @@
 use std::{cell::RefCell, error::Error, marker::PhantomData, num, rc::Rc};
 
 use ntex_bytes::ByteString;
-use ntex_service::pipeline::PipelineWithState;
+use ntex_service::pipeline::PipelineState;
 use ntex_service::{Ctx, Service, ServiceFactory, cfg::Cfg, fn_factory_with_config};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashMap, HashSet, future::join, hash_map, services::inflight::InFlightService};
@@ -16,33 +16,37 @@ use super::publish::{Publish, PublishAck};
 use super::{Connection, Session, ToPublishAck, shared::Ack, shared::MqttShared};
 
 /// MQTT 5 protocol dispatcher
-pub(super) fn factory<St, AppSt, Pub, Ctl>(
+pub(super) fn factory<St, AppSt, E, Pub, Ctl>(
     publish: Pub,
     control: Ctl,
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
-    Connection<St>,
+    Connection<St, AppSt>,
     Res = Option<Encoded>,
-    Error = DispatcherError<Pub::Error>,
+    Error = DispatcherError<E>,
     InitError = Box<dyn Error>,
 >
 where
     St: 'static,
     AppSt: 'static,
-    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = PublishAck> + 'static,
-    Pub::Error: ToPublishAck<Error = Pub::Error>,
+    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<St, AppSt>, Res = PublishAck> + 'static,
+    Pub::Error: ToPublishAck<Error = E>,
     Pub::InitError: Into<Box<dyn Error>> + 'static,
-    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<St>, Res = ProtocolMessageAck>
-        + 'static,
-    Ctl::Error: Into<Pub::Error>,
+    Ctl: ServiceFactory<
+            Session<AppSt>,
+            ProtocolMessage,
+            Connection<St, AppSt>,
+            Res = ProtocolMessageAck,
+        > + 'static,
     Ctl::InitError: Into<Box<dyn Error>> + 'static,
+    E: From<Ctl::Error> + 'static,
 {
-    fn_factory_with_config(async move |con: &Connection<St>| {
+    fn_factory_with_config(async move |con: &Connection<St, AppSt>| {
         let cfg: Cfg<MqttServiceConfig> = con.cfg();
 
         // create services
-        let sink = con.sink().shared();
+        let sink = con.session().sink().shared();
         let (publish, control) = join(publish.create(con), control.create(con)).await;
 
         let publish = publish.map_err(Into::into)?;
@@ -51,10 +55,10 @@ where
         let control = BufferService::new(
             16,
             // limit number of in-flight messages
-            PipelineWithState::new(InFlightService::new(1, control)),
+            PipelineState::new(InFlightService::new(1, control)),
         )
         .map_err(|err| match err {
-            BufferServiceError::Service(e) => DispatcherError::Service(e.into()),
+            BufferServiceError::Service(e) => DispatcherError::Service(E::from(e)),
             BufferServiceError::RequestCanceled => {
                 DispatcherError::Protocol(ProtocolError::ReadTimeout)
             }

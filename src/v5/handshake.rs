@@ -1,7 +1,7 @@
 use ntex_io::IoBoxed;
 use std::{fmt, num::NonZeroU16, rc::Rc};
 
-use super::{codec, shared::MqttShared, sink::MqttSink};
+use super::{Session, codec, shared::MqttShared, sink::MqttSink};
 
 /// Handshake message
 pub struct Handshake {
@@ -79,12 +79,14 @@ impl Handshake {
         } else {
             30
         };
+        let session = Session::new(st, MqttSink::new(shared.clone()));
+
         HandshakeAck {
             io,
             shared,
             keepalive,
             packet,
-            session: Some(st),
+            session: Some(session),
             max_send: None,
         }
     }
@@ -128,7 +130,7 @@ impl fmt::Debug for Handshake {
 /// Handshake ack message
 pub struct HandshakeAck<St> {
     pub(crate) io: IoBoxed,
-    pub(crate) session: Option<St>,
+    pub(crate) session: Option<Session<St>>,
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) packet: codec::ConnectAck,
     pub(crate) keepalive: u16,
@@ -146,6 +148,11 @@ impl<St> fmt::Debug for HandshakeAck<St> {
 }
 
 impl<St> HandshakeAck<St> {
+    /// Created session
+    pub fn session(&self) -> Option<&Session<St>> {
+        self.session.as_ref()
+    }
+
     #[inline]
     #[must_use]
     /// Set idle keep-alive for the connection in seconds.

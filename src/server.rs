@@ -57,7 +57,11 @@ where
     }
 
     /// Service to handle v5 protocol
-    pub fn v5<S>(self, service: impl IntoService<S, St, IoBoxed>) -> MqttServer<St, V3, S, Err>
+    pub fn v5<S>(
+        self,
+        // service: impl IntoService<S, St, IoBoxed>
+        service: S,
+    ) -> MqttServer<St, V3, S, Err>
     where
         S: Service<St, IoBoxed, Res = (), Error = MqttError<Err>>,
     {
