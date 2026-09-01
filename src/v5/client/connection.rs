@@ -118,7 +118,7 @@ impl Client {
         }
 
         let dispatcher = Pipeline::with(
-            Session::new((), sink.clone()),
+            Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
                 fn_service(async |pkt| Ok(Either::Left(pkt))),
@@ -131,7 +131,7 @@ impl Client {
             ),
         );
         let control = Pipeline::with(
-            Session::new((), sink),
+            Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<(), codec::Encoded>::default(),
                 self.shared.clone(),
@@ -154,7 +154,7 @@ impl Client {
         }
 
         let dispatcher = Pipeline::with(
-            Session::new((), sink.clone()),
+            Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
                 fn_service(async |pkt| Ok(Either::Left(pkt))),
@@ -165,7 +165,7 @@ impl Client {
             ),
         );
         let control = Pipeline::with(
-            Session::new((), sink),
+            Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<(), codec::Encoded>::default(),
                 self.shared.clone(),
@@ -193,7 +193,7 @@ impl Client {
         }
 
         let dispatcher = Pipeline::with(
-            Session::new((), sink.clone()),
+            Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
                 fn_service(async |pkt| Ok(Either::Left(pkt))),
@@ -204,7 +204,7 @@ impl Client {
             ),
         );
         let control = Pipeline::with(
-            Session::new((), sink),
+            Session::new((), sink, self.io.shared()),
             ControlService::new(control, self.shared.clone()),
         );
 
@@ -266,7 +266,7 @@ where
         }
 
         let dispatcher = Pipeline::with(
-            Session::new((), sink.clone()),
+            Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
                 dispatch(self.builder.finish(), self.handlers),
@@ -279,7 +279,7 @@ where
             ),
         );
         let control = Pipeline::with(
-            Session::new((), sink),
+            Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<Err, codec::Encoded>::default(),
                 self.shared.clone(),
@@ -301,7 +301,7 @@ where
         }
 
         let dispatcher = Pipeline::with(
-            Session::new((), sink.clone()),
+            Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
                 dispatch(self.builder.finish(), self.handlers),
@@ -312,7 +312,7 @@ where
             ),
         );
         let control = Pipeline::with(
-            Session::new((), sink),
+            Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<Err, codec::Encoded>::default(),
                 self.shared.clone(),

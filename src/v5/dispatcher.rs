@@ -13,7 +13,7 @@ use crate::{MqttServiceConfig, types::QoS};
 use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
 use super::control::{Pkt, ProtocolMessage, ProtocolMessageAck};
 use super::publish::{Publish, PublishAck};
-use super::{Connection, Session, ToPublishAck, shared::Ack, shared::MqttShared};
+use super::{Session, ToPublishAck, shared::Ack, shared::MqttShared};
 
 /// MQTT 5 protocol dispatcher
 pub(super) fn factory<AppSt, E, Pub, Ctl>(
@@ -22,26 +22,26 @@ pub(super) fn factory<AppSt, E, Pub, Ctl>(
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
-    Connection<AppSt>,
+    Session<AppSt>,
     Res = Option<Encoded>,
     Error = DispatcherError<E>,
     InitError = Box<dyn Error>,
 >
 where
     AppSt: 'static,
-    Pub: ServiceFactory<Session<AppSt>, Publish, Connection<AppSt>, Res = PublishAck> + 'static,
+    Pub: ServiceFactory<Session<AppSt>, Publish, Session<AppSt>, Res = PublishAck> + 'static,
     Pub::Error: ToPublishAck<Error = E>,
     Pub::InitError: Into<Box<dyn Error>> + 'static,
-    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<AppSt>, Res = ProtocolMessageAck>
+    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Session<AppSt>, Res = ProtocolMessageAck>
         + 'static,
     Ctl::InitError: Into<Box<dyn Error>> + 'static,
     E: From<Ctl::Error> + 'static,
 {
-    fn_factory_with_config(async move |con: &Connection<AppSt>| {
+    fn_factory_with_config(async move |con: &Session<AppSt>| {
         let cfg: Cfg<MqttServiceConfig> = con.cfg();
 
         // create services
-        let sink = con.st().sink().shared();
+        let sink = con.sink().shared();
         let (publish, control) = join(publish.create(con), control.create(con)).await;
 
         let publish = publish.map_err(Into::into)?;

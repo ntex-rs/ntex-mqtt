@@ -1,12 +1,12 @@
 use std::{error::Error, fmt, marker::PhantomData};
 
 use ntex_codec::{Decoder, Encoder};
+use ntex_io::IoBoxed;
 use ntex_service::pipeline::{Pipeline, PipelineFactory};
 use ntex_service::{Ctx, Middleware, Service, ServiceFactory};
 
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttError};
-use crate::types::InputMapper;
-use crate::{Connection, HandshakePipeline, Session, control::Control, io::Dispatcher};
+use crate::{HandshakePipeline, Session, control::Control, io::Dispatcher};
 
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = Option<<U as Encoder>::Item>;
@@ -16,13 +16,12 @@ type ControlPipeline<AppSt, Codec, Cfg, Err, E> = PipelineFactory<
     Control<E>,
     Response<Codec>,
     MqttError<Err>,
-    Connection<Cfg, AppSt>,
+    Session<Cfg, AppSt>,
     Box<dyn Error>,
 >;
 
-pub struct MqttServer<St, Im: InputMapper, AppSt, Codec: Encoder, Cfg, Err, E, T, M> {
-    im: Im,
-    handshake: HandshakePipeline<St, Im::State, AppSt, Codec, Cfg, MqttError<Err>>,
+pub struct MqttServer<St, Im, AppSt, Codec: Encoder, Cfg, Err, E, T, M> {
+    handshake: HandshakePipeline<St, Im, AppSt, Codec, Cfg, MqttError<Err>>,
     handler: T,
     middleware: M,
     control: ControlPipeline<AppSt, Codec, Cfg, Err, E>,
@@ -32,7 +31,6 @@ pub struct MqttServer<St, Im: InputMapper, AppSt, Codec: Encoder, Cfg, Err, E, T
 impl<St, Im, AppSt, Codec, Cfg, Err, E, T, M> fmt::Debug
     for MqttServer<St, Im, AppSt, Codec, Cfg, Err, E, T, M>
 where
-    Im: InputMapper,
     Codec: Encoder,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -42,18 +40,21 @@ where
 
 impl<St, Im, AppSt, Codec, Cfg, Err, E, T, M> MqttServer<St, Im, AppSt, Codec, Cfg, Err, E, T, M>
 where
-    Im: InputMapper,
+    St: 'static,
+    Im: 'static,
+    AppSt: 'static,
+    Cfg: 'static,
+    Err: 'static,
+    E: 'static,
     Codec: Encoder,
 {
     pub(crate) fn new(
-        im: Im,
-        handshake: HandshakePipeline<St, Im::State, AppSt, Codec, Cfg, MqttError<Err>>,
+        handshake: HandshakePipeline<St, Im, AppSt, Codec, Cfg, MqttError<Err>>,
         handler: T,
         middleware: M,
         control: ControlPipeline<AppSt, Codec, Cfg, Err, E>,
     ) -> Self {
         MqttServer {
-            im,
             handshake,
             handler,
             middleware,
@@ -66,7 +67,7 @@ where
 impl<St, Im, AppSt, Codec, Cfg, Err, E, T, M> MqttServer<St, Im, AppSt, Codec, Cfg, Err, E, T, M>
 where
     St: 'static,
-    Im: InputMapper,
+    Im: 'static,
     AppSt: 'static,
     Cfg: 'static,
     Err: 'static,
@@ -74,12 +75,12 @@ where
     T: ServiceFactory<
             Session<Cfg, AppSt>,
             Request<Codec>,
-            Connection<Cfg, AppSt>,
+            Session<Cfg, AppSt>,
             Res = Response<Codec>,
             Error = DispatcherError<E>,
             InitError = Box<dyn Error>,
         > + 'static,
-    M: Middleware<T::Service, Session<Cfg, AppSt>, Connection<Cfg, AppSt>>,
+    M: Middleware<T::Service, Session<Cfg, AppSt>, Session<Cfg, AppSt>>,
     M::Service: Service<
             Session<Cfg, AppSt>,
             Request<Codec>,
@@ -90,17 +91,17 @@ where
 {
     pub fn build(
         self,
-    ) -> impl Service<St, Im::Input, Res = (), Error = MqttError<Err>>
+    ) -> impl Service<St, (IoBoxed, Im), Res = (), Error = MqttError<Err>>
     + use<St, Im, AppSt, Codec, Cfg, Err, E, T, M> {
         self
     }
 }
 
-impl<St, Im, AppSt, Codec, Cfg, Err, E, T, M> Service<St, Im::Input>
+impl<St, Im, AppSt, Codec, Cfg, Err, E, T, M> Service<St, (IoBoxed, Im)>
     for MqttServer<St, Im, AppSt, Codec, Cfg, Err, E, T, M>
 where
     St: 'static,
-    Im: InputMapper,
+    Im: 'static,
     AppSt: 'static,
     Cfg: 'static,
     Err: 'static,
@@ -108,12 +109,12 @@ where
     T: ServiceFactory<
             Session<Cfg, AppSt>,
             Request<Codec>,
-            Connection<Cfg, AppSt>,
+            Session<Cfg, AppSt>,
             Res = Response<Codec>,
             Error = DispatcherError<E>,
             InitError = Box<dyn Error>,
         > + 'static,
-    M: Middleware<T::Service, Session<Cfg, AppSt>, Connection<Cfg, AppSt>>,
+    M: Middleware<T::Service, Session<Cfg, AppSt>, Session<Cfg, AppSt>>,
     M::Service: Service<
             Session<Cfg, AppSt>,
             Request<Codec>,
@@ -125,27 +126,30 @@ where
     type Res = ();
     type Error = MqttError<Err>;
 
-    async fn call(&self, req: Im::Input, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
-        let (io, st) = self.im.map(req).map_err(MqttError::HandlerInit)?;
+    async fn call(
+        &self,
+        (io, st): (IoBoxed, Im),
+        ctx: Ctx<'_, Self, St>,
+    ) -> Result<(), Self::Error> {
         let tag = io.tag();
 
-        let (io, codec, session, con, keepalive) = self.handshake.call((io, st), ctx.st()).await?;
+        let (io, codec, session, keepalive) = self.handshake.call((io, st), ctx.st()).await?;
         log::trace!("{tag}: Connection handshake succeeded");
 
         let control = self
             .control
-            .create(&con, &session)
+            .create(&session, session.clone())
             .await
             .map_err(MqttError::HandlerInit)?;
         let handler = self
             .handler
-            .create(&con)
+            .create(&session)
             .await
             .map_err(MqttError::HandlerInit)?;
-        let hnd = self.middleware.create(handler, &con);
+        let hnd = self.middleware.create(handler, &session);
         log::trace!("{tag}: Connection handler is created, starting dispatcher");
 
-        Dispatcher::new(io, codec, Pipeline::with(session.clone(), hnd), control)
+        Dispatcher::new(io, codec, Pipeline::with(session, hnd), control)
             .keepalive_timeout(keepalive)
             .await
     }

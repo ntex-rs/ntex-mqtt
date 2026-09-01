@@ -88,7 +88,7 @@ impl<St> Handshake<St> {
         } else {
             30
         };
-        let session = Session::new(st, MqttSink::new(shared.clone()));
+        let session = Session::new(st, MqttSink::new(shared.clone()), io.shared());
 
         HandshakeAck {
             io,

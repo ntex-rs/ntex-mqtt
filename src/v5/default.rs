@@ -7,31 +7,31 @@ use crate::error::{MqttError, PayloadError};
 use crate::{Control, MqttServiceConfig, Reason, inflight::InFlightServiceImpl};
 
 use super::control::{ProtocolMessage, ProtocolMessageAck};
-use super::{Connection, Session, codec, codec::Encoded, shared::MqttShared};
+use super::{Session, codec, codec::Encoded, shared::MqttShared};
 
 /// Default control service
 #[derive(Debug)]
-pub struct DefaultProtocolService<E>(PhantomData<E>);
+pub struct DefaultProtoSrv<E>(PhantomData<E>);
 
-impl<E> Default for DefaultProtocolService<E> {
+impl<E> Default for DefaultProtoSrv<E> {
     fn default() -> Self {
-        DefaultProtocolService(PhantomData)
+        DefaultProtoSrv(PhantomData)
     }
 }
 
-impl<St, E, Cfg> ServiceFactory<St, ProtocolMessage, Cfg> for DefaultProtocolService<E> {
+impl<St, E, Cfg> ServiceFactory<St, ProtocolMessage, Cfg> for DefaultProtoSrv<E> {
     type Res = ProtocolMessageAck;
     type Error = E;
 
-    type Service = DefaultProtocolService<E>;
+    type Service = DefaultProtoSrv<E>;
     type InitError = Infallible;
 
     async fn create(&self, _: &Cfg) -> Result<Self::Service, Self::InitError> {
-        Ok(DefaultProtocolService(PhantomData))
+        Ok(DefaultProtoSrv(PhantomData))
     }
 }
 
-impl<St, E> Service<St, ProtocolMessage> for DefaultProtocolService<E> {
+impl<St, E> Service<St, ProtocolMessage> for DefaultProtoSrv<E> {
     type Res = ProtocolMessageAck;
     type Error = E;
 
@@ -59,11 +59,11 @@ impl<St, E> Service<St, ProtocolMessage> for DefaultProtocolService<E> {
 /// Default is 64kb size
 pub struct InFlightService;
 
-impl<S, St, AppSt> Middleware<S, St, Connection<AppSt>> for InFlightService {
+impl<S, St, AppSt> Middleware<S, St, Session<AppSt>> for InFlightService {
     type Service = InFlightServiceImpl<S>;
 
     #[inline]
-    fn create(&self, service: S, cfg: &Connection<AppSt>) -> Self::Service {
+    fn create(&self, service: S, cfg: &Session<AppSt>) -> Self::Service {
         let cfg: Cfg<MqttServiceConfig> = cfg.cfg();
         InFlightServiceImpl::new(0, cfg.max_receive_size, service)
     }
@@ -94,7 +94,7 @@ impl<S, E> ControlService<S, E> {
 
 impl<AppSt, Sf, E> ControlFactory<AppSt, Sf, E>
 where
-    Sf: ServiceFactory<Session<AppSt>, Control<E>, Connection<AppSt>>,
+    Sf: ServiceFactory<Session<AppSt>, Control<E>, Session<AppSt>>,
 {
     pub(super) fn new(svc: Sf) -> Self {
         Self {
@@ -104,10 +104,10 @@ where
     }
 }
 
-impl<AppSt, Sf, E> ServiceFactory<Session<AppSt>, Control<E>, Connection<AppSt>>
+impl<AppSt, Sf, E> ServiceFactory<Session<AppSt>, Control<E>, Session<AppSt>>
     for ControlFactory<AppSt, Sf, E>
 where
-    Sf: ServiceFactory<Session<AppSt>, Control<E>, Connection<AppSt>, Res = Option<Encoded>>,
+    Sf: ServiceFactory<Session<AppSt>, Control<E>, Session<AppSt>, Res = Option<Encoded>>,
     Sf::InitError: Error + 'static,
 {
     type Res = Sf::Res;
@@ -116,9 +116,9 @@ where
     type Service = ControlService<Sf::Service, E>;
     type InitError = Box<dyn Error>;
 
-    async fn create(&self, cfg: &Connection<AppSt>) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &Session<AppSt>) -> Result<Self::Service, Self::InitError> {
         Ok(ControlService {
-            shared: cfg.st().sink().shared(),
+            shared: cfg.sink().shared(),
             svc: self.svc.create(cfg).await.map_err(dyn_err)?,
             _t: PhantomData,
         })
@@ -218,14 +218,13 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
         let sink = MqttSink::new(shared.clone());
-        let ses = Session::new((), sink.clone());
-        let con = Connection::new((), sink.clone(), io.shared());
+        let ses = Session::new((), sink.clone(), io.shared());
 
         let disp = ControlFactory::<(), (), _, ()>::new(control::DefaultControlService::<
             (),
             codec::Encoded,
         >::default());
-        let svc = Pipeline::with(ses, disp.create(&con).await.unwrap());
+        let svc = Pipeline::with(ses, disp.create(&ses).await.unwrap());
 
         assert!(!sink.is_ready());
         shared.set_cap(1);

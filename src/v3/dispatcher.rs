@@ -14,7 +14,7 @@ use super::codec::{Decoded, Encoded, Packet};
 use super::control::{
     ProtocolMessage, ProtocolMessageAck, ProtocolMessageKind, Subscribe, Unsubscribe,
 };
-use super::{Connection, Session, publish::Publish, shared::Ack, shared::MqttShared};
+use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
 pub(super) fn factory<AppSt, Sf, Ctl, E>(
@@ -23,7 +23,7 @@ pub(super) fn factory<AppSt, Sf, Ctl, E>(
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
-    Connection<AppSt>,
+    Session<AppSt>,
     Res = Option<Encoded>,
     Error = DispatcherError<E>,
     InitError = Box<dyn Error>,
@@ -31,15 +31,15 @@ pub(super) fn factory<AppSt, Sf, Ctl, E>(
 where
     AppSt: 'static,
     E: From<Sf::Error> + From<Ctl::Error> + 'static,
-    Sf: ServiceFactory<Session<AppSt>, Publish, Connection<AppSt>, Res = ()> + 'static,
+    Sf: ServiceFactory<Session<AppSt>, Publish, Session<AppSt>, Res = ()> + 'static,
     Sf::InitError: Into<Box<dyn Error>> + 'static,
-    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<AppSt>, Res = ProtocolMessageAck>
+    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Session<AppSt>, Res = ProtocolMessageAck>
         + 'static,
     Ctl::InitError: Into<Box<dyn Error>> + 'static,
 {
-    ntex_service::fn_factory_with_config(async move |st: &Connection<AppSt>| {
+    ntex_service::fn_factory_with_config(async move |st: &Session<AppSt>| {
         // create services
-        let sink = st.st().sink().shared();
+        let sink = st.sink().shared();
         let fut = join(publish.create(st), control.create(st));
         let (publish, control) = fut.await;
 

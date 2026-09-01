@@ -6,10 +6,10 @@ use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex_service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
 use ntex_util::HashMap;
 
-use super::{Connection, Session, publish::Publish, publish::PublishAck};
+use super::{Session, publish::Publish, publish::PublishAck};
 
 type Handler<AppSt, E> =
-    BoxServiceFactory<Session<AppSt>, Publish, PublishAck, E, Connection<AppSt>, Box<dyn Error>>;
+    BoxServiceFactory<Session<AppSt>, Publish, PublishAck, E, Session<AppSt>, Box<dyn Error>>;
 type HandlerService<AppSt, E> = BoxService<Session<AppSt>, Publish, PublishAck, E>;
 
 /// Router - structure that follows the builder pattern
@@ -35,16 +35,11 @@ where
     ///
     /// Default service to be used if no matching resource could be found.
     pub fn new<U>(
-        default: impl IntoServiceFactory<U, Session<AppSt>, Publish, Connection<AppSt>>,
+        default: impl IntoServiceFactory<U, Session<AppSt>, Publish, Session<AppSt>>,
     ) -> Self
     where
-        U: ServiceFactory<
-                Session<AppSt>,
-                Publish,
-                Connection<AppSt>,
-                Res = PublishAck,
-                Error = Err,
-            > + 'static,
+        U: ServiceFactory<Session<AppSt>, Publish, Session<AppSt>, Res = PublishAck, Error = Err>
+            + 'static,
         U::InitError: Error + 'static,
     {
         Router {
@@ -63,14 +58,9 @@ where
     pub fn resource<T, F, U>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoServiceFactory<U, Session<AppSt>, Publish, Connection<AppSt>>,
-        U: ServiceFactory<
-                Session<AppSt>,
-                Publish,
-                Connection<AppSt>,
-                Res = PublishAck,
-                Error = Err,
-            > + 'static,
+        F: IntoServiceFactory<U, Session<AppSt>, Publish, Session<AppSt>>,
+        U: ServiceFactory<Session<AppSt>, Publish, Session<AppSt>, Res = PublishAck, Error = Err>
+            + 'static,
         U::InitError: Error + 'static,
     {
         self.router.path(address, self.handlers.len());
@@ -93,7 +83,7 @@ where
 }
 
 impl<AppSt, Err>
-    IntoServiceFactory<RouterFactory<AppSt, Err>, Session<AppSt>, Publish, Connection<AppSt>>
+    IntoServiceFactory<RouterFactory<AppSt, Err>, Session<AppSt>, Publish, Session<AppSt>>
     for Router<AppSt, Err>
 where
     AppSt: 'static,
@@ -116,7 +106,7 @@ impl<AppSt, Err> fmt::Debug for RouterFactory<AppSt, Err> {
     }
 }
 
-impl<AppSt, Err> ServiceFactory<Session<AppSt>, Publish, Connection<AppSt>>
+impl<AppSt, Err> ServiceFactory<Session<AppSt>, Publish, Session<AppSt>>
     for RouterFactory<AppSt, Err>
 where
     Err: 'static,
@@ -127,7 +117,7 @@ where
     type Service = RouterService<AppSt, Err>;
     type InitError = Box<dyn Error>;
 
-    async fn create(&self, cfg: &Connection<AppSt>) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &Session<AppSt>) -> Result<Self::Service, Self::InitError> {
         let default = self.default.create(cfg).await?;
 
         let mut handlers = Vec::with_capacity(self.handlers.len());
