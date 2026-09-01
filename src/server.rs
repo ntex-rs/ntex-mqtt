@@ -1,8 +1,7 @@
 use std::{fmt, io, marker};
 
 use ntex_io::IoBoxed;
-use ntex_service::state::{DefaultState, RequestState};
-use ntex_service::{Ctx, IntoService, Service, cfg::Configuration};
+use ntex_service::{Ctx, IntoService, RequestState, Service, cfg::Configuration};
 use ntex_util::future::{Either, join, select};
 use ntex_util::time::Deadline;
 
@@ -11,91 +10,71 @@ use crate::error::{HandshakeError, MqttError};
 use crate::version::{ProtocolVersion, VersionCodec};
 
 /// Mqtt Server
-pub struct MqttServer<St, Rst, V3, V5, Err> {
-    rst: Rst,
+pub struct MqttServer<St, Req, V3, V5, Err> {
     v3: V3,
     v5: V5,
-    _t: marker::PhantomData<(St, Err)>,
+    ph: marker::PhantomData<(St, Req, Err)>,
 }
 
-impl<St, Rst, V3, V5, Err> fmt::Debug for MqttServer<St, Rst, V3, V5, Err> {
+impl<St, Req, V3, V5, Err> fmt::Debug for MqttServer<St, Req, V3, V5, Err> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MqttServer").finish()
     }
 }
 
-impl<St, Err>
-    MqttServer<St, DefaultState<IoBoxed>, DefaultProtoSrv<Err>, DefaultProtoSrv<Err>, Err>
-{
+impl<St, Req, Err> MqttServer<St, Req, DefaultProtoSrv<Err>, DefaultProtoSrv<Err>, Err> {
     /// Create mqtt server
     pub fn new() -> Self {
         MqttServer {
-            rst: DefaultState::new(),
             v3: DefaultProtoSrv::new(ProtocolVersion::MQTT3),
             v5: DefaultProtoSrv::new(ProtocolVersion::MQTT5),
-            _t: marker::PhantomData,
+            ph: marker::PhantomData,
         }
     }
 }
 
-impl<St, Rst, Err> MqttServer<St, Rst, DefaultProtoSrv<Err>, DefaultProtoSrv<Err>, Err> {
-    /// Create mqtt server
-    pub fn with(rst: Rst) -> Self {
-        MqttServer {
-            rst,
-            v3: DefaultProtoSrv::new(ProtocolVersion::MQTT3),
-            v5: DefaultProtoSrv::new(ProtocolVersion::MQTT5),
-            _t: marker::PhantomData,
-        }
-    }
-}
-
-impl<Err> Default
-    for MqttServer<(), DefaultState<IoBoxed>, DefaultProtoSrv<Err>, DefaultProtoSrv<Err>, Err>
-{
+impl<Req, Err> Default for MqttServer<(), Req, DefaultProtoSrv<Err>, DefaultProtoSrv<Err>, Err> {
     fn default() -> Self {
         MqttServer::new()
     }
 }
 
-impl<St, Rst, V3, V5, Err> MqttServer<St, Rst, V3, V5, Err>
+impl<St, Req, V3, V5, Err> MqttServer<St, Req, V3, V5, Err>
 where
-    Rst: RequestState<Res = IoBoxed>,
-    V3: Service<St, (IoBoxed, Rst::State), Res = (), Error = MqttError<Err>>,
-    V5: Service<St, (IoBoxed, Rst::State), Res = (), Error = MqttError<Err>>,
+    Req: RequestState<IoBoxed>,
+    V3: Service<St, (IoBoxed, Req::State), Res = (), Error = MqttError<Err>>,
+    V5: Service<St, (IoBoxed, Req::State), Res = (), Error = MqttError<Err>>,
 {
     /// Service to handle v3 protocol
-    pub fn v3<S>(self, service: S) -> MqttServer<St, Rst, S, V5, Err>
+    pub fn v3<S>(self, service: S) -> MqttServer<St, Req, S, V5, Err>
     where
-        S: Service<St, (IoBoxed, Rst::State), Res = (), Error = MqttError<Err>>,
+        S: Service<St, (IoBoxed, Req::State), Res = (), Error = MqttError<Err>>,
     {
         MqttServer {
             v3: service.into_service(),
             v5: self.v5,
-            rst: self.rst,
-            _t: marker::PhantomData,
+            ph: marker::PhantomData,
         }
     }
 
     /// Service to handle v5 protocol
-    pub fn v5<S>(self, service: S) -> MqttServer<St, Rst, V3, S, Err>
+    pub fn v5<S>(self, service: S) -> MqttServer<St, Req, V3, S, Err>
     where
-        S: Service<St, (IoBoxed, Rst::State), Res = (), Error = MqttError<Err>>,
+        S: Service<St, (IoBoxed, Req::State), Res = (), Error = MqttError<Err>>,
     {
         MqttServer {
             v3: self.v3,
             v5: service.into_service(),
-            rst: self.rst,
-            _t: marker::PhantomData,
+            ph: marker::PhantomData,
         }
     }
 }
 
-impl<St, Rst, V3, V5, Err> Service<St, Rst::Req> for MqttServer<St, Rst, V3, V5, Err>
+impl<St, Req, V3, V5, Err> Service<St, Req> for MqttServer<St, Req, V3, V5, Err>
 where
-    Rst: RequestState<Res = IoBoxed>,
-    V3: Service<St, (IoBoxed, Rst::State), Res = (), Error = MqttError<Err>>,
-    V5: Service<St, (IoBoxed, Rst::State), Res = (), Error = MqttError<Err>>,
+    Req: RequestState<IoBoxed>,
+    V3: Service<St, (IoBoxed, Req::State), Res = (), Error = MqttError<Err>>,
+    V5: Service<St, (IoBoxed, Req::State), Res = (), Error = MqttError<Err>>,
 {
     type Res = ();
     type Error = MqttError<Err>;
@@ -108,8 +87,8 @@ where
     }
 
     #[inline]
-    async fn call(&self, req: Rst::Req, ctx: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
-        let (io, st) = self.rst.map(req);
+    async fn call(&self, req: Req, ctx: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
+        let (io, st) = req.unpack();
 
         // try to read Version, buffer may already contain info
         let res = io
