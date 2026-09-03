@@ -2,7 +2,7 @@ use std::{cell::RefCell, error::Error, marker::PhantomData, num, rc::Rc};
 
 use ntex_bytes::ByteString;
 use ntex_service::pipeline::PipelineState;
-use ntex_service::{Ctx, Service, ServiceFactory, cfg::Cfg, fn_factory_with_config};
+use ntex_service::{Ctx, Service, ServiceFactory, cfg::Cfg};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashMap, HashSet, future::join, hash_map, services::inflight::InFlightService};
 
@@ -37,7 +37,7 @@ where
     Ctl::InitError: Into<Box<dyn Error>> + 'static,
     E: From<Ctl::Error> + 'static,
 {
-    fn_factory_with_config(async move |con: &Session<AppSt>| {
+    ntex_service::factory(async move |con: &Session<AppSt>| {
         let cfg: Cfg<MqttServiceConfig> = con.cfg();
 
         // create services

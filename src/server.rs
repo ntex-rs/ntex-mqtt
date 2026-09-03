@@ -88,7 +88,7 @@ where
 
     #[inline]
     async fn call(&self, req: Req, ctx: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
-        let (io, st) = req.unpack();
+        let (st, io) = req.unpack();
 
         // try to read Version, buffer may already contain info
         let res = io

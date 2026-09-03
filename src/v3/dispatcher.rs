@@ -1,8 +1,6 @@
 use std::{cell::RefCell, error::Error, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
-use ntex_service::cfg::Cfg;
-use ntex_service::pipeline::PipelineState;
-use ntex_service::{Ctx, Service, ServiceFactory};
+use ntex_service::{Ctx, Service, ServiceFactory, cfg::Cfg, pipeline::PipelineState};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
@@ -37,7 +35,7 @@ where
         + 'static,
     Ctl::InitError: Into<Box<dyn Error>> + 'static,
 {
-    ntex_service::fn_factory_with_config(async move |st: &Session<AppSt>| {
+    ntex_service::factory(async move |st: &Session<AppSt>| {
         // create services
         let sink = st.sink().shared();
         let fut = join(publish.create(st), control.create(st));
