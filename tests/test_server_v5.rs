@@ -4,15 +4,15 @@ use std::{cell::RefCell, rc::Rc};
 use std::{convert::Infallible, future::Future, num::NonZeroU16, pin::Pin, time::Duration};
 
 use ntex::service::pipeline::Pipeline;
-use ntex::service::{cfg::SharedCfg, fn_factory_with_config, fn_service};
+use ntex::service::{cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
 use ntex::util::{BytePages, ByteString, Bytes, lazy};
 use ntex::{codec::Encoder, io::Framed, io::IoConfig, rt, server};
 
 use ntex_mqtt::v5::codec::{self, Decoded, Encoded, Packet};
 use ntex_mqtt::v5::{
-    Connection, Handshake, HandshakeAck, MqttServer, ProtocolMessage, Publish, PublishAck, QoS,
-    client, error,
+    Connect, ConnectAck, MqttServer, ProtocolMessage, Publish, PublishAck, QoS, Session, client,
+    error,
 };
 use ntex_mqtt::{Control, MqttServiceConfig, Reason};
 
@@ -54,18 +54,18 @@ fn packet(res: Decoded) -> Packet {
     }
 }
 
-async fn handshake(packet: Handshake) -> Result<HandshakeAck<St>, TestError> {
-    Ok(packet.ack(St))
+async fn connect(msg: Connect) -> Result<ConnectAck<St>, TestError> {
+    Ok(msg.ack(St))
 }
 
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
     let srv = server::test_server(async || {
-        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(handshake)
+        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -104,13 +104,13 @@ async fn test_simple_streaming() -> std::io::Result<()> {
             }
             Ok::<_, TestError>(p.ack())
         })
-        .build(handshake)
+        .build(connect)
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_min_chunk_size(4)))
     .start();
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -207,13 +207,13 @@ async fn test_simple_streaming2() {
             chunks.lock().unwrap().push(chunk);
             Ok::<_, TestError>(p.ack())
         })
-        .build(handshake)
+        .build(connect)
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_min_chunk_size(4)))
     .start();
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -243,22 +243,22 @@ async fn test_simple_streaming2() {
 }
 
 #[ntex::test]
-async fn test_handshake_failed() -> std::io::Result<()> {
+async fn test_connect_failed() -> std::io::Result<()> {
     let srv = server::test_server(async || {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
-            async move |hnd: Handshake| {
+            async move |hnd: Connect| {
                 Ok::<_, ()>(hnd.failed::<St>(codec::ConnectAckReason::NotAuthorized))
             },
         )
     });
 
     // connect to server
-    let err = Pipeline::new(client::MqttConnector::new())
+    let err = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap_err();
     match &*err {
-        error::ClientError::Ack(pkt) => {
+        error::MqttClientError::Ack(pkt) => {
             assert_eq!(pkt.reason_code, codec::ConnectAckReason::NotAuthorized);
         }
         _ => panic!("error"),
@@ -270,19 +270,19 @@ async fn test_handshake_failed() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_disconnect() -> std::io::Result<()> {
     let srv = server::test_server(async || {
-        MqttServer::new(fn_factory_with_config(async |con: &Connection<()>| {
+        MqttServer::new(async |con: &Session<St>| {
             let sink = con.sink().clone();
             Ok::<_, Infallible>(fn_service(async move |p: Publish| {
                 sink.close();
                 sleep(Duration::from_millis(100)).await;
                 Ok::<_, TestError>(p.ack())
             }))
-        }))
-        .build(handshake)
+        })
+        .build(connect)
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -302,7 +302,7 @@ async fn test_disconnect() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_disconnect_with_reason() -> std::io::Result<()> {
     let srv = server::test_server(async || {
-        MqttServer::new(fn_factory_with_config(async |con: &Connection<()>| {
+        MqttServer::new(async |con: &Session<St>| {
             let sink = con.sink().clone();
             Ok::<_, Infallible>(fn_service(async move |p: Publish| {
                 let pkt = codec::Disconnect {
@@ -313,12 +313,12 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
                 sleep(Duration::from_millis(100)).await;
                 Ok::<_, TestError>(p.ack())
             }))
-        }))
-        .build(handshake)
+        })
+        .build(connect)
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -350,7 +350,7 @@ async fn test_nested_errors_handling() -> std::io::Result<()> {
                 Control::Stop(Reason::Error(_)) => Err(TestError),
                 _ => panic!("{:?}", msg),
             })
-            .build(handshake)
+            .build(connect)
     });
 
     // connect to server
@@ -395,7 +395,7 @@ async fn test_disconnect_on_error() -> std::io::Result<()> {
                 Control::Stop(Reason::PeerGone(_)) => Ok::<_, TestError>(None),
                 _ => panic!("{:?}", msg),
             })
-            .build(handshake)
+            .build(connect)
     });
 
     // connect to server
@@ -427,7 +427,7 @@ async fn test_disconnect_after_control_error() -> std::io::Result<()> {
                 ProtocolMessage::Subscribe(_) => Err(TestError),
                 _ => Ok(msg.disconnect()),
             })
-            .build(handshake)
+            .build(connect)
     });
 
     let io = srv.connect().await.unwrap();
@@ -483,7 +483,7 @@ async fn test_qos2() -> std::io::Result<()> {
                 }
                 _ => Ok(msg.disconnect()),
             })
-            .build(handshake)
+            .build(connect)
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_qos(QoS::ExactlyOnce)))
     .start();
@@ -571,13 +571,13 @@ async fn test_qos2_client() -> std::io::Result<()> {
                 }
                 _ => Ok(msg.disconnect()),
             })
-            .build(handshake)
+            .build(connect)
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_qos(QoS::ExactlyOnce)))
     .start();
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -611,7 +611,7 @@ async fn test_ping() -> std::io::Result<()> {
                 }
                 _ => Ok(msg.disconnect_with(codec::Disconnect::default())),
             })
-            .build(handshake)
+            .build(connect)
     });
 
     let io = srv.connect().await.unwrap();
@@ -652,7 +652,7 @@ async fn test_ack_order() -> std::io::Result<()> {
             }
             _ => Ok(msg.disconnect()),
         })
-        .build(handshake)
+        .build(connect)
     });
 
     let io = srv.connect().await.unwrap();
@@ -732,7 +732,7 @@ async fn test_dups() {
             sleep(Duration::from_millis(10000)).await;
             Ok::<_, TestError>(p.ack())
         })
-        .build(handshake)
+        .build(connect)
     });
 
     let io = srv.connect().await.unwrap();
@@ -873,7 +873,7 @@ async fn test_max_receive() {
                 ))
             }
         })
-        .build(handshake)
+        .build(connect)
     })
     .config(
         SharedCfg::new("MQTT").add(
@@ -953,7 +953,7 @@ async fn test_keepalive() {
         MqttServer::new(async move |p: Publish| Ok::<_, TestError>(p.ack()))
             .control(async move |msg| match msg {
                 Control::Stop(Reason::Protocol(msg)) => {
-                    if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
+                    if let &error::MqttProtocolError::KeepAliveTimeout = msg.get_ref() {
                         ka.store(true, Relaxed);
                     }
                     Ok::<_, TestError>(None)
@@ -962,11 +962,11 @@ async fn test_keepalive() {
                     codec::Packet::from(codec::Disconnect::default()).into(),
                 )),
             })
-            .build(async move |con: Handshake| Ok::<_, TestError>(con.ack(St).keep_alive(1)))
+            .build(async move |con: Connect| Ok::<_, TestError>(con.ack(St).keep_alive(1)))
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -992,7 +992,7 @@ async fn test_keepalive2() {
         MqttServer::new(async move |p: Publish| Ok::<_, TestError>(p.ack()))
             .control(async move |msg| match msg {
                 Control::Stop(Reason::Protocol(msg)) => {
-                    if let &error::ProtocolError::KeepAliveTimeout = msg.get_ref() {
+                    if let &error::MqttProtocolError::KeepAliveTimeout = msg.get_ref() {
                         ka.store(true, Relaxed);
                     }
                     Ok::<_, TestError>(None)
@@ -1001,11 +1001,11 @@ async fn test_keepalive2() {
                     codec::Packet::from(codec::Disconnect::default()).into(),
                 )),
             })
-            .build(async move |con: Handshake| Ok::<_, TestError>(con.ack(St).keep_alive(1)))
+            .build(async move |con: Connect| Ok::<_, TestError>(con.ack(St).keep_alive(1)))
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -1043,7 +1043,7 @@ async fn test_keepalive3() {
         MqttServer::new(async move |p: Publish| Ok::<_, TestError>(p.ack()))
             .control(async move |msg| match msg {
                 Control::Stop(Reason::Protocol(msg)) => {
-                    if let &error::ProtocolError::ReadTimeout = msg.get_ref() {
+                    if let &error::MqttProtocolError::ReadTimeout = msg.get_ref() {
                         ka.store(true, Relaxed);
                     }
                     Ok::<_, TestError>(None)
@@ -1052,7 +1052,7 @@ async fn test_keepalive3() {
                     codec::Packet::from(codec::Disconnect::default()).into(),
                 )),
             })
-            .build(async move |con: Handshake| Ok::<_, TestError>(con.ack(St).keep_alive(1)))
+            .build(async move |con: Connect| Ok::<_, TestError>(con.ack(St).keep_alive(1)))
     })
     .config(
         SharedCfg::new("MQTT").add(IoConfig::new().set_frame_read_rate(
@@ -1119,7 +1119,7 @@ async fn test_sink_encoder_error_pub_qos1() {
                 ))
             }
         })
-        .build(async move |con: Handshake| {
+        .build(async move |con: Connect| {
             let builder = con.sink().publish("test").properties(|props| {
                 props.user_properties.push((
                     "ssssssssssssssssssssssssssssssssssss".into(),
@@ -1140,7 +1140,7 @@ async fn test_sink_encoder_error_pub_qos1() {
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(
             client::Connect::new(srv.addr())
                 .client_id("user")
@@ -1176,7 +1176,7 @@ async fn test_sink_encoder_error_pub_qos0() {
                 ))
             }
         })
-        .build(async move |con: Handshake| {
+        .build(async move |con: Connect| {
             let builder = con.sink().publish("test").properties(|props| {
                 props.user_properties.push((
                     "ssssssssssssssssssssssssssssssssssss".into(),
@@ -1195,7 +1195,7 @@ async fn test_sink_encoder_error_pub_qos0() {
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(
             client::Connect::new(srv.addr())
                 .client_id("user")
@@ -1236,7 +1236,7 @@ async fn test_sink_success_after_encoder_error_qos1() {
                 ))
             }
         })
-        .build(async move |con: Handshake| {
+        .build(async move |con: Connect| {
             let sink = con.sink().clone();
             let success = success.clone();
 
@@ -1264,7 +1264,7 @@ async fn test_sink_success_after_encoder_error_qos1() {
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(
             client::Connect::new(srv.addr())
                 .client_id("user")
@@ -1305,11 +1305,11 @@ async fn test_request_problem_info() {
                     .reason("TEST".into()),
             )
         })
-        .build(async move |con: Handshake| Ok::<_, ()>(con.ack(St)))
+        .build(async move |con: Connect| Ok::<_, ()>(con.ack(St)))
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(
             client::Connect::new(srv.addr())
                 .client_id("user")
@@ -1345,7 +1345,7 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
                 }
                 _ => Ok(msg.disconnect()),
             })
-            .build(handshake)
+            .build(connect)
     });
 
     let io = srv.connect().await.unwrap();
@@ -1413,7 +1413,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
             }
             _ => Ok(msg.disconnect()),
         })
-        .build(handshake)
+        .build(connect)
     });
 
     let io = srv.connect().await.unwrap();
@@ -1485,7 +1485,7 @@ async fn handle_or_drop_publish_after_disconnect(
             }
             _ => Ok(msg.disconnect()),
         })
-        .build(handshake)
+        .build(connect)
     })
     .config(
         SharedCfg::new("MQTT").add(
@@ -1577,7 +1577,7 @@ async fn test_max_qos() -> std::io::Result<()> {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .control(async move |msg| {
                 if let Control::Stop(Reason::Protocol(err)) = msg
-                    && let error::ProtocolError::ProtocolViolation(_) = err.get_ref()
+                    && let error::MqttProtocolError::ProtocolViolation(_) = err.get_ref()
                 {
                     violated.store(true, Relaxed);
                     Ok(Some(
@@ -1588,7 +1588,7 @@ async fn test_max_qos() -> std::io::Result<()> {
                     Ok::<_, TestError>(None)
                 }
             })
-            .build(handshake)
+            .build(connect)
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_qos(QoS::AtMostOnce)))
     .start();
@@ -1623,7 +1623,7 @@ async fn test_max_qos() -> std::io::Result<()> {
 async fn test_sink_ready() -> std::io::Result<()> {
     let srv = server::test_server(async || {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
-            async move |packet: Handshake| {
+            async move |packet: Connect| {
                 let sink = packet.sink();
                 let mut ready = Box::pin(sink.ready());
                 let res = lazy(|cx| Pin::new(&mut ready).poll(cx)).await;
@@ -1674,11 +1674,11 @@ async fn test_sink_ready() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_sink_publish_noblock() -> std::io::Result<()> {
     let srv = server::test_server(async move || {
-        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(handshake)
+        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -1735,13 +1735,13 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
         })
         .control(async move |msg| {
             if let Control::Stop(Reason::Protocol(msg)) = msg
-                && msg.get_ref() == &error::ProtocolError::ReadTimeout
+                && msg.get_ref() == &error::MqttProtocolError::ReadTimeout
             {
                 check.store(true, Relaxed);
             }
             Ok::<_, TestError>(None)
         })
-        .build(handshake)
+        .build(connect)
     })
     .config(
         SharedCfg::new("MQTT")
@@ -1814,7 +1814,7 @@ async fn test_publish_sink_disconnect() -> std::io::Result<()> {
     let srv = server::test_server(async move || {
         let tx = tx.clone();
         let val = val2.clone();
-        MqttServer::new(fn_factory_with_config(async move |con: &Connection<()>| {
+        MqttServer::new(async move |con: &Session<St>| {
             let tx = tx.clone();
             let val = val.clone();
             let sink = con.sink().clone();
@@ -1825,12 +1825,12 @@ async fn test_publish_sink_disconnect() -> std::io::Result<()> {
                 sleep(Seconds(999)).await;
                 Ok::<_, TestError>(p.ack())
             }))
-        }))
-        .build(handshake)
+        })
+        .build(connect)
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -1859,7 +1859,7 @@ async fn test_peergone_after_sink_disconnect() -> std::io::Result<()> {
     let srv = server::test_server(async move || {
         let tx = tx.clone();
         let val = val2.clone();
-        MqttServer::new(fn_factory_with_config(async move |con: &Connection<()>| {
+        MqttServer::new(async move |con: &Session<St>| {
             let sink = con.sink().clone();
             rt::spawn(async move {
                 sleep(Seconds(1)).await;
@@ -1868,7 +1868,7 @@ async fn test_peergone_after_sink_disconnect() -> std::io::Result<()> {
             Ok::<_, Infallible>(fn_service(async move |p: Publish| {
                 Ok::<_, TestError>(p.ack())
             }))
-        }))
+        })
         .control(async move |pkt: Control<_>| {
             if let Control::Stop(Reason::PeerGone(_)) = pkt {
                 val.store(true, Relaxed);
@@ -1876,11 +1876,11 @@ async fn test_peergone_after_sink_disconnect() -> std::io::Result<()> {
             }
             Ok::<_, TestError>(None)
         })
-        .build(handshake)
+        .build(connect)
     });
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -1903,7 +1903,7 @@ async fn test_peergone_after_sink_disconnect() -> std::io::Result<()> {
 async fn test_disconnect_once() -> std::io::Result<()> {
     let srv = server::test_server(async move || {
         MqttServer::new(async |_: Publish| Err(TestError))
-            .control(fn_factory_with_config(async move |con: &Connection<()>| {
+            .control(async move |con: &Session<St>| {
                 let sink = con.sink().clone();
                 Ok::<_, Infallible>(fn_service(async move |pkt: Control<_>| {
                     if let Control::Stop(Reason::Error(_)) = pkt {
@@ -1914,12 +1914,12 @@ async fn test_disconnect_once() -> std::io::Result<()> {
                     }
                     Ok::<_, TestError>(None)
                 }))
-            }))
-            .build(handshake)
+            })
+            .build(connect)
     });
 
     // connect to server
-    let cl = Pipeline::with(
+    let cl = Pipeline::new(
         SharedCfg::new("client").build(),
         client::MqttConnector::new(),
     )
@@ -1969,17 +1969,17 @@ async fn test_disconnect_once() -> std::io::Result<()> {
 /// concurrent requests regardless client request
 async fn test_max_outbound() -> std::io::Result<()> {
     let srv = server::TestServerBuilder::new(async move || {
-        MqttServer::new(fn_factory_with_config(async |con: &Connection<()>| {
+        MqttServer::new(async |con: &Session<St>| {
             assert_eq!(con.sink().credit(), 15);
             Ok::<_, Infallible>(fn_service(async |p: Publish| Ok::<_, TestError>(p.ack())))
-        }))
-        .build(async |hnd: Handshake| Ok::<_, TestError>(hnd.ack(St).max_send(Some(15))))
+        })
+        .build(async |hnd: Connect| Ok::<_, TestError>(hnd.ack(St).max_send(Some(15))))
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_send(10)))
     .start();
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(
             client::Connect::new(srv.addr())
                 .client_id("user")
@@ -2005,17 +2005,17 @@ async fn test_max_outbound() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_max_outbound2() -> std::io::Result<()> {
     let srv = server::TestServerBuilder::new(async move || {
-        MqttServer::new(fn_factory_with_config(async |con: &Connection<()>| {
+        MqttServer::new(async |con: &Session<St>| {
             assert_eq!(con.sink().credit(), 10);
             Ok::<_, Infallible>(fn_service(async |p: Publish| Ok::<_, TestError>(p.ack())))
-        }))
-        .build(handshake)
+        })
+        .build(connect)
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_send(10)))
     .start();
 
     // connect to server
-    let client = Pipeline::new(client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(
             client::Connect::new(srv.addr())
                 .client_id("user")
@@ -2062,7 +2062,7 @@ async fn protocol_error_session_expiry() -> std::io::Result<()> {
                     Ok::<_, TestError>(None)
                 }
             })
-            .build(handshake)
+            .build(connect)
     });
 
     // connect to server, session expiry to 0
@@ -2125,7 +2125,7 @@ async fn test_sink_close_with_no_reason() -> std::io::Result<()> {
     let srv = server::test_server(async move || {
         let tx = tx.clone();
         let val = val2.clone();
-        MqttServer::new(fn_factory_with_config(async move |con: &Connection<()>| {
+        MqttServer::new(async move |con: &Session<St>| {
             let tx = tx.clone();
             let val = val.clone();
             let sink = con.sink().clone();
@@ -2136,12 +2136,12 @@ async fn test_sink_close_with_no_reason() -> std::io::Result<()> {
                 sleep(Seconds(999)).await;
                 Ok::<_, TestError>(p.ack())
             }))
-        }))
-        .build(handshake)
+        })
+        .build(connect)
     });
 
     // connect to server
-    let client = Pipeline::with(
+    let client = Pipeline::new(
         SharedCfg::new("client").build(),
         ntex_service::__assert_svc(client::MqttConnector::new()),
     )

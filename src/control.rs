@@ -1,6 +1,7 @@
 //! Control message for connection management service
-use std::{convert::Infallible, io, marker::PhantomData};
+use std::{io, marker::PhantomData};
 
+use ntex_error::ErrorInfo;
 use ntex_service::{Ctx, Service, ServiceFactory};
 
 use crate::error;
@@ -41,7 +42,7 @@ impl<E> Control<E> {
         Control::Stop(Reason::PeerGone(PeerGone(err)))
     }
 
-    pub(super) fn proto(err: error::ProtocolError) -> Self {
+    pub(super) fn proto(err: error::MqttProtocolError) -> Self {
         Control::Stop(Reason::Protocol(ProtocolError::new(err)))
     }
 }
@@ -85,23 +86,23 @@ impl<E> Error<E> {
 /// Protocol level error
 #[derive(Debug, Clone)]
 pub struct ProtocolError {
-    err: error::ProtocolError,
+    err: error::MqttProtocolError,
 }
 
 impl ProtocolError {
-    pub fn new(err: error::ProtocolError) -> Self {
+    pub fn new(err: error::MqttProtocolError) -> Self {
         Self { err }
     }
 
     #[inline]
     /// Returns reference to a protocol error
-    pub fn get_ref(&self) -> &error::ProtocolError {
+    pub fn get_ref(&self) -> &error::MqttProtocolError {
         &self.err
     }
 
     #[inline]
     /// Return inner error
-    pub fn into(self) -> error::ProtocolError {
+    pub fn into(self) -> error::MqttProtocolError {
         self.err
     }
 }
@@ -134,14 +135,14 @@ impl<E, R> Default for DefaultControlService<E, R> {
     }
 }
 
-impl<St, E, Req, R, Cfg> ServiceFactory<St, Req, Cfg> for DefaultControlService<E, R> {
+impl<St, E, Req, R> ServiceFactory<St, Req> for DefaultControlService<E, R> {
     type Res = Option<R>;
     type Error = E;
 
     type Service = DefaultControlService<E, R>;
-    type InitError = Infallible;
+    type InitError = ErrorInfo;
 
-    async fn create(&self, _: &Cfg) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, _: &St) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService(PhantomData))
     }
 }

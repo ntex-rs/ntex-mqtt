@@ -1,5 +1,6 @@
-use std::{error::Error, fmt, io, num::NonZeroU16};
+use std::{fmt, io, num::NonZeroU16};
 
+use ntex_error::ErrorInfo;
 use ntex_util::future::Either;
 
 use crate::v5::codec::DisconnectReasonCode;
@@ -13,25 +14,25 @@ pub enum MqttError<E> {
     /// Publish handler service error
     #[error("Service error")]
     Service(E),
-    /// Handshake error
-    #[error("Mqtt handshake error: {}", _0)]
-    Handshake(#[from] HandshakeError<E>),
+    /// Connect error
+    #[error("Mqtt connect error: {}", _0)]
+    Connect(#[from] MqttConnectError<E>),
     /// Handler initialization error
     #[error("Mqtt handler initialization error: {}", _0)]
-    HandlerInit(#[from] Box<dyn Error>),
+    HandlerInit(#[from] ErrorInfo),
 }
 
 /// Errors which can occur during mqtt connection handshake.
 #[derive(Debug, thiserror::Error)]
-pub enum HandshakeError<E> {
+pub enum MqttConnectError<E> {
     /// Handshake service error
-    #[error("Handshake service error")]
+    #[error("Connect service error")]
     Service(E),
     /// Protocol error
     #[error("Mqtt protocol error: {}", _0)]
-    Protocol(#[from] ProtocolError),
-    /// Handshake timeout
-    #[error("Handshake timeout")]
+    Protocol(#[from] MqttProtocolError),
+    /// Connect timeout
+    #[error("Connect timeout")]
     Timeout,
     /// Peer disconnect
     #[error("Peer is disconnected, error: {:?}", _0)]
@@ -46,12 +47,12 @@ pub enum DispatcherError<E> {
     Service(E),
     /// Protocol violations error
     #[error("Protocol violations error: {}", _0)]
-    Protocol(#[from] ProtocolError),
+    Protocol(#[from] MqttProtocolError),
 }
 
 impl<E> From<SpecViolation> for DispatcherError<E> {
     fn from(spec: SpecViolation) -> Self {
-        DispatcherError::Protocol(ProtocolError::spec(spec))
+        DispatcherError::Protocol(MqttProtocolError::spec(spec))
     }
 }
 
@@ -60,7 +61,7 @@ impl<E> From<SpecViolation> for DispatcherError<E> {
 pub enum PayloadError {
     /// Protocol error
     #[error("{0}")]
-    Protocol(#[from] ProtocolError),
+    Protocol(#[from] MqttProtocolError),
     /// Service error
     #[error("Service error")]
     Service,
@@ -74,7 +75,7 @@ pub enum PayloadError {
 
 /// Protocol level errors
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ProtocolError {
+pub enum MqttProtocolError {
     /// MQTT decoding error
     #[error("Decoding error: {0:?}")]
     Decode(#[from] DecodeError),
@@ -236,7 +237,7 @@ impl ProtocolViolationError {
     }
 }
 
-impl ProtocolError {
+impl MqttProtocolError {
     pub(crate) fn violation(reason: DisconnectReasonCode, message: &'static str) -> Self {
         Self::ProtocolViolation(ProtocolViolationError {
             inner: ViolationInner::Common { reason, message },
@@ -253,7 +254,7 @@ impl ProtocolError {
         Self::violation(DisconnectReasonCode::ProtocolError, message)
     }
 
-    pub(crate) fn unexpected_packet(packet_type: u8, message: &'static str) -> ProtocolError {
+    pub(crate) fn unexpected_packet(packet_type: u8, message: &'static str) -> MqttProtocolError {
         Self::ProtocolViolation(ProtocolViolationError {
             inner: ViolationInner::UnexpectedPacket {
                 packet_type,
@@ -270,27 +271,27 @@ impl ProtocolError {
 
 impl<E> From<io::Error> for MqttError<E> {
     fn from(err: io::Error) -> Self {
-        MqttError::Handshake(HandshakeError::Disconnected(Some(err)))
+        MqttError::Connect(MqttConnectError::Disconnected(Some(err)))
     }
 }
 
 impl<E> From<Either<io::Error, io::Error>> for MqttError<E> {
     fn from(err: Either<io::Error, io::Error>) -> Self {
-        MqttError::Handshake(HandshakeError::Disconnected(Some(err.into_inner())))
+        MqttError::Connect(MqttConnectError::Disconnected(Some(err.into_inner())))
     }
 }
 
 impl<E> From<EncodeError> for MqttError<E> {
     fn from(err: EncodeError) -> Self {
-        MqttError::Handshake(HandshakeError::Protocol(ProtocolError::Encode(err)))
+        MqttError::Connect(MqttConnectError::Protocol(MqttProtocolError::Encode(err)))
     }
 }
 
-impl<E> From<Either<DecodeError, io::Error>> for HandshakeError<E> {
+impl<E> From<Either<DecodeError, io::Error>> for MqttConnectError<E> {
     fn from(err: Either<DecodeError, io::Error>) -> Self {
         match err {
-            Either::Left(err) => HandshakeError::Protocol(ProtocolError::Decode(err)),
-            Either::Right(err) => HandshakeError::Disconnected(Some(err)),
+            Either::Left(err) => MqttConnectError::Protocol(MqttProtocolError::Decode(err)),
+            Either::Right(err) => MqttConnectError::Disconnected(Some(err)),
         }
     }
 }
@@ -367,16 +368,16 @@ pub enum SendPacketError {
 
 /// Errors which can occur when attempting to handle mqtt client connection.
 #[derive(Debug, thiserror::Error)]
-pub enum ClientError<T: fmt::Debug> {
+pub enum MqttClientError<T: fmt::Debug> {
     /// Connect negotiation failed
     #[error("Connect ack failed: {:?}", _0)]
     Ack(T),
     /// Protocol error
     #[error("Protocol error: {:?}", _0)]
-    Protocol(#[from] ProtocolError),
-    /// Handshake timeout
-    #[error("Handshake timeout")]
-    HandshakeTimeout,
+    Protocol(#[from] MqttProtocolError),
+    /// Connect timeout
+    #[error("Connect timeout")]
+    ConnectTimeout,
     /// Peer disconnected
     #[error("Peer disconnected")]
     Disconnected(Option<std::io::Error>),
@@ -385,17 +386,29 @@ pub enum ClientError<T: fmt::Debug> {
     Connect(#[from] ntex_net::connect::ConnectError),
 }
 
-impl<T: fmt::Debug> From<EncodeError> for ClientError<T> {
-    fn from(err: EncodeError) -> Self {
-        ClientError::Protocol(ProtocolError::Encode(err))
+impl<T: Clone + fmt::Debug> Clone for MqttClientError<T> {
+    fn clone(&self) -> Self {
+        match self {
+            MqttClientError::Ack(e) => MqttClientError::Ack(e.clone()),
+            MqttClientError::Protocol(e) => MqttClientError::Protocol(*e),
+            MqttClientError::ConnectTimeout => MqttClientError::ConnectTimeout,
+            MqttClientError::Disconnected(_) => MqttClientError::Disconnected(None),
+            MqttClientError::Connect(e) => MqttClientError::Connect(e.clone()),
+        }
     }
 }
 
-impl<T: fmt::Debug> From<Either<DecodeError, std::io::Error>> for ClientError<T> {
+impl<T: fmt::Debug> From<EncodeError> for MqttClientError<T> {
+    fn from(err: EncodeError) -> Self {
+        MqttClientError::Protocol(MqttProtocolError::Encode(err))
+    }
+}
+
+impl<T: fmt::Debug> From<Either<DecodeError, std::io::Error>> for MqttClientError<T> {
     fn from(err: Either<DecodeError, std::io::Error>) -> Self {
         match err {
-            Either::Left(err) => ClientError::Protocol(ProtocolError::Decode(err)),
-            Either::Right(err) => ClientError::Disconnected(Some(err)),
+            Either::Left(err) => MqttClientError::Protocol(MqttProtocolError::Decode(err)),
+            Either::Right(err) => MqttClientError::Disconnected(Some(err)),
         }
     }
 }
@@ -408,8 +421,8 @@ mod tests {
 
     #[test]
     fn test_spec_violation_reason_and_message() {
-        let err = ProtocolError::spec(SpecViolation::Connack_3_2_2_11);
-        let ProtocolError::ProtocolViolation(violation) = err else {
+        let err = MqttProtocolError::spec(SpecViolation::Connack_3_2_2_11);
+        let MqttProtocolError::ProtocolViolation(violation) = err else {
             panic!("expected protocol violation");
         };
 
@@ -422,8 +435,8 @@ mod tests {
 
     #[test]
     fn test_generic_violation_reason_and_message() {
-        let err = ProtocolError::generic_violation("broken");
-        let ProtocolError::ProtocolViolation(violation) = err else {
+        let err = MqttProtocolError::generic_violation("broken");
+        let MqttProtocolError::ProtocolViolation(violation) = err else {
             panic!("expected protocol violation");
         };
 
@@ -433,8 +446,8 @@ mod tests {
 
     #[test]
     fn test_unexpected_packet_reason_and_message() {
-        let err = ProtocolError::unexpected_packet(0b0011_0000, "unexpected");
-        let ProtocolError::ProtocolViolation(violation) = err else {
+        let err = MqttProtocolError::unexpected_packet(0b0011_0000, "unexpected");
+        let MqttProtocolError::ProtocolViolation(violation) = err else {
             panic!("expected protocol violation");
         };
 
@@ -451,7 +464,7 @@ mod tests {
         let io_err = io::Error::other("io");
         let err: MqttError<()> = io_err.into();
         match err {
-            MqttError::Handshake(HandshakeError::Disconnected(Some(err))) => {
+            MqttError::Connect(MqttConnectError::Disconnected(Some(err))) => {
                 assert_eq!(err.kind(), io::ErrorKind::Other);
             }
             _ => panic!("expected disconnected handshake error"),
@@ -460,23 +473,23 @@ mod tests {
         let err: MqttError<()> = EncodeError::MalformedPacket.into();
         assert!(matches!(
             err,
-            MqttError::Handshake(HandshakeError::Protocol(ProtocolError::Encode(
+            MqttError::Connect(MqttConnectError::Protocol(MqttProtocolError::Encode(
                 EncodeError::MalformedPacket
             )))
         ));
     }
 
     #[test]
-    fn test_handshake_error_from_decode_or_io() {
-        let err: HandshakeError<()> = Either::Left(DecodeError::MalformedPacket).into();
+    fn test_connect_error_from_decode_or_io() {
+        let err: MqttConnectError<()> = Either::Left(DecodeError::MalformedPacket).into();
         assert!(matches!(
             err,
-            HandshakeError::Protocol(ProtocolError::Decode(DecodeError::MalformedPacket))
+            MqttConnectError::Protocol(MqttProtocolError::Decode(DecodeError::MalformedPacket))
         ));
 
-        let err: HandshakeError<()> = Either::Right(io::Error::other("peer")).into();
+        let err: MqttConnectError<()> = Either::Right(io::Error::other("peer")).into();
         match err {
-            HandshakeError::Disconnected(Some(err)) => {
+            MqttConnectError::Disconnected(Some(err)) => {
                 assert_eq!(err.kind(), io::ErrorKind::Other);
             }
             _ => panic!("expected disconnected handshake error"),
@@ -485,24 +498,24 @@ mod tests {
 
     #[test]
     fn test_client_error_from_decode_or_io_and_encode() {
-        let err: ClientError<()> = Either::Left(DecodeError::InvalidLength).into();
+        let err: MqttClientError<()> = Either::Left(DecodeError::InvalidLength).into();
         assert!(matches!(
             err,
-            ClientError::Protocol(ProtocolError::Decode(DecodeError::InvalidLength))
+            MqttClientError::Protocol(MqttProtocolError::Decode(DecodeError::InvalidLength))
         ));
 
-        let err: ClientError<()> = Either::Right(io::Error::other("peer")).into();
+        let err: MqttClientError<()> = Either::Right(io::Error::other("peer")).into();
         match err {
-            ClientError::Disconnected(Some(err)) => {
+            MqttClientError::Disconnected(Some(err)) => {
                 assert_eq!(err.kind(), io::ErrorKind::Other);
             }
             _ => panic!("expected disconnected client error"),
         }
 
-        let err: ClientError<()> = EncodeError::UnexpectedPayload.into();
+        let err: MqttClientError<()> = EncodeError::UnexpectedPayload.into();
         assert!(matches!(
             err,
-            ClientError::Protocol(ProtocolError::Encode(EncodeError::UnexpectedPayload))
+            MqttClientError::Protocol(MqttProtocolError::Encode(EncodeError::UnexpectedPayload))
         ));
     }
 }

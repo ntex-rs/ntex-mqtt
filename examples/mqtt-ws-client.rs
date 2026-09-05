@@ -27,8 +27,9 @@ async fn main() -> std::io::Result<()> {
     );
 
     // connect to server
-    let client = Pipeline::new(v3::client::MqttConnector::new().connector(
-        move |_: Connect<&str>| {
+    let client = Pipeline::new(
+        SharedCfg::default(),
+        v3::client::MqttConnector::new().connector(move |_: Connect<&str>| {
             let client = ws_client.clone();
             async move {
                 Ok(client
@@ -37,8 +38,8 @@ async fn main() -> std::io::Result<()> {
                     .map_err(|e| ConnectError::Io(io::Error::other(e)))?
                     .into_transport())
             }
-        },
-    ))
+        }),
+    )
     .call(
         v3::client::Connect::new("127.0.0.1:8883")
             .client_id("user")

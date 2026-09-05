@@ -4,7 +4,7 @@ use ntex_service::{Ctx, Service};
 use ntex_util::future::{Either, join};
 use ntex_util::{HashSet, services::inflight::InFlightService};
 
-use crate::error::{DispatcherError, PayloadError, ProtocolError, SpecViolation};
+use crate::error::{DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::v3::codec::{self, Decoded, Encoded, Packet};
 use crate::v3::shared::{Ack, MqttShared};
@@ -231,7 +231,7 @@ where
                 | Packet::Subscribe { .. }
                 | Packet::Unsubscribe { .. }),
                 _,
-            ) => Err(ProtocolError::unexpected_packet(
+            ) => Err(MqttProtocolError::unexpected_packet(
                 pkt.packet_type(),
                 "Packet of the type is not expected from server",
             )
@@ -343,8 +343,8 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
-        let disp = Pipeline::with(
-            Session::new((), MqttSink::new(shared.clone())),
+        let disp = Pipeline::new(
+            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
             Dispatcher::new(
                 shared.clone(),
                 fn_service(|_| async {

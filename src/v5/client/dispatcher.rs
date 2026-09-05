@@ -4,7 +4,7 @@ use ntex_bytes::ByteString;
 use ntex_service::{Ctx, Service, cfg::Cfg};
 use ntex_util::{HashMap, HashSet, future::Either, future::join, hash_map};
 
-use crate::error::{DispatcherError, PayloadError, ProtocolError, SpecViolation};
+use crate::error::{DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
 use crate::v5::codec::{Decoded, DisconnectReasonCode, Encoded, Packet};
 use crate::v5::shared::{Ack, MqttShared};
@@ -143,7 +143,7 @@ where
                             if let Some(aliased_topic) = inner.aliases.get(&alias) {
                                 publish.topic = aliased_topic.clone();
                             } else {
-                                return Err(ProtocolError::violation(
+                                return Err(MqttProtocolError::violation(
                                     DisconnectReasonCode::TopicAliasInvalid,
                                     "Unknown topic alias",
                                 )
@@ -264,7 +264,7 @@ where
                         .await
                 }
             }
-            Decoded::Packet(Packet::Auth(_), ..) => Err(ProtocolError::unexpected_packet(
+            Decoded::Packet(Packet::Auth(_), ..) => Err(MqttProtocolError::unexpected_packet(
                 packet_type::AUTH,
                 "AUTH packet is not supported at this time",
             )
@@ -273,7 +273,7 @@ where
             Decoded::Packet(
                 pkt @ (Packet::PingRequest | Packet::Subscribe(_) | Packet::Unsubscribe(_)),
                 _,
-            ) => Err(ProtocolError::unexpected_packet(
+            ) => Err(MqttProtocolError::unexpected_packet(
                 pkt.packet_type(),
                 "Packet of the type is not expected from server",
             )

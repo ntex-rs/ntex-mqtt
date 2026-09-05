@@ -1,10 +1,8 @@
 use std::{cell::RefCell, convert::Infallible};
 
-use ntex::service::{
-    ServiceFactory, cfg::SharedCfg, fn_factory_with_config, fn_service, fn_service_st,
-};
+use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_service};
 use ntex::util::ByteString;
-use ntex_mqtt::v5::{self, Connection, MqttServer, Publish, PublishAck, Session};
+use ntex_mqtt::v5::{self, MqttServer, Publish, PublishAck, Session};
 use ntex_mqtt::{Control, Reason};
 
 #[derive(Clone, Debug)]
@@ -32,16 +30,16 @@ impl std::convert::TryFrom<MyServerError> for PublishAck {
     }
 }
 
-async fn handshake(handshake: v5::Handshake) -> Result<v5::HandshakeAck<MySession>, MyServerError> {
-    log::info!("new connection: {:?}", handshake);
+async fn connect(msg: v5::Connect) -> Result<v5::ConnectAck<MySession>, MyServerError> {
+    log::info!("new connection: {:?}", msg);
 
     let session = MySession {
-        _client_id: handshake.packet().client_id.to_string(),
+        _client_id: msg.packet().client_id.to_string(),
         subscriptions: RefCell::new(Vec::new()),
-        sink: handshake.sink(),
+        sink: msg.sink(),
     };
 
-    Ok(handshake.ack(session))
+    Ok(msg.ack(session))
 }
 
 async fn publish(
@@ -78,13 +76,12 @@ async fn publish(
 fn protocol_service_factory() -> impl ServiceFactory<
     Session<MySession>,
     v5::ProtocolMessage,
-    Connection<()>,
     Res = v5::ProtocolMessageAck,
     Error = MyServerError,
-    InitError = MyServerError,
+    InitError = Infallible,
 > {
-    fn_factory_with_config(async move |_: &Connection<()>| {
-        Ok(fn_service_st(
+    ntex::factory(async move |_: &Session<MySession>| {
+        Ok(ntex::service(
             async move |st: &Session<MySession>, msg| match msg {
                 v5::ProtocolMessage::Auth(a) => Ok(a.ack(v5::codec::Auth::default())),
                 v5::ProtocolMessage::Disconnect(d) => Ok(d.ack()),
@@ -108,12 +105,11 @@ fn protocol_service_factory() -> impl ServiceFactory<
 fn control_service_factory() -> impl ServiceFactory<
     Session<MySession>,
     Control<MyServerError>,
-    Connection<()>,
     Res = Option<v5::codec::Encoded>,
     Error = MyServerError,
-    InitError = MyServerError,
+    InitError = Infallible,
 > {
-    fn_factory_with_config(async move |_: &Connection<()>| {
+    ntex::factory(async move |_: &Session<MySession>| {
         Ok(fn_service(async move |control| match control {
             Control::Stop(Reason::Error(_)) => Ok(Some(
                 v5::codec::Packet::from(v5::codec::Disconnect {
@@ -136,14 +132,14 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
-            MqttServer::new(fn_factory_with_config(async |_| {
-                Ok::<_, Infallible>(fn_service_st(async |ses: &Session<MySession>, req| {
+            MqttServer::new(async |_: &Session<MySession>| {
+                Ok::<_, Infallible>(ntex::service(async |ses: &Session<MySession>, req| {
                     publish(ses, req).await
                 }))
-            }))
+            })
             .control(control_service_factory())
             .protocol(protocol_service_factory())
-            .build(handshake)
+            .build(connect)
         })?
         .workers(1)
         .run()

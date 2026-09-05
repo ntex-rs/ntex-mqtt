@@ -1,12 +1,10 @@
 //! Mqtt-over-WS server
-#![recursion_limit = "256"]
-use std::{error::Error, io};
+use std::io;
 
-use ntex::http::{self, HttpService, Request, Response, h1};
-use ntex::io::{Filter, Io, Layer};
-use ntex::service::{Pipeline, Service, svc};
-use ntex::{SharedCfg, util::variant, ws};
-use ntex_mqtt::{HandshakeError, MqttError, MqttServer, ProtocolError, v3, v5};
+use ntex::http::{self, HttpService, Request, Response, error::DispatchError, h1};
+use ntex::io::{Filter, Io, IoBoxed, Layer};
+use ntex::{Pipeline, PipelineBinding, Service, SharedCfg, ws};
+use ntex_mqtt::{MqttError, MqttServer, v3, v5};
 use ntex_tls::openssl::SslAcceptor;
 use openssl::ssl::{self, SslFiletype, SslMethod};
 
@@ -31,7 +29,7 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
 }
 
 /// Mqtt server factory
-fn mqtt_server<F: Filter>() -> impl Service<(), Io<F>, Res = (), Error = Box<dyn Error>> {
+fn mqtt_server() -> impl Service<(), IoBoxed, Res = (), Error = io::Error> {
     MqttServer::new()
         .v3(v3::MqttServer::new(async move |publish: v3::Publish| {
             log::info!(
@@ -41,9 +39,9 @@ fn mqtt_server<F: Filter>() -> impl Service<(), Io<F>, Res = (), Error = Box<dyn
             );
             Ok::<_, ServerError>(())
         })
-        .build(async move |handshake: v3::Handshake| {
-            log::info!("new mqtt v3 connection: {:?}", handshake);
-            Ok(handshake.ack(Session, false))
+        .build(async move |msg: v3::Connect| {
+            log::info!("new mqtt v3 connection: {:?}", msg);
+            Ok(msg.ack(Session, false))
         }))
         .v5(v5::MqttServer::new(async move |publish: v5::Publish| {
             log::info!(
@@ -53,51 +51,73 @@ fn mqtt_server<F: Filter>() -> impl Service<(), Io<F>, Res = (), Error = Box<dyn
             );
             Ok::<_, ServerError>(publish.ack())
         })
-        .build(async move |handshake: v5::Handshake| {
-            log::info!("new mqtt v5 connection: {:?}", handshake);
-            Ok(handshake.ack(Session))
+        .build(async move |msg: v5::Connect| {
+            log::info!("new mqtt v5 connection: {:?}", msg);
+            Ok(msg.ack(Session))
         }))
         .map_err(|e: MqttError<ServerError>| {
             log::info!("Mqtt server error: {:?}", e);
-            Box::<dyn Error>::from(e)
+            io::Error::other(format!("Mqtt error {e:?}"))
         })
+}
+
+/// Mqtt server factory
+fn http_server<F: Filter>(
+    mqtt: PipelineBinding<IoBoxed, (), io::Error>,
+) -> impl Service<(), Io<F>, Res = (), Error = DispatchError> {
+    HttpService::new(async |_| {
+        // ntex::web could be used for normal http
+        //
+        // this impl doe not allow http
+        Ok::<_, io::Error>(Response::NotFound().body("Use WebSocket proto"))
+    })
+    // websocket handler, we need to verify websocket handshake
+    // and then switch to websokets streaming
+    .h1_control(async move |msg: h1::Control<_, _>| {
+        let ack = match msg {
+            h1::Control::Upgrade(ctl) => {
+                let (ack, io, req, codec) = ctl.handle();
+                // negotiate ws protocol and install Ws transport
+                let io = ws(io, req, codec).await?;
+                // handle mqtt protocol
+                mqtt.call(io.boxed()).await?;
+
+                ack
+            }
+            _ => msg.ack(),
+        };
+        Ok::<_, io::Error>(ack)
+    })
 }
 
 /// WebSocket service
 ///
 /// ws server negotiates ws protocol and switch to websocket transport
-pub fn ws<F: Filter>() -> impl Service<
-    (),
-    (Request, Io<F>, h1::Codec),
-    Res = Io<Layer<ws::WsTransport, F>>,
-    Error = Box<dyn Error>,
-> {
-    ntex::fn_service(
-        move |(req, io, codec): (Request, Io<F>, h1::Codec)| async move {
-            log::trace!("Got http request: {:?}", req);
+async fn ws<F: Filter>(
+    io: Io<F>,
+    req: Request,
+    codec: h1::Codec,
+) -> Result<Io<Layer<ws::WsTransport, F>>, io::Error> {
+    log::trace!("Got http request: {:?}", req);
 
-            match ws::handshake(req.head()) {
-                Err(e) => {
-                    // invalid WebSocket handshake request
-                    log::info!("WebSocket negotiation failed: {:?}", e);
-                    Err(Box::<dyn Error>::from(e))
-                }
-                Ok(mut res) => {
-                    // send success http response and switch to ws codec
-                    io.send(
-                        h1::Message::Item((res.finish().drop_body(), http::body::BodySize::Empty)),
-                        &codec,
-                    )
-                    .await
-                    .map_err(Box::<dyn Error>::from)?;
+    match ws::handshake(req.head()) {
+        Err(e) => {
+            // invalid WebSocket handshake request
+            log::info!("WebSocket negotiation failed: {:?}", e);
+            Err(io::Error::other(e))
+        }
+        Ok(mut res) => {
+            // send success http response and switch to ws codec
+            io.send(
+                h1::Message::Item((res.finish().drop_body(), http::body::BodySize::Empty)),
+                &codec,
+            )
+            .await?;
 
-                    log::trace!("WebSocket handshake is completed");
-
-                    Ok(ws::WsTransport::create(io, ws::Codec::new()))
-                }
-            }
-        },
-    )
+            log::trace!("WebSocket handshake is completed");
+            Ok(ws::WsTransport::create(io, ws::Codec::new()))
+        }
+    }
 }
 
 enum Protocol {
@@ -129,13 +149,14 @@ async fn main() -> std::io::Result<()> {
             "127.0.0.1:8883",
             SharedCfg::default(),
             async move |_| {
-                let ws_svc = Pipeline::with((), svc(ws()).and_then(mqtt_server()));
+                let mqtt = Pipeline::new((), mqtt_server());
+                let http = Pipeline::new((), http_server(mqtt.bind()));
 
                 // first switch to ssl stream
                 SslAcceptor::new(acceptor.clone())
-                    .map_err(|_err| MqttError::Service(ServerError {}))
+                    .map_err(|e| io::Error::other(e))
                     // we need to read first 4 bytes and detect protocol GET or MQTT
-                    .and_then(|io: Io<_>| async move {
+                    .and_then(async move |io: Io<_>| {
                         println!("Connection is established, select protocol");
 
                         // we can read incoming bytes stream without consuming it
@@ -152,53 +173,16 @@ async fn main() -> std::io::Result<()> {
                             println!("Protocol is unknown {:?}", buf);
                             Protocol::Unknown
                         };
+
                         return match result {
-                            Protocol::Mqtt => Ok(variant::Variant2::V1(io)),
-                            Protocol::Http => Ok(variant::Variant2::V2(io)),
-                            Protocol::Unknown => {
-                                Err(MqttError::Handshake(HandshakeError::Protocol(
-                                    ProtocolError::generic_violation("Unsupported protocol"),
-                                )))
-                            }
+                            Protocol::Mqtt => mqtt.call(io.boxed()).await,
+                            Protocol::Http => http
+                                .call(io)
+                                .await
+                                .map_err(|e| io::Error::other(format!("Http error {e:?}"))),
+                            Protocol::Unknown => Err(io::Error::other("Unsupported protocol")),
                         };
                     })
-                    .map_err(Box::<dyn Error>::from)
-                    // start mqtt server.
-                    //
-                    // we need two different servers one for mqtt protocol
-                    // and another for websockets
-                    //
-                    // for this purpose we are going to use ntex::util::variant helper service
-                    .and_then(
-                        // normal mqtt server
-                        variant::variant(mqtt_server())
-                            // http server for websockets
-                            .v2(HttpService::new(async |_| {
-                                // ntex::web could be used for normal http
-                                //
-                                // this impl doe not allow http
-                                Ok::<_, io::Error>(Response::NotFound().body("Use WebSocket proto"))
-                            })
-                            // websocket handler, we need to verify websocket handshake
-                            // and then switch to websokets streaming
-                            .h1_control(async move |msg: h1::Control<_, _>| {
-                                let ack = match msg {
-                                    h1::Control::Upgrade(ctl) => {
-                                        let ws = ws_svc.bind();
-                                        ctl.handle(move |req, io, codec| {
-                                            ws.call_static((req, io, codec))
-                                        })
-                                    }
-                                    _ => msg.ack(),
-                                };
-                                Ok::<_, io::Error>(ack)
-                            })
-                            // adapt service error to mqtt error
-                            .map_err(|e| {
-                                log::info!("Http server error: {:?}", e);
-                                Box::<dyn Error>::from(e)
-                            })),
-                    )
             },
         )?
         .workers(1)

@@ -3,7 +3,7 @@ use std::{cell::RefCell, fmt, marker, num::NonZeroU16, rc::Rc};
 use ntex_bytes::ByteString;
 use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Path, Router, RouterBuilder};
-use ntex_service::pipeline::{Pipeline, PipelineWithState};
+use ntex_service::pipeline::{Pipeline, PipelineState};
 use ntex_service::{IntoService, Service, cfg::Cfg, fn_service, fn_service_st};
 use ntex_util::time::{Millis, Seconds, sleep};
 use ntex_util::{HashMap, future::Either};
@@ -93,7 +93,7 @@ impl Client {
     {
         let mut builder = Router::build();
         builder.path(address, 0);
-        let handlers = vec![PipelineWithState::new(service.into_service())];
+        let handlers = vec![PipelineState::new(service.into_service())];
 
         ClientRouter {
             builder,
@@ -117,8 +117,8 @@ impl Client {
             ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
-            Session::new((), sink.clone()),
+        let dispatcher = Pipeline::new(
+            Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
                 fn_service(async |pkt| Ok(Either::Left(pkt))),
@@ -130,8 +130,8 @@ impl Client {
                 self.cfg,
             ),
         );
-        let control = Pipeline::with(
-            Session::new((), sink),
+        let control = Pipeline::new(
+            Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<(), codec::Encoded>::default(),
                 self.shared.clone(),
@@ -153,8 +153,8 @@ impl Client {
             ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
-            Session::new((), sink.clone()),
+        let dispatcher = Pipeline::new(
+            Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
                 fn_service(async |pkt| Ok(Either::Left(pkt))),
@@ -164,8 +164,8 @@ impl Client {
                 self.cfg,
             ),
         );
-        let control = Pipeline::with(
-            Session::new((), sink),
+        let control = Pipeline::new(
+            Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<(), codec::Encoded>::default(),
                 self.shared.clone(),
@@ -192,8 +192,8 @@ impl Client {
             ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
-            Session::new((), sink.clone()),
+        let dispatcher = Pipeline::new(
+            Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
                 fn_service(async |pkt| Ok(Either::Left(pkt))),
@@ -203,8 +203,8 @@ impl Client {
                 self.cfg,
             ),
         );
-        let control = Pipeline::with(
-            Session::new((), sink),
+        let control = Pipeline::new(
+            Session::new((), sink, self.io.shared()),
             ControlService::new(control, self.shared.clone()),
         );
 
@@ -221,7 +221,7 @@ impl Client {
 pub struct ClientRouter<Err, PErr> {
     io: IoBoxed,
     builder: RouterBuilder<usize>,
-    handlers: Vec<PipelineWithState<Session<()>, Publish, PublishAck, PErr>>,
+    handlers: Vec<PipelineState<Session<()>, Publish, PublishAck, PErr>>,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     max_receive: usize,
@@ -254,7 +254,7 @@ where
     {
         self.builder.path(address, self.handlers.len());
         self.handlers
-            .push(PipelineWithState::new(service.into_service()));
+            .push(PipelineState::new(service.into_service()));
         self
     }
 
@@ -265,8 +265,8 @@ where
             ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
-            Session::new((), sink.clone()),
+        let dispatcher = Pipeline::new(
+            Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
                 dispatch(self.builder.finish(), self.handlers),
@@ -278,8 +278,8 @@ where
                 self.cfg,
             ),
         );
-        let control = Pipeline::with(
-            Session::new((), sink),
+        let control = Pipeline::new(
+            Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<Err, codec::Encoded>::default(),
                 self.shared.clone(),
@@ -300,8 +300,8 @@ where
             ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
-            Session::new((), sink.clone()),
+        let dispatcher = Pipeline::new(
+            Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
                 dispatch(self.builder.finish(), self.handlers),
@@ -311,8 +311,8 @@ where
                 self.cfg,
             ),
         );
-        let control = Pipeline::with(
-            Session::new((), sink),
+        let control = Pipeline::new(
+            Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<Err, codec::Encoded>::default(),
                 self.shared.clone(),
@@ -330,7 +330,7 @@ where
 
 fn dispatch<PErr>(
     router: Router<usize>,
-    handlers: Vec<PipelineWithState<Session<()>, Publish, PublishAck, PErr>>,
+    handlers: Vec<PipelineState<Session<()>, Publish, PublishAck, PErr>>,
 ) -> impl Service<Session<()>, Publish, Res = Either<Publish, PublishAck>, Error = PErr>
 where
     PErr: 'static,

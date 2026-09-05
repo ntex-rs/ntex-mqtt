@@ -204,7 +204,7 @@ mod tests {
     async fn test_inflight() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightServiceImpl::new(1, 0, SleepService(wait_time)));
+        let srv = Pipeline::new((), InFlightServiceImpl::new(1, 0, SleepService(wait_time)));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.bind();
@@ -223,7 +223,7 @@ mod tests {
     async fn test_inflight2() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightServiceImpl::new(0, 10, SleepService(wait_time)));
+        let srv = Pipeline::new((), InFlightServiceImpl::new(0, 10, SleepService(wait_time)));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.bind();
@@ -278,15 +278,18 @@ mod tests {
     async fn test_inflight3() {
         let wait_time = Duration::from_millis(50);
 
-        let srv = Pipeline::new(InFlightServiceImpl::new(
-            1,
-            10,
-            Srv2 {
-                dur: wait_time,
-                cnt: Cell::new(false),
-                waker: LocalWaker::new(),
-            },
-        ));
+        let srv = Pipeline::new(
+            (),
+            InFlightServiceImpl::new(
+                1,
+                10,
+                Srv2 {
+                    dur: wait_time,
+                    cnt: Cell::new(false),
+                    waker: LocalWaker::new(),
+                },
+            ),
+        );
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.bind();

@@ -6,7 +6,7 @@ use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
 use ntex_util::{HashSet, channel::pool};
 
-use crate::error::{DecodeError, EncodeError, PayloadError, ProtocolError, SendPacketError};
+use crate::error::{DecodeError, EncodeError, MqttProtocolError, PayloadError, SendPacketError};
 use crate::v3::codec::{self, Encoded, Publish};
 use crate::{payload::PlSender, types::packet_type};
 
@@ -331,13 +331,13 @@ impl MqttShared {
             .set(num::NonZeroU32::new(pkt.payload_size - len as u32));
     }
 
-    pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), ProtocolError> {
+    pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), MqttProtocolError> {
         self.pkt_ack_inner(ack).inspect_err(|_| {
             self.close();
         })
     }
 
-    fn pkt_ack_inner(&self, pkt: Ack) -> Result<(), ProtocolError> {
+    fn pkt_ack_inner(&self, pkt: Ack) -> Result<(), MqttProtocolError> {
         let mut queues = self.queues.borrow_mut();
 
         // check ack order
@@ -348,7 +348,7 @@ impl MqttShared {
                     idx,
                     pkt.packet_id()
                 );
-                Err(ProtocolError::packet_id_mismatch())
+                Err(MqttProtocolError::packet_id_mismatch())
             } else if matches!(pkt, Ack::Receive(_)) {
                 // get publish ack channel
                 log::trace!("Ack packet with id: {}", pkt.packet_id());
@@ -402,7 +402,7 @@ impl MqttShared {
                     Ok(())
                 } else {
                     log::trace!("MQTT protocol error, unexpected packet");
-                    Err(ProtocolError::unexpected_packet(
+                    Err(MqttProtocolError::unexpected_packet(
                         pkt.packet_type(),
                         tp.expected_str(),
                     ))
@@ -410,7 +410,7 @@ impl MqttShared {
             }
         } else {
             log::trace!("Unexpected PUBACK packet: {:?}", pkt.packet_id());
-            Err(ProtocolError::generic_violation(
+            Err(MqttProtocolError::generic_violation(
                 "Received PUBACK packet while there are no unacknowledged PUBLISH packets",
             ))
         }

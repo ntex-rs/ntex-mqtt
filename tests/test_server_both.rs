@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 
 use ntex::util::{ByteString, Bytes};
-use ntex::{Pipeline, server};
+use ntex::{Pipeline, SharedCfg, server};
 use ntex_mqtt::{MqttServer, v3, v5};
 
 struct St;
@@ -28,15 +28,15 @@ async fn test_simple() -> std::io::Result<()> {
     let srv = server::test_server(async || {
         MqttServer::new()
             .v3(v3::MqttServer::new(async |_| Ok::<_, TestError>(()))
-                .build(async move |con: v3::Handshake| Ok::<_, TestError>(con.ack(St, false))))
+                .build(async move |con: v3::Connect| Ok::<_, TestError>(con.ack(St, false))))
             .v5(
                 v5::MqttServer::new(async move |p: v5::Publish| Ok::<_, TestError>(p.ack()))
-                    .build(async move |con: v5::Handshake| Ok::<_, TestError>(con.ack(St))),
+                    .build(async move |con: v5::Connect| Ok::<_, TestError>(con.ack(St))),
             )
     });
 
     // connect to v5 server
-    let client = Pipeline::new(v5::client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), v5::client::MqttConnector::new())
         .call(v5::client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
@@ -51,7 +51,7 @@ async fn test_simple() -> std::io::Result<()> {
     sink.close();
 
     // connect to v3 server
-    let client = Pipeline::new(v3::client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), v3::client::MqttConnector::new())
         .call(v3::client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();

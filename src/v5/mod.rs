@@ -4,23 +4,22 @@ pub mod client;
 pub mod codec;
 pub mod control;
 
+mod connect;
 mod default;
 mod dispatcher;
-mod handshake;
 mod publish;
 mod router;
 mod server;
 mod shared;
 mod sink;
 
-pub type Connection<St> = crate::Connection<MqttSink, St>;
 pub type Session<St> = crate::Session<MqttSink, St>;
 
 use ntex_error::Error;
 use std::num::NonZeroU16;
 
+pub use self::connect::{Connect, ConnectAck};
 pub use self::control::{ProtocolMessage, ProtocolMessageAck};
-pub use self::handshake::{Handshake, HandshakeAck};
 pub use self::publish::{Publish, PublishAck};
 pub use self::router::Router;
 pub use self::server::MqttServer;

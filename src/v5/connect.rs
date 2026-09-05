@@ -1,25 +1,28 @@
 use ntex_io::IoBoxed;
 use std::{fmt, num::NonZeroU16, rc::Rc};
 
-use super::{codec, shared::MqttShared, sink::MqttSink};
+use super::{Session, codec, shared::MqttShared, sink::MqttSink};
 
-/// Handshake message
-pub struct Handshake {
+/// Connect message
+pub struct Connect<St = ()> {
     io: IoBoxed,
+    st: St,
     pkt: Box<codec::Connect>,
     size: u32,
     pub(super) shared: Rc<MqttShared>,
 }
 
-impl Handshake {
+impl<St> Connect<St> {
     pub(crate) fn new(
         pkt: Box<codec::Connect>,
         size: u32,
         io: IoBoxed,
+        st: St,
         shared: Rc<MqttShared>,
     ) -> Self {
         Self {
             io,
+            st,
             pkt,
             size,
             shared,
@@ -47,14 +50,25 @@ impl Handshake {
     }
 
     #[inline]
+    pub fn st(&self) -> &St {
+        &self.st
+    }
+
+    #[inline]
     /// Returns mqtt server sink
     pub fn sink(&self) -> MqttSink {
         MqttSink::new(self.shared.clone())
     }
 
     #[inline]
-    /// Ack handshake message and set state
-    pub fn ack<St>(self, st: St) -> HandshakeAck<St> {
+    /// Ack Connect message and set state
+    pub fn ack<AppSt>(self, st: AppSt) -> ConnectAck<AppSt> {
+        self.ack_and_session(st).0
+    }
+
+    #[inline]
+    /// Ack Connect message and set state
+    pub fn ack_and_session<AppSt>(self, st: AppSt) -> (ConnectAck<AppSt>, Session<AppSt>) {
         let max_pkt_size = self.shared.codec.max_inbound_size();
         let receive_max = self.shared.receive_max();
         let packet = codec::ConnectAck {
@@ -70,29 +84,35 @@ impl Handshake {
             ..codec::ConnectAck::default()
         };
 
-        let Handshake {
-            io, shared, pkt, ..
-        } = self;
+        let io = self.io;
+        let pkt = self.pkt;
+        let shared = self.shared;
+
         // [MQTT-3.1.2-22]
         let keepalive = if pkt.keep_alive != 0 {
             (pkt.keep_alive >> 1).saturating_add(pkt.keep_alive)
         } else {
             30
         };
-        HandshakeAck {
-            io,
-            shared,
-            keepalive,
-            packet,
-            session: Some(st),
-            max_send: None,
-        }
+        let session = Session::new(st, MqttSink::new(shared.clone()), io.shared());
+
+        (
+            ConnectAck {
+                io,
+                shared,
+                keepalive,
+                packet,
+                session: Some(session.clone()),
+                max_send: None,
+            },
+            session,
+        )
     }
 
     #[inline]
-    /// Create handshake ack object with error
-    pub fn failed<St>(self, reason_code: codec::ConnectAckReason) -> HandshakeAck<St> {
-        HandshakeAck {
+    /// Create Connect ack object with error
+    pub fn failed<AppSt>(self, reason_code: codec::ConnectAckReason) -> ConnectAck<AppSt> {
+        ConnectAck {
             io: self.io,
             shared: self.shared,
             session: None,
@@ -106,9 +126,9 @@ impl Handshake {
     }
 
     #[inline]
-    /// Create handshake ack object with provided `ConnectAck` packet
-    pub fn fail_with<St>(self, ack: codec::ConnectAck) -> HandshakeAck<St> {
-        HandshakeAck {
+    /// Create Connect ack object with provided `ConnectAck` packet
+    pub fn fail_with<AppSt>(self, ack: codec::ConnectAck) -> ConnectAck<AppSt> {
+        ConnectAck {
             io: self.io,
             shared: self.shared,
             session: None,
@@ -119,25 +139,25 @@ impl Handshake {
     }
 }
 
-impl fmt::Debug for Handshake {
+impl fmt::Debug for Connect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.pkt.fmt(f)
     }
 }
 
-/// Handshake ack message
-pub struct HandshakeAck<St> {
+/// Connect ack message
+pub struct ConnectAck<St> {
     pub(crate) io: IoBoxed,
-    pub(crate) session: Option<St>,
+    pub(crate) session: Option<Session<St>>,
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) packet: codec::ConnectAck,
     pub(crate) keepalive: u16,
     pub(crate) max_send: Option<u16>,
 }
 
-impl<St> fmt::Debug for HandshakeAck<St> {
+impl<St> fmt::Debug for ConnectAck<St> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HandshakeAck")
+        f.debug_struct("ConnectAck")
             .field("packet", &self.packet)
             .field("keepalive", &self.keepalive)
             .field("max_send", &self.max_send)
@@ -145,7 +165,7 @@ impl<St> fmt::Debug for HandshakeAck<St> {
     }
 }
 
-impl<St> HandshakeAck<St> {
+impl<St> ConnectAck<St> {
     #[inline]
     #[must_use]
     /// Set idle keep-alive for the connection in seconds.
@@ -201,16 +221,16 @@ mod tests {
         let codec_v5 = codec::Codec::new();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec_v5, Rc::default()));
         let connect = Box::new(codec::Connect::default());
-        let h = Handshake::new(connect, 0, IoBoxed::from(io), shared);
+        let h = Connect::new(connect, 0, IoBoxed::from(io), (), shared);
 
-        // Handshake delegates to the Connect packet
+        // Connect delegates to the Connect packet
         let dbg = format!("{h:?}");
         assert!(!dbg.is_empty());
 
-        // HandshakeAck
+        // ConnectAck
         let ack = h.ack(42u32);
         let dbg = format!("{ack:?}");
-        assert!(dbg.contains("HandshakeAck"));
+        assert!(dbg.contains("ConnectAck"));
         assert!(dbg.contains("keepalive"));
     }
 }

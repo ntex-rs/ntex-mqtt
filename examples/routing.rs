@@ -51,9 +51,9 @@ async fn main() -> std::io::Result<()> {
                     Ok(())
                 }),
             )
-            .build(async move |handshake: v3::Handshake| {
-                log::info!("new mqtt v3 connection: {:?}", handshake);
-                Ok::<_, ServerError>(handshake.ack(Session, false))
+            .build(async move |msg: v3::Connect| {
+                log::info!("new mqtt v3 connection: {:?}", msg);
+                Ok::<_, ServerError>(msg.ack(Session, false))
             })
         })?
         .workers(1)

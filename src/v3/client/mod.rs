@@ -14,7 +14,7 @@ pub use self::control::{ProtocolMessage, ProtocolMessageAck};
 
 pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;
-pub use crate::v3::{codec, error, error::ClientError, sink::MqttSink};
+pub use crate::v3::{codec, error, error::MqttClientError, sink::MqttSink};
 
 #[derive(Clone, Debug)]
 pub struct Connect<A: Address> {

@@ -2,44 +2,13 @@ use std::{fmt, ops::Deref, rc::Rc};
 
 use ntex_service::cfg::{Cfg, Configuration, SharedCfg};
 
-pub struct Connection<T, St> {
-    st: St,
-    sink: T,
-    shared: SharedCfg,
-}
-
-impl<T, St> Connection<T, St> {
-    pub(crate) fn new(st: St, sink: T, shared: SharedCfg) -> Self {
-        Self { st, sink, shared }
-    }
-
-    #[inline]
-    pub fn st(&self) -> &St {
-        &self.st
-    }
-
-    #[inline]
-    pub fn sink(&self) -> &T {
-        &self.sink
-    }
-
-    #[inline]
-    pub fn shared(&self) -> SharedCfg {
-        self.shared.clone()
-    }
-
-    #[inline]
-    pub fn cfg<U: Configuration>(&self) -> Cfg<U> {
-        self.shared.get()
-    }
-}
-
 /// Mqtt connection session
 pub struct Session<T, St>(Rc<SessionInner<T, St>>);
 
 struct SessionInner<T, St> {
     st: St,
     sink: T,
+    shared: SharedCfg,
 }
 
 impl<T, St> Clone for Session<T, St> {
@@ -50,13 +19,18 @@ impl<T, St> Clone for Session<T, St> {
 }
 
 impl<T, St> Session<T, St> {
-    pub(crate) fn new(st: St, sink: T) -> Self {
-        Session(Rc::new(SessionInner { st, sink }))
+    pub(crate) fn new(st: St, sink: T, shared: SharedCfg) -> Self {
+        Session(Rc::new(SessionInner { st, sink, shared }))
     }
 
     #[inline]
     pub fn sink(&self) -> &T {
         &self.0.sink
+    }
+
+    #[inline]
+    pub fn cfg<U: Configuration>(&self) -> Cfg<U> {
+        self.0.shared.get()
     }
 }
 
@@ -81,7 +55,7 @@ mod tests {
 
     #[test]
     fn test_session() {
-        let s = Session::new(42u32, "sink");
+        let s = Session::new(42u32, "sink", SharedCfg::default());
         assert_eq!(s.sink(), &"sink");
         assert_eq!(*s, 42u32);
         assert_eq!(format!("{s:?}"), "Session");

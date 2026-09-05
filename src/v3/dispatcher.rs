@@ -1,12 +1,11 @@
-use std::{cell::RefCell, error::Error, marker::PhantomData, num::NonZeroU16, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
-use ntex_service::cfg::Cfg;
-use ntex_service::pipeline::PipelineWithState;
-use ntex_service::{Ctx, Service, ServiceFactory};
+use ntex_error::{Error, ErrorDiagnostic, ErrorInfo};
+use ntex_service::{Ctx, Service, ServiceFactory, cfg::Cfg, pipeline::PipelineState};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
-use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
+use crate::error::{DecodeError, DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
 use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
@@ -14,52 +13,45 @@ use super::codec::{Decoded, Encoded, Packet};
 use super::control::{
     ProtocolMessage, ProtocolMessageAck, ProtocolMessageKind, Subscribe, Unsubscribe,
 };
-use super::{Connection, Session, publish::Publish, shared::Ack, shared::MqttShared};
+use super::{Session, publish::Publish, shared::Ack, shared::MqttShared};
 
 /// mqtt3 protocol dispatcher
-pub(super) fn factory<St, AppSt, Sf, Ctl, E>(
+pub(super) fn factory<AppSt, Sf, Ctl>(
     publish: Sf,
     control: Ctl,
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
-    Connection<St>,
     Res = Option<Encoded>,
-    Error = DispatcherError<E>,
-    InitError = Box<dyn Error>,
+    Error = DispatcherError<Sf::Error>,
+    InitError = ErrorInfo,
 >
 where
-    St: 'static,
     AppSt: 'static,
-    E: 'static,
-    Sf: ServiceFactory<Session<AppSt>, Publish, Connection<St>, Res = ()> + 'static,
-    Sf::Error: Into<E>,
-    Sf::InitError: Into<Box<dyn Error>> + 'static,
-    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Connection<St>, Res = ProtocolMessageAck>
-        + 'static,
-    Ctl::Error: Into<E>,
-    Ctl::InitError: Into<Box<dyn Error>> + 'static,
+    Sf: ServiceFactory<Session<AppSt>, Publish, Res = ()> + 'static,
+    Sf::InitError: ErrorDiagnostic,
+    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Res = ProtocolMessageAck> + 'static,
+    Ctl::Error: Into<Sf::Error>,
+    Ctl::InitError: ErrorDiagnostic,
 {
-    let factories = Rc::new((publish, control));
-
-    ntex_service::fn_factory_with_config(async move |st: &Connection<St>| {
+    ntex_service::factory(async move |st: &Session<AppSt>| {
         // create services
         let sink = st.sink().shared();
-        let fut = join(factories.0.create(st), factories.1.create(st));
+        let fut = join(publish.create(st), control.create(st));
         let (publish, control) = fut.await;
 
-        let publish = publish.map_err(Into::into)?.map_err(Into::into);
-        let control = control.map_err(Into::into)?;
+        let publish = publish.map_err(|e| ErrorInfo::from(Error::from(e)))?;
+        let control = control.map_err(|e| ErrorInfo::from(Error::from(e)))?;
 
         let control = BufferService::new(
             16,
             // limit number of in-flight messages
-            PipelineWithState::new(InFlightService::new(1, control)),
+            PipelineState::new(InFlightService::new(1, control)),
         )
         .map_err(|err| match err {
             BufferServiceError::Service(e) => DispatcherError::Service(e.into()),
             BufferServiceError::RequestCanceled => {
-                DispatcherError::Protocol(ProtocolError::ReadTimeout)
+                DispatcherError::Protocol(MqttProtocolError::ReadTimeout)
             }
         });
 
@@ -235,7 +227,7 @@ where
                     }
                     Ok(None)
                 } else {
-                    Err(ProtocolError::Decode(DecodeError::UnexpectedPayload).into())
+                    Err(MqttProtocolError::Decode(DecodeError::UnexpectedPayload).into())
                 }
             }
             Decoded::Packet(Packet::PublishAck { packet_id }, _) => {
@@ -258,7 +250,7 @@ where
                         .control(ProtocolMessage::pubrel(packet_id), ctx)
                         .await
                 } else {
-                    Err(ProtocolError::unexpected_packet(
+                    Err(MqttProtocolError::unexpected_packet(
                         packet_type::PUBREL,
                         "Unknown packet-id in PublishRelease packet",
                     )
@@ -458,8 +450,8 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
-        let disp = Pipeline::with(
-            Session::new((), MqttSink::new(shared.clone())),
+        let disp = Pipeline::new(
+            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
             Dispatcher::new(
                 shared.clone(),
                 fn_service(async |_| {
@@ -499,7 +491,7 @@ mod tests {
             999,
         )));
 
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) =
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) =
             f.await.err().unwrap()
         else {
             panic!()
@@ -520,8 +512,8 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
 
-        let disp = Pipeline::with(
-            Session::new((), MqttSink::new(shared.clone())),
+        let disp = Pipeline::new(
+            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
             Dispatcher::new(
                 shared.clone(),
                 fn_service(async |_: Publish| Ok::<_, ()>(())),
@@ -541,7 +533,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         let error::ViolationInner::Common { reason, .. } = err.inner else {
@@ -563,7 +555,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         let error::ViolationInner::Common { reason, .. } = err.inner else {
@@ -585,7 +577,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         let error::ViolationInner::UnexpectedPacket { packet_type, .. } = err.inner else {
@@ -604,7 +596,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         let error::ViolationInner::Common { reason, .. } = err.inner else {
@@ -627,7 +619,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         assert_eq!(
@@ -648,7 +640,7 @@ mod tests {
             .err()
             .unwrap();
 
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         assert_eq!(

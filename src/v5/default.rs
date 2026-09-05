@@ -1,36 +1,37 @@
-use std::{convert::Infallible, error::Error, marker::PhantomData, rc::Rc};
+use std::{marker::PhantomData, rc::Rc};
 
+use ntex_error::ErrorInfo;
 use ntex_service::{Ctx, Middleware, Service, ServiceFactory, cfg::Cfg};
 
 use crate::error::{MqttError, PayloadError};
 use crate::{Control, MqttServiceConfig, Reason, inflight::InFlightServiceImpl};
 
 use super::control::{ProtocolMessage, ProtocolMessageAck};
-use super::{Connection, Session, codec, codec::Encoded, shared::MqttShared};
+use super::{Session, codec, codec::Encoded, shared::MqttShared};
 
 /// Default control service
 #[derive(Debug)]
-pub struct DefaultProtocolService<E>(PhantomData<E>);
+pub struct DefaultProtoSrv<E>(PhantomData<E>);
 
-impl<E> Default for DefaultProtocolService<E> {
+impl<E> Default for DefaultProtoSrv<E> {
     fn default() -> Self {
-        DefaultProtocolService(PhantomData)
+        DefaultProtoSrv(PhantomData)
     }
 }
 
-impl<St, E, Cfg> ServiceFactory<St, ProtocolMessage, Cfg> for DefaultProtocolService<E> {
+impl<St, Err> ServiceFactory<St, ProtocolMessage> for DefaultProtoSrv<Err> {
     type Res = ProtocolMessageAck;
-    type Error = E;
+    type Error = Err;
 
-    type Service = DefaultProtocolService<E>;
-    type InitError = Infallible;
+    type Service = DefaultProtoSrv<Err>;
+    type InitError = ErrorInfo;
 
-    async fn create(&self, _: &Cfg) -> Result<Self::Service, Self::InitError> {
-        Ok(DefaultProtocolService(PhantomData))
+    async fn create(&self, _: &St) -> Result<Self::Service, Self::InitError> {
+        Ok(DefaultProtoSrv(PhantomData))
     }
 }
 
-impl<St, E> Service<St, ProtocolMessage> for DefaultProtocolService<E> {
+impl<St, E> Service<St, ProtocolMessage> for DefaultProtoSrv<E> {
     type Res = ProtocolMessageAck;
     type Error = E;
 
@@ -58,12 +59,12 @@ impl<St, E> Service<St, ProtocolMessage> for DefaultProtocolService<E> {
 /// Default is 64kb size
 pub struct InFlightService;
 
-impl<S, St> Middleware<S, Connection<St>> for InFlightService {
+impl<S, AppSt> Middleware<S, Session<AppSt>> for InFlightService {
     type Service = InFlightServiceImpl<S>;
 
     #[inline]
-    fn create(&self, service: S, cfg: &Connection<St>) -> Self::Service {
-        let cfg: Cfg<MqttServiceConfig> = cfg.cfg();
+    fn create(&self, st: &Session<AppSt>, service: S) -> Self::Service {
+        let cfg: Cfg<MqttServiceConfig> = st.cfg();
         InFlightServiceImpl::new(0, cfg.max_receive_size, service)
     }
 }
@@ -76,9 +77,9 @@ pub struct ControlService<S, E> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ControlFactory<St, AppSt, Sf, E> {
+pub struct ControlFactory<AppSt, Sf, E> {
     svc: Sf,
-    _t: PhantomData<(E, St, AppSt)>,
+    _t: PhantomData<(E, AppSt)>,
 }
 
 impl<S, E> ControlService<S, E> {
@@ -91,9 +92,9 @@ impl<S, E> ControlService<S, E> {
     }
 }
 
-impl<St, AppSt, Sf, E> ControlFactory<St, AppSt, Sf, E>
+impl<AppSt, Sf, E> ControlFactory<AppSt, Sf, E>
 where
-    Sf: ServiceFactory<Session<AppSt>, Control<E>, Connection<St>>,
+    Sf: ServiceFactory<Session<AppSt>, Control<E>>,
 {
     pub(super) fn new(svc: Sf) -> Self {
         Self {
@@ -103,22 +104,20 @@ where
     }
 }
 
-impl<St, AppSt, Sf, E> ServiceFactory<Session<AppSt>, Control<E>, Connection<St>>
-    for ControlFactory<St, AppSt, Sf, E>
+impl<AppSt, Sf, E> ServiceFactory<Session<AppSt>, Control<E>> for ControlFactory<AppSt, Sf, E>
 where
-    Sf: ServiceFactory<Session<AppSt>, Control<E>, Connection<St>, Res = Option<Encoded>>,
-    Sf::InitError: Error + 'static,
+    Sf: ServiceFactory<Session<AppSt>, Control<E>, Res = Option<Encoded>>,
 {
     type Res = Sf::Res;
     type Error = MqttError<Sf::Error>;
 
     type Service = ControlService<Sf::Service, E>;
-    type InitError = Box<dyn Error>;
+    type InitError = Sf::InitError;
 
-    async fn create(&self, cfg: &Connection<St>) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &Session<AppSt>) -> Result<Self::Service, Self::InitError> {
         Ok(ControlService {
             shared: cfg.sink().shared(),
-            svc: self.svc.create(cfg).await.map_err(Box::new)?,
+            svc: self.svc.create(cfg).await?,
             _t: PhantomData,
         })
     }
@@ -217,21 +216,18 @@ mod tests {
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
         let sink = MqttSink::new(shared.clone());
-        let ses = Session::new((), sink.clone());
-        let con = Connection::new((), sink.clone(), io.shared());
+        let ses = Session::new((), sink.clone(), io.shared());
 
-        let disp = ControlFactory::<(), (), _, ()>::new(control::DefaultControlService::<
-            (),
-            codec::Encoded,
-        >::default());
-        let svc = Pipeline::with(ses, disp.create(&con).await.unwrap());
+        let disp =
+            ControlFactory::new(control::DefaultControlService::<(), codec::Encoded>::default());
+        let svc = Pipeline::new(ses.clone(), disp.create(&ses).await.unwrap());
 
         assert!(!sink.is_ready());
         shared.set_cap(1);
         assert!(sink.is_ready());
         assert!(shared.wait_readiness().is_none());
 
-        svc.call(Control::wr(true)).await.unwrap();
+        svc.call(Control::<bool>::wr(true)).await.unwrap();
         assert!(!sink.is_ready());
         let rx = shared.wait_readiness();
         let rx2 = shared.wait_readiness().unwrap();
