@@ -1,5 +1,5 @@
-use ntex::Pipeline;
 use ntex::time::{Millis, Seconds, sleep};
+use ntex::{Pipeline, SharedCfg};
 use ntex_mqtt::v5;
 
 #[derive(Debug)]
@@ -31,7 +31,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     // connect to server
-    let client = Pipeline::new(v5::client::MqttConnector::new())
+    let client = Pipeline::new(SharedCfg::default(), v5::client::MqttConnector::new())
         .call(
             v5::client::Connect::new("127.0.0.1:1883")
                 .client_id("user")

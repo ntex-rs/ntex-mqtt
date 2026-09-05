@@ -21,9 +21,9 @@ impl std::convert::TryFrom<ServerError> for v5::PublishAck {
     }
 }
 
-async fn handshake_v3(handshake: v3::Handshake) -> Result<v3::HandshakeAck<Session>, ServerError> {
-    log::info!("new connection: {:?}", handshake);
-    Ok(handshake.ack(Session, false))
+async fn connect_v3(msg: v3::Connect) -> Result<v3::ConnectAck<Session>, ServerError> {
+    log::info!("new connection: {:?}", msg);
+    Ok(msg.ack(Session, false))
 }
 
 async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
@@ -35,9 +35,9 @@ async fn publish_v3(publish: v3::Publish) -> Result<(), ServerError> {
     Ok(())
 }
 
-async fn handshake_v5(handshake: v5::Handshake) -> Result<v5::HandshakeAck<Session>, ServerError> {
-    log::info!("new connection: {:?}", handshake);
-    Ok(handshake.ack(Session))
+async fn connect_v5(msg: v5::Connect) -> Result<v5::ConnectAck<Session>, ServerError> {
+    log::info!("new connection: {:?}", msg);
+    Ok(msg.ack(Session))
 }
 
 async fn publish_v5(publish: v5::Publish) -> Result<v5::PublishAck, ServerError> {
@@ -57,8 +57,8 @@ async fn main() -> std::io::Result<()> {
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
             MqttServer::new()
-                .v3(v3::MqttServer::new(publish_v3).build(handshake_v3))
-                .v5(v5::MqttServer::new(publish_v5).build(handshake_v5))
+                .v3(v3::MqttServer::new(publish_v3).build(connect_v3))
+                .v5(v5::MqttServer::new(publish_v5).build(connect_v5))
         })?
         .workers(1)
         .run()

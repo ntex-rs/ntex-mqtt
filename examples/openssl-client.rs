@@ -1,6 +1,6 @@
-use ntex::Pipeline;
 use ntex::connect::openssl::SslConnector;
 use ntex::time::{Millis, Seconds, sleep};
+use ntex::{Pipeline, SharedCfg};
 use ntex_mqtt::v5;
 use openssl::ssl;
 
@@ -38,6 +38,7 @@ async fn main() -> std::io::Result<()> {
 
     // connect to server
     let client = Pipeline::new(
+        SharedCfg::default(),
         v5::client::MqttConnector::new().connector(SslConnector::new(builder.build())),
     )
     .call(

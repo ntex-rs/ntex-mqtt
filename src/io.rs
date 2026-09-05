@@ -9,7 +9,7 @@ use ntex_util::channel::condition::Condition;
 use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
 
 use crate::control::Control;
-use crate::error::{DecodeError, DispatcherError, EncodeError, ProtocolError};
+use crate::error::{DecodeError, DispatcherError, EncodeError, MqttProtocolError};
 
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = <U as Encoder>::Item;
@@ -297,11 +297,9 @@ where
                                     spawn(inner.control.call_static(Control::wr(true)));
                                 }
                                 Err(RecvError::Decoder(err)) => {
-                                    inner.stop(
-                                        inner.control.call_static(Control::proto(
-                                            ProtocolError::Decode(err),
-                                        )),
-                                    );
+                                    inner.stop(inner.control.call_static(Control::proto(
+                                        MqttProtocolError::Decode(err),
+                                    )));
                                 }
                                 Err(RecvError::PeerGone(err)) => {
                                     inner.stop(inner.control.call_static(Control::peer_gone(err)));
@@ -445,7 +443,7 @@ where
         if let Some(err) = self.state.error.take() {
             log::trace!("{}: Error occurred, stopping dispatcher", self.io.tag());
             let item = match err {
-                IoDispatcherError::Encoder(err) => Control::proto(ProtocolError::Encode(err)),
+                IoDispatcherError::Encoder(err) => Control::proto(MqttProtocolError::Encode(err)),
                 IoDispatcherError::Service(DispatcherError::Service(err)) => Control::err(err),
                 IoDispatcherError::Service(DispatcherError::Protocol(err)) => Control::proto(err),
             };
@@ -476,7 +474,7 @@ where
                         );
                         self.stop(
                             self.control
-                                .call_static(Control::proto(ProtocolError::KeepAliveTimeout)),
+                                .call_static(Control::proto(MqttProtocolError::KeepAliveTimeout)),
                         );
                         Poll::Ready(PollService::Continue)
                     }
@@ -551,7 +549,7 @@ where
         }
     }
 
-    fn handle_timeout(&mut self) -> Result<(), ProtocolError> {
+    fn handle_timeout(&mut self) -> Result<(), MqttProtocolError> {
         // check read timer
         if self.flags.contains(Flags::READ_TIMEOUT) {
             if let Some(params) = self.io.cfg().frame_read_rate() {
@@ -578,11 +576,11 @@ where
                     }
                 }
                 log::trace!("{}: Max payload timeout has been reached", self.io.tag());
-                return Err(ProtocolError::ReadTimeout);
+                return Err(MqttProtocolError::ReadTimeout);
             }
         } else if self.flags.contains(Flags::KA_TIMEOUT) {
             log::trace!("{}: Keep-alive error, stopping dispatcher", self.io.tag());
-            return Err(ProtocolError::KeepAliveTimeout);
+            return Err(MqttProtocolError::KeepAliveTimeout);
         }
         Ok(())
     }
@@ -669,8 +667,8 @@ mod tests {
                         state,
                         keepalive_timeout,
                         stopping: Condition::new(),
-                        service: Pipeline::new(service.into_service()),
-                        control: Pipeline::new(control),
+                        service: Pipeline::new((), service.into_service()),
+                        control: Pipeline::new((), control),
                         io: IoBoxed::from(io),
                         st: IoDispatcherState::Processing,
                         flags: if keepalive_timeout.is_zero() {
@@ -1154,7 +1152,7 @@ mod tests {
             }),
             fn_service(async move |msg: Control<()>| {
                 if let Control::Stop(Reason::Protocol(err)) = msg
-                    && matches!(err.get_ref(), &ProtocolError::KeepAliveTimeout)
+                    && matches!(err.get_ref(), &MqttProtocolError::KeepAliveTimeout)
                 {
                     data3.lock().unwrap().borrow_mut().push(1);
                 }
@@ -1236,7 +1234,7 @@ mod tests {
             }),
             fn_service(async move |msg: Control<()>| {
                 if let Control::Stop(Reason::Protocol(err)) = msg
-                    && matches!(err.get_ref(), &ProtocolError::KeepAliveTimeout)
+                    && matches!(err.get_ref(), &MqttProtocolError::KeepAliveTimeout)
                 {
                     data3.lock().unwrap().borrow_mut().push(1);
                 }
@@ -1281,7 +1279,7 @@ mod tests {
             }),
             fn_service(async move |msg: Control<()>| {
                 if let Control::Stop(Reason::Protocol(err)) = msg
-                    && matches!(err.get_ref(), &ProtocolError::ReadTimeout)
+                    && matches!(err.get_ref(), &MqttProtocolError::ReadTimeout)
                 {
                     data3.lock().unwrap().borrow_mut().push(1);
                 }

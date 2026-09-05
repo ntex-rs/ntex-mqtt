@@ -35,7 +35,7 @@ mod version;
 
 pub use self::config::MqttServiceConfig;
 pub use self::control::{Control, Reason};
-pub use self::error::{HandshakeError, MqttError, ProtocolError};
+pub use self::error::{MqttConnectError, MqttError, MqttProtocolError};
 pub use self::inflight::SizedRequest;
 pub use self::payload::Payload;
 pub use self::server::MqttServer;
@@ -47,5 +47,5 @@ pub use self::types::QoS;
 pub const TCP_PORT: u16 = 1883;
 pub const TLS_PORT: u16 = 8883;
 
-pub(crate) type HandshakePipeline<St, ImSt, AppSt, Codec, Cfg, Err> =
+pub(crate) type ConnectPipeline<St, ImSt, AppSt, Codec, Cfg, Err> =
     PipelineState<St, (IoBoxed, ImSt), (IoBoxed, Codec, Session<Cfg, AppSt>, Seconds), Err>;

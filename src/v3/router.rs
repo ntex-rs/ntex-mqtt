@@ -1,13 +1,13 @@
-use std::{error::Error, fmt, rc::Rc};
+use std::{fmt, rc::Rc};
 
+use ntex_error::{Error, ErrorDiagnostic, ErrorInfo};
 use ntex_router::{IntoPattern, RouterBuilder};
 use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex_service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
 
 use super::{Session, publish::Publish};
 
-type Handler<AppSt, E> =
-    BoxServiceFactory<Session<AppSt>, Publish, (), E, Session<AppSt>, Box<dyn Error>>;
+type Handler<AppSt, E> = BoxServiceFactory<Session<AppSt>, Publish, (), E, ErrorInfo>;
 type HandlerService<AppSt, E> = BoxService<Session<AppSt>, Publish, (), E>;
 
 /// Router - structure that follows the builder pattern
@@ -32,17 +32,17 @@ where
     /// Create mqtt application router.
     ///
     /// Default service to be used if no matching resource could be found.
-    pub fn new<U>(f: impl IntoServiceFactory<U, Session<AppSt>, Publish, Session<AppSt>>) -> Self
+    pub fn new<U>(f: impl IntoServiceFactory<U, Session<AppSt>, Publish>) -> Self
     where
-        U: ServiceFactory<Session<AppSt>, Publish, Session<AppSt>, Res = (), Error = Err> + 'static,
-        U::InitError: Error + 'static,
+        U: ServiceFactory<Session<AppSt>, Publish, Res = (), Error = Err> + 'static,
+        U::InitError: ErrorDiagnostic,
     {
         Router {
             router: ntex_router::Router::build(),
             handlers: Vec::new(),
             default: boxed::factory(
                 f.into_factory()
-                    .map_init_err(|e| Box::new(e) as Box<dyn Error>),
+                    .map_init_err(|e| ErrorInfo::from(Error::from(e))),
             ),
         }
     }
@@ -52,22 +52,21 @@ where
     pub fn resource<T, F, U>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
-        F: IntoServiceFactory<U, Session<AppSt>, Publish, Session<AppSt>>,
-        U: ServiceFactory<Session<AppSt>, Publish, Session<AppSt>, Res = (), Error = Err> + 'static,
-        U::InitError: Error + 'static,
+        F: IntoServiceFactory<U, Session<AppSt>, Publish>,
+        U: ServiceFactory<Session<AppSt>, Publish, Res = (), Error = Err> + 'static,
+        U::InitError: ErrorDiagnostic,
     {
         self.router.path(address, self.handlers.len());
         self.handlers.push(boxed::factory(
             service
                 .into_factory()
-                .map_init_err(|e| Box::new(e) as Box<dyn Error>),
+                .map_init_err(|e| ErrorInfo::from(Error::from(e))),
         ));
         self
     }
 }
 
-impl<AppSt, Err>
-    IntoServiceFactory<RouterFactory<AppSt, Err>, Session<AppSt>, Publish, Session<AppSt>>
+impl<AppSt, Err> IntoServiceFactory<RouterFactory<AppSt, Err>, Session<AppSt>, Publish>
     for Router<AppSt, Err>
 where
     AppSt: 'static,
@@ -94,8 +93,7 @@ impl<AppSt, Err> fmt::Debug for RouterFactory<AppSt, Err> {
     }
 }
 
-impl<AppSt, Err> ServiceFactory<Session<AppSt>, Publish, Session<AppSt>>
-    for RouterFactory<AppSt, Err>
+impl<AppSt, Err> ServiceFactory<Session<AppSt>, Publish> for RouterFactory<AppSt, Err>
 where
     AppSt: 'static,
     Err: 'static,
@@ -104,7 +102,7 @@ where
     type Error = Err;
 
     type Service = RouterService<AppSt, Err>;
-    type InitError = Box<dyn Error>;
+    type InitError = ErrorInfo;
 
     async fn create(&self, con: &Session<AppSt>) -> Result<Self::Service, Self::InitError> {
         let fut: Vec<_> = self.handlers.iter().map(|h| h.create(con)).collect();
@@ -168,8 +166,7 @@ mod tests {
 
     #[test]
     fn test_debug() {
-        let router: Router<(), (), ()> =
-            Router::new(fn_service(async |_: Publish| Ok::<_, ()>(())));
+        let router: Router<(), ()> = Router::new(fn_service(async |_: Publish| Ok::<_, ()>(())));
         assert!(format!("{router:?}").contains("v3::Router"));
     }
 }

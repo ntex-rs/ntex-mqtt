@@ -404,7 +404,7 @@ impl MqttShared {
         }
     }
 
-    pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), error::ProtocolError> {
+    pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), error::MqttProtocolError> {
         self.pkt_ack_inner(ack).inspect_err(|_| {
             self.close(Some(codec::Disconnect {
                 reason_code: codec::DisconnectReasonCode::ImplementationSpecificError,
@@ -413,7 +413,7 @@ impl MqttShared {
         })
     }
 
-    fn pkt_ack_inner(&self, pkt: Ack) -> Result<(), error::ProtocolError> {
+    fn pkt_ack_inner(&self, pkt: Ack) -> Result<(), error::MqttProtocolError> {
         let mut queues = self.queues.borrow_mut();
 
         // check ack order
@@ -424,7 +424,7 @@ impl MqttShared {
                     idx,
                     pkt.packet_id()
                 );
-                Err(error::ProtocolError::packet_id_mismatch())
+                Err(error::MqttProtocolError::packet_id_mismatch())
             } else if matches!(pkt, Ack::Receive(_)) {
                 // get publish ack channel
                 log::trace!("Ack packet receive with id: {}", pkt.packet_id());
@@ -480,7 +480,7 @@ impl MqttShared {
                     Ok(())
                 } else {
                     log::trace!("MQTT protocol error, unexpeted packet");
-                    Err(error::ProtocolError::unexpected_packet(
+                    Err(error::MqttProtocolError::unexpected_packet(
                         pkt.packet_type(),
                         tp.expected_str(),
                     ))
@@ -488,7 +488,7 @@ impl MqttShared {
             }
         } else {
             log::trace!("Unexpected PublishAck packet");
-            Err(error::ProtocolError::generic_violation(
+            Err(error::MqttProtocolError::generic_violation(
                 "Received PUBACK packet while there are no unacknowledged PUBLISH packets",
             ))
         }

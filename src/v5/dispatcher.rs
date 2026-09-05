@@ -1,12 +1,13 @@
-use std::{cell::RefCell, error::Error, marker::PhantomData, num, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, num, rc::Rc};
 
 use ntex_bytes::ByteString;
+use ntex_error::{Error, ErrorDiagnostic, ErrorInfo};
 use ntex_service::pipeline::PipelineState;
 use ntex_service::{Ctx, Service, ServiceFactory, cfg::Cfg};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashMap, HashSet, future::join, hash_map, services::inflight::InFlightService};
 
-use crate::error::{DecodeError, DispatcherError, PayloadError, ProtocolError, SpecViolation};
+use crate::error::{DecodeError, DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
 use crate::{MqttServiceConfig, types::QoS};
 
@@ -22,20 +23,18 @@ pub(super) fn factory<AppSt, E, Pub, Ctl>(
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
-    Session<AppSt>,
     Res = Option<Encoded>,
     Error = DispatcherError<E>,
-    InitError = Box<dyn Error>,
+    InitError = ErrorInfo,
 >
 where
     AppSt: 'static,
-    Pub: ServiceFactory<Session<AppSt>, Publish, Session<AppSt>, Res = PublishAck> + 'static,
-    Pub::Error: ToPublishAck<Error = E>,
-    Pub::InitError: Into<Box<dyn Error>> + 'static,
-    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Session<AppSt>, Res = ProtocolMessageAck>
-        + 'static,
-    Ctl::InitError: Into<Box<dyn Error>> + 'static,
     E: From<Ctl::Error> + 'static,
+    Pub: ServiceFactory<Session<AppSt>, Publish, Res = PublishAck> + 'static,
+    Pub::Error: ToPublishAck<Error = E>,
+    Pub::InitError: ErrorDiagnostic,
+    Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Res = ProtocolMessageAck> + 'static,
+    Ctl::InitError: ErrorDiagnostic,
 {
     ntex_service::factory(async move |con: &Session<AppSt>| {
         let cfg: Cfg<MqttServiceConfig> = con.cfg();
@@ -44,8 +43,8 @@ where
         let sink = con.sink().shared();
         let (publish, control) = join(publish.create(con), control.create(con)).await;
 
-        let publish = publish.map_err(Into::into)?;
-        let control = control.map_err(Into::into)?;
+        let publish = publish.map_err(|e| ErrorInfo::from(Error::from(e)))?;
+        let control = control.map_err(|e| ErrorInfo::from(Error::from(e)))?;
 
         let control = BufferService::new(
             16,
@@ -55,7 +54,7 @@ where
         .map_err(|err| match err {
             BufferServiceError::Service(e) => DispatcherError::Service(E::from(e)),
             BufferServiceError::RequestCanceled => {
-                DispatcherError::Protocol(ProtocolError::ReadTimeout)
+                DispatcherError::Protocol(MqttProtocolError::ReadTimeout)
             }
         });
 
@@ -227,7 +226,7 @@ where
                             if let Some(aliased_topic) = inner.aliases.get(&alias) {
                                 publish.topic = aliased_topic.clone();
                             } else {
-                                return Err(ProtocolError::violation(
+                                return Err(MqttProtocolError::violation(
                                     DisconnectReasonCode::TopicAliasInvalid,
                                     "Unknown topic alias",
                                 )
@@ -293,7 +292,7 @@ where
                     }
                     Ok(None)
                 } else {
-                    Err(ProtocolError::Decode(DecodeError::UnexpectedPayload).into())
+                    Err(MqttProtocolError::Decode(DecodeError::UnexpectedPayload).into())
                 }
             }
             Decoded::Packet(Packet::PublishAck(packet), _) => {
@@ -575,8 +574,8 @@ mod tests {
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
         shared.set_topic_alias_max(1);
 
-        let disp = Pipeline::with(
-            Session::new((), MqttSink::new(shared.clone())),
+        let disp = Pipeline::new(
+            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
             Dispatcher::new(
                 shared.clone(),
                 fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
@@ -603,7 +602,7 @@ mod tests {
             .err()
             .unwrap();
 
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         assert_eq!(
@@ -620,7 +619,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         assert_eq!(
@@ -654,7 +653,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         assert_eq!(
@@ -698,7 +697,7 @@ mod tests {
             .err()
             .unwrap();
 
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         assert_eq!(
@@ -724,7 +723,7 @@ mod tests {
             .err()
             .unwrap();
 
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         assert_eq!(
@@ -746,7 +745,7 @@ mod tests {
             .err()
             .unwrap();
 
-        let DispatcherError::Protocol(ProtocolError::ProtocolViolation(err)) = err else {
+        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
             panic!()
         };
         assert_eq!(

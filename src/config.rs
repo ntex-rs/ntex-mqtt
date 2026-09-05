@@ -86,6 +86,16 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
+    /// Set handshake timeout.
+    ///
+    /// Handshake includes `connect` packet and response `connect-ack`.
+    /// By default handshake timeuot is disabled.
+    pub fn set_handshake_timeout(mut self, timeout: Seconds) -> Self {
+        self.handshake_timeout = timeout;
+        self
+    }
+
+    #[must_use]
     /// Set max allowed `QoS`.
     ///
     /// If peer sends publish with higher qos then `ProtocolError::MaxQoSViolated(..)`
@@ -199,16 +209,6 @@ impl MqttServiceConfig {
     /// By default handle-qos-after-disconnect is set to `None`
     pub fn set_handle_qos_after_disconnect(mut self, max_handle_qos: Option<QoS>) -> Self {
         self.handle_qos_after_disconnect = max_handle_qos;
-        self
-    }
-
-    #[must_use]
-    /// Set handshake timeout.
-    ///
-    /// Handshake includes `connect` packet and response `connect-ack`.
-    /// By default handshake timeuot is disabled.
-    pub fn set_handshake_timeout(mut self, timeout: Seconds) -> Self {
-        self.handshake_timeout = timeout;
         self
     }
 }

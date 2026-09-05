@@ -1,4 +1,6 @@
-use ntex::service::{cfg::SharedCfg, fn_factory_with_config, fn_service_st};
+use std::convert::Infallible;
+
+use ntex::service::cfg::SharedCfg;
 use ntex_mqtt::{MqttServer, v3, v5, v5::codec::PublishAckReason};
 
 #[derive(Clone, Debug)]
@@ -25,16 +27,14 @@ impl std::convert::TryFrom<MyServerError> for v5::PublishAck {
     }
 }
 
-async fn handshake_v3(
-    handshake: v3::Handshake,
-) -> Result<v3::HandshakeAck<MySession>, MyServerError> {
-    log::info!("new connection: {:?}", handshake);
+async fn connect_v3(msg: v3::Connect) -> Result<v3::ConnectAck<MySession>, MyServerError> {
+    log::info!("new connection: {:?}", msg);
 
     let session = MySession {
-        client_id: handshake.packet().client_id.to_string(),
+        client_id: msg.packet().client_id.to_string(),
     };
 
-    Ok(handshake.ack(session, false))
+    Ok(msg.ack(session, false))
 }
 
 async fn publish_v3(
@@ -57,16 +57,14 @@ async fn publish_v3(
     }
 }
 
-async fn handshake_v5(
-    handshake: v5::Handshake,
-) -> Result<v5::HandshakeAck<MySession>, MyServerError> {
-    log::info!("new connection: {:?}", handshake);
+async fn connect_v5(msg: v5::Connect) -> Result<v5::ConnectAck<MySession>, MyServerError> {
+    log::info!("new connection: {:?}", msg);
 
     let session = MySession {
-        client_id: handshake.packet().client_id.to_string(),
+        client_id: msg.packet().client_id.to_string(),
     };
 
-    Ok(handshake.ack(session))
+    Ok(msg.ack(session))
 }
 
 async fn publish_v5(
@@ -98,26 +96,18 @@ async fn main() -> std::io::Result<()> {
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
             MqttServer::new()
-                .v3(
-                    v3::MqttServer::new(fn_factory_with_config(async |_: &v3::Connection<()>| {
-                        Ok::<_, MyServerError>(fn_service_st(
-                            async move |ses: &v3::Session<MySession>, req| {
-                                publish_v3(ses, req).await
-                            },
-                        ))
-                    }))
-                    .build(handshake_v3),
-                )
-                .v5(v5::MqttServer::new(fn_factory_with_config(
-                    async |_con: &v5::Connection<()>| {
-                        Ok::<_, MyServerError>(fn_service_st(
-                            async move |ses: &v5::Session<MySession>, req| {
-                                publish_v5(ses, req).await
-                            },
-                        ))
-                    },
-                ))
-                .build(handshake_v5))
+                .v3(v3::MqttServer::new(async |_: &v3::Session<MySession>| {
+                    Ok::<_, Infallible>(ntex::service(
+                        async move |ses: &v3::Session<MySession>, req| publish_v3(ses, req).await,
+                    ))
+                })
+                .build(connect_v3))
+                .v5(v5::MqttServer::new(async |_con: &v5::Session<MySession>| {
+                    Ok::<_, Infallible>(ntex::service(
+                        async move |ses: &v5::Session<MySession>, req| publish_v5(ses, req).await,
+                    ))
+                })
+                .build(connect_v5))
         })?
         .workers(1)
         .run()

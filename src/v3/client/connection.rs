@@ -101,7 +101,7 @@ impl Client {
             let _ = ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
+        let dispatcher = Pipeline::new(
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
@@ -111,7 +111,7 @@ impl Client {
                 fn_service(async |_: ProtocolMessage| Ok::<_, ()>(ProtocolMessage::disconnect())),
             ),
         );
-        let control = Pipeline::with(
+        let control = Pipeline::new(
             Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<(), codec::Encoded>::default(),
@@ -135,7 +135,7 @@ impl Client {
             let _ = ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
+        let dispatcher = Pipeline::new(
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
@@ -145,7 +145,7 @@ impl Client {
                 service.into_service(),
             ),
         );
-        let control = Pipeline::with(
+        let control = Pipeline::new(
             Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<E, codec::Encoded>::default(),
@@ -175,7 +175,7 @@ impl Client {
             let _ = ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
+        let dispatcher = Pipeline::new(
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
@@ -185,7 +185,7 @@ impl Client {
                 service.into_service(),
             ),
         );
-        let control = Pipeline::with(
+        let control = Pipeline::new(
             Session::new((), sink, self.io.shared()),
             ControlService::new(control, self.shared.clone()).map_err(MqttError::Service),
         );
@@ -246,7 +246,7 @@ where
             let _ = ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
+        let dispatcher = Pipeline::new(
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
@@ -256,7 +256,7 @@ where
                 fn_service(async |_: ProtocolMessage| Ok::<_, Err>(ProtocolMessage::disconnect())),
             ),
         );
-        let control = Pipeline::with(
+        let control = Pipeline::new(
             Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<Err, codec::Encoded>::default(),
@@ -279,7 +279,7 @@ where
             let _ = ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
+        let dispatcher = Pipeline::new(
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
@@ -289,7 +289,7 @@ where
                 service.into_service(),
             ),
         );
-        let control = Pipeline::with(
+        let control = Pipeline::new(
             Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<Err, codec::Encoded>::default(),

@@ -1,6 +1,6 @@
 use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes};
 
-use crate::error::{DecodeError, EncodeError, ProtocolError};
+use crate::error::{DecodeError, EncodeError, MqttProtocolError};
 use crate::utils::{self, Decode, Property};
 use crate::v5::codec::{UserProperties, UserProperty, encode, property_type as pt};
 
@@ -63,17 +63,17 @@ impl Disconnect {
     }
 
     /// Create new instance of `Disconnect`, set reason from protocol error
-    pub fn from_proto_error(err: &ProtocolError) -> Self {
+    pub fn from_proto_error(err: &MqttProtocolError) -> Self {
         Self {
             reason_code: match err {
-                ProtocolError::Decode(DecodeError::InvalidLength) => {
+                MqttProtocolError::Decode(DecodeError::InvalidLength) => {
                     DisconnectReasonCode::MalformedPacket
                 }
-                ProtocolError::Decode(DecodeError::MaxSizeExceeded { .. }) => {
+                MqttProtocolError::Decode(DecodeError::MaxSizeExceeded { .. }) => {
                     DisconnectReasonCode::PacketTooLarge
                 }
-                ProtocolError::KeepAliveTimeout => DisconnectReasonCode::KeepAliveTimeout,
-                ProtocolError::ProtocolViolation(e) => e.reason(),
+                MqttProtocolError::KeepAliveTimeout => DisconnectReasonCode::KeepAliveTimeout,
+                MqttProtocolError::ProtocolViolation(e) => e.reason(),
                 _ => DisconnectReasonCode::ImplementationSpecificError,
             },
             ..Default::default()

@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn test_session() {
-        let s = Session::new(42u32, "sink");
+        let s = Session::new(42u32, "sink", SharedCfg::default());
         assert_eq!(s.sink(), &"sink");
         assert_eq!(*s, 42u32);
         assert_eq!(format!("{s:?}"), "Session");

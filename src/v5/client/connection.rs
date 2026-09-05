@@ -117,7 +117,7 @@ impl Client {
             ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
+        let dispatcher = Pipeline::new(
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
@@ -130,7 +130,7 @@ impl Client {
                 self.cfg,
             ),
         );
-        let control = Pipeline::with(
+        let control = Pipeline::new(
             Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<(), codec::Encoded>::default(),
@@ -153,7 +153,7 @@ impl Client {
             ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
+        let dispatcher = Pipeline::new(
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
@@ -164,7 +164,7 @@ impl Client {
                 self.cfg,
             ),
         );
-        let control = Pipeline::with(
+        let control = Pipeline::new(
             Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<(), codec::Encoded>::default(),
@@ -192,7 +192,7 @@ impl Client {
             ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
+        let dispatcher = Pipeline::new(
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
@@ -203,7 +203,7 @@ impl Client {
                 self.cfg,
             ),
         );
-        let control = Pipeline::with(
+        let control = Pipeline::new(
             Session::new((), sink, self.io.shared()),
             ControlService::new(control, self.shared.clone()),
         );
@@ -265,7 +265,7 @@ where
             ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
+        let dispatcher = Pipeline::new(
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
@@ -278,7 +278,7 @@ where
                 self.cfg,
             ),
         );
-        let control = Pipeline::with(
+        let control = Pipeline::new(
             Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<Err, codec::Encoded>::default(),
@@ -300,7 +300,7 @@ where
             ntex_util::spawn(keepalive(sink.clone(), self.keepalive));
         }
 
-        let dispatcher = Pipeline::with(
+        let dispatcher = Pipeline::new(
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
@@ -311,7 +311,7 @@ where
                 self.cfg,
             ),
         );
-        let control = Pipeline::with(
+        let control = Pipeline::new(
             Session::new((), sink, self.io.shared()),
             ControlService::new(
                 control::DefaultControlService::<Err, codec::Encoded>::default(),
