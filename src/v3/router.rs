@@ -1,13 +1,13 @@
 use std::{fmt, rc::Rc};
 
-use ntex_error::{Error, ErrorDiagnostic, ErrorInfo};
+use ntex_error::{Failure, IntoFailure};
 use ntex_router::{IntoPattern, RouterBuilder};
 use ntex_service::boxed::{self, BoxService, BoxServiceFactory};
 use ntex_service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
 
 use super::{Session, publish::Publish};
 
-type Handler<AppSt, E> = BoxServiceFactory<Session<AppSt>, Publish, (), E, ErrorInfo>;
+type Handler<AppSt, E> = BoxServiceFactory<Session<AppSt>, Publish, (), E, Failure>;
 type HandlerService<AppSt, E> = BoxService<Session<AppSt>, Publish, (), E>;
 
 /// Router - structure that follows the builder pattern
@@ -35,15 +35,12 @@ where
     pub fn new<U>(f: impl IntoServiceFactory<U, Session<AppSt>, Publish>) -> Self
     where
         U: ServiceFactory<Session<AppSt>, Publish, Res = (), Error = Err> + 'static,
-        U::InitError: ErrorDiagnostic,
+        U::InitError: IntoFailure,
     {
         Router {
             router: ntex_router::Router::build(),
             handlers: Vec::new(),
-            default: boxed::factory(
-                f.into_factory()
-                    .map_init_err(|e| ErrorInfo::from(Error::from(e))),
-            ),
+            default: boxed::factory(f.into_factory().map_init_err(IntoFailure::fail)),
         }
     }
 
@@ -54,13 +51,11 @@ where
         T: IntoPattern,
         F: IntoServiceFactory<U, Session<AppSt>, Publish>,
         U: ServiceFactory<Session<AppSt>, Publish, Res = (), Error = Err> + 'static,
-        U::InitError: ErrorDiagnostic,
+        U::InitError: IntoFailure,
     {
         self.router.path(address, self.handlers.len());
         self.handlers.push(boxed::factory(
-            service
-                .into_factory()
-                .map_init_err(|e| ErrorInfo::from(Error::from(e))),
+            service.into_factory().map_init_err(IntoFailure::fail),
         ));
         self
     }
@@ -102,7 +97,7 @@ where
     type Error = Err;
 
     type Service = RouterService<AppSt, Err>;
-    type InitError = ErrorInfo;
+    type InitError = Failure;
 
     async fn create(&self, con: &Session<AppSt>) -> Result<Self::Service, Self::InitError> {
         let fut: Vec<_> = self.handlers.iter().map(|h| h.create(con)).collect();

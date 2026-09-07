@@ -1,6 +1,6 @@
 use std::{cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
-use ntex_error::{Error, ErrorDiagnostic, ErrorInfo};
+use ntex_error::{Failure, IntoFailure};
 use ntex_service::{Ctx, Service, ServiceFactory, cfg::Cfg, pipeline::PipelineState};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
 use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
@@ -24,15 +24,15 @@ pub(super) fn factory<AppSt, Sf, Ctl>(
     Decoded,
     Res = Option<Encoded>,
     Error = DispatcherError<Sf::Error>,
-    InitError = ErrorInfo,
+    InitError = Failure,
 >
 where
     AppSt: 'static,
     Sf: ServiceFactory<Session<AppSt>, Publish, Res = ()> + 'static,
-    Sf::InitError: ErrorDiagnostic,
+    Sf::InitError: IntoFailure,
     Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Res = ProtocolMessageAck> + 'static,
     Ctl::Error: Into<Sf::Error>,
-    Ctl::InitError: ErrorDiagnostic,
+    Ctl::InitError: IntoFailure,
 {
     ntex_service::factory(async move |st: &Session<AppSt>| {
         // create services
@@ -40,8 +40,8 @@ where
         let fut = join(publish.create(st), control.create(st));
         let (publish, control) = fut.await;
 
-        let publish = publish.map_err(|e| ErrorInfo::from(Error::from(e)))?;
-        let control = control.map_err(|e| ErrorInfo::from(Error::from(e)))?;
+        let publish = publish.map_err(IntoFailure::fail)?;
+        let control = control.map_err(IntoFailure::fail)?;
 
         let control = BufferService::new(
             16,

@@ -1,7 +1,7 @@
 #![allow(clippy::type_complexity)]
 use std::{fmt, marker::PhantomData, rc::Rc};
 
-use ntex_error::{Error, ErrorDiagnostic, ErrorInfo};
+use ntex_error::{Failure, IntoFailure};
 use ntex_io::IoBoxed;
 use ntex_service::cfg::Configuration;
 use ntex_service::pipeline::PipelineFactory;
@@ -20,7 +20,7 @@ use super::shared::{MqttShared, MqttSinkPool};
 use super::{MqttSink, Publish, Session, codec as mqtt, dispatcher::factory};
 
 type ControlPipeline<AppSt, E, Err> =
-    PipelineFactory<Session<AppSt>, Control<E>, Option<mqtt::Encoded>, MqttError<Err>, ErrorInfo>;
+    PipelineFactory<Session<AppSt>, Control<E>, Option<mqtt::Encoded>, MqttError<Err>, Failure>;
 
 /// Mqtt v3.1.1 server
 ///
@@ -75,7 +75,7 @@ where
     AppSt: 'static,
     Err: 'static,
     Pub: ServiceFactory<Session<AppSt>, Publish, Res = ()> + 'static,
-    Pub::InitError: ErrorDiagnostic,
+    Pub::InitError: IntoFailure,
 {
     /// Create server builder and provide publish service
     pub fn new<I>(publish: I) -> Self
@@ -93,7 +93,7 @@ where
     AppSt: 'static,
     Err: 'static,
     Pub: ServiceFactory<Session<AppSt>, Publish, Res = ()> + 'static,
-    Pub::InitError: ErrorDiagnostic,
+    Pub::InitError: IntoFailure,
 {
     /// Create server builder with state
     pub fn with<I>(publish: I) -> Self
@@ -120,10 +120,10 @@ where
     AppSt: 'static,
     Err: 'static,
     Pub: ServiceFactory<Session<AppSt>, Publish, Res = ()> + 'static,
-    Pub::InitError: ErrorDiagnostic,
+    Pub::InitError: IntoFailure,
     P: ServiceFactory<Session<AppSt>, ProtocolMessage, Res = ProtocolMessageAck> + 'static,
     P::Error: Into<Pub::Error>,
-    P::InitError: ErrorDiagnostic,
+    P::InitError: IntoFailure,
 {
     #[must_use]
     /// Registers middleware, in the form of a middleware component (type),
@@ -167,7 +167,7 @@ where
         F: IntoServiceFactory<Srv, Session<AppSt>, ProtocolMessage>,
         Srv: ServiceFactory<Session<AppSt>, ProtocolMessage, Res = ProtocolMessageAck> + 'static,
         Srv::Error: Into<Pub::Error>,
-        Srv::InitError: ErrorDiagnostic,
+        Srv::InitError: IntoFailure,
     {
         MqttServer {
             publish: self.publish,
@@ -189,7 +189,7 @@ where
         Srv: ServiceFactory<Session<AppSt>, Control<Pub::Error>, Res = Option<mqtt::Encoded>>
             + 'static,
         Srv::Error: Into<Err>,
-        Srv::InitError: ErrorDiagnostic,
+        Srv::InitError: IntoFailure,
     {
         MqttServer {
             publish: self.publish,
@@ -198,7 +198,7 @@ where
             control: ControlPipeline::new(ControlFactory::new(
                 f.into_factory()
                     .map_err(|e| MqttError::Service(e.into()))
-                    .map_init_err(|e| ErrorInfo::from(Error::from(e))),
+                    .map_init_err(IntoFailure::fail),
             )),
             pool: self.pool,
             st: self.st,
@@ -222,7 +222,7 @@ where
             mqtt::Decoded,
             Res = Option<mqtt::Encoded>,
             Error = DispatcherError<Pub::Error>,
-            InitError = ErrorInfo,
+            InitError = Failure,
         >,
         M,
     >

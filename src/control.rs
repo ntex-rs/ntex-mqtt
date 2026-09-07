@@ -1,7 +1,7 @@
 //! Control message for connection management service
 use std::{io, marker::PhantomData};
 
-use ntex_error::ErrorInfo;
+use ntex_error::Failure;
 use ntex_service::{Ctx, Service, ServiceFactory};
 
 use crate::error;
@@ -140,7 +140,7 @@ impl<St, E, Req, R> ServiceFactory<St, Req> for DefaultControlService<E, R> {
     type Error = E;
 
     type Service = DefaultControlService<E, R>;
-    type InitError = ErrorInfo;
+    type InitError = Failure;
 
     async fn create(&self, _: &St) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService(PhantomData))
