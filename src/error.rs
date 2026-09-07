@@ -1,6 +1,6 @@
 use std::{fmt, io, num::NonZeroU16};
 
-use ntex_error::ErrorInfo;
+use ntex_error::Failure;
 use ntex_util::future::Either;
 
 use crate::v5::codec::DisconnectReasonCode;
@@ -16,10 +16,18 @@ pub enum MqttError<E> {
     Service(E),
     /// Connect error
     #[error("Mqtt connect error: {}", _0)]
-    Connect(#[from] MqttConnectError<E>),
+    Connect(
+        #[from]
+        #[source]
+        MqttConnectError<E>,
+    ),
     /// Handler initialization error
     #[error("Mqtt handler initialization error: {}", _0)]
-    HandlerInit(#[from] ErrorInfo),
+    HandlerInit(
+        #[from]
+        #[source]
+        Failure,
+    ),
 }
 
 /// Errors which can occur during mqtt connection handshake.

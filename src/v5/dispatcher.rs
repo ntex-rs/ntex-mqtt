@@ -1,7 +1,7 @@
 use std::{cell::RefCell, marker::PhantomData, num, rc::Rc};
 
 use ntex_bytes::ByteString;
-use ntex_error::{Error, ErrorDiagnostic, ErrorInfo};
+use ntex_error::{Failure, IntoFailure};
 use ntex_service::pipeline::PipelineState;
 use ntex_service::{Ctx, Service, ServiceFactory, cfg::Cfg};
 use ntex_util::services::buffer::{BufferService, BufferServiceError};
@@ -25,16 +25,16 @@ pub(super) fn factory<AppSt, E, Pub, Ctl>(
     Decoded,
     Res = Option<Encoded>,
     Error = DispatcherError<E>,
-    InitError = ErrorInfo,
+    InitError = Failure,
 >
 where
     AppSt: 'static,
     E: From<Ctl::Error> + 'static,
     Pub: ServiceFactory<Session<AppSt>, Publish, Res = PublishAck> + 'static,
     Pub::Error: ToPublishAck<Error = E>,
-    Pub::InitError: ErrorDiagnostic,
+    Pub::InitError: IntoFailure,
     Ctl: ServiceFactory<Session<AppSt>, ProtocolMessage, Res = ProtocolMessageAck> + 'static,
-    Ctl::InitError: ErrorDiagnostic,
+    Ctl::InitError: IntoFailure,
 {
     ntex_service::factory(async move |con: &Session<AppSt>| {
         let cfg: Cfg<MqttServiceConfig> = con.cfg();
@@ -43,8 +43,8 @@ where
         let sink = con.sink().shared();
         let (publish, control) = join(publish.create(con), control.create(con)).await;
 
-        let publish = publish.map_err(|e| ErrorInfo::from(Error::from(e)))?;
-        let control = control.map_err(|e| ErrorInfo::from(Error::from(e)))?;
+        let publish = publish.map_err(IntoFailure::fail)?;
+        let control = control.map_err(IntoFailure::fail)?;
 
         let control = BufferService::new(
             16,

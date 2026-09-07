@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, rc::Rc};
 
-use ntex_error::ErrorInfo;
+use ntex_error::Failure;
 use ntex_service::{Ctx, Middleware, Service, ServiceFactory, cfg::Cfg};
 
 use crate::error::PayloadError;
@@ -24,7 +24,7 @@ impl<St, Err> ServiceFactory<St, ProtocolMessage> for DefaultProtoSrv<Err> {
     type Error = Err;
 
     type Service = DefaultProtoSrv<Err>;
-    type InitError = ErrorInfo;
+    type InitError = Failure;
 
     async fn create(&self, _: &St) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultProtoSrv(PhantomData))

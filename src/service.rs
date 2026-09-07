@@ -1,7 +1,7 @@
 use std::{fmt, marker::PhantomData};
 
 use ntex_codec::{Decoder, Encoder};
-use ntex_error::ErrorInfo;
+use ntex_error::Failure;
 use ntex_io::IoBoxed;
 use ntex_service::pipeline::{Pipeline, PipelineFactory};
 use ntex_service::{Ctx, Middleware, RequestState, Service, ServiceFactory};
@@ -13,7 +13,7 @@ type Request<U> = <U as Decoder>::Item;
 type Response<U> = Option<<U as Encoder>::Item>;
 
 type ControlPipeline<AppSt, Codec, Cfg, Err, E> =
-    PipelineFactory<Session<Cfg, AppSt>, Control<E>, Response<Codec>, MqttError<Err>, ErrorInfo>;
+    PipelineFactory<Session<Cfg, AppSt>, Control<E>, Response<Codec>, MqttError<Err>, Failure>;
 
 pub struct MqttServer<St, Im, AppSt, Codec: Encoder, Cfg, Err, E, T, M> {
     connect: ConnectPipeline<St, Im, AppSt, Codec, Cfg, MqttError<Err>>,
@@ -73,7 +73,7 @@ where
             Request<Codec>,
             Res = Response<Codec>,
             Error = DispatcherError<E>,
-            InitError = ErrorInfo,
+            InitError = Failure,
         > + 'static,
     M: Middleware<T::Service, Session<Cfg, AppSt>>,
     M::Service: Service<
