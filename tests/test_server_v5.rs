@@ -2143,7 +2143,7 @@ async fn test_sink_close_with_no_reason() -> std::io::Result<()> {
     // connect to server
     let client = Pipeline::new(
         SharedCfg::new("client").build(),
-        ntex_service::__assert_svc(client::MqttConnector::new()),
+        client::MqttConnector::new(),
     )
     .call(client::Connect::new(srv.addr()).client_id("user"))
     .await

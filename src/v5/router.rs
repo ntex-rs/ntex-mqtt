@@ -40,7 +40,7 @@ where
         U::InitError: IntoFailure,
     {
         Router {
-            router: ntex_router::Router::build(),
+            router: ntex_router::Router::builder(),
             handlers: Vec::new(),
             default: boxed::factory(default.into_factory().map_init_err(IntoFailure::fail)),
         }
@@ -65,7 +65,7 @@ where
     /// Finish router configuration and create router service factory
     pub fn build(self) -> RouterFactory<AppSt, Err> {
         RouterFactory {
-            router: self.router.finish(),
+            router: self.router.build(),
             handlers: Rc::new(self.handlers),
             default: self.default,
         }

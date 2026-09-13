@@ -1,7 +1,5 @@
 //! Examples show how to handle different mqtt topics
-use std::convert::Infallible;
-
-use ntex::service::{cfg::SharedCfg, fn_service};
+use ntex::SharedCfg;
 use ntex_mqtt::v5;
 
 #[derive(Clone)]
@@ -43,11 +41,9 @@ async fn main() -> std::io::Result<()> {
                 // this handler can handle topic1, topic2 and topic3 topics
                 .resource(
                     ["topic1", "topic2", "topic3"],
-                    async |_: &v5::Session<MySession>| {
-                        Ok::<_, Infallible>(fn_service(async move |p: v5::Publish| {
-                            log::info!("incoming publish for {:?} -> {:?}", p.topic(), p.id());
-                            Ok(p.ack())
-                        }))
+                    async move |_: &v5::Session<MySession>, p: v5::Publish| {
+                        log::info!("incoming publish for {:?} -> {:?}", p.topic(), p.id());
+                        Ok(p.ack())
                     },
                 )
                 // this handler can handle topic with dynamic section
