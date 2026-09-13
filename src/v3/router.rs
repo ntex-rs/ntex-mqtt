@@ -38,7 +38,7 @@ where
         U::InitError: IntoFailure,
     {
         Router {
-            router: ntex_router::Router::build(),
+            router: ntex_router::Router::builder(),
             handlers: Vec::new(),
             default: boxed::factory(f.into_factory().map_init_err(IntoFailure::fail)),
         }
@@ -69,7 +69,7 @@ where
 {
     fn into_factory(self) -> RouterFactory<AppSt, Err> {
         RouterFactory {
-            router: Rc::new(self.router.finish()),
+            router: Rc::new(self.router.build()),
             handlers: self.handlers,
             default: self.default,
         }

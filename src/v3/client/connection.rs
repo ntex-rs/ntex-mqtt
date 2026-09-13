@@ -75,7 +75,7 @@ impl Client {
         F: IntoService<U, Session<()>, Publish>,
         U: Service<Session<()>, Publish, Res = ()> + 'static,
     {
-        let mut builder = Router::build();
+        let mut builder = Router::builder();
         builder.path(address, 0);
         let handlers = vec![PipelineState::new(service.into_service())];
 
@@ -252,7 +252,7 @@ where
                 self.shared.clone(),
                 self.max_receive,
                 self.max_buffer_size,
-                dispatch(self.builder.finish(), self.handlers),
+                dispatch(self.builder.build(), self.handlers),
                 fn_service(async |_: ProtocolMessage| Ok::<_, Err>(ProtocolMessage::disconnect())),
             ),
         );
@@ -285,7 +285,7 @@ where
                 self.shared.clone(),
                 self.max_receive,
                 self.max_buffer_size,
-                dispatch(self.builder.finish(), self.handlers),
+                dispatch(self.builder.build(), self.handlers),
                 service.into_service(),
             ),
         );

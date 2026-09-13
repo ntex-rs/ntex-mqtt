@@ -1,7 +1,6 @@
-use std::{cell::RefCell, convert::Infallible};
+use std::cell::RefCell;
 
-use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_service};
-use ntex::util::ByteString;
+use ntex::{SharedCfg, util::ByteString};
 use ntex_mqtt::v5::{self, MqttServer, Publish, PublishAck, Session};
 use ntex_mqtt::{Control, Reason};
 
@@ -73,56 +72,43 @@ async fn publish(
     Ok(publish.ack())
 }
 
-fn protocol_service_factory() -> impl ServiceFactory<
-    Session<MySession>,
-    v5::ProtocolMessage,
-    Res = v5::ProtocolMessageAck,
-    Error = MyServerError,
-    InitError = Infallible,
-> {
-    ntex::factory(async move |_: &Session<MySession>| {
-        Ok(ntex::service(
-            async move |st: &Session<MySession>, msg| match msg {
-                v5::ProtocolMessage::Auth(a) => Ok(a.ack(v5::codec::Auth::default())),
-                v5::ProtocolMessage::Disconnect(d) => Ok(d.ack()),
-                v5::ProtocolMessage::Subscribe(mut s) => {
-                    // store subscribed topics in session, publish service uses this list for echos
-                    s.iter_mut().for_each(|mut s| {
-                        st.subscriptions.borrow_mut().push(s.topic().clone());
-                        s.confirm(v5::QoS::AtLeastOnce);
-                    });
+async fn protocol_service(
+    st: &Session<MySession>,
+    msg: v5::ProtocolMessage,
+) -> Result<v5::ProtocolMessageAck, MyServerError> {
+    match msg {
+        v5::ProtocolMessage::Auth(a) => Ok(a.ack(v5::codec::Auth::default())),
+        v5::ProtocolMessage::Disconnect(d) => Ok(d.ack()),
+        v5::ProtocolMessage::Subscribe(mut s) => {
+            // store subscribed topics in session, publish service uses this list for echos
+            s.iter_mut().for_each(|mut s| {
+                st.subscriptions.borrow_mut().push(s.topic().clone());
+                s.confirm(v5::QoS::AtLeastOnce);
+            });
 
-                    Ok(s.ack())
-                }
-                v5::ProtocolMessage::Unsubscribe(s) => Ok(s.ack()),
-                v5::ProtocolMessage::Ping(p) => Ok(p.ack()),
-                _ => Ok(msg.ack()),
-            },
-        ))
-    })
+            Ok(s.ack())
+        }
+        v5::ProtocolMessage::Unsubscribe(s) => Ok(s.ack()),
+        v5::ProtocolMessage::Ping(p) => Ok(p.ack()),
+        _ => Ok(msg.ack()),
+    }
 }
 
-fn control_service_factory() -> impl ServiceFactory<
-    Session<MySession>,
-    Control<MyServerError>,
-    Res = Option<v5::codec::Encoded>,
-    Error = MyServerError,
-    InitError = Infallible,
-> {
-    ntex::factory(async move |_: &Session<MySession>| {
-        Ok(fn_service(async move |control| match control {
-            Control::Stop(Reason::Error(_)) => Ok(Some(
-                v5::codec::Packet::from(v5::codec::Disconnect {
-                    reason_code: v5::codec::DisconnectReasonCode::UnspecifiedError,
-                    ..Default::default()
-                })
-                .into(),
-            )),
-            Control::Stop(Reason::Protocol(_)) => Ok(None),
-            Control::Stop(Reason::PeerGone(_)) => Ok(None),
-            _ => Ok(None),
-        }))
-    })
+async fn control_service(
+    control: Control<MyServerError>,
+) -> Result<Option<v5::codec::Encoded>, MyServerError> {
+    match control {
+        Control::Stop(Reason::Error(_)) => Ok(Some(
+            v5::codec::Packet::from(v5::codec::Disconnect {
+                reason_code: v5::codec::DisconnectReasonCode::UnspecifiedError,
+                ..Default::default()
+            })
+            .into(),
+        )),
+        Control::Stop(Reason::Protocol(_)) => Ok(None),
+        Control::Stop(Reason::PeerGone(_)) => Ok(None),
+        _ => Ok(None),
+    }
 }
 
 #[ntex::main]
@@ -132,14 +118,10 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
-            MqttServer::new(async |_: &Session<MySession>| {
-                Ok::<_, Infallible>(ntex::service(async |ses: &Session<MySession>, req| {
-                    publish(ses, req).await
-                }))
-            })
-            .control(control_service_factory())
-            .protocol(protocol_service_factory())
-            .build(connect)
+            MqttServer::new(async |ses: &Session<MySession>, req| publish(ses, req).await)
+                .control(control_service)
+                .protocol(protocol_service)
+                .build(connect)
         })?
         .workers(1)
         .run()

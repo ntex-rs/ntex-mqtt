@@ -349,7 +349,7 @@ where
                 IoDispatcherState::Shutdown(ref mut res) => {
                     if inner.service.poll_shutdown(cx).is_ready() {
                         log::trace!("{}: Service shutdown is completed, stop", inner.io.tag());
-                        inner.stopping.notify();
+                        inner.stopping.notify(());
                         inner.st = IoDispatcherState::ShutdownIo(res.take());
                     } else {
                         return Poll::Pending;
@@ -403,7 +403,7 @@ where
             spawn(async move {
                 let empty_q = match select(fut, stopping).await {
                     Either::Left(item) => state.handle_result(item, response_idx, &st, &codec),
-                    Either::Right(()) => state.handle_result(Ok(None), response_idx, &st, &codec),
+                    Either::Right(_) => state.handle_result(Ok(None), response_idx, &st, &codec),
                 };
                 if empty_q {
                     st.notify_dispatcher();
@@ -785,7 +785,7 @@ mod tests {
         sleep(Millis(50)).await;
         client.write("test");
         sleep(Millis(50)).await;
-        condition.notify();
+        condition.notify(());
 
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"testtesttest"));
@@ -812,7 +812,7 @@ mod tests {
             }
         }
 
-        let condition = Condition::new();
+        let condition = Condition::default();
         let waiter = condition.wait();
         let ops = Rc::new(RefCell::new(Vec::new()));
         let ops2 = ops.clone();

@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use ntex::service::cfg::SharedCfg;
 use ntex_mqtt::{MqttServer, v3, v5, v5::codec::PublishAckReason};
 
@@ -96,18 +94,18 @@ async fn main() -> std::io::Result<()> {
     ntex::server::build()
         .bind("mqtt", "127.0.0.1:1883", SharedCfg::default(), async |_| {
             MqttServer::new()
-                .v3(v3::MqttServer::new(async |_: &v3::Session<MySession>| {
-                    Ok::<_, Infallible>(ntex::service(
-                        async move |ses: &v3::Session<MySession>, req| publish_v3(ses, req).await,
-                    ))
-                })
-                .build(connect_v3))
-                .v5(v5::MqttServer::new(async |_con: &v5::Session<MySession>| {
-                    Ok::<_, Infallible>(ntex::service(
-                        async move |ses: &v5::Session<MySession>, req| publish_v5(ses, req).await,
-                    ))
-                })
-                .build(connect_v5))
+                .v3(
+                    v3::MqttServer::new(async move |ses: &v3::Session<MySession>, req| {
+                        publish_v3(ses, req).await
+                    })
+                    .build(connect_v3),
+                )
+                .v5(
+                    v5::MqttServer::new(async move |ses: &v5::Session<MySession>, req| {
+                        publish_v5(ses, req).await
+                    })
+                    .build(connect_v5),
+                )
         })?
         .workers(1)
         .run()

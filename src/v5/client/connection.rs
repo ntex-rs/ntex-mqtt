@@ -91,7 +91,7 @@ impl Client {
         E: From<U::Error>,
         PublishAck: TryFrom<U::Error, Error = E>,
     {
-        let mut builder = Router::build();
+        let mut builder = Router::builder();
         builder.path(address, 0);
         let handlers = vec![PipelineState::new(service.into_service())];
 
@@ -269,7 +269,7 @@ where
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
-                dispatch(self.builder.finish(), self.handlers),
+                dispatch(self.builder.build(), self.handlers),
                 fn_service(async |msg: ProtocolMessage| {
                     Ok(msg.disconnect(codec::Disconnect::default()))
                 }),
@@ -304,7 +304,7 @@ where
             Session::new((), sink.clone(), self.io.shared()),
             create_dispatcher(
                 self.shared.clone(),
-                dispatch(self.builder.finish(), self.handlers),
+                dispatch(self.builder.build(), self.handlers),
                 service.into_service(),
                 self.max_receive,
                 16,

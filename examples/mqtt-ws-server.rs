@@ -109,7 +109,7 @@ async fn ws<F: Filter>(
         Ok(mut res) => {
             // send success http response and switch to ws codec
             io.send(
-                h1::Message::Item((res.finish().drop_body(), http::body::BodySize::Empty)),
+                h1::Message::Item((res.build().drop_body(), http::body::BodySize::Empty)),
                 &codec,
             )
             .await?;
