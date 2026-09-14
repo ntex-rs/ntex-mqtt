@@ -1,6 +1,8 @@
 # Changes
 
-## [9.0.0-beta.0] - 2026-08-25
+## [9.0.0] - 2026-09-14
+
+* Refactor state management
 
 * Update to ntex-service 5.0
 
