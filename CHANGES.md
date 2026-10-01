@@ -20,6 +20,8 @@
 
 * Control service readiness pauses reading only, readiness errors shut down the service and io
 
+* Report the first service call error to the control service, later errors no longer overwrite it
+
 * Stop dispatcher on response encode errors in spawned service calls
 
 * Only publish acks keep the order of incoming packets, other responses are sent once ready, pending ones count towards max queue

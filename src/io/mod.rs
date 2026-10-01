@@ -196,10 +196,16 @@ where
     }
 
     fn set_error(&self, err: DispatcherError<E>) {
-        self.error.set(Some(match err {
+        self.set_stop(match err {
             DispatcherError::Service(err) => Control::err(err),
             DispatcherError::Protocol(err) => Control::proto(err),
-        }));
+        });
+    }
+
+    /// Keeps the stop message for the first error, later errors are dropped.
+    fn set_stop(&self, msg: Control<E>) {
+        let first = self.error.take().unwrap_or(msg);
+        self.error.set(Some(first));
     }
 
     /// Encodes the response of a completed call, returns `true` on error.
@@ -207,8 +213,7 @@ where
         match item {
             Ok(Some(item)) => {
                 if let Err(err) = io.encode(item, codec) {
-                    self.error
-                        .set(Some(Control::proto(MqttProtocolError::Encode(err))));
+                    self.set_stop(Control::proto(MqttProtocolError::Encode(err)));
                     return true;
                 }
                 false
@@ -546,16 +551,8 @@ where
         };
 
         Poll::Ready(match status {
-            IoStatusUpdate::Timeout if self.timers.active == Timer::Write => {
-                self.handle_timeout().err().map(Control::proto)
-            }
-            IoStatusUpdate::Timeout => {
-                log::trace!(
-                    "{}: Keep-alive error, stopping dispatcher during pause",
-                    self.io.tag()
-                );
-                Some(Control::proto(MqttProtocolError::KeepAliveTimeout))
-            }
+            // only the write timer can be armed during pause
+            IoStatusUpdate::Timeout => self.handle_timeout().err().map(Control::proto),
             IoStatusUpdate::PeerGone(err) => {
                 log::trace!(
                     "{}: Peer is gone during pause, stopping dispatcher: {:?}",
@@ -1184,6 +1181,98 @@ mod tests {
         assert!(client.is_closed());
     }
 
+    /// Protocol error from service readiness stops the dispatcher
+    #[ntex::test]
+    async fn test_protocol_err_in_service_ready() {
+        struct Srv;
+
+        impl Service<(), Bytes> for Srv {
+            type Res = Option<Bytes>;
+            type Error = DispatcherError<()>;
+
+            async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
+                Err(DispatcherError::Protocol(MqttProtocolError::ReadTimeout))
+            }
+
+            async fn call(&self, _: Bytes, _: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+                Ok(None)
+            }
+        }
+
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let errs = Rc::new(RefCell::new(Vec::new()));
+        let errs2 = errs.clone();
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG")),
+            BytesCodec,
+            Srv,
+            fn_service(async move |msg: Control<()>| {
+                if let Control::Stop(Reason::Protocol(err)) = msg {
+                    errs2.borrow_mut().push(*err.get_ref());
+                }
+                Ok::<_, ()>(None)
+            }),
+        );
+        let res = timeout(Millis(500), disp).await.unwrap();
+        assert_eq!(res, Ok(()));
+        assert!(matches!(
+            &errs.borrow()[..],
+            [MqttProtocolError::ReadTimeout]
+        ));
+        assert!(client.is_closed());
+    }
+
+    /// Service readiness error while the control service handles the stop message
+    #[ntex::test]
+    async fn test_err_in_service_ready_during_stop() {
+        struct Srv(Rc<Cell<bool>>, Rc<Cell<usize>>);
+
+        impl Service<(), Bytes> for Srv {
+            type Res = Option<Bytes>;
+            type Error = DispatcherError<()>;
+
+            async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
+                if self.0.get() {
+                    self.1.set(self.1.get() + 1);
+                    Err(DispatcherError::Service(()))
+                } else {
+                    Ok(())
+                }
+            }
+
+            async fn call(&self, _: Bytes, _: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+                Ok(None)
+            }
+        }
+
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let stopped = Rc::new(Cell::new(false));
+        let stopped2 = stopped.clone();
+        let counter = Rc::new(Cell::new(0));
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG")),
+            ByteCodec,
+            Srv(stopped.clone(), counter.clone()),
+            fn_service(async move |msg: Control<()>| {
+                if let Control::Stop(Reason::Protocol(_)) = msg {
+                    stopped2.set(true);
+                    sleep(Millis(100)).await;
+                }
+                Ok::<_, ()>(None)
+            }),
+        );
+        client.write("E");
+        let res = timeout(Millis(500), disp).await.unwrap();
+        assert_eq!(res, Ok(()));
+        assert!(stopped.get());
+        assert_eq!(counter.get(), 1);
+        assert!(client.is_closed());
+    }
+
     #[ntex::test]
     async fn test_write_backpressure() {
         let (client, server) = Io::create();
@@ -1700,6 +1789,85 @@ mod tests {
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0]);
     }
 
+    /// Frame read budget restarts after the service pauses reading
+    #[ntex::test]
+    async fn test_read_rate_reset_on_pause() {
+        struct Srv(Rc<Cell<bool>>, Condition<()>);
+
+        impl Service<(), Bytes> for Srv {
+            type Res = Option<Bytes>;
+            type Error = DispatcherError<()>;
+
+            async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
+                if self.0.get() {
+                    self.1.wait().await;
+                }
+                Ok(())
+            }
+
+            async fn call(
+                &self,
+                msg: Bytes,
+                _: Ctx<'_, Self, ()>,
+            ) -> Result<Self::Res, Self::Error> {
+                Ok(Some(msg))
+            }
+        }
+
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let errs = Rc::new(RefCell::new(Vec::new()));
+        let errs2 = errs.clone();
+        let paused = Rc::new(Cell::new(false));
+        let cond = Condition::new();
+        let config = SharedCfg::new("DBG").add(
+            IoConfig::new()
+                .set_keepalive_timeout(Seconds::ZERO)
+                .set_frame_read_rate(Seconds(1), Seconds(2), 2),
+        );
+        let (disp, state) = Dispatcher::new_debug(
+            nio::Io::new(server, config),
+            BytesLenCodec(16),
+            Srv(paused.clone(), cond.clone()),
+            fn_service(async move |msg: Control<()>| {
+                if let Control::Stop(Reason::Protocol(err)) = msg {
+                    errs2.borrow_mut().push(*err.get_ref());
+                }
+                Ok::<_, ()>(None)
+            }),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        // first period is extended, one second of the budget is left
+        client.write("123");
+        sleep(Millis(1200)).await;
+        client.write("456");
+        sleep(Millis(100)).await;
+
+        // pause restarts the budget
+        paused.set(true);
+        client.write("7");
+        sleep(Millis(300)).await;
+        paused.set(false);
+        cond.notify(());
+
+        // two more periods fit into the restarted budget
+        sleep(Millis(200)).await;
+        client.write("abc");
+        sleep(Millis(1000)).await;
+        client.write("def");
+        sleep(Millis(200)).await;
+        assert!(state.is_active(), "{:?}", errs.borrow());
+        assert!(errs.borrow().is_empty());
+
+        client.write("ghi");
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"1234567abcdefghi"));
+    }
+
     #[ntex::test]
     async fn test_read_timeout() {
         let (client, server) = Io::create();
@@ -1899,6 +2067,50 @@ mod tests {
             [MqttProtocolError::Encode(EncodeError::MalformedPacket)]
         ));
         assert_eq!(client.read().await.unwrap(), Bytes::from_static(b"a"));
+    }
+
+    /// The first error is reported to the control service
+    #[ntex::test]
+    async fn first_error_is_kept() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let msgs = Rc::new(RefCell::new(Vec::new()));
+        let msgs2 = msgs.clone();
+        let (disp, state) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG").add(IoConfig::new())),
+            ByteCodec,
+            fn_service(async move |msg: Bytes| match &msg[..] {
+                b"b" => {
+                    sleep(Millis(50)).await;
+                    Err(DispatcherError::Service(()))
+                }
+                b"c" => {
+                    sleep(Millis(50)).await;
+                    Err(DispatcherError::Protocol(
+                        MqttProtocolError::KeepAliveTimeout,
+                    ))
+                }
+                _ => {
+                    sleep(Millis(10_000)).await;
+                    Ok(None)
+                }
+            }),
+            fn_service(async move |msg: Control<()>| {
+                if let Control::Stop(reason) = msg {
+                    msgs2.borrow_mut().push(matches!(reason, Reason::Error(_)));
+                }
+                Ok::<_, ()>(None)
+            }),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("abc");
+        sleep(Millis(300)).await;
+        assert!(!state.is_active());
+        assert_eq!(&msgs.borrow()[..], &[true]);
     }
 
     /// Calls spawned in the same poll as the stop are cancelled on service shutdown
@@ -2149,6 +2361,34 @@ mod tests {
         sleep(Millis(2000)).await;
         assert!(!state.is_active());
         assert!(data.borrow().contains(&3));
+    }
+
+    /// Write timer expires after backpressure is released while service is not ready
+    #[ntex::test]
+    async fn test_write_timeout_released_service_not_ready() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+
+        let (srv, control, data) = write_timeout_srv(false);
+        let (disp, state) = Dispatcher::new_debug(
+            nio::Io::new(server, write_timeout_cfg()),
+            BytesCodec,
+            srv,
+            control,
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("GET /test HTTP/1\r\n\r\n");
+        sleep(Millis(300)).await;
+        assert_eq!(&data.borrow()[..], &[1]);
+
+        client.remote_buffer_cap(1024 * 1024);
+        sleep(Millis(2000)).await;
+        assert!(state.is_active());
+        assert!(!data.borrow().contains(&3));
+        assert_eq!(client.read_any().len(), 65_536);
     }
 
     /// Reading pauses while the response queue is full
