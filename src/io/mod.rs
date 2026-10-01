@@ -183,17 +183,22 @@ where
         }));
     }
 
-    /// Encodes the response of a completed call.
-    fn write_result(&self, item: ServiceResult<Codec, E>, io: &IoRef, codec: &Codec) {
+    /// Encodes the response of a completed call, returns `true` on error.
+    fn write_result(&self, item: ServiceResult<Codec, E>, io: &IoRef, codec: &Codec) -> bool {
         match item {
             Ok(Some(item)) => {
                 if let Err(err) = io.encode(item, codec) {
                     self.error
                         .set(Some(Control::proto(MqttProtocolError::Encode(err))));
+                    return true;
                 }
+                false
             }
-            Ok(None) => (),
-            Err(err) => self.set_error(err),
+            Ok(None) => false,
+            Err(err) => {
+                self.set_error(err);
+                true
+            }
         }
     }
 
@@ -206,28 +211,28 @@ where
         io: &IoRef,
         codec: &Codec,
     ) -> bool {
-        let err = item.is_err();
         let mut queue = self.queue.borrow_mut();
         let idx = response_idx.wrapping_sub(self.base.get());
 
         if idx == 0 {
             // write the head response and the completed responses after it
             let was_full = self.is_full(queue.len());
+            let mut err = false;
             let mut item = Some(item);
             while let Some(res) = item {
                 let _ = queue.pop_front();
                 self.base.set(self.base.get().wrapping_add(1));
-                self.write_result(res, io, codec);
+                err |= self.write_result(res, io, codec);
                 item = queue.front_mut().and_then(Option::take);
             }
-            err || queue.is_empty() || (was_full && !self.is_full(queue.len()))
+            // the dispatcher waits for results only on errors and a full queue
+            err || (was_full && !self.is_full(queue.len()))
+        } else if let Err(err) = item {
+            self.set_error(err);
+            true
         } else {
-            if let Err(err) = item {
-                self.set_error(err);
-            } else {
-                queue[idx] = Some(item);
-            }
-            err
+            queue[idx] = Some(item);
+            false
         }
     }
 }
@@ -1662,6 +1667,9 @@ mod tests {
         type Error = EncodeError;
 
         fn encode(&self, item: Bytes, dst: &mut BytePages) -> Result<(), Self::Error> {
+            if item == "X" {
+                return Err(EncodeError::MalformedPacket);
+            }
             dst.append(item);
             Ok(())
         }
@@ -1705,6 +1713,48 @@ mod tests {
                 Ok::<_, DispatcherError<()>>(None)
             }
         })
+    }
+
+    /// A spawned call that fails to encode its response stops the dispatcher
+    /// while later calls are still pending
+    #[ntex::test]
+    async fn encode_error_in_spawned_call() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let errs = Rc::new(RefCell::new(Vec::new()));
+        let errs2 = errs.clone();
+        let (disp, state) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG").add(IoConfig::new())),
+            ByteCodec,
+            fn_service(async move |msg: Bytes| {
+                let delay = match &msg[..] {
+                    b"a" => 50,
+                    b"X" => 100,
+                    _ => 10_000,
+                };
+                sleep(Millis(delay)).await;
+                Ok::<_, DispatcherError<()>>(Some(msg))
+            }),
+            fn_service(async move |msg: Control<()>| {
+                if let Control::Stop(Reason::Protocol(err)) = msg {
+                    errs2.borrow_mut().push(*err.get_ref());
+                }
+                Ok::<_, ()>(None)
+            }),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("aXc");
+        sleep(Millis(300)).await;
+        assert!(!state.is_active());
+        assert!(matches!(
+            &errs.borrow()[..],
+            [MqttProtocolError::Encode(EncodeError::MalformedPacket)]
+        ));
+        assert_eq!(client.read().await.unwrap(), Bytes::from_static(b"a"));
     }
 
     /// Calls spawned in the same poll as the stop are cancelled on service shutdown

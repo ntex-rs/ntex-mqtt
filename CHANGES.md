@@ -18,6 +18,8 @@
 
 * v5: Send PacketIdentifierInUse acks in the order packets are received
 
+* Stop dispatcher on response encode errors in spawned service calls
+
 * Set default MqttServiceConfig connect timeout to 5 seconds
 
 ## [9.0.0] - 2026-09-14
