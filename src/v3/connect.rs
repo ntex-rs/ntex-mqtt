@@ -222,7 +222,7 @@ mod tests {
 
         // Handshake delegates to the Connect packet
         let dbg = format!("{h:?}");
-        assert!(!dbg.is_empty());
+        assert_ne!(dbg, "");
 
         // HandshakeAck
         let ack = h.ack(42u32, false);

@@ -233,7 +233,7 @@ mod tests {
 
         // Connect delegates to the Connect packet
         let dbg = format!("{h:?}");
-        assert!(!dbg.is_empty());
+        assert_ne!(dbg, "");
 
         // ConnectAck
         let ack = h.ack(42u32);

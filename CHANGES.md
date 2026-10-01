@@ -24,6 +24,8 @@
 
 * Release write backpressure and stop the write timer once output is flushed, even if the service is not ready
 
+* Deliver write backpressure changes to the control service in order and before the stop message, write their responses, control errors shut down the dispatcher
+
 * Stop dispatcher on response encode errors in spawned service calls
 
 * Only publish acks keep the order of incoming packets, other responses are sent once ready, pending ones count towards max queue

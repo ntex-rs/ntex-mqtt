@@ -20,6 +20,16 @@ use crate::error::{DecodeError, DispatcherError, EncodeError, MqttProtocolError}
 /// Io waiter tag, in-flight service calls are cancelled once it is woken.
 const STOP_TAG: usize = 0x6d71_7474;
 
+bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    struct Flags: u8 {
+        /// Service readiness failed, it is not polled during stop
+        const READY_ERR  = 0b0000_0001;
+        /// Write backpressure state of the last `Control::wr` message
+        const WR_ENABLED = 0b0000_0010;
+    }
+}
+
 /// Decoder state the dispatcher needs for read timers and response ordering.
 pub trait FrameState: Decoder {
     /// Returns `true` while the last decoded item is followed by more parts
@@ -94,8 +104,9 @@ where
     state: Rc<DispatcherState<Codec, E>>,
     timers: Timers,
     keepalive_timeout: Seconds,
-    /// Service readiness failed, it is not polled during stop
-    ready_err: bool,
+    flags: Flags,
+    /// Pending `Control::wr` call, messages are delivered one at a time
+    wr_call: Option<ControlCall<Codec, E, Err>>,
 }
 
 struct DispatcherState<Codec, E>
@@ -169,7 +180,8 @@ where
                 control,
                 service,
                 keepalive_timeout,
-                ready_err: false,
+                flags: Flags::empty(),
+                wr_call: None,
                 st: IoDispatcherState::Processing,
             },
         }
@@ -308,6 +320,13 @@ where
             }
         }
 
+        if matches!(
+            inner.st,
+            IoDispatcherState::Processing | IoDispatcherState::Backpressure
+        ) {
+            inner.poll_wr(cx);
+        }
+
         loop {
             match inner.st {
                 IoDispatcherState::Processing => {
@@ -329,7 +348,7 @@ where
                                 inner.stop(Control::proto(err));
                             }
                         }
-                        Err(RecvError::WriteBackpressure) => inner.enter_backpressure(),
+                        Err(RecvError::WriteBackpressure) => inner.enter_backpressure(cx),
                         Err(RecvError::Decoder(err)) => {
                             inner.stop(Control::proto(MqttProtocolError::Decode(err)));
                         }
@@ -350,16 +369,25 @@ where
                         // by the processing state
                         inner.stop_timer();
                         inner.st = IoDispatcherState::Processing;
-                        spawn(inner.control.call_static(Control::wr(false)));
+                        inner.poll_wr(cx);
                     }
                 }
                 // wait for the control service to handle the stop message
                 IoDispatcherState::Stop(ref mut fut) => {
                     // service may rely on poll_ready for response results
-                    if !inner.ready_err
+                    if !inner.flags.contains(Flags::READY_ERR)
                         && let Poll::Ready(Err(_)) = inner.service.poll_ready(cx)
                     {
-                        inner.ready_err = true;
+                        inner.flags.insert(Flags::READY_ERR);
+                    }
+
+                    // the stop message is delivered after the pending wr message
+                    if inner.wr_call.is_some() {
+                        inner.poll_wr(cx);
+                        if inner.wr_call.is_some() {
+                            return Poll::Pending;
+                        }
+                        continue;
                     }
 
                     let res = ready!(Pin::new(fut).poll(cx)).map(|item| {
@@ -416,11 +444,62 @@ where
         self.st = IoDispatcherState::Stop(self.control.call_static(msg));
     }
 
-    fn enter_backpressure(&mut self) {
+    /// Shuts down the service and io without the stop message.
+    fn shutdown_err(&mut self, err: Err) {
+        self.timers.active = Timer::Stopped;
+        self.io.stop_timer();
+        self.st = IoDispatcherState::Shutdown(Some(Err(err)));
+    }
+
+    fn enter_backpressure(&mut self, cx: &mut Context<'_>) {
         if !matches!(self.st, IoDispatcherState::Backpressure) {
             self.start_write_timer();
             self.st = IoDispatcherState::Backpressure;
-            spawn(self.control.call_static(Control::wr(true)));
+            self.poll_wr(cx);
+        }
+    }
+
+    /// Delivers write backpressure changes to the control service.
+    ///
+    /// Messages are delivered one at a time and in order, state changes
+    /// during a pending call are coalesced into the latest state. No new
+    /// messages are sent after the dispatcher is stopped.
+    fn poll_wr(&mut self, cx: &mut Context<'_>) {
+        loop {
+            if let Some(mut fut) = self.wr_call.take() {
+                match Pin::new(&mut fut).poll(cx) {
+                    Poll::Pending => {
+                        self.wr_call = Some(fut);
+                        return;
+                    }
+                    Poll::Ready(Ok(Some(item))) => {
+                        if let Err(err) = self.io.encode(item, &self.codec) {
+                            self.state
+                                .set_stop(Control::proto(MqttProtocolError::Encode(err)));
+                        }
+                    }
+                    Poll::Ready(Ok(None)) => (),
+                    Poll::Ready(Err(err)) => {
+                        log::error!(
+                            "{}: Control service failed to handle write backpressure, shutdown",
+                            self.io.tag()
+                        );
+                        self.shutdown_err(err);
+                        return;
+                    }
+                }
+            }
+
+            let enabled = match self.st {
+                IoDispatcherState::Processing => false,
+                IoDispatcherState::Backpressure => true,
+                _ => return,
+            };
+            if enabled == self.flags.contains(Flags::WR_ENABLED) {
+                return;
+            }
+            self.flags.set(Flags::WR_ENABLED, enabled);
+            self.wr_call = Some(self.control.call_static(Control::wr(enabled)));
         }
     }
 
@@ -491,9 +570,7 @@ where
                 "{}: Control service readiness check failed, shutdown",
                 self.io.tag()
             );
-            self.timers.active = Timer::Stopped;
-            self.io.stop_timer();
-            self.st = IoDispatcherState::Shutdown(Some(Err(err)));
+            self.shutdown_err(err);
             return Poll::Ready(PollService::Continue);
         }
 
@@ -518,7 +595,7 @@ where
                     "{}: Service readiness check failed, stopping",
                     self.io.tag()
                 );
-                self.ready_err = true;
+                self.flags.insert(Flags::READY_ERR);
                 Control::err(err)
             }
             Poll::Ready(Err(DispatcherError::Protocol(err))) => Control::proto(err),
@@ -564,7 +641,7 @@ where
                 Some(Control::peer_gone(err))
             }
             IoStatusUpdate::WriteBackpressure => {
-                self.enter_backpressure();
+                self.enter_backpressure(cx);
                 None
             }
         })
@@ -2757,5 +2834,142 @@ mod tests {
         client.close().await;
         let _ = ctx.send(());
         let _ = rx.await;
+    }
+
+    /// Control service that records `wr` and stop messages
+    #[derive(Clone)]
+    struct WrCtl {
+        log: Rc<RefCell<Vec<&'static str>>>,
+        /// delay for `wr(true)` handling
+        delay: Millis,
+        /// response for `wr(false)`
+        resp: Option<Bytes>,
+        /// `wr(false)` fails
+        fail: bool,
+    }
+
+    impl WrCtl {
+        fn new(delay: Millis) -> Self {
+            WrCtl {
+                log: Rc::default(),
+                delay,
+                resp: None,
+                fail: false,
+            }
+        }
+    }
+
+    impl Service<(), Control<()>> for WrCtl {
+        type Res = Option<Bytes>;
+        type Error = ();
+
+        async fn call(&self, msg: Control<()>, _: Ctx<'_, Self, ()>) -> Result<Option<Bytes>, ()> {
+            match msg {
+                Control::WrBackpressure(st) if st.enabled() => {
+                    self.log.borrow_mut().push("wr1");
+                    sleep(self.delay).await;
+                    self.log.borrow_mut().push("wr1-done");
+                    Ok(None)
+                }
+                Control::WrBackpressure(_) => {
+                    self.log.borrow_mut().push("wr0");
+                    if self.fail { Err(()) } else { Ok(self.resp.clone()) }
+                }
+                Control::Stop(_) => {
+                    self.log.borrow_mut().push("stop");
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    fn wr_dispatcher(
+        ctl: WrCtl,
+        write_timeout: Seconds,
+    ) -> (Io, nio::IoRef, oneshot::Receiver<Result<(), ()>>) {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+
+        let cfg = SharedCfg::new("DBG").add(
+            IoConfig::new()
+                .set_keepalive_timeout(Seconds::ZERO)
+                .set_write_buf(32 * 1024)
+                .set_write_timeout(write_timeout),
+        );
+        let (disp, io) = Dispatcher::new_debug(
+            nio::Io::new(server, cfg),
+            BytesCodec,
+            fn_service(async |_: Bytes| {
+                Ok::<_, DispatcherError<()>>(Some(Bytes::from(vec![b'x'; 65_536])))
+            }),
+            ctl,
+        );
+        let (tx, rx) = oneshot::channel();
+        ntex_util::spawn(async move {
+            let _ = tx.send(disp.await);
+        });
+        client.write("1");
+        (client, io, rx)
+    }
+
+    /// `wr(false)` is delivered after `wr(true)` is handled
+    #[ntex::test]
+    async fn test_wr_in_order() {
+        let ctl = WrCtl::new(Millis(200));
+        let (client, _io, _rx) = wr_dispatcher(ctl.clone(), Seconds::ZERO);
+        sleep(Millis(50)).await;
+        assert_eq!(&ctl.log.borrow()[..], &["wr1"]);
+
+        // backpressure is released while wr(true) is pending
+        client.remote_buffer_cap(1024 * 1024);
+        let _ = client.read().await;
+        sleep(Millis(50)).await;
+        assert_eq!(&ctl.log.borrow()[..], &["wr1"]);
+
+        sleep(Millis(250)).await;
+        assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "wr0"]);
+    }
+
+    /// Stop is delivered after the pending wr message
+    #[ntex::test]
+    async fn test_wr_before_stop() {
+        let ctl = WrCtl::new(Millis(1500));
+        let (_client, _io, _rx) = wr_dispatcher(ctl.clone(), Seconds(1));
+
+        // write timeout stops the dispatcher while wr(true) is pending
+        sleep(Millis(1250)).await;
+        assert_eq!(&ctl.log.borrow()[..], &["wr1"]);
+
+        sleep(Millis(500)).await;
+        assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "stop"]);
+    }
+
+    /// Response of the wr message is written
+    #[ntex::test]
+    async fn test_wr_response() {
+        let mut ctl = WrCtl::new(Millis(0));
+        ctl.resp = Some(Bytes::from_static(b"wr"));
+        let (client, _io, _rx) = wr_dispatcher(ctl.clone(), Seconds::ZERO);
+        sleep(Millis(50)).await;
+
+        client.remote_buffer_cap(1024 * 1024);
+        sleep(Millis(100)).await;
+        let buf = client.read_any();
+        assert_eq!(buf.len(), 65_538);
+        assert!(buf.ends_with(b"wr"));
+        assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "wr0"]);
+    }
+
+    /// Error of the wr message shuts down the dispatcher without stop message
+    #[ntex::test]
+    async fn test_wr_error() {
+        let mut ctl = WrCtl::new(Millis(0));
+        ctl.fail = true;
+        let (client, _io, rx) = wr_dispatcher(ctl.clone(), Seconds::ZERO);
+        sleep(Millis(50)).await;
+
+        client.remote_buffer_cap(1024 * 1024);
+        assert_eq!(timeout(Millis(500), rx).await.unwrap().unwrap(), Err(()));
+        assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "wr0"]);
     }
 }
