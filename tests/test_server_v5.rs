@@ -729,7 +729,7 @@ async fn test_ack_order() -> std::io::Result<()> {
 async fn test_dups() {
     let srv = server::test_server(async move || {
         MqttServer::new(async move |p: Publish| {
-            sleep(Duration::from_millis(10000)).await;
+            sleep(Duration::from_millis(100)).await;
             Ok::<_, TestError>(p.ack())
         })
         .build(connect)
@@ -816,7 +816,19 @@ async fn test_dups() {
     .await
     .unwrap();
 
-    // PublishAck
+    // acks are sent in the order packets are received, the original publish first
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        packet(pkt),
+        Packet::PublishAck(codec::PublishAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            reason_code: codec::PublishAckReason::Success,
+            properties: Default::default(),
+            reason_string: None,
+        })
+    );
+
+    // PublishAck for the dup
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         packet(pkt),

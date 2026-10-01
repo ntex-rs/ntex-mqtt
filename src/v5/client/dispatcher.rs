@@ -125,14 +125,14 @@ where
 
                         // check for duplicated packet id
                         if !inner.inflight.insert(pid) {
-                            let _ = self.inner.sink.encode_packet(Packet::PublishAck(
+                            // queued to keep acks in the order packets are received
+                            return Ok(Some(Encoded::Packet(Packet::PublishAck(
                                 codec::PublishAck {
                                     packet_id: pid,
                                     reason_code: codec::PublishAckReason::PacketIdentifierInUse,
                                     ..Default::default()
                                 },
-                            ));
-                            return Ok(None);
+                            ))));
                         }
                     }
 

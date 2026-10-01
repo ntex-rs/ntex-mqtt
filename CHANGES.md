@@ -16,6 +16,8 @@
 
 * Keep-alive and frame read rate timeouts apply to the whole streamed publish, not each payload chunk
 
+* v5: Send PacketIdentifierInUse acks in the order packets are received
+
 * Set default MqttServiceConfig connect timeout to 5 seconds
 
 ## [9.0.0] - 2026-09-14
