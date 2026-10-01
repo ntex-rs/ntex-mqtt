@@ -59,7 +59,7 @@ impl Publish {
     }
 
     #[inline]
-    /// Returns reference to publish packet
+    /// Returns mutable reference to publish packet
     pub fn packet_mut(&mut self) -> &mut codec::Publish {
         &mut self.0
     }

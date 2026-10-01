@@ -170,7 +170,8 @@ impl<St> ConnectAck<St> {
     #[must_use]
     /// Set idle time-out for the connection in seconds.
     ///
-    /// By default idle time-out is set to 30 seconds.
+    /// By default idle time-out is set to 1.5 times of the client's keep-alive
+    /// value, or to 30 seconds if the client's keep-alive is 0.
     pub fn idle_timeout(mut self, timeout: Seconds) -> Self {
         self.keepalive = timeout;
         self
@@ -179,7 +180,8 @@ impl<St> ConnectAck<St> {
     #[must_use]
     /// Number of outgoing concurrent messages.
     ///
-    /// By default outgoing is set to 16 messages
+    /// If value is `None` or `Some(0)`, the `MqttServiceConfig` value is used
+    /// (16 messages by default).
     pub fn max_send(mut self, val: Option<u16>) -> Self {
         if val == Some(0) {
             self.max_send = None;

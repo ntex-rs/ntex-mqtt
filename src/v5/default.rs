@@ -9,7 +9,10 @@ use crate::{Control, MqttServiceConfig, Reason, inflight::InFlightServiceImpl};
 use super::control::{ProtocolMessage, ProtocolMessageAck};
 use super::{Session, codec, codec::Encoded, shared::MqttShared};
 
-/// Default control service
+/// Default protocol-message service
+///
+/// Responds to `Ping` and `Disconnect` messages, any other message closes
+/// the connection with `UnspecifiedError` disconnect reason.
 #[derive(Debug)]
 pub struct DefaultProtoSrv<E>(PhantomData<E>);
 

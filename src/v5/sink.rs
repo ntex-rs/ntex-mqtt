@@ -26,7 +26,10 @@ impl MqttSink {
     }
 
     #[inline]
-    /// Check if io stream is open
+    /// Check if connection is active
+    ///
+    /// Returns `false` as soon as the connection starts closing, either
+    /// locally or because the peer has gone. Buffered data may still be flushing.
     pub fn is_open(&self) -> bool {
         self.0.is_active()
     }
@@ -48,7 +51,10 @@ impl MqttSink {
     }
 
     #[inline]
-    /// Get client's receive credit
+    /// Get remaining send credit
+    ///
+    /// Number of `QoS 1` and `QoS 2` publish packets that can be sent before
+    /// the peer's receive maximum is exhausted.
     pub fn credit(&self) -> usize {
         self.0.credit()
     }
@@ -68,8 +74,11 @@ impl MqttSink {
     }
 
     #[inline]
-    /// Force close MQTT connection. Dispatcher does not wait for uncompleted
-    /// responses (ending them with error), but it flushes buffers.
+    /// Force close MQTT connection.
+    ///
+    /// The connection is aborted immediately, dispatcher does not wait for
+    /// uncompleted responses (ending them with error) and buffered data is discarded.
+    /// Use [`close`](Self::close) to close connection gracefully.
     pub fn force_close(&self) {
         self.0.force_close();
     }
@@ -125,7 +134,9 @@ impl MqttSink {
     /// Set publish ack callback
     ///
     /// Use non-blocking send, `PublishBuilder::send_at_least_once_no_block()`
-    /// First argument is packet id, second argument is "disconnected" state
+    ///
+    /// First argument is received `PublishAck` packet (on disconnect, a synthetic
+    /// ack that carries only packet id), second argument is "disconnected" state.
     pub fn publish_ack_cb<F>(&self, f: F)
     where
         F: Fn(codec::PublishAck, bool) + 'static,
@@ -314,7 +325,8 @@ impl PublishBuilder {
     ///
     /// # Panics
     ///
-    /// Panics if sink is not ready or publish ack callback is not set
+    /// Panics if sink is not ready. If publish ack callback is not set,
+    /// connection task panics later, when ack is received.
     pub fn send_at_least_once_no_block(mut self, payload: Bytes) -> Result<(), SendPacketError> {
         if self.shared.is_active() {
             // check readiness
@@ -455,7 +467,11 @@ impl PublishBuilder {
     }
 }
 
-/// Publish released for `QoS2`
+/// `PublishReceived` packet is received for `QoS 2` publish
+///
+/// Call [`release`](Self::release) to send `PublishRelease` packet and wait for
+/// `PublishComplete`. If the value is dropped, `PublishRelease` is sent without
+/// waiting for `PublishComplete`.
 pub struct PublishReceived {
     ack: codec::PublishAck,
     result: Option<codec::PublishAck2>,
@@ -485,7 +501,7 @@ impl PublishReceived {
         }
     }
 
-    /// Returns reference to auth packet
+    /// Returns reference to received `PublishReceived` packet
     pub fn packet(&self) -> &codec::PublishAck {
         &self.ack
     }

@@ -40,7 +40,10 @@ impl Codec {
     /// Set max inbound frame size.
     ///
     /// If max size is set to `0`, size is unlimited.
-    /// By default max size is set to `0`
+    /// By default max size is set to `0`.
+    ///
+    /// Inbound packets over the limit fail with `DecodeError::MaxSizeExceeded`,
+    /// outgoing publish packets over the limit fail with `EncodeError::OverMaxPacketSize`.
     pub fn set_max_size(&self, size: u32) {
         self.max_size.set(size);
     }

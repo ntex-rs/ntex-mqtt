@@ -124,7 +124,7 @@ where
     <Codec as Encoder>::Item: 'static,
     E: 'static,
 {
-    /// Construct new `Dispatcher` instance with outgoing messages stream.
+    /// Construct new `Dispatcher` instance.
     pub(crate) fn new(
         io: IoBoxed,
         codec: Codec,
@@ -167,7 +167,7 @@ where
     ///
     /// To disable timeout set value to 0.
     ///
-    /// By default keep-alive timeout is set to 30 seconds.
+    /// By default keep-alive timeout is taken from the io configuration.
     pub(crate) fn keepalive_timeout(mut self, timeout: Seconds) -> Self {
         self.inner.keepalive_timeout = timeout;
         if timeout.is_zero() {

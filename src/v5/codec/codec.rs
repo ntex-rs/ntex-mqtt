@@ -60,18 +60,15 @@ impl Codec {
         self.min_chunk_size.set(size);
     }
 
-    /// Set max inbound frame size.
-    ///
-    /// If max size is set to `0`, size is unlimited.
-    /// By default max size is set to `0`
+    /// Get max inbound frame size.
     pub fn max_inbound_size(&self) -> u32 {
         self.max_in_size.get()
     }
 
-    /// Set max outbound frame size.
+    /// Get max outbound frame size.
     ///
-    /// If max size is set to `0`, size is unlimited.
-    /// By default max size is set to `0`
+    /// Returned value excludes fixed header size, see
+    /// [`set_max_outbound_size`](Self::set_max_outbound_size).
     pub fn max_outbound_size(&self) -> u32 {
         self.max_out_size.get()
     }
@@ -87,7 +84,10 @@ impl Codec {
     /// Set max outbound frame size.
     ///
     /// If max size is set to `0`, size is unlimited.
-    /// By default max size is set to `0`
+    /// By default max size is set to `0`.
+    ///
+    /// Fixed header size (5 bytes) is subtracted from values greater than 5,
+    /// so `max_outbound_size()` returns `size - 5`.
     pub fn set_max_outbound_size(&self, mut size: u32) {
         if size > 5 {
             // fixed header = 1, var_len(remaining.max_value()) = 4

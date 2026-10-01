@@ -47,7 +47,7 @@ impl<E> Control<E> {
     }
 }
 
-/// Write back-pressure `CtlFrame` message
+/// Write back-pressure control message
 #[derive(Debug, Copy, Clone)]
 pub struct WrBackpressure(bool);
 

@@ -63,7 +63,7 @@ impl<A: Address> Connect<A> {
     #[must_use]
     /// A time interval measured in seconds.
     ///
-    /// keep-alive is set to 30 seconds by default.
+    /// keep-alive is disabled (set to 0) by default.
     pub fn keep_alive(mut self, val: Seconds) -> Self {
         self.pkt.keep_alive = val.seconds() as u16;
         self
@@ -122,8 +122,8 @@ impl<A: Address> Connect<A> {
     #[must_use]
     /// Set `receive max`
     ///
-    /// Number of in-flight incoming publish packets. By default receive max is set to 16 packets.
-    /// To disable in-flight limit set value to 0.
+    /// Number of in-flight incoming publish packets. By default the property is
+    /// not sent, so the limit is 65535 packets. Setting value to 0 has the same effect.
     pub fn max_receive(mut self, val: u16) -> Self {
         if let Some(val) = NonZeroU16::new(val) {
             self.pkt.receive_max = Some(val);

@@ -172,7 +172,10 @@ impl<St> ConnectAck<St> {
     /// This method sets `server_keepalive_sec` property for `ConnectAck`
     /// response packet.
     ///
-    /// By default idle keep-alive is set to 30 seconds.
+    /// By default idle keep-alive is set to 1.5 times of the client's keep-alive
+    /// value, or to 30 seconds if the client's keep-alive is 0. `server_keepalive_sec`
+    /// is set only if it is not set explicitly and the value is lower than
+    /// the client's keep-alive.
     ///
     /// # Panics
     ///
@@ -186,7 +189,9 @@ impl<St> ConnectAck<St> {
     #[must_use]
     /// Number of outgoing concurrent messages.
     ///
-    /// By default outgoing is set to 16 messages
+    /// If value is `None` or `Some(0)`, the `MqttServiceConfig` value is used
+    /// (16 messages by default). The value is also capped by the client's
+    /// receive maximum.
     pub fn max_send(mut self, val: Option<u16>) -> Self {
         if val == Some(0) {
             self.max_send = None;

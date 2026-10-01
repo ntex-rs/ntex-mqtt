@@ -11,7 +11,7 @@ pub(crate) const ERR_AUTH_NOT_SUP: &str = "Auth control message is not supported
 /// Errors which can occur when attempting to handle mqtt connection.
 #[derive(Debug, thiserror::Error)]
 pub enum MqttError<E> {
-    /// Publish handler service error
+    /// Application service error (handshake, publish or control service)
     #[error("Service error")]
     Service(E),
     /// Connect error
@@ -50,7 +50,7 @@ pub enum MqttConnectError<E> {
 /// Errors related to protocol dispatcher
 #[derive(Debug, thiserror::Error)]
 pub enum DispatcherError<E> {
-    /// Publish handler service error
+    /// Application service error (publish or control service)
     #[error("Service error")]
     Service(E),
     /// Protocol violations error
