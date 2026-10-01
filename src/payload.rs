@@ -32,7 +32,8 @@ impl Payload {
 
     pub(crate) fn from_stream(buf: Bytes, buf_size: usize) -> (Payload, PlSender) {
         let (tx, rx) = bstream::channel();
-        rx.max_buffer_size(buf_size);
+        let size = u32::try_from(buf_size).unwrap_or(u32::MAX);
+        rx.set_watermarks(size, size / 2);
         if !buf.is_empty() {
             tx.feed_data(buf);
         }

@@ -412,7 +412,7 @@ mod tests {
         let codec = Codec::new();
 
         let mut buf = BytePages::default();
-        codec.encodev(pkt.clone().into(), &mut buf).unwrap();
+        codec.encode(pkt.clone().into(), &mut buf).unwrap();
 
         assert_eq!(
             pkt,

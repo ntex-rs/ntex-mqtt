@@ -190,7 +190,7 @@ where
                     return Err(SpecViolation::Connack_3_2_2_11.into());
                 }
 
-                if inner.sink.is_closed()
+                if !inner.sink.is_active()
                     && self
                         .cfg
                         .handle_qos_after_disconnect
@@ -274,7 +274,7 @@ where
                 },
                 size,
             ) => {
-                if self.inner.sink.is_closed() {
+                if !self.inner.sink.is_active() {
                     Ok(None)
                 } else if topic_filters
                     .iter()
@@ -308,7 +308,7 @@ where
                 },
                 size,
             ) => {
-                if self.inner.sink.is_closed() {
+                if !self.inner.sink.is_active() {
                     Ok(None)
                 } else if topic_filters.iter().any(|tf| !crate::topic::is_valid(tf)) {
                     Err(SpecViolation::Subs_4_7_1.into())
@@ -605,6 +605,25 @@ mod tests {
         assert_eq!(
             reason,
             crate::v5::codec::DisconnectReasonCode::ProtocolError
+        );
+
+        // protocol violations close the connection, subscriptions are
+        // ignored on a closed connection
+        let io = Io::new(IoTest::create().0, cfg.clone());
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            false,
+            Rc::default(),
+        ));
+        let disp = Pipeline::new(
+            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
+            Dispatcher::new(
+                shared.clone(),
+                fn_service(async |_: Publish| Ok::<_, ()>(())),
+                fn_service(async |msg: ProtocolMessage| Ok::<_, DispatcherError<()>>(msg.ack())),
+                cfg.get(),
+            ),
         );
 
         // subscribe invalid topic

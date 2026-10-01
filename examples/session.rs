@@ -41,7 +41,7 @@ async fn publish_v3(
 ) -> Result<(), MyServerError> {
     log::info!(
         "incoming publish ({:?}): {:?} -> {:?}",
-        &*session,
+        *session,
         publish.id(),
         publish.topic()
     );
@@ -71,7 +71,7 @@ async fn publish_v5(
 ) -> Result<v5::PublishAck, MyServerError> {
     log::info!(
         "incoming publish ({:?}) : {:?} -> {:?}",
-        &*session,
+        *session,
         publish.id(),
         publish.topic()
     );

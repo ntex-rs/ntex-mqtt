@@ -47,7 +47,7 @@ async fn publish(
 ) -> Result<PublishAck, MyServerError> {
     log::info!(
         "incoming client publish ({:?}) : {:?} -> {:?}",
-        &*session,
+        *session,
         publish.id(),
         publish.topic()
     );

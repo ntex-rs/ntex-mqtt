@@ -266,7 +266,7 @@ impl Encoder for Codec {
     type Item = Encoded;
     type Error = EncodeError;
 
-    fn encodev(&self, mut item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
+    fn encode(&self, mut item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
         // handle [MQTT 3.1.2.11.7]
         if self.flags.get().contains(CodecFlags::NO_PROBLEM_INFO) {
             match item {

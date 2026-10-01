@@ -163,7 +163,7 @@ impl MqttShared {
     }
 
     pub(super) fn close(&self, pkt: Option<codec::Disconnect>) {
-        if !self.is_closed() {
+        if self.is_active() {
             if let Some(pkt) = pkt
                 && !self.is_disconnect_sent()
             {
@@ -187,8 +187,8 @@ impl MqttShared {
             .set(Some(error::EncodeError::PublishIncomplete));
     }
 
-    pub(super) fn is_closed(&self) -> bool {
-        self.io.is_closed()
+    pub(super) fn is_active(&self) -> bool {
+        self.io.is_active()
     }
 
     pub(super) fn is_streaming(&self) -> bool {
@@ -339,7 +339,7 @@ impl MqttShared {
     }
 
     pub(super) async fn want_payload_stream(&self) -> Result<(), SendPacketError> {
-        if self.is_closed() {
+        if !self.is_active() {
             Err(SendPacketError::Disconnected)
         } else if self.flags.get().contains(Flags::WRB_ENABLED) {
             let (tx, rx) = self.pool.waiters.channel();
@@ -600,8 +600,8 @@ impl Encoder for MqttShared {
     type Error = error::EncodeError;
 
     #[inline]
-    fn encodev(&self, item: Self::Item, dst: &mut BytePages) -> Result<(), Self::Error> {
-        self.codec.encodev(item, dst)
+    fn encode(&self, item: Self::Item, dst: &mut BytePages) -> Result<(), Self::Error> {
+        self.codec.encode(item, dst)
     }
 }
 

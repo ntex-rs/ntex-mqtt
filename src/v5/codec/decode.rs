@@ -64,7 +64,7 @@ mod tests {
         let (_len, consumed) = decode_variable_length(&bytes[1..]).unwrap().unwrap();
         let cur = Bytes::copy_from_slice(&bytes[consumed + 1..]);
         let mut tmp = BytePages::default();
-        ntex_codec::Encoder::encodev(
+        ntex_codec::Encoder::encode(
             &crate::v5::codec::Codec::new(),
             Encoded::Packet(res.clone()),
             &mut tmp,
@@ -81,7 +81,7 @@ mod tests {
 
     fn assert_decode_publish<B: AsRef<[u8]>>(bytes: B, res: &Publish, pl: &Bytes) {
         let mut tmp = BytePages::default();
-        ntex_codec::Encoder::encodev(
+        ntex_codec::Encoder::encode(
             &crate::v5::codec::Codec::new(),
             Encoded::Publish(res.clone(), Some(pl.clone())),
             &mut tmp,

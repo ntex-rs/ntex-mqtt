@@ -154,14 +154,28 @@ async fn main() -> std::io::Result<()> {
 
                 // first switch to ssl stream
                 SslAcceptor::new(acceptor.clone())
-                    .map_err(|e| io::Error::other(e))
+                    .map_err(io::Error::other)
                     // we need to read first 4 bytes and detect protocol GET or MQTT
                     .and_then(async move |io: Io<_>| {
                         println!("Connection is established, select protocol");
 
                         // we can read incoming bytes stream without consuming it
                         let mut buf = [0; 8];
-                        io.read(&mut buf).await?;
+                        while !io.with_read_dst(|b| {
+                            if b.len() >= buf.len() {
+                                buf.copy_from_slice(&b[..8]);
+                                true
+                            } else {
+                                false
+                            }
+                        }) {
+                            if io.read_more().await?.is_none() {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "Disconnected",
+                                ));
+                            }
+                        }
 
                         let result = if &buf[4..8] == b"MQTT" {
                             println!("MQTT protocol is selected");
@@ -174,14 +188,14 @@ async fn main() -> std::io::Result<()> {
                             Protocol::Unknown
                         };
 
-                        return match result {
+                        match result {
                             Protocol::Mqtt => mqtt.call(io.boxed()).await,
                             Protocol::Http => http
                                 .call(io)
                                 .await
                                 .map_err(|e| io::Error::other(format!("Http error {e:?}"))),
                             Protocol::Unknown => Err(io::Error::other("Unsupported protocol")),
-                        };
+                        }
                     })
             },
         )?

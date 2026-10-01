@@ -1096,7 +1096,7 @@ async fn test_keepalive3() {
         },
         None,
     );
-    codec.encodev(pkt, &mut buf).unwrap();
+    codec.encode(pkt, &mut buf).unwrap();
     io.encode_slice(&buf.freeze()[..5]).unwrap();
     sleep(Duration::from_millis(2000)).await;
 
@@ -1773,23 +1773,21 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
     );
 
     let mut buf = BytePages::default();
-    codec.encodev(p, &mut buf).unwrap();
+    codec.encode(p, &mut buf).unwrap();
     let mut buf = buf.freeze();
 
     io.encode_slice(&buf[..50]).unwrap();
     buf.advance_to(50);
     sleep(Millis(100)).await;
-    io.encode_slice(&buf[..10]).unwrap();
-    buf.advance_to(10);
-    sleep(Millis(1000)).await;
+    io.encode_slice(&buf[..30]).unwrap();
+    buf.advance_to(30);
+    sleep(Millis(1500)).await;
     assert!(!check.load(Relaxed));
 
+    // the read rate is satisfied, but the max timeout is reached
     io.encode_slice(&buf[..12]).unwrap();
     buf.advance_to(12);
     sleep(Millis(1000)).await;
-    assert!(!check.load(Relaxed));
-
-    sleep(Millis(2300)).await;
     assert!(check.load(Relaxed));
 
     Ok(())

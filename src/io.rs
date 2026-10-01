@@ -287,7 +287,7 @@ where
                                         return Poll::Pending;
                                     }
                                 }
-                                Err(RecvError::KeepAlive) => {
+                                Err(RecvError::Timeout) => {
                                     if let Err(err) = inner.handle_timeout() {
                                         inner.stop(inner.control.call_static(Control::proto(err)));
                                     }
@@ -466,8 +466,20 @@ where
                 self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
                 self.io.stop_timer();
 
-                match ready!(self.io.poll_read_pause(cx)) {
-                    IoStatusUpdate::KeepAlive => {
+                let status = match self.io.poll_read_pause(cx) {
+                    Poll::Ready(status) => status,
+                    // clean read eof does not close the connection, but a peer that
+                    // stopped sending cannot make progress while service is not ready
+                    Poll::Pending
+                        if self.io.is_read_eof() && self.io.with_read_dst(|b| b.is_empty()) =>
+                    {
+                        IoStatusUpdate::PeerGone(None)
+                    }
+                    Poll::Pending => return Poll::Pending,
+                };
+
+                match status {
+                    IoStatusUpdate::Timeout => {
                         log::trace!(
                             "{}: Keep-alive error, stopping dispatcher during pause",
                             self.io.tag()
@@ -611,7 +623,7 @@ mod tests {
         type Error = EncodeError;
 
         #[inline]
-        fn encodev(&self, item: Bytes, dst: &mut BytePages) -> Result<(), Self::Error> {
+        fn encode(&self, item: Bytes, dst: &mut BytePages) -> Result<(), Self::Error> {
             dst.append(item);
             Ok(())
         }
@@ -1032,8 +1044,8 @@ mod tests {
 
         let config = SharedCfg::new("DBG").add(
             IoConfig::new()
-                .set_read_buf(8 * 1024, 1024, 16)
-                .set_write_buf(32 * 1024, 1024, 16),
+                .set_read_buf(8 * 1024, 1024)
+                .set_write_buf(32 * 1024),
         );
 
         let (disp, io) = Dispatcher::new_debug(
@@ -1073,15 +1085,15 @@ mod tests {
         assert_eq!(client.remote_buffer(|buf| buf.len()), 0);
 
         // response message
-        assert_eq!(io.with_write_buf(|buf| buf.len()).unwrap(), 65536);
+        assert_eq!(io.with_write_src(|buf| buf.len()).unwrap(), 65536);
 
         client.remote_buffer_cap(10240);
         sleep(Millis(50)).await;
-        assert_eq!(io.with_write_buf(|buf| buf.len()).unwrap(), 55296);
+        assert_eq!(io.with_write_src(|buf| buf.len()).unwrap(), 55296);
 
         client.remote_buffer_cap(45056);
         sleep(Millis(50)).await;
-        assert_eq!(io.with_write_buf(|buf| buf.len()).unwrap(), 10240);
+        assert_eq!(io.with_write_src(|buf| buf.len()).unwrap(), 10240);
 
         // backpressure disabled
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 1, 2]);
@@ -1190,8 +1202,8 @@ mod tests {
         type Error = EncodeError;
 
         #[inline]
-        fn encode(&self, item: Bytes, dst: &mut BytesMut) -> Result<(), Self::Error> {
-            dst.extend_from_slice(&item[..]);
+        fn encode(&self, item: Bytes, dst: &mut BytePages) -> Result<(), Self::Error> {
+            dst.append(item);
             Ok(())
         }
     }
@@ -1295,16 +1307,16 @@ mod tests {
         assert_eq!(buf, Bytes::from_static(b"12345678"));
 
         client.write("1");
-        sleep(Millis(1000)).await;
-        assert!(!state.flags().is_stopping());
+        sleep(Millis(500)).await;
+        assert!(state.is_active());
         client.write("23");
         sleep(Millis(1000)).await;
-        assert!(!state.flags().is_stopping());
+        assert!(state.is_active());
         client.write("4");
         sleep(Millis(2000)).await;
 
         // write side must be closed, dispatcher should fail with keep-alive
-        assert!(state.flags().is_stopping());
+        assert!(!state.is_active());
         assert!(client.is_closed());
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 1]);
     }
@@ -1453,7 +1465,7 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(
                 server,
-                SharedCfg::new("DBG").add(IoConfig::new().set_write_buf(2, 1, 128)),
+                SharedCfg::new("DBG").add(IoConfig::new().set_write_buf(2)),
             ),
             BytesCodec,
             Srv(Cell::new(false), Cell::new(Some(rx))),
