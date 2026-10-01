@@ -789,6 +789,44 @@ mod tests {
     use super::*;
     use crate::{control::Reason, error::DecodeError, error::EncodeError};
 
+    /// Waits up to 1 second for the condition, returns its last value
+    async fn wait_until(f: impl Fn() -> bool) -> bool {
+        for _ in 0..100 {
+            if f() {
+                return true;
+            }
+            sleep(Millis(10)).await;
+        }
+        f()
+    }
+
+    /// Writes `data` every `step` until the dispatcher stops, up to 10 times
+    async fn write_until_stopped(
+        client: &Io,
+        state: &nio::IoRef,
+        data: &'static str,
+        step: Millis,
+    ) -> bool {
+        for _ in 0..10 {
+            if !state.is_active() {
+                return true;
+            }
+            client.write(data);
+            sleep(step).await;
+        }
+        !state.is_active()
+    }
+
+    /// Reads from the peer until `len` bytes are received
+    async fn read_exact(client: &Io, len: usize) -> BytesMut {
+        let mut buf = BytesMut::new();
+        while buf.len() < len {
+            let data = timeout(Millis(1000), client.read()).await.unwrap().unwrap();
+            buf.extend_from_slice(&data);
+        }
+        buf
+    }
+
     #[derive(Debug, Copy, Clone)]
     struct BytesCodec;
 
@@ -1025,8 +1063,8 @@ mod tests {
         client.write("test");
         sleep(Millis(50)).await;
         client.close().await;
-        assert!(client.is_server_dropped());
-        sleep(Millis(150)).await;
+        assert!(wait_until(|| client.is_server_dropped()).await);
+        assert!(wait_until(|| ops.borrow().len() == 5).await);
 
         assert_eq!(
             &[
@@ -1051,8 +1089,8 @@ mod tests {
         client.write("test");
         sleep(Millis(50)).await;
         client.close().await;
-        assert!(client.is_server_dropped());
-        sleep(Millis(150)).await;
+        assert!(wait_until(|| client.is_server_dropped()).await);
+        assert!(wait_until(|| ops.borrow().len() == 5).await);
 
         assert_eq!(
             &[
@@ -1633,16 +1671,14 @@ mod tests {
         let (client, state, errs) =
             chunk_dispatcher(IoConfig::new().set_keepalive_timeout(Seconds(1)));
 
-        for _ in 0..3 {
+        for _ in 0..2 {
             client.write("p");
             sleep(Millis(300)).await;
         }
         assert!(state.is_active());
-        for _ in 0..4 {
-            client.write("p");
-            sleep(Millis(300)).await;
-        }
-        assert!(!state.is_active());
+
+        // parts of a streamed packet do not reset keep-alive
+        assert!(write_until_stopped(&client, &state, "p", Millis(300)).await);
         assert!(matches!(
             &errs.borrow()[..],
             [MqttProtocolError::KeepAliveTimeout]
@@ -1677,16 +1713,14 @@ mod tests {
                 .set_frame_read_rate(Seconds(1), Seconds(2), 2),
         );
 
-        for _ in 0..4 {
+        for _ in 0..2 {
             client.write("ppp");
             sleep(Millis(400)).await;
         }
         assert!(state.is_active());
-        for _ in 0..4 {
-            client.write("ppp");
-            sleep(Millis(400)).await;
-        }
-        assert!(!state.is_active());
+
+        // the frame read rate is satisfied until the max timeout
+        assert!(write_until_stopped(&client, &state, "ppp", Millis(400)).await);
         assert!(matches!(
             &errs.borrow()[..],
             [MqttProtocolError::ReadTimeout]
@@ -1703,8 +1737,8 @@ mod tests {
         );
 
         client.write("p");
-        sleep(Millis(1500)).await;
-        assert!(!state.is_active());
+        sleep(Millis(1000)).await;
+        assert!(wait_until(|| !state.is_active()).await);
         assert!(matches!(
             &errs.borrow()[..],
             [MqttProtocolError::ReadTimeout]
@@ -1720,16 +1754,14 @@ mod tests {
                 .set_frame_read_rate(Seconds(1), Seconds(2), 2),
         );
 
-        for _ in 0..4 {
+        for _ in 0..2 {
             client.write("123");
             sleep(Millis(400)).await;
         }
         assert!(state.is_active());
-        for _ in 0..4 {
-            client.write("123");
-            sleep(Millis(400)).await;
-        }
-        assert!(!state.is_active());
+
+        // the frame read rate is satisfied until the max timeout
+        assert!(write_until_stopped(&client, &state, "123", Millis(400)).await);
         assert!(matches!(
             &errs.borrow()[..],
             [MqttProtocolError::ReadTimeout]
@@ -1809,16 +1841,14 @@ mod tests {
         let (client, state, errs) =
             timeout_dispatcher(IoConfig::new().set_keepalive_timeout(Seconds(1)));
 
-        for _ in 0..3 {
+        for _ in 0..2 {
             client.write("1");
             sleep(Millis(300)).await;
         }
         assert!(state.is_active());
-        for _ in 0..4 {
-            client.write("1");
-            sleep(Millis(300)).await;
-        }
-        assert!(!state.is_active());
+
+        // received bytes of an incomplete frame do not reset keep-alive
+        assert!(write_until_stopped(&client, &state, "1", Millis(300)).await);
         assert!(matches!(
             &errs.borrow()[..],
             [MqttProtocolError::KeepAliveTimeout]
@@ -2555,16 +2585,18 @@ mod tests {
             let _ = disp.await;
         });
 
-        // the first call is polled by the dispatcher, others are spawned
+        // the first call is polled by the dispatcher, others are spawned,
+        // unordered calls complete one after another
         client.write("qaqqbc");
+        wait_until(|| calls.borrow().len() == 5).await;
+        // the queue is full with "a" and "b", "c" is not read
         sleep(Millis(50)).await;
         assert_eq!(&calls.borrow()[..], ["q", "a", "q", "q", "b"]);
         assert!(client.read_any().is_empty());
 
         let _ = tx.send(());
-        sleep(Millis(50)).await;
+        assert_eq!(read_exact(&client, 3).await, b"abc"[..]);
         assert_eq!(calls.borrow().len(), 6);
-        assert_eq!(client.read_any(), Bytes::from_static(b"abc"));
     }
 
     /// Pending unordered calls count towards the queue limit
@@ -2575,6 +2607,8 @@ mod tests {
 
         let calls = Rc::new(Cell::new(0));
         let calls2 = calls.clone();
+        let gate = Condition::new();
+        let gate2 = gate.clone();
 
         let cfg: SharedCfg = SharedCfg::new("DBG")
             .add(IoConfig::new())
@@ -2589,7 +2623,7 @@ mod tests {
                 if msg == "a" {
                     std::future::pending::<()>().await;
                 }
-                sleep(Millis(100)).await;
+                let _ = gate2.wait().await;
                 Ok::<_, DispatcherError<()>>(None)
             }),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
@@ -2599,12 +2633,13 @@ mod tests {
         });
 
         client.write("aqqqq");
-        sleep(Millis(50)).await;
+        assert!(wait_until(|| calls.get() == 3).await);
+        sleep(Millis(100)).await;
         assert_eq!(calls.get(), 3);
 
         // completed calls release the limit
-        sleep(Millis(300)).await;
-        assert_eq!(calls.get(), 5);
+        gate.notify_and_lock(());
+        assert!(wait_until(|| calls.get() == 5).await);
     }
 
     /// Read is paused while the service is not ready, the queue is full or
@@ -2843,8 +2878,8 @@ mod tests {
     #[derive(Clone)]
     struct WrCtl {
         log: Rc<RefCell<Vec<&'static str>>>,
-        /// delay for `wr(true)` handling
-        delay: Millis,
+        /// `wr(true)` handling waits for the gate
+        gate: Option<Condition<()>>,
         /// response for `wr(false)`
         resp: Option<Bytes>,
         /// `wr(false)` fails
@@ -2852,10 +2887,10 @@ mod tests {
     }
 
     impl WrCtl {
-        fn new(delay: Millis) -> Self {
+        fn new(gate: Option<Condition<()>>) -> Self {
             WrCtl {
                 log: Rc::default(),
-                delay,
+                gate,
                 resp: None,
                 fail: false,
             }
@@ -2870,7 +2905,9 @@ mod tests {
             match msg {
                 Control::WrBackpressure(st) if st.enabled() => {
                     self.log.borrow_mut().push("wr1");
-                    sleep(self.delay).await;
+                    if let Some(gate) = &self.gate {
+                        gate.wait().await;
+                    }
                     self.log.borrow_mut().push("wr1-done");
                     Ok(None)
                 }
@@ -2918,46 +2955,48 @@ mod tests {
     /// `wr(false)` is delivered after `wr(true)` is handled
     #[ntex::test]
     async fn test_wr_in_order() {
-        let ctl = WrCtl::new(Millis(200));
+        let gate = Condition::new();
+        let ctl = WrCtl::new(Some(gate.clone()));
         let (client, _io, _rx) = wr_dispatcher(ctl.clone(), Seconds::ZERO);
-        sleep(Millis(50)).await;
-        assert_eq!(&ctl.log.borrow()[..], &["wr1"]);
+        assert!(wait_until(|| ctl.log.borrow().len() == 1).await);
 
         // backpressure is released while wr(true) is pending
         client.remote_buffer_cap(1024 * 1024);
-        let _ = client.read().await;
+        let _ = read_exact(&client, 65_536).await;
         sleep(Millis(50)).await;
         assert_eq!(&ctl.log.borrow()[..], &["wr1"]);
 
-        sleep(Millis(250)).await;
+        gate.notify(());
+        assert!(wait_until(|| ctl.log.borrow().len() == 3).await);
         assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "wr0"]);
     }
 
     /// Stop is delivered after the pending wr message
     #[ntex::test]
     async fn test_wr_before_stop() {
-        let ctl = WrCtl::new(Millis(1500));
+        let gate = Condition::new();
+        let ctl = WrCtl::new(Some(gate.clone()));
         let (_client, _io, _rx) = wr_dispatcher(ctl.clone(), Seconds(1));
 
         // write timeout stops the dispatcher while wr(true) is pending
-        sleep(Millis(1250)).await;
+        sleep(Millis(2500)).await;
         assert_eq!(&ctl.log.borrow()[..], &["wr1"]);
 
-        sleep(Millis(500)).await;
+        gate.notify(());
+        assert!(wait_until(|| ctl.log.borrow().len() == 3).await);
         assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "stop"]);
     }
 
     /// Response of the wr message is written
     #[ntex::test]
     async fn test_wr_response() {
-        let mut ctl = WrCtl::new(Millis(0));
+        let mut ctl = WrCtl::new(None);
         ctl.resp = Some(Bytes::from_static(b"wr"));
         let (client, _io, _rx) = wr_dispatcher(ctl.clone(), Seconds::ZERO);
-        sleep(Millis(50)).await;
+        assert!(wait_until(|| ctl.log.borrow().len() == 2).await);
 
         client.remote_buffer_cap(1024 * 1024);
-        sleep(Millis(100)).await;
-        let buf = client.read_any();
+        let buf = read_exact(&client, 65_538).await;
         assert_eq!(buf.len(), 65_538);
         assert!(buf.ends_with(b"wr"));
         assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "wr0"]);
@@ -2966,13 +3005,13 @@ mod tests {
     /// Error of the wr message shuts down the dispatcher without stop message
     #[ntex::test]
     async fn test_wr_error() {
-        let mut ctl = WrCtl::new(Millis(0));
+        let mut ctl = WrCtl::new(None);
         ctl.fail = true;
         let (client, _io, rx) = wr_dispatcher(ctl.clone(), Seconds::ZERO);
-        sleep(Millis(50)).await;
+        assert!(wait_until(|| ctl.log.borrow().len() == 2).await);
 
         client.remote_buffer_cap(1024 * 1024);
-        assert_eq!(timeout(Millis(500), rx).await.unwrap().unwrap(), Err(()));
+        assert_eq!(timeout(Millis(1000), rx).await.unwrap().unwrap(), Err(()));
         assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "wr0"]);
     }
 }
