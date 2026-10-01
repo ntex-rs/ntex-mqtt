@@ -59,6 +59,9 @@ impl Payload {
     }
 
     /// Read complete payload
+    ///
+    /// Unlike [`read`](Self::read), returns `PayloadError::Consumed` error
+    /// if the payload has already been read.
     pub async fn read_all(&self) -> Result<Bytes, PayloadError> {
         match &self.pl {
             Either::Left(pl) => pl.take().ok_or(PayloadError::Consumed),

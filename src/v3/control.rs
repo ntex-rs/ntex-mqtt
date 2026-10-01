@@ -68,7 +68,10 @@ impl ProtocolMessage {
     }
 
     #[inline]
-    /// Disconnects the client by sending DISCONNECT packet.
+    /// Close the connection.
+    ///
+    /// Pending payload is dropped. Server does not send `Disconnect` packet,
+    /// MQTT v3 does not define server-side `Disconnect`.
     pub fn disconnect(&self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             result: ProtocolMessageKind::Disconnect,
@@ -77,6 +80,9 @@ impl ProtocolMessage {
 
     #[inline]
     /// Ack control message
+    ///
+    /// For `Subscribe` and `Unsubscribe` messages, this method closes the connection,
+    /// use [`Subscribe::ack`] and [`Unsubscribe::ack`] instead.
     pub fn ack(self) -> ProtocolMessageAck {
         match self {
             ProtocolMessage::PublishRelease(msg) => msg.ack(),
@@ -194,7 +200,9 @@ impl Subscribe {
     }
 
     #[inline]
-    /// convert subscription to a result
+    /// Convert subscription to a result
+    ///
+    /// Topics that are not confirmed are acked with `SubscribeReturnCode::Failure`.
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             result: ProtocolMessageKind::Subscribe(SubscribeResult {
@@ -335,7 +343,7 @@ impl Unsubscribe {
     }
 
     #[inline]
-    /// Ack control message
+    /// Ack unsubscribe message
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             result: ProtocolMessageKind::Unsubscribe(UnsubscribeResult {

@@ -24,10 +24,12 @@ type ControlPipeline<AppSt, E, Err> =
 
 /// Mqtt v3.1.1 server
 ///
-/// `St` - connection state
-/// `AppSt` - application service
-/// `Pub` - service for handling mqtt publish messages
-/// `P` - service for handling protocol control messages
+/// * `St` - connection state, available before the handshake
+/// * `AppSt` - session state, returned by the connect (handshake) service
+/// * `Err` - application error type
+/// * `Pub` - service for handling mqtt publish messages
+/// * `P` - service for handling protocol messages
+/// * `M` - middleware applied to the publish service
 ///
 /// Every mqtt connection is handled in several steps. First step is connect. Server calls
 /// connect service with `Connect` message, during this step service can authenticate connect
@@ -38,16 +40,17 @@ type ControlPipeline<AppSt, E, Err> =
 /// ```rust,ignore
 /// use ntex_mqtt::v3::{Connect, ConnectAck};
 ///
-/// async fn connect(hnd: Connect) -> Result<ConnectAkc<MyState>, MyError> {
+/// async fn connect(hnd: Connect) -> Result<ConnectAck<MyState>, MyError> {
 ///     Ok(hnd.ack(MyState::new(), false))
 /// }
 /// ```
 ///
-/// During next stage, control and publish services get constructed,
-/// both factories receive `Session<St>` state object as an argument. Publish service
-/// handles `Publish` packet. On success, server server sends `PublishAck` packet to
-/// the client, in case of error connection get closed. Control service receives all
-/// other packets, like `Subscribe`, `Unsubscribe` etc. Also control service receives
+/// During next stage, protocol, control and publish services get constructed,
+/// factories receive `Session<AppSt>` state object as an argument. Publish service
+/// handles `Publish` packet. On success, server sends `PublishAck` packet for `QoS 1`
+/// or `PublishReceived` packet for `QoS 2` to the client, nothing is sent for `QoS 0`.
+/// In case of error connection get closed. Protocol service receives all
+/// other packets, like `Subscribe`, `Unsubscribe` etc. Control service receives
 /// errors from publish service and connection disconnect.
 pub struct MqttServer<St, AppSt, Err, Pub, P, M = Identity>
 where

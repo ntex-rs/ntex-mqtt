@@ -61,7 +61,7 @@ impl<A: Address> Connect<A> {
     #[must_use]
     /// A time interval measured in seconds.
     ///
-    /// keep-alive is set to 30 seconds by default.
+    /// keep-alive is disabled (set to 0) by default.
     pub fn keep_alive(mut self, val: Seconds) -> Self {
         self.pkt.keep_alive = val.seconds() as u16;
         self

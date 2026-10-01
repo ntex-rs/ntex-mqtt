@@ -6,8 +6,8 @@ use crate::{error, types::QoS, v5::codec};
 
 /// MQTT protocol–related messages.
 ///
-/// The control service is always called with these frames one at a time.
-/// Unhandled messages are stored in a buffer. Other types of messages may be
+/// The protocol-message service is always called with these messages one at a time.
+/// Up to 16 pending messages are buffered. Other types of messages may be
 /// handled out of order.
 #[derive(Debug)]
 pub enum ProtocolMessage {
@@ -159,7 +159,7 @@ impl PublishRelease {
         }
     }
 
-    /// Returns reference to auth packet
+    /// Returns reference to `PublishRelease` packet
     pub fn packet(&self) -> &codec::PublishAck2 {
         &self.pkt
     }
@@ -417,8 +417,7 @@ pub struct Unsubscribe {
 }
 
 impl Unsubscribe {
-    /// Create a new `Unsubscribe` control `CtlFrame` from an `Unsubscribe`
-    /// packet
+    /// Create a new `Unsubscribe` control message from an UNSUBSCRIBE packet
     pub fn new(packet: codec::Unsubscribe, size: u32) -> Self {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
@@ -451,7 +450,7 @@ impl Unsubscribe {
     }
 
     #[inline]
-    /// returns iterator over subscription topics
+    /// returns iterator over topics to unsubscribe
     pub fn iter_mut(&mut self) -> UnsubscribeIter<'_> {
         UnsubscribeIter {
             subs: ptr::from_ref::<Unsubscribe>(self).cast_mut(),
@@ -549,7 +548,7 @@ impl<'a> Iterator for UnsubscribeIter<'a> {
     }
 }
 
-/// Subscription topic
+/// Topic to unsubscribe from
 #[derive(Debug)]
 pub struct UnsubscribeItem<'a> {
     topic: &'a ByteString,
@@ -558,7 +557,7 @@ pub struct UnsubscribeItem<'a> {
 
 impl<'a> UnsubscribeItem<'a> {
     #[inline]
-    /// subscription topic
+    /// topic being unsubscribed
     pub fn topic(&self) -> &'a ByteString {
         self.topic
     }

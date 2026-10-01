@@ -64,9 +64,9 @@ impl MqttServiceConfig {
     ///
     /// Defines a timeout for reading protocol version. If a client does not transmit
     /// version of the protocol within this time, the connection is terminated with
-    /// `Mqtt::Handshake(HandshakeError::Timeout)` error.
+    /// `MqttError::Connect(MqttConnectError::Timeout)` error.
     ///
-    /// By default, timeuot is 5 seconds.
+    /// By default, timeout is 5 seconds.
     pub fn protocol_version_timeout(mut self, timeout: Seconds) -> Self {
         self.protocol_version_timeout = timeout.into();
         self
@@ -77,7 +77,7 @@ impl MqttServiceConfig {
     ///
     /// Defines a timeout for reading `Connect` frame. If a client does not transmit
     /// the entire frame within this time, the connection is terminated with
-    /// `Mqtt::Handshake(HandshakeError::Timeout)` error.
+    /// `MqttError::Connect(MqttConnectError::Timeout)` error.
     ///
     /// By default, connect timeout is disabled.
     pub fn set_connect_timeout(mut self, timeout: Seconds) -> Self {
@@ -86,10 +86,14 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Set handshake timeout.
+    /// Set client handshake timeout.
     ///
-    /// Handshake includes `connect` packet and response `connect-ack`.
-    /// By default handshake timeuot is disabled.
+    /// Used by the client connectors only. Handshake includes `connect` packet and
+    /// response `connect-ack`. If it does not complete in time, connect fails with
+    /// `MqttClientError::ConnectTimeout`. Server side uses
+    /// [`set_connect_timeout`](Self::set_connect_timeout) instead.
+    ///
+    /// By default handshake timeout is disabled.
     pub fn set_handshake_timeout(mut self, timeout: Seconds) -> Self {
         self.handshake_timeout = timeout;
         self
@@ -98,8 +102,10 @@ impl MqttServiceConfig {
     #[must_use]
     /// Set max allowed `QoS`.
     ///
-    /// If peer sends publish with higher qos then `ProtocolError::MaxQoSViolated(..)`
-    /// By default max qos is set to `ExactlyOnce`.
+    /// If peer sends publish with higher qos, the connection is terminated with
+    /// `MqttProtocolError::ProtocolViolation` error (`SpecViolation::Connack_3_2_2_11`).
+    ///
+    /// By default max qos is set to `AtLeastOnce`.
     pub fn set_max_qos(mut self, qos: QoS) -> Self {
         self.max_qos = qos;
         self
@@ -118,8 +124,11 @@ impl MqttServiceConfig {
     #[must_use]
     /// Set `receive max`
     ///
-    /// Number of in-flight publish packets. By default receive max is set to 15 packets.
-    /// To disable timeout set value to 0.
+    /// Number of in-flight incoming publish packets. By default receive max is set
+    /// to 16 packets.
+    ///
+    /// For MQTT v3, `0` disables the limit. For MQTT v5, `0` means the protocol
+    /// default of 65535 packets.
     pub fn set_max_receive(mut self, val: u16) -> Self {
         self.max_receive = val;
         self
@@ -128,7 +137,7 @@ impl MqttServiceConfig {
     #[must_use]
     /// Total size of received in-flight messages.
     ///
-    /// By default total in-flight size is set to 64Kb
+    /// By default total in-flight size is set to 65535 bytes
     pub fn set_max_receive_size(mut self, val: usize) -> Self {
         self.max_receive_size = val;
         self
@@ -146,8 +155,9 @@ impl MqttServiceConfig {
     #[must_use]
     /// Maximum number of concurrent outgoing messages.
     ///
-    /// For MQTT v5, this also acts as the maximum number of in-flight
-    /// messages, regardless of what the client requests.
+    /// For MQTT v5, this is an upper bound for in-flight outgoing messages, the
+    /// effective value is the minimum of this value (or `ConnectAck::max_send()`)
+    /// and the client's receive maximum.
     ///
     /// By default outgoing is set to 16 messages
     pub fn set_max_send(mut self, val: u16) -> Self {
@@ -158,7 +168,7 @@ impl MqttServiceConfig {
     #[must_use]
     /// Total size of outgoing messages.
     ///
-    /// By default total outgoing size is set to 64Kb
+    /// Note: this value is not used at the moment.
     pub fn set_max_send_size(mut self, val: u32) -> Self {
         self.max_send_size = (val, val / 10);
         self
@@ -170,7 +180,7 @@ impl MqttServiceConfig {
     /// If the minimum size is set to `0`, incoming payload chunks
     /// will be processed immediately. Otherwise, the codec will
     /// accumulate chunks until the total size reaches the specified minimum.
-    /// By default min size is set to `0`
+    /// By default min size is set to 32Kb
     pub fn set_min_chunk_size(mut self, size: u32) -> Self {
         self.min_chunk_size = size;
         self
@@ -188,8 +198,9 @@ impl MqttServiceConfig {
     #[must_use]
     /// Handle max received `QoS` messages after client disconnect.
     ///
-    /// By default, messages received before dispatched to the publish service will be dropped if
-    /// the client disconnect is detected on the server.
+    /// By default, messages received before dispatched to the publish service will be dropped
+    /// once the connection is closing, either the client disconnected or the server
+    /// started closing the connection.
     ///
     /// If this option is set to `Some(QoS::AtMostOnce)`, only the received `QoS 0` messages will
     /// always be handled by the server's publish service no matter if the client is disconnected

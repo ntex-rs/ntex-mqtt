@@ -91,9 +91,10 @@ impl Client {
         }
     }
 
-    /// Run client with default control messages handler.
+    /// Run client with default handlers.
     ///
-    /// Default handler closes connection on any control message.
+    /// Default handlers close connection on any incoming publish or
+    /// protocol message.
     pub async fn start_default(self) {
         let sink = MqttSink::new(self.shared.clone());
 
@@ -122,7 +123,9 @@ impl Client {
         let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
 
-    /// Run client with provided control messages handler
+    /// Run client with provided protocol-message service.
+    ///
+    /// Default control service is used.
     pub async fn start<F, S, E>(self, service: F) -> Result<(), MqttError<E>>
     where
         E: fmt::Debug + 'static,
@@ -157,7 +160,7 @@ impl Client {
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 
-    /// Run client with provided protocol and control handlers
+    /// Run client with provided protocol-message and control services.
     pub async fn start_with_control<F, S, E, C>(
         self,
         service: F,
@@ -239,7 +242,10 @@ where
         self
     }
 
-    /// Run client with default control messages handler
+    /// Run client with default handlers.
+    ///
+    /// Default handlers close connection on any unrouted publish or
+    /// protocol message.
     pub async fn start_default(self) {
         let sink = MqttSink::new(self.shared.clone());
         if self.keepalive.non_zero() {
@@ -267,7 +273,9 @@ where
         let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
 
-    /// Run client and handle control messages
+    /// Run client with provided protocol-message service.
+    ///
+    /// Default control service is used.
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
         F: IntoService<S, Session<()>, ProtocolMessage>,

@@ -100,7 +100,7 @@ impl Publish {
         self.payload.read_all().await
     }
 
-    /// Replace packet'a payload with empty bytes, returns existing payload.
+    /// Take the payload out of the message, leaving an empty `Payload` behind.
     pub fn take_payload(&mut self) -> Payload {
         mem::take(&mut self.payload)
     }

@@ -11,9 +11,9 @@ use crate::v3::{codec, control::ProtocolMessageKind, error};
 pub enum ProtocolMessage {
     /// Unhandled publish packet
     Publish(Publish),
-    /// `PublishRelease` packet from a client
+    /// `PublishRelease` packet from the server
     PublishRelease(PublishRelease),
-    /// Ping packet from a client
+    /// Ping packet from the server
     Ping(Ping),
 }
 
@@ -55,7 +55,7 @@ impl Publish {
     }
 
     #[inline]
-    /// Returns reference to publish packet
+    /// Returns mutable reference to publish packet
     pub fn packet_mut(&mut self) -> &mut codec::Publish {
         &mut self.0
     }

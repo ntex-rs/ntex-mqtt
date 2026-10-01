@@ -6,6 +6,8 @@
 
 * Stop the dispatcher on clean peer eof while the service is not ready
 
+* Api docs fixes
+
 ## [9.0.0] - 2026-09-14
 
 * Refactor state management

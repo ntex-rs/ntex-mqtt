@@ -25,7 +25,10 @@ impl MqttSink {
     }
 
     #[inline]
-    /// Check if io stream is open
+    /// Check if connection is active
+    ///
+    /// Returns `false` as soon as the connection starts closing, either
+    /// locally or because the peer has gone. Buffered data may still be flushing.
     pub fn is_open(&self) -> bool {
         self.0.is_active()
     }
@@ -41,7 +44,10 @@ impl MqttSink {
     }
 
     #[inline]
-    /// Get client receive credit
+    /// Get remaining send credit
+    ///
+    /// Number of `QoS 1` and `QoS 2` publish packets that can be sent before
+    /// `max_send` in-flight limit is reached.
     pub fn credit(&self) -> usize {
         self.0.credit()
     }
@@ -62,13 +68,19 @@ impl MqttSink {
 
     #[inline]
     /// Close mqtt connection.
+    ///
+    /// Client sink sends `Disconnect` packet first. Pending acks are cancelled
+    /// with `SendPacketError::Disconnected` error.
     pub fn close(&self) {
         self.0.close();
     }
 
     #[inline]
-    /// Force close mqtt connection. mqtt dispatcher does not wait for uncompleted
-    /// responses, but it flushes buffers.
+    /// Force close mqtt connection.
+    ///
+    /// The connection is aborted immediately, mqtt dispatcher does not wait for
+    /// uncompleted responses and buffered data is discarded. Use
+    /// [`close`](Self::close) to close connection gracefully.
     pub fn force_close(&self) {
         self.0.force_close();
     }
@@ -117,8 +129,6 @@ impl MqttSink {
 
     #[inline]
     /// Create subscribe packet builder
-    ///
-    /// panics if id is 0
     pub fn subscribe(&self) -> SubscribeBuilder {
         SubscribeBuilder {
             id: None,
@@ -193,6 +203,10 @@ impl PublishBuilder {
 
     #[inline]
     /// Get size of the publish packet
+    ///
+    /// Size excludes fixed header. It is calculated with the current `QoS` of
+    /// the packet, which is `QoS 0` until the packet is sent. Add 2 bytes for
+    /// `QoS 1` and `QoS 2` packets.
     pub fn size(&self, payload_size: usize) -> u32 {
         (codec::encode::get_encoded_publish_size(&self.packet) + payload_size) as u32
     }
@@ -213,7 +227,11 @@ impl PublishBuilder {
         }
     }
 
-    /// Send publish packet with `QoS 0`
+    /// Start streaming publish packet with `QoS 0`
+    ///
+    /// `size` is the total payload size, the payload must be sent via returned
+    /// `StreamingPayload`. Dropping `StreamingPayload` before the entire payload
+    /// is sent terminates the connection.
     pub fn stream_at_most_once(mut self, size: u32) -> Result<StreamingPayload, SendPacketError> {
         if self.shared.is_active() {
             log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
@@ -398,7 +416,11 @@ impl PublishBuilder {
     }
 }
 
-/// Publish released for `QoS 2`
+/// `PublishReceived` packet is received for `QoS 2` publish
+///
+/// Call [`release`](Self::release) to send `PublishRelease` packet and wait for
+/// `PublishComplete`. If the value is dropped, `PublishRelease` is sent without
+/// waiting for `PublishComplete`.
 pub struct PublishReceived {
     packet_id: Option<NonZeroU16>,
     shared: Rc<MqttShared>,
@@ -475,7 +497,7 @@ impl SubscribeBuilder {
     }
 
     #[inline]
-    /// Get size of the subscribe packet
+    /// Get size of the subscribe packet, excluding fixed header
     pub fn size(&self) -> u32 {
         codec::encode::get_encoded_subscribe_size(&self.topic_filters) as u32
     }
@@ -559,7 +581,7 @@ impl UnsubscribeBuilder {
     }
 
     #[inline]
-    /// Get size of the unsubscribe packet
+    /// Get size of the unsubscribe packet, excluding fixed header
     pub fn size(&self) -> u32 {
         codec::encode::get_encoded_unsubscribe_size(&self.topic_filters) as u32
     }
