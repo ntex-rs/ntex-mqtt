@@ -610,6 +610,11 @@ impl crate::io::FrameState for MqttShared {
     fn is_partial(&self) -> bool {
         self.codec.is_payload_pending()
     }
+
+    #[inline]
+    fn has_response(&self, item: &Decoded) -> bool {
+        !matches!(item, Decoded::Publish(publish, ..) if publish.qos == QoS::AtMostOnce)
+    }
 }
 
 impl Decoder for MqttShared {

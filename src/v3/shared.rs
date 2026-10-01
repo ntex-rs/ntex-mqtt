@@ -8,7 +8,7 @@ use ntex_util::{HashSet, channel::pool};
 
 use crate::error::{DecodeError, EncodeError, MqttProtocolError, PayloadError, SendPacketError};
 use crate::v3::codec::{self, Encoded, Publish};
-use crate::{payload::PlSender, types::packet_type};
+use crate::{QoS, payload::PlSender, types::packet_type};
 
 #[derive(Debug)]
 pub(super) enum Ack {
@@ -535,6 +535,11 @@ impl crate::io::FrameState for MqttShared {
     #[inline]
     fn is_partial(&self) -> bool {
         self.codec.is_payload_pending()
+    }
+
+    #[inline]
+    fn has_response(&self, item: &codec::Decoded) -> bool {
+        !matches!(item, codec::Decoded::Publish(publish, ..) if publish.qos == QoS::AtMostOnce)
     }
 }
 

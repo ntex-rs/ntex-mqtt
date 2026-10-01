@@ -20,8 +20,8 @@ use crate::error::{DecodeError, DispatcherError, EncodeError, MqttProtocolError}
 /// Io waiter tag, in-flight service calls are cancelled once it is woken.
 const STOP_TAG: usize = 0x6d71_7474;
 
-/// Decoder state the dispatcher needs for read timers.
-pub trait FrameState {
+/// Decoder state the dispatcher needs for read timers and response ordering.
+pub trait FrameState: Decoder {
     /// Returns `true` while the last decoded item is followed by more parts
     /// of the same packet, such as the payload chunks of a streamed publish.
     ///
@@ -30,12 +30,26 @@ pub trait FrameState {
     fn is_partial(&self) -> bool {
         false
     }
+
+    /// Returns `false` if the service never responds to the item, such as
+    /// an at most once publish.
+    ///
+    /// These calls do not keep a slot in the response queue, a response
+    /// returned anyway is written once the call completes.
+    fn has_response(&self, _: &<Self as Decoder>::Item) -> bool {
+        true
+    }
 }
 
 impl<T: FrameState> FrameState for Rc<T> {
     #[inline]
     fn is_partial(&self) -> bool {
         (**self).is_partial()
+    }
+
+    #[inline]
+    fn has_response(&self, item: &T::Item) -> bool {
+        (**self).has_response(item)
     }
 }
 
@@ -97,7 +111,8 @@ where
     waker: LocalWaker,
     /// Pending call polled by the dispatcher, other pending calls are spawned
     response: Cell<Option<ServiceCall<Codec, E>>>,
-    response_idx: Cell<usize>,
+    /// Queue index of the polled call, `None` for a call without response
+    response_idx: Cell<Option<usize>>,
     max_queue: usize,
 }
 
@@ -136,7 +151,7 @@ where
             queue: RefCell::new(VecDeque::new()),
             waker: LocalWaker::default(),
             response: Cell::new(None),
-            response_idx: Cell::new(0),
+            response_idx: Cell::new(None),
             max_queue: io.cfg().ctx().get::<MqttServiceConfig>().max_queue,
         });
         let keepalive_timeout = io.cfg().keepalive_timeout();
@@ -202,6 +217,22 @@ where
         }
     }
 
+    /// Handles the result of a call, returns `true` if the dispatcher must be
+    /// woken up.
+    fn complete(
+        &self,
+        item: ServiceResult<Codec, E>,
+        response_idx: Option<usize>,
+        io: &IoRef,
+        codec: &Codec,
+    ) -> bool {
+        if let Some(idx) = response_idx {
+            self.handle_result(item, idx, io, codec)
+        } else {
+            self.write_result(item, io, codec)
+        }
+    }
+
     /// Handles the result of a queued call, returns `true` if the dispatcher
     /// must be woken up.
     fn handle_result(
@@ -257,7 +288,7 @@ where
         // handle service response future
         if let Some(mut fut) = inner.state.response.take() {
             if let Poll::Ready(item) = Pin::new(&mut fut).poll(cx) {
-                inner.state.handle_result(
+                inner.state.complete(
                     item,
                     inner.state.response_idx.get(),
                     inner.io.as_ref(),
@@ -383,15 +414,22 @@ where
     }
 
     fn call_service(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
+        let ordered = self.codec.has_response(&item);
         let mut fut = self.service.call_nowait(item);
         let mut queue = self.state.queue.borrow_mut();
+
+        // calls without response do not keep a slot in the queue
+        let mut push_pending = || {
+            ordered.then(|| {
+                queue.push_back(None);
+                self.state.base.get().wrapping_add(queue.len() - 1)
+            })
+        };
 
         // only one pending call is polled by the dispatcher, spawn the rest
         if let Some(resp) = self.state.response.take() {
             self.state.response.set(Some(resp));
-
-            let response_idx = self.state.base.get().wrapping_add(queue.len());
-            queue.push_back(None);
+            let response_idx = push_pending();
 
             let st = self.io.get_ref();
             let codec = self.codec.clone();
@@ -406,22 +444,21 @@ where
                     Either::Left(item) => item,
                     Either::Right(()) => Ok(None),
                 };
-                if state.handle_result(item, response_idx, &st, &codec) {
+                if state.complete(item, response_idx, &st, &codec) {
                     st.notify_dispatcher();
                 }
             });
         } else if let Poll::Ready(res) = Pin::new(&mut fut).poll(cx) {
-            if queue.is_empty() {
+            // only responses wait for the calls before them
+            if queue.is_empty() || !matches!(res, Ok(Some(_))) {
                 self.state.write_result(res, self.io.as_ref(), &self.codec);
             } else {
                 queue.push_back(Some(res));
             }
         } else {
-            self.state
-                .response_idx
-                .set(self.state.base.get().wrapping_add(queue.len()));
+            let response_idx = push_pending();
+            self.state.response_idx.set(response_idx);
             self.state.response.set(Some(fut));
-            queue.push_back(None);
         }
     }
 
@@ -1675,7 +1712,11 @@ mod tests {
         }
     }
 
-    impl FrameState for ByteCodec {}
+    impl FrameState for ByteCodec {
+        fn has_response(&self, item: &Bytes) -> bool {
+            item != "q"
+        }
+    }
 
     impl Decoder for ByteCodec {
         type Item = Bytes;
@@ -2048,6 +2089,54 @@ mod tests {
         sleep(Millis(50)).await;
         assert_eq!(calls.get(), 10);
         assert_eq!(client.read_any(), Bytes::from_static(b"0123456789"));
+    }
+
+    /// Calls without response do not keep a slot in the response queue
+    #[ntex::test]
+    async fn no_response_calls_skip_queue() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let rx = Cell::new(Some(rx));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let calls2 = calls.clone();
+
+        let cfg: SharedCfg = SharedCfg::new("DBG")
+            .add(IoConfig::new())
+            .add(MqttServiceConfig::new().set_max_queue(2))
+            .into();
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, cfg),
+            ByteCodec,
+            fn_service(async move |msg: Bytes| {
+                calls2.borrow_mut().push(msg.clone());
+                if msg == "q" {
+                    sleep(Millis(10)).await;
+                    return Ok(None);
+                }
+                // first ordered call blocks the head of the queue
+                if let Some(rx) = rx.take() {
+                    let _ = rx.await;
+                }
+                Ok::<_, DispatcherError<()>>(Some(msg))
+            }),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        // the first call is polled by the dispatcher, others are spawned
+        client.write("qaqqbc");
+        sleep(Millis(50)).await;
+        assert_eq!(&calls.borrow()[..], ["q", "a", "q", "q", "b"]);
+        assert!(client.read_any().is_empty());
+
+        let _ = tx.send(());
+        sleep(Millis(50)).await;
+        assert_eq!(calls.borrow().len(), 6);
+        assert_eq!(client.read_any(), Bytes::from_static(b"abc"));
     }
 
     /// Read is paused while the service is not ready, the queue is full or

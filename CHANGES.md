@@ -20,6 +20,8 @@
 
 * Stop dispatcher on response encode errors in spawned service calls
 
+* QoS 0 publishes and calls completed without response do not keep a dispatcher response queue slot
+
 * Set default MqttServiceConfig connect timeout to 5 seconds
 
 ## [9.0.0] - 2026-09-14
