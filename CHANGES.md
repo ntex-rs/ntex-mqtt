@@ -10,6 +10,8 @@
 
 * Support IoConfig::write_timeout(), add MqttProtocolError::WriteTimeout
 
+* Limit dispatcher response queue, add MqttServiceConfig::set_max_queue()
+
 ## [9.0.0] - 2026-09-14
 
 * Refactor state management

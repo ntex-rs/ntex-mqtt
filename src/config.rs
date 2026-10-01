@@ -9,6 +9,7 @@ pub struct MqttServiceConfig {
     pub(crate) max_size: u32,
     pub(crate) max_receive: u16,
     pub(crate) max_receive_size: usize,
+    pub(crate) max_queue: usize,
     pub(crate) max_topic_alias: u16,
     pub(crate) max_send: u16,
     pub(crate) max_send_size: (u32, u32),
@@ -48,6 +49,7 @@ impl MqttServiceConfig {
             max_send_size: (65535, 512),
             max_receive: 16,
             max_receive_size: 65535,
+            max_queue: 64,
             max_topic_alias: 32,
             min_chunk_size: 32 * 1024,
             max_payload_buffer_size: 32 * 1024,
@@ -140,6 +142,20 @@ impl MqttServiceConfig {
     /// By default total in-flight size is set to 65535 bytes
     pub fn set_max_receive_size(mut self, val: usize) -> Self {
         self.max_receive_size = val;
+        self
+    }
+
+    #[must_use]
+    /// Set max number of queued responses.
+    ///
+    /// Responses are sent in the order of incoming packets. A response that is
+    /// ready waits in the queue until all earlier responses are sent. When the
+    /// queue reaches this limit, the dispatcher stops reading new packets until
+    /// queued responses are sent. `0` disables the limit.
+    ///
+    /// By default the limit is set to 64 responses.
+    pub fn set_max_queue(mut self, val: usize) -> Self {
+        self.max_queue = val;
         self
     }
 

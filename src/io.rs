@@ -4,10 +4,14 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin:
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Decoded, IoBoxed, IoRef, IoStatusUpdate, RecvError};
-use ntex_service::pipeline::{Pipeline, PipelineCall};
+use ntex_service::{
+    cfg::Configuration,
+    pipeline::{Pipeline, PipelineCall},
+};
 use ntex_util::channel::condition::Condition;
 use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
 
+use crate::config::MqttServiceConfig;
 use crate::control::Control;
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttProtocolError};
 
@@ -82,6 +86,7 @@ where
     waker: LocalWaker,
     response: Cell<Option<ServiceCall<Codec, E>>>,
     response_idx: Cell<usize>,
+    max_queue: usize,
 }
 
 enum ServiceResult<T> {
@@ -139,6 +144,7 @@ where
             waker: LocalWaker::default(),
             response: Cell::new(None),
             response_idx: Cell::new(0),
+            max_queue: io.cfg().ctx().get::<MqttServiceConfig>().max_queue,
         });
         let keepalive_timeout = io.cfg().keepalive_timeout();
 
@@ -185,6 +191,10 @@ where
     Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError>,
     <Codec as Encoder>::Item: 'static,
 {
+    fn is_full(&self, len: usize) -> bool {
+        self.max_queue != 0 && len >= self.max_queue
+    }
+
     fn handle_result(
         &self,
         item: Result<Option<Response<Codec>>, DispatcherError<E>>,
@@ -198,6 +208,7 @@ where
 
         // handle first response
         if idx == 0 {
+            let was_full = self.is_full(queue.len());
             let _ = queue.pop_front();
             self.base.set(self.base.get().wrapping_add(1));
             match item {
@@ -229,7 +240,7 @@ where
                 }
             }
 
-            err || queue.is_empty()
+            err || queue.is_empty() || (was_full && !self.is_full(queue.len()))
         } else {
             if let Err(err) = item {
                 self.error.set(Some(IoDispatcherError::Service(err)));
@@ -463,8 +474,13 @@ where
             return Poll::Ready(PollService::Continue);
         }
 
-        // check readiness
-        match self.service.poll_ready(cx) {
+        // check readiness, pause reading while the response queue is full
+        let ready = if self.state.is_full(self.state.queue.borrow().len()) {
+            Poll::Pending
+        } else {
+            self.service.poll_ready(cx)
+        };
+        match ready {
             Poll::Ready(Ok(())) => Poll::Ready(PollService::Ready),
             // pause io read task
             Poll::Pending => {
@@ -730,6 +746,7 @@ mod tests {
                 queue: RefCell::new(VecDeque::new()),
                 response: Cell::new(None),
                 response_idx: Cell::new(0),
+                max_queue: io.cfg().ctx().get::<MqttServiceConfig>().max_queue,
             });
 
             (
@@ -1624,6 +1641,49 @@ mod tests {
         sleep(Millis(2000)).await;
         assert!(!state.is_active());
         assert!(data.borrow().contains(&3));
+    }
+
+    /// Reading pauses while the response queue is full
+    #[ntex::test]
+    async fn test_max_queue() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let rx = Cell::new(Some(rx));
+        let calls = Rc::new(Cell::new(0));
+        let calls2 = calls.clone();
+
+        let cfg: SharedCfg = SharedCfg::new("DBG")
+            .add(IoConfig::new())
+            .add(MqttServiceConfig::new().set_max_queue(4))
+            .into();
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, cfg),
+            BytesLenCodec(1),
+            fn_service(async move |msg: Bytes| {
+                calls2.set(calls2.get() + 1);
+                // first call blocks the head of the queue
+                if let Some(rx) = rx.take() {
+                    let _ = rx.await;
+                }
+                Ok::<_, DispatcherError<()>>(Some(msg))
+            }),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("0123456789");
+        sleep(Millis(50)).await;
+        assert_eq!(calls.get(), 4);
+        assert!(client.read_any().is_empty());
+
+        let _ = tx.send(());
+        sleep(Millis(50)).await;
+        assert_eq!(calls.get(), 10);
+        assert_eq!(client.read_any(), Bytes::from_static(b"0123456789"));
     }
 
     /// Service becomes not ready and write backpressure is enabled
