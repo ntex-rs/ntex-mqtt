@@ -47,6 +47,7 @@ bitflags::bitflags! {
         const READ_TIMEOUT  = 0b0001_0000;
         const READY         = 0b0010_0000;
         const READY_TASK    = 0b0100_0000;
+        const WR_TIMEOUT    = 0b1000_0000;
     }
 }
 
@@ -293,6 +294,7 @@ where
                                     }
                                 }
                                 Err(RecvError::WriteBackpressure) => {
+                                    inner.start_write_timer();
                                     inner.st = IoDispatcherState::Backpressure;
                                     spawn(inner.control.call_static(Control::wr(true)));
                                 }
@@ -311,9 +313,18 @@ where
                 }
                 // handle write back-pressure
                 IoDispatcherState::Backpressure => {
+                    // check write timeout
+                    if let Poll::Ready(IoStatusUpdate::Timeout) = inner.io.poll_status_update(cx)
+                        && let Err(err) = inner.handle_timeout()
+                    {
+                        inner.stop(inner.control.call_static(Control::proto(err)));
+                        continue;
+                    }
+
                     if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
                         inner.stop(inner.control.call_static(Control::peer_gone(Some(err))));
                     } else if ready!(inner.poll_service(cx)) == PollService::Ready {
+                        inner.stop_write_timer();
                         inner.st = IoDispatcherState::Processing;
                         spawn(inner.control.call_static(Control::wr(false)));
                     }
@@ -379,6 +390,7 @@ where
     Err: 'static,
 {
     fn stop(&mut self, fut: ControlCall<Codec, E, Err>) {
+        self.flags.remove(Flags::WR_TIMEOUT);
         self.io.stop_timer();
         self.st = IoDispatcherState::Stop(Some(fut));
     }
@@ -462,9 +474,11 @@ where
                     self.io.flags()
                 );
 
-                // remove timers
+                // remove read timers, the write timer keeps running while paused
                 self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
-                self.io.stop_timer();
+                if !self.flags.contains(Flags::WR_TIMEOUT) {
+                    self.io.stop_timer();
+                }
 
                 let status = match self.io.poll_read_pause(cx) {
                     Poll::Ready(status) => status,
@@ -479,6 +493,12 @@ where
                 };
 
                 match status {
+                    IoStatusUpdate::Timeout if self.flags.contains(Flags::WR_TIMEOUT) => {
+                        if let Err(err) = self.handle_timeout() {
+                            self.stop(self.control.call_static(Control::proto(err)));
+                        }
+                        Poll::Ready(PollService::Continue)
+                    }
                     IoStatusUpdate::Timeout => {
                         log::trace!(
                             "{}: Keep-alive error, stopping dispatcher during pause",
@@ -500,6 +520,9 @@ where
                         Poll::Ready(PollService::Continue)
                     }
                     IoStatusUpdate::WriteBackpressure => {
+                        if !matches!(self.st, IoDispatcherState::Backpressure) {
+                            self.start_write_timer();
+                        }
                         self.st = IoDispatcherState::Backpressure;
                         spawn(self.control.call_static(Control::wr(true)));
                         Poll::Ready(PollService::Continue)
@@ -561,7 +584,44 @@ where
         }
     }
 
+    /// Start write timeout when write backpressure is enabled.
+    ///
+    /// Frames are not decoded during backpressure, so read timers are stopped.
+    fn start_write_timer(&mut self) {
+        self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
+
+        let timeout = self.io.cfg().write_timeout();
+        if timeout.is_zero() {
+            self.flags.remove(Flags::WR_TIMEOUT);
+            self.io.stop_timer();
+        } else if !self.flags.contains(Flags::WR_TIMEOUT) {
+            log::trace!("{}: Start write timer {:?}", self.io.tag(), timeout);
+            self.flags.insert(Flags::WR_TIMEOUT);
+            self.io.start_timer(timeout);
+        }
+    }
+
+    /// Stop write timeout when write backpressure is disabled.
+    fn stop_write_timer(&mut self) {
+        if self.flags.contains(Flags::WR_TIMEOUT) {
+            self.flags.remove(Flags::WR_TIMEOUT);
+            self.io.stop_timer();
+        }
+    }
+
     fn handle_timeout(&mut self) -> Result<(), MqttProtocolError> {
+        // check write timer
+        if self.flags.contains(Flags::WR_TIMEOUT) {
+            self.flags.remove(Flags::WR_TIMEOUT);
+            // backpressure can be released unnoticed while the service is paused
+            return if self.io.is_wr_backpressure() {
+                log::trace!("{}: Write backpressure timeout", self.io.tag());
+                Err(MqttProtocolError::WriteTimeout)
+            } else {
+                Ok(())
+            };
+        }
+
         // check read timer
         if self.flags.contains(Flags::READ_TIMEOUT) {
             if let Some(params) = self.io.cfg().frame_read_rate() {
@@ -1427,6 +1487,143 @@ mod tests {
 
         let cnt = data.load(Ordering::Relaxed);
         assert_eq!(cnt, 2);
+    }
+
+    fn write_timeout_srv(
+        ready: bool,
+    ) -> (
+        impl Service<(), Bytes, Res = Option<Bytes>, Error = DispatcherError<()>>,
+        impl Service<(), Control<()>, Res = Option<Bytes>, Error = ()>,
+        Rc<RefCell<Vec<u8>>>,
+    ) {
+        struct Srv(bool, Cell<bool>);
+
+        impl Service<(), Bytes> for Srv {
+            type Res = Option<Bytes>;
+            type Error = DispatcherError<()>;
+
+            async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
+                if !self.0 && self.1.get() {
+                    std::future::pending::<()>().await;
+                }
+                Ok(())
+            }
+
+            async fn call(&self, _: Bytes, _: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+                self.1.set(true);
+                Ok(Some(Bytes::from(vec![b'x'; 65_536])))
+            }
+        }
+
+        let data = Rc::new(RefCell::new(Vec::new()));
+        let data2 = data.clone();
+        let control = fn_service(async move |msg: Control<()>| {
+            match msg {
+                Control::WrBackpressure(st) => {
+                    data2.borrow_mut().push(if st.enabled() { 1 } else { 2 });
+                }
+                Control::Stop(Reason::Protocol(err))
+                    if matches!(err.get_ref(), &MqttProtocolError::WriteTimeout) =>
+                {
+                    data2.borrow_mut().push(3);
+                }
+                Control::Stop(_) => (),
+            }
+            Ok::<_, ()>(None)
+        });
+        (Srv(ready, Cell::new(false)), control, data)
+    }
+
+    fn write_timeout_cfg() -> SharedCfg {
+        SharedCfg::new("DBG")
+            .add(
+                IoConfig::new()
+                    .set_keepalive_timeout(Seconds::ZERO)
+                    .set_write_buf(32 * 1024)
+                    .set_write_timeout(Seconds(1)),
+            )
+            .into()
+    }
+
+    /// Peer does not read, dispatcher stops with write timeout
+    #[ntex::test]
+    async fn test_write_timeout() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+
+        let (srv, control, data) = write_timeout_srv(true);
+        let (disp, state) = Dispatcher::new_debug(
+            nio::Io::new(server, write_timeout_cfg()),
+            BytesCodec,
+            srv,
+            control,
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("GET /test HTTP/1\r\n\r\n");
+        sleep(Millis(500)).await;
+        assert!(state.is_active());
+        assert_eq!(&data.borrow()[..], &[1]);
+
+        sleep(Millis(2000)).await;
+        assert!(!state.is_active());
+        assert_eq!(&data.borrow()[..], &[1, 3]);
+    }
+
+    /// Backpressure is released before write timeout
+    #[ntex::test]
+    async fn test_write_timeout_released() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+
+        let (srv, control, data) = write_timeout_srv(true);
+        let (disp, state) = Dispatcher::new_debug(
+            nio::Io::new(server, write_timeout_cfg()),
+            BytesCodec,
+            srv,
+            control,
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("GET /test HTTP/1\r\n\r\n");
+        sleep(Millis(500)).await;
+        assert_eq!(&data.borrow()[..], &[1]);
+
+        client.remote_buffer_cap(1024 * 1024);
+        sleep(Millis(2000)).await;
+        assert!(state.is_active());
+        assert_eq!(&data.borrow()[..], &[1, 2]);
+        assert_eq!(client.read_any().len(), 65_536);
+    }
+
+    /// Write timeout keeps running while service is not ready
+    #[ntex::test]
+    async fn test_write_timeout_service_not_ready() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+
+        let (srv, control, data) = write_timeout_srv(false);
+        let (disp, state) = Dispatcher::new_debug(
+            nio::Io::new(server, write_timeout_cfg()),
+            BytesCodec,
+            srv,
+            control,
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("GET /test HTTP/1\r\n\r\n");
+        sleep(Millis(500)).await;
+        assert!(state.is_active());
+
+        sleep(Millis(2000)).await;
+        assert!(!state.is_active());
+        assert!(data.borrow().contains(&3));
     }
 
     /// Service becomes not ready and write backpressure is enabled

@@ -8,6 +8,8 @@
 
 * Api docs fixes
 
+* Support IoConfig::write_timeout(), add MqttProtocolError::WriteTimeout
+
 ## [9.0.0] - 2026-09-14
 
 * Refactor state management
