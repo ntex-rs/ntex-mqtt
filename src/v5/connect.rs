@@ -177,6 +177,9 @@ impl<St> ConnectAck<St> {
     /// is set only if it is not set explicitly and the value is lower than
     /// the client's keep-alive.
     ///
+    /// See [`MqttServiceConfig`](crate::MqttServiceConfig#read-timeouts) for how
+    /// keep-alive interacts with the frame read rate.
+    ///
     /// # Panics
     ///
     /// Panics if timeout is `0`.
@@ -230,7 +233,7 @@ mod tests {
 
         // Connect delegates to the Connect packet
         let dbg = format!("{h:?}");
-        assert!(!dbg.is_empty());
+        assert_ne!(dbg, "");
 
         // ConnectAck
         let ack = h.ack(42u32);

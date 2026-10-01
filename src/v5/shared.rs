@@ -605,6 +605,29 @@ impl Encoder for MqttShared {
     }
 }
 
+impl crate::io::FrameState for MqttShared {
+    #[inline]
+    fn is_partial(&self) -> bool {
+        self.codec.is_payload_pending()
+    }
+
+    #[inline]
+    fn is_ordered(&self, item: &Decoded) -> bool {
+        // mqtt orders acks of publish packets only
+        match item {
+            Decoded::Publish(publish, ..) => publish.qos != QoS::AtMostOnce,
+            Decoded::Packet(pkt, _) => !matches!(
+                pkt,
+                Packet::PingRequest
+                    | Packet::Subscribe(_)
+                    | Packet::Unsubscribe(_)
+                    | Packet::PublishRelease(_)
+            ),
+            Decoded::PayloadChunk(..) => true,
+        }
+    }
+}
+
 impl Decoder for MqttShared {
     type Item = Decoded;
     type Error = error::DecodeError;

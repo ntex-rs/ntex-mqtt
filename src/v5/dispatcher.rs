@@ -208,14 +208,14 @@ where
 
                         // check for duplicated packet id
                         if !inner.inflight.insert(pid) {
-                            let _ = self.inner.sink.encode_packet(codec::Packet::PublishAck(
+                            // queued to keep acks in the order packets are received
+                            return Ok(Some(Encoded::Packet(codec::Packet::PublishAck(
                                 codec::PublishAck {
                                     packet_id: pid,
                                     reason_code: codec::PublishAckReason::PacketIdentifierInUse,
                                     ..Default::default()
                                 },
-                            ));
-                            return Ok(None);
+                            ))));
                         }
                     }
 
@@ -368,8 +368,8 @@ where
                     );
                     Err(SpecViolation::Connack_3_2_2_3_12.into())
                 } else if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
-                    // duplicated packet id
-                    let _ = self.inner.sink.encode_packet(codec::Packet::SubscribeAck(
+                    // duplicated packet id, queued to keep acks in the order packets are received
+                    Ok(Some(Encoded::Packet(codec::Packet::SubscribeAck(
                         codec::SubscribeAck {
                             packet_id: pkt.packet_id,
                             status: pkt
@@ -380,8 +380,7 @@ where
                             properties: codec::UserProperties::new(),
                             reason_string: None,
                         },
-                    ));
-                    Ok(None)
+                    ))))
                 } else {
                     let id = pkt.packet_id;
                     self.inner
@@ -399,8 +398,8 @@ where
                 {
                     Err(SpecViolation::Subs_4_7_1.into())
                 } else if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
-                    // duplicated packet id
-                    let _ = self.inner.sink.encode_packet(codec::Packet::UnsubscribeAck(
+                    // duplicated packet id, queued to keep acks in the order packets are received
+                    Ok(Some(Encoded::Packet(codec::Packet::UnsubscribeAck(
                         codec::UnsubscribeAck {
                             packet_id: pkt.packet_id,
                             status: pkt
@@ -411,8 +410,7 @@ where
                             properties: codec::UserProperties::new(),
                             reason_string: None,
                         },
-                    ));
-                    Ok(None)
+                    ))))
                 } else {
                     let id = pkt.packet_id;
                     self.inner

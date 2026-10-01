@@ -99,6 +99,9 @@ pub enum MqttProtocolError {
     /// Read frame timeout
     #[error("Read frame timeout")]
     ReadTimeout,
+    /// Write backpressure timeout
+    #[error("Write timeout")]
+    WriteTimeout,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]

@@ -167,21 +167,25 @@ impl CounterInner {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::poll_fn, time::Duration};
+    use std::future::poll_fn;
 
     use ntex_service::Pipeline;
-    use ntex_util::{future::lazy, task::LocalWaker, time::sleep};
+    use ntex_util::channel::{condition::Condition, oneshot};
+    use ntex_util::future::lazy;
+    use ntex_util::task::LocalWaker;
+    use ntex_util::time::{Millis, sleep, timeout};
 
     use super::*;
 
-    struct SleepService(Duration);
+    /// Calls complete when the gate is opened
+    struct GateService(Condition);
 
-    impl Service<(), ()> for SleepService {
+    impl Service<(), ()> for GateService {
         type Res = ();
         type Error = ();
 
         async fn call(&self, _r: (), _: Ctx<'_, Self, ()>) -> Result<(), ()> {
-            sleep(self.0).await;
+            let _ = self.0.wait().await;
             Ok::<_, ()>(())
         }
     }
@@ -202,43 +206,51 @@ mod tests {
 
     #[ntex::test]
     async fn test_inflight() {
-        let wait_time = Duration::from_millis(50);
-
-        let srv = Pipeline::new((), InFlightServiceImpl::new(1, 0, SleepService(wait_time)));
+        let gate = Condition::new();
+        let srv = Pipeline::new(
+            (),
+            InFlightServiceImpl::new(1, 0, GateService(gate.clone())),
+        );
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.bind();
         ntex_util::spawn(async move {
             let _ = srv2.call(()).await;
         });
-        ntex_util::time::sleep(Duration::from_millis(25)).await;
+        sleep(Millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
-        ntex_util::time::sleep(Duration::from_millis(50)).await;
+        // wait for in-flight call to complete
+        gate.notify_and_lock(());
+        let res = timeout(Millis(5000), srv.ready()).await;
+        assert_eq!(res, Ok(Ok(())));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
         assert!(lazy(|cx| srv.poll_shutdown(cx)).await.is_ready());
     }
 
     #[ntex::test]
     async fn test_inflight2() {
-        let wait_time = Duration::from_millis(50);
-
-        let srv = Pipeline::new((), InFlightServiceImpl::new(0, 10, SleepService(wait_time)));
+        let gate = Condition::new();
+        let srv = Pipeline::new(
+            (),
+            InFlightServiceImpl::new(0, 10, GateService(gate.clone())),
+        );
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
         let srv2 = srv.bind();
         ntex_util::spawn(async move {
             let _ = srv2.call(()).await;
         });
-        ntex_util::time::sleep(Duration::from_millis(25)).await;
+        sleep(Millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
-        ntex_util::time::sleep(Duration::from_millis(100)).await;
+        gate.notify_and_lock(());
+        assert_eq!(timeout(Millis(5000), srv.ready()).await, Ok(Ok(())));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
     }
 
     struct Srv2 {
-        dur: Duration,
+        gate: Condition,
         cnt: Cell<bool>,
         waker: LocalWaker,
     }
@@ -260,11 +272,11 @@ mod tests {
         }
 
         async fn call(&self, _r: (), _: Ctx<'_, Self, ()>) -> Result<(), ()> {
-            let fut = sleep(self.dur);
+            let fut = self.gate.wait();
             self.cnt.set(true);
             self.waker.wake();
 
-            fut.await;
+            let _ = fut.await;
             self.cnt.set(false);
             self.waker.wake();
             Ok::<_, ()>(())
@@ -276,15 +288,14 @@ mod tests {
     /// does not wakes dispatcher.
     #[ntex::test]
     async fn test_inflight3() {
-        let wait_time = Duration::from_millis(50);
-
+        let gate = Condition::new();
         let srv = Pipeline::new(
             (),
             InFlightServiceImpl::new(
                 1,
                 10,
                 Srv2 {
-                    dur: wait_time,
+                    gate: gate.clone(),
                     cnt: Cell::new(false),
                     waker: LocalWaker::new(),
                 },
@@ -296,18 +307,24 @@ mod tests {
         ntex_util::spawn(async move {
             let _ = srv2.call(()).await;
         });
-        ntex_util::time::sleep(Duration::from_millis(25)).await;
+        sleep(Millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
         let srv2 = srv.bind();
-        let (tx, rx) = ntex_util::channel::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         ntex_util::spawn(async move {
             let _ = srv2.ready().await;
             let _ = tx.send(());
         });
-        assert_eq!(srv.ready().await, Ok(()));
 
-        let _ = rx.await;
+        // both readiness waiters are registered before the call completes
+        let (res, ()) = ntex_util::future::join(timeout(Millis(5000), srv.ready()), async {
+            sleep(Millis(10)).await;
+            gate.notify_and_lock(());
+        })
+        .await;
+        assert_eq!(res, Ok(Ok(())));
+        assert_eq!(timeout(Millis(5000), rx).await, Ok(Ok(())));
     }
 
     #[test]

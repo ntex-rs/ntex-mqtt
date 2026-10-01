@@ -3,12 +3,41 @@ use ntex_util::time::{Millis, Seconds};
 
 use crate::types::QoS;
 
+/// Mqtt server and client configuration.
+///
+/// # Read timeouts
+///
+/// The dispatcher uses one read-side timer, selected by the read state:
+///
+/// * Between packets the keep-alive timeout applies. It is restarted after
+///   every received packet, a streamed publish is one packet and its payload
+///   chunks do not restart it. The server sets keep-alive during the handshake,
+///   see [`v3::ConnectAck::idle_timeout()`] and
+///   [`v5::ConnectAck::keep_alive()`].
+/// * While a packet is partially received and a frame read rate is configured
+///   with `IoConfig::set_frame_read_rate(timeout, max_timeout, rate)`, the
+///   frame read rate replaces keep-alive. The peer must send more than `rate`
+///   bytes every `timeout` period, and the whole packet must be received within
+///   `max_timeout`. If `max_timeout` is zero, a packet is not limited in time
+///   as long as the peer keeps the rate.
+/// * Without a frame read rate, keep-alive also bounds a partially received
+///   packet.
+///
+/// No read timer runs while reading is paused, because the service is not
+/// ready or the response queue is full (see [`set_max_queue`]). The frame read
+/// budget restarts when reading resumes. During write backpressure only the
+/// write timeout (`IoConfig::set_write_timeout()`) applies.
+///
+/// [`set_max_queue`]: MqttServiceConfig::set_max_queue
+/// [`v3::ConnectAck::idle_timeout()`]: crate::v3::ConnectAck::idle_timeout
+/// [`v5::ConnectAck::keep_alive()`]: crate::v5::ConnectAck::keep_alive
 #[derive(Debug)]
 pub struct MqttServiceConfig {
     pub(crate) max_qos: QoS,
     pub(crate) max_size: u32,
     pub(crate) max_receive: u16,
     pub(crate) max_receive_size: usize,
+    pub(crate) max_queue: usize,
     pub(crate) max_topic_alias: u16,
     pub(crate) max_send: u16,
     pub(crate) max_send_size: (u32, u32),
@@ -48,11 +77,12 @@ impl MqttServiceConfig {
             max_send_size: (65535, 512),
             max_receive: 16,
             max_receive_size: 65535,
+            max_queue: 64,
             max_topic_alias: 32,
             min_chunk_size: 32 * 1024,
             max_payload_buffer_size: 32 * 1024,
             handle_qos_after_disconnect: None,
-            connect_timeout: Seconds::ZERO,
+            connect_timeout: Seconds(5),
             handshake_timeout: Seconds::ZERO,
             protocol_version_timeout: Millis(5_000),
             config: CfgContext::default(),
@@ -79,7 +109,10 @@ impl MqttServiceConfig {
     /// the entire frame within this time, the connection is terminated with
     /// `MqttError::Connect(MqttConnectError::Timeout)` error.
     ///
-    /// By default, connect timeout is disabled.
+    /// Use `Seconds::ZERO` to disable the timeout. Frame read rate
+    /// (`IoConfig::set_frame_read_rate`) does not apply to the `Connect` frame.
+    ///
+    /// By default, connect timeout is set to 5 seconds.
     pub fn set_connect_timeout(mut self, timeout: Seconds) -> Self {
         self.connect_timeout = timeout;
         self
@@ -144,6 +177,23 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
+    /// Set max number of queued responses.
+    ///
+    /// Publish acks are sent in the order of incoming packets. An ack that is
+    /// ready waits in the queue until all earlier acks are sent. When the
+    /// queue reaches this limit, the dispatcher stops reading new packets until
+    /// queued acks are sent. Responses to other packets, such as pings and
+    /// subscriptions, are sent once ready and at most once publishes have no
+    /// response, these are not queued but pending ones count towards the limit.
+    /// `0` disables the limit.
+    ///
+    /// By default the limit is set to 64 responses.
+    pub fn set_max_queue(mut self, val: usize) -> Self {
+        self.max_queue = val;
+        self
+    }
+
+    #[must_use]
     /// Number of topic aliases.
     ///
     /// By default value is set to 32
@@ -181,6 +231,9 @@ impl MqttServiceConfig {
     /// will be processed immediately. Otherwise, the codec will
     /// accumulate chunks until the total size reaches the specified minimum.
     /// By default min size is set to 32Kb
+    ///
+    /// Payload chunks are read as one publish packet, keep-alive and
+    /// frame read rate timeouts apply to the whole publish, not to each chunk.
     pub fn set_min_chunk_size(mut self, size: u32) -> Self {
         self.min_chunk_size = size;
         self

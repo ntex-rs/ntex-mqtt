@@ -8,6 +8,30 @@
 
 * Api docs fixes
 
+* Support IoConfig::write_timeout(), add MqttProtocolError::WriteTimeout
+
+* Limit dispatcher response queue, add MqttServiceConfig::set_max_queue()
+
+* Refactor dispatcher timers, frame read rate counts bytes consumed by the codec
+
+* Keep-alive and frame read rate timeouts apply to the whole streamed publish, not each payload chunk
+
+* v5: Send PacketIdentifierInUse publish acks in the order packets are received
+
+* Control service readiness pauses reading only, readiness errors shut down the service and io
+
+* Report the first service call error to the control service, later errors no longer overwrite it
+
+* Release write backpressure and stop the write timer once output is flushed, even if the service is not ready
+
+* Deliver write backpressure changes to the control service in order and before the stop message, write their responses, control errors shut down the dispatcher
+
+* Stop dispatcher on response encode errors in spawned service calls
+
+* Only publish acks keep the order of incoming packets, other responses are sent once ready, pending ones count towards max queue
+
+* Set default MqttServiceConfig connect timeout to 5 seconds
+
 ## [9.0.0] - 2026-09-14
 
 * Refactor state management

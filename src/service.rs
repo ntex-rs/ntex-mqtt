@@ -7,7 +7,7 @@ use ntex_service::pipeline::{Pipeline, PipelineFactory};
 use ntex_service::{Ctx, Middleware, RequestState, Service, ServiceFactory};
 
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttError};
-use crate::{ConnectPipeline, Session, control::Control, io::Dispatcher};
+use crate::{ConnectPipeline, Session, control::Control, io::Dispatcher, io::FrameState};
 
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = Option<<U as Encoder>::Item>;
@@ -82,7 +82,8 @@ where
             Res = Response<Codec>,
             Error = DispatcherError<E>,
         > + 'static,
-    Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
+    Codec:
+        Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + FrameState + Clone + 'static,
     Req: RequestState<IoBoxed, State = Im>,
 {
     type Res = ();

@@ -515,12 +515,16 @@ async fn test_ping() -> std::io::Result<()> {
 #[ntex::test]
 async fn test_ack_order() -> std::io::Result<()> {
     let srv = server::test_server(async move || {
-        MqttServer::new(async |_| {
-            sleep(Duration::from_millis(100)).await;
+        MqttServer::new(async |p: Publish| {
+            // the first publish completes last
+            let delay = if p.id() == NonZeroU16::new(1) { 200 } else { 50 };
+            sleep(Duration::from_millis(delay)).await;
             Ok::<_, ()>(())
         })
         .protocol(async move |msg| {
-            if let ProtocolMessage::Subscribe(mut msg) = msg {
+            if let ProtocolMessage::Ping(msg) = msg {
+                Ok(msg.ack())
+            } else if let ProtocolMessage::Subscribe(mut msg) = msg {
                 for mut sub in &mut msg {
                     assert_eq!(sub.qos(), codec::QoS::AtLeastOnce);
                     sub.topic();
@@ -569,6 +573,9 @@ async fn test_ack_order() -> std::io::Result<()> {
     )
     .await
     .unwrap();
+    io.send(Encoded::Packet(Packet::PingRequest), &codec)
+        .await
+        .unwrap();
     io.send(
         Encoded::Publish(
             codec::Publish {
@@ -586,17 +593,7 @@ async fn test_ack_order() -> std::io::Result<()> {
     .await
     .unwrap();
 
-    let pkt = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(
-        pkt,
-        Decoded::Packet(
-            Packet::PublishAck {
-                packet_id: NonZeroU16::new(1).unwrap()
-            },
-            2
-        )
-    );
-
+    // subscribe and ping responses do not wait for publish acks
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         pkt,
@@ -606,6 +603,21 @@ async fn test_ack_order() -> std::io::Result<()> {
                 status: vec![codec::SubscribeReturnCode::Success(codec::QoS::AtLeastOnce)],
             },
             3
+        )
+    );
+
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(pkt, Decoded::Packet(Packet::PingResponse, 0));
+
+    // publish acks keep the order of publish packets
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        pkt,
+        Decoded::Packet(
+            Packet::PublishAck {
+                packet_id: NonZeroU16::new(1).unwrap()
+            },
+            2
         )
     );
 

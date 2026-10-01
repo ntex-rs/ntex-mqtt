@@ -642,6 +642,7 @@ async fn test_ack_order() -> std::io::Result<()> {
             Ok::<_, TestError>(p.ack())
         })
         .protocol(async move |msg| match msg {
+            ProtocolMessage::Ping(msg) => Ok(msg.ack()),
             ProtocolMessage::Subscribe(mut msg) => {
                 for mut sub in &mut msg {
                     sub.topic();
@@ -700,17 +701,11 @@ async fn test_ack_order() -> std::io::Result<()> {
     .await
     .unwrap();
 
-    let pkt = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(
-        packet(pkt),
-        Packet::PublishAck(codec::PublishAck {
-            packet_id: NonZeroU16::new(1).unwrap(),
-            reason_code: codec::PublishAckReason::Success,
-            properties: Default::default(),
-            reason_string: None,
-        })
-    );
+    io.send(Encoded::Packet(Packet::PingRequest), &codec)
+        .await
+        .unwrap();
 
+    // subscribe and ping responses do not wait for publish acks
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         packet(pkt),
@@ -722,6 +717,20 @@ async fn test_ack_order() -> std::io::Result<()> {
         })
     );
 
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(packet(pkt), Packet::PingResponse);
+
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        packet(pkt),
+        Packet::PublishAck(codec::PublishAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            reason_code: codec::PublishAckReason::Success,
+            properties: Default::default(),
+            reason_string: None,
+        })
+    );
+
     Ok(())
 }
 
@@ -729,7 +738,7 @@ async fn test_ack_order() -> std::io::Result<()> {
 async fn test_dups() {
     let srv = server::test_server(async move || {
         MqttServer::new(async move |p: Publish| {
-            sleep(Duration::from_millis(10000)).await;
+            sleep(Duration::from_millis(100)).await;
             Ok::<_, TestError>(p.ack())
         })
         .build(connect)
@@ -816,19 +825,7 @@ async fn test_dups() {
     .await
     .unwrap();
 
-    // PublishAck
-    let pkt = io.recv(&codec).await.unwrap().unwrap();
-    assert_eq!(
-        packet(pkt),
-        Packet::PublishAck(codec::PublishAck {
-            packet_id: NonZeroU16::new(1).unwrap(),
-            reason_code: codec::PublishAckReason::PacketIdentifierInUse,
-            properties: Default::default(),
-            reason_string: None,
-        })
-    );
-
-    // SubscribeAck
+    // subscribe acks do not wait for publish acks
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         packet(pkt),
@@ -852,6 +849,30 @@ async fn test_dups() {
             status: vec![codec::UnsubscribeAckReason::PacketIdentifierInUse],
         }
         .into()
+    );
+
+    // publish acks are sent in the order publish packets are received
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        packet(pkt),
+        Packet::PublishAck(codec::PublishAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            reason_code: codec::PublishAckReason::Success,
+            properties: Default::default(),
+            reason_string: None,
+        })
+    );
+
+    // PublishAck for the dup
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        packet(pkt),
+        Packet::PublishAck(codec::PublishAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            reason_code: codec::PublishAckReason::PacketIdentifierInUse,
+            properties: Default::default(),
+            reason_string: None,
+        })
     );
 }
 
