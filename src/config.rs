@@ -3,6 +3,34 @@ use ntex_util::time::{Millis, Seconds};
 
 use crate::types::QoS;
 
+/// Mqtt server and client configuration.
+///
+/// # Read timeouts
+///
+/// The dispatcher uses one read-side timer, selected by the read state:
+///
+/// * Between packets the keep-alive timeout applies. It is restarted after
+///   every received packet, a streamed publish is one packet and its payload
+///   chunks do not restart it. The server sets keep-alive during the handshake,
+///   see [`v3::ConnectAck::idle_timeout()`] and
+///   [`v5::ConnectAck::keep_alive()`].
+/// * While a packet is partially received and a frame read rate is configured
+///   with `IoConfig::set_frame_read_rate(timeout, max_timeout, rate)`, the
+///   frame read rate replaces keep-alive. The peer must send more than `rate`
+///   bytes every `timeout` period, and the whole packet must be received within
+///   `max_timeout`. If `max_timeout` is zero, a packet is not limited in time
+///   as long as the peer keeps the rate.
+/// * Without a frame read rate, keep-alive also bounds a partially received
+///   packet.
+///
+/// No read timer runs while reading is paused, because the service is not
+/// ready or the response queue is full (see [`set_max_queue`]). The frame read
+/// budget restarts when reading resumes. During write backpressure only the
+/// write timeout (`IoConfig::set_write_timeout()`) applies.
+///
+/// [`set_max_queue`]: MqttServiceConfig::set_max_queue
+/// [`v3::ConnectAck::idle_timeout()`]: crate::v3::ConnectAck::idle_timeout
+/// [`v5::ConnectAck::keep_alive()`]: crate::v5::ConnectAck::keep_alive
 #[derive(Debug)]
 pub struct MqttServiceConfig {
     pub(crate) max_qos: QoS,

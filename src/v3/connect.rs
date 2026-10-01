@@ -172,6 +172,9 @@ impl<St> ConnectAck<St> {
     ///
     /// By default idle time-out is set to 1.5 times of the client's keep-alive
     /// value, or to 30 seconds if the client's keep-alive is 0.
+    ///
+    /// See [`MqttServiceConfig`](crate::MqttServiceConfig#read-timeouts) for how
+    /// keep-alive interacts with the frame read rate.
     pub fn idle_timeout(mut self, timeout: Seconds) -> Self {
         self.keepalive = timeout;
         self
