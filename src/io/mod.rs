@@ -22,7 +22,7 @@ const STOP_TAG: usize = 0x6d71_7474;
 
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = <U as Encoder>::Item;
-type Queue<T, E> = RefCell<VecDeque<ServiceResult<Result<T, E>>>>;
+type ServiceResult<Codec, E> = Result<Option<Response<Codec>>, DispatcherError<E>>;
 
 type ServiceCall<Codec, E> =
     PipelineCall<Request<Codec>, Option<Response<Codec>>, DispatcherError<E>>;
@@ -46,16 +46,6 @@ pin_project_lite::pin_project! {
     }
 }
 
-bitflags::bitflags! {
-    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-    struct Flags: u8  {
-        const READY_ERR     = 0b0000_0001;
-        const IO_ERR        = 0b0000_0010;
-        const READY         = 0b0000_0100;
-        const READY_TASK    = 0b0000_1000;
-    }
-}
-
 struct DispatcherInner<Codec, E, Err>
 where
     Codec: Encoder + Decoder + 'static,
@@ -63,7 +53,6 @@ where
     Err: 'static,
 {
     io: IoBoxed,
-    flags: Flags,
     codec: Codec,
     service: ServicePipeline<Codec, E>,
     control: ControlPipeline<Codec, E, Err>,
@@ -71,6 +60,8 @@ where
     state: Rc<DispatcherState<Codec, E>>,
     timers: Timers,
     keepalive_timeout: Seconds,
+    /// Service readiness failed, it is not polled during stop
+    ready_err: bool,
 }
 
 struct DispatcherState<Codec, E>
@@ -78,42 +69,26 @@ where
     Codec: Encoder + Decoder + 'static,
     E: 'static,
 {
-    error: Cell<Option<IoDispatcherError<DispatcherError<E>>>>,
+    /// Stop message for the first error
+    error: Cell<Option<Control<E>>>,
+    /// Index of the queue head
     base: Cell<usize>,
-    queue: Queue<Option<Response<Codec>>, DispatcherError<E>>,
+    /// Service results in request order, `None` is a pending call
+    queue: RefCell<VecDeque<Option<ServiceResult<Codec, E>>>>,
     waker: LocalWaker,
+    /// Pending call polled by the dispatcher, other pending calls are spawned
     response: Cell<Option<ServiceCall<Codec, E>>>,
     response_idx: Cell<usize>,
     max_queue: usize,
-}
-
-enum ServiceResult<T> {
-    Pending,
-    Ready(T),
-}
-
-impl<T> ServiceResult<T> {
-    fn take(&mut self) -> Option<T> {
-        let this = std::mem::replace(self, ServiceResult::Pending);
-        match this {
-            ServiceResult::Pending => None,
-            ServiceResult::Ready(result) => Some(result),
-        }
-    }
 }
 
 #[derive(Debug)]
 enum IoDispatcherState<Codec: Encoder + Decoder, E: 'static, Err: 'static> {
     Processing,
     Backpressure,
-    Stop(Option<ControlCall<Codec, E, Err>>),
+    Stop(ControlCall<Codec, E, Err>),
     Shutdown(Option<Result<(), Err>>),
     ShutdownIo(Option<Result<(), Err>>),
-}
-
-pub(crate) enum IoDispatcherError<S> {
-    Encoder(EncodeError),
-    Service(S),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -155,7 +130,7 @@ where
                 control,
                 service,
                 keepalive_timeout,
-                flags: Flags::empty(),
+                ready_err: false,
                 st: IoDispatcherState::Processing,
             },
         }
@@ -181,9 +156,32 @@ where
         self.max_queue != 0 && len >= self.max_queue
     }
 
+    fn set_error(&self, err: DispatcherError<E>) {
+        self.error.set(Some(match err {
+            DispatcherError::Service(err) => Control::err(err),
+            DispatcherError::Protocol(err) => Control::proto(err),
+        }));
+    }
+
+    /// Encodes the response of a completed call.
+    fn write_result(&self, item: ServiceResult<Codec, E>, io: &IoRef, codec: &Codec) {
+        match item {
+            Ok(Some(item)) => {
+                if let Err(err) = io.encode(item, codec) {
+                    self.error
+                        .set(Some(Control::proto(MqttProtocolError::Encode(err))));
+                }
+            }
+            Ok(None) => (),
+            Err(err) => self.set_error(err),
+        }
+    }
+
+    /// Handles the result of a queued call, returns `true` if the dispatcher
+    /// must be woken up.
     fn handle_result(
         &self,
-        item: Result<Option<Response<Codec>>, DispatcherError<E>>,
+        item: ServiceResult<Codec, E>,
         response_idx: usize,
         io: &IoRef,
         codec: &Codec,
@@ -192,46 +190,22 @@ where
         let mut queue = self.queue.borrow_mut();
         let idx = response_idx.wrapping_sub(self.base.get());
 
-        // handle first response
         if idx == 0 {
+            // write the head response and the completed responses after it
             let was_full = self.is_full(queue.len());
-            let _ = queue.pop_front();
-            self.base.set(self.base.get().wrapping_add(1));
-            match item {
-                Err(err) => {
-                    self.error.set(Some(IoDispatcherError::Service(err)));
-                }
-                Ok(Some(item)) => {
-                    if let Err(err) = io.encode(item, codec) {
-                        self.error.set(Some(IoDispatcherError::Encoder(err)));
-                    }
-                }
-                Ok(None) => (),
-            }
-
-            // check remaining response
-            while let Some(item) = queue.front_mut().and_then(ServiceResult::take) {
+            let mut item = Some(item);
+            while let Some(res) = item {
                 let _ = queue.pop_front();
                 self.base.set(self.base.get().wrapping_add(1));
-                match item {
-                    Err(err) => {
-                        self.error.set(Some(IoDispatcherError::Service(err)));
-                    }
-                    Ok(Some(item)) => {
-                        if let Err(err) = io.encode(item, codec) {
-                            self.error.set(Some(IoDispatcherError::Encoder(err)));
-                        }
-                    }
-                    Ok(None) => (),
-                }
+                self.write_result(res, io, codec);
+                item = queue.front_mut().and_then(Option::take);
             }
-
             err || queue.is_empty() || (was_full && !self.is_full(queue.len()))
         } else {
             if let Err(err) = item {
-                self.error.set(Some(IoDispatcherError::Service(err)));
+                self.set_error(err);
             } else {
-                queue[idx] = ServiceResult::Ready(item);
+                queue[idx] = Some(item);
             }
             err
         }
@@ -247,10 +221,8 @@ where
 {
     type Output = Result<(), Err>;
 
-    #[allow(clippy::too_many_lines)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.as_mut().project();
-        let inner = this.inner;
+        let inner = self.as_mut().project().inner;
         inner.state.waker.register(cx.waker());
 
         // check control service readiness
@@ -273,39 +245,29 @@ where
         loop {
             match inner.st {
                 IoDispatcherState::Processing => {
-                    match ready!(inner.poll_service(cx)) {
-                        PollService::Ready => {
-                            // decode incoming bytes stream
-                            match inner.io.poll_recv_decode(&inner.codec, cx) {
-                                Ok(decoded) => {
-                                    inner.update_timer(&decoded);
-                                    if let Some(el) = decoded.item {
-                                        inner.call_service(cx, el);
-                                    } else {
-                                        return Poll::Pending;
-                                    }
-                                }
-                                Err(RecvError::Timeout) => {
-                                    if let Err(err) = inner.handle_timeout() {
-                                        inner.stop(inner.control.call_static(Control::proto(err)));
-                                    }
-                                }
-                                Err(RecvError::WriteBackpressure) => {
-                                    inner.start_write_timer();
-                                    inner.st = IoDispatcherState::Backpressure;
-                                    spawn(inner.control.call_static(Control::wr(true)));
-                                }
-                                Err(RecvError::Decoder(err)) => {
-                                    inner.stop(inner.control.call_static(Control::proto(
-                                        MqttProtocolError::Decode(err),
-                                    )));
-                                }
-                                Err(RecvError::PeerGone(err)) => {
-                                    inner.stop(inner.control.call_static(Control::peer_gone(err)));
-                                }
+                    if ready!(inner.poll_service(cx)) == PollService::Continue {
+                        continue;
+                    }
+                    // decode incoming bytes stream
+                    match inner.io.poll_recv_decode(&inner.codec, cx) {
+                        Ok(decoded) => {
+                            inner.update_timer(&decoded);
+                            if let Some(el) = decoded.item {
+                                inner.call_service(cx, el);
+                            } else {
+                                return Poll::Pending;
                             }
                         }
-                        PollService::Continue => (),
+                        Err(RecvError::Timeout) => {
+                            if let Err(err) = inner.handle_timeout() {
+                                inner.stop(Control::proto(err));
+                            }
+                        }
+                        Err(RecvError::WriteBackpressure) => inner.enter_backpressure(),
+                        Err(RecvError::Decoder(err)) => {
+                            inner.stop(Control::proto(MqttProtocolError::Decode(err)));
+                        }
+                        Err(RecvError::PeerGone(err)) => inner.stop(Control::peer_gone(err)),
                     }
                 }
                 // handle write back-pressure
@@ -314,65 +276,42 @@ where
                     if let Poll::Ready(IoStatusUpdate::Timeout) = inner.io.poll_status_update(cx)
                         && let Err(err) = inner.handle_timeout()
                     {
-                        inner.stop(inner.control.call_static(Control::proto(err)));
-                        continue;
-                    }
-
-                    if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
-                        inner.stop(inner.control.call_static(Control::peer_gone(Some(err))));
+                        inner.stop(Control::proto(err));
+                    } else if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
+                        inner.stop(Control::peer_gone(Some(err)));
                     } else if ready!(inner.poll_service(cx)) == PollService::Ready {
                         inner.stop_timer();
                         inner.st = IoDispatcherState::Processing;
                         spawn(inner.control.call_static(Control::wr(false)));
                     }
                 }
-                // drain service responses and shutdown io
-                IoDispatcherState::Stop(ref mut stop) => {
-                    // service may relay on poll_ready for response results
-                    if !inner.flags.contains(Flags::READY_ERR)
-                        && let Poll::Ready(res) = inner.service.poll_ready(cx)
-                        && res.is_err()
+                // wait for the control service to handle the stop message
+                IoDispatcherState::Stop(ref mut fut) => {
+                    // service may rely on poll_ready for response results
+                    if !inner.ready_err
+                        && let Poll::Ready(Err(_)) = inner.service.poll_ready(cx)
                     {
-                        inner.flags.insert(Flags::READY_ERR);
+                        inner.ready_err = true;
                     }
 
-                    let mut fut = stop.take().unwrap();
-                    match Pin::new(&mut fut).poll(cx) {
-                        Poll::Ready(Ok(item)) => {
-                            if let Some(item) = item {
-                                let _ = inner.io.encode(item, &inner.codec);
-                            }
-                            inner.st = IoDispatcherState::Shutdown(Some(Ok(())));
+                    let res = ready!(Pin::new(fut).poll(cx)).map(|item| {
+                        if let Some(item) = item {
+                            let _ = inner.io.encode(item, &inner.codec);
                         }
-                        Poll::Ready(Err(err)) => {
-                            inner.st = IoDispatcherState::Shutdown(Some(Err(err)));
-                        }
-                        Poll::Pending => {
-                            *stop = Some(fut);
-                            return Poll::Pending;
-                        }
-                    }
+                    });
+                    inner.st = IoDispatcherState::Shutdown(Some(res));
                 }
                 // shutdown service
                 IoDispatcherState::Shutdown(ref mut res) => {
-                    if inner.service.poll_shutdown(cx).is_ready() {
-                        log::trace!("{}: Service shutdown is completed, stop", inner.io.tag());
-                        inner.io.wake(STOP_TAG);
-                        inner.st = IoDispatcherState::ShutdownIo(res.take());
-                    } else {
-                        return Poll::Pending;
-                    }
+                    ready!(inner.service.poll_shutdown(cx));
+                    log::trace!("{}: Service shutdown is completed, stop", inner.io.tag());
+                    inner.io.wake(STOP_TAG);
+                    inner.st = IoDispatcherState::ShutdownIo(res.take());
                 }
-
                 IoDispatcherState::ShutdownIo(ref mut res) => {
-                    return if inner.flags.contains(Flags::IO_ERR) {
-                        Poll::Ready(res.take().unwrap_or(Ok(())))
-                    } else if inner.io.poll_shutdown(cx).is_ready() {
-                        log::trace!("{}: io shutdown completed", inner.io.tag());
-                        Poll::Ready(res.take().unwrap_or(Ok(())))
-                    } else {
-                        Poll::Pending
-                    };
+                    let _ = ready!(inner.io.poll_shutdown(cx));
+                    log::trace!("{}: io shutdown completed", inner.io.tag());
+                    return Poll::Ready(res.take().unwrap_or(Ok(())));
                 }
             }
         }
@@ -401,23 +340,31 @@ where
     E: 'static,
     Err: 'static,
 {
-    fn stop(&mut self, fut: ControlCall<Codec, E, Err>) {
+    /// Stops timers and sends the stop message to the control service.
+    fn stop(&mut self, msg: Control<E>) {
         self.timers.active = Timer::Stopped;
         self.io.stop_timer();
-        self.st = IoDispatcherState::Stop(Some(fut));
+        self.st = IoDispatcherState::Stop(self.control.call_static(msg));
+    }
+
+    fn enter_backpressure(&mut self) {
+        if !matches!(self.st, IoDispatcherState::Backpressure) {
+            self.start_write_timer();
+            self.st = IoDispatcherState::Backpressure;
+            spawn(self.control.call_static(Control::wr(true)));
+        }
     }
 
     fn call_service(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
         let mut fut = self.service.call_nowait(item);
         let mut queue = self.state.queue.borrow_mut();
 
-        // optimize first call
+        // only one pending call is polled by the dispatcher, spawn the rest
         if let Some(resp) = self.state.response.take() {
-            // first call is running
             self.state.response.set(Some(resp));
 
             let response_idx = self.state.base.get().wrapping_add(queue.len());
-            queue.push_back(ServiceResult::Pending);
+            queue.push_back(None);
 
             let st = self.io.get_ref();
             let codec = self.codec.clone();
@@ -428,53 +375,34 @@ where
             let _ = stopping.poll_ready(cx);
 
             spawn(async move {
-                let empty_q = match select(fut, stopping).await {
-                    Either::Left(item) => state.handle_result(item, response_idx, &st, &codec),
-                    Either::Right(()) => state.handle_result(Ok(None), response_idx, &st, &codec),
+                let item = match select(fut, stopping).await {
+                    Either::Left(item) => item,
+                    Either::Right(()) => Ok(None),
                 };
-                if empty_q {
+                if state.handle_result(item, response_idx, &st, &codec) {
                     st.notify_dispatcher();
                 }
             });
         } else if let Poll::Ready(res) = Pin::new(&mut fut).poll(cx) {
-            // check if current result is only response
             if queue.is_empty() {
-                match res {
-                    Err(err) => {
-                        self.state.error.set(Some(IoDispatcherError::Service(err)));
-                    }
-                    Ok(Some(item)) => {
-                        if let Err(err) = self.io.encode(item, &self.codec) {
-                            self.state.error.set(Some(IoDispatcherError::Encoder(err)));
-                        }
-                    }
-                    Ok(None) => (),
-                }
+                self.state.write_result(res, self.io.as_ref(), &self.codec);
             } else {
-                queue.push_back(ServiceResult::Ready(res));
-                self.state
-                    .response_idx
-                    .set(self.state.base.get().wrapping_add(queue.len()));
+                queue.push_back(Some(res));
             }
         } else {
-            self.state.response.set(Some(fut));
             self.state
                 .response_idx
                 .set(self.state.base.get().wrapping_add(queue.len()));
-            queue.push_back(ServiceResult::Pending);
+            self.state.response.set(Some(fut));
+            queue.push_back(None);
         }
     }
 
     fn poll_service(&mut self, cx: &mut Context<'_>) -> Poll<PollService> {
         // check for errors
-        if let Some(err) = self.state.error.take() {
+        if let Some(msg) = self.state.error.take() {
             log::trace!("{}: Error occurred, stopping dispatcher", self.io.tag());
-            let item = match err {
-                IoDispatcherError::Encoder(err) => Control::proto(MqttProtocolError::Encode(err)),
-                IoDispatcherError::Service(DispatcherError::Service(err)) => Control::err(err),
-                IoDispatcherError::Service(DispatcherError::Protocol(err)) => Control::proto(err),
-            };
-            self.stop(self.control.call_static(item));
+            self.stop(msg);
             return Poll::Ready(PollService::Continue);
         }
 
@@ -484,87 +412,75 @@ where
         } else {
             self.service.poll_ready(cx)
         };
-        match ready {
-            Poll::Ready(Ok(())) => Poll::Ready(PollService::Ready),
-            // pause io read task
-            Poll::Pending => {
-                log::trace!(
-                    "{}: Service is not ready, pause read task {:?}",
-                    self.io.tag(),
-                    self.io.flags()
-                );
-
-                // the write timeout keeps running while the service is paused
-                if self.timers.active != Timer::Write {
-                    self.stop_timer();
-                }
-                self.timers.reset_read(self.io.cfg());
-
-                let status = match self.io.poll_read_pause(cx) {
-                    Poll::Ready(status) => status,
-                    // clean read eof does not close the connection, but a peer that
-                    // stopped sending cannot make progress while service is not ready
-                    Poll::Pending
-                        if self.io.is_read_eof() && self.io.with_read_dst(|b| b.is_empty()) =>
-                    {
-                        IoStatusUpdate::PeerGone(None)
-                    }
-                    Poll::Pending => return Poll::Pending,
-                };
-
-                match status {
-                    IoStatusUpdate::Timeout if self.timers.active == Timer::Write => {
-                        if let Err(err) = self.handle_timeout() {
-                            self.stop(self.control.call_static(Control::proto(err)));
-                        }
-                        Poll::Ready(PollService::Continue)
-                    }
-                    IoStatusUpdate::Timeout => {
-                        log::trace!(
-                            "{}: Keep-alive error, stopping dispatcher during pause",
-                            self.io.tag()
-                        );
-                        self.stop(
-                            self.control
-                                .call_static(Control::proto(MqttProtocolError::KeepAliveTimeout)),
-                        );
-                        Poll::Ready(PollService::Continue)
-                    }
-                    IoStatusUpdate::PeerGone(err) => {
-                        log::trace!(
-                            "{}: Peer is gone during pause, stopping dispatcher: {:?}",
-                            self.io.tag(),
-                            err
-                        );
-                        self.stop(self.control.call_static(Control::peer_gone(err)));
-                        Poll::Ready(PollService::Continue)
-                    }
-                    IoStatusUpdate::WriteBackpressure => {
-                        if !matches!(self.st, IoDispatcherState::Backpressure) {
-                            self.start_write_timer();
-                        }
-                        self.st = IoDispatcherState::Backpressure;
-                        spawn(self.control.call_static(Control::wr(true)));
-                        Poll::Ready(PollService::Continue)
-                    }
-                }
-            }
-            // handle service readiness error
+        let msg = match ready {
+            Poll::Ready(Ok(())) => return Poll::Ready(PollService::Ready),
+            Poll::Pending => match ready!(self.poll_read_pause(cx)) {
+                Some(msg) => msg,
+                None => return Poll::Ready(PollService::Continue),
+            },
             Poll::Ready(Err(DispatcherError::Service(err))) => {
                 log::error!(
                     "{}: Service readiness check failed, stopping",
                     self.io.tag()
                 );
-                self.flags.insert(Flags::READY_ERR);
-                self.stop(self.control.call_static(Control::err(err)));
-                Poll::Ready(PollService::Continue)
+                self.ready_err = true;
+                Control::err(err)
             }
-            // handle protocol violations
-            Poll::Ready(Err(DispatcherError::Protocol(err))) => {
-                self.stop(self.control.call_static(Control::proto(err)));
-                Poll::Ready(PollService::Continue)
-            }
+            Poll::Ready(Err(DispatcherError::Protocol(err))) => Control::proto(err),
+        };
+        self.stop(msg);
+        Poll::Ready(PollService::Continue)
+    }
+
+    /// Pauses reading while the service is not ready, returns the stop
+    /// message if the dispatcher must stop.
+    fn poll_read_pause(&mut self, cx: &mut Context<'_>) -> Poll<Option<Control<E>>> {
+        log::trace!(
+            "{}: Service is not ready, pause read task {:?}",
+            self.io.tag(),
+            self.io.flags()
+        );
+
+        // the write timeout keeps running while the service is paused
+        if self.timers.active != Timer::Write {
+            self.stop_timer();
         }
+        self.timers.reset_read(self.io.cfg());
+
+        let status = match self.io.poll_read_pause(cx) {
+            Poll::Ready(status) => status,
+            // clean read eof does not close the connection, but a peer that
+            // stopped sending cannot make progress while service is not ready
+            Poll::Pending if self.io.is_read_eof() && self.io.with_read_dst(|b| b.is_empty()) => {
+                IoStatusUpdate::PeerGone(None)
+            }
+            Poll::Pending => return Poll::Pending,
+        };
+
+        Poll::Ready(match status {
+            IoStatusUpdate::Timeout if self.timers.active == Timer::Write => {
+                self.handle_timeout().err().map(Control::proto)
+            }
+            IoStatusUpdate::Timeout => {
+                log::trace!(
+                    "{}: Keep-alive error, stopping dispatcher during pause",
+                    self.io.tag()
+                );
+                Some(Control::proto(MqttProtocolError::KeepAliveTimeout))
+            }
+            IoStatusUpdate::PeerGone(err) => {
+                log::trace!(
+                    "{}: Peer is gone during pause, stopping dispatcher: {:?}",
+                    self.io.tag(),
+                    err
+                );
+                Some(Control::peer_gone(err))
+            }
+            IoStatusUpdate::WriteBackpressure => {
+                self.enter_backpressure();
+                None
+            }
+        })
     }
 
     fn update_timer(&mut self, decoded: &Decoded<<Codec as Decoder>::Item>) {
@@ -750,36 +666,14 @@ mod tests {
                 + 'static,
             C: Service<(), Control<E>, Res = Option<Response<U>>, Error = Err> + 'static,
         {
-            let keepalive_timeout = io.cfg().keepalive_timeout();
             let rio = io.get_ref();
-            let io = IoBoxed::from(io);
-
-            let state = Rc::new(DispatcherState {
-                error: Cell::new(None),
-                base: Cell::new(0),
-                waker: LocalWaker::default(),
-                queue: RefCell::new(VecDeque::new()),
-                response: Cell::new(None),
-                response_idx: Cell::new(0),
-                max_queue: io.cfg().ctx().get::<MqttServiceConfig>().max_queue,
-            });
-
-            (
-                Dispatcher {
-                    inner: DispatcherInner {
-                        codec,
-                        state,
-                        keepalive_timeout,
-                        service: Pipeline::new((), service.into_service()),
-                        control: Pipeline::new((), control),
-                        timers: Timers::new(&io),
-                        io,
-                        st: IoDispatcherState::Processing,
-                        flags: Flags::empty(),
-                    },
-                },
-                rio,
-            )
+            let disp = Dispatcher::new(
+                IoBoxed::from(io),
+                codec,
+                Pipeline::new((), service.into_service()),
+                Pipeline::new((), control),
+            );
+            (disp, rio)
         }
     }
 
@@ -1928,6 +1822,181 @@ mod tests {
         sleep(Millis(50)).await;
         assert_eq!(calls.get(), 10);
         assert_eq!(client.read_any(), Bytes::from_static(b"0123456789"));
+    }
+
+    /// Read is paused while the service is not ready, the queue is full or
+    /// on write backpressure. The transport does not read the socket then, so
+    /// a peer half-close or a reset is observed only once the backend reports
+    /// it (epoll HUP/ERR, failed write), which is what `Terminate` simulates.
+    #[derive(Copy, Clone, Debug)]
+    enum Disconnect {
+        /// Peer closes the connection, clean read eof
+        Close,
+        /// Connection reset, reported on the next read
+        Reset,
+        /// Transport failure detected by the backend, e.g. epoll HUP/ERR
+        Terminate,
+    }
+
+    impl Disconnect {
+        async fn apply(self, client: &Io, io: &nio::IoRef) {
+            match self {
+                Disconnect::Close => client.close().await,
+                Disconnect::Reset => {
+                    client.read_error(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+                }
+                Disconnect::Terminate => io.terminate(),
+            }
+        }
+    }
+
+    fn spawn_disp<F: Future + 'static>(disp: F) -> Rc<Cell<bool>> {
+        let done = Rc::new(Cell::new(false));
+        let done2 = done.clone();
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+            done2.set(true);
+        });
+        done
+    }
+
+    fn ctl_srv() -> impl Service<(), Control<()>, Res = Option<Bytes>, Error = ()> {
+        fn_service(async move |_: Control<()>| Ok::<_, ()>(None))
+    }
+
+    async fn assert_stops(case: &str, done: &Cell<bool>) {
+        for _ in 0..40 {
+            if done.get() {
+                return;
+            }
+            sleep(Millis(50)).await;
+        }
+        panic!("{case}: dispatcher did not stop after disconnect");
+    }
+
+    /// Dispatcher stops on disconnect while idle or reading a frame
+    #[ntex::test]
+    async fn disconnect_while_reading() {
+        for d in [Disconnect::Close, Disconnect::Reset, Disconnect::Terminate] {
+            for data in ["", "1", "12"] {
+                let (client, server) = Io::create();
+                client.remote_buffer_cap(1024);
+                let (disp, io) = Dispatcher::new_debug(
+                    nio::Io::new(server, SharedCfg::new("DBG").add(IoConfig::new())),
+                    BytesLenCodec(4),
+                    fn_service(async move |msg: Bytes| Ok::<_, DispatcherError<()>>(Some(msg))),
+                    ctl_srv(),
+                );
+                let done = spawn_disp(disp);
+                client.write(data);
+                sleep(Millis(25)).await;
+                assert!(!done.get());
+
+                d.apply(&client, &io).await;
+                assert_stops(&format!("{d:?}, data {data:?}"), &done).await;
+            }
+        }
+    }
+
+    /// Dispatcher stops on disconnect while service calls are in flight
+    #[ntex::test]
+    async fn disconnect_with_inflight_calls() {
+        for d in [Disconnect::Close, Disconnect::Reset, Disconnect::Terminate] {
+            let (client, server) = Io::create();
+            client.remote_buffer_cap(1024);
+            let dropped = Rc::new(Cell::new(false));
+            let (disp, io) = Dispatcher::new_debug(
+                nio::Io::new(server, SharedCfg::new("DBG").add(IoConfig::new())),
+                ByteCodec,
+                pending_service(dropped.clone()),
+                ctl_srv(),
+            );
+            let done = spawn_disp(disp);
+            client.write("123");
+            sleep(Millis(25)).await;
+
+            d.apply(&client, &io).await;
+            assert_stops(&format!("{d:?}"), &done).await;
+            assert!(dropped.get());
+        }
+    }
+
+    /// Dispatcher stops on disconnect while the response queue is full
+    #[ntex::test]
+    async fn disconnect_with_full_queue() {
+        for d in [Disconnect::Terminate] {
+            let (client, server) = Io::create();
+            client.remote_buffer_cap(1024);
+            let cfg: SharedCfg = SharedCfg::new("DBG")
+                .add(IoConfig::new())
+                .add(MqttServiceConfig::new().set_max_queue(2))
+                .into();
+            let (disp, io) = Dispatcher::new_debug(
+                nio::Io::new(server, cfg),
+                ByteCodec,
+                pending_service(Rc::default()),
+                ctl_srv(),
+            );
+            let done = spawn_disp(disp);
+            client.write("12345");
+            sleep(Millis(25)).await;
+
+            d.apply(&client, &io).await;
+            assert_stops(&format!("{d:?}"), &done).await;
+        }
+    }
+
+    /// Dispatcher stops on disconnect while the service is not ready
+    #[ntex::test]
+    async fn disconnect_service_not_ready() {
+        for d in [Disconnect::Terminate] {
+            for data in ["1", "12"] {
+                let (client, server) = Io::create();
+                client.remote_buffer_cap(1024 * 1024);
+                let (srv, control, _) = write_timeout_srv(false);
+                let (disp, io) = Dispatcher::new_debug(
+                    nio::Io::new(server, SharedCfg::new("DBG").add(IoConfig::new())),
+                    ByteCodec,
+                    srv,
+                    control,
+                );
+                let done = spawn_disp(disp);
+                client.write(data);
+                sleep(Millis(25)).await;
+                assert!(!done.get());
+
+                d.apply(&client, &io).await;
+                assert_stops(&format!("{d:?}, data {data:?}"), &done).await;
+            }
+        }
+    }
+
+    /// Dispatcher stops on disconnect during write backpressure
+    #[ntex::test]
+    async fn disconnect_write_backpressure() {
+        for d in [Disconnect::Terminate] {
+            for ready in [true, false] {
+                let (client, server) = Io::create();
+                client.remote_buffer_cap(0);
+                let (srv, control, data) = write_timeout_srv(ready);
+                let (disp, io) = Dispatcher::new_debug(
+                    nio::Io::new(
+                        server,
+                        SharedCfg::new("DBG").add(IoConfig::new().set_write_buf(32 * 1024)),
+                    ),
+                    ByteCodec,
+                    srv,
+                    control,
+                );
+                let done = spawn_disp(disp);
+                client.write("1");
+                sleep(Millis(25)).await;
+                assert_eq!(&data.borrow()[..], &[1]);
+
+                d.apply(&client, &io).await;
+                assert_stops(&format!("{d:?}, service ready {ready}"), &done).await;
+            }
+        }
     }
 
     /// Service becomes not ready and write backpressure is enabled
