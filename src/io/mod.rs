@@ -31,12 +31,13 @@ pub trait FrameState: Decoder {
         false
     }
 
-    /// Returns `false` if the service never responds to the item, such as
-    /// an at most once publish.
+    /// Returns `false` if the response to the item does not have to follow
+    /// the responses to earlier items, such as a ping or an at most once
+    /// publish.
     ///
-    /// These calls do not keep a slot in the response queue, a response
-    /// returned anyway is written once the call completes.
-    fn has_response(&self, _: &<Self as Decoder>::Item) -> bool {
+    /// These calls do not keep a slot in the response queue, the response is
+    /// written once the call completes.
+    fn is_ordered(&self, _: &<Self as Decoder>::Item) -> bool {
         true
     }
 }
@@ -48,8 +49,8 @@ impl<T: FrameState> FrameState for Rc<T> {
     }
 
     #[inline]
-    fn has_response(&self, item: &T::Item) -> bool {
-        (**self).has_response(item)
+    fn is_ordered(&self, item: &T::Item) -> bool {
+        (**self).is_ordered(item)
     }
 }
 
@@ -111,9 +112,9 @@ where
     waker: LocalWaker,
     /// Pending call polled by the dispatcher, other pending calls are spawned
     response: Cell<Option<ServiceCall<Codec, E>>>,
-    /// Queue index of the polled call, `None` for a call without response
+    /// Queue index of the polled call, `None` for an unordered call
     response_idx: Cell<Option<usize>>,
-    /// Pending calls without response, they count towards `max_queue`
+    /// Pending unordered calls, they count towards `max_queue`
     unordered: Cell<usize>,
     max_queue: usize,
 }
@@ -420,11 +421,11 @@ where
     }
 
     fn call_service(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
-        let ordered = self.codec.has_response(&item);
+        let ordered = self.codec.is_ordered(&item);
         let mut fut = self.service.call_nowait(item);
         let mut queue = self.state.queue.borrow_mut();
 
-        // calls without response do not keep a slot in the queue
+        // unordered calls do not keep a slot in the queue
         let mut push_pending = || {
             if ordered {
                 queue.push_back(None);
@@ -1722,7 +1723,7 @@ mod tests {
     }
 
     impl FrameState for ByteCodec {
-        fn has_response(&self, item: &Bytes) -> bool {
+        fn is_ordered(&self, item: &Bytes) -> bool {
             item != "q"
         }
     }
@@ -2100,9 +2101,9 @@ mod tests {
         assert_eq!(client.read_any(), Bytes::from_static(b"0123456789"));
     }
 
-    /// Calls without response do not keep a slot in the response queue
+    /// Unordered calls do not keep a slot in the response queue
     #[ntex::test]
-    async fn no_response_calls_skip_queue() {
+    async fn unordered_calls_skip_queue() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
 
@@ -2148,9 +2149,9 @@ mod tests {
         assert_eq!(client.read_any(), Bytes::from_static(b"abc"));
     }
 
-    /// Pending calls without response count towards the queue limit
+    /// Pending unordered calls count towards the queue limit
     #[ntex::test]
-    async fn no_response_calls_limit() {
+    async fn unordered_calls_limit() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
 

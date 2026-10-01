@@ -16,11 +16,11 @@
 
 * Keep-alive and frame read rate timeouts apply to the whole streamed publish, not each payload chunk
 
-* v5: Send PacketIdentifierInUse acks in the order packets are received
+* v5: Send PacketIdentifierInUse publish acks in the order packets are received
 
 * Stop dispatcher on response encode errors in spawned service calls
 
-* QoS 0 publishes and calls completed without response do not keep a dispatcher response queue slot, pending ones count towards max queue
+* Only publish acks keep the order of incoming packets, other responses are sent once ready, pending ones count towards max queue
 
 * Set default MqttServiceConfig connect timeout to 5 seconds
 

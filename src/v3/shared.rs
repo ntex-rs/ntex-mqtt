@@ -538,8 +538,19 @@ impl crate::io::FrameState for MqttShared {
     }
 
     #[inline]
-    fn has_response(&self, item: &codec::Decoded) -> bool {
-        !matches!(item, codec::Decoded::Publish(publish, ..) if publish.qos == QoS::AtMostOnce)
+    fn is_ordered(&self, item: &codec::Decoded) -> bool {
+        // mqtt orders acks of publish packets only
+        match item {
+            codec::Decoded::Publish(publish, ..) => publish.qos != QoS::AtMostOnce,
+            codec::Decoded::Packet(pkt, _) => !matches!(
+                pkt,
+                codec::Packet::PingRequest
+                    | codec::Packet::Subscribe { .. }
+                    | codec::Packet::Unsubscribe { .. }
+                    | codec::Packet::PublishRelease { .. }
+            ),
+            codec::Decoded::PayloadChunk(..) => true,
+        }
     }
 }
 

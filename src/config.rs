@@ -151,11 +151,12 @@ impl MqttServiceConfig {
     #[must_use]
     /// Set max number of queued responses.
     ///
-    /// Responses are sent in the order of incoming packets. A response that is
-    /// ready waits in the queue until all earlier responses are sent. When the
+    /// Publish acks are sent in the order of incoming packets. An ack that is
+    /// ready waits in the queue until all earlier acks are sent. When the
     /// queue reaches this limit, the dispatcher stops reading new packets until
-    /// queued responses are sent. Pending calls without response, such as
-    /// QoS 0 publishes, are not queued but count towards the limit.
+    /// queued acks are sent. Responses to other packets, such as pings and
+    /// subscriptions, are sent once ready and at most once publishes have no
+    /// response, these are not queued but pending ones count towards the limit.
     /// `0` disables the limit.
     ///
     /// By default the limit is set to 64 responses.
