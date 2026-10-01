@@ -10,13 +10,15 @@ use ntex_service::{
     cfg::Configuration,
     pipeline::{Pipeline, PipelineCall},
 };
-use ntex_util::channel::condition::Condition;
 use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
 
 use self::timer::{Timer, Timers};
 use crate::config::MqttServiceConfig;
 use crate::control::Control;
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttProtocolError};
+
+/// Io waiter tag, in-flight service calls are cancelled once it is woken.
+const STOP_TAG: usize = 0x6d71_7474;
 
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = <U as Encoder>::Item;
@@ -67,7 +69,6 @@ where
     control: ControlPipeline<Codec, E, Err>,
     st: IoDispatcherState<Codec, E, Err>,
     state: Rc<DispatcherState<Codec, E>>,
-    stopping: Condition,
     timers: Timers,
     keepalive_timeout: Seconds,
 }
@@ -156,7 +157,6 @@ where
                 keepalive_timeout,
                 flags: Flags::empty(),
                 st: IoDispatcherState::Processing,
-                stopping: Condition::new(),
             },
         }
     }
@@ -357,7 +357,7 @@ where
                 IoDispatcherState::Shutdown(ref mut res) => {
                     if inner.service.poll_shutdown(cx).is_ready() {
                         log::trace!("{}: Service shutdown is completed, stop", inner.io.tag());
-                        inner.stopping.notify(());
+                        inner.io.wake(STOP_TAG);
                         inner.st = IoDispatcherState::ShutdownIo(res.take());
                     } else {
                         return Poll::Pending;
@@ -375,6 +375,21 @@ where
                     };
                 }
             }
+        }
+    }
+}
+
+impl<Codec, E, Err> Drop for DispatcherInner<Codec, E, Err>
+where
+    Codec: Encoder + Decoder + 'static,
+    E: 'static,
+    Err: 'static,
+{
+    fn drop(&mut self) {
+        // io waiters are woken on disconnect only after the transport is torn
+        // down, cancel in-flight calls unless the shutdown already did
+        if !matches!(self.st, IoDispatcherState::ShutdownIo(_)) {
+            self.io.wake(STOP_TAG);
         }
     }
 }
@@ -407,12 +422,15 @@ where
             let st = self.io.get_ref();
             let codec = self.codec.clone();
             let state = self.state.clone();
-            let stopping = self.stopping.wait();
+            // the dispatcher is not stopped yet, register the waiter now
+            // so a wake before the first poll of the task is not missed
+            let stopping = st.waiter(STOP_TAG).into_static();
+            let _ = stopping.poll_ready(cx);
 
             spawn(async move {
                 let empty_q = match select(fut, stopping).await {
                     Either::Left(item) => state.handle_result(item, response_idx, &st, &codec),
-                    Either::Right(_) => state.handle_result(Ok(None), response_idx, &st, &codec),
+                    Either::Right(()) => state.handle_result(Ok(None), response_idx, &st, &codec),
                 };
                 if empty_q {
                     st.notify_dispatcher();
@@ -752,7 +770,6 @@ mod tests {
                         codec,
                         state,
                         keepalive_timeout,
-                        stopping: Condition::new(),
                         service: Pipeline::new((), service.into_service()),
                         control: Pipeline::new((), control),
                         timers: Timers::new(&io),
@@ -1567,6 +1584,107 @@ mod tests {
         sleep(Millis(250)).await;
 
         assert!(&data.load(Ordering::Relaxed));
+    }
+
+    #[derive(Clone)]
+    struct ByteCodec;
+
+    impl Encoder for ByteCodec {
+        type Item = Bytes;
+        type Error = EncodeError;
+
+        fn encode(&self, item: Bytes, dst: &mut BytePages) -> Result<(), Self::Error> {
+            dst.append(item);
+            Ok(())
+        }
+    }
+
+    impl Decoder for ByteCodec {
+        type Item = Bytes;
+        type Error = DecodeError;
+
+        fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+            match src.first() {
+                None => Ok(None),
+                Some(b'E') => Err(DecodeError::MalformedPacket),
+                Some(_) => Ok(Some(src.split_to(1))),
+            }
+        }
+    }
+
+    struct OnDropFlag(Rc<Cell<bool>>);
+    impl Drop for OnDropFlag {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+
+    /// Service that responds to `w` immediately and never completes other calls
+    fn pending_service(
+        dropped: Rc<Cell<bool>>,
+    ) -> impl Service<(), Bytes, Res = Option<Bytes>, Error = DispatcherError<()>> {
+        fn_service(move |msg: Bytes| {
+            let dropped = dropped.clone();
+            async move {
+                if msg == Bytes::from_static(b"w") {
+                    return Ok(Some(Bytes::from_static(b"response")));
+                }
+                // the first call is polled by the dispatcher, others are spawned
+                let _guard = (msg == Bytes::from_static(b"2")).then(|| OnDropFlag(dropped));
+                std::future::pending::<()>().await;
+                Ok::<_, DispatcherError<()>>(None)
+            }
+        })
+    }
+
+    /// Calls spawned in the same poll as the stop are cancelled on service shutdown
+    #[ntex::test]
+    async fn cancel_spawned_before_first_poll() {
+        let (client, server) = Io::create();
+        // pending write data delays io shutdown
+        client.remote_buffer_cap(0);
+
+        let dropped = Rc::new(Cell::new(false));
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG").add(IoConfig::new())),
+            ByteCodec,
+            pending_service(dropped.clone()),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
+        );
+
+        // decode, spawn and stop within a single dispatcher poll
+        client.write("w12E");
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+        sleep(Millis(50)).await;
+        assert!(!client.is_closed());
+        assert!(dropped.get());
+    }
+
+    /// Spawned calls are cancelled when the dispatcher is dropped
+    #[ntex::test]
+    async fn cancel_spawned_on_drop() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+
+        let dropped = Rc::new(Cell::new(false));
+        let (mut disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG").add(IoConfig::new())),
+            ByteCodec,
+            pending_service(dropped.clone()),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
+        );
+
+        client.write("w12");
+        sleep(Millis(25)).await;
+        let _ = ntex_util::future::lazy(|cx| Pin::new(&mut disp).poll(cx)).await;
+        sleep(Millis(25)).await;
+        assert!(!dropped.get());
+
+        drop(disp);
+        sleep(Millis(25)).await;
+        assert!(dropped.get());
     }
 
     /// Handle peer gone while publish service is not ready
