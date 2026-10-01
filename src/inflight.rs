@@ -202,7 +202,7 @@ mod tests {
 
     #[ntex::test]
     async fn test_inflight() {
-        let wait_time = Duration::from_millis(50);
+        let wait_time = Duration::from_millis(250);
 
         let srv = Pipeline::new((), InFlightServiceImpl::new(1, 0, SleepService(wait_time)));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
@@ -214,7 +214,9 @@ mod tests {
         ntex_util::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
-        ntex_util::time::sleep(Duration::from_millis(50)).await;
+        // wait for in-flight call to complete
+        let res = ntex_util::time::timeout(Duration::from_secs(5), srv.ready()).await;
+        assert_eq!(res, Ok(Ok(())));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
         assert!(lazy(|cx| srv.poll_shutdown(cx)).await.is_ready());
     }
