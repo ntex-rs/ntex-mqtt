@@ -345,7 +345,9 @@ where
                         inner.stop(Control::proto(err));
                     } else if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
                         inner.stop(Control::peer_gone(Some(err)));
-                    } else if ready!(inner.poll_service(cx)) == PollService::Ready {
+                    } else {
+                        // backpressure is released, service readiness is checked
+                        // by the processing state
                         inner.stop_timer();
                         inner.st = IoDispatcherState::Processing;
                         spawn(inner.control.call_static(Control::wr(false)));
@@ -2363,7 +2365,7 @@ mod tests {
         assert!(data.borrow().contains(&3));
     }
 
-    /// Write timer expires after backpressure is released while service is not ready
+    /// Backpressure is released while service is not ready, write timer is stopped
     #[ntex::test]
     async fn test_write_timeout_released_service_not_ready() {
         let (client, server) = Io::create();
@@ -2385,9 +2387,12 @@ mod tests {
         assert_eq!(&data.borrow()[..], &[1]);
 
         client.remote_buffer_cap(1024 * 1024);
+        sleep(Millis(200)).await;
+        assert_eq!(&data.borrow()[..], &[1, 2]);
+
         sleep(Millis(2000)).await;
         assert!(state.is_active());
-        assert!(!data.borrow().contains(&3));
+        assert_eq!(&data.borrow()[..], &[1, 2]);
         assert_eq!(client.read_any().len(), 65_536);
     }
 

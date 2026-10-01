@@ -22,6 +22,8 @@
 
 * Report the first service call error to the control service, later errors no longer overwrite it
 
+* Release write backpressure and stop the write timer once output is flushed, even if the service is not ready
+
 * Stop dispatcher on response encode errors in spawned service calls
 
 * Only publish acks keep the order of incoming packets, other responses are sent once ready, pending ones count towards max queue
