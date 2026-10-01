@@ -190,7 +190,7 @@ impl Encoder for Codec {
     type Item = Encoded;
     type Error = EncodeError;
 
-    fn encodev(&self, item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
+    fn encode(&self, item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
         match item {
             Encoded::Packet(pkt) => {
                 let content_size = encode::get_encoded_size(&pkt);
@@ -275,7 +275,7 @@ mod tests {
         };
         let payload = Bytes::from(Vec::from("a".repeat(260 * 1024)));
         codec
-            .encodev(Encoded::Publish(pkt.clone(), Some(payload)), &mut buf)
+            .encode(Encoded::Publish(pkt.clone(), Some(payload)), &mut buf)
             .unwrap();
 
         let Decoded::Publish(pkt2, _, _) = codec

@@ -1,4 +1,4 @@
-use ntex_bytes::BytesMut;
+use ntex_bytes::{BytePages, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
@@ -59,7 +59,7 @@ impl Encoder for VersionCodec {
     type Item = ProtocolVersion;
     type Error = EncodeError;
 
-    fn encode(&self, _: Self::Item, _: &mut BytesMut) -> Result<(), EncodeError> {
+    fn encode(&self, _: Self::Item, _: &mut BytePages) -> Result<(), EncodeError> {
         Err(EncodeError::UnsupportedVersion)
     }
 }

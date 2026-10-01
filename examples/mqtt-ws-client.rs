@@ -22,7 +22,6 @@ async fn main() -> std::io::Result<()> {
     // we need custom connector that would open ws connection and enable ws transport
     let ws_client = Rc::new(
         ws::WsClient::new("https://127.0.0.1:8883", SharedCfg::default())
-            .unwrap()
             .connector(SslConnector::new(builder.build())),
     );
 

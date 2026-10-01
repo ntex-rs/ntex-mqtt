@@ -1,5 +1,11 @@
 # Changes
 
+## [9.1.0] - Unreleased
+
+* Update to ntex-io 4.1, ntex-codec 2.0
+
+* Stop the dispatcher on clean peer eof while the service is not ready
+
 ## [9.0.0] - 2026-09-14
 
 * Refactor state management

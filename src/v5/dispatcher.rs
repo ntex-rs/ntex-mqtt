@@ -254,7 +254,7 @@ where
                         }
                     }
 
-                    if state.is_closed()
+                    if !state.is_active()
                         && self
                             .cfg
                             .handle_qos_after_disconnect
@@ -324,12 +324,12 @@ where
                 Ok(None)
             }
             Decoded::Packet(Packet::Auth(pkt), size) => {
-                if self.inner.sink.is_closed() {
-                    Ok(None)
-                } else {
+                if self.inner.sink.is_active() {
                     self.inner
                         .control(ProtocolMessage::auth(pkt, size), ctx)
                         .await
+                } else {
+                    Ok(None)
                 }
             }
             Decoded::Packet(Packet::PingRequest, _) => {
@@ -353,7 +353,7 @@ where
                 }
             }
             Decoded::Packet(Packet::Subscribe(pkt), size) => {
-                if self.inner.sink.is_closed() {
+                if !self.inner.sink.is_active() {
                     Ok(None)
                 } else if pkt
                     .topic_filters
@@ -390,7 +390,7 @@ where
                 }
             }
             Decoded::Packet(Packet::Unsubscribe(pkt), size) => {
-                if self.inner.sink.is_closed() {
+                if !self.inner.sink.is_active() {
                     Ok(None)
                 } else if pkt
                     .topic_filters

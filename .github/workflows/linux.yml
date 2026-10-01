@@ -8,7 +8,7 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - 1.95.0 # MSRV
+          - 1.97.0 # MSRV
           - stable
           - nightly
 
@@ -45,8 +45,3 @@ jobs:
         timeout-minutes: 10
         run: |
           cargo nextest run --retries=3 --all --features="ntex/neon-uring"
-
-      - name: Run tests [compio]
-        timeout-minutes: 10
-        run: |
-          cargo nextest run --retries=3 --all --features="ntex/compio"
