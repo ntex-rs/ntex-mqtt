@@ -289,9 +289,6 @@ where
         let inner = self.as_mut().project().inner;
         inner.state.waker.register(cx.waker());
 
-        // check control service readiness
-        ready!(inner.control.poll_ready(cx))?;
-
         // handle service response future
         if let Some(mut fut) = inner.state.response.take() {
             if let Poll::Ready(item) = Pin::new(&mut fut).poll(cx) {
@@ -480,11 +477,28 @@ where
             return Poll::Ready(PollService::Continue);
         }
 
+        // control service cannot handle the stop message, shutdown
+        let control = self.control.poll_ready(cx);
+        if let Poll::Ready(Err(err)) = control {
+            log::error!(
+                "{}: Control service readiness check failed, shutdown",
+                self.io.tag()
+            );
+            self.timers.active = Timer::Stopped;
+            self.io.stop_timer();
+            self.st = IoDispatcherState::Shutdown(Some(Err(err)));
+            return Poll::Ready(PollService::Continue);
+        }
+
         // check readiness, pause reading while the response queue is full
+        // or the control service is not ready
         let ready = if self.state.is_full(self.state.queue.borrow().len()) {
             Poll::Pending
         } else {
-            self.service.poll_ready(cx)
+            match self.service.poll_ready(cx) {
+                Poll::Ready(Ok(())) if control.is_pending() => Poll::Pending,
+                ready => ready,
+            }
         };
         let msg = match ready {
             Poll::Ready(Ok(())) => return Poll::Ready(PollService::Ready),
@@ -690,7 +704,7 @@ mod tests {
     use ntex_io::{self as nio, IoConfig, testing::IoTest as Io};
     use ntex_service::{Ctx, IntoService, Service, cfg::SharedCfg, fn_service};
     use ntex_util::channel::{condition::Condition, oneshot};
-    use ntex_util::time::{Millis, sleep};
+    use ntex_util::time::{Millis, sleep, timeout};
     use rand::RngExt;
 
     use super::*;
@@ -1089,6 +1103,85 @@ mod tests {
 
         // service must be checked for readiness only once
         assert_eq!(counter.get(), 1);
+    }
+
+    struct Ctl(Rc<Cell<bool>>, bool);
+
+    impl Service<(), Control<()>> for Ctl {
+        type Res = Option<Bytes>;
+        type Error = ();
+
+        async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
+            if self.1 {
+                return Err(());
+            }
+            if self.0.get() {
+                sleep(Millis(250)).await;
+                self.0.set(false);
+            }
+            Ok(())
+        }
+
+        async fn call(&self, _: Control<()>, _: Ctx<'_, Self, ()>) -> Result<Option<Bytes>, ()> {
+            Ok(None)
+        }
+    }
+
+    /// Responses are written and reading is paused while control is not ready
+    #[ntex::test]
+    async fn control_not_ready() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+        client.write("1");
+
+        let busy = Rc::new(Cell::new(false));
+        let busy2 = busy.clone();
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG")),
+            BytesCodec,
+            fn_service(async move |msg: Bytes| {
+                busy2.set(true);
+                sleep(Millis(50)).await;
+                Ok::<_, DispatcherError<()>>(Some(msg))
+            }),
+            Ctl(busy, false),
+        );
+        let (tx, rx) = oneshot::channel();
+        ntex_util::spawn(async move {
+            let _ = tx.send(disp.await);
+        });
+
+        let buf = timeout(Millis(150), client.read()).await.unwrap().unwrap();
+        assert_eq!(buf, Bytes::from_static(b"1"));
+
+        // reading is paused until control is ready
+        client.write("2");
+        sleep(Millis(50)).await;
+        assert_eq!(client.read_any(), Bytes::new());
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"2"));
+
+        client.close().await;
+        assert_eq!(rx.await.unwrap(), Ok(()));
+    }
+
+    /// Control readiness error shuts down the dispatcher
+    #[ntex::test]
+    async fn control_ready_err() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+        client.write("1");
+
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG")),
+            BytesCodec,
+            fn_service(async move |msg: Bytes| Ok::<_, DispatcherError<()>>(Some(msg))),
+            Ctl(Rc::new(Cell::new(false)), true),
+        );
+        let res = timeout(Millis(500), disp).await.unwrap();
+        assert_eq!(res, Err(()));
+        assert_eq!(client.read_any(), Bytes::new());
+        assert!(client.is_closed());
     }
 
     #[ntex::test]

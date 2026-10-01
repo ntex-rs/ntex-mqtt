@@ -18,6 +18,8 @@
 
 * v5: Send PacketIdentifierInUse publish acks in the order packets are received
 
+* Control service readiness pauses reading only, readiness errors shut down the service and io
+
 * Stop dispatcher on response encode errors in spawned service calls
 
 * Only publish acks keep the order of incoming packets, other responses are sent once ready, pending ones count towards max queue
