@@ -12,6 +12,8 @@
 
 * Limit dispatcher response queue, add MqttServiceConfig::set_max_queue()
 
+* Refactor dispatcher timers, frame read rate counts bytes consumed by the codec
+
 ## [9.0.0] - 2026-09-14
 
 * Refactor state management

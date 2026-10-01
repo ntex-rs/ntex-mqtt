@@ -1,4 +1,6 @@
 //! Framed transport dispatcher
+mod timer;
+
 use std::task::{Context, Poll, ready};
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin::Pin, rc::Rc};
 
@@ -11,6 +13,7 @@ use ntex_service::{
 use ntex_util::channel::condition::Condition;
 use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
 
+use self::timer::{Timer, Timers};
 use crate::config::MqttServiceConfig;
 use crate::control::Control;
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttProtocolError};
@@ -46,12 +49,8 @@ bitflags::bitflags! {
     struct Flags: u8  {
         const READY_ERR     = 0b0000_0001;
         const IO_ERR        = 0b0000_0010;
-        const KA_ENABLED    = 0b0000_0100;
-        const KA_TIMEOUT    = 0b0000_1000;
-        const READ_TIMEOUT  = 0b0001_0000;
-        const READY         = 0b0010_0000;
-        const READY_TASK    = 0b0100_0000;
-        const WR_TIMEOUT    = 0b1000_0000;
+        const READY         = 0b0000_0100;
+        const READY_TASK    = 0b0000_1000;
     }
 }
 
@@ -69,9 +68,7 @@ where
     st: IoDispatcherState<Codec, E, Err>,
     state: Rc<DispatcherState<Codec, E>>,
     stopping: Condition,
-    read_remains: u32,
-    read_remains_prev: u32,
-    read_max_timeout: Seconds,
+    timers: Timers,
     keepalive_timeout: Seconds,
 }
 
@@ -150,22 +147,16 @@ where
 
         Dispatcher {
             inner: DispatcherInner {
+                timers: Timers::new(&io),
                 io,
                 codec,
                 state,
                 control,
                 service,
                 keepalive_timeout,
-                flags: if keepalive_timeout.is_zero() {
-                    Flags::empty()
-                } else {
-                    Flags::KA_ENABLED
-                },
+                flags: Flags::empty(),
                 st: IoDispatcherState::Processing,
                 stopping: Condition::new(),
-                read_remains: 0,
-                read_remains_prev: 0,
-                read_max_timeout: Seconds::ZERO,
             },
         }
     }
@@ -177,11 +168,6 @@ where
     /// By default keep-alive timeout is taken from the io configuration.
     pub(crate) fn keepalive_timeout(mut self, timeout: Seconds) -> Self {
         self.inner.keepalive_timeout = timeout;
-        if timeout.is_zero() {
-            self.inner.flags.remove(Flags::KA_ENABLED);
-        } else {
-            self.inner.flags.insert(Flags::KA_ENABLED);
-        }
         self
     }
 }
@@ -335,7 +321,7 @@ where
                     if let Err(err) = ready!(inner.io.poll_flush(cx, false)) {
                         inner.stop(inner.control.call_static(Control::peer_gone(Some(err))));
                     } else if ready!(inner.poll_service(cx)) == PollService::Ready {
-                        inner.stop_write_timer();
+                        inner.stop_timer();
                         inner.st = IoDispatcherState::Processing;
                         spawn(inner.control.call_static(Control::wr(false)));
                     }
@@ -401,7 +387,7 @@ where
     Err: 'static,
 {
     fn stop(&mut self, fut: ControlCall<Codec, E, Err>) {
-        self.flags.remove(Flags::WR_TIMEOUT);
+        self.timers.active = Timer::Stopped;
         self.io.stop_timer();
         self.st = IoDispatcherState::Stop(Some(fut));
     }
@@ -490,11 +476,11 @@ where
                     self.io.flags()
                 );
 
-                // remove read timers, the write timer keeps running while paused
-                self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
-                if !self.flags.contains(Flags::WR_TIMEOUT) {
-                    self.io.stop_timer();
+                // the write timeout keeps running while the service is paused
+                if self.timers.active != Timer::Write {
+                    self.stop_timer();
                 }
+                self.timers.reset_read(self.io.cfg());
 
                 let status = match self.io.poll_read_pause(cx) {
                     Poll::Ready(status) => status,
@@ -509,7 +495,7 @@ where
                 };
 
                 match status {
-                    IoStatusUpdate::Timeout if self.flags.contains(Flags::WR_TIMEOUT) => {
+                    IoStatusUpdate::Timeout if self.timers.active == Timer::Write => {
                         if let Err(err) = self.handle_timeout() {
                             self.stop(self.control.call_static(Control::proto(err)));
                         }
@@ -564,96 +550,96 @@ where
     }
 
     fn update_timer(&mut self, decoded: &Decoded<<Codec as Decoder>::Item>) {
-        // got parsed frame
-        if decoded.item.is_some() {
-            self.read_remains = 0;
-            self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
-        } else if self.flags.contains(Flags::READ_TIMEOUT) {
-            // received new data but not enough for parsing complete frame
-            self.read_remains = decoded.remains as u32;
-        } else if self.read_remains == 0 && decoded.remains == 0 {
-            // no new data, start keep-alive timer
-            if self.flags.contains(Flags::KA_ENABLED) && !self.flags.contains(Flags::KA_TIMEOUT) {
+        let item = decoded.item.is_some();
+        self.timers.update_read(
+            self.io.cfg(),
+            item,
+            decoded.remains as u32,
+            decoded.consumed as u32,
+        );
+
+        // keep-alive and frame read timers do not apply while a frame is handled
+        let timer = self
+            .timers
+            .select(self.io.cfg(), !self.keepalive_timeout.is_zero(), item);
+        self.set_timer(timer);
+    }
+
+    /// Starts the write timeout when write backpressure is enabled.
+    ///
+    /// Frames are not decoded during backpressure, so read-side timers are
+    /// stopped when no write timeout is configured.
+    fn start_write_timer(&mut self) {
+        let timeout = self.io.cfg().write_timeout();
+        if timeout.is_zero() {
+            self.stop_timer();
+        } else if self.timers.active != Timer::Write {
+            log::trace!("{}: Start write timer {:?}", self.io.tag(), timeout);
+            self.timers.active = Timer::Write;
+            self.io.start_timer(timeout);
+        }
+    }
+
+    /// Stops the dispatcher timer, if it is armed.
+    fn stop_timer(&mut self) {
+        if self.timers.active != Timer::Stopped {
+            self.timers.active = Timer::Stopped;
+            self.io.stop_timer();
+        }
+    }
+
+    /// Arms the dispatcher timer for a read-side purpose, an armed timer
+    /// with the same purpose keeps running.
+    fn set_timer(&mut self, timer: Timer) {
+        if self.timers.active == timer {
+            return;
+        }
+        self.timers.active = match timer {
+            Timer::KeepAlive => {
                 log::trace!(
                     "{}: Start keep-alive timer {:?}",
                     self.io.tag(),
                     self.keepalive_timeout
                 );
-                self.flags.insert(Flags::KA_TIMEOUT);
                 self.io.start_timer(self.keepalive_timeout);
+                Timer::KeepAlive
             }
-        } else if let Some(params) = self.io.cfg().frame_read_rate() {
-            // we got new data but not enough to parse single frame
-            // start read timer
-            self.flags.insert(Flags::READ_TIMEOUT);
-
-            self.read_remains = decoded.remains as u32;
-            self.read_remains_prev = 0;
-            self.read_max_timeout = params.max_timeout;
-            self.io.start_timer(params.timeout);
-
-            log::trace!(
-                "{}: Start frame read timer {:?}",
-                self.io.tag(),
-                params.timeout
-            );
-        }
-    }
-
-    /// Start write timeout when write backpressure is enabled.
-    ///
-    /// Frames are not decoded during backpressure, so read timers are stopped.
-    fn start_write_timer(&mut self) {
-        self.flags.remove(Flags::KA_TIMEOUT | Flags::READ_TIMEOUT);
-
-        let timeout = self.io.cfg().write_timeout();
-        if timeout.is_zero() {
-            self.flags.remove(Flags::WR_TIMEOUT);
-            self.io.stop_timer();
-        } else if !self.flags.contains(Flags::WR_TIMEOUT) {
-            log::trace!("{}: Start write timer {:?}", self.io.tag(), timeout);
-            self.flags.insert(Flags::WR_TIMEOUT);
-            self.io.start_timer(timeout);
-        }
-    }
-
-    /// Stop write timeout when write backpressure is disabled.
-    fn stop_write_timer(&mut self) {
-        if self.flags.contains(Flags::WR_TIMEOUT) {
-            self.flags.remove(Flags::WR_TIMEOUT);
-            self.io.stop_timer();
-        }
+            Timer::FrameRead if let Some(params) = self.io.cfg().frame_read_rate() => {
+                log::trace!(
+                    "{}: Start frame read timer {:?}",
+                    self.io.tag(),
+                    params.timeout
+                );
+                self.io.start_timer(params.timeout);
+                Timer::FrameRead
+            }
+            _ => {
+                self.io.stop_timer();
+                Timer::Stopped
+            }
+        };
     }
 
     fn handle_timeout(&mut self) -> Result<(), MqttProtocolError> {
-        // check write timer
-        if self.flags.contains(Flags::WR_TIMEOUT) {
-            self.flags.remove(Flags::WR_TIMEOUT);
-            // backpressure can be released unnoticed while the service is paused
-            return if self.io.is_wr_backpressure() {
-                log::trace!("{}: Write backpressure timeout", self.io.tag());
-                Err(MqttProtocolError::WriteTimeout)
-            } else {
-                Ok(())
-            };
-        }
-
-        // check read timer
-        if self.flags.contains(Flags::READ_TIMEOUT) {
-            if let Some(params) = self.io.cfg().frame_read_rate() {
-                let total = self.read_remains - self.read_remains_prev;
+        match self.timers.active {
+            Timer::FrameRead => {
+                let (Some(params), Some(p)) =
+                    (self.io.cfg().frame_read_rate(), self.timers.read.progress())
+                else {
+                    self.timers.active = Timer::Stopped;
+                    return Ok(());
+                };
 
                 // read rate, start timer for next period
-                if total > params.rate {
-                    self.read_remains_prev = self.read_remains;
-                    self.read_remains = 0;
+                if p.consumed > params.rate {
+                    let total = p.consumed;
+                    p.consumed = 0;
 
                     if !params.max_timeout.is_zero() {
-                        self.read_max_timeout =
-                            Seconds(self.read_max_timeout.0.saturating_sub(params.timeout.0));
+                        p.max_timeout = Seconds(p.max_timeout.0.saturating_sub(params.timeout.0));
                     }
 
-                    if params.max_timeout.is_zero() || !self.read_max_timeout.is_zero() {
+                    if params.max_timeout.is_zero() || !p.max_timeout.is_zero() {
                         log::trace!(
                             "{}: Frame read rate {:?}, extend timer",
                             self.io.tag(),
@@ -662,15 +648,25 @@ where
                         self.io.start_timer(params.timeout);
                         return Ok(());
                     }
+                    log::trace!("{}: Max payload timeout has been reached", self.io.tag());
                 }
-                log::trace!("{}: Max payload timeout has been reached", self.io.tag());
-                return Err(MqttProtocolError::ReadTimeout);
+                Err(MqttProtocolError::ReadTimeout)
             }
-        } else if self.flags.contains(Flags::KA_TIMEOUT) {
-            log::trace!("{}: Keep-alive error, stopping dispatcher", self.io.tag());
-            return Err(MqttProtocolError::KeepAliveTimeout);
+            // backpressure can be released unnoticed while the service is paused
+            Timer::Write if !self.io.is_wr_backpressure() => {
+                self.timers.active = Timer::Stopped;
+                Ok(())
+            }
+            Timer::Write => {
+                log::trace!("{}: Write backpressure timeout", self.io.tag());
+                Err(MqttProtocolError::WriteTimeout)
+            }
+            Timer::KeepAlive => {
+                log::trace!("{}: Keep-alive error, stopping dispatcher", self.io.tag());
+                Err(MqttProtocolError::KeepAliveTimeout)
+            }
+            Timer::Stopped => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -738,6 +734,7 @@ mod tests {
         {
             let keepalive_timeout = io.cfg().keepalive_timeout();
             let rio = io.get_ref();
+            let io = IoBoxed::from(io);
 
             let state = Rc::new(DispatcherState {
                 error: Cell::new(None),
@@ -758,16 +755,10 @@ mod tests {
                         stopping: Condition::new(),
                         service: Pipeline::new((), service.into_service()),
                         control: Pipeline::new((), control),
-                        io: IoBoxed::from(io),
+                        timers: Timers::new(&io),
+                        io,
                         st: IoDispatcherState::Processing,
-                        flags: if keepalive_timeout.is_zero() {
-                            Flags::empty()
-                        } else {
-                            Flags::KA_ENABLED
-                        },
-                        read_remains: 0,
-                        read_remains_prev: 0,
-                        read_max_timeout: Seconds::ZERO,
+                        flags: Flags::empty(),
                     },
                 },
                 rio,
@@ -1296,6 +1287,141 @@ mod tests {
                 Ok(None)
             }
         }
+    }
+
+    fn timeout_dispatcher(cfg: IoConfig) -> (Io, nio::IoRef, Rc<RefCell<Vec<MqttProtocolError>>>) {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let errs = Rc::new(RefCell::new(Vec::new()));
+        let errs2 = errs.clone();
+        let (disp, state) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG").add(cfg)),
+            BytesLenCodec(64),
+            fn_service(async move |msg: Bytes| Ok::<_, DispatcherError<()>>(Some(msg))),
+            fn_service(async move |msg: Control<()>| {
+                if let Control::Stop(Reason::Protocol(err)) = msg {
+                    errs2.borrow_mut().push(*err.get_ref());
+                }
+                Ok::<_, ()>(None)
+            }),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+        (client, state, errs)
+    }
+
+    /// Frame read rate is satisfied, but the cumulative max timeout is reached
+    #[ntex::test]
+    async fn test_read_rate_max_timeout() {
+        let (client, state, errs) = timeout_dispatcher(
+            IoConfig::new()
+                .set_keepalive_timeout(Seconds::ZERO)
+                .set_frame_read_rate(Seconds(1), Seconds(2), 2),
+        );
+
+        for _ in 0..4 {
+            client.write("123");
+            sleep(Millis(400)).await;
+        }
+        assert!(state.is_active());
+        for _ in 0..4 {
+            client.write("123");
+            sleep(Millis(400)).await;
+        }
+        assert!(!state.is_active());
+        assert!(matches!(
+            &errs.borrow()[..],
+            [MqttProtocolError::ReadTimeout]
+        ));
+    }
+
+    /// Bytes the codec consumes without producing a frame count towards the read rate
+    #[ntex::test]
+    async fn test_read_rate_codec_consumed() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        #[derive(Clone)]
+        struct ConsumingCodec;
+
+        impl Encoder for ConsumingCodec {
+            type Item = Bytes;
+            type Error = EncodeError;
+
+            fn encode(&self, item: Bytes, dst: &mut BytePages) -> Result<(), Self::Error> {
+                dst.append(item);
+                Ok(())
+            }
+        }
+
+        impl Decoder for ConsumingCodec {
+            type Item = Bytes;
+            type Error = DecodeError;
+
+            fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+                // consume input, frames are never complete
+                src.clear();
+                Ok(None)
+            }
+        }
+
+        let errs = Rc::new(RefCell::new(Vec::new()));
+        let errs2 = errs.clone();
+        let cfg = IoConfig::new()
+            .set_keepalive_timeout(Seconds::ZERO)
+            .set_frame_read_rate(Seconds(1), Seconds::ZERO, 2);
+        let (disp, state) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG").add(cfg)),
+            ConsumingCodec,
+            fn_service(async move |msg: Bytes| Ok::<_, DispatcherError<()>>(Some(msg))),
+            fn_service(async move |msg: Control<()>| {
+                if let Control::Stop(Reason::Protocol(err)) = msg {
+                    errs2.borrow_mut().push(*err.get_ref());
+                }
+                Ok::<_, ()>(None)
+            }),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        for _ in 0..6 {
+            client.write("123");
+            sleep(Millis(400)).await;
+        }
+        assert!(state.is_active());
+
+        // data stops, read rate is not satisfied
+        sleep(Millis(2500)).await;
+        assert!(!state.is_active());
+        assert!(matches!(
+            &errs.borrow()[..],
+            [MqttProtocolError::ReadTimeout]
+        ));
+    }
+
+    /// Without frame read rate, keep-alive bounds a slowly received frame
+    #[ntex::test]
+    async fn test_keepalive_partial_frame() {
+        let (client, state, errs) =
+            timeout_dispatcher(IoConfig::new().set_keepalive_timeout(Seconds(1)));
+
+        for _ in 0..3 {
+            client.write("1");
+            sleep(Millis(300)).await;
+        }
+        assert!(state.is_active());
+        for _ in 0..4 {
+            client.write("1");
+            sleep(Millis(300)).await;
+        }
+        assert!(!state.is_active());
+        assert!(matches!(
+            &errs.borrow()[..],
+            [MqttProtocolError::KeepAliveTimeout]
+        ));
     }
 
     /// Do not use keep-alive timer if not configured
