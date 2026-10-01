@@ -401,7 +401,10 @@ where
                 IoDispatcherState::Shutdown(ref mut res) => {
                     ready!(inner.service.poll_shutdown(cx));
                     log::trace!("{}: Service shutdown is completed, stop", inner.io.tag());
+                    // cancel in-flight calls, the polled one is dropped as well,
+                    // otherwise it runs until the io is closed
                     inner.io.wake(STOP_TAG);
+                    drop(inner.state.response.take());
                     inner.st = IoDispatcherState::ShutdownIo(res.take());
                 }
                 IoDispatcherState::ShutdownIo(ref mut res) => {
