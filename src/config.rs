@@ -154,7 +154,9 @@ impl MqttServiceConfig {
     /// Responses are sent in the order of incoming packets. A response that is
     /// ready waits in the queue until all earlier responses are sent. When the
     /// queue reaches this limit, the dispatcher stops reading new packets until
-    /// queued responses are sent. `0` disables the limit.
+    /// queued responses are sent. Pending calls without response, such as
+    /// QoS 0 publishes, are not queued but count towards the limit.
+    /// `0` disables the limit.
     ///
     /// By default the limit is set to 64 responses.
     pub fn set_max_queue(mut self, val: usize) -> Self {

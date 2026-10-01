@@ -113,6 +113,8 @@ where
     response: Cell<Option<ServiceCall<Codec, E>>>,
     /// Queue index of the polled call, `None` for a call without response
     response_idx: Cell<Option<usize>>,
+    /// Pending calls without response, they count towards `max_queue`
+    unordered: Cell<usize>,
     max_queue: usize,
 }
 
@@ -152,6 +154,7 @@ where
             waker: LocalWaker::default(),
             response: Cell::new(None),
             response_idx: Cell::new(None),
+            unordered: Cell::new(0),
             max_queue: io.cfg().ctx().get::<MqttServiceConfig>().max_queue,
         });
         let keepalive_timeout = io.cfg().keepalive_timeout();
@@ -188,7 +191,7 @@ where
     <Codec as Encoder>::Item: 'static,
 {
     fn is_full(&self, len: usize) -> bool {
-        self.max_queue != 0 && len >= self.max_queue
+        self.max_queue != 0 && len + self.unordered.get() >= self.max_queue
     }
 
     fn set_error(&self, err: DispatcherError<E>) {
@@ -229,7 +232,10 @@ where
         if let Some(idx) = response_idx {
             self.handle_result(item, idx, io, codec)
         } else {
-            self.write_result(item, io, codec)
+            let len = self.queue.borrow().len();
+            let was_full = self.is_full(len);
+            self.unordered.set(self.unordered.get() - 1);
+            self.write_result(item, io, codec) || (was_full && !self.is_full(len))
         }
     }
 
@@ -420,10 +426,13 @@ where
 
         // calls without response do not keep a slot in the queue
         let mut push_pending = || {
-            ordered.then(|| {
+            if ordered {
                 queue.push_back(None);
-                self.state.base.get().wrapping_add(queue.len() - 1)
-            })
+                Some(self.state.base.get().wrapping_add(queue.len() - 1))
+            } else {
+                self.state.unordered.set(self.state.unordered.get() + 1);
+                None
+            }
         };
 
         // only one pending call is polled by the dispatcher, spawn the rest
@@ -2137,6 +2146,46 @@ mod tests {
         sleep(Millis(50)).await;
         assert_eq!(calls.borrow().len(), 6);
         assert_eq!(client.read_any(), Bytes::from_static(b"abc"));
+    }
+
+    /// Pending calls without response count towards the queue limit
+    #[ntex::test]
+    async fn no_response_calls_limit() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let calls = Rc::new(Cell::new(0));
+        let calls2 = calls.clone();
+
+        let cfg: SharedCfg = SharedCfg::new("DBG")
+            .add(IoConfig::new())
+            .add(MqttServiceConfig::new().set_max_queue(3))
+            .into();
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, cfg),
+            ByteCodec,
+            fn_service(async move |msg: Bytes| {
+                calls2.set(calls2.get() + 1);
+                // the polled call never completes, spawned calls wake the dispatcher
+                if msg == "a" {
+                    std::future::pending::<()>().await;
+                }
+                sleep(Millis(100)).await;
+                Ok::<_, DispatcherError<()>>(None)
+            }),
+            fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        client.write("aqqqq");
+        sleep(Millis(50)).await;
+        assert_eq!(calls.get(), 3);
+
+        // completed calls release the limit
+        sleep(Millis(300)).await;
+        assert_eq!(calls.get(), 5);
     }
 
     /// Read is paused while the service is not ready, the queue is full or
