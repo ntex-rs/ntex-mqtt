@@ -117,6 +117,13 @@ impl Codec {
     }
 }
 
+impl Codec {
+    /// Returns `true` while the payload of a decoded publish is not complete.
+    pub(crate) fn is_payload_pending(&self) -> bool {
+        matches!(self.state.get(), DecodeState::PublishPayload(_))
+    }
+}
+
 impl Default for Codec {
     fn default() -> Self {
         Self::new()
@@ -404,5 +411,48 @@ mod tests {
                 max_size: 5
             })
         );
+    }
+
+    #[test]
+    fn test_payload_pending() {
+        use ntex_bytes::ByteString;
+
+        let codec = Codec::new();
+        codec.set_min_chunk_size(10);
+        let pkt = Publish {
+            topic: ByteString::from_static("/test"),
+            payload_size: 100,
+            ..Default::default()
+        };
+        let mut buf = BytePages::default();
+        codec
+            .encode(
+                Encoded::Publish(pkt, Some(Bytes::from(vec![b'a'; 100]))),
+                &mut buf,
+            )
+            .unwrap();
+        let data = buf.freeze();
+        assert!(!codec.is_payload_pending());
+
+        let mut src = BytesMut::from(&data[..data.len() - 20]);
+        let Some(Decoded::Publish(_, payload, _)) = codec.decode(&mut src).unwrap() else {
+            panic!()
+        };
+        assert_eq!(payload.len(), 80);
+        assert!(codec.is_payload_pending());
+
+        src.extend_from_slice(&data[data.len() - 20..data.len() - 10]);
+        assert_eq!(
+            codec.decode(&mut src).unwrap(),
+            Some(Decoded::PayloadChunk(Bytes::from(vec![b'a'; 10]), false))
+        );
+        assert!(codec.is_payload_pending());
+
+        src.extend_from_slice(&data[data.len() - 10..]);
+        assert_eq!(
+            codec.decode(&mut src).unwrap(),
+            Some(Decoded::PayloadChunk(Bytes::from(vec![b'a'; 10]), true))
+        );
+        assert!(!codec.is_payload_pending());
     }
 }

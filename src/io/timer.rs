@@ -18,7 +18,8 @@ pub(super) struct Timers {
 pub(super) enum ReadPhase {
     /// No partial frame is buffered.
     Idle,
-    /// A frame has started but is not complete.
+    /// A frame has started but is not complete, including a publish
+    /// whose payload chunks are still being received.
     ReadingFrame(ReadProgress),
 }
 
@@ -59,8 +60,10 @@ impl Timers {
 
     /// Updates the read phase after a decode attempt.
     ///
+    /// `item` is `true` when a complete frame was decoded. A partial item,
+    /// a part of a streamed publish, keeps the frame in progress.
     /// `remains` is the buffered input left by the decoder and `consumed` the
-    /// input it took without producing a frame.
+    /// input it took.
     pub(super) fn update_read(&mut self, cfg: &IoConfig, item: bool, remains: u32, consumed: u32) {
         if item {
             self.read = ReadPhase::Idle;

@@ -54,7 +54,7 @@ impl MqttServiceConfig {
             min_chunk_size: 32 * 1024,
             max_payload_buffer_size: 32 * 1024,
             handle_qos_after_disconnect: None,
-            connect_timeout: Seconds::ZERO,
+            connect_timeout: Seconds(5),
             handshake_timeout: Seconds::ZERO,
             protocol_version_timeout: Millis(5_000),
             config: CfgContext::default(),
@@ -81,7 +81,10 @@ impl MqttServiceConfig {
     /// the entire frame within this time, the connection is terminated with
     /// `MqttError::Connect(MqttConnectError::Timeout)` error.
     ///
-    /// By default, connect timeout is disabled.
+    /// Use `Seconds::ZERO` to disable the timeout. Frame read rate
+    /// (`IoConfig::set_frame_read_rate`) does not apply to the `Connect` frame.
+    ///
+    /// By default, connect timeout is set to 5 seconds.
     pub fn set_connect_timeout(mut self, timeout: Seconds) -> Self {
         self.connect_timeout = timeout;
         self
@@ -197,6 +200,9 @@ impl MqttServiceConfig {
     /// will be processed immediately. Otherwise, the codec will
     /// accumulate chunks until the total size reaches the specified minimum.
     /// By default min size is set to 32Kb
+    ///
+    /// Payload chunks are read as one publish packet, keep-alive and
+    /// frame read rate timeouts apply to the whole publish, not to each chunk.
     pub fn set_min_chunk_size(mut self, size: u32) -> Self {
         self.min_chunk_size = size;
         self

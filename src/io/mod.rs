@@ -20,6 +20,25 @@ use crate::error::{DecodeError, DispatcherError, EncodeError, MqttProtocolError}
 /// Io waiter tag, in-flight service calls are cancelled once it is woken.
 const STOP_TAG: usize = 0x6d71_7474;
 
+/// Decoder state the dispatcher needs for read timers.
+pub trait FrameState {
+    /// Returns `true` while the last decoded item is followed by more parts
+    /// of the same packet, such as the payload chunks of a streamed publish.
+    ///
+    /// The parts of a packet are read as one frame, keep-alive and frame
+    /// read rate timers continue across them.
+    fn is_partial(&self) -> bool {
+        false
+    }
+}
+
+impl<T: FrameState> FrameState for Rc<T> {
+    #[inline]
+    fn is_partial(&self) -> bool {
+        (**self).is_partial()
+    }
+}
+
 type Request<U> = <U as Decoder>::Item;
 type Response<U> = <U as Encoder>::Item;
 type ServiceResult<Codec, E> = Result<Option<Response<Codec>>, DispatcherError<E>>;
@@ -99,7 +118,8 @@ enum PollService {
 
 impl<Codec, E, Err> Dispatcher<Codec, E, Err>
 where
-    Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
+    Codec:
+        Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + FrameState + Clone + 'static,
     <Codec as Encoder>::Item: 'static,
     E: 'static,
 {
@@ -214,7 +234,8 @@ where
 
 impl<Codec, E, Err> Future for Dispatcher<Codec, E, Err>
 where
-    Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
+    Codec:
+        Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + FrameState + Clone + 'static,
     <Codec as Encoder>::Item: 'static,
     E: 'static,
     Err: 'static,
@@ -335,7 +356,8 @@ where
 
 impl<Codec, E, Err> DispatcherInner<Codec, E, Err>
 where
-    Codec: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
+    Codec:
+        Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + FrameState + Clone + 'static,
     <Codec as Encoder>::Item: 'static,
     E: 'static,
     Err: 'static,
@@ -484,7 +506,8 @@ where
     }
 
     fn update_timer(&mut self, decoded: &Decoded<<Codec as Decoder>::Item>) {
-        let item = decoded.item.is_some();
+        // parts of a streamed publish are read as one frame
+        let item = decoded.item.is_some() && !self.codec.is_partial();
         self.timers.update_read(
             self.io.cfg(),
             item,
@@ -492,7 +515,7 @@ where
             decoded.consumed as u32,
         );
 
-        // keep-alive and frame read timers do not apply while a frame is handled
+        // keep-alive and frame read timers do not apply while a complete frame is handled
         let timer = self
             .timers
             .select(self.io.cfg(), !self.keepalive_timeout.is_zero(), item);
@@ -635,6 +658,8 @@ mod tests {
         }
     }
 
+    impl FrameState for BytesCodec {}
+
     impl Decoder for BytesCodec {
         type Item = Bytes;
         type Error = DecodeError;
@@ -650,7 +675,11 @@ mod tests {
 
     impl<U, E, Err> Dispatcher<U, E, Err>
     where
-        U: Decoder<Error = DecodeError> + Encoder<Error = EncodeError> + Clone + 'static,
+        U: Decoder<Error = DecodeError>
+            + Encoder<Error = EncodeError>
+            + FrameState
+            + Clone
+            + 'static,
         E: 'static,
         Err: 'static,
     {
@@ -1187,6 +1216,8 @@ mod tests {
         }
     }
 
+    impl FrameState for BytesLenCodec {}
+
     impl Decoder for BytesLenCodec {
         type Item = Bytes;
         type Error = DecodeError;
@@ -1221,6 +1252,147 @@ mod tests {
             let _ = disp.await;
         });
         (client, state, errs)
+    }
+
+    /// Decodes one byte per item, `p` is a part of a streamed packet
+    #[derive(Clone, Default)]
+    struct ChunkCodec(Rc<Cell<bool>>);
+
+    impl Encoder for ChunkCodec {
+        type Item = Bytes;
+        type Error = EncodeError;
+
+        fn encode(&self, item: Bytes, dst: &mut BytePages) -> Result<(), Self::Error> {
+            dst.append(item);
+            Ok(())
+        }
+    }
+
+    impl FrameState for ChunkCodec {
+        fn is_partial(&self) -> bool {
+            self.0.get()
+        }
+    }
+
+    impl Decoder for ChunkCodec {
+        type Item = Bytes;
+        type Error = DecodeError;
+
+        fn decode(&self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+            if src.is_empty() {
+                Ok(None)
+            } else {
+                self.0.set(src[0] == b'p');
+                Ok(Some(src.split_to(1)))
+            }
+        }
+    }
+
+    fn chunk_dispatcher(cfg: IoConfig) -> (Io, nio::IoRef, Rc<RefCell<Vec<MqttProtocolError>>>) {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let errs = Rc::new(RefCell::new(Vec::new()));
+        let errs2 = errs.clone();
+        let (disp, state) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG").add(cfg)),
+            ChunkCodec::default(),
+            fn_service(async move |_: Bytes| Ok::<_, DispatcherError<()>>(None)),
+            fn_service(async move |msg: Control<()>| {
+                if let Control::Stop(Reason::Protocol(err)) = msg {
+                    errs2.borrow_mut().push(*err.get_ref());
+                }
+                Ok::<_, ()>(None)
+            }),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+        (client, state, errs)
+    }
+
+    /// Keep-alive bounds the whole streamed packet, not each part
+    #[ntex::test]
+    async fn test_keepalive_partial_items() {
+        let (client, state, errs) =
+            chunk_dispatcher(IoConfig::new().set_keepalive_timeout(Seconds(1)));
+
+        for _ in 0..3 {
+            client.write("p");
+            sleep(Millis(300)).await;
+        }
+        assert!(state.is_active());
+        for _ in 0..4 {
+            client.write("p");
+            sleep(Millis(300)).await;
+        }
+        assert!(!state.is_active());
+        assert!(matches!(
+            &errs.borrow()[..],
+            [MqttProtocolError::KeepAliveTimeout]
+        ));
+    }
+
+    /// Keep-alive restarts after the last part of a streamed packet
+    #[ntex::test]
+    async fn test_keepalive_after_partial_items() {
+        let (client, state, errs) =
+            chunk_dispatcher(IoConfig::new().set_keepalive_timeout(Seconds(1)));
+
+        for _ in 0..2 {
+            client.write("p");
+            sleep(Millis(300)).await;
+        }
+        client.write("e");
+        for _ in 0..5 {
+            sleep(Millis(300)).await;
+            client.write("c");
+        }
+        assert!(state.is_active());
+        assert!(errs.borrow().is_empty());
+    }
+
+    /// Frame read rate max timeout bounds the whole streamed packet
+    #[ntex::test]
+    async fn test_read_rate_partial_items() {
+        let (client, state, errs) = chunk_dispatcher(
+            IoConfig::new()
+                .set_keepalive_timeout(Seconds::ZERO)
+                .set_frame_read_rate(Seconds(1), Seconds(2), 2),
+        );
+
+        for _ in 0..4 {
+            client.write("ppp");
+            sleep(Millis(400)).await;
+        }
+        assert!(state.is_active());
+        for _ in 0..4 {
+            client.write("ppp");
+            sleep(Millis(400)).await;
+        }
+        assert!(!state.is_active());
+        assert!(matches!(
+            &errs.borrow()[..],
+            [MqttProtocolError::ReadTimeout]
+        ));
+    }
+
+    /// Streamed packet parts below the frame read rate time out
+    #[ntex::test]
+    async fn test_read_rate_slow_partial_items() {
+        let (client, state, errs) = chunk_dispatcher(
+            IoConfig::new()
+                .set_keepalive_timeout(Seconds::ZERO)
+                .set_frame_read_rate(Seconds(1), Seconds::ZERO, 2),
+        );
+
+        client.write("p");
+        sleep(Millis(1500)).await;
+        assert!(!state.is_active());
+        assert!(matches!(
+            &errs.borrow()[..],
+            [MqttProtocolError::ReadTimeout]
+        ));
     }
 
     /// Frame read rate is satisfied, but the cumulative max timeout is reached
@@ -1266,6 +1438,8 @@ mod tests {
                 Ok(())
             }
         }
+
+        impl FrameState for ConsumingCodec {}
 
         impl Decoder for ConsumingCodec {
             type Item = Bytes;
@@ -1492,6 +1666,8 @@ mod tests {
             Ok(())
         }
     }
+
+    impl FrameState for ByteCodec {}
 
     impl Decoder for ByteCodec {
         type Item = Bytes;

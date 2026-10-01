@@ -605,6 +605,13 @@ impl Encoder for MqttShared {
     }
 }
 
+impl crate::io::FrameState for MqttShared {
+    #[inline]
+    fn is_partial(&self) -> bool {
+        self.codec.is_payload_pending()
+    }
+}
+
 impl Decoder for MqttShared {
     type Item = Decoded;
     type Error = error::DecodeError;

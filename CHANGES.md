@@ -14,6 +14,10 @@
 
 * Refactor dispatcher timers, frame read rate counts bytes consumed by the codec
 
+* Keep-alive and frame read rate timeouts apply to the whole streamed publish, not each payload chunk
+
+* Set default MqttServiceConfig connect timeout to 5 seconds
+
 ## [9.0.0] - 2026-09-14
 
 * Refactor state management
