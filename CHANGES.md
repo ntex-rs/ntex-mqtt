@@ -27,7 +27,7 @@
 
 * Fix sink being stuck in streaming state after a failed publish encode
 
-* codec: Reject strings containing the null character U+0000
+* codec: Reject strings containing the null character U+0000, on decode and encode
 
 * v3: Send CONNACK 0x01 for an unsupported protocol level and CONNACK 0x02 for an empty
   client id without clean session before closing the connection

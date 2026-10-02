@@ -682,4 +682,64 @@ mod tests {
             assert_encoded(&codec, Encoded::Packet(pkt));
         }
     }
+
+    #[test]
+    fn test_encode_null_char() {
+        let codec = Codec::new();
+        let nul = || ByteString::from_static("a\0b");
+        let packet_id = NonZeroU16::new(1).unwrap();
+        let connect = Connect {
+            client_id: ByteString::from_static("id"),
+            last_will: Some(LastWill {
+                qos: QoS::AtMostOnce,
+                retain: false,
+                topic: ByteString::from_static("w"),
+                message: Bytes::new(),
+            }),
+            ..Connect::default()
+        };
+        assert_encoded(
+            &codec,
+            Encoded::Packet(Packet::Connect(Box::new(connect.clone()))),
+        );
+
+        let invalid = [
+            Packet::Connect(Box::new(Connect {
+                client_id: nul(),
+                ..connect.clone()
+            })),
+            Packet::Connect(Box::new(Connect {
+                username: Some(nul()),
+                ..connect.clone()
+            })),
+            Packet::Connect(Box::new(Connect {
+                last_will: Some(LastWill {
+                    topic: nul(),
+                    ..connect.last_will.clone().unwrap()
+                }),
+                ..connect
+            })),
+            Packet::Subscribe {
+                packet_id,
+                topic_filters: vec![(nul(), QoS::AtMostOnce)],
+            },
+            Packet::Unsubscribe {
+                packet_id,
+                topic_filters: vec![nul()],
+            },
+        ];
+        for pkt in invalid {
+            assert_rejected(&codec, Encoded::Packet(pkt));
+        }
+
+        let publish = Publish {
+            dup: false,
+            retain: false,
+            qos: QoS::AtMostOnce,
+            topic: nul(),
+            packet_id: None,
+            payload_size: 0,
+        };
+        assert_rejected(&codec, Encoded::Publish(publish, None));
+    }
 }

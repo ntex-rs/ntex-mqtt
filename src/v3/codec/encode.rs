@@ -2,7 +2,7 @@ use ntex_bytes::{BufMut, BytePages, ByteString};
 
 use crate::error::EncodeError;
 use crate::types::{ConnectFlags, MQTT, MQTT_LEVEL_3, QoS, WILL_QOS_SHIFT, packet_type};
-use crate::utils::{Encode, is_valid_topic_name, write_variable_length};
+use crate::utils::{Encode, is_valid_str, is_valid_topic_name, write_variable_length};
 
 use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
 
@@ -85,6 +85,12 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
                 !connect.client_id.is_empty() || connect.clean_session,
                 EncodeError::MalformedPacket
             );
+            // strings must not include U+0000, [MQTT-1.5.3-2] (MQTT 3.1.1, 1.5.3)
+            ensure!(
+                is_valid_str(&connect.client_id)
+                    && connect.username.as_deref().is_none_or(is_valid_str),
+                EncodeError::MalformedPacket
+            );
             // Will Topic is a topic name, [MQTT-4.7.3-1], [MQTT-4.7.1-1] (MQTT 3.1.1, 4.7)
             if let Some(ref will) = connect.last_will {
                 ensure!(
@@ -96,16 +102,24 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
         Packet::Subscribe { topic_filters, .. } => {
             // [MQTT-3.8.3-3] at least one topic filter is required (3.1.1, 3.8.3)
             // [MQTT-4.7.3-1] topic filters must be at least one character long (3.1.1, 4.7.3)
+            // [MQTT-1.5.3-2] strings must not include U+0000 (3.1.1, 1.5.3)
             ensure!(
-                !topic_filters.is_empty() && topic_filters.iter().all(|(f, _)| !f.is_empty()),
+                !topic_filters.is_empty()
+                    && topic_filters
+                        .iter()
+                        .all(|(f, _)| !f.is_empty() && is_valid_str(f)),
                 EncodeError::MalformedPacket
             );
         }
         Packet::Unsubscribe { topic_filters, .. } => {
             // [MQTT-3.10.3-2] at least one topic filter is required (3.1.1, 3.10.3)
             // [MQTT-4.7.3-1] topic filters must be at least one character long (3.1.1, 4.7.3)
+            // [MQTT-1.5.3-2] strings must not include U+0000 (3.1.1, 1.5.3)
             ensure!(
-                !topic_filters.is_empty() && topic_filters.iter().all(|f| !f.is_empty()),
+                !topic_filters.is_empty()
+                    && topic_filters
+                        .iter()
+                        .all(|f| !f.is_empty() && is_valid_str(f)),
                 EncodeError::MalformedPacket
             );
         }
@@ -116,8 +130,8 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
 
 /// Checks the rules a sender must follow before anything gets written.
 pub(super) fn validate_publish(publish: &Publish) -> Result<(), EncodeError> {
-    // topic name must not be empty or contain wildcards,
-    // [MQTT-4.7.3-1], [MQTT-3.3.2-2] (MQTT 3.1.1, 4.7.3, 3.3.2.1)
+    // topic name must not be empty or contain wildcards or U+0000,
+    // [MQTT-4.7.3-1], [MQTT-3.3.2-2], [MQTT-1.5.3-2] (MQTT 3.1.1, 4.7.3, 3.3.2.1, 1.5.3)
     ensure!(
         is_valid_topic_name(&publish.topic),
         EncodeError::MalformedPacket

@@ -416,7 +416,11 @@ mod tests {
     use ntex_bytes::ByteString;
     use std::num::NonZeroU16;
 
-    use crate::v5::codec::{Connect, LastWill, QoS, Subscribe, SubscriptionOptions, Unsubscribe};
+    use crate::v5::codec::{
+        Auth, Connect, ConnectAck, Disconnect, LastWill, PublishAck, PublishAck2, QoS, Subscribe,
+        SubscribeAck, SubscribeAckReason, SubscriptionOptions, Unsubscribe, UnsubscribeAck,
+        UnsubscribeAckReason,
+    };
 
     fn assert_rejected(codec: &Codec, item: Encoded) {
         let mut buf = BytePages::default();
@@ -790,5 +794,175 @@ mod tests {
         for pkt in valid {
             assert_encoded(&codec, Encoded::Packet(pkt));
         }
+    }
+
+    fn nul() -> ByteString {
+        ByteString::from_static("a\0b")
+    }
+
+    fn nul_props() -> Vec<(ByteString, ByteString)> {
+        vec![(nul(), ByteString::from_static("v"))]
+    }
+
+    /// `pkt` is encoded, each setter puts a null char into one string field
+    fn assert_nul_rejected<T: Clone>(pkt: &T, encoded: fn(T) -> Encoded, setters: &[fn(&mut T)]) {
+        let codec = Codec::new();
+        assert_encoded(&codec, encoded(pkt.clone()));
+        for set in setters {
+            let mut pkt = pkt.clone();
+            set(&mut pkt);
+            assert_rejected(&codec, encoded(pkt));
+        }
+    }
+
+    #[test]
+    fn test_encode_null_char_connect() {
+        let connect = Connect {
+            client_id: ByteString::from_static("id"),
+            last_will: Some(LastWill {
+                qos: QoS::AtMostOnce,
+                retain: false,
+                topic: ByteString::from_static("w"),
+                message: Bytes::new(),
+                will_delay_interval_sec: None,
+                correlation_data: None,
+                message_expiry_interval: None,
+                content_type: None,
+                user_properties: Vec::new(),
+                is_utf8_payload: None,
+                response_topic: None,
+            }),
+            ..Connect::default()
+        };
+        assert_nul_rejected(
+            &connect,
+            |p| Encoded::Packet(Packet::Connect(Box::new(p))),
+            &[
+                |p| p.client_id = nul(),
+                |p| p.username = Some(nul()),
+                |p| p.auth_method = Some(nul()),
+                |p| p.user_properties = nul_props(),
+                |p| p.user_properties = vec![(ByteString::from_static("k"), nul())],
+                |p| p.last_will.as_mut().unwrap().topic = nul(),
+                |p| p.last_will.as_mut().unwrap().content_type = Some(nul()),
+                |p| p.last_will.as_mut().unwrap().response_topic = Some(nul()),
+                |p| p.last_will.as_mut().unwrap().user_properties = nul_props(),
+            ],
+        );
+        assert_nul_rejected(
+            &ConnectAck::default(),
+            |p| Encoded::Packet(Packet::ConnectAck(Box::new(p))),
+            &[
+                |p| p.assigned_client_id = Some(nul()),
+                |p| p.response_info = Some(nul()),
+                |p| p.server_reference = Some(nul()),
+                |p| p.auth_method = Some(nul()),
+                |p| p.reason_string = Some(nul()),
+                |p| p.user_properties = nul_props(),
+            ],
+        );
+        assert_nul_rejected(
+            &Publish {
+                topic: ByteString::from_static("a/b"),
+                ..Publish::default()
+            },
+            |p| Encoded::Publish(p, None),
+            &[
+                |p| p.topic = nul(),
+                |p| p.properties.content_type = Some(nul()),
+                |p| p.properties.response_topic = Some(nul()),
+                |p| p.properties.user_properties = nul_props(),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_encode_null_char_packets() {
+        let packet_id = NonZeroU16::new(1).unwrap();
+        assert_nul_rejected(
+            &PublishAck::default(),
+            |p| Encoded::Packet(Packet::PublishReceived(p)),
+            &[
+                |p| p.reason_string = Some(nul()),
+                |p| p.properties = nul_props(),
+            ],
+        );
+        assert_nul_rejected(
+            &PublishAck2::default(),
+            |p| Encoded::Packet(Packet::PublishRelease(p)),
+            &[
+                |p| p.reason_string = Some(nul()),
+                |p| p.properties = nul_props(),
+            ],
+        );
+        assert_nul_rejected(
+            &Subscribe {
+                packet_id,
+                id: None,
+                user_properties: Vec::new(),
+                topic_filters: vec![(ByteString::from_static("a"), SubscriptionOptions::default())],
+            },
+            |p| Encoded::Packet(Packet::Subscribe(p)),
+            &[
+                |p| p.topic_filters[0].0 = nul(),
+                |p| p.user_properties = nul_props(),
+            ],
+        );
+        assert_nul_rejected(
+            &SubscribeAck {
+                packet_id,
+                properties: Vec::new(),
+                reason_string: None,
+                status: vec![SubscribeAckReason::GrantedQos0],
+            },
+            |p| Encoded::Packet(Packet::SubscribeAck(p)),
+            &[
+                |p| p.reason_string = Some(nul()),
+                |p| p.properties = nul_props(),
+            ],
+        );
+        assert_nul_rejected(
+            &Unsubscribe {
+                packet_id,
+                user_properties: Vec::new(),
+                topic_filters: vec![ByteString::from_static("a")],
+            },
+            |p| Encoded::Packet(Packet::Unsubscribe(p)),
+            &[
+                |p| p.topic_filters[0] = nul(),
+                |p| p.user_properties = nul_props(),
+            ],
+        );
+        assert_nul_rejected(
+            &UnsubscribeAck {
+                packet_id,
+                properties: Vec::new(),
+                reason_string: None,
+                status: vec![UnsubscribeAckReason::Success],
+            },
+            |p| Encoded::Packet(Packet::UnsubscribeAck(p)),
+            &[
+                |p| p.reason_string = Some(nul()),
+                |p| p.properties = nul_props(),
+            ],
+        );
+        assert_nul_rejected(
+            &Disconnect::default(),
+            |p| Encoded::Packet(Packet::Disconnect(p)),
+            &[
+                |p| p.server_reference = Some(nul()),
+                |p| p.reason_string = Some(nul()),
+                |p| p.user_properties = nul_props(),
+            ],
+        );
+        assert_nul_rejected(
+            &Auth::default(),
+            |p| Encoded::Packet(Packet::Auth(p)),
+            &[
+                |p| p.auth_method = Some(nul()),
+                |p| p.reason_string = Some(nul()),
+                |p| p.user_properties = nul_props(),
+            ],
+        );
     }
 }

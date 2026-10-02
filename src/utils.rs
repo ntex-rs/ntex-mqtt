@@ -279,11 +279,17 @@ impl Encode for &[u8] {
     }
 }
 
+/// Strings must not include the null character U+0000,
+/// [MQTT-1.5.3-2] (MQTT 3.1.1, 1.5.3), [MQTT-1.5.4-2] (MQTT 5.0, 1.5.4)
+pub(crate) fn is_valid_str(s: &str) -> bool {
+    !s.as_bytes().contains(&0)
+}
+
 /// Topic names must be at least one character long and must not contain
 /// wildcard characters, [MQTT-4.7.3-1], [MQTT-4.7.1-1] (MQTT 3.1.1, 4.7),
-/// [MQTT-4.7.3-1], [MQTT-4.7.0-1] (MQTT 5.0, 4.7)
+/// [MQTT-4.7.3-1], [MQTT-4.7.0-1] (MQTT 5.0, 4.7), or the null character
 pub(crate) fn is_valid_topic_name(topic: &str) -> bool {
-    !topic.is_empty() && !topic.contains(['+', '#'])
+    !topic.is_empty() && !topic.bytes().any(|b| matches!(b, b'+' | b'#' | 0))
 }
 
 pub(crate) fn write_variable_length(len: u32, dst: &mut BytePages) {
