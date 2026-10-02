@@ -117,6 +117,13 @@ impl Connect {
 
         let flags =
             ConnectFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnectReservedFlagSet)?;
+        // Will QoS and Will Retain must be 0 if Will Flag is 0,
+        // [MQTT-3.1.2-11], [MQTT-3.1.2-13] (MQTT 5.0, 3.1.2.6, 3.1.2.7)
+        ensure!(
+            flags.contains(ConnectFlags::WILL)
+                || !flags.intersects(ConnectFlags::WILL_QOS | ConnectFlags::WILL_RETAIN),
+            DecodeError::MalformedPacket
+        );
         let keep_alive = src.get_u16();
 
         // reading properties
@@ -232,6 +239,7 @@ fn decode_last_will(src: &mut Bytes, flags: ConnectFlags) -> Result<LastWill, De
     let topic = ByteString::decode(src)?;
     let message = Bytes::decode(src)?;
     Ok(LastWill {
+        // Will QoS 3 is a Malformed Packet, [MQTT-3.1.2-12] (MQTT 5.0, 3.1.2.6)
         qos: QoS::try_from((flags & ConnectFlags::WILL_QOS).bits() >> WILL_QOS_SHIFT)?,
         retain: flags.contains(ConnectFlags::WILL_RETAIN),
         topic,

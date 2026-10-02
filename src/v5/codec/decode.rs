@@ -106,6 +106,38 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_connect_flags() {
+        // will qos/retain without will flag
+        for flags in *b"\x08\x10\x18\x20" {
+            let mut buf = b"\x00\x04MQTT\x05\x00\x00\x3C\x00\x00\x0512345".to_vec();
+            buf[7] = flags;
+            assert_eq!(
+                Connect::decode(&mut Bytes::from(buf)),
+                Err(DecodeError::MalformedPacket),
+                "flags: {flags:#x}"
+            );
+        }
+        // will qos 3
+        assert_eq!(
+            Connect::decode(&mut Bytes::from_static(
+                b"\x00\x04MQTT\x05\x1C\x00\x3C\x00\x00\x0512345\x00\x00\x05topic\x00\x07message"
+            )),
+            Err(DecodeError::MalformedPacket),
+        );
+        // password without user name is allowed, MQTT 5.0, 3.1.2.9
+        assert!(matches!(
+            Connect::decode(&mut Bytes::from_static(
+                b"\x00\x04MQTT\x05\x40\x00\x3C\x00\x00\x0512345\x00\x04pass"
+            )),
+            Ok(Connect {
+                username: None,
+                password: Some(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn test_decode_connect_packets() {
         assert_eq!(
             Connect::decode(&mut Bytes::from_static(

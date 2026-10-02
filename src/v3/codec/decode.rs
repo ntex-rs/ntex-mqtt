@@ -50,6 +50,19 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
 
     let flags = ConnectFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnectReservedFlagSet)?;
 
+    // Will QoS and Will Retain must be 0 if Will Flag is 0,
+    // [MQTT-3.1.2-11], [MQTT-3.1.2-13], [MQTT-3.1.2-15] (MQTT 3.1.1, 3.1.2.5 - 3.1.2.7)
+    ensure!(
+        flags.contains(ConnectFlags::WILL)
+            || !flags.intersects(ConnectFlags::WILL_QOS | ConnectFlags::WILL_RETAIN),
+        DecodeError::MalformedPacket
+    );
+    // Password Flag must be 0 if User Name Flag is 0, [MQTT-3.1.2-22] (MQTT 3.1.1, 3.1.2.9)
+    ensure!(
+        flags.contains(ConnectFlags::USERNAME) || !flags.contains(ConnectFlags::PASSWORD),
+        DecodeError::MalformedPacket
+    );
+
     let keep_alive = u16::decode(src)?;
     let client_id = ByteString::decode(src)?;
 
@@ -62,6 +75,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
         let topic = ByteString::decode(src)?;
         let message = Bytes::decode(src)?;
         Some(LastWill {
+            // Will QoS 3 is rejected, [MQTT-3.1.2-14] (MQTT 3.1.1, 3.1.2.6)
             qos: QoS::try_from((flags & ConnectFlags::WILL_QOS).bits() >> WILL_QOS_SHIFT)?,
             retain: flags.contains(ConnectFlags::WILL_RETAIN),
             topic,
@@ -216,6 +230,27 @@ mod tests {
 
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
+    }
+
+    #[test]
+    fn test_decode_connect_flags() {
+        // will qos/retain without will flag, password without user name
+        for flags in *b"\x08\x10\x18\x20\x40" {
+            let mut buf = b"\x00\x04MQTT\x04\x00\x00\x3C\x00\x0512345\x00\x04pass".to_vec();
+            buf[7] = flags;
+            assert_eq!(
+                decode_connect_packet(&mut Bytes::from(buf)),
+                Err(DecodeError::MalformedPacket),
+                "flags: {flags:#x}"
+            );
+        }
+        // will qos 3
+        assert_eq!(
+            decode_connect_packet(&mut Bytes::from_static(
+                b"\x00\x04MQTT\x04\x1C\x00\x3C\x00\x0512345\x00\x05topic\x00\x07message"
+            )),
+            Err(DecodeError::MalformedPacket),
+        );
     }
 
     #[test]

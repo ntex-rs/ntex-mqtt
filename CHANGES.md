@@ -15,6 +15,8 @@
 
 * codec: Reject SUBSCRIBE and UNSUBSCRIBE packets without topic filters
 
+* codec: Reject CONNECT packets with invalid will or password flags
+
 * Update to ntex-io 4.1, ntex-codec 2.0
 
 * Stop the dispatcher on clean peer eof while the service is not ready
