@@ -69,12 +69,12 @@ impl crate::inflight::SizedRequest for Decoded {
         }
     }
 
-    fn is_publish(&self) -> bool {
-        matches!(self, Decoded::Publish(..))
-    }
-
-    fn is_chunk(&self) -> bool {
-        matches!(self, Decoded::PayloadChunk(..))
+    fn has_more_chunks(&self) -> bool {
+        match self {
+            Decoded::Publish(publish, payload, _) => publish.payload_size != payload.len() as u32,
+            Decoded::PayloadChunk(_, eof) => !eof,
+            Decoded::Packet(..) => false,
+        }
     }
 }
 
@@ -666,5 +666,30 @@ mod tests {
             err.inner,
             error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1)
         );
+    }
+
+    #[test]
+    fn test_has_more_chunks() {
+        use crate::inflight::SizedRequest;
+
+        let publish = |size| {
+            Decoded::Publish(
+                codec::Publish {
+                    dup: false,
+                    retain: false,
+                    qos: QoS::AtLeastOnce,
+                    topic: ByteString::new(),
+                    packet_id: None,
+                    payload_size: size,
+                },
+                Bytes::from_static(b"ab"),
+                10,
+            )
+        };
+        assert!(!publish(2).has_more_chunks());
+        assert!(publish(5).has_more_chunks());
+        assert!(Decoded::PayloadChunk(Bytes::from_static(b"c"), false).has_more_chunks());
+        assert!(!Decoded::PayloadChunk(Bytes::from_static(b"de"), true).has_more_chunks());
+        assert!(!Decoded::Packet(codec::Packet::PingRequest, 2).has_more_chunks());
     }
 }
