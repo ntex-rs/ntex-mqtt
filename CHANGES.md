@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Accept a v5 Message Expiry Interval of 0, `PublishProperties::message_expiry_interval`
+  and `LastWill::message_expiry_interval` are `Option<u32>`
+
 * Reject a CONNECT with an empty Will Topic or a Will Topic with wildcards,
   v5 server also rejects a Will Response Topic with wildcards and sends CONNACK 0x82 Protocol Error,
   v3 server closes the connection without CONNACK

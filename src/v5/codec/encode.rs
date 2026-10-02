@@ -546,7 +546,7 @@ mod tests {
                     message: Bytes::from_static(b"message"),
                     will_delay_interval_sec: Some(5),
                     correlation_data: Some(Bytes::from_static(b"correlationData")),
-                    message_expiry_interval: NonZeroU32::new(7),
+                    message_expiry_interval: Some(7),
                     content_type: Some(ByteString::from_static("contentType")),
                     user_properties: vec![
                         (ByteString::from_static("name"), ByteString::from_static("value"))
