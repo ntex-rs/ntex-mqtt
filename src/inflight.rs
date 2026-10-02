@@ -9,17 +9,17 @@ pub trait SizedRequest {
     /// Encoded size of the request in bytes
     fn size(&self) -> u32;
 
-    /// Check if the request is a publish packet
-    fn is_publish(&self) -> bool;
-
-    /// Check if the request is a chunk of a streaming publish payload
-    fn is_chunk(&self) -> bool;
+    /// Check if more payload chunks of a streaming publish follow this request
+    ///
+    /// While chunks are pending, readiness ignores the in-flight limits so that
+    /// the payload can reach the publish handler that holds an in-flight slot.
+    fn has_more_chunks(&self) -> bool;
 }
 
 pub struct InFlightServiceImpl<S> {
     count: Counter,
     service: S,
-    publish: Cell<bool>,
+    streaming: Cell<bool>,
 }
 
 impl<S> fmt::Debug for InFlightServiceImpl<S> {
@@ -32,7 +32,7 @@ impl<S> InFlightServiceImpl<S> {
     pub fn new(max_cap: u16, max_size: usize, service: S) -> Self {
         InFlightServiceImpl {
             service,
-            publish: Cell::new(false),
+            streaming: Cell::new(false),
             count: Counter::new(max_cap, max_size),
         }
     }
@@ -48,7 +48,7 @@ where
 
     #[inline]
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), S::Error> {
-        if self.publish.get() || self.count.is_available() {
+        if self.streaming.get() || self.count.is_available() {
             ctx.ready(&self.service).await
         } else {
             join(self.count.available(), ctx.ready(&self.service))
@@ -59,13 +59,7 @@ where
 
     #[inline]
     async fn call(&self, req: Req, ctx: Ctx<'_, Self, St>) -> Result<S::Res, S::Error> {
-        // process payload chunks
-        if self.publish.get() && !req.is_chunk() {
-            self.publish.set(false);
-        }
-        if req.is_publish() {
-            self.publish.set(true);
-        }
+        self.streaming.set(req.has_more_chunks());
 
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
         let task_guard = self.count.get(size);
@@ -199,11 +193,7 @@ mod tests {
             12
         }
 
-        fn is_publish(&self) -> bool {
-            false
-        }
-
-        fn is_chunk(&self) -> bool {
+        fn has_more_chunks(&self) -> bool {
             false
         }
     }
@@ -451,6 +441,89 @@ mod tests {
         assert_eq!(timeout(Millis(5000), rx).await, Ok(Ok(())));
     }
 
+    /// Request with a payload, the flag indicates that payload chunks follow
+    #[derive(Clone, Copy)]
+    struct Req(bool);
+
+    impl SizedRequest for Req {
+        fn size(&self) -> u32 {
+            12
+        }
+
+        fn has_more_chunks(&self) -> bool {
+            self.0
+        }
+    }
+
+    struct GateReqService(Condition);
+
+    impl Service<(), Req> for GateReqService {
+        type Res = ();
+        type Error = ();
+
+        async fn call(&self, _r: Req, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
+            let _ = self.0.wait().await;
+            Ok(())
+        }
+    }
+
+    async fn spawn_call(srv: &Pipeline<Req, (), ()>, req: Req) {
+        let srv = srv.bind();
+        ntex_util::spawn(async move {
+            let _ = srv.call(req).await;
+        });
+        sleep(Millis(25)).await;
+    }
+
+    async fn check_streaming(max_cap: u16, max_size: usize) {
+        let gate = Condition::new();
+        let srv = Pipeline::new(
+            (),
+            InFlightServiceImpl::new(max_cap, max_size, GateReqService(gate.clone())),
+        );
+
+        // streaming publish holds the only slot, chunks must still pass
+        spawn_call(&srv, Req(true)).await;
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
+        spawn_call(&srv, Req(true)).await;
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
+
+        // the last chunk restores the limits
+        spawn_call(&srv, Req(false)).await;
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
+
+        gate.notify_and_lock(());
+        let res = timeout(Millis(5000), srv.ready()).await;
+        assert_eq!(res, Ok(Ok(())));
+    }
+
+    #[ntex::test]
+    async fn test_inflight_streaming_cap() {
+        check_streaming(1, 0).await;
+    }
+
+    #[ntex::test]
+    async fn test_inflight_streaming_size() {
+        check_streaming(0, 10).await;
+    }
+
+    #[ntex::test]
+    async fn test_inflight_complete_payload() {
+        let gate = Condition::new();
+        let srv = Pipeline::new(
+            (),
+            InFlightServiceImpl::new(1, 0, GateReqService(gate.clone())),
+        );
+
+        // publish with the whole payload does not bypass the limits
+        spawn_call(&srv, Req(false)).await;
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
+
+        gate.notify_and_lock(());
+        let res = timeout(Millis(5000), srv.ready()).await;
+        assert_eq!(res, Ok(Ok(())));
+    }
+
     #[test]
     fn test_debug() {
         struct NoopSvc;
@@ -466,10 +539,7 @@ mod tests {
             fn size(&self) -> u32 {
                 0
             }
-            fn is_publish(&self) -> bool {
-                false
-            }
-            fn is_chunk(&self) -> bool {
+            fn has_more_chunks(&self) -> bool {
                 false
             }
         }
