@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: v5 `Codec::clone()` copies the decode state and flags, the codec returned by client
+  `into_inner()` keeps the limits from the server's CONNACK
+
 * codec: Accept a v5 Message Expiry Interval of 0, `PublishProperties::message_expiry_interval`
   and `LastWill::message_expiry_interval` are `Option<u32>`
 

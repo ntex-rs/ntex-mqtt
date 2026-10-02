@@ -10,6 +10,7 @@ use crate::utils::decode_variable_length;
 use super::{Decoded, Encoded};
 use super::{Packet, decode::decode_packet, encode, encode::EncodeLtd, packet::Publish};
 
+#[derive(Clone)]
 pub struct Codec {
     state: Cell<DecodeState>,
     max_in_size: Cell<u32>,
@@ -410,19 +411,6 @@ impl Encoder for Codec {
                     Err(EncodeError::UnexpectedPayload)
                 }
             }
-        }
-    }
-}
-
-impl Clone for Codec {
-    fn clone(&self) -> Self {
-        Codec {
-            state: Cell::new(DecodeState::FrameHeader),
-            max_in_size: self.max_in_size.clone(),
-            max_out_size: self.max_out_size.clone(),
-            min_chunk_size: self.min_chunk_size.clone(),
-            flags: Cell::new(CodecFlags::empty()),
-            encoding_payload: Cell::new(None),
         }
     }
 }
@@ -1493,6 +1481,56 @@ mod tests {
             .encode(Encoded::Packet(Packet::Connect(pkt)), &mut buf)
             .unwrap();
         assert_eq!(&buf.freeze()[..], &connect[..]);
+    }
+
+    #[test]
+    fn test_clone() {
+        let codec = Codec::new();
+        codec.set_max_inbound_size(100);
+        codec.set_max_outbound_size(200);
+        codec.set_retain_available(false);
+        codec.set_sub_ids_available(false);
+
+        // partially decoded PUBACK
+        let mut src = BytesMut::from(&b"\x40\x02"[..]);
+        assert!(codec.decode(&mut src).unwrap().is_none());
+
+        let cloned = codec.clone();
+        assert_eq!(cloned.max_inbound_size(), 100);
+        assert_eq!(cloned.max_outbound_size(), 200);
+        assert!(!cloned.retain_available());
+        assert!(!cloned.sub_ids_available());
+        assert_eq!(cloned.flags.get(), codec.flags.get());
+
+        src.extend_from_slice(b"\x00\x01");
+        assert_eq!(
+            cloned.decode(&mut src).unwrap(),
+            Some(Decoded::Packet(
+                Packet::PublishAck(PublishAck {
+                    packet_id: NonZeroU16::new(1).unwrap(),
+                    ..PublishAck::default()
+                }),
+                2
+            ))
+        );
+
+        // payload of an encoded publish is expected
+        let codec = Codec::new();
+        let mut buf = BytePages::default();
+        codec
+            .encode(
+                Encoded::Publish(
+                    Publish {
+                        topic: ByteString::from_static("t"),
+                        payload_size: 1,
+                        ..Default::default()
+                    },
+                    None,
+                ),
+                &mut buf,
+            )
+            .unwrap();
+        assert!(codec.clone().is_encoding_payload());
     }
 
     #[test]
