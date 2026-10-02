@@ -25,11 +25,6 @@ fn is_valid_response_topic(topic: &Option<ByteString>) -> bool {
     topic.as_deref().is_none_or(is_valid_topic_name)
 }
 
-/// Shared Subscription Topic Filters start with `$share/` (MQTT 5.0, 4.8.2)
-fn is_shared_filter(filter: &str) -> bool {
-    filter.starts_with("$share/")
-}
-
 fn is_valid_props(props: &UserProperties) -> bool {
     props
         .iter()
@@ -92,7 +87,9 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
         Packet::Subscribe(sub) => {
             !sub.topic_filters.is_empty()
                 && sub.topic_filters.iter().all(|(f, opts)| {
-                    !f.is_empty() && is_valid_str(f) && !(opts.no_local && is_shared_filter(f))
+                    !f.is_empty()
+                        && is_valid_str(f)
+                        && !(opts.no_local && crate::topic::is_shared(f))
                 })
                 && sub.id.is_none_or(is_valid_sub_id)
                 && is_valid_props(&sub.user_properties)

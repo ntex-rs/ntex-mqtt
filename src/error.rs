@@ -149,12 +149,20 @@ pub enum SpecViolation {
     Connack_3_2_2_3_12,
     #[error("[MQTT-3.3.2-2] PUBLISH packet's topic name contains wildcard character")]
     Pub_3_3_2_2,
+    #[error("[MQTT-3.3.2-14] PUBLISH packet's Response Topic contains wildcard character")]
+    Pub_3_3_2_14,
+    #[error("[MQTT-3.3.4-6] PUBLISH packet sent by Client contains a Subscription Identifier")]
+    Pub_3_3_4_6,
     #[error("[MQTT-3.3.4-7] Number of in-flight messages exceeds set maximum")]
     Pub_3_3_4_7,
     #[error("[MQTT-3.3.4-9] Number of in-flight messages exceeds set maximum")]
     Pub_3_3_4_9,
     #[error("[MQTT-4.7.1-*] Topic filter is malformed")]
     Subs_4_7_1,
+    #[error("[MQTT-4.8.2-*] Shared Subscription Topic Filter is malformed")]
+    Subs_4_8_2,
+    #[error("[MQTT-3.8.3-4] No Local is set on a Shared Subscription")]
+    Subs_3_8_3_4,
     #[error("[MQTT-3.14.2-*] The Session Expiry Interval must not be set on DISCONNECT by Server")]
     Disconnect_3_14_2_21,
     #[error("[MQTT-3.14.2-*] Non-Zero Session Expiry Interval is set on DISCONNECT")]
@@ -177,7 +185,11 @@ impl SpecViolation {
             | SpecViolation::PacketId_2_2_1_3_Unsub
             | SpecViolation::Connect_3_1_2_26
             | SpecViolation::Pub_3_3_2_2
+            | SpecViolation::Pub_3_3_2_14
+            | SpecViolation::Pub_3_3_4_6
             | SpecViolation::Subs_4_7_1
+            | SpecViolation::Subs_4_8_2
+            | SpecViolation::Subs_3_8_3_4
             | SpecViolation::Connack_3_2_2_17
             | SpecViolation::Disconnect_3_14_2_21
             | SpecViolation::Disconnect_3_14_2_22 => DisconnectReasonCode::ProtocolError,
@@ -211,6 +223,12 @@ impl SpecViolation {
             SpecViolation::Pub_3_3_2_2 => {
                 "[MQTT-3.3.2-2] PUBLISH packet's topic name contains wildcard character"
             }
+            SpecViolation::Pub_3_3_2_14 => {
+                "[MQTT-3.3.2-14] PUBLISH packet's Response Topic contains wildcard character"
+            }
+            SpecViolation::Pub_3_3_4_6 => {
+                "[MQTT-3.3.4-6] PUBLISH packet sent by Client contains a Subscription Identifier"
+            }
             SpecViolation::Pub_3_3_4_7 => {
                 "[MQTT-3.3.4-7] Number of in-flight messages exceeds set maximum"
             }
@@ -218,6 +236,12 @@ impl SpecViolation {
                 "[MQTT-3.3.4-9] Number of in-flight messages exceeds set maximum"
             }
             SpecViolation::Subs_4_7_1 => "[MQTT-4.7.1-*] Topic filter is malformed",
+            SpecViolation::Subs_4_8_2 => {
+                "[MQTT-4.8.2-*] Shared Subscription Topic Filter is malformed"
+            }
+            SpecViolation::Subs_3_8_3_4 => {
+                "[MQTT-3.8.3-4] No Local is set on a Shared Subscription"
+            }
             SpecViolation::Disconnect_3_14_2_21 => {
                 "[MQTT-3.14.2-*] The Session Expiry Interval must not be set on DISCONNECT by Server"
             }

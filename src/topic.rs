@@ -31,6 +31,22 @@ pub(crate) fn is_valid(topic: &str) -> bool {
     }
 }
 
+/// Shared Subscription Topic Filters start with `$share/` (MQTT 5.0, 4.8.2)
+pub(crate) fn is_shared(filter: &str) -> bool {
+    filter.starts_with("$share/")
+}
+
+/// The `ShareName` of a Shared Subscription must be at least one character long, must not
+/// contain "/", "+" or "#" and must be followed by "/" and a Topic Filter,
+/// [MQTT-4.8.2-1], [MQTT-4.8.2-2] (MQTT 5.0, 4.8.2)
+pub(crate) fn is_valid_shared(filter: &str) -> bool {
+    filter.strip_prefix("$share/").is_none_or(|rest| {
+        rest.split_once('/').is_some_and(|(name, filter)| {
+            !name.is_empty() && !name.contains(['+', '#']) && !filter.is_empty()
+        })
+    })
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TopicFilterError {
     InvalidTopic,
@@ -476,5 +492,21 @@ mod tests {
     #[test_case("a/+/#", "a/b" => true; "13")]
     fn matches_filter(superset_filter: &'static str, subset_filter: &'static str) -> bool {
         topic(superset_filter).matches_filter(&topic(subset_filter))
+    }
+
+    #[test_case("a/b" => true; "not_shared")]
+    #[test_case("$share" => true; "not_shared_no_sep")]
+    #[test_case("$share/g/a" => true; "pass1")]
+    #[test_case("$share/g/#" => true; "pass2")]
+    #[test_case("$share/g/+/a/" => true; "pass3")]
+    #[test_case("$share/group1//" => true; "pass4")]
+    #[test_case("$share//a" => false; "fail_empty_name")]
+    #[test_case("$share/g" => false; "fail_no_filter")]
+    #[test_case("$share/g/" => false; "fail_empty_filter")]
+    #[test_case("$share/+/a" => false; "fail_name_plus")]
+    #[test_case("$share/#/a" => false; "fail_name_hash")]
+    #[test_case("$share/a+b/c" => false; "fail_name_plus_mid")]
+    fn is_valid_shared(filter: &str) -> bool {
+        super::is_valid_shared(filter)
     }
 }

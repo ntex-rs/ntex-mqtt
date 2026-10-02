@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* Reject a v5 PUBLISH from a client with a Subscription Identifier or a Response Topic
+  with wildcards, reject a malformed ShareName and No Local on a Shared Subscription
+
 * codec: Clear Session Present in a CONNACK with a non-zero reason code
 
 * codec: Drop Session Expiry Interval from a v5 DISCONNECT sent by the server
