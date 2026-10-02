@@ -1352,3 +1352,53 @@ async fn test_handshake_fail() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[ntex::test]
+async fn test_handshake_invalid_will_topic() -> std::io::Result<()> {
+    let called = Arc::new(AtomicBool::new(false));
+    let called2 = called.clone();
+    let srv = server::test_server(async move || {
+        let called = called2.clone();
+        MqttServer::new(async |_: Publish| Ok::<_, ()>(())).build(async move |msg: Connect| {
+            called.store(true, Relaxed);
+            Ok::<_, ()>(msg.ack(St, false))
+        })
+    });
+    let connect_pkt = |topic: &str| {
+        let mut body = vec![
+            0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0x06, 0x00, 0x3c, 0x00, 0x02, b'i', b'd',
+        ];
+        body.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+        body.extend_from_slice(topic.as_bytes());
+        body.extend_from_slice(&[0x00, 0x00]);
+        let mut pkt = vec![0x10, body.len() as u8];
+        pkt.extend(body);
+        pkt
+    };
+
+    // the connection is closed without CONNACK, [MQTT-3.1.4-1]
+    for topic in ["", "a/#", "+", "a/+/b"] {
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::default();
+        io.encode_slice(&connect_pkt(topic)).unwrap();
+        assert!(io.recv(&codec).await.unwrap().is_none());
+    }
+    assert!(!called.load(Relaxed));
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode_slice(&connect_pkt("a/b")).unwrap();
+    assert_eq!(
+        io.recv(&codec).await.unwrap().unwrap(),
+        Decoded::Packet(
+            Packet::ConnectAck(codec::ConnectAck {
+                session_present: false,
+                return_code: codec::ConnectAckReason::ConnectionAccepted,
+            }),
+            2
+        )
+    );
+    assert!(called.load(Relaxed));
+
+    Ok(())
+}

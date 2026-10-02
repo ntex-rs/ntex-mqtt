@@ -163,6 +163,12 @@ pub enum SpecViolation {
     Subs_4_8_2,
     #[error("[MQTT-3.8.3-4] No Local is set on a Shared Subscription")]
     Subs_3_8_3_4,
+    #[error("[MQTT-4.7.3-1] CONNECT packet's Will Topic is empty")]
+    Will_4_7_3_1,
+    #[error("[MQTT-4.7.0-1] CONNECT packet's Will Topic contains wildcard character")]
+    Will_4_7_0_1,
+    #[error("[MQTT-3.3.2-14] CONNECT packet's Will Response Topic contains wildcard character")]
+    Will_3_3_2_14,
     #[error("[MQTT-3.14.2-*] The Session Expiry Interval must not be set on DISCONNECT by Server")]
     Disconnect_3_14_2_21,
     #[error("[MQTT-3.14.2-*] Non-Zero Session Expiry Interval is set on DISCONNECT")]
@@ -190,13 +196,16 @@ impl SpecViolation {
             | SpecViolation::Subs_4_7_1
             | SpecViolation::Subs_4_8_2
             | SpecViolation::Subs_3_8_3_4
+            | SpecViolation::Will_4_7_3_1
+            | SpecViolation::Will_4_7_0_1
+            | SpecViolation::Will_3_3_2_14
             | SpecViolation::Connack_3_2_2_17
             | SpecViolation::Disconnect_3_14_2_21
             | SpecViolation::Disconnect_3_14_2_22 => DisconnectReasonCode::ProtocolError,
         }
     }
 
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             SpecViolation::PacketId_2_2_1_3_Pub => {
                 "[MQTT-2.2.1-3] PUBLISH received with packet id that is already in use"
@@ -241,6 +250,13 @@ impl SpecViolation {
             }
             SpecViolation::Subs_3_8_3_4 => {
                 "[MQTT-3.8.3-4] No Local is set on a Shared Subscription"
+            }
+            SpecViolation::Will_4_7_3_1 => "[MQTT-4.7.3-1] CONNECT packet's Will Topic is empty",
+            SpecViolation::Will_4_7_0_1 => {
+                "[MQTT-4.7.0-1] CONNECT packet's Will Topic contains wildcard character"
+            }
+            SpecViolation::Will_3_3_2_14 => {
+                "[MQTT-3.3.2-14] CONNECT packet's Will Response Topic contains wildcard character"
             }
             SpecViolation::Disconnect_3_14_2_21 => {
                 "[MQTT-3.14.2-*] The Session Expiry Interval must not be set on DISCONNECT by Server"

@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* Reject a CONNECT with an empty Will Topic or a Will Topic with wildcards,
+  v5 server also rejects a Will Response Topic with wildcards and sends CONNACK 0x82 Protocol Error,
+  v3 server closes the connection without CONNACK
+
 * codec: Check the v5 max inbound and outbound packet size against the total packet size,
   `Codec::max_outbound_size()` returns the configured size, `DecodeError::MaxSizeExceeded`
   reports the total packet size

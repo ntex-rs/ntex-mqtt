@@ -2,6 +2,8 @@ use std::{fmt, fmt::Write, io};
 
 use ntex_bytes::ByteString;
 
+use crate::error::SpecViolation;
+
 #[allow(clippy::match_same_arms)]
 pub(crate) fn is_valid(topic: &str) -> bool {
     if topic.is_empty() {
@@ -45,6 +47,19 @@ pub(crate) fn is_valid_shared(filter: &str) -> bool {
             !name.is_empty() && !name.contains(['+', '#']) && !filter.is_empty()
         })
     })
+}
+
+/// The Will Topic is a Topic Name, it must be at least one character long
+/// and must not contain wildcards, [MQTT-4.7.3-1], [MQTT-4.7.0-1] (MQTT 5.0, 4.7),
+/// [MQTT-4.7.3-1], [MQTT-4.7.1-1] (MQTT 3.1.1, 4.7)
+pub(crate) fn check_will_topic(topic: &str) -> Result<(), SpecViolation> {
+    if topic.is_empty() {
+        Err(SpecViolation::Will_4_7_3_1)
+    } else if topic.contains(['+', '#']) {
+        Err(SpecViolation::Will_4_7_0_1)
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
