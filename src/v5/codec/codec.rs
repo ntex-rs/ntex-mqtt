@@ -24,6 +24,8 @@ bitflags::bitflags! {
     pub struct CodecFlags: u8 {
         const NO_PROBLEM_INFO = 0b0000_0001;
         const NO_RETAIN       = 0b0000_0010;
+        /// codec decoded a CONNECT packet, it is used by a server
+        const SERVER          = 0b0000_0100;
         const NO_SUB_IDS      = 0b0000_1000;
     }
 }
@@ -141,6 +143,14 @@ impl Codec {
         mut pkt: Packet,
         dst: &mut BytePages,
     ) -> Result<(), EncodeError> {
+        // Session Expiry Interval must not be sent on a DISCONNECT by the Server,
+        // [MQTT-3.14.2-2] (MQTT 5.0, 3.14.2.2.2)
+        if let Packet::Disconnect(ref mut pkt) = pkt
+            && self.flags.get().contains(CodecFlags::SERVER)
+        {
+            pkt.session_expiry_interval_secs = None;
+        }
+
         // handle [MQTT 3.1.2.11.7]
         if self.flags.get().contains(CodecFlags::NO_PROBLEM_INFO) {
             match pkt {
@@ -324,6 +334,7 @@ impl Decoder for Codec {
                         if let Packet::Connect(ref pkt) = packet {
                             let mut flags = self.flags.get();
                             flags.set(CodecFlags::NO_PROBLEM_INFO, !pkt.request_problem_info);
+                            flags.insert(CodecFlags::SERVER);
                             self.flags.set(flags);
                         }
                         Ok(Some(Decoded::Packet(packet, fixed.remaining_length)))
@@ -1342,5 +1353,31 @@ mod tests {
         ] {
             assert_eq!(decode(data), Err(DecodeError::MalformedPacket));
         }
+    }
+
+    #[test]
+    fn test_server_disconnect_session_expiry() {
+        let disconnect = || {
+            Encoded::Packet(Packet::Disconnect(Disconnect {
+                session_expiry_interval_secs: Some(10),
+                ..Disconnect::default()
+            }))
+        };
+        let encode = |codec: &Codec| {
+            let mut buf = BytePages::default();
+            codec.encode(disconnect(), &mut buf).unwrap();
+            buf.freeze()
+        };
+
+        // client keeps Session Expiry Interval
+        let codec = Codec::new();
+        assert_eq!(&encode(&codec)[..], b"\xE0\x07\x00\x05\x11\x00\x00\x00\x0A");
+
+        // server drops it
+        let mut src = BytesMut::from(&b"\x10\x0F\x00\x04MQTT\x05\x02\x00\x3C\x00\x00\x02id"[..]);
+        let Some(Decoded::Packet(Packet::Connect(_), _)) = codec.decode(&mut src).unwrap() else {
+            panic!()
+        };
+        assert_eq!(&encode(&codec)[..], b"\xE0\x02\x00\x00");
     }
 }
