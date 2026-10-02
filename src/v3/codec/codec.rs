@@ -4,7 +4,7 @@ use ntex_bytes::{Buf, BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{FixedHeader, MAX_PACKET_SIZE, QoS, packet_type};
+use crate::types::{FixedHeader, MAX_FRAME_RESERVE, MAX_PACKET_SIZE, QoS, packet_type};
 use crate::utils::decode_variable_length;
 
 use super::{Decoded, Encoded, Publish, decode, encode};
@@ -110,11 +110,12 @@ impl Decoder for Codec {
                                     first_byte,
                                     remaining_length,
                                 }));
-                                // todo: validate remaining_length against max frame size config
                                 let remaining_length = remaining_length as usize;
                                 if src.len() < remaining_length {
-                                    // todo: subtract?
-                                    src.reserve(remaining_length); // extend receiving buffer to fit the whole frame -- todo: too eager?
+                                    src.reserve(min(
+                                        remaining_length - src.len(),
+                                        MAX_FRAME_RESERVE,
+                                    ));
                                     return Ok(None);
                                 }
                             }
@@ -514,5 +515,25 @@ mod tests {
             .encode(Encoded::Packet(Packet::PingRequest), &mut buf)
             .unwrap();
         assert_eq!(&buf.freeze()[..], b"cd\xc0\x00");
+    }
+
+    #[test]
+    fn test_frame_reserve() {
+        let codec = Codec::new();
+
+        // header of max size subscribe packet
+        let mut src = BytesMut::from(&b"\x82\xff\xff\xff\x7f"[..]);
+        assert_eq!(codec.decode(&mut src), Ok(None));
+        assert!(src.is_empty());
+        assert!(src.capacity() >= MAX_FRAME_RESERVE);
+        assert!(src.capacity() < MAX_FRAME_RESERVE * 4);
+
+        // small frames reserve the rest of the frame
+        let codec = Codec::new();
+        let mut src = BytesMut::from(&b"\x82\xe8\x07\x00\x01"[..]);
+        assert_eq!(codec.decode(&mut src), Ok(None));
+        assert_eq!(src.len(), 2);
+        assert!(src.capacity() >= 1000);
+        assert!(src.capacity() < MAX_FRAME_RESERVE);
     }
 }
