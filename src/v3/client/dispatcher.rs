@@ -137,6 +137,11 @@ where
 
         match packet {
             Decoded::Publish(publish, payload, size) => {
+                // the Topic Name must not contain wildcards, [MQTT-3.3.2-2] (MQTT 3.1.1, 3.3.2)
+                if publish.topic.contains(['#', '+']) {
+                    return Err(SpecViolation::Pub_3_3_2_2.into());
+                }
+
                 let inner = &self.inner;
                 let packet_id = publish.packet_id;
 
@@ -397,5 +402,57 @@ mod tests {
             }
             DispatcherError::Service(()) => panic!(),
         }
+    }
+
+    #[ntex::test]
+    async fn test_publish_topic_wildcards() {
+        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            false,
+            Rc::default(),
+        ));
+        let disp = Pipeline::new(
+            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
+            Dispatcher::new(
+                shared.clone(),
+                fn_service(async |_| Ok::<_, ()>(Either::Left(()))),
+                fn_service(async |_| {
+                    Ok::<_, DispatcherError<()>>(ProtocolMessageAck {
+                        result: ProtocolMessageKind::Nothing,
+                    })
+                }),
+                32 * 1024,
+            ),
+        );
+        let publish = |topic: &'static str| {
+            Decoded::Publish(
+                codec::Publish {
+                    dup: false,
+                    retain: false,
+                    qos: QoS::AtMostOnce,
+                    topic: ByteString::from_static(topic),
+                    packet_id: None,
+                    payload_size: 0,
+                },
+                Bytes::new(),
+                999,
+            )
+        };
+
+        // [MQTT-3.3.2-2] the Topic Name must not contain wildcards
+        for topic in ["a/+", "a/#", "+", "a+b"] {
+            let Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err))) =
+                disp.call(publish(topic)).await
+            else {
+                panic!("expected protocol violation for {topic}")
+            };
+            assert_eq!(
+                err.inner,
+                crate::error::ViolationInner::Spec(SpecViolation::Pub_3_3_2_2)
+            );
+        }
+        assert!(disp.call(publish("a/b")).await.is_ok());
     }
 }

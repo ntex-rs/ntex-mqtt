@@ -106,6 +106,20 @@ where
 
         match req {
             Decoded::Publish(mut publish, payload, size) => {
+                // the Topic Name and the Response Topic must not contain wildcards,
+                // [MQTT-3.3.2-2], [MQTT-3.3.2-14] (MQTT 5.0, 3.3.2.1, 3.3.2.3.5)
+                if publish.topic.contains(['#', '+']) {
+                    return Err(SpecViolation::Pub_3_3_2_2.into());
+                }
+                if publish
+                    .properties
+                    .response_topic
+                    .as_ref()
+                    .is_some_and(|t| t.contains(['#', '+']))
+                {
+                    return Err(SpecViolation::Pub_3_3_2_14.into());
+                }
+
                 let info = &self.inner;
                 let packet_id = publish.packet_id;
 
@@ -380,5 +394,68 @@ impl<C> Inner<C> {
             self.sink.drop_sink(true);
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex_bytes::Bytes;
+    use ntex_io::{Io, testing::IoTest};
+    use ntex_service::{Pipeline, cfg::SharedCfg, fn_service};
+
+    use super::*;
+    use crate::{error::ViolationInner, v5::MqttSink};
+
+    #[ntex::test]
+    async fn test_publish_topic_wildcards() {
+        let cfg: SharedCfg = SharedCfg::new("DBG").add(MqttServiceConfig::new()).into();
+        let io = Io::new(IoTest::create().0, cfg.clone());
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            Rc::default(),
+        ));
+        let disp = Pipeline::new(
+            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
+            create_dispatcher(
+                shared.clone(),
+                fn_service(async |p: Publish| Ok::<_, ()>(Either::Right(p.ack()))),
+                fn_service(async |msg: ProtocolMessage| Ok::<_, ()>(msg.ack())),
+                16,
+                16,
+                cfg.get(),
+            ),
+        );
+        let publish = |topic: &'static str, response_topic: Option<&'static str>| {
+            let mut pkt = codec::Publish {
+                topic: ByteString::from_static(topic),
+                ..Default::default()
+            };
+            pkt.properties.response_topic = response_topic.map(ByteString::from_static);
+            Decoded::Publish(pkt, Bytes::new(), 999)
+        };
+        let violation = |res: Result<Option<Encoded>, DispatcherError<()>>| {
+            let Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err))) = res
+            else {
+                panic!("expected protocol violation")
+            };
+            assert_eq!(err.reason(), DisconnectReasonCode::ProtocolError);
+            let ViolationInner::Spec(err) = err.inner else {
+                panic!()
+            };
+            err
+        };
+
+        // [MQTT-3.3.2-2] the Topic Name must not contain wildcards
+        for topic in ["a/+", "a/#", "+", "a+b"] {
+            let err = violation(disp.call(publish(topic, None)).await);
+            assert_eq!(err, SpecViolation::Pub_3_3_2_2);
+        }
+        // [MQTT-3.3.2-14] the Response Topic must not contain wildcards
+        for topic in ["resp/+", "resp/#"] {
+            let err = violation(disp.call(publish("a", Some(topic))).await);
+            assert_eq!(err, SpecViolation::Pub_3_3_2_14);
+        }
+        assert!(disp.call(publish("a/b", Some("resp/a"))).await.is_ok());
     }
 }
