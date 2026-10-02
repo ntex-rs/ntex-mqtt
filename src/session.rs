@@ -24,11 +24,13 @@ impl<T, St> Session<T, St> {
     }
 
     #[inline]
+    /// Returns reference to the connection sink
     pub fn sink(&self) -> &T {
         &self.0.sink
     }
 
     #[inline]
+    /// Returns the configuration of type `U` for this connection
     pub fn cfg<U: Configuration>(&self) -> Cfg<U> {
         self.0.shared.get()
     }

@@ -30,6 +30,7 @@ impl ProtocolMessage {
         ProtocolMessage::Disconnect(Disconnect(pkt, size))
     }
 
+    /// Disconnect from the server by sending the provided `Disconnect` packet
     pub fn disconnect(&self, pkt: codec::Disconnect) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::Disconnect(pkt)),
@@ -48,6 +49,7 @@ impl ProtocolMessage {
     }
 }
 
+/// Unhandled `Publish` packet received from a server
 #[derive(Debug)]
 pub struct Publish(codec::Publish, Payload, u32);
 
@@ -89,6 +91,7 @@ impl Publish {
     }
 
     #[inline]
+    /// Ack `QoS0` publish packet, no acknowledgement is sent to the server
     pub fn ack_qos0(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::None,
@@ -97,6 +100,7 @@ impl Publish {
     }
 
     #[inline]
+    /// Ack publish packet with the provided reason code
     pub fn ack(self, reason_code: codec::PublishAckReason) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: self.0.packet_id.map_or(Pkt::None, |packet_id| {
@@ -112,6 +116,7 @@ impl Publish {
     }
 
     #[inline]
+    /// Ack publish packet with the provided reason code, properties and reason string
     pub fn ack_with(
         self,
         reason_code: codec::PublishAckReason,
@@ -131,6 +136,7 @@ impl Publish {
         }
     }
 
+    /// Ack publish packet with the provided reason code and return the publish packet
     pub fn into_inner(
         self,
         reason_code: codec::PublishAckReason,

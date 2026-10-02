@@ -30,26 +30,31 @@ impl<St> Connect<St> {
     }
 
     #[inline]
+    /// Returns reference to connect packet
     pub fn packet(&self) -> &codec::Connect {
         &self.pkt
     }
 
     #[inline]
+    /// Returns mutable reference to connect packet
     pub fn packet_mut(&mut self) -> &mut codec::Connect {
         &mut self.pkt
     }
 
     #[inline]
+    /// Returns size of the packet
     pub fn packet_size(&self) -> u32 {
         self.size
     }
 
     #[inline]
+    /// Returns reference to the io object of the connection
     pub fn io(&self) -> &IoBoxed {
         &self.io
     }
 
     #[inline]
+    /// Returns reference to the handshake state
     pub fn st(&self) -> &St {
         &self.st
     }

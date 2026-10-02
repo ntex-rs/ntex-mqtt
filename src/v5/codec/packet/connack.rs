@@ -14,24 +14,56 @@ pub struct ConnectAck {
     /// enables a Client to establish whether the Client and Server have a consistent view
     /// about whether there is already stored Session state.
     pub session_present: bool,
+    /// Connect Reason Code.
     pub reason_code: ConnectAckReason,
 
+    /// Session Expiry Interval property, in seconds.
+    ///
+    /// `None` means the interval requested in the CONNECT packet is used.
     pub session_expiry_interval_secs: Option<u32>,
+    /// Receive Maximum property, the number of `QoS` 1 and `QoS` 2 publications
+    /// the Server is willing to process concurrently.
     pub receive_max: NonZeroU16,
+    /// Maximum `QoS` property, the highest `QoS` level the Server supports.
+    ///
+    /// Defaults to `QoS::ExactlyOnce` if the property is absent.
     pub max_qos: QoS,
+    /// Maximum Packet Size property, in bytes.
+    ///
+    /// `None` means the Server imposes no limit beyond the protocol one.
     pub max_packet_size: Option<u32>,
+    /// Assigned Client Identifier property, set when the Server generated the client id.
     pub assigned_client_id: Option<ByteString>,
+    /// Topic Alias Maximum property, the highest value the Server accepts as a Topic Alias.
+    ///
+    /// Zero means the Server does not accept any Topic Alias.
     pub topic_alias_max: u16,
+    /// Retain Available property, whether the Server supports retained messages.
     pub retain_available: bool,
+    /// Wildcard Subscription Available property, whether the Server supports
+    /// Wildcard Subscriptions.
     pub wildcard_subscription_available: bool,
+    /// Subscription Identifiers Available property, whether the Server supports
+    /// Subscription Identifiers.
     pub subscription_identifiers_available: bool,
+    /// Shared Subscription Available property, whether the Server supports
+    /// Shared Subscriptions.
     pub shared_subscription_available: bool,
+    /// Server Keep Alive property, in seconds.
+    ///
+    /// `None` means the Keep Alive requested in the CONNECT packet is used.
     pub server_keepalive_sec: Option<u16>,
+    /// Response Information property, used as the basis for creating a Response Topic.
     pub response_info: Option<ByteString>,
+    /// Server Reference property, identifies another Server the Client should use.
     pub server_reference: Option<ByteString>,
+    /// Authentication Method property, the name of the authentication method in use.
     pub auth_method: Option<ByteString>,
+    /// Authentication Data property, its content is defined by the authentication method.
     pub auth_data: Option<Bytes>,
+    /// Reason String property, a human readable string designed for diagnostics.
     pub reason_string: Option<ByteString>,
+    /// User Property pairs, additional diagnostic or other information.
     pub user_properties: UserProperties,
 }
 
@@ -64,32 +96,55 @@ impl Default for ConnectAck {
 prim_enum! {
     /// CONNACK reason codes
     pub enum ConnectAckReason {
+        /// The connection is accepted.
         Success = 0,
+        /// The Server does not wish to reveal the reason for the failure, or none of the other reason codes apply.
         UnspecifiedError = 128,
+        /// Data within the CONNECT packet could not be correctly parsed.
         MalformedPacket = 129,
+        /// Data in the CONNECT packet does not conform to the specification.
         ProtocolError = 130,
+        /// The CONNECT is valid but is not accepted by this Server.
         ImplementationSpecificError = 131,
+        /// The Server does not support the version of the MQTT protocol requested by the Client.
         UnsupportedProtocolVersion = 132,
+        /// The Client Identifier is a valid string but is not allowed by the Server.
         ClientIdentifierNotValid = 133,
+        /// The Server does not accept the user name or password specified by the Client.
         BadUserNameOrPassword = 134,
+        /// The Client is not authorized to connect.
         NotAuthorized = 135,
+        /// The MQTT Server is not available.
         ServerUnavailable = 136,
+        /// The Server is busy, try again later.
         ServerBusy = 137,
+        /// This Client has been banned by administrative action.
         Banned = 138,
+        /// The authentication method is not supported or does not match the method in use.
         BadAuthenticationMethod = 140,
+        /// The Will Topic Name is not malformed, but is not accepted by this Server.
         TopicNameInvalid = 144,
+        /// The CONNECT packet exceeded the maximum permissible size.
         PacketTooLarge = 149,
+        /// An implementation or administrative imposed limit has been exceeded.
         QuotaExceeded = 151,
+        /// The Will Payload does not match the specified Payload Format Indicator.
         PayloadFormatInvalid = 153,
+        /// The Server does not support retained messages, and Will Retain was set to 1.
         RetainNotSupported = 154,
+        /// The Server does not support the `QoS` set in Will `QoS`.
         QosNotSupported = 155,
+        /// The Client should temporarily use another server.
         UseAnotherServer = 156,
+        /// The Client should permanently use another server.
         ServerMoved = 157,
+        /// The connection rate limit has been exceeded.
         ConnectionRateExceeded = 159
     }
 }
 
 impl ConnectAckReason {
+    /// Human readable description of the reason code
     pub fn reason(self) -> &'static str {
         match self {
             ConnectAckReason::Success => "Connection Accepted",

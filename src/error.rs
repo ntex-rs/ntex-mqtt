@@ -104,6 +104,7 @@ pub enum MqttProtocolError {
     WriteTimeout,
 }
 
+/// Protocol violation error
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(transparent)]
 pub struct ProtocolViolationError {
@@ -126,51 +127,74 @@ pub(crate) enum ViolationInner {
     },
 }
 
+/// Mqtt specification violations
 #[allow(non_camel_case_types)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SpecViolation {
+    /// PUBLISH is received with a packet id that is already in use
     #[error("[MQTT-2.2.1-3] PUBLISH received with packet id that is already in use")]
     PacketId_2_2_1_3_Pub,
+    /// SUBSCRIBE is received with a packet id that is already in use
     #[error("[MQTT-2.2.1-3] SUBSCRIBE received with packet id that is already in use")]
     PacketId_2_2_1_3_Sub,
+    /// UNSUBSCRIBE is received with a packet id that is already in use
     #[error("[MQTT-2.2.1-3] UNSUBSCRIBE received with packet id that is already in use")]
     PacketId_2_2_1_3_Unsub,
+    /// Topic alias is greater than the Topic Alias Maximum sent in CONNECT
     #[error("[MQTT-3.1.2-26] Topic alias is greater than max allowed")]
     Connect_3_1_2_26,
+    /// PUBLISH is received with a `QoS` greater than the Maximum `QoS` sent in CONNACK
     #[error(
         "[MQTT-3.2.2-11] PUBLISH packet at a QoS level exceeding the Maximum QoS level specified in CONNACK"
     )]
     Connack_3_2_2_11,
+    /// PUBLISH is received with the RETAIN flag set while retain is not supported
     #[error("[MQTT-3.2.2-14] RETAIN is not supported")]
     Connack_3_2_2_14,
+    /// Topic alias is greater than the Topic Alias Maximum sent in CONNACK
     #[error("[MQTT-3.2.2-17] Topic alias is greater than max allowed")]
     Connack_3_2_2_17,
+    /// Subscription Identifier is used while it is not supported
     #[error("[MQTT-3.2.2-3.12] Subscription Identifiers are not supported")]
     Connack_3_2_2_3_12,
+    /// PUBLISH topic name contains a wildcard character
     #[error("[MQTT-3.3.2-2] PUBLISH packet's topic name contains wildcard character")]
     Pub_3_3_2_2,
+    /// PUBLISH Response Topic contains a wildcard character
     #[error("[MQTT-3.3.2-14] PUBLISH packet's Response Topic contains wildcard character")]
     Pub_3_3_2_14,
+    /// PUBLISH sent by a client contains a Subscription Identifier
     #[error("[MQTT-3.3.4-6] PUBLISH packet sent by Client contains a Subscription Identifier")]
     Pub_3_3_4_6,
+    /// Number of in-flight messages received exceeds the Receive Maximum sent by the server
     #[error("[MQTT-3.3.4-7] Number of in-flight messages exceeds set maximum")]
     Pub_3_3_4_7,
+    /// Number of in-flight messages received exceeds the Receive Maximum sent by the client
     #[error("[MQTT-3.3.4-9] Number of in-flight messages exceeds set maximum")]
     Pub_3_3_4_9,
+    /// Subscription topic filter is malformed
     #[error("[MQTT-4.7.1-*] Topic filter is malformed")]
     Subs_4_7_1,
+    /// Shared subscription topic filter is malformed
     #[error("[MQTT-4.8.2-*] Shared Subscription Topic Filter is malformed")]
     Subs_4_8_2,
+    /// No Local option is set on a shared subscription
     #[error("[MQTT-3.8.3-4] No Local is set on a Shared Subscription")]
     Subs_3_8_3_4,
+    /// CONNECT Will Topic is empty
     #[error("[MQTT-4.7.3-1] CONNECT packet's Will Topic is empty")]
     Will_4_7_3_1,
+    /// CONNECT Will Topic contains a wildcard character
     #[error("[MQTT-4.7.0-1] CONNECT packet's Will Topic contains wildcard character")]
     Will_4_7_0_1,
+    /// CONNECT Will Response Topic contains a wildcard character
     #[error("[MQTT-3.3.2-14] CONNECT packet's Will Response Topic contains wildcard character")]
     Will_3_3_2_14,
+    /// DISCONNECT sent by the server contains a Session Expiry Interval
     #[error("[MQTT-3.14.2-*] The Session Expiry Interval must not be set on DISCONNECT by Server")]
     Disconnect_3_14_2_21,
+    /// DISCONNECT contains a non-zero Session Expiry Interval while the session expiry
+    /// interval of the CONNECT packet was zero
     #[error("[MQTT-3.14.2-*] Non-Zero Session Expiry Interval is set on DISCONNECT")]
     Disconnect_3_14_2_22,
 }
@@ -295,12 +319,14 @@ impl MqttProtocolError {
         })
     }
 
+    /// Create protocol violation error from a specification violation
     pub fn spec(err: SpecViolation) -> Self {
         Self::ProtocolViolation(ProtocolViolationError {
             inner: ViolationInner::Spec(err),
         })
     }
 
+    /// Create generic protocol violation error with the `ProtocolError` reason code
     pub fn generic_violation(message: &'static str) -> Self {
         Self::violation(DisconnectReasonCode::ProtocolError, message)
     }
@@ -347,57 +373,86 @@ impl<E> From<Either<DecodeError, io::Error>> for MqttConnectError<E> {
     }
 }
 
+/// Errors which can occur during packet decoding
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum DecodeError {
+    /// CONNECT packet's protocol name is not `MQTT`
     #[error("Invalid protocol")]
     InvalidProtocol,
+    /// Packet's length does not match its content
     #[error("Invalid length")]
     InvalidLength,
+    /// Packet cannot be parsed according to the protocol specification
     #[error("Malformed packet")]
     MalformedPacket,
+    /// CONNECT packet's protocol level is not supported
     #[error("Unsupported protocol level")]
     UnsupportedProtocolLevel,
+    /// CONNECT packet's reserved flag is set
     #[error("Connect frame's reserved flag is set")]
     ConnectReservedFlagSet,
+    /// CONNACK packet's reserved flags are set
     #[error("ConnectAck frame's reserved flag is set")]
     ConnAckReservedFlagSet,
+    /// CONNECT packet's client id is not valid
     #[error("Invalid client id")]
     InvalidClientId,
+    /// Packet type is not known or not supported
     #[error("Unsupported packet type")]
     UnsupportedPacketType,
     // MQTT v3 only
+    /// Packet id is missing for a packet that requires it
     #[error("Packet id is required")]
     PacketIdRequired,
+    /// Packet is bigger than the configured maximum packet size
     #[error("Max size exceeded size:{size} max-size:{max_size}")]
-    MaxSizeExceeded { size: u32, max_size: u32 },
+    MaxSizeExceeded {
+        /// Size of the received packet
+        size: u32,
+        /// Configured maximum packet size
+        max_size: u32,
+    },
+    /// String field does not contain valid utf-8 data
     #[error("utf8 error")]
     Utf8Error,
+    /// Packet contains more data than expected
     #[error("Unexpected payload")]
     UnexpectedPayload,
 }
 
+/// Errors which can occur during packet encoding
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum EncodeError {
+    /// Packet is bigger than the Maximum Packet Size advertised by the peer
     #[error("Packet is bigger than peer's Maximum Packet Size")]
     OverMaxPacketSize,
+    /// More payload chunks are sent than declared by the publish packet
     #[error("Streaming payload is bigger than Publish packet definition")]
     OverPublishSize,
+    /// Streaming publish is completed before all declared payload is sent
     #[error("Streaming payload is incomplete")]
     PublishIncomplete,
+    /// Packet's length does not match its content
     #[error("Invalid length")]
     InvalidLength,
+    /// Packet cannot be encoded according to the protocol specification
     #[error("Malformed packet")]
     MalformedPacket,
+    /// Packet id is missing for a packet that requires it
     #[error("Packet id is required")]
     PacketIdRequired,
+    /// Payload is set for a packet that does not allow it
     #[error("Unexpected payload")]
     UnexpectedPayload,
+    /// Another packet is sent while a streaming publish expects payload chunks
     #[error("Publish packet is not completed, expect payload")]
     ExpectPayload,
+    /// Packet cannot be encoded for the negotiated protocol version
     #[error("Unsupported version")]
     UnsupportedVersion,
 }
 
+/// Errors which can occur when sending a packet
 #[derive(Debug, PartialEq, Eq, Copy, Clone, thiserror::Error)]
 pub enum SendPacketError {
     /// Encoder error

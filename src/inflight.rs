@@ -6,10 +6,13 @@ use ntex_util::{future::join, task::LocalWaker};
 
 /// Trait for types that could be sized
 pub trait SizedRequest {
+    /// Encoded size of the request in bytes
     fn size(&self) -> u32;
 
+    /// Check if the request is a publish packet
     fn is_publish(&self) -> bool;
 
+    /// Check if the request is a chunk of a streaming publish payload
     fn is_chunk(&self) -> bool;
 }
 
@@ -167,7 +170,8 @@ impl CounterInner {
 
 #[cfg(test)]
 mod tests {
-    use std::future::poll_fn;
+    use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
+    use std::{future::poll_fn, task::Wake, task::Waker};
 
     use ntex_service::Pipeline;
     use ntex_util::channel::{condition::Condition, oneshot};
@@ -247,6 +251,126 @@ mod tests {
         gate.notify_and_lock(());
         assert_eq!(timeout(Millis(5000), srv.ready()).await, Ok(Ok(())));
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
+    }
+
+    /// Readiness waiter must be woken by the in-flight counter when a call completes
+    async fn check_ready_woken(max_cap: u16, max_size: usize) {
+        let gate = Condition::new();
+        let svc = Rc::new(InFlightServiceImpl::new(
+            max_cap,
+            max_size,
+            GateService(gate.clone()),
+        ));
+        // a completed pipeline call wakes the pipeline readiness waiters,
+        // the call uses a separate pipeline so only the counter can wake `srv`
+        let srv = Pipeline::new((), svc.clone());
+        let srv2 = Pipeline::new((), svc);
+
+        ntex_util::spawn(async move {
+            let _ = srv2.call(()).await;
+        });
+        sleep(Millis(25)).await;
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
+
+        // poll readiness from a separate task, so unrelated wakeups of
+        // the test task cannot re-poll it
+        let ready = Rc::new(Cell::new(false));
+        let ready2 = ready.clone();
+        ntex_util::spawn(async move {
+            assert_eq!(srv.ready().await, Ok(()));
+            ready2.set(true);
+        });
+        sleep(Millis(25)).await;
+        assert!(!ready.get());
+
+        gate.notify_and_lock(());
+        sleep(Millis(50)).await;
+        assert!(ready.get());
+    }
+
+    #[ntex::test]
+    async fn test_inflight_cap_wakes_ready() {
+        check_ready_woken(1, 0).await;
+    }
+
+    #[ntex::test]
+    async fn test_inflight_size_wakes_ready() {
+        check_ready_woken(0, 10).await;
+    }
+
+    #[derive(Default)]
+    struct CountWaker(AtomicUsize);
+
+    impl CountWaker {
+        fn count(&self) -> usize {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Wake for CountWaker {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Register a waker with the counter
+    fn register(counter: &Counter) -> (Arc<CountWaker>, bool) {
+        let w = Arc::new(CountWaker::default());
+        let waker = Waker::from(w.clone());
+        let available = counter.0.available(&Context::from_waker(&waker));
+        (w, available)
+    }
+
+    #[test]
+    fn test_counter_cap_waker() {
+        let counter = Counter::new(2, 0);
+        let g1 = counter.get(0);
+        let (w, available) = register(&counter);
+        assert!(available);
+
+        // counter becomes full
+        let g2 = counter.get(0);
+        assert_eq!(w.count(), 1);
+        let (w, available) = register(&counter);
+        assert!(!available);
+
+        // capacity is released
+        drop(g1);
+        assert_eq!(w.count(), 1);
+        assert!(counter.is_available());
+
+        let (w, available) = register(&counter);
+        assert!(available);
+        drop(g2);
+        assert_eq!(w.count(), 0);
+    }
+
+    #[test]
+    fn test_counter_size_waker() {
+        let counter = Counter::new(0, 10);
+        let g1 = counter.get(6);
+        let (w, available) = register(&counter);
+        assert!(available);
+
+        // size limit is exceeded
+        let g2 = counter.get(6);
+        assert_eq!(w.count(), 1);
+        let (w, available) = register(&counter);
+        assert!(!available);
+
+        // size drops to the limit
+        drop(g1);
+        assert_eq!(w.count(), 1);
+        assert!(counter.is_available());
+
+        let (w, available) = register(&counter);
+        assert!(available);
+        drop(g2);
+        assert_eq!(w.count(), 0);
     }
 
     struct Srv2 {

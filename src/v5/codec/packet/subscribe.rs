@@ -15,16 +15,24 @@ pub struct Subscribe {
     pub packet_id: NonZeroU16,
     /// Subscription Identifier
     pub id: Option<NonZeroU32>,
+    /// User Property pairs, additional diagnostic or other information.
     pub user_properties: UserProperties,
     /// the list of Topic Filters and `QoS` to which the Client wants to subscribe.
     pub topic_filters: Vec<(ByteString, SubscriptionOptions)>,
 }
 
+/// Subscription Options of a Topic Filter
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct SubscriptionOptions {
+    /// Maximum `QoS` level at which the Server may send messages to the Client.
     pub qos: QoS,
+    /// No Local option, messages must not be forwarded to a connection with a Client Identifier
+    /// equal to the Client Identifier of the publishing connection.
     pub no_local: bool,
+    /// Retain As Published option, keep the RETAIN flag of forwarded messages.
     pub retain_as_published: bool,
+    /// Retain Handling option, whether retained messages are sent when the subscription
+    /// is established.
     pub retain_handling: RetainHandling,
 }
 
@@ -40,9 +48,14 @@ impl Default for SubscriptionOptions {
 }
 
 prim_enum! {
+    /// Retain Handling subscription option
     pub enum RetainHandling {
+        /// Send retained messages at the time of the subscribe.
         AtSubscribe = 0,
+        /// Send retained messages at subscribe only if the subscription does not
+        /// currently exist.
         AtSubscribeNew = 1,
+        /// Do not send retained messages at the time of the subscribe.
         NoAtSubscribe = 2
     }
 }
@@ -50,8 +63,11 @@ prim_enum! {
 /// Represents SUBACK packet
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SubscribeAck {
+    /// Packet Identifier
     pub packet_id: NonZeroU16,
+    /// User Property pairs, additional diagnostic or other information.
     pub properties: UserProperties,
+    /// Reason String property, a human readable string designed for diagnostics.
     pub reason_string: Option<ByteString>,
     /// corresponds to a Topic Filter in the SUBSCRIBE Packet being acknowledged.
     pub status: Vec<SubscribeAckReason>,
@@ -62,6 +78,7 @@ pub struct SubscribeAck {
 pub struct Unsubscribe {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
+    /// User Property pairs, additional diagnostic or other information.
     pub user_properties: UserProperties,
     /// the list of Topic Filters that the Client wishes to unsubscribe from.
     pub topic_filters: Vec<ByteString>,
@@ -72,25 +89,41 @@ pub struct Unsubscribe {
 pub struct UnsubscribeAck {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
+    /// User Property pairs, additional diagnostic or other information.
     pub properties: UserProperties,
+    /// Reason String property, a human readable string designed for diagnostics.
     pub reason_string: Option<ByteString>,
+    /// Reason codes, one for each Topic Filter in the UNSUBSCRIBE packet being acknowledged.
     pub status: Vec<UnsubscribeAckReason>,
 }
 
 prim_enum! {
     /// SUBACK reason codes
     pub enum SubscribeAckReason {
+        /// The subscription is accepted and the maximum `QoS` sent will be `QoS` 0.
         GrantedQos0 = 0,
+        /// The subscription is accepted and the maximum `QoS` sent will be `QoS` 1.
         GrantedQos1 = 1,
+        /// The subscription is accepted and any received `QoS` will be sent.
         GrantedQos2 = 2,
+        /// The subscription is not accepted and the Server either does not wish to reveal
+        /// the reason or none of the other reason codes apply.
         UnspecifiedError = 128,
+        /// The SUBSCRIBE is valid but the Server does not accept it.
         ImplementationSpecificError = 131,
+        /// The Client is not authorized to make this subscription.
         NotAuthorized = 135,
+        /// The Topic Filter is correctly formed but is not allowed for this Client.
         TopicFilterInvalid = 143,
+        /// The specified Packet Identifier is already in use.
         PacketIdentifierInUse = 145,
+        /// An implementation or administrative imposed limit has been exceeded.
         QuotaExceeded = 151,
+        /// The Server does not support Shared Subscriptions for this Client.
         SharedSubscriptionNotSupported = 158,
+        /// The Server does not support Subscription Identifiers.
         SubscriptionIdentifiersNotSupported = 161,
+        /// The Server does not support Wildcard Subscriptions.
         WildcardSubscriptionsNotSupported = 162
     }
 }
@@ -98,12 +131,20 @@ prim_enum! {
 prim_enum! {
     /// UNSUBACK reason codes
     pub enum UnsubscribeAckReason {
+        /// The subscription is deleted.
         Success = 0,
+        /// No matching Topic Filter is being used by the Client.
         NoSubscriptionExisted = 17,
+        /// The unsubscribe could not be completed and the Server either does not wish to
+        /// reveal the reason or none of the other reason codes apply.
         UnspecifiedError = 128,
+        /// The UNSUBSCRIBE is valid but the Server does not accept it.
         ImplementationSpecificError = 131,
+        /// The Client is not authorized to unsubscribe.
         NotAuthorized = 135,
+        /// The Topic Filter is correctly formed but is not allowed for this Client.
         TopicFilterInvalid = 143,
+        /// The specified Packet Identifier is already in use.
         PacketIdentifierInUse = 145
     }
 }

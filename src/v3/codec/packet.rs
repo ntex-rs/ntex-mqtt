@@ -25,6 +25,7 @@ prim_enum! {
 }
 
 impl ConnectAckReason {
+    /// Returns a human readable description of the return code
     pub fn reason(self) -> &'static str {
         match self {
             ConnectAckReason::ConnectionAccepted => "Connection Accepted",
@@ -89,6 +90,8 @@ impl Connect {
 pub struct Publish {
     /// this might be re-delivery of an earlier attempt to send the Packet.
     pub dup: bool,
+    /// the Server must store the Application Message and its `QoS`, so it can be
+    /// delivered to future subscribers of the topic.
     pub retain: bool,
     /// the level of assurance for delivery of an Application Message.
     pub qos: QoS,
@@ -103,6 +106,7 @@ pub struct Publish {
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 /// `ConnectAck` message
 pub struct ConnectAck {
+    /// the Connect Return Code reported by the Server
     pub return_code: ConnectAckReason,
     /// enables a Client to establish whether the Client and Server have a consistent view
     /// about whether there is already stored Session state.
@@ -112,7 +116,9 @@ pub struct ConnectAck {
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 /// Subscribe Return Code
 pub enum SubscribeReturnCode {
+    /// Subscription accepted with the granted maximum `QoS`
     Success(QoS),
+    /// Subscription failed
     Failure,
 }
 
@@ -152,6 +158,7 @@ pub enum Packet {
     },
     /// Subscribe acknowledgment
     SubscribeAck {
+        /// Packet Identifier
         packet_id: NonZeroU16,
         /// corresponds to a Topic Filter in the SUBSCRIBE Packet being acknowledged.
         status: Vec<SubscribeReturnCode>,
@@ -183,6 +190,7 @@ impl From<Connect> for Packet {
 }
 
 impl Packet {
+    /// Returns the MQTT control packet type value
     pub fn packet_type(&self) -> u8 {
         match self {
             Packet::Connect(_) => packet_type::CONNECT,

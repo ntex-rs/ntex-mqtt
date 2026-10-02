@@ -8,6 +8,7 @@ use super::codec::{self, EncodeLtd};
 use super::shared::{Ack, AckType, MqttShared};
 use crate::{error::EncodeError, error::SendPacketError, types::QoS};
 
+/// Mqtt client/server sink, it is used to send packets to the peer
 pub struct MqttSink(Rc<MqttShared>);
 
 impl Clone for MqttSink {
@@ -182,6 +183,7 @@ impl fmt::Debug for MqttSink {
     }
 }
 
+/// Publish packet builder
 pub struct PublishBuilder {
     shared: Rc<MqttShared>,
     packet: codec::Publish,
@@ -723,6 +725,7 @@ impl UnsubscribeBuilder {
     }
 }
 
+/// Sender for a streaming publish payload
 pub struct StreamingPayload {
     shared: Rc<MqttShared>,
     rx: Cell<Option<pool::Receiver<()>>>,

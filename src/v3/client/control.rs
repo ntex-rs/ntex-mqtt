@@ -1,3 +1,5 @@
+//! MQTT 3.1.1 client control messages
+
 use std::num::NonZeroU16;
 
 use ntex_bytes::Bytes;
@@ -44,6 +46,7 @@ impl ProtocolMessage {
     }
 }
 
+/// Unhandled publish packet from the server
 #[derive(Debug)]
 pub struct Publish(codec::Publish, Payload, u32);
 
@@ -85,6 +88,7 @@ impl Publish {
     }
 
     #[inline]
+    /// Ack publish message, sends `PublishAck` packet if the publish has a packet id
     pub fn ack(self) -> ProtocolMessageAck {
         if let Some(id) = self.0.packet_id {
             ProtocolMessageAck {
@@ -98,6 +102,7 @@ impl Publish {
     }
 
     #[inline]
+    /// Ack publish message and return the publish packet, payload is dropped
     pub fn into_inner(self) -> (ProtocolMessageAck, codec::Publish) {
         if let Some(id) = self.0.packet_id {
             (

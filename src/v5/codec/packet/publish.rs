@@ -12,26 +12,40 @@ use crate::v5::codec::{UserProperties, encode, property_type as pt};
 pub struct Publish {
     /// this might be re-delivery of an earlier attempt to send the Packet.
     pub dup: bool,
+    /// the Server must store the Application Message and deliver it to future
+    /// matching subscribers.
     pub retain: bool,
     /// the level of assurance for delivery of an Application Message.
     pub qos: QoS,
     /// only present in PUBLISH Packets where the `QoS` level is 1 or 2.
     pub packet_id: Option<NonZeroU16>,
+    /// the Topic Name the Application Message is published to.
     pub topic: ByteString,
+    /// size of the Application Message payload, in bytes.
     pub payload_size: u32,
+    /// PUBLISH properties.
     pub properties: PublishProperties,
 }
 
+/// PUBLISH message properties
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct PublishProperties {
+    /// Topic Alias property, an integer value used in place of the Topic Name.
     pub topic_alias: Option<NonZeroU16>,
+    /// Correlation Data property, used by the sender of the request to identify the response.
     pub correlation_data: Option<Bytes>,
     /// Message Expiry Interval in seconds, 0 is a valid value (MQTT 5.0, 3.3.2.3.3)
     pub message_expiry_interval: Option<u32>,
+    /// Content Type property, describes the content of the Application Message.
     pub content_type: Option<ByteString>,
+    /// User Property pairs, additional diagnostic or other information.
     pub user_properties: UserProperties,
+    /// Payload Format Indicator property, `true` if the payload is UTF-8 encoded
+    /// character data.
     pub is_utf8_payload: bool,
+    /// Response Topic property, the topic name for a response message.
     pub response_topic: Option<ByteString>,
+    /// Subscription Identifier properties of the subscriptions matching this message.
     pub subscription_ids: Vec<NonZeroU32>,
 }
 

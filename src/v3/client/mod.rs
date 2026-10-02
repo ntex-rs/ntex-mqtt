@@ -16,6 +16,7 @@ pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;
 pub use crate::v3::{codec, error, error::MqttClientError, sink::MqttSink};
 
+/// Client connect message
 #[derive(Clone, Debug)]
 pub struct Connect<A: Address> {
     addr: A,

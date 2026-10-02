@@ -1,4 +1,5 @@
 //! MQTT Client/Server framework
+#![warn(missing_docs)]
 #![deny(clippy::pedantic)]
 #![allow(
     clippy::cast_possible_truncation,
@@ -19,6 +20,7 @@ mod topic;
 mod utils;
 
 pub mod control;
+/// Errors which can occur during mqtt connection handling
 pub mod error;
 pub mod v3;
 pub mod v5;
@@ -44,7 +46,9 @@ pub use self::topic::{TopicFilter, TopicFilterError, TopicFilterLevel};
 pub use self::types::QoS;
 
 // http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
+/// Default port for plain tcp mqtt connections
 pub const TCP_PORT: u16 = 1883;
+/// Default port for tls encrypted mqtt connections
 pub const TLS_PORT: u16 = 8883;
 
 pub(crate) type ConnectPipeline<St, ImSt, AppSt, Codec, Cfg, Err> =

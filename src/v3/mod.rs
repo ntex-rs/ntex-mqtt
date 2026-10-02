@@ -11,6 +11,7 @@ mod server;
 mod shared;
 mod sink;
 
+/// MQTT 3.1.1 session, provides access to the sink and the application state.
 pub type Session<St> = crate::Session<MqttSink, St>;
 
 pub use self::connect::{Connect, ConnectAck};

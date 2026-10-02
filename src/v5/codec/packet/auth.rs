@@ -7,18 +7,28 @@ use crate::v5::codec::{UserProperties, UserProperty, encode, property_type as pt
 /// AUTH message
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Auth {
+    /// Authenticate Reason Code.
     pub reason_code: AuthReasonCode,
+    /// Authentication Method property, the name of the authentication method in use.
+    ///
+    /// It is a Protocol Error to omit it, so it is always set on a decoded packet.
     pub auth_method: Option<ByteString>,
+    /// Authentication Data property, its content is defined by the authentication method.
     pub auth_data: Option<Bytes>,
+    /// Reason String property, a human readable string designed for diagnostics.
     pub reason_string: Option<ByteString>,
+    /// User Property pairs, additional diagnostic or other information.
     pub user_properties: UserProperties,
 }
 
 prim_enum! {
     /// AUTH reason codes
     pub enum AuthReasonCode {
+        /// Authentication is successful, sent by the Server.
         Success = 0,
+        /// Continue the authentication with another step.
         ContinueAuth = 24,
+        /// Initiate a re-authentication, sent by the Client.
         ReAuth = 25
     }
 }

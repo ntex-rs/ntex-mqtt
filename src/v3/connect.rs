@@ -34,26 +34,31 @@ impl<St> Connect<St> {
     }
 
     #[inline]
+    /// Returns reference to the CONNECT packet
     pub fn packet(&self) -> &mqtt::Connect {
         &self.pkt
     }
 
     #[inline]
+    /// Returns mutable reference to the CONNECT packet
     pub fn packet_mut(&mut self) -> &mut mqtt::Connect {
         &mut self.pkt
     }
 
     #[inline]
+    /// Returns size of the CONNECT packet
     pub fn packet_size(&self) -> u32 {
         self.pkt_size
     }
 
     #[inline]
+    /// Returns reference to the io object of the connection
     pub fn io(&self) -> &IoBoxed {
         &self.io
     }
 
     #[inline]
+    /// Returns reference to the connection state
     pub fn st(&self) -> &St {
         &self.st
     }

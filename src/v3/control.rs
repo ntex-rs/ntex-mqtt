@@ -1,3 +1,5 @@
+//! MQTT 3.1.1 server control messages
+
 use std::{fmt, marker::PhantomData, num::NonZeroU16, ptr};
 
 use ntex_bytes::ByteString;
@@ -22,6 +24,7 @@ pub enum ProtocolMessage {
     Ping(Ping),
 }
 
+/// Result of a control message handling
 #[derive(Debug)]
 pub struct ProtocolMessageAck {
     pub(crate) result: ProtocolMessageKind,
@@ -107,6 +110,7 @@ impl ProtocolMessage {
 /// Publish release
 #[derive(Copy, Clone, Debug)]
 pub struct PublishRelease {
+    /// Packet Identifier
     pub packet_id: NonZeroU16,
 }
 
@@ -126,11 +130,13 @@ impl PublishRelease {
     }
 }
 
+/// PING request from the peer
 #[derive(Copy, Clone, Debug)]
 pub struct Ping;
 
 impl Ping {
     #[inline]
+    /// Ack ping message, sends `PingResponse` packet to the peer
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             result: ProtocolMessageKind::Ping,
@@ -138,11 +144,13 @@ impl Ping {
     }
 }
 
+/// DISCONNECT packet from the peer
 #[derive(Copy, Clone, Debug)]
 pub struct Disconnect;
 
 impl Disconnect {
     #[inline]
+    /// Ack disconnect message, closes the connection
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             result: ProtocolMessageKind::Disconnect,

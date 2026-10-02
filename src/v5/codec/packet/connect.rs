@@ -15,14 +15,34 @@ pub struct Connect {
     /// a time interval measured in seconds.
     pub keep_alive: u16,
 
+    /// Session Expiry Interval property, in seconds.
+    ///
+    /// Zero means the session ends when the network connection is closed.
     pub session_expiry_interval_secs: u32,
+    /// Authentication Method property, the name of the authentication method in use.
     pub auth_method: Option<ByteString>,
+    /// Authentication Data property, its content is defined by the authentication method.
     pub auth_data: Option<Bytes>,
+    /// Request Problem Information property, whether the Server may send a Reason String
+    /// and User Properties on failures.
     pub request_problem_info: bool,
+    /// Request Response Information property, whether the Server should return
+    /// Response Information in the CONNACK.
     pub request_response_info: bool,
+    /// Receive Maximum property, the number of `QoS` 1 and `QoS` 2 publications the Client
+    /// is willing to process concurrently.
+    ///
+    /// `None` means the default of 65535.
     pub receive_max: Option<NonZeroU16>,
+    /// Topic Alias Maximum property, the highest value the Client accepts as a Topic Alias.
+    ///
+    /// Zero means the Client does not accept any Topic Alias.
     pub topic_alias_max: u16,
+    /// User Property pairs, additional diagnostic or other information.
     pub user_properties: UserProperties,
+    /// Maximum Packet Size property, in bytes.
+    ///
+    /// `None` means no limit beyond the one imposed by the protocol.
     pub max_packet_size: Option<NonZeroU32>,
 
     /// `Will Message` be stored on the Server and associated with the Network Connection.
@@ -47,13 +67,22 @@ pub struct LastWill {
     /// defines the Application Message that is to be published to the `Will Topic`
     pub message: Bytes,
 
+    /// Will Delay Interval property, in seconds.
+    ///
+    /// `None` means the Will Message is published without delay.
     pub will_delay_interval_sec: Option<u32>,
+    /// Correlation Data property, used by the sender of the request to identify the response.
     pub correlation_data: Option<Bytes>,
     /// Message Expiry Interval in seconds, 0 is a valid value (MQTT 5.0, 3.1.3.2.4)
     pub message_expiry_interval: Option<u32>,
+    /// Content Type property, describes the content of the Will Message.
     pub content_type: Option<ByteString>,
+    /// User Property pairs sent with the Will Message.
     pub user_properties: UserProperties,
+    /// Payload Format Indicator property, `Some(true)` if the Will Message is UTF-8
+    /// encoded character data.
     pub is_utf8_payload: Option<bool>,
+    /// Response Topic property, the topic name for a response message.
     pub response_topic: Option<ByteString>,
 }
 
