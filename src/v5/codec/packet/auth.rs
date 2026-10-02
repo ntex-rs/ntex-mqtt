@@ -25,46 +25,51 @@ prim_enum! {
 
 impl Auth {
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        let auth = if src.has_remaining() {
-            let reason_code = src.get_u8().try_into()?;
+        // Reason Code and Property Length are omitted for Success without properties,
+        // the AUTH has a Remaining Length of 0 (MQTT 5.0, 3.15.2.1)
+        if !src.has_remaining() {
+            return Ok(Self::default());
+        }
 
-            if src.has_remaining() {
-                let mut auth_method = None;
-                let mut auth_data = None;
-                let mut reason_string = None;
-                let mut user_properties = Vec::new();
+        let reason_code = src.get_u8().try_into()?;
+        let mut auth_method = None;
+        let mut auth_data = None;
+        let mut reason_string = None;
+        let mut user_properties = Vec::new();
 
-                if reason_code != AuthReasonCode::Success || src.has_remaining() {
-                    let prop_src = &mut utils::take_properties(src)?;
-                    while prop_src.has_remaining() {
-                        match prop_src.get_u8() {
-                            pt::AUTH_METHOD => auth_method.read_value(prop_src)?,
-                            pt::AUTH_DATA => auth_data.read_value(prop_src)?,
-                            pt::REASON_STRING => reason_string.read_value(prop_src)?,
-                            pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
-                            _ => return Err(DecodeError::MalformedPacket),
-                        }
-                    }
-                    ensure!(!src.has_remaining(), DecodeError::InvalidLength);
-                }
-
-                Self {
-                    reason_code,
-                    auth_method,
-                    auth_data,
-                    reason_string,
-                    user_properties,
-                }
-            } else {
-                Self {
-                    reason_code,
-                    ..Default::default()
+        if src.has_remaining() {
+            let prop_src = &mut utils::take_properties(src)?;
+            while prop_src.has_remaining() {
+                match prop_src.get_u8() {
+                    pt::AUTH_METHOD => auth_method.read_value(prop_src)?,
+                    pt::AUTH_DATA => auth_data.read_value(prop_src)?,
+                    pt::REASON_STRING => reason_string.read_value(prop_src)?,
+                    pt::USER => user_properties.push(UserProperty::decode(prop_src)?),
+                    _ => return Err(DecodeError::MalformedPacket),
                 }
             }
-        } else {
-            Self::default()
-        };
-        Ok(auth)
+            ensure!(!src.has_remaining(), DecodeError::InvalidLength);
+        }
+        // omitting Authentication Method is a Protocol Error (MQTT 5.0, 3.15.2.2.2)
+        ensure!(auth_method.is_some(), DecodeError::MalformedPacket);
+
+        Ok(Self {
+            reason_code,
+            auth_method,
+            auth_data,
+            reason_string,
+            user_properties,
+        })
+    }
+
+    /// Success without properties is encoded with a Remaining Length of 0,
+    /// (MQTT 5.0, 3.15.2.1)
+    pub(crate) fn is_short_form(&self) -> bool {
+        self.reason_code == AuthReasonCode::Success
+            && self.auth_method.is_none()
+            && self.auth_data.is_none()
+            && self.reason_string.is_none()
+            && self.user_properties.is_empty()
     }
 }
 
@@ -84,6 +89,10 @@ impl encode::EncodeLtd for Auth {
     fn encoded_size(&self, limit: u32) -> usize {
         const HEADER_LEN: usize = 1; // reason code
 
+        if self.is_short_form() {
+            return 0;
+        }
+
         let mut prop_len = encode::encoded_property_size(&self.auth_method)
             + encode::encoded_property_size(&self.auth_data);
         let diag_len = encode::encoded_size_opt_props(
@@ -96,6 +105,9 @@ impl encode::EncodeLtd for Auth {
     }
 
     fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
+        if self.is_short_form() {
+            return Ok(());
+        }
         let start_len = buf.len();
         buf.put_u8(self.reason_code.into());
 
