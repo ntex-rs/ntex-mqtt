@@ -148,6 +148,9 @@ pub(super) fn decode_publish_packet(
     // topic name must be at least one character long, [MQTT-4.7.3-1] (MQTT 3.1.1, 4.7.3)
     ensure!(!topic.is_empty(), DecodeError::MalformedPacket);
     let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
+    let dup = (packet_flags & 0b1000) == 0b1000;
+    // DUP flag must be 0 for QoS 0 messages, [MQTT-3.3.1-2] (MQTT 3.1.1, 3.3.1.1)
+    ensure!(!dup || qos != QoS::AtMostOnce, DecodeError::MalformedPacket);
     let packet_id = if qos == QoS::AtMostOnce {
         None
     } else {
@@ -159,7 +162,7 @@ pub(super) fn decode_publish_packet(
         topic,
         packet_id,
         payload_size,
-        dup: (packet_flags & 0b1000) == 0b1000,
+        dup,
         retain: (packet_flags & 0b0001) == 0b0001,
     })
 }
@@ -383,6 +386,25 @@ mod tests {
         assert_eq!(
             decode_publish_packet(&mut Bytes::from_static(b"\x00\x00\x00\x01data"), 0x32, 4),
             Err(DecodeError::MalformedPacket)
+        );
+    }
+
+    #[test]
+    fn test_decode_publish_dup_qos0() {
+        // DUP flag must be 0 for QoS 0 messages, [MQTT-3.3.1-2]
+        assert_eq!(
+            decode_publish_packet(&mut Bytes::from_static(b"\x00\x01tdata"), 0x38, 4),
+            Err(DecodeError::MalformedPacket)
+        );
+        let codec = crate::v3::codec::Codec::new();
+        let mut buf = BytesMut::from(&b"\x38\x07\x00\x01tdata"[..]);
+        assert!(matches!(
+            ntex_codec::Decoder::decode(&codec, &mut buf),
+            Err(DecodeError::MalformedPacket)
+        ));
+        assert!(
+            decode_publish_packet(&mut Bytes::from_static(b"\x00\x01t\x00\x01data"), 0x3a, 4)
+                .is_ok_and(|p| p.dup)
         );
     }
 

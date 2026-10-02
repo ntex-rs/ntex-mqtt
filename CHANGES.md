@@ -2,6 +2,8 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Reject a QoS 0 PUBLISH with the DUP flag set [MQTT-3.3.1-2]
+
 * codec: Reject a CONNACK with Session Present set and a non-zero return code
   [MQTT-3.2.2-4] (v3), [MQTT-3.2.2-6] (v5)
 

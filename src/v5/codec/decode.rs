@@ -342,6 +342,29 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_publish_dup_qos0() {
+        // DUP flag must be 0 for QoS 0 messages, [MQTT-3.3.1-2]
+        assert_eq!(
+            Publish::decode(&mut Bytes::from_static(b"\x00\x01t\x00data"), 0x38, 4),
+            Err(DecodeError::MalformedPacket)
+        );
+        let codec = crate::v5::codec::Codec::new();
+        let mut buf = BytesMut::from(&b"\x38\x08\x00\x01t\x00data"[..]);
+        assert!(matches!(
+            ntex_codec::Decoder::decode(&codec, &mut buf),
+            Err(DecodeError::MalformedPacket)
+        ));
+        assert!(
+            Publish::decode(
+                &mut Bytes::from_static(b"\x00\x01t\x00\x01\x00data"),
+                0x3a,
+                4
+            )
+            .is_ok_and(|p| p.dup)
+        );
+    }
+
+    #[test]
     fn test_decode_publish_packets() {
         //assert_eq!(
         //    decode_publish_packet(b"\x00\x05topic\x12\x34"),
