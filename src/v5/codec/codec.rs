@@ -1200,4 +1200,43 @@ mod tests {
             Some(DecodeError::MalformedPacket)
         );
     }
+
+    #[test]
+    fn test_connack_max_qos() {
+        let codec = Codec::new();
+        for (qos, expected) in [(0, QoS::AtMostOnce), (1, QoS::AtLeastOnce)] {
+            let mut src = BytesMut::from(&[0x20, 0x05, 0x00, 0x00, 0x02, 0x24, qos][..]);
+            let Some(Decoded::Packet(Packet::ConnectAck(ack), _)) = codec.decode(&mut src).unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(ack.max_qos, expected);
+
+            // encoded value round-trips
+            let mut buf = BytePages::default();
+            codec
+                .encode(Encoded::Packet(Packet::ConnectAck(ack)), &mut buf)
+                .unwrap();
+            assert_eq!(
+                &buf.freeze()[..],
+                &[0x20, 0x05, 0x00, 0x00, 0x02, 0x24, qos]
+            );
+        }
+
+        // absent property means QoS 2
+        let mut src = BytesMut::from(&b"\x20\x03\x00\x00\x00"[..]);
+        let Some(Decoded::Packet(Packet::ConnectAck(ack), _)) = codec.decode(&mut src).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(ack.max_qos, QoS::ExactlyOnce);
+
+        for qos in [2, 3] {
+            let mut src = BytesMut::from(&[0x20, 0x05, 0x00, 0x00, 0x02, 0x24, qos][..]);
+            assert_eq!(
+                Codec::new().decode(&mut src).err(),
+                Some(DecodeError::MalformedPacket)
+            );
+        }
+    }
 }
