@@ -104,8 +104,11 @@ impl TopicFilterLevel {
     }
 }
 
-fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(superset: &TopicFilter, subset: L) -> bool {
-    let mut superset = superset.0.iter();
+fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(
+    superset: &[TopicFilterLevel],
+    subset: L,
+) -> bool {
+    let mut superset = superset.iter();
 
     for (index, subset_level) in subset.enumerate() {
         match superset.next() {
@@ -128,7 +131,19 @@ fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(superset: &TopicFilter, sub
     }
 }
 
+/// Returns the position of the filter after the `$share/{ShareName}/` prefix
+/// of a Shared Subscription (MQTT 5.0, 4.8.2)
+fn filter_start(levels: &[TopicFilterLevel]) -> usize {
+    match levels {
+        [TopicFilterLevel::System(s), _, ..] if s == "$share" => 2,
+        _ => 0,
+    }
+}
+
 /// Parsed mqtt topic filter
+///
+/// A Shared Subscription `$share/{ShareName}/{filter}` is parsed with the `$share`
+/// and `ShareName` levels, the levels of the filter follow them (MQTT 5.0, 4.8.2)
 #[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize)]
 pub struct TopicFilter(Vec<TopicFilterLevel>);
 
@@ -150,24 +165,52 @@ impl TopicFilter {
         &self.0
     }
 
+    /// Returns the `ShareName` of a Shared Subscription, `$share/{ShareName}/{filter}`
+    pub fn share_name(&self) -> Option<&str> {
+        match self.0.get(1) {
+            Some(TopicFilterLevel::Normal(name)) if filter_start(&self.0) != 0 => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Returns levels of the filter without the Shared Subscription prefix
+    fn filter(&self) -> &[TopicFilterLevel] {
+        &self.0[filter_start(&self.0)..]
+    }
+
     fn is_valid(&self) -> bool {
-        // a topic filter has at least one level (MQTT 5.0, 4.7.3)
-        !self.0.is_empty()
-            && self
-                .0
+        let start = filter_start(&self.0);
+        // [MQTT-4.8.2-1] the ShareName must be at least one character long
+        // and must not contain "/", "+" or "#" (MQTT 5.0, 4.8.2)
+        if start != 0
+            && !matches!(&self.0[1], TopicFilterLevel::Normal(s) if !s.is_empty() && !s.contains(['/', '+', '#']))
+        {
+            return false;
+        }
+
+        // a topic filter is at least one character long, [MQTT-4.7.3-1] (MQTT 5.0, 4.7.3),
+        // [MQTT-4.8.2-2] the ShareName is followed by a topic filter (MQTT 5.0, 4.8.2)
+        let filter = &self.0[start..];
+        !filter.is_empty()
+            && filter != [TopicFilterLevel::Blank]
+            && filter
                 .iter()
                 .enumerate()
-                .all(|(pos, level)| level.is_valid(pos, self.0.len()))
+                .all(|(pos, level)| level.is_valid(pos, filter.len()))
     }
 
     /// Check if the topic filter matches another topic filter
+    ///
+    /// Shared Subscriptions are matched by the filter after the `$share/{ShareName}/` prefix
     pub fn matches_filter(&self, topic: &TopicFilter) -> bool {
-        match_topic(self, topic.0.iter())
+        match_topic(self.filter(), topic.filter().iter())
     }
 
     /// Check if the topic filter matches the topic name
+    ///
+    /// Shared Subscriptions are matched by the filter after the `$share/{ShareName}/` prefix
     pub fn matches_topic<S: AsRef<str> + ?Sized>(&self, topic: &S) -> bool {
-        match_topic(self, topic.as_ref().split('/'))
+        match_topic(self.filter(), topic.as_ref().split('/'))
     }
 }
 
@@ -260,6 +303,8 @@ impl TryFrom<ByteString> for TopicFilter {
         if value.is_empty() {
             return Err(TopicFilterError::InvalidTopic);
         }
+        // the filter of a Shared Subscription starts after `$share/{ShareName}/`
+        let start = if is_shared(&value) { 2 } else { 0 };
 
         value
             .split('/')
@@ -271,7 +316,7 @@ impl TryFrom<ByteString> for TopicFilter {
                 _ => {
                     if level.contains(['+', '#']) {
                         Err(TopicFilterError::InvalidLevel)
-                    } else if idx == 0 && is_system(level) {
+                    } else if (idx == 0 || idx == start) && is_system(level) {
                         Ok(TopicFilterLevel::System(recover_bstr(&value, level)))
                     } else {
                         Ok(TopicFilterLevel::Normal(recover_bstr(&value, level)))
@@ -370,6 +415,7 @@ fn recover_bstr(superset: &ByteString, subset: &str) -> ByteString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
     use test_case::test_case;
 
     #[test_case("abc" => true; "pass_norm1")]
@@ -435,6 +481,19 @@ mod tests {
     #[test_case("" => Err(TopicFilterError::InvalidTopic) ; "11")]
     #[test_case("/finance" => Ok(vec![TopicFilterLevel::Blank, lvl_normal("finance")]) ; "12")]
     #[test_case("finance/" => Ok(vec![lvl_normal("finance"), TopicFilterLevel::Blank]) ; "13")]
+    #[test_case("$share/g/a/+" => Ok(vec![lvl_sys("$share"), lvl_normal("g"), lvl_normal("a"), TopicFilterLevel::SingleWildcard]) ; "shared1")]
+    #[test_case("$share/g/$SYS/#" => Ok(vec![lvl_sys("$share"), lvl_normal("g"), lvl_sys("$SYS"), TopicFilterLevel::MultiWildcard]) ; "shared2")]
+    #[test_case("$share/$g/a/$b" => Ok(vec![lvl_sys("$share"), lvl_normal("$g"), lvl_normal("a"), lvl_normal("$b")]) ; "shared3")]
+    #[test_case("$share/g//" => Ok(vec![lvl_sys("$share"), lvl_normal("g"), TopicFilterLevel::Blank, TopicFilterLevel::Blank]) ; "shared4")]
+    #[test_case("$share" => Ok(vec![lvl_sys("$share")]) ; "shared5")]
+    #[test_case("$sharex/g/$a" => Ok(vec![lvl_sys("$sharex"), lvl_normal("g"), lvl_normal("$a")]) ; "shared6")]
+    #[test_case("$share/g" => Err(TopicFilterError::InvalidTopic) ; "shared_fail1")]
+    #[test_case("$share/g/" => Err(TopicFilterError::InvalidTopic) ; "shared_fail2")]
+    #[test_case("$share//a" => Err(TopicFilterError::InvalidTopic) ; "shared_fail3")]
+    #[test_case("$share/+/a" => Err(TopicFilterError::InvalidTopic) ; "shared_fail4")]
+    #[test_case("$share/#" => Err(TopicFilterError::InvalidTopic) ; "shared_fail5")]
+    #[test_case("$share/" => Err(TopicFilterError::InvalidTopic) ; "shared_fail6")]
+    #[test_case("$share/g/#/a" => Err(TopicFilterError::InvalidTopic) ; "shared_fail7")]
     fn parsing(input: &str) -> Result<Vec<TopicFilterLevel>, TopicFilterError> {
         TopicFilter::try_from(ByteString::from(input)).map(|t| t.levels().to_vec())
     }
@@ -455,8 +514,56 @@ mod tests {
     #[test_case(vec![lvl_normal("a"), lvl_normal("$b"), TopicFilterLevel::Blank] => true; "14")]
     #[test_case(vec![TopicFilterLevel::Blank, TopicFilterLevel::SingleWildcard, TopicFilterLevel::MultiWildcard] => true; "15")]
     #[test_case(vec![TopicFilterLevel::MultiWildcard] => true; "16")]
+    #[test_case(vec![TopicFilterLevel::Blank] => false; "17")]
+    #[test_case(vec![TopicFilterLevel::Blank, TopicFilterLevel::Blank] => true; "18")]
+    #[test_case(vec![lvl_sys("$share"), lvl_normal("g"), lvl_sys("$SYS")] => true; "shared1")]
+    #[test_case(vec![lvl_sys("$share"), lvl_normal("g"), lvl_normal("$SYS")] => false; "shared2")]
+    #[test_case(vec![lvl_sys("$share"), lvl_normal("g"), lvl_normal("a"), lvl_sys("$b")] => false; "shared3")]
+    #[test_case(vec![lvl_sys("$share"), lvl_normal("g"), TopicFilterLevel::Blank] => false; "shared4")]
+    #[test_case(vec![lvl_sys("$share"), lvl_normal("g")] => false; "shared5")]
+    #[test_case(vec![lvl_sys("$share"), TopicFilterLevel::Blank, lvl_normal("a")] => false; "shared6")]
+    #[test_case(vec![lvl_sys("$share"), TopicFilterLevel::SingleWildcard, lvl_normal("a")] => false; "shared7")]
+    #[test_case(vec![lvl_sys("$share"), TopicFilterLevel::Normal("a+".into()), lvl_normal("a")] => false; "shared8")]
+    #[test_case(vec![lvl_sys("$share"), TopicFilterLevel::MultiWildcard] => false; "shared9")]
+    #[test_case(vec![lvl_sys("$share"), lvl_normal("g"), TopicFilterLevel::MultiWildcard] => true; "shared10")]
     fn topic_is_valid(levels: Vec<TopicFilterLevel>) -> bool {
         TopicFilter::try_from(levels).is_ok()
+    }
+
+    #[test]
+    fn test_shared_subscription() {
+        assert_eq!(topic("$share/g/a").share_name(), Some("g"));
+        assert_eq!(topic("$share/$g/a").share_name(), Some("$g"));
+        assert_eq!(topic("$share").share_name(), None);
+        assert_eq!(topic("$sharex/g/a").share_name(), None);
+        assert_eq!(topic("a/$share/g").share_name(), None);
+        assert_eq!(topic("$share/g/a/+").to_string(), "$share/g/a/+");
+
+        // parsing agrees with the checks of the incoming filters
+        for filter in [
+            "$share",
+            "$share/",
+            "$share/g",
+            "$share/g/",
+            "$share//a",
+            "$share/g/a",
+            "$share/g//",
+            "$share/g/#",
+            "$share/+/a",
+            "$share/#",
+            "$share/g+/a",
+            "$share/g/a#",
+            "$share/g/$SYS/+",
+            "$sharex/g",
+            "/",
+            "a/$share/g",
+        ] {
+            assert_eq!(
+                TopicFilter::from_str(filter).is_ok(),
+                is_valid(filter) && is_valid_shared(filter),
+                "{filter}"
+            );
+        }
     }
 
     #[test]
@@ -473,11 +580,13 @@ mod tests {
 
     #[test]
     fn test_serde() {
-        let tf = topic("$SYS/+/a//#");
-        let json = serde_json::to_string(&tf).unwrap();
-        let de: TopicFilter = serde_json::from_str(&json).unwrap();
-        assert_eq!(de, tf);
-        assert_eq!(de.to_string(), "$SYS/+/a//#");
+        for filter in ["$SYS/+/a//#", "$share/g/$SYS/+"] {
+            let tf = topic(filter);
+            let json = serde_json::to_string(&tf).unwrap();
+            let de: TopicFilter = serde_json::from_str(&json).unwrap();
+            assert_eq!(de, tf);
+            assert_eq!(de.to_string(), filter);
+        }
 
         for json in [
             "[]",
@@ -560,6 +669,13 @@ mod tests {
     #[test_case("#", "/$SYS/monitor/Clients" => true; "sys5")]
     #[test_case("+", "$SYS" => false; "sys6")]
     #[test_case("+/#", "$SYS" => false; "sys7")]
+    #[test_case("$share/g/a/+", "a/b" => true; "shared1")]
+    #[test_case("$share/g/#", "a/b" => true; "shared2")]
+    #[test_case("$share/g/#", "$SYS/a" => false; "shared3")]
+    #[test_case("$share/g/+/a", "$SYS/a" => false; "shared4")]
+    #[test_case("$share/g/$SYS/#", "$SYS/a" => true; "shared5")]
+    #[test_case("$share/g/a", "$share/g/a" => false; "shared6")]
+    #[test_case("$share", "$share" => true; "shared7")]
     fn matches_topic(filter: &'static str, topic_str: &'static str) -> bool {
         topic(filter).matches_topic(topic_str)
     }
@@ -586,6 +702,14 @@ mod tests {
     #[test_case("$SYS/+", "$SYS/a" => true; "sys7")]
     #[test_case("#", "a/$SYS" => true; "sys8")]
     #[test_case("+/+", "a/$SYS" => true; "sys9")]
+    #[test_case("$share/g/#", "a/b" => true; "shared1")]
+    #[test_case("#", "$share/g/a" => true; "shared2")]
+    #[test_case("a/+", "$share/g/a/b" => true; "shared3")]
+    #[test_case("$share/g/+", "$share/h/a" => true; "shared4")]
+    #[test_case("#", "$share/g/$SYS/a" => false; "shared5")]
+    #[test_case("$SYS/+", "$share/g/$SYS/a" => true; "shared6")]
+    #[test_case("$share/g/a", "$share/g/b" => false; "shared7")]
+    #[test_case("$share/g/+", "#" => false; "shared8")]
     fn matches_filter(superset_filter: &'static str, subset_filter: &'static str) -> bool {
         topic(superset_filter).matches_filter(&topic(subset_filter))
     }

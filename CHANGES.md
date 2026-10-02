@@ -2,6 +2,12 @@
 
 ## [9.1.0] - Unreleased
 
+* `TopicFilter` supports Shared Subscriptions `$share/{ShareName}/{filter}`, malformed ones
+  are rejected [MQTT-4.8.2-1], [MQTT-4.8.2-2], matching uses the filter after the prefix,
+  a `$` first level of the filter is a `System` level, add `TopicFilter::share_name()`
+
+* `TopicFilter` created from levels rejects a single `Blank` level, an empty topic filter
+
 * Fix `TopicFilter::matches_filter()` matching a filter that starts with a `$` level by
   a wildcard at the first level [MQTT-4.7.2-1]
 
