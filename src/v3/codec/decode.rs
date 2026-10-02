@@ -136,6 +136,8 @@ pub(super) fn decode_publish_packet(
     payload_size: u32,
 ) -> Result<Publish, DecodeError> {
     let topic = ByteString::decode(src)?;
+    // topic name must be at least one character long, [MQTT-4.7.3-1] (MQTT 3.1.1, 4.7.3)
+    ensure!(!topic.is_empty(), DecodeError::MalformedPacket);
     let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
     let packet_id = if qos == QoS::AtMostOnce {
         None
@@ -348,6 +350,18 @@ mod tests {
         );
 
         assert_decode_packet!(b"\xe0\x00", Packet::Disconnect);
+    }
+
+    #[test]
+    fn test_decode_publish_empty_topic() {
+        assert_eq!(
+            decode_publish_packet(&mut Bytes::from_static(b"\x00\x00data"), 0x30, 4),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            decode_publish_packet(&mut Bytes::from_static(b"\x00\x00\x00\x01data"), 0x32, 4),
+            Err(DecodeError::MalformedPacket)
+        );
     }
 
     #[test]

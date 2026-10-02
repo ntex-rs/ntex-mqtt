@@ -19,6 +19,8 @@
 
 * codec: Reject trailing bytes in CONNECT, CONNACK, PINGREQ, PINGRESP and DISCONNECT packets
 
+* codec: Reject PUBLISH packets with an empty topic name (v5: unless a topic alias is set)
+
 * v3: Send CONNACK 0x01 for an unsupported protocol level and CONNACK 0x02 for an empty
   client id without clean session before closing the connection
 
