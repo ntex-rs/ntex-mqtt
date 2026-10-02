@@ -9,6 +9,9 @@
 
 * codec: Fail encoding packets while a publish payload is incomplete
 
+* Write acks, pings and other packets sent while a publish payload is streamed after the payload
+  instead of failing with ExpectPayload
+
 * codec: Reserve at most 8kb of read buffer ahead for non-publish packets
 
 * codec: Reject SUBSCRIBE packets with reserved subscription options bits set

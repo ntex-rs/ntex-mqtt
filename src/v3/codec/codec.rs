@@ -7,7 +7,7 @@ use crate::error::{DecodeError, EncodeError};
 use crate::types::{FixedHeader, MAX_FRAME_RESERVE, MAX_PACKET_SIZE, packet_type};
 use crate::utils::decode_variable_length;
 
-use super::{Decoded, Encoded, decode, encode};
+use super::{Decoded, Encoded, Packet, decode, encode};
 
 #[derive(Debug, Clone)]
 /// Mqtt v3.1.1 protocol codec
@@ -65,6 +65,21 @@ impl Codec {
     /// Returns `true` while the payload of a decoded publish is not complete.
     pub(crate) fn is_payload_pending(&self) -> bool {
         matches!(self.state.get(), DecodeState::PublishPayload(_))
+    }
+
+    /// Returns `true` while the payload of an encoded publish is not complete.
+    pub(crate) fn is_encoding_payload(&self) -> bool {
+        self.encoding_payload.get().is_some()
+    }
+
+    /// Encodes a packet, an incomplete publish payload is not checked.
+    pub(crate) fn encode_packet(pkt: &Packet, dst: &mut BytePages) -> Result<(), EncodeError> {
+        encode::validate(pkt)?;
+        let content_size = encode::get_encoded_size(pkt);
+        if content_size > MAX_PACKET_SIZE as usize {
+            return Err(EncodeError::OverMaxPacketSize);
+        }
+        encode::encode(pkt, dst, content_size as u32) // safe: content_size <= MAX_PACKET_SIZE
     }
 }
 
@@ -210,15 +225,7 @@ impl Encoder for Codec {
             return Err(EncodeError::ExpectPayload);
         }
         match item {
-            Encoded::Packet(pkt) => {
-                encode::validate(&pkt)?;
-                let content_size = encode::get_encoded_size(&pkt);
-                if content_size > MAX_PACKET_SIZE as usize {
-                    return Err(EncodeError::OverMaxPacketSize);
-                }
-                encode::encode(&pkt, dst, content_size as u32)?; // safe: content_size <= MAX_PACKET_SIZE
-                Ok(())
-            }
+            Encoded::Packet(pkt) => Self::encode_packet(&pkt, dst),
             Encoded::Publish(pkt, buf) => {
                 encode::validate_publish(&pkt)?;
                 if buf

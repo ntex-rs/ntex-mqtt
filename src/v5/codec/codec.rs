@@ -122,6 +122,67 @@ impl Codec {
     pub(crate) fn is_payload_pending(&self) -> bool {
         matches!(self.state.get(), DecodeState::PublishPayload(_))
     }
+
+    /// Returns `true` while the payload of an encoded publish is not complete.
+    pub(crate) fn is_encoding_payload(&self) -> bool {
+        self.encoding_payload.get().is_some()
+    }
+
+    fn max_out_size(&self) -> u32 {
+        match self.max_out_size.get() {
+            0 => MAX_PACKET_SIZE,
+            size => size.min(MAX_PACKET_SIZE),
+        }
+    }
+
+    /// Encodes a packet, an incomplete publish payload is not checked.
+    pub(crate) fn encode_packet(
+        &self,
+        mut pkt: Packet,
+        dst: &mut BytePages,
+    ) -> Result<(), EncodeError> {
+        // handle [MQTT 3.1.2.11.7]
+        if self.flags.get().contains(CodecFlags::NO_PROBLEM_INFO) {
+            match pkt {
+                Packet::PublishAck(ref mut pkt) | Packet::PublishReceived(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::PublishRelease(ref mut pkt) | Packet::PublishComplete(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::Subscribe(ref mut pkt) => {
+                    pkt.user_properties.clear();
+                }
+                Packet::SubscribeAck(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::Unsubscribe(ref mut pkt) => {
+                    pkt.user_properties.clear();
+                }
+                Packet::UnsubscribeAck(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::Auth(ref mut pkt) => {
+                    pkt.user_properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                _ => (),
+            }
+        }
+
+        encode::validate(&pkt)?;
+        let max_size = self.max_out_size();
+        let content_size = pkt.encoded_size(max_size);
+        if content_size > max_size as usize {
+            Err(EncodeError::OverMaxPacketSize)
+        } else {
+            pkt.encode(dst, content_size as u32) // safe: max_size <= MAX_PACKET_SIZE
+        }
+    }
 }
 
 impl Default for Codec {
@@ -277,64 +338,14 @@ impl Encoder for Codec {
     type Item = Encoded;
     type Error = EncodeError;
 
-    fn encode(&self, mut item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
-        // handle [MQTT 3.1.2.11.7]
-        if self.flags.get().contains(CodecFlags::NO_PROBLEM_INFO) {
-            match item {
-                Encoded::Packet(
-                    Packet::PublishAck(ref mut pkt) | Packet::PublishReceived(ref mut pkt),
-                ) => {
-                    pkt.properties.clear();
-                    let _ = pkt.reason_string.take();
-                }
-                Encoded::Packet(
-                    Packet::PublishRelease(ref mut pkt) | Packet::PublishComplete(ref mut pkt),
-                ) => {
-                    pkt.properties.clear();
-                    let _ = pkt.reason_string.take();
-                }
-                Encoded::Packet(Packet::Subscribe(ref mut pkt)) => {
-                    pkt.user_properties.clear();
-                }
-                Encoded::Packet(Packet::SubscribeAck(ref mut pkt)) => {
-                    pkt.properties.clear();
-                    let _ = pkt.reason_string.take();
-                }
-                Encoded::Packet(Packet::Unsubscribe(ref mut pkt)) => {
-                    pkt.user_properties.clear();
-                }
-                Encoded::Packet(Packet::UnsubscribeAck(ref mut pkt)) => {
-                    pkt.properties.clear();
-                    let _ = pkt.reason_string.take();
-                }
-                Encoded::Packet(Packet::Auth(ref mut pkt)) => {
-                    pkt.user_properties.clear();
-                    let _ = pkt.reason_string.take();
-                }
-                _ => (),
-            }
-        }
-
-        let max_out_size = self.max_out_size.get();
-        let max_size = if max_out_size != 0 {
-            max_out_size.min(MAX_PACKET_SIZE)
-        } else {
-            MAX_PACKET_SIZE
-        };
+    fn encode(&self, item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
         match item {
             Encoded::Packet(pkt) => {
                 if self.encoding_payload.get().is_some() {
                     log::trace!("Expect payload, received {pkt:?}");
                     Err(EncodeError::ExpectPayload)
                 } else {
-                    encode::validate(&pkt)?;
-                    let content_size = pkt.encoded_size(max_size);
-                    if content_size > max_size as usize {
-                        Err(EncodeError::OverMaxPacketSize)
-                    } else {
-                        pkt.encode(dst, content_size as u32)?; // safe: max_size <= MAX_PACKET_SIZE
-                        Ok(())
-                    }
+                    self.encode_packet(pkt, dst)
                 }
             }
             Encoded::Publish(pkt, buf) => {
@@ -349,6 +360,7 @@ impl Encoder for Codec {
                     return Err(EncodeError::OverPublishSize);
                 }
                 encode::validate_publish(&pkt)?;
+                let max_size = self.max_out_size();
                 let content_size = pkt.encoded_size(max_size);
                 if content_size > max_size as usize {
                     return Err(EncodeError::OverMaxPacketSize);
@@ -644,6 +656,37 @@ mod tests {
             .encode(Encoded::Packet(Packet::PingRequest), &mut buf)
             .unwrap();
         assert_eq!(&buf.freeze()[..], b"cd\xc0\x00");
+    }
+
+    #[test]
+    fn test_no_problem_info() {
+        let ack = || {
+            Encoded::Packet(Packet::PublishAck(PublishAck {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                reason_code: crate::v5::codec::PublishAckReason::Success,
+                properties: vec![("k".into(), "v".into())],
+                reason_string: Some("reason".into()),
+            }))
+        };
+        let encode = |codec: &Codec, item| {
+            let mut buf = BytePages::default();
+            codec.encode(item, &mut buf).unwrap();
+            buf.freeze()
+        };
+
+        let codec = Codec::new();
+        let connect = Connect {
+            client_id: "user".into(),
+            request_problem_info: false,
+            ..Default::default()
+        };
+        let mut buf =
+            BytesMut::from(&encode(&Codec::new(), Packet::Connect(Box::new(connect)).into())[..]);
+        codec.decode(&mut buf).unwrap().unwrap();
+
+        // [MQTT-3.1.2-29] no reason string or user properties
+        assert_eq!(&encode(&codec, ack())[..], b"\x40\x04\x00\x01\x00\x00");
+        assert!(encode(&Codec::new(), ack()).len() > 6);
     }
 
     #[test]

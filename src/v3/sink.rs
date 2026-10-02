@@ -732,4 +732,54 @@ mod tests {
             .unwrap();
         drop(client);
     }
+
+    #[ntex::test]
+    async fn test_packets_deferred_while_streaming() {
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            true,
+            Rc::default(),
+        ));
+        shared.set_cap(16);
+        let sink = MqttSink::new(shared.clone());
+
+        let stream = sink.publish("a/b").stream_at_most_once(6).unwrap();
+        stream.send(Bytes::from_static(b"ab")).await.unwrap();
+
+        // client keep-alive and dispatcher responses
+        assert!(sink.ping());
+        let ack = codec::Packet::PublishAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+        };
+        io.encode(codec::Encoded::Packet(ack), &shared).unwrap();
+
+        // publish cannot interleave with payload
+        assert_eq!(
+            sink.publish("c").send_at_most_once(Bytes::new()),
+            Err(SendPacketError::Encode(EncodeError::ExpectPayload))
+        );
+
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"\x30\x0b\x00\x03a/bab"));
+
+        // incomplete payload, packets are still deferred
+        stream.send(Bytes::from_static(b"cd")).await.unwrap();
+        assert!(shared.is_streaming());
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"cd"));
+
+        stream.send(Bytes::from_static(b"ef")).await.unwrap();
+        assert!(!shared.is_streaming());
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"ef\xc0\x00\x40\x02\x00\x01"));
+
+        // nothing left behind
+        assert!(sink.ping());
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"\xc0\x00"));
+    }
 }
