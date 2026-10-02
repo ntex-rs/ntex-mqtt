@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Reject publish packets with a header longer than the packet, reject
+  encoding a publish with a payload bigger than its payload size
+
 * Update to ntex-io 4.1, ntex-codec 2.0
 
 * Stop the dispatcher on clean peer eof while the service is not ready

@@ -124,10 +124,12 @@ impl Decoder for Codec {
                 }
                 DecodeState::PublishHeader(fixed) => {
                     if let Some(hdr_len) = decode::publish_size(src, fixed.first_byte)? {
+                        let Some(payload_len) = fixed.remaining_length.checked_sub(hdr_len) else {
+                            return Err(DecodeError::InvalidLength);
+                        };
                         if src.len() < hdr_len as usize {
                             return Ok(None);
                         }
-                        let payload_len = fixed.remaining_length - hdr_len;
                         let mut buf = src.split_to(hdr_len as usize);
                         let publish =
                             decode::decode_publish_packet(&mut buf, fixed.first_byte, payload_len)?;
@@ -211,6 +213,12 @@ impl Encoder for Codec {
                 let Publish { qos, packet_id, .. } = pkt;
                 if (qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce) && packet_id.is_none() {
                     return Err(EncodeError::PacketIdRequired);
+                }
+                if buf
+                    .as_ref()
+                    .is_some_and(|buf| buf.len() > pkt.payload_size as usize)
+                {
+                    return Err(EncodeError::OverPublishSize);
                 }
 
                 let content_size = encode::get_encoded_publish_size(&pkt) as u32;
@@ -340,5 +348,65 @@ mod tests {
             Some(Decoded::PayloadChunk(Bytes::from(vec![b'a'; 10]), true))
         );
         assert!(!codec.is_payload_pending());
+    }
+
+    #[test]
+    fn test_publish_header_over_remaining_length() {
+        // topic "abc" needs 5 bytes, packet declares 4
+        let codec = Codec::new();
+        let mut src = BytesMut::from(&b"\x30\x04\x00\x03abc"[..]);
+        assert_eq!(codec.decode(&mut src), Err(DecodeError::InvalidLength));
+
+        // qos 1 adds the packet id
+        let codec = Codec::new();
+        let mut src = BytesMut::from(&b"\x32\x06\x00\x03abc\x00\x01"[..]);
+        assert_eq!(codec.decode(&mut src), Err(DecodeError::InvalidLength));
+
+        // header without payload
+        let codec = Codec::new();
+        let mut src = BytesMut::from(&b"\x30\x05\x00\x03abc"[..]);
+        let Some(Decoded::Publish(pkt, payload, 5)) = codec.decode(&mut src).unwrap() else {
+            panic!()
+        };
+        assert_eq!(pkt.topic, "abc");
+        assert_eq!(pkt.payload_size, 0);
+        assert!(payload.is_empty());
+        assert!(!codec.is_payload_pending());
+    }
+
+    #[test]
+    fn test_encode_payload_over_publish_size() {
+        let codec = Codec::new();
+        let pkt = Publish {
+            dup: false,
+            retain: false,
+            qos: QoS::AtMostOnce,
+            topic: ByteString::from_static("/test"),
+            packet_id: None,
+            payload_size: 2,
+        };
+        let mut buf = BytePages::default();
+        assert_eq!(
+            codec.encode(
+                Encoded::Publish(pkt.clone(), Some(Bytes::from_static(b"abc"))),
+                &mut buf
+            ),
+            Err(EncodeError::OverPublishSize)
+        );
+        assert!(buf.freeze().is_empty());
+
+        // no payload is expected after the failed publish
+        assert_eq!(
+            codec.encode(Encoded::PayloadChunk(Bytes::from_static(b"a")), &mut buf),
+            Err(EncodeError::UnexpectedPayload)
+        );
+
+        codec
+            .encode(
+                Encoded::Publish(pkt, Some(Bytes::from_static(b"ab"))),
+                &mut buf,
+            )
+            .unwrap();
+        assert!(buf.freeze().ends_with(b"ab"));
     }
 }
