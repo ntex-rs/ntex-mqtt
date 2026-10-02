@@ -12,20 +12,30 @@ pub use self::codec::Codec;
 pub(crate) use self::encode::EncodeLtd;
 pub use self::packet::*;
 
+/// A single user property, a name/value pair
 pub type UserProperty = (ByteString, ByteString);
+/// A list of user properties
 pub type UserProperties = Vec<UserProperty>;
 
+/// Decoded MQTT v5 protocol item
 #[derive(Clone, PartialEq, Eq)]
 pub enum Decoded {
+    /// Decoded packet and its size
     Packet(Packet, u32),
+    /// Decoded `Publish` packet, the first payload chunk and the packet size
     Publish(Publish, Bytes, u32),
+    /// Next chunk of the publish payload, the flag indicates the last chunk
     PayloadChunk(Bytes, bool),
 }
 
+/// Item to encode into the MQTT v5 protocol stream
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Encoded {
+    /// Packet to encode
     Packet(Packet),
+    /// `Publish` packet with an optional first payload chunk
     Publish(Publish, Option<Bytes>),
+    /// Next chunk of the publish payload
     PayloadChunk(Bytes),
 }
 

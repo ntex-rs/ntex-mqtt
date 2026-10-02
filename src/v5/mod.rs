@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod codec;
+/// Server side MQTT protocol messages
 pub mod control;
 
 mod connect;
@@ -13,6 +14,7 @@ mod server;
 mod shared;
 mod sink;
 
+/// MQTT v5 session, provides access to the application state and the server sink
 pub type Session<St> = crate::Session<MqttSink, St>;
 
 use ntex_error::Error;
@@ -41,11 +43,18 @@ fn disconnect(msg: &'static str) -> ProtocolMessageAck {
     }
 }
 
+/// Converts a publish service error into a `PublishAck` packet.
+///
+/// It allows the publish service to report an error to the client with a
+/// `PublishAck` packet instead of terminating the connection.
 pub trait ToPublishAck {
+    /// Error type that is returned if the error cannot be converted to an ack
     type Error;
 
+    /// Try to convert the error into a `PublishAck`
     fn try_ack(self) -> Result<PublishAck, Self::Error>;
 
+    /// Convert the error into the resulting error type
     fn into_error(self) -> Self::Error;
 }
 

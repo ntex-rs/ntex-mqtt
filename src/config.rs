@@ -69,6 +69,7 @@ impl Configuration for MqttServiceConfig {
 }
 
 impl MqttServiceConfig {
+    /// Create mqtt configuration with default settings
     pub fn new() -> Self {
         Self {
             max_qos: QoS::AtLeastOnce,

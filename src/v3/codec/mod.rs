@@ -14,17 +14,25 @@ pub use self::packet::{
 };
 pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};
 
+/// Result of a decode operation
 #[derive(Clone, PartialEq, Eq)]
 pub enum Decoded {
+    /// Decoded control packet and its total size in bytes
     Packet(Packet, u32),
+    /// Decoded PUBLISH packet, the first payload chunk and the packet size in bytes
     Publish(Publish, Bytes, u32),
+    /// Next chunk of a PUBLISH payload, the flag indicates the last chunk
     PayloadChunk(Bytes, bool),
 }
 
+/// Item that can be encoded and sent to the peer
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Encoded {
+    /// Control packet
     Packet(Packet),
+    /// PUBLISH packet with an optional first payload chunk
     Publish(Publish, Option<Bytes>),
+    /// Next chunk of a PUBLISH payload
     PayloadChunk(Bytes),
 }
 

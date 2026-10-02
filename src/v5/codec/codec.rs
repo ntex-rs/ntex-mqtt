@@ -10,6 +10,7 @@ use crate::utils::decode_variable_length;
 use super::{Decoded, Encoded};
 use super::{Packet, decode::decode_packet, encode, encode::EncodeLtd, packet::Publish};
 
+/// MQTT v5 protocol codec
 #[derive(Clone)]
 pub struct Codec {
     state: Cell<DecodeState>,

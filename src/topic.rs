@@ -62,19 +62,28 @@ pub(crate) fn check_will_topic(topic: &str) -> Result<(), SpecViolation> {
     }
 }
 
+/// Errors which can occur when parsing a topic filter
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TopicFilterError {
+    /// Topic filter is malformed
     InvalidTopic,
+    /// Topic filter level is malformed
     InvalidLevel,
 }
 
+/// Single level of a topic filter
 #[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TopicFilterLevel {
+    /// Ordinary level name
     Normal(ByteString),
+    /// Level name of a reserved topic, it starts with `$`
     System(ByteString),
+    /// Empty level name
     Blank,
-    SingleWildcard, // Single level wildcard +
-    MultiWildcard,  // Multi-level wildcard #
+    /// Single level wildcard `+`
+    SingleWildcard,
+    /// Multi-level wildcard `#`
+    MultiWildcard,
 }
 
 impl TopicFilterLevel {
@@ -112,10 +121,12 @@ fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(superset: &TopicFilter, sub
     }
 }
 
+/// Parsed mqtt topic filter
 #[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TopicFilter(Vec<TopicFilterLevel>);
 
 impl TopicFilter {
+    /// Returns levels of the topic filter
     pub fn levels(&self) -> &[TopicFilterLevel] {
         &self.0
     }
@@ -137,10 +148,12 @@ impl TopicFilter {
             .is_none()
     }
 
+    /// Check if the topic filter matches another topic filter
     pub fn matches_filter(&self, topic: &TopicFilter) -> bool {
         match_topic(self, topic.0.iter())
     }
 
+    /// Check if the topic filter matches the topic name
     pub fn matches_topic<S: AsRef<str> + ?Sized>(&self, topic: &S) -> bool {
         match_topic(self, topic.as_ref().split('/'))
     }

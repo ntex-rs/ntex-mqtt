@@ -910,11 +910,15 @@ mod tests {
         sleep(Millis(25)).await;
         client.write("GET /test HTTP/1\r\n\r\n");
 
-        let buf = client.read().await.unwrap();
-        assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
-
-        let buf = client.read().await.unwrap();
-        assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
+        // both responses are in flight, a late wakeup can read them at once
+        let expected = b"GET /test HTTP/1\r\n\r\nGET /test HTTP/1\r\n\r\n";
+        let mut buf = BytesMut::new();
+        while buf.len() < expected.len() {
+            let chunk = client.read().await.unwrap();
+            assert!(!chunk.is_empty(), "connection is closed");
+            buf.extend_from_slice(&chunk);
+        }
+        assert_eq!(buf, &expected[..]);
 
         client.close().await;
         assert!(client.is_server_dropped());

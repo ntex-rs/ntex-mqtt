@@ -7,6 +7,7 @@ use crate::v3::shared::{Ack, AckType, MqttShared};
 use crate::v3::{codec, error::SendPacketError};
 use crate::{error::EncodeError, types::QoS};
 
+/// Mqtt client/server sink, it is used to send packets to the peer
 pub struct MqttSink(Rc<MqttShared>);
 
 impl Clone for MqttSink {
@@ -154,6 +155,7 @@ impl fmt::Debug for MqttSink {
     }
 }
 
+/// Publish packet builder
 pub struct PublishBuilder {
     packet: codec::Publish,
     shared: Rc<MqttShared>,

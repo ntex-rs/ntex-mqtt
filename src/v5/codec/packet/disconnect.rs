@@ -7,45 +7,82 @@ use crate::v5::codec::{UserProperties, UserProperty, encode, property_type as pt
 /// DISCONNECT message
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Disconnect {
+    /// Disconnect Reason Code.
     pub reason_code: DisconnectReasonCode,
+    /// Session Expiry Interval property, in seconds.
+    ///
+    /// `None` means the interval from the CONNECT packet is used.
     pub session_expiry_interval_secs: Option<u32>,
+    /// Server Reference property, identifies another Server the Client should use.
     pub server_reference: Option<ByteString>,
+    /// Reason String property, a human readable string designed for diagnostics.
     pub reason_string: Option<ByteString>,
+    /// User Property pairs, additional diagnostic or other information.
     pub user_properties: UserProperties,
 }
 
 prim_enum! {
     /// DISCONNECT reason codes
     pub enum DisconnectReasonCode {
+        /// Close the connection normally, do not send the Will Message.
         NormalDisconnection = 0,
+        /// The Client wishes to disconnect but requires that the Server also publishes its Will Message.
         DisconnectWithWillMessage = 4,
+        /// The sender either does not wish to reveal the reason, or none of the other reason codes apply.
         UnspecifiedError = 128,
+        /// The received packet does not conform to the specification.
         MalformedPacket = 129,
+        /// An unexpected or out of order packet was received.
         ProtocolError = 130,
+        /// The packet received is valid but cannot be processed by this implementation.
         ImplementationSpecificError = 131,
+        /// The request is not authorized.
         NotAuthorized = 135,
+        /// The Server is busy and cannot continue processing requests from this Client.
         ServerBusy = 137,
+        /// The Server is shutting down.
         ServerShuttingDown = 139,
+        /// The authentication method is not supported or does not match the method in use.
         BadAuthenticationMethod = 140,
+        /// No packet has been received for 1.5 times the Keep Alive time.
         KeepAliveTimeout = 141,
+        /// Another connection using the same Client Identifier has connected, closing this one.
         SessionTakenOver = 142,
+        /// The Topic Filter is correctly formed, but is not accepted by this Server.
         TopicFilterInvalid = 143,
+        /// The Topic Name is correctly formed, but is not accepted by this Client or Server.
         TopicNameInvalid = 144,
+        /// More than Receive Maximum publications were received without being acknowledged.
         ReceiveMaximumExceeded = 147,
+        /// A PUBLISH packet contained a Topic Alias greater than the advertised Topic Alias Maximum.
         TopicAliasInvalid = 148,
+        /// The packet size is greater than the Maximum Packet Size for this Client or Server.
         PacketTooLarge = 149,
+        /// The received data rate is too high.
         MessageRateTooHigh = 150,
+        /// An implementation or administrative imposed limit has been exceeded.
         QuotaExceeded = 151,
+        /// The connection is closed due to an administrative action.
         AdministrativeAction = 152,
+        /// The payload format does not match the one specified by the Payload Format Indicator.
         PayloadFormatInvalid = 153,
+        /// The Server does not support retained messages.
         RetainNotSupported = 154,
+        /// The Client specified a `QoS` greater than the Maximum `QoS` from the CONNACK.
         QosNotSupported = 155,
+        /// The Client should temporarily change its Server.
         UseAnotherServer = 156,
+        /// The Server is moved and the Client should permanently change its server location.
         ServerMoved = 157,
+        /// The Server does not support Shared Subscriptions.
         SharedSubscriptionNotSupported = 158,
+        /// The connection is closed because the connection rate is too high.
         ConnectionRateExceeded = 159,
+        /// The maximum connection time authorized for this connection has been exceeded.
         MaximumConnectTime = 160,
+        /// The Server does not support Subscription Identifiers.
         SubscriptionIdentifiersNotSupported = 0xa1,
+        /// The Server does not support Wildcard Subscriptions.
         WildcardSubscriptionsNotSupported = 162
     }
 }

@@ -36,20 +36,29 @@ prim_enum! {
 }
 
 bitflags::bitflags! {
+    /// CONNECT packet flags
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ConnectFlags: u8 {
+        /// User Name is present in the payload
         const USERNAME    = 0b1000_0000;
+        /// Password is present in the payload
         const PASSWORD    = 0b0100_0000;
+        /// Will Message must be retained by the server
         const WILL_RETAIN = 0b0010_0000;
+        /// Quality of Service of the Will Message
         const WILL_QOS    = 0b0001_1000;
+        /// Will Message is present in the payload
         const WILL        = 0b0000_0100;
+        /// Start a new session, discarding any existing session state
         const CLEAN_START = 0b0000_0010;
     }
 }
 
 bitflags::bitflags! {
+    /// CONNACK packet flags
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ConnectAckFlags: u8 {
+        /// The server has an existing session state for the client
         const SESSION_PRESENT = 0b0000_0001;
     }
 }

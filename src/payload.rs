@@ -24,6 +24,7 @@ impl Default for Payload {
 }
 
 impl Payload {
+    /// Create fixed payload from bytes
     pub fn from_bytes(buf: Bytes) -> Payload {
         Payload {
             pl: Either::Left(Cell::new(Some(buf))),
@@ -76,6 +77,7 @@ impl Payload {
     }
 
     #[must_use]
+    /// Take the payload, leaving an empty payload in its place
     pub fn take(&mut self) -> Payload {
         Payload {
             pl: mem::replace(&mut self.pl, Either::Left(Cell::new(None))),

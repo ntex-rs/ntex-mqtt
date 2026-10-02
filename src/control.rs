@@ -66,6 +66,7 @@ pub struct Error<E> {
 }
 
 impl<E> Error<E> {
+    /// Create new service level error
     pub fn new(err: E) -> Self {
         Self { err }
     }
@@ -90,6 +91,7 @@ pub struct ProtocolError {
 }
 
 impl ProtocolError {
+    /// Create new protocol level error
     pub fn new(err: error::MqttProtocolError) -> Self {
         Self { err }
     }

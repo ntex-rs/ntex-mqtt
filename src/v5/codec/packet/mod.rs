@@ -58,6 +58,7 @@ pub enum Packet {
 }
 
 impl Packet {
+    /// Returns MQTT control packet type of this packet
     pub fn packet_type(&self) -> u8 {
         match self {
             Packet::Connect(_) => packet_type::CONNECT,

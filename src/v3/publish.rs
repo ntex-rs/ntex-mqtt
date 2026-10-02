@@ -34,6 +34,8 @@ impl Publish {
     }
 
     #[inline]
+    /// the Server must store the Application Message and its `QoS`, so it can be
+    /// delivered to future subscribers of the topic.
     pub fn retain(&self) -> bool {
         self.pkt.retain
     }
@@ -57,21 +59,25 @@ impl Publish {
     }
 
     #[inline]
+    /// Returns reference to the parsed publish topic
     pub fn topic(&self) -> &Path<ByteString> {
         &self.topic
     }
 
     #[inline]
+    /// Returns mutable reference to the parsed publish topic
     pub fn topic_mut(&mut self) -> &mut Path<ByteString> {
         &mut self.topic
     }
 
     #[inline]
+    /// Returns reference to the PUBLISH packet
     pub fn packet(&self) -> &codec::Publish {
         &self.pkt
     }
 
     #[inline]
+    /// Returns mutable reference to the PUBLISH packet
     pub fn packet_mut(&mut self) -> &mut codec::Publish {
         &mut self.pkt
     }

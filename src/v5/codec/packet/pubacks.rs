@@ -14,8 +14,11 @@ const HEADER_LEN: u32 = 2 + 1; // packet id + reason code
 pub struct PublishAck {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
+    /// PUBACK/PUBREC Reason Code.
     pub reason_code: PublishAckReason,
+    /// User Property pairs, additional diagnostic or other information.
     pub properties: UserProperties,
+    /// Reason String property, a human readable string designed for diagnostics.
     pub reason_string: Option<ByteString>,
 }
 
@@ -24,22 +27,35 @@ pub struct PublishAck {
 pub struct PublishAck2 {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
+    /// PUBREL/PUBCOMP Reason Code.
     pub reason_code: PublishAck2Reason,
+    /// User Property pairs, additional diagnostic or other information.
     pub properties: UserProperties,
+    /// Reason String property, a human readable string designed for diagnostics.
     pub reason_string: Option<ByteString>,
 }
 
 prim_enum! {
     /// PUBACK / PUBREC reason codes
     pub enum PublishAckReason {
+        /// The message is accepted.
         Success = 0,
+        /// The message is accepted but there are no subscribers, sent only by the Server.
         NoMatchingSubscribers = 16,
+        /// The receiver does not accept the publish but does not want to reveal the reason,
+        /// or none of the other reason codes apply.
         UnspecifiedError = 128,
+        /// The PUBLISH is valid but the receiver is not willing to accept it.
         ImplementationSpecificError = 131,
+        /// The PUBLISH is not authorized.
         NotAuthorized = 135,
+        /// The Topic Name is not malformed, but is not accepted by this Client or Server.
         TopicNameInvalid = 144,
+        /// The Packet Identifier is already in use.
         PacketIdentifierInUse = 145,
+        /// An implementation or administrative imposed limit has been exceeded.
         QuotaExceeded = 151,
+        /// The payload format does not match the specified Payload Format Indicator.
         PayloadFormatInvalid = 153
     }
 }
@@ -47,7 +63,9 @@ prim_enum! {
 prim_enum! {
     /// PUBREL / PUBCOMP reason codes
     pub enum PublishAck2Reason {
+        /// Message released (PUBREL) or Packet Identifier released (PUBCOMP).
         Success = 0,
+        /// The Packet Identifier is not known.
         PacketIdNotFound = 146
     }
 }

@@ -7,6 +7,7 @@ use ntex_util::time::Seconds;
 
 mod connection;
 mod connector;
+/// Client side MQTT protocol messages
 pub mod control;
 mod dispatcher;
 
@@ -18,6 +19,7 @@ pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;
 pub use crate::v5::{codec, error, sink::MqttSink};
 
+/// Client connect message, it describes the connection to a server
 #[derive(Clone, Debug)]
 pub struct Connect<A: Address> {
     addr: A,

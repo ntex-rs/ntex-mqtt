@@ -112,6 +112,7 @@ impl ProtocolMessage {
     }
 }
 
+/// `Auth` control message
 #[derive(Debug)]
 pub struct Auth {
     pkt: codec::Auth,
@@ -129,6 +130,7 @@ impl Auth {
         self.size
     }
 
+    /// Ack auth message with the provided `Auth` packet
     pub fn ack(self, response: codec::Auth) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::Auth(response)),
@@ -137,6 +139,7 @@ impl Auth {
     }
 }
 
+/// `PublishRelease` control message
 #[derive(Debug, Clone)]
 pub struct PublishRelease {
     pkt: codec::PublishAck2,
@@ -197,10 +200,12 @@ impl PublishRelease {
     }
 }
 
+/// `Ping` control message
 #[derive(Debug, Copy, Clone)]
 pub struct Ping;
 
 impl Ping {
+    /// Ack ping message with a `PingResponse` packet
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::PingResponse),
@@ -209,6 +214,7 @@ impl Ping {
     }
 }
 
+/// `Disconnect` control message
 #[derive(Debug, Clone)]
 pub struct Disconnect(pub(crate) codec::Disconnect, pub(crate) u32);
 
