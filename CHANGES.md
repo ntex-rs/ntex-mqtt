@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* Client dispatchers reject PUBLISH with wildcards in the Topic Name [MQTT-3.3.2-2] and,
+  for v5, in the Response Topic [MQTT-3.3.2-14]
+
 * Fix `TopicFilter` panicking in `Display` when created without levels, `TryFrom` rejects
   an empty list of levels and `Deserialize` validates the levels like `TryFrom`
 
