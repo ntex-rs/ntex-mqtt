@@ -334,9 +334,11 @@ where
                     shared
                         .codec
                         .set_sub_ids_available(ack.packet.subscription_identifiers_available);
-                    if ack.packet.server_keepalive_sec.is_none() && (keep_alive > ack.keepalive) {
-                        ack.packet.server_keepalive_sec = Some(ack.keepalive);
-                    }
+                    let keep_alive = super::connect::server_keep_alive(
+                        keep_alive,
+                        ack.keepalive,
+                        &mut ack.packet.server_keepalive_sec,
+                    );
 
                     // outbound receive max
                     let max_send_cfg = ack.max_send.unwrap_or(cfg.max_send);
@@ -349,7 +351,7 @@ where
                         &shared.codec,
                     )?;
 
-                    Ok((ack.io, shared.clone(), session, Seconds(ack.keepalive)))
+                    Ok((ack.io, shared.clone(), session, Seconds(keep_alive)))
                 } else {
                     log::trace!("Failed to complete Connect: {:#?}", ack.packet);
 
