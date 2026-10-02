@@ -1120,4 +1120,28 @@ mod tests {
             &[|p, b| p.properties.correlation_data = Some(b)],
         );
     }
+
+    #[test]
+    fn test_encode_response_topic_wildcards() {
+        let codec = Codec::new();
+        let publish = |topic: &'static str| {
+            let mut p = Publish {
+                topic: ByteString::from_static("a/b"),
+                ..Publish::default()
+            };
+            p.properties.response_topic = Some(ByteString::from_static(topic));
+            Encoded::Publish(p, None)
+        };
+        let connect = |topic: &'static str| {
+            let mut p = will_connect();
+            p.last_will.as_mut().unwrap().response_topic = Some(ByteString::from_static(topic));
+            Encoded::Packet(Packet::Connect(Box::new(p)))
+        };
+        assert_encoded(&codec, publish("a/b"));
+        assert_encoded(&codec, connect("a/b"));
+        for topic in ["a/+", "+", "a/#", "#", ""] {
+            assert_rejected(&codec, publish(topic));
+            assert_rejected(&codec, connect(topic));
+        }
+    }
 }

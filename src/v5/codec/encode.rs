@@ -19,6 +19,12 @@ fn is_valid_opt_bin(b: &Option<Bytes>) -> bool {
     b.as_deref().is_none_or(is_valid_bin)
 }
 
+/// Response Topic is used as the Topic Name of the response message, it must not
+/// contain wildcard characters, [MQTT-3.3.2-14] (MQTT 5.0, 3.3.2.3.5, 3.1.3.2.6)
+fn is_valid_response_topic(topic: &Option<ByteString>) -> bool {
+    topic.as_deref().is_none_or(is_valid_topic_name)
+}
+
 fn is_valid_props(props: &UserProperties) -> bool {
     props
         .iter()
@@ -52,7 +58,7 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
                         && is_valid_bin(&will.message)
                         && is_valid_opt_bin(&will.correlation_data)
                         && is_valid_opt_str(&will.content_type)
-                        && is_valid_opt_str(&will.response_topic)
+                        && is_valid_response_topic(&will.response_topic)
                         && is_valid_props(&will.user_properties)
                 })
         }
@@ -130,7 +136,7 @@ pub(super) fn validate_publish(publish: &Publish) -> Result<(), EncodeError> {
     ensure!(
         is_valid_opt_bin(&publish.properties.correlation_data)
             && is_valid_opt_str(&publish.properties.content_type)
-            && is_valid_opt_str(&publish.properties.response_topic)
+            && is_valid_response_topic(&publish.properties.response_topic)
             && is_valid_props(&publish.properties.user_properties),
         EncodeError::MalformedPacket
     );
