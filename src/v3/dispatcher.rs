@@ -7,7 +7,7 @@ use ntex_util::{HashSet, future::join, services::inflight::InFlightService};
 
 use crate::error::{DecodeError, DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
-use crate::{MqttServiceConfig, types::QoS, types::packet_type};
+use crate::{MqttServiceConfig, types::QoS};
 
 use super::codec::{Decoded, Encoded, Packet};
 use super::control::{
@@ -250,11 +250,14 @@ where
                         .control(ProtocolMessage::pubrel(packet_id), ctx)
                         .await
                 } else {
-                    Err(MqttProtocolError::unexpected_packet(
-                        packet_type::PUBREL,
-                        "Unknown packet-id in PublishRelease packet",
-                    )
-                    .into())
+                    // PUBREL is re-sent after a session resumes [MQTT-4.4.0-1], the
+                    // release could be already completed, PUBCOMP is required [MQTT-4.3.3-2]
+                    log::trace!(
+                        "{}: Unknown packet-id in PublishRelease packet: {:?}",
+                        self.tag(),
+                        packet_id
+                    );
+                    Ok(Some(Encoded::Packet(Packet::PublishComplete { packet_id })))
                 }
             }
             Decoded::Packet(Packet::PublishComplete { packet_id }, _) => {
@@ -522,6 +525,25 @@ mod tests {
             ),
         );
 
+        // unknown PublishRelease, [MQTT-4.4.0-1]
+        let pkt = disp
+            .call(Decoded::Packet(
+                Packet::PublishRelease {
+                    packet_id: NonZeroU16::new(100).unwrap(),
+                },
+                999,
+            ))
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(
+            pkt,
+            Some(Encoded::Packet(Packet::PublishComplete {
+                packet_id: NonZeroU16::new(100).unwrap()
+            }))
+        );
+        assert!(shared.is_active());
+
         // unknown PublishAck
         let err = disp
             .call(Decoded::Packet(
@@ -565,25 +587,6 @@ mod tests {
             reason,
             crate::v5::codec::DisconnectReasonCode::ProtocolError
         );
-
-        // unknown PublishRelease
-        let err = disp
-            .call(Decoded::Packet(
-                Packet::PublishRelease {
-                    packet_id: NonZeroU16::new(100).unwrap(),
-                },
-                999,
-            ))
-            .await
-            .err()
-            .unwrap();
-        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
-            panic!()
-        };
-        let error::ViolationInner::UnexpectedPacket { packet_type, .. } = err.inner else {
-            panic!()
-        };
-        assert_eq!(packet_type, 98);
 
         // unknown PublishComplete
         let err = disp

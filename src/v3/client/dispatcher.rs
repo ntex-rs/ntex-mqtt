@@ -207,9 +207,10 @@ where
                         .control(ProtocolMessage::pubrel(packet_id), ctx)
                         .await
                 } else {
-                    log::warn!("Unknown packet-id in PublishRelease packet");
-                    self.inner.sink.close();
-                    Ok(None)
+                    // PUBREL is re-sent after a session resumes [MQTT-4.4.0-1], the
+                    // release could be already completed, PUBCOMP is required [MQTT-4.3.3-2]
+                    log::trace!("Unknown packet-id in PublishRelease packet: {packet_id:?}");
+                    Ok(Some(Encoded::Packet(Packet::PublishComplete { packet_id })))
                 }
             }
             Decoded::Packet(Packet::SubscribeAck { packet_id, status }, _) => {
@@ -454,5 +455,41 @@ mod tests {
             );
         }
         assert!(disp.call(publish("a/b")).await.is_ok());
+    }
+
+    #[ntex::test]
+    async fn test_unknown_pubrel() {
+        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            false,
+            Rc::default(),
+        ));
+        let disp = Pipeline::new(
+            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
+            Dispatcher::new(
+                shared.clone(),
+                fn_service(async |_| Ok::<_, ()>(Either::Left(()))),
+                fn_service(async |_| {
+                    Ok::<_, DispatcherError<()>>(ProtocolMessageAck {
+                        result: ProtocolMessageKind::Nothing,
+                    })
+                }),
+                32 * 1024,
+            ),
+        );
+
+        // PUBREL is re-sent after a session resumes [MQTT-4.4.0-1]
+        let packet_id = NonZeroU16::new(100).unwrap();
+        let pkt = disp
+            .call(Decoded::Packet(Packet::PublishRelease { packet_id }, 999))
+            .await
+            .unwrap();
+        assert_eq!(
+            pkt,
+            Some(Encoded::Packet(Packet::PublishComplete { packet_id }))
+        );
+        assert!(shared.is_active());
     }
 }
