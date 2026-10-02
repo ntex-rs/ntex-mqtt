@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Check string and binary data lengths before encoding, packets with fields over
+  65,535 bytes fail without writing partial data
+
 * codec: Fail encoding subscription identifiers over 268,435,455 instead of panicking
 
 * v5: Send CONNACK 0x84 for an unsupported protocol level, v3 CONNACK 0x01 for MQTT 3.1.1 clients

@@ -690,12 +690,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_encode_null_char() {
-        let codec = Codec::new();
-        let nul = || ByteString::from_static("a\0b");
-        let packet_id = NonZeroU16::new(1).unwrap();
-        let connect = Connect {
+    fn will_connect() -> Connect {
+        Connect {
             client_id: ByteString::from_static("id"),
             last_will: Some(LastWill {
                 qos: QoS::AtMostOnce,
@@ -704,49 +700,89 @@ mod tests {
                 message: Bytes::new(),
             }),
             ..Connect::default()
-        };
-        assert_encoded(
-            &codec,
-            Encoded::Packet(Packet::Connect(Box::new(connect.clone()))),
-        );
+        }
+    }
 
-        let invalid = [
+    /// Packets with `s` in each string field
+    fn str_packets(s: &ByteString) -> Vec<Encoded> {
+        let packet_id = NonZeroU16::new(1).unwrap();
+        let connect = will_connect();
+        let packets = vec![
             Packet::Connect(Box::new(Connect {
-                client_id: nul(),
+                client_id: s.clone(),
                 ..connect.clone()
             })),
             Packet::Connect(Box::new(Connect {
-                username: Some(nul()),
+                username: Some(s.clone()),
                 ..connect.clone()
             })),
             Packet::Connect(Box::new(Connect {
                 last_will: Some(LastWill {
-                    topic: nul(),
+                    topic: s.clone(),
                     ..connect.last_will.clone().unwrap()
                 }),
                 ..connect
             })),
             Packet::Subscribe {
                 packet_id,
-                topic_filters: vec![(nul(), QoS::AtMostOnce)],
+                topic_filters: vec![(s.clone(), QoS::AtMostOnce)],
             },
             Packet::Unsubscribe {
                 packet_id,
-                topic_filters: vec![nul()],
+                topic_filters: vec![s.clone()],
             },
         ];
-        for pkt in invalid {
-            assert_rejected(&codec, Encoded::Packet(pkt));
-        }
-
         let publish = Publish {
             dup: false,
             retain: false,
             qos: QoS::AtMostOnce,
-            topic: nul(),
+            topic: s.clone(),
             packet_id: None,
             payload_size: 0,
         };
-        assert_rejected(&codec, Encoded::Publish(publish, None));
+        let mut items: Vec<_> = packets.into_iter().map(Encoded::Packet).collect();
+        items.push(Encoded::Publish(publish, None));
+        items
+    }
+
+    /// Strings must not include the null character U+0000, [MQTT-1.5.3-2],
+    /// they are limited to 65,535 bytes (MQTT 3.1.1, 1.5.3)
+    #[test]
+    fn test_encode_invalid_str() {
+        let codec = Codec::new();
+        for item in str_packets(&ByteString::from("a".repeat(65_535))) {
+            assert_encoded(&codec, item);
+        }
+        for s in [
+            ByteString::from_static("a\0b"),
+            ByteString::from("a".repeat(65_536)),
+        ] {
+            for item in str_packets(&s) {
+                assert_rejected(&codec, item);
+            }
+        }
+    }
+
+    /// Will Message and Password are limited to 65,535 bytes (MQTT 3.1.1, 3.1.3.3, 3.1.3.5)
+    #[test]
+    fn test_encode_bin_too_long() {
+        let codec = Codec::new();
+        let setters: [fn(&mut Connect, Bytes); 2] = [
+            |p, b| {
+                p.username = Some(ByteString::from_static("user"));
+                p.password = Some(b);
+            },
+            |p, b| p.last_will.as_mut().unwrap().message = b,
+        ];
+        for set in setters {
+            let mut connect = will_connect();
+            set(&mut connect, Bytes::from(vec![b'a'; 65_535]));
+            assert_encoded(
+                &codec,
+                Encoded::Packet(Packet::Connect(Box::new(connect.clone()))),
+            );
+            set(&mut connect, Bytes::from(vec![b'a'; 65_536]));
+            assert_rejected(&codec, Encoded::Packet(Packet::Connect(Box::new(connect))));
+        }
     }
 }

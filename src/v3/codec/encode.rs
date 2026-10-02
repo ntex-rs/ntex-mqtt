@@ -2,7 +2,9 @@ use ntex_bytes::{BufMut, BytePages, ByteString};
 
 use crate::error::EncodeError;
 use crate::types::{ConnectFlags, MQTT, MQTT_LEVEL_3, QoS, WILL_QOS_SHIFT, packet_type};
-use crate::utils::{Encode, is_valid_str, is_valid_topic_name, write_variable_length};
+use crate::utils::{
+    Encode, is_valid_bin, is_valid_str, is_valid_topic_name, write_variable_length,
+};
 
 use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
 
@@ -85,16 +87,18 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
                 !connect.client_id.is_empty() || connect.clean_session,
                 EncodeError::MalformedPacket
             );
-            // strings must not include U+0000, [MQTT-1.5.3-2] (MQTT 3.1.1, 1.5.3)
+            // strings must not include U+0000, [MQTT-1.5.3-2] (MQTT 3.1.1, 1.5.3),
+            // strings and binary data are limited to 65,535 bytes (MQTT 3.1.1, 1.5.3, 3.1.3)
             ensure!(
                 is_valid_str(&connect.client_id)
-                    && connect.username.as_deref().is_none_or(is_valid_str),
+                    && connect.username.as_deref().is_none_or(is_valid_str)
+                    && connect.password.as_deref().is_none_or(is_valid_bin),
                 EncodeError::MalformedPacket
             );
             // Will Topic is a topic name, [MQTT-4.7.3-1], [MQTT-4.7.1-1] (MQTT 3.1.1, 4.7)
             if let Some(ref will) = connect.last_will {
                 ensure!(
-                    is_valid_topic_name(&will.topic),
+                    is_valid_topic_name(&will.topic) && is_valid_bin(&will.message),
                     EncodeError::MalformedPacket
                 );
             }

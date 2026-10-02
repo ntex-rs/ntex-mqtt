@@ -884,28 +884,41 @@ mod tests {
         }
     }
 
-    fn nul() -> ByteString {
-        ByteString::from_static("a\0b")
+    /// Strings that must be rejected: one with the null character U+0000,
+    /// [MQTT-1.5.4-2], and one over 65,535 bytes (MQTT 5.0, 1.5.4)
+    fn invalid_strs() -> [ByteString; 2] {
+        [
+            ByteString::from_static("a\0b"),
+            ByteString::from("a".repeat(65_536)),
+        ]
     }
 
-    fn nul_props() -> Vec<(ByteString, ByteString)> {
-        vec![(nul(), ByteString::from_static("v"))]
+    fn props(key: ByteString) -> Vec<(ByteString, ByteString)> {
+        vec![(key, ByteString::from_static("v"))]
     }
 
-    /// `pkt` is encoded, each setter puts a null char into one string field
-    fn assert_nul_rejected<T: Clone>(pkt: &T, encoded: fn(T) -> Encoded, setters: &[fn(&mut T)]) {
+    /// `pkt` is encoded, each setter puts an invalid string into one string field
+    fn assert_str_rejected<T: Clone>(
+        pkt: &T,
+        encoded: fn(T) -> Encoded,
+        setters: &[fn(&mut T, ByteString)],
+    ) {
         let codec = Codec::new();
         assert_encoded(&codec, encoded(pkt.clone()));
         for set in setters {
+            for s in invalid_strs() {
+                let mut pkt = pkt.clone();
+                set(&mut pkt, s);
+                assert_rejected(&codec, encoded(pkt));
+            }
             let mut pkt = pkt.clone();
-            set(&mut pkt);
-            assert_rejected(&codec, encoded(pkt));
+            set(&mut pkt, ByteString::from("a".repeat(65_535)));
+            assert_encoded(&codec, encoded(pkt));
         }
     }
 
-    #[test]
-    fn test_encode_null_char_connect() {
-        let connect = Connect {
+    fn will_connect() -> Connect {
+        Connect {
             client_id: ByteString::from_static("id"),
             last_will: Some(LastWill {
                 qos: QoS::AtMostOnce,
@@ -921,69 +934,74 @@ mod tests {
                 response_topic: None,
             }),
             ..Connect::default()
-        };
-        assert_nul_rejected(
+        }
+    }
+
+    #[test]
+    fn test_encode_invalid_str_connect() {
+        let connect = will_connect();
+        assert_str_rejected(
             &connect,
             |p| Encoded::Packet(Packet::Connect(Box::new(p))),
             &[
-                |p| p.client_id = nul(),
-                |p| p.username = Some(nul()),
-                |p| p.auth_method = Some(nul()),
-                |p| p.user_properties = nul_props(),
-                |p| p.user_properties = vec![(ByteString::from_static("k"), nul())],
-                |p| p.last_will.as_mut().unwrap().topic = nul(),
-                |p| p.last_will.as_mut().unwrap().content_type = Some(nul()),
-                |p| p.last_will.as_mut().unwrap().response_topic = Some(nul()),
-                |p| p.last_will.as_mut().unwrap().user_properties = nul_props(),
+                |p, s| p.client_id = s,
+                |p, s| p.username = Some(s),
+                |p, s| p.auth_method = Some(s),
+                |p, s| p.user_properties = props(s),
+                |p, s| p.user_properties = vec![(ByteString::from_static("k"), s)],
+                |p, s| p.last_will.as_mut().unwrap().topic = s,
+                |p, s| p.last_will.as_mut().unwrap().content_type = Some(s),
+                |p, s| p.last_will.as_mut().unwrap().response_topic = Some(s),
+                |p, s| p.last_will.as_mut().unwrap().user_properties = props(s),
             ],
         );
-        assert_nul_rejected(
+        assert_str_rejected(
             &ConnectAck::default(),
             |p| Encoded::Packet(Packet::ConnectAck(Box::new(p))),
             &[
-                |p| p.assigned_client_id = Some(nul()),
-                |p| p.response_info = Some(nul()),
-                |p| p.server_reference = Some(nul()),
-                |p| p.auth_method = Some(nul()),
-                |p| p.reason_string = Some(nul()),
-                |p| p.user_properties = nul_props(),
+                |p, s| p.assigned_client_id = Some(s),
+                |p, s| p.response_info = Some(s),
+                |p, s| p.server_reference = Some(s),
+                |p, s| p.auth_method = Some(s),
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.user_properties = props(s),
             ],
         );
-        assert_nul_rejected(
+        assert_str_rejected(
             &Publish {
                 topic: ByteString::from_static("a/b"),
                 ..Publish::default()
             },
             |p| Encoded::Publish(p, None),
             &[
-                |p| p.topic = nul(),
-                |p| p.properties.content_type = Some(nul()),
-                |p| p.properties.response_topic = Some(nul()),
-                |p| p.properties.user_properties = nul_props(),
+                |p, s| p.topic = s,
+                |p, s| p.properties.content_type = Some(s),
+                |p, s| p.properties.response_topic = Some(s),
+                |p, s| p.properties.user_properties = props(s),
             ],
         );
     }
 
     #[test]
-    fn test_encode_null_char_packets() {
+    fn test_encode_invalid_str_packets() {
         let packet_id = NonZeroU16::new(1).unwrap();
-        assert_nul_rejected(
+        assert_str_rejected(
             &PublishAck::default(),
             |p| Encoded::Packet(Packet::PublishReceived(p)),
             &[
-                |p| p.reason_string = Some(nul()),
-                |p| p.properties = nul_props(),
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.properties = props(s),
             ],
         );
-        assert_nul_rejected(
+        assert_str_rejected(
             &PublishAck2::default(),
             |p| Encoded::Packet(Packet::PublishRelease(p)),
             &[
-                |p| p.reason_string = Some(nul()),
-                |p| p.properties = nul_props(),
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.properties = props(s),
             ],
         );
-        assert_nul_rejected(
+        assert_str_rejected(
             &Subscribe {
                 packet_id,
                 id: None,
@@ -992,11 +1010,11 @@ mod tests {
             },
             |p| Encoded::Packet(Packet::Subscribe(p)),
             &[
-                |p| p.topic_filters[0].0 = nul(),
-                |p| p.user_properties = nul_props(),
+                |p, s| p.topic_filters[0].0 = s,
+                |p, s| p.user_properties = props(s),
             ],
         );
-        assert_nul_rejected(
+        assert_str_rejected(
             &SubscribeAck {
                 packet_id,
                 properties: Vec::new(),
@@ -1005,11 +1023,11 @@ mod tests {
             },
             |p| Encoded::Packet(Packet::SubscribeAck(p)),
             &[
-                |p| p.reason_string = Some(nul()),
-                |p| p.properties = nul_props(),
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.properties = props(s),
             ],
         );
-        assert_nul_rejected(
+        assert_str_rejected(
             &Unsubscribe {
                 packet_id,
                 user_properties: Vec::new(),
@@ -1017,11 +1035,11 @@ mod tests {
             },
             |p| Encoded::Packet(Packet::Unsubscribe(p)),
             &[
-                |p| p.topic_filters[0] = nul(),
-                |p| p.user_properties = nul_props(),
+                |p, s| p.topic_filters[0] = s,
+                |p, s| p.user_properties = props(s),
             ],
         );
-        assert_nul_rejected(
+        assert_str_rejected(
             &UnsubscribeAck {
                 packet_id,
                 properties: Vec::new(),
@@ -1030,27 +1048,76 @@ mod tests {
             },
             |p| Encoded::Packet(Packet::UnsubscribeAck(p)),
             &[
-                |p| p.reason_string = Some(nul()),
-                |p| p.properties = nul_props(),
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.properties = props(s),
             ],
         );
-        assert_nul_rejected(
+        assert_str_rejected(
             &Disconnect::default(),
             |p| Encoded::Packet(Packet::Disconnect(p)),
             &[
-                |p| p.server_reference = Some(nul()),
-                |p| p.reason_string = Some(nul()),
-                |p| p.user_properties = nul_props(),
+                |p, s| p.server_reference = Some(s),
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.user_properties = props(s),
             ],
         );
-        assert_nul_rejected(
+        assert_str_rejected(
             &Auth::default(),
             |p| Encoded::Packet(Packet::Auth(p)),
             &[
-                |p| p.auth_method = Some(nul()),
-                |p| p.reason_string = Some(nul()),
-                |p| p.user_properties = nul_props(),
+                |p, s| p.auth_method = Some(s),
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.user_properties = props(s),
             ],
+        );
+    }
+
+    /// `pkt` is encoded, each setter puts binary data into one binary field,
+    /// it is limited to 65,535 bytes (MQTT 5.0, 1.5.6)
+    fn assert_bin_rejected<T: Clone>(
+        pkt: &T,
+        encoded: fn(T) -> Encoded,
+        setters: &[fn(&mut T, Bytes)],
+    ) {
+        let codec = Codec::new();
+        for set in setters {
+            let mut pkt = pkt.clone();
+            set(&mut pkt, Bytes::from(vec![b'a'; 65_535]));
+            assert_encoded(&codec, encoded(pkt.clone()));
+            set(&mut pkt, Bytes::from(vec![b'a'; 65_536]));
+            assert_rejected(&codec, encoded(pkt));
+        }
+    }
+
+    #[test]
+    fn test_encode_bin_too_long() {
+        assert_bin_rejected(
+            &will_connect(),
+            |p| Encoded::Packet(Packet::Connect(Box::new(p))),
+            &[
+                |p, b| p.password = Some(b),
+                |p, b| p.auth_data = Some(b),
+                |p, b| p.last_will.as_mut().unwrap().message = b,
+                |p, b| p.last_will.as_mut().unwrap().correlation_data = Some(b),
+            ],
+        );
+        assert_bin_rejected(
+            &ConnectAck::default(),
+            |p| Encoded::Packet(Packet::ConnectAck(Box::new(p))),
+            &[|p, b| p.auth_data = Some(b)],
+        );
+        assert_bin_rejected(
+            &Auth::default(),
+            |p| Encoded::Packet(Packet::Auth(p)),
+            &[|p, b| p.auth_data = Some(b)],
+        );
+        assert_bin_rejected(
+            &Publish {
+                topic: ByteString::from_static("a/b"),
+                ..Publish::default()
+            },
+            |p| Encoded::Publish(p, None),
+            &[|p, b| p.properties.correlation_data = Some(b)],
         );
     }
 }

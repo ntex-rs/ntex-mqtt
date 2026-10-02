@@ -1,16 +1,22 @@
 #![allow(clippy::ref_option, clippy::needless_pass_by_value)]
 use std::num::NonZeroU32;
 
-use ntex_bytes::{BufMut, BytePages, ByteString};
+use ntex_bytes::{BufMut, BytePages, ByteString, Bytes};
 
 use super::packet::{Packet, Publish, property_type as pt};
 use super::{UserProperties, UserProperty};
 use crate::error::EncodeError;
 use crate::types::{MAX_PACKET_SIZE, QoS, packet_type};
-use crate::utils::{Encode, is_valid_str, is_valid_topic_name, write_variable_length};
+use crate::utils::{
+    Encode, is_valid_bin, is_valid_str, is_valid_topic_name, write_variable_length,
+};
 
 fn is_valid_opt_str(s: &Option<ByteString>) -> bool {
     s.as_deref().is_none_or(is_valid_str)
+}
+
+fn is_valid_opt_bin(b: &Option<Bytes>) -> bool {
+    b.as_deref().is_none_or(is_valid_bin)
 }
 
 fn is_valid_props(props: &UserProperties) -> bool {
@@ -29,17 +35,22 @@ fn is_valid_sub_id(id: NonZeroU32) -> bool {
 /// an invalid packet must not leave partial data in the write buffer.
 ///
 /// Strings, including user properties, must not include U+0000,
-/// [MQTT-1.5.4-2] (MQTT 5.0, 1.5.4).
+/// [MQTT-1.5.4-2] (MQTT 5.0, 1.5.4), strings and binary data are limited
+/// to 65,535 bytes (MQTT 5.0, 1.5.4, 1.5.6).
 pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
     let valid = match packet {
         Packet::Connect(connect) => {
             is_valid_str(&connect.client_id)
                 && is_valid_opt_str(&connect.username)
+                && is_valid_opt_bin(&connect.password)
                 && is_valid_opt_str(&connect.auth_method)
+                && is_valid_opt_bin(&connect.auth_data)
                 && is_valid_props(&connect.user_properties)
                 // Will Topic is a topic name, [MQTT-4.7.3-1], [MQTT-4.7.0-1] (MQTT 5.0, 4.7)
                 && connect.last_will.as_ref().is_none_or(|will| {
                     is_valid_topic_name(&will.topic)
+                        && is_valid_bin(&will.message)
+                        && is_valid_opt_bin(&will.correlation_data)
                         && is_valid_opt_str(&will.content_type)
                         && is_valid_opt_str(&will.response_topic)
                         && is_valid_props(&will.user_properties)
@@ -50,6 +61,7 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
                 && is_valid_opt_str(&ack.response_info)
                 && is_valid_opt_str(&ack.server_reference)
                 && is_valid_opt_str(&ack.auth_method)
+                && is_valid_opt_bin(&ack.auth_data)
                 && is_valid_opt_str(&ack.reason_string)
                 && is_valid_props(&ack.user_properties)
         }
@@ -93,6 +105,7 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
         }
         Packet::Auth(auth) => {
             is_valid_opt_str(&auth.auth_method)
+                && is_valid_opt_bin(&auth.auth_data)
                 && is_valid_opt_str(&auth.reason_string)
                 && is_valid_props(&auth.user_properties)
         }
@@ -112,9 +125,11 @@ pub(super) fn validate_publish(publish: &Publish) -> Result<(), EncodeError> {
             || (publish.topic.is_empty() && publish.properties.topic_alias.is_some()),
         EncodeError::MalformedPacket
     );
-    // strings must not include U+0000, [MQTT-1.5.4-2] (MQTT 5.0, 1.5.4)
+    // strings must not include U+0000, [MQTT-1.5.4-2] (MQTT 5.0, 1.5.4),
+    // strings and binary data are limited to 65,535 bytes (MQTT 5.0, 1.5.4, 1.5.6)
     ensure!(
-        is_valid_opt_str(&publish.properties.content_type)
+        is_valid_opt_bin(&publish.properties.correlation_data)
+            && is_valid_opt_str(&publish.properties.content_type)
             && is_valid_opt_str(&publish.properties.response_topic)
             && is_valid_props(&publish.properties.user_properties),
         EncodeError::MalformedPacket
@@ -252,7 +267,7 @@ pub(crate) fn encoded_size_opt_props(
     }
 
     if let Some(reason) = reason_str {
-        let reason_len = 1 + reason.encoded_size(); // safety: TODO: CHECK string length for being out of bounds (> u16::max_value())?
+        let reason_len = 1 + reason.encoded_size(); // string length is checked by `validate`
         if reason_len <= limit as usize {
             len += reason_len;
         }
