@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v3: Reply with PUBCOMP to a PUBREL with an unknown packet id instead of closing the
+  connection, PUBREL is re-sent after a session resumes [MQTT-4.4.0-1]
+
 * `TopicFilter` supports Shared Subscriptions `$share/{ShareName}/{filter}`, malformed ones
   are rejected [MQTT-4.8.2-1], [MQTT-4.8.2-2], matching uses the filter after the prefix,
   a `$` first level of the filter is a `System` level, add `TopicFilter::share_name()`
