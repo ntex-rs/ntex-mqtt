@@ -589,4 +589,20 @@ mod tests {
         assert_decode_packet!(b"\xc0\x00", Packet::PingRequest);
         assert_decode_packet!(b"\xd0\x00", Packet::PingResponse);
     }
+
+    #[test]
+    fn test_decode_non_minimal_remaining_length() {
+        // MQTT 3.1.1 does not require the minimal encoding (2.2.3)
+        let codec = crate::v3::codec::Codec::new();
+        let mut buf = BytesMut::from(&b"\xc0\x80\x00"[..]);
+        let res = ntex_codec::Decoder::decode(&codec, &mut buf);
+        assert!(
+            matches!(
+                res,
+                Ok(Some(super::super::Decoded::Packet(Packet::PingRequest, _)))
+            ),
+            "{res:?}"
+        );
+        assert!(buf.is_empty());
+    }
 }

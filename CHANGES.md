@@ -2,6 +2,8 @@
 
 ## [9.1.0] - Unreleased
 
+* v5: Reject a non-minimal Variable Byte Integer encoding [MQTT-1.5.5-1]
+
 * codec: Reject a QoS 0 PUBLISH with the DUP flag set [MQTT-3.3.1-2]
 
 * codec: Reject a CONNACK with Session Present set and a non-zero return code

@@ -119,7 +119,7 @@ impl Publish {
         }
 
         // properties len
-        if let Some((prop_len, pos)) = utils::decode_variable_length(&src[len as usize..])? {
+        if let Some((prop_len, pos)) = utils::decode_variable_length_v5(&src[len as usize..])? {
             Ok(Some(len + prop_len + pos as u32))
         } else {
             Ok(None)
@@ -147,7 +147,7 @@ fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, Decode
             pt::RESP_TOPIC => response_topic.read_value(prop_src)?,
             pt::CORR_DATA => correlation_data.read_value(prop_src)?,
             pt::SUB_ID => {
-                let id = utils::decode_variable_length_cursor(prop_src)?;
+                let id = utils::decode_variable_length_cursor_v5(prop_src)?;
                 subscription_ids.push(NonZeroU32::new(id).ok_or(DecodeError::MalformedPacket)?);
             }
             pt::TOPIC_ALIAS => topic_alias.read_value(prop_src)?,

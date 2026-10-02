@@ -5,7 +5,7 @@ use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{FixedHeader, MAX_FRAME_RESERVE, MAX_PACKET_SIZE, packet_type};
-use crate::utils::decode_variable_length;
+use crate::utils::decode_variable_length_v5;
 
 use super::{Decoded, Encoded};
 use super::{Packet, decode::decode_packet, encode, encode::EncodeLtd, packet::Publish};
@@ -221,7 +221,7 @@ impl Decoder for Codec {
                     }
                     let src_slice = src.as_ref();
                     let first_byte = src_slice[0];
-                    match decode_variable_length(&src_slice[1..])? {
+                    match decode_variable_length_v5(&src_slice[1..])? {
                         Some((remaining_length, consumed)) => {
                             // check max packet size, it is the total packet size,
                             // (MQTT 5.0, 3.1.2.11.4, 3.2.2.3.6)
