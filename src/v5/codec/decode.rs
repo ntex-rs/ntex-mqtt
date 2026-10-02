@@ -224,9 +224,9 @@ mod tests {
         );
 
         assert_eq!(
-            ConnectAck::decode(&mut Bytes::from_static(b"\x01\x86\x00")),
+            ConnectAck::decode(&mut Bytes::from_static(b"\x00\x86\x00")),
             Ok(ConnectAck {
-                session_present: true,
+                session_present: false,
                 reason_code: ConnectAckReason::BadUserNameOrPassword,
                 ..ConnectAck::default()
             })
@@ -238,15 +238,34 @@ mod tests {
         );
 
         assert_decode_packet(
-            b"\x20\x03\x01\x86\x00",
+            b"\x20\x03\x00\x86\x00",
             &Packet::ConnectAck(Box::new(ConnectAck {
-                session_present: true,
+                session_present: false,
                 reason_code: ConnectAckReason::BadUserNameOrPassword,
                 ..ConnectAck::default()
             })),
         );
 
         assert_decode_packet([0b1110_0000, 0], &Packet::Disconnect(Disconnect::default()));
+    }
+
+    #[test]
+    fn test_decode_connect_ack_session_present() {
+        assert_eq!(
+            ConnectAck::decode(&mut Bytes::from_static(b"\x01\x00\x00")),
+            Ok(ConnectAck {
+                session_present: true,
+                reason_code: ConnectAckReason::Success,
+                ..ConnectAck::default()
+            })
+        );
+        // Session Present must be 0 with a non-zero Reason Code, [MQTT-3.2.2-6]
+        for code in [0x80u8, 0x86, 0x9F] {
+            assert_eq!(
+                ConnectAck::decode(&mut Bytes::from(vec![1, code, 0])),
+                Err(DecodeError::MalformedPacket)
+            );
+        }
     }
 
     fn default_test_publish() -> Publish {
