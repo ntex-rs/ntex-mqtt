@@ -221,7 +221,10 @@ impl encode::EncodeLtd for ConnectAck {
     fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {
         let start_len = buf.len();
 
-        buf.put_slice(&[u8::from(self.session_present), self.reason_code.into()]);
+        // Session Present must be 0 with a non-zero Reason Code,
+        // [MQTT-3.2.2-6] (MQTT 5.0, 3.2.2.1.1)
+        let session_present = self.session_present && self.reason_code == ConnectAckReason::Success;
+        buf.put_slice(&[u8::from(session_present), self.reason_code.into()]);
 
         let prop_len = encode::var_int_len_from_size(size - 2);
         utils::write_variable_length(prop_len, buf);

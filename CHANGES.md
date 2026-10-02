@@ -2,6 +2,8 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Clear Session Present in a CONNACK with a non-zero reason code
+
 * codec: Drop Session Expiry Interval from a v5 DISCONNECT sent by the server
 
 * codec: Require a v5 Authentication Method in AUTH and with CONNECT Authentication Data,
