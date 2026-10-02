@@ -1,4 +1,4 @@
-use std::num::NonZeroU16;
+use std::num::{NonZeroU16, NonZeroU32};
 
 use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes};
 
@@ -117,7 +117,8 @@ impl ConnectAck {
         let mut receive_max = None;
         let mut max_qos = None;
         let mut retain_available = None;
-        let mut max_packet_size = None;
+        // Maximum Packet Size of zero is a Protocol Error (MQTT 5.0, 3.2.2.3.6)
+        let mut max_packet_size: Option<NonZeroU32> = None;
         let mut assigned_client_id = None;
         let mut topic_alias_max = None;
         let mut reason_string = None;
@@ -164,7 +165,7 @@ impl ConnectAck {
             session_expiry_interval_secs,
             receive_max: receive_max.unwrap_or(RECEIVE_MAX_DEFAULT),
             max_qos: max_qos.unwrap_or(QoS::ExactlyOnce),
-            max_packet_size,
+            max_packet_size: max_packet_size.map(NonZeroU32::get),
             assigned_client_id,
             topic_alias_max: topic_alias_max.unwrap_or(0u16),
             retain_available: retain_available.unwrap_or(true),

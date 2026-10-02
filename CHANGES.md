@@ -2,6 +2,8 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Reject a v5 CONNACK Maximum Packet Size of zero on decode and encode
+
 * codec: Reject encoding a v5 Shared Subscription with No Local set
 
 * codec: Reject encoding a v5 Response Topic with wildcard characters
