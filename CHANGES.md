@@ -21,6 +21,12 @@
 
 * codec: Reject PUBLISH packets with an empty topic name (v5: unless a topic alias is set)
 
+* codec: Enforce sender-side rules in the encoder: valid topic names in PUBLISH and Will, no DUP flag
+  for QoS 0, non-empty topic filter lists, v3 password requires username and empty client id requires
+  clean session
+
+* Fix sink being stuck in streaming state after a failed publish encode
+
 * v3: Send CONNACK 0x01 for an unsupported protocol level and CONNACK 0x02 for an empty
   client id without clean session before closing the connection
 

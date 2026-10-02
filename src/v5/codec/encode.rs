@@ -1,11 +1,68 @@
 #![allow(clippy::ref_option, clippy::needless_pass_by_value)]
 use ntex_bytes::{BufMut, BytePages, ByteString};
 
-use super::packet::{Packet, property_type as pt};
+use super::packet::{Packet, Publish, property_type as pt};
 use super::{UserProperties, UserProperty};
 use crate::error::EncodeError;
-use crate::types::packet_type;
-use crate::utils::{Encode, write_variable_length};
+use crate::types::{QoS, packet_type};
+use crate::utils::{Encode, is_valid_topic_name, write_variable_length};
+
+/// Checks the rules a sender must follow before anything gets written,
+/// an invalid packet must not leave partial data in the write buffer.
+pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
+    match packet {
+        Packet::Connect(connect) => {
+            // Will Topic is a topic name, [MQTT-4.7.3-1], [MQTT-4.7.0-1] (MQTT 5.0, 4.7)
+            if let Some(ref will) = connect.last_will {
+                ensure!(
+                    is_valid_topic_name(&will.topic),
+                    EncodeError::MalformedPacket
+                );
+            }
+        }
+        Packet::Subscribe(sub) => {
+            // [MQTT-3.8.3-2] at least one topic filter is required (5.0, 3.8.3)
+            // [MQTT-4.7.3-1] topic filters must be at least one character long (5.0, 4.7.3)
+            ensure!(
+                !sub.topic_filters.is_empty()
+                    && sub.topic_filters.iter().all(|(f, _)| !f.is_empty()),
+                EncodeError::MalformedPacket
+            );
+        }
+        Packet::Unsubscribe(unsub) => {
+            // [MQTT-3.10.3-2] at least one topic filter is required (5.0, 3.10.3)
+            // [MQTT-4.7.3-1] topic filters must be at least one character long (5.0, 4.7.3)
+            ensure!(
+                !unsub.topic_filters.is_empty()
+                    && unsub.topic_filters.iter().all(|f| !f.is_empty()),
+                EncodeError::MalformedPacket
+            );
+        }
+        _ => (),
+    }
+    Ok(())
+}
+
+/// Checks the rules a sender must follow before anything gets written.
+pub(super) fn validate_publish(publish: &Publish) -> Result<(), EncodeError> {
+    // topic name must not contain wildcards, [MQTT-3.3.2-2] (MQTT 5.0, 3.3.2.1),
+    // it must not be empty, [MQTT-4.7.3-1] (MQTT 5.0, 4.7.3),
+    // unless a topic alias is used (MQTT 5.0, 3.3.2.3.4)
+    ensure!(
+        is_valid_topic_name(&publish.topic)
+            || (publish.topic.is_empty() && publish.properties.topic_alias.is_some()),
+        EncodeError::MalformedPacket
+    );
+    if publish.qos == QoS::AtMostOnce {
+        // DUP flag must be 0 for QoS 0 messages, [MQTT-3.3.1-2] (MQTT 5.0, 3.3.1.1)
+        ensure!(!publish.dup, EncodeError::MalformedPacket);
+        // QoS 0 PUBLISH must not contain a Packet Identifier, [MQTT-2.2.1-2] (MQTT 5.0, 2.2.1)
+        ensure!(publish.packet_id.is_none(), EncodeError::MalformedPacket);
+    } else {
+        ensure!(publish.packet_id.is_some(), EncodeError::PacketIdRequired);
+    }
+    Ok(())
+}
 
 pub(crate) trait EncodeLtd {
     fn encoded_size(&self, limit: u32) -> usize;

@@ -8,7 +8,7 @@ use crate::types::{FixedHeader, MAX_FRAME_RESERVE, MAX_PACKET_SIZE, packet_type}
 use crate::utils::decode_variable_length;
 
 use super::{Decoded, Encoded};
-use super::{Packet, decode::decode_packet, encode::EncodeLtd, packet::Publish};
+use super::{Packet, decode::decode_packet, encode, encode::EncodeLtd, packet::Publish};
 
 pub struct Codec {
     state: Cell<DecodeState>,
@@ -327,6 +327,7 @@ impl Encoder for Codec {
                     log::trace!("Expect payload, received {pkt:?}");
                     Err(EncodeError::ExpectPayload)
                 } else {
+                    encode::validate(&pkt)?;
                     let content_size = pkt.encoded_size(max_size);
                     if content_size > max_size as usize {
                         Err(EncodeError::OverMaxPacketSize)
@@ -347,6 +348,7 @@ impl Encoder for Codec {
                 {
                     return Err(EncodeError::OverPublishSize);
                 }
+                encode::validate_publish(&pkt)?;
                 let content_size = pkt.encoded_size(max_size);
                 if content_size > max_size as usize {
                     return Err(EncodeError::OverMaxPacketSize);
@@ -411,6 +413,25 @@ impl fmt::Debug for Codec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ntex_bytes::ByteString;
+    use std::num::NonZeroU16;
+
+    use crate::v5::codec::{Connect, LastWill, QoS, Subscribe, SubscriptionOptions, Unsubscribe};
+
+    fn assert_rejected(codec: &Codec, item: Encoded) {
+        let mut buf = BytePages::default();
+        assert_eq!(
+            codec.encode(item, &mut buf),
+            Err(EncodeError::MalformedPacket)
+        );
+        assert!(buf.freeze().is_empty(), "nothing is written");
+    }
+
+    fn assert_encoded(codec: &Codec, item: Encoded) {
+        let mut buf = BytePages::default();
+        codec.encode(item, &mut buf).unwrap();
+        assert!(!buf.freeze().is_empty());
+    }
 
     #[test]
     fn test_max_size() {
@@ -639,5 +660,135 @@ mod tests {
         assert_eq!(src.len(), 2);
         assert!(src.capacity() >= 1000);
         assert!(src.capacity() < MAX_FRAME_RESERVE);
+    }
+
+    #[test]
+    fn test_encode_publish_sender_rules() {
+        let codec = Codec::new();
+        let id = NonZeroU16::new(1);
+        let publish = Publish {
+            topic: ByteString::from_static("a/b"),
+            ..Default::default()
+        };
+        let invalid = [
+            Publish {
+                topic: ByteString::new(),
+                ..publish.clone()
+            },
+            Publish {
+                topic: ByteString::from_static("a/+"),
+                ..publish.clone()
+            },
+            Publish {
+                topic: ByteString::from_static("a/#"),
+                ..publish.clone()
+            },
+            Publish {
+                dup: true,
+                ..publish.clone()
+            },
+            Publish {
+                packet_id: id,
+                ..publish.clone()
+            },
+        ];
+        for pkt in invalid {
+            assert_rejected(&codec, Encoded::Publish(pkt, None));
+        }
+
+        assert_encoded(&codec, Encoded::Publish(publish.clone(), None));
+        let pkt = Publish {
+            dup: true,
+            qos: QoS::AtLeastOnce,
+            packet_id: id,
+            ..publish.clone()
+        };
+        assert_encoded(&codec, Encoded::Publish(pkt, None));
+
+        // empty topic is allowed with a topic alias
+        let mut pkt = Publish {
+            topic: ByteString::new(),
+            ..publish
+        };
+        pkt.properties.topic_alias = id;
+        assert_encoded(&codec, Encoded::Publish(pkt.clone(), None));
+        pkt.topic = ByteString::from_static("a/+");
+        assert_rejected(&codec, Encoded::Publish(pkt, None));
+    }
+
+    #[test]
+    fn test_encode_packet_sender_rules() {
+        let codec = Codec::new();
+        let packet_id = NonZeroU16::new(1).unwrap();
+        let connect = Connect {
+            client_id: ByteString::from_static("id"),
+            ..Connect::default()
+        };
+        let will = |topic| LastWill {
+            qos: QoS::AtMostOnce,
+            retain: false,
+            topic: ByteString::from_static(topic),
+            message: Bytes::new(),
+            will_delay_interval_sec: None,
+            correlation_data: None,
+            message_expiry_interval: None,
+            content_type: None,
+            user_properties: Vec::new(),
+            is_utf8_payload: None,
+            response_topic: None,
+        };
+        let opts = SubscriptionOptions::default();
+        let subscribe = |topic_filters| Subscribe {
+            packet_id,
+            id: None,
+            user_properties: Vec::new(),
+            topic_filters,
+        };
+        let unsubscribe = |topic_filters| Unsubscribe {
+            packet_id,
+            user_properties: Vec::new(),
+            topic_filters,
+        };
+        let invalid = [
+            Packet::Connect(Box::new(Connect {
+                last_will: Some(will("")),
+                ..connect.clone()
+            })),
+            Packet::Connect(Box::new(Connect {
+                last_will: Some(will("w/#")),
+                ..connect.clone()
+            })),
+            Packet::Subscribe(subscribe(vec![])),
+            Packet::Subscribe(subscribe(vec![
+                (ByteString::from_static("a"), opts),
+                (ByteString::new(), opts),
+            ])),
+            Packet::Unsubscribe(unsubscribe(vec![])),
+            Packet::Unsubscribe(unsubscribe(vec![
+                ByteString::from_static("a"),
+                ByteString::new(),
+            ])),
+        ];
+        for pkt in invalid {
+            assert_rejected(&codec, Encoded::Packet(pkt));
+        }
+
+        let valid = [
+            // password without username and empty client id are allowed in v5
+            Packet::Connect(Box::new(Connect {
+                client_id: ByteString::new(),
+                password: Some(Bytes::from_static(b"pwd")),
+                last_will: Some(will("w/t")),
+                ..connect
+            })),
+            Packet::Subscribe(subscribe(vec![
+                (ByteString::from_static("a/+"), opts),
+                (ByteString::from_static("#"), opts),
+            ])),
+            Packet::Unsubscribe(unsubscribe(vec![ByteString::from_static("a/#")])),
+        ];
+        for pkt in valid {
+            assert_encoded(&codec, Encoded::Packet(pkt));
+        }
     }
 }

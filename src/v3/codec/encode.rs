@@ -2,7 +2,7 @@ use ntex_bytes::{BufMut, BytePages, ByteString};
 
 use crate::error::EncodeError;
 use crate::types::{ConnectFlags, MQTT, MQTT_LEVEL_3, QoS, WILL_QOS_SHIFT, packet_type};
-use crate::utils::{Encode, write_variable_length};
+use crate::utils::{Encode, is_valid_topic_name, write_variable_length};
 
 use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
 
@@ -68,6 +68,69 @@ pub(crate) fn get_encoded_size(packet: &Packet) -> usize {
 
         Packet::PingRequest | Packet::PingResponse | Packet::Disconnect => 0,
     }
+}
+
+/// Checks the rules a sender must follow before anything gets written,
+/// an invalid packet must not leave partial data in the write buffer.
+pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
+    match packet {
+        Packet::Connect(connect) => {
+            // Password Flag must be 0 if User Name Flag is 0, [MQTT-3.1.2-22] (MQTT 3.1.1, 3.1.2.9)
+            ensure!(
+                connect.password.is_none() || connect.username.is_some(),
+                EncodeError::MalformedPacket
+            );
+            // zero-byte ClientId requires CleanSession, [MQTT-3.1.3-7] (MQTT 3.1.1, 3.1.3.1)
+            ensure!(
+                !connect.client_id.is_empty() || connect.clean_session,
+                EncodeError::MalformedPacket
+            );
+            // Will Topic is a topic name, [MQTT-4.7.3-1], [MQTT-4.7.1-1] (MQTT 3.1.1, 4.7)
+            if let Some(ref will) = connect.last_will {
+                ensure!(
+                    is_valid_topic_name(&will.topic),
+                    EncodeError::MalformedPacket
+                );
+            }
+        }
+        Packet::Subscribe { topic_filters, .. } => {
+            // [MQTT-3.8.3-3] at least one topic filter is required (3.1.1, 3.8.3)
+            // [MQTT-4.7.3-1] topic filters must be at least one character long (3.1.1, 4.7.3)
+            ensure!(
+                !topic_filters.is_empty() && topic_filters.iter().all(|(f, _)| !f.is_empty()),
+                EncodeError::MalformedPacket
+            );
+        }
+        Packet::Unsubscribe { topic_filters, .. } => {
+            // [MQTT-3.10.3-2] at least one topic filter is required (3.1.1, 3.10.3)
+            // [MQTT-4.7.3-1] topic filters must be at least one character long (3.1.1, 4.7.3)
+            ensure!(
+                !topic_filters.is_empty() && topic_filters.iter().all(|f| !f.is_empty()),
+                EncodeError::MalformedPacket
+            );
+        }
+        _ => (),
+    }
+    Ok(())
+}
+
+/// Checks the rules a sender must follow before anything gets written.
+pub(super) fn validate_publish(publish: &Publish) -> Result<(), EncodeError> {
+    // topic name must not be empty or contain wildcards,
+    // [MQTT-4.7.3-1], [MQTT-3.3.2-2] (MQTT 3.1.1, 4.7.3, 3.3.2.1)
+    ensure!(
+        is_valid_topic_name(&publish.topic),
+        EncodeError::MalformedPacket
+    );
+    if publish.qos == QoS::AtMostOnce {
+        // DUP flag must be 0 for QoS 0 messages, [MQTT-3.3.1-2] (MQTT 3.1.1, 3.3.1.1)
+        ensure!(!publish.dup, EncodeError::MalformedPacket);
+        // QoS 0 PUBLISH must not contain a Packet Identifier, [MQTT-2.3.1-5] (MQTT 3.1.1, 2.3.1)
+        ensure!(publish.packet_id.is_none(), EncodeError::MalformedPacket);
+    } else {
+        ensure!(publish.packet_id.is_some(), EncodeError::PacketIdRequired);
+    }
+    Ok(())
 }
 
 pub(crate) fn encode(
@@ -171,11 +234,7 @@ pub(super) fn encode_publish(
     );
     write_variable_length(content_size, dst);
     publish.topic.encode(dst)?;
-    if publish.qos == QoS::AtMostOnce {
-        if publish.packet_id.is_some() {
-            return Err(EncodeError::MalformedPacket); // packet id must not be set
-        }
-    } else {
+    if publish.qos != QoS::AtMostOnce {
         publish
             .packet_id
             .ok_or(EncodeError::PacketIdRequired)?

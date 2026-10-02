@@ -274,6 +274,13 @@ impl Encode for &[u8] {
     }
 }
 
+/// Topic names must be at least one character long and must not contain
+/// wildcard characters, [MQTT-4.7.3-1], [MQTT-4.7.1-1] (MQTT 3.1.1, 4.7),
+/// [MQTT-4.7.3-1], [MQTT-4.7.0-1] (MQTT 5.0, 4.7)
+pub(crate) fn is_valid_topic_name(topic: &str) -> bool {
+    !topic.is_empty() && !topic.contains(['+', '#'])
+}
+
 pub(crate) fn write_variable_length(len: u32, dst: &mut BytePages) {
     match len {
         0..=127 => dst.put_u8(len as u8),

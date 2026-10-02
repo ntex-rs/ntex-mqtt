@@ -4,10 +4,10 @@ use ntex_bytes::{Buf, BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{FixedHeader, MAX_FRAME_RESERVE, MAX_PACKET_SIZE, QoS, packet_type};
+use crate::types::{FixedHeader, MAX_FRAME_RESERVE, MAX_PACKET_SIZE, packet_type};
 use crate::utils::decode_variable_length;
 
-use super::{Decoded, Encoded, Publish, decode, encode};
+use super::{Decoded, Encoded, decode, encode};
 
 #[derive(Debug, Clone)]
 /// Mqtt v3.1.1 protocol codec
@@ -211,6 +211,7 @@ impl Encoder for Codec {
         }
         match item {
             Encoded::Packet(pkt) => {
+                encode::validate(&pkt)?;
                 let content_size = encode::get_encoded_size(&pkt);
                 if content_size > MAX_PACKET_SIZE as usize {
                     return Err(EncodeError::OverMaxPacketSize);
@@ -219,10 +220,7 @@ impl Encoder for Codec {
                 Ok(())
             }
             Encoded::Publish(pkt, buf) => {
-                let Publish { qos, packet_id, .. } = pkt;
-                if (qos == QoS::AtLeastOnce || qos == QoS::ExactlyOnce) && packet_id.is_none() {
-                    return Err(EncodeError::PacketIdRequired);
-                }
+                encode::validate_publish(&pkt)?;
                 if buf
                     .as_ref()
                     .is_some_and(|buf| buf.len() > pkt.payload_size as usize)
@@ -276,7 +274,22 @@ mod tests {
     use ntex_bytes::{ByteString, Bytes};
     use std::num::NonZeroU16;
 
-    use crate::v3::codec::Packet;
+    use crate::v3::codec::{Connect, LastWill, Packet, Publish, QoS};
+
+    fn assert_rejected(codec: &Codec, item: Encoded) {
+        let mut buf = BytePages::default();
+        assert_eq!(
+            codec.encode(item, &mut buf),
+            Err(EncodeError::MalformedPacket)
+        );
+        assert!(buf.freeze().is_empty(), "nothing is written");
+    }
+
+    fn assert_encoded(codec: &Codec, item: Encoded) {
+        let mut buf = BytePages::default();
+        codec.encode(item, &mut buf).unwrap();
+        assert!(!buf.freeze().is_empty());
+    }
 
     #[test]
     fn test_max_size() {
@@ -535,5 +548,138 @@ mod tests {
         assert_eq!(src.len(), 2);
         assert!(src.capacity() >= 1000);
         assert!(src.capacity() < MAX_FRAME_RESERVE);
+    }
+
+    #[test]
+    fn test_encode_publish_sender_rules() {
+        let codec = Codec::new();
+        let id = NonZeroU16::new(1);
+        let publish = Publish {
+            dup: false,
+            retain: false,
+            qos: QoS::AtMostOnce,
+            topic: ByteString::from_static("a/b"),
+            packet_id: None,
+            payload_size: 0,
+        };
+        let invalid = [
+            Publish {
+                topic: ByteString::new(),
+                ..publish.clone()
+            },
+            Publish {
+                topic: ByteString::from_static("a/+"),
+                ..publish.clone()
+            },
+            Publish {
+                topic: ByteString::from_static("a/#"),
+                ..publish.clone()
+            },
+            Publish {
+                dup: true,
+                ..publish.clone()
+            },
+            Publish {
+                packet_id: id,
+                ..publish.clone()
+            },
+        ];
+        for pkt in invalid {
+            assert_rejected(&codec, Encoded::Publish(pkt, None));
+        }
+
+        assert_encoded(&codec, Encoded::Publish(publish.clone(), None));
+        let pkt = Publish {
+            dup: true,
+            qos: QoS::AtLeastOnce,
+            packet_id: id,
+            ..publish
+        };
+        assert_encoded(&codec, Encoded::Publish(pkt, None));
+    }
+
+    #[test]
+    fn test_encode_packet_sender_rules() {
+        let codec = Codec::new();
+        let packet_id = NonZeroU16::new(1).unwrap();
+        let connect = Connect {
+            client_id: ByteString::from_static("id"),
+            ..Connect::default()
+        };
+        let will = |topic| LastWill {
+            qos: QoS::AtMostOnce,
+            retain: false,
+            topic: ByteString::from_static(topic),
+            message: Bytes::new(),
+        };
+        let qos = QoS::AtMostOnce;
+        let invalid = [
+            Packet::Connect(Box::new(Connect {
+                password: Some(Bytes::from_static(b"pwd")),
+                ..connect.clone()
+            })),
+            Packet::Connect(Box::new(Connect {
+                client_id: ByteString::new(),
+                ..connect.clone()
+            })),
+            Packet::Connect(Box::new(Connect {
+                last_will: Some(will("")),
+                ..connect.clone()
+            })),
+            Packet::Connect(Box::new(Connect {
+                last_will: Some(will("w/+")),
+                ..connect.clone()
+            })),
+            Packet::Subscribe {
+                packet_id,
+                topic_filters: vec![],
+            },
+            Packet::Subscribe {
+                packet_id,
+                topic_filters: vec![
+                    (ByteString::from_static("a"), qos),
+                    (ByteString::new(), qos),
+                ],
+            },
+            Packet::Unsubscribe {
+                packet_id,
+                topic_filters: vec![],
+            },
+            Packet::Unsubscribe {
+                packet_id,
+                topic_filters: vec![ByteString::from_static("a"), ByteString::new()],
+            },
+        ];
+        for pkt in invalid {
+            assert_rejected(&codec, Encoded::Packet(pkt));
+        }
+
+        let valid = [
+            Packet::Connect(Box::new(Connect {
+                username: Some(ByteString::from_static("user")),
+                password: Some(Bytes::from_static(b"pwd")),
+                last_will: Some(will("w/t")),
+                ..connect.clone()
+            })),
+            Packet::Connect(Box::new(Connect {
+                client_id: ByteString::new(),
+                clean_session: true,
+                ..connect
+            })),
+            Packet::Subscribe {
+                packet_id,
+                topic_filters: vec![
+                    (ByteString::from_static("a/+"), qos),
+                    (ByteString::from_static("#"), qos),
+                ],
+            },
+            Packet::Unsubscribe {
+                packet_id,
+                topic_filters: vec![ByteString::from_static("a/#")],
+            },
+        ];
+        for pkt in valid {
+            assert_encoded(&codec, Encoded::Packet(pkt));
+        }
     }
 }

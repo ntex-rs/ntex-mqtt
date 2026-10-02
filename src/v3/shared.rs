@@ -230,8 +230,11 @@ impl MqttShared {
         payload: Option<Bytes>,
     ) -> Result<(), EncodeError> {
         self.check_streaming()?;
-        self.enable_streaming(&pkt, payload.as_ref());
-        self.io.encode(Encoded::Publish(pkt, payload), &self.codec)
+        let remaining = Self::streaming_size(&pkt, payload.as_ref());
+        self.io
+            .encode(Encoded::Publish(pkt, payload), &self.codec)?;
+        self.streaming_remaining.set(remaining);
+        Ok(())
     }
 
     pub(super) fn encode_publish_payload(&self, payload: Bytes) -> Result<bool, EncodeError> {
@@ -325,10 +328,11 @@ impl MqttShared {
         }
     }
 
-    fn enable_streaming(&self, pkt: &Publish, payload: Option<&Bytes>) {
+    /// Remaining streaming payload size, it is applied only after the
+    /// publish packet is encoded successfully
+    fn streaming_size(pkt: &Publish, payload: Option<&Bytes>) -> Option<num::NonZeroU32> {
         let len = payload.map_or(0, Bytes::len);
-        self.streaming_remaining
-            .set(num::NonZeroU32::new(pkt.payload_size - len as u32));
+        num::NonZeroU32::new(pkt.payload_size - len as u32)
     }
 
     pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), MqttProtocolError> {
@@ -442,7 +446,7 @@ impl MqttShared {
         payload: Option<Bytes>,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
         self.check_streaming()?;
-        self.enable_streaming(&pkt, payload.as_ref());
+        let remaining = Self::streaming_size(&pkt, payload.as_ref());
 
         let mut queues = self.queues.borrow_mut();
         if queues.inflight_ids.contains(&id) {
@@ -450,6 +454,7 @@ impl MqttShared {
         } else {
             match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
                 Ok(()) => {
+                    self.streaming_remaining.set(remaining);
                     let (tx, rx) = self.pool.queue.channel();
                     queues.inflight.push_back((id, Some(tx), ack));
                     queues.inflight_ids.insert(id);
@@ -469,7 +474,7 @@ impl MqttShared {
         payload: Option<Bytes>,
     ) -> Result<(), SendPacketError> {
         self.check_streaming()?;
-        self.enable_streaming(&pkt, payload.as_ref());
+        let remaining = Self::streaming_size(&pkt, payload.as_ref());
 
         let mut queues = self.queues.borrow_mut();
         if queues.inflight_ids.contains(&id) {
@@ -477,6 +482,7 @@ impl MqttShared {
         } else {
             match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
                 Ok(()) => {
+                    self.streaming_remaining.set(remaining);
                     assert!(
                         self.flags.get().contains(Flags::ON_PUBLISH_ACK),
                         "Publish ack callback is not set"

@@ -173,11 +173,7 @@ impl encode::EncodeLtd for Publish {
         let start_len = buf.len();
 
         self.topic.encode(buf)?;
-        if self.qos == QoS::AtMostOnce {
-            if self.packet_id.is_some() {
-                return Err(EncodeError::MalformedPacket); // packet id must not be set
-            }
-        } else {
+        if self.qos != QoS::AtMostOnce {
             self.packet_id
                 .ok_or(EncodeError::PacketIdRequired)?
                 .encode(buf)?;

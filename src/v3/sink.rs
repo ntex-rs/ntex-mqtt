@@ -700,4 +700,36 @@ mod tests {
         let ub = sink.unsubscribe();
         assert!(format!("{ub:?}").contains("UnsubscribeBuilder"));
     }
+
+    #[ntex::test]
+    async fn test_rejected_publish_does_not_start_streaming() {
+        let (client, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            true,
+            Rc::default(),
+        ));
+        shared.set_cap(16);
+        let sink = MqttSink::new(shared.clone());
+        let err = Err(SendPacketError::Encode(
+            crate::error::EncodeError::MalformedPacket,
+        ));
+
+        let res = sink.publish("a/+").stream_at_most_once(10).map(|_| ());
+        assert_eq!(res, err);
+        assert!(!shared.is_streaming());
+
+        let (fut, _stream) = sink.publish("a/+").stream_at_least_once(10);
+        assert_eq!(fut.await, err);
+        assert!(!shared.is_streaming());
+
+        // sink is still usable
+        assert!(sink.is_open());
+        sink.publish("a/b")
+            .send_at_most_once(Bytes::from_static(b"data"))
+            .unwrap();
+        drop(client);
+    }
 }
