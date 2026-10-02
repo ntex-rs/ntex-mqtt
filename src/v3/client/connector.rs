@@ -110,9 +110,7 @@ where
             .into();
         let pool = self.pool.clone();
         let keepalive_timeout = pkt.keep_alive;
-        let codec = codec::Codec::new();
-        codec.set_max_size(cfg.max_size);
-        codec.set_min_chunk_size(cfg.min_chunk_size);
+        let codec = codec::Codec::from_config(&cfg);
 
         io.encode(Encoded::Packet(pkt.into()), &codec)
             .map_err(Error::from_err)?;

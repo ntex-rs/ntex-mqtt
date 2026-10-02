@@ -113,9 +113,9 @@ where
         let max_receive = pkt.receive_max.map_or(65535, NonZero::get);
         let pool = self.pool.clone();
 
-        let codec = codec::Codec::new();
+        // the client advertises its own inbound limit in CONNECT
+        let codec = codec::Codec::from_config(&cfg);
         codec.set_max_inbound_size(max_packet_size);
-        codec.set_min_chunk_size(cfg.min_chunk_size);
 
         io.encode(Encoded::Packet(Packet::Connect(Box::new(pkt))), &codec)
             .map_err(Error::from_err)?;

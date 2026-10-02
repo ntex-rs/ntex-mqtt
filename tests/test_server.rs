@@ -962,9 +962,11 @@ async fn test_nested_errors() -> std::io::Result<()> {
 
 #[ntex::test]
 async fn test_large_publish() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
+    let srv = server::TestServerBuilder::new(async move || {
         MqttServer::new(async |_| Ok::<_, TestError>(())).build(connect)
-    });
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_size(512 * 1024)))
+    .start();
 
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
@@ -989,7 +991,49 @@ async fn test_large_publish() -> std::io::Result<()> {
     let res = io.send(p, &codec).await;
     assert!(res.is_ok());
     let result = io.recv(&codec).await;
-    assert!(result.is_ok());
+    assert!(
+        matches!(
+            result,
+            Ok(Some(Decoded::Packet(Packet::PublishAck { .. }, _)))
+        ),
+        "{result:?}"
+    );
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_default_max_size() -> std::io::Result<()> {
+    let srv = server::test_server(async move || {
+        MqttServer::new(async |_| Ok::<_, TestError>(())).build(connect)
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let ack = io.recv(&codec).await.unwrap().unwrap();
+    assert!(matches!(ack, Decoded::Packet(Packet::ConnectAck(_), _)));
+
+    // the default 256 KB limit closes the connection
+    let p = Encoded::Publish(
+        codec::Publish {
+            dup: false,
+            retain: false,
+            qos: codec::QoS::AtLeastOnce,
+            topic: ByteString::from("test"),
+            packet_id: Some(NonZeroU16::new(3).unwrap()),
+            payload_size: 256 * 1024,
+        },
+        Some(Bytes::from(vec![b'*'; 256 * 1024])),
+    );
+    let _ = io.send(p, &codec).await;
+    let result = io.recv(&codec).await;
+    assert!(matches!(result, Ok(None) | Err(_)), "{result:?}");
 
     Ok(())
 }
@@ -1012,7 +1056,7 @@ fn ssl_acceptor() -> openssl::ssl::SslAcceptor {
 async fn test_large_publish_openssl() -> std::io::Result<()> {
     use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 
-    let srv = server::test_server(async move || {
+    let srv = server::TestServerBuilder::new(async move || {
         server::openssl::SslAcceptor::new(ssl_acceptor())
             .map_err(|_| ())
             .and_then(
@@ -1020,7 +1064,9 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
                     .build(connect)
                     .map_err(|_| ()),
             )
-    });
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_size(512 * 1024)))
+    .start();
 
     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
     builder.set_verify(SslVerifyMode::NONE);
@@ -1053,7 +1099,13 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
     let res = io.send(p, &codec).await;
     assert!(res.is_ok());
     let result = io.recv(&codec).await;
-    assert!(result.is_ok());
+    assert!(
+        matches!(
+            result,
+            Ok(Some(Decoded::Packet(Packet::PublishAck { .. }, _)))
+        ),
+        "{result:?}"
+    );
 
     Ok(())
 }
@@ -1227,7 +1279,11 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
     .config(
         SharedCfg::new("MQTT")
             .add(IoConfig::new().set_frame_read_rate(Seconds(1), Seconds(2), 10))
-            .add(MqttServiceConfig::new().set_min_chunk_size(32 * 1024)),
+            .add(
+                MqttServiceConfig::new()
+                    .set_min_chunk_size(32 * 1024)
+                    .set_max_size(0),
+            ),
     )
     .start();
 

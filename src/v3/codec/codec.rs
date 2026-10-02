@@ -3,6 +3,7 @@ use std::{cell::Cell, cmp::min, num::NonZeroU32};
 use ntex_bytes::{Buf, BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
+use crate::MqttServiceConfig;
 use crate::error::{DecodeError, EncodeError};
 use crate::types::{FixedHeader, MAX_FRAME_RESERVE, MAX_PACKET_SIZE, packet_type};
 use crate::utils::decode_variable_length;
@@ -35,6 +36,14 @@ impl Codec {
             min_chunk_size: Cell::new(0),
             encoding_payload: Cell::new(None),
         }
+    }
+
+    /// Create `Codec` instance with inbound limits from the service configuration
+    pub(crate) fn from_config(cfg: &MqttServiceConfig) -> Self {
+        let codec = Self::new();
+        codec.set_max_size(cfg.max_size);
+        codec.set_min_chunk_size(cfg.min_chunk_size);
+        codec
     }
 
     /// Set max inbound frame size.
@@ -784,5 +793,15 @@ mod tests {
             set(&mut connect, Bytes::from(vec![b'a'; 65_536]));
             assert_rejected(&codec, Encoded::Packet(Packet::Connect(Box::new(connect))));
         }
+    }
+
+    #[test]
+    fn test_from_config() {
+        let cfg = MqttServiceConfig::new()
+            .set_max_size(1)
+            .set_min_chunk_size(3);
+        let codec = Codec::from_config(&cfg);
+        assert_eq!(codec.max_size.get(), 1);
+        assert_eq!(codec.min_chunk_size.get(), 3);
     }
 }

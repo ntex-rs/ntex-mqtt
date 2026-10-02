@@ -2,6 +2,13 @@
 
 ## [9.1.0] - Unreleased
 
+* Fix in-flight limits being skipped for the request after a PUBLISH with a complete payload
+  or after the last payload chunk, `SizedRequest::is_publish()` and `is_chunk()` are replaced
+  by `has_more_chunks()`
+
+* Default `MqttServiceConfig::max_size` is 256 KB instead of unlimited, the v5 server
+  advertises it as Maximum Packet Size in CONNACK, use `set_max_size(0)` for no limit
+
 * v5: Reject a non-minimal Variable Byte Integer encoding [MQTT-1.5.5-1]
 
 * codec: Reject a QoS 0 PUBLISH with the DUP flag set [MQTT-3.3.1-2]

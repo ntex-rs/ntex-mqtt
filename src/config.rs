@@ -73,7 +73,7 @@ impl MqttServiceConfig {
     pub fn new() -> Self {
         Self {
             max_qos: QoS::AtLeastOnce,
-            max_size: 0,
+            max_size: 256 * 1024,
             max_send: 16,
             max_send_size: (65535, 512),
             max_receive: 16,
@@ -146,10 +146,16 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Set max inbound frame size.
+    /// Set max inbound packet size.
     ///
-    /// If max size is set to `0`, size is unlimited.
-    /// By default max size is set to `0`
+    /// Larger packets close the connection with a `MaxSizeExceeded` decode error.
+    /// Applies to MQTT v3 servers and clients and MQTT v5 servers, a v5 server advertises
+    /// it as Maximum Packet Size in CONNACK. Non-PUBLISH packets are buffered whole, and
+    /// decoding expands them in memory (up to ~10x for SUBSCRIBE topic filters or user
+    /// properties), keep the limit bounded for untrusted peers.
+    ///
+    /// If max size is set to `0`, size is unlimited (up to 256 MB, the protocol maximum).
+    /// By default max size is set to 256 KB.
     pub fn set_max_size(mut self, size: u32) -> Self {
         self.max_size = size;
         self

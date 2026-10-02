@@ -250,9 +250,7 @@ where
 
         let cfg = io.cfg().ctx().get::<MqttServiceConfig>();
 
-        let codec = mqtt::Codec::default();
-        codec.set_max_inbound_size(cfg.max_size);
-        codec.set_min_chunk_size(cfg.min_chunk_size);
+        let codec = mqtt::Codec::from_config(&cfg);
 
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, self.pool.clone()));
         shared.set_max_qos(cfg.max_qos);
