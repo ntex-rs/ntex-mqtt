@@ -4,7 +4,7 @@ use ntex_bytes::{Buf, BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{FixedHeader, QoS, packet_type};
+use crate::types::{FixedHeader, MAX_PACKET_SIZE, QoS, packet_type};
 use crate::utils::decode_variable_length;
 
 use super::{Decoded, Encoded, Publish, decode, encode};
@@ -44,6 +44,8 @@ impl Codec {
     ///
     /// Inbound packets over the limit fail with `DecodeError::MaxSizeExceeded`,
     /// outgoing publish packets over the limit fail with `EncodeError::OverMaxPacketSize`.
+    /// Outgoing packets over the protocol limit (268,435,455 bytes) always fail
+    /// with `EncodeError::OverMaxPacketSize`.
     pub fn set_max_size(&self, size: u32) {
         self.max_size.set(size);
     }
@@ -206,7 +208,10 @@ impl Encoder for Codec {
         match item {
             Encoded::Packet(pkt) => {
                 let content_size = encode::get_encoded_size(&pkt);
-                encode::encode(&pkt, dst, content_size as u32)?;
+                if content_size > MAX_PACKET_SIZE as usize {
+                    return Err(EncodeError::OverMaxPacketSize);
+                }
+                encode::encode(&pkt, dst, content_size as u32)?; // safe: content_size <= MAX_PACKET_SIZE
                 Ok(())
             }
             Encoded::Publish(pkt, buf) => {
@@ -221,12 +226,16 @@ impl Encoder for Codec {
                     return Err(EncodeError::OverPublishSize);
                 }
 
-                let content_size = encode::get_encoded_publish_size(&pkt) as u32;
-                if self.max_size.get() != 0 && content_size > self.max_size.get() {
+                let max_size = match self.max_size.get() {
+                    0 => MAX_PACKET_SIZE,
+                    size => size.min(MAX_PACKET_SIZE),
+                };
+                let content_size = encode::get_encoded_publish_size(&pkt);
+                if content_size > max_size as usize {
                     return Err(EncodeError::OverMaxPacketSize);
                 }
 
-                encode::encode_publish(&pkt, dst, content_size)?; // safe: max_size <= u32 max value
+                encode::encode_publish(&pkt, dst, content_size as u32)?; // safe: content_size <= MAX_PACKET_SIZE
 
                 let remaining = if let Some(buf) = buf {
                     let remaining = pkt.payload_size - buf.len() as u32;
@@ -261,6 +270,9 @@ impl Encoder for Codec {
 mod tests {
     use super::*;
     use ntex_bytes::{ByteString, Bytes};
+    use std::num::NonZeroU16;
+
+    use crate::v3::codec::Packet;
 
     #[test]
     fn test_max_size() {
@@ -408,5 +420,56 @@ mod tests {
             )
             .unwrap();
         assert!(buf.freeze().ends_with(b"ab"));
+    }
+
+    #[test]
+    fn test_encode_over_protocol_max_size() {
+        let codec = Codec::new();
+        let pkt = Publish {
+            dup: false,
+            retain: false,
+            qos: QoS::AtMostOnce,
+            topic: ByteString::from_static("/test"),
+            packet_id: None,
+            payload_size: MAX_PACKET_SIZE - 7,
+        };
+        let mut buf = BytePages::default();
+
+        // remaining length is limited by the protocol, regardless of max size
+        for max_size in [0, u32::MAX] {
+            codec.set_max_size(max_size);
+            for payload_size in [MAX_PACKET_SIZE - 6, u32::MAX] {
+                let pkt = Publish {
+                    payload_size,
+                    ..pkt.clone()
+                };
+                assert_eq!(
+                    codec.encode(Encoded::Publish(pkt, None), &mut buf),
+                    Err(EncodeError::OverMaxPacketSize)
+                );
+                assert!(buf.freeze().is_empty());
+                assert_eq!(
+                    codec.encode(Encoded::PayloadChunk(Bytes::from_static(b"a")), &mut buf),
+                    Err(EncodeError::UnexpectedPayload)
+                );
+            }
+        }
+
+        codec.encode(Encoded::Publish(pkt, None), &mut buf).unwrap();
+        assert_eq!(&buf.freeze()[..], b"\x30\xff\xff\xff\x7f\x00\x05/test");
+
+        // 4097 * (2 + 65535 + 1) bytes, the filter is shared
+        let codec = Codec::new();
+        codec.set_max_size(u32::MAX);
+        let filter = ByteString::from("a".repeat(65_535));
+        let pkt = Packet::Subscribe {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            topic_filters: vec![(filter, QoS::AtMostOnce); 4097],
+        };
+        assert_eq!(
+            codec.encode(Encoded::Packet(pkt), &mut buf),
+            Err(EncodeError::OverMaxPacketSize)
+        );
+        assert!(buf.freeze().is_empty());
     }
 }

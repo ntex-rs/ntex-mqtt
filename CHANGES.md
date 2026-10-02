@@ -5,6 +5,8 @@
 * codec: Reject publish packets with a header longer than the packet, reject
   encoding a publish with a payload bigger than its payload size
 
+* codec: Fail encoding packets over the protocol size limit instead of panicking
+
 * Update to ntex-io 4.1, ntex-codec 2.0
 
 * Stop the dispatcher on clean peer eof while the service is not ready

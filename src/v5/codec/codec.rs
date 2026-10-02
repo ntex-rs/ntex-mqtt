@@ -316,7 +316,7 @@ impl Encoder for Codec {
 
         let max_out_size = self.max_out_size.get();
         let max_size = if max_out_size != 0 {
-            max_out_size
+            max_out_size.min(MAX_PACKET_SIZE)
         } else {
             MAX_PACKET_SIZE
         };
@@ -330,7 +330,7 @@ impl Encoder for Codec {
                     if content_size > max_size as usize {
                         Err(EncodeError::OverMaxPacketSize)
                     } else {
-                        pkt.encode(dst, content_size as u32)?; // safe: max_size <= u32 max value
+                        pkt.encode(dst, content_size as u32)?; // safe: max_size <= MAX_PACKET_SIZE
                         Ok(())
                     }
                 }
@@ -342,12 +342,12 @@ impl Encoder for Codec {
                 {
                     return Err(EncodeError::OverPublishSize);
                 }
-                let content_size = pkt.encoded_size(max_size) as u32;
-                if content_size > max_size {
+                let content_size = pkt.encoded_size(max_size);
+                if content_size > max_size as usize {
                     return Err(EncodeError::OverMaxPacketSize);
                 }
 
-                pkt.encode(dst, content_size)?; // safe: max_size <= u32 max value
+                pkt.encode(dst, content_size as u32)?; // safe: max_size <= MAX_PACKET_SIZE
 
                 let remaining = if let Some(buf) = buf {
                     let remaining = pkt.payload_size - buf.len() as u32;
@@ -520,5 +520,60 @@ mod tests {
             )
             .unwrap();
         assert!(buf.freeze().ends_with(b"ab"));
+    }
+
+    #[test]
+    fn test_encode_over_protocol_max_size() {
+        use ntex_bytes::ByteString;
+        use std::num::NonZeroU16;
+
+        use crate::v5::codec::{Subscribe, SubscriptionOptions};
+
+        let codec = Codec::new();
+        let pkt = Publish {
+            topic: ByteString::from_static("/test"),
+            payload_size: MAX_PACKET_SIZE - 8,
+            ..Default::default()
+        };
+        let mut buf = BytePages::default();
+
+        // remaining length is limited by the protocol, regardless of max size
+        for max_size in [0, u32::MAX] {
+            codec.set_max_outbound_size(max_size);
+            for payload_size in [MAX_PACKET_SIZE - 7, u32::MAX] {
+                let pkt = Publish {
+                    payload_size,
+                    ..pkt.clone()
+                };
+                assert_eq!(
+                    codec.encode(Encoded::Publish(pkt, None), &mut buf),
+                    Err(EncodeError::OverMaxPacketSize)
+                );
+                assert!(buf.freeze().is_empty());
+                assert_eq!(
+                    codec.encode(Encoded::PayloadChunk(Bytes::from_static(b"a")), &mut buf),
+                    Err(EncodeError::UnexpectedPayload)
+                );
+            }
+        }
+
+        codec.encode(Encoded::Publish(pkt, None), &mut buf).unwrap();
+        assert_eq!(&buf.freeze()[..], b"\x30\xff\xff\xff\x7f\x00\x05/test\x00");
+
+        // 4097 * (2 + 65535 + 1) bytes, the filter is shared
+        let codec = Codec::new();
+        codec.set_max_outbound_size(u32::MAX);
+        let filter = ByteString::from("a".repeat(65_535));
+        let pkt = Packet::Subscribe(Subscribe {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            id: None,
+            user_properties: Vec::new(),
+            topic_filters: vec![(filter, SubscriptionOptions::default()); 4097],
+        });
+        assert_eq!(
+            codec.encode(Encoded::Packet(pkt), &mut buf),
+            Err(EncodeError::OverMaxPacketSize)
+        );
+        assert!(buf.freeze().is_empty());
     }
 }
