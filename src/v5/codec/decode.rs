@@ -1,4 +1,4 @@
-use ntex_bytes::{ByteString, Bytes};
+use ntex_bytes::{Buf, ByteString, Bytes};
 
 use super::{UserProperty, packet, packet::Packet};
 use crate::{error::DecodeError, types::packet_type, utils::Decode};
@@ -6,6 +6,11 @@ use crate::{error::DecodeError, types::packet_type, utils::Decode};
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
         packet_type::PUBACK => Ok(Packet::PublishAck(packet::PublishAck::decode(&mut src)?)),
+        // PINGREQ and PINGRESP have no variable header and no payload
+        // (MQTT 5.0, 3.12.2 - 3.13.3)
+        packet_type::PINGREQ | packet_type::PINGRESP if src.has_remaining() => {
+            Err(DecodeError::InvalidLength)
+        }
         packet_type::PINGREQ => Ok(Packet::PingRequest),
         packet_type::PINGRESP => Ok(Packet::PingResponse),
         packet_type::SUBSCRIBE => Ok(Packet::Subscribe(packet::Subscribe::decode(&mut src)?)),
@@ -103,6 +108,38 @@ mod tests {
             "decoded packet does not match expectations.\nexpected: {res:?}\nactual: {decoded:?}\nencoding output for expected: {:X?}",
             tmp.freeze().as_ref()
         );
+    }
+
+    #[test]
+    fn test_decode_connect_flags() {
+        // will qos/retain without will flag
+        for flags in *b"\x08\x10\x18\x20" {
+            let mut buf = b"\x00\x04MQTT\x05\x00\x00\x3C\x00\x00\x0512345".to_vec();
+            buf[7] = flags;
+            assert_eq!(
+                Connect::decode(&mut Bytes::from(buf)),
+                Err(DecodeError::MalformedPacket),
+                "flags: {flags:#x}"
+            );
+        }
+        // will qos 3
+        assert_eq!(
+            Connect::decode(&mut Bytes::from_static(
+                b"\x00\x04MQTT\x05\x1C\x00\x3C\x00\x00\x0512345\x00\x00\x05topic\x00\x07message"
+            )),
+            Err(DecodeError::MalformedPacket),
+        );
+        // password without user name is allowed, MQTT 5.0, 3.1.2.9
+        assert!(matches!(
+            Connect::decode(&mut Bytes::from_static(
+                b"\x00\x04MQTT\x05\x40\x00\x3C\x00\x00\x0512345\x00\x04pass"
+            )),
+            Ok(Connect {
+                username: None,
+                password: Some(_),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -225,6 +262,67 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_null_char() {
+        // topic
+        assert_eq!(
+            Publish::decode(&mut Bytes::from_static(b"\x00\x03a\x00b\x00data"), 0x30, 4),
+            Err(DecodeError::MalformedPacket)
+        );
+        // user property
+        assert_eq!(
+            Publish::decode(
+                &mut Bytes::from_static(b"\x00\x03a/b\x06\x26\x00\x01\x00\x00\x00data"),
+                0x30,
+                4
+            ),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert!(
+            Publish::decode(
+                &mut Bytes::from_static(b"\x00\x03a/b\x06\x26\x00\x01k\x00\x00data"),
+                0x30,
+                4
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_decode_publish_empty_topic() {
+        // no topic alias
+        assert_eq!(
+            Publish::decode(&mut Bytes::from_static(b"\x00\x00\x00data"), 0x30, 4),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            Publish::decode(
+                &mut Bytes::from_static(b"\x00\x00\x00\x01\x00data"),
+                0x32,
+                4
+            ),
+            Err(DecodeError::MalformedPacket)
+        );
+        // topic alias
+        assert_eq!(
+            Publish::decode(
+                &mut Bytes::from_static(b"\x00\x00\x03\x23\x00\x01data"),
+                0x30,
+                4
+            ),
+            Ok(Publish {
+                topic: ByteString::new(),
+                packet_id: None,
+                payload_size: 4,
+                properties: PublishProperties {
+                    topic_alias: NonZeroU16::new(1),
+                    ..PublishProperties::default()
+                },
+                ..default_test_publish()
+            })
+        );
+    }
+
+    #[test]
     fn test_decode_publish_packets() {
         //assert_eq!(
         //    decode_publish_packet(b"\x00\x05topic\x12\x34"),
@@ -294,6 +392,50 @@ mod tests {
                 reason_string: None,
             }),
         );
+    }
+
+    #[test]
+    fn test_decode_empty_subscribe_packets() {
+        assert_eq!(
+            decode_packet(Bytes::from_static(b"\x12\x34\x00"), packet_type::SUBSCRIBE),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            decode_packet(
+                Bytes::from_static(b"\x12\x34\x00"),
+                packet_type::UNSUBSCRIBE
+            ),
+            Err(DecodeError::MalformedPacket)
+        );
+    }
+
+    #[test]
+    fn test_decode_subscribe_options() {
+        // all non-reserved subscription options bits
+        let Packet::Subscribe(sub) =
+            decode_packet(Bytes::from_static(b"\x12\x34\x00\x00\x04test\x2e"), 0x82).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            sub.topic_filters[0].1,
+            SubscriptionOptions {
+                qos: QoS::ExactlyOnce,
+                no_local: true,
+                retain_as_published: true,
+                retain_handling: RetainHandling::NoAtSubscribe,
+            }
+        );
+
+        // reserved bits of subscription options are set
+        for opts in [0b0100_0001, 0b1000_0001] {
+            let mut src = BytesMut::from(&b"\x12\x34\x00\x00\x04test"[..]);
+            src.extend_from_slice(&[opts]);
+            assert_eq!(
+                decode_packet(src.freeze(), 0x82),
+                Err(DecodeError::MalformedPacket)
+            );
+        }
     }
 
     #[test]
@@ -402,6 +544,25 @@ mod tests {
                 status: vec![],
             }),
         );
+    }
+
+    #[test]
+    fn test_decode_trailing_bytes() {
+        let cases: [(u8, &[u8]); 3] = [
+            (
+                packet_type::CONNECT,
+                b"\x00\x04MQTT\x05\x02\x00\x3C\x00\x00\x0512345\x00",
+            ),
+            (packet_type::PINGREQ, b"\x00"),
+            (packet_type::PINGRESP, b"\x00"),
+        ];
+        for (first_byte, src) in cases {
+            assert_eq!(
+                decode_packet(Bytes::copy_from_slice(src), first_byte),
+                Err(DecodeError::InvalidLength),
+                "packet type: {first_byte:#x}"
+            );
+        }
     }
 
     #[test]

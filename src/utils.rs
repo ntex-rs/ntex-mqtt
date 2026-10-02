@@ -115,7 +115,12 @@ impl Decode for Bytes {
 
 impl Decode for ByteString {
     fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        ByteString::try_from(Bytes::decode(src)?).map_err(|()| DecodeError::Utf8Error)
+        let bytes = Bytes::decode(src)?;
+        // strings must not include U+0000, [MQTT-1.5.3-2] (MQTT 3.1.1, 1.5.3),
+        // [MQTT-1.5.4-2] (MQTT 5.0, 1.5.4). 0x00 never occurs inside other
+        // utf-8 sequences, so checking raw bytes is enough
+        ensure!(!bytes.contains(&0), DecodeError::MalformedPacket);
+        ByteString::try_from(bytes).map_err(|()| DecodeError::Utf8Error)
     }
 }
 
@@ -274,6 +279,29 @@ impl Encode for &[u8] {
     }
 }
 
+/// Strings have a two byte length prefix, so they are limited to 65,535 bytes,
+/// (MQTT 3.1.1, 1.5.3), (MQTT 5.0, 1.5.4), and must not include the null character
+/// U+0000, [MQTT-1.5.3-2] (MQTT 3.1.1, 1.5.3), [MQTT-1.5.4-2] (MQTT 5.0, 1.5.4)
+pub(crate) fn is_valid_str(s: &str) -> bool {
+    is_valid_bin(s.as_bytes()) && !s.as_bytes().contains(&0)
+}
+
+/// Binary data has a two byte length prefix, so it is limited to 65,535 bytes,
+/// (MQTT 3.1.1, 3.1.3.3, 3.1.3.5), (MQTT 5.0, 1.5.6)
+pub(crate) fn is_valid_bin(b: &[u8]) -> bool {
+    u16::try_from(b.len()).is_ok()
+}
+
+/// Topic names must be at least one character long and must not contain
+/// wildcard characters, [MQTT-4.7.3-1], [MQTT-4.7.1-1] (MQTT 3.1.1, 4.7),
+/// [MQTT-4.7.3-1], [MQTT-4.7.0-1] (MQTT 5.0, 4.7), or the null character,
+/// and they are strings limited to 65,535 bytes (MQTT 3.1.1, 1.5.3), (MQTT 5.0, 1.5.4)
+pub(crate) fn is_valid_topic_name(topic: &str) -> bool {
+    !topic.is_empty()
+        && is_valid_bin(topic.as_bytes())
+        && !topic.bytes().any(|b| matches!(b, b'+' | b'#' | 0))
+}
+
 pub(crate) fn write_variable_length(len: u32, dst: &mut BytePages) {
     match len {
         0..=127 => dst.put_u8(len as u8),
@@ -302,6 +330,15 @@ pub(crate) fn write_variable_length(len: u32, dst: &mut BytePages) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_decode_string_null_char() {
+        let decode = |b: &'static [u8]| ByteString::decode(&mut Bytes::from_static(b));
+        assert_eq!(decode(b"\x00\x03a/b").unwrap(), "a/b");
+        assert_eq!(decode(b"\x00\x03a\x00b"), Err(DecodeError::MalformedPacket));
+        assert_eq!(decode(b"\x00\x01\x00"), Err(DecodeError::MalformedPacket));
+        assert_eq!(decode(b"\x00\x02\xc0\x80"), Err(DecodeError::Utf8Error));
+    }
 
     #[test]
     fn test_decode_variable_length() {

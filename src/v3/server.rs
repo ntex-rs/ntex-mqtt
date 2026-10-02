@@ -8,9 +8,9 @@ use ntex_service::pipeline::PipelineFactory;
 use ntex_service::{
     Ctx, Identity, IntoService, IntoServiceFactory, Service, ServiceFactory, Stack,
 };
-use ntex_util::{time::Seconds, time::timeout_checked};
+use ntex_util::{future::Either, time::Seconds, time::timeout_checked};
 
-use crate::error::{DispatcherError, MqttConnectError, MqttError, MqttProtocolError};
+use crate::error::{DecodeError, DispatcherError, MqttConnectError, MqttError, MqttProtocolError};
 use crate::{ConnectPipeline, MqttServiceConfig, control, control::Control, service};
 
 use super::connect::{Connect, ConnectAck};
@@ -284,17 +284,23 @@ where
         ));
 
         // read first packet
-        let packet = timeout_checked(cfg.connect_timeout, io.recv(&shared.codec))
+        let packet = match timeout_checked(cfg.connect_timeout, io.recv(&shared.codec))
             .await
             .map_err(|()| MqttError::Connect(MqttConnectError::Timeout))?
-            .map_err(|err| {
-                log::trace!("Error is received during mqtt connect handshake: {err:?}");
-                MqttError::Connect(MqttConnectError::from(err))
-            })?
-            .ok_or_else(|| {
+        {
+            Ok(Some(packet)) => packet,
+            Ok(None) => {
                 log::trace!("Server mqtt is disconnected during handshake");
-                MqttError::Connect(MqttConnectError::Disconnected(None))
-            })?;
+                return Err(MqttError::Connect(MqttConnectError::Disconnected(None)));
+            }
+            Err(err) => {
+                log::trace!("Error is received during mqtt connect handshake: {err:?}");
+                if let Either::Left(ref err) = err {
+                    reject_connect(&io, &shared.codec, err).await;
+                }
+                return Err(MqttError::Connect(MqttConnectError::from(err)));
+            }
+        };
 
         match packet {
             mqtt::Decoded::Packet(mqtt::Packet::Connect(connect), size) => {
@@ -355,6 +361,27 @@ where
             }
             mqtt::Decoded::PayloadChunk(..) => unreachable!(),
         }
+    }
+}
+
+/// Send CONNACK for a CONNECT packet rejected by the decoder, and close the connection
+pub(crate) async fn reject_connect(io: &IoBoxed, codec: &mqtt::Codec, err: &DecodeError) {
+    let return_code = match err {
+        // [MQTT-3.1.2-2] (MQTT 3.1.1, 3.1.2.2)
+        DecodeError::UnsupportedProtocolLevel => {
+            mqtt::ConnectAckReason::UnacceptableProtocolVersion
+        }
+        // [MQTT-3.1.3-8] (MQTT 3.1.1, 3.1.3.1)
+        DecodeError::InvalidClientId => mqtt::ConnectAckReason::IdentifierRejected,
+        _ => return,
+    };
+    let pkt = mqtt::Packet::ConnectAck(mqtt::ConnectAck {
+        session_present: false,
+        return_code,
+    });
+    log::trace!("Sending failed handshake ack: {pkt:#?}");
+    if io.encode(mqtt::Encoded::Packet(pkt), codec).is_ok() {
+        let _ = io.shutdown().await;
     }
 }
 

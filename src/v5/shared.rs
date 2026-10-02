@@ -36,6 +36,8 @@ pub struct MqttShared {
     encode_error: Cell<Option<error::EncodeError>>,
     streaming_waiter: Cell<Option<pool::Sender<()>>>,
     streaming_remaining: Cell<Option<num::NonZeroU32>>,
+    /// Packets encoded while a publish payload is incomplete
+    deferred: Cell<Option<BytePages>>,
     on_publish_ack: Cell<Option<Box<dyn Fn(codec::PublishAck, bool)>>>,
     pub(super) payload: Cell<Option<PlSender>>,
     pub(super) flags: Cell<Flags>,
@@ -93,6 +95,7 @@ impl MqttShared {
             encode_error: Cell::new(None),
             streaming_waiter: Cell::new(None),
             streaming_remaining: Cell::new(None),
+            deferred: Cell::new(None),
         }
     }
 
@@ -169,7 +172,7 @@ impl MqttShared {
             {
                 let _ = self
                     .io
-                    .encode(Encoded::Packet(Packet::Disconnect(pkt)), &self.codec);
+                    .encode(Encoded::Packet(Packet::Disconnect(pkt)), self);
             }
             self.io.close();
         }
@@ -362,15 +365,16 @@ impl MqttShared {
         }
     }
 
-    fn enable_streaming(&self, pkt: &Publish, payload: Option<&Bytes>) {
+    /// Remaining streaming payload size, it is applied only after the
+    /// publish packet is encoded successfully
+    fn streaming_size(pkt: &Publish, payload: Option<&Bytes>) -> Option<num::NonZeroU32> {
         let len = payload.map_or(0, Bytes::len);
-        self.streaming_remaining
-            .set(num::NonZeroU32::new(pkt.payload_size - len as u32));
+        num::NonZeroU32::new(pkt.payload_size - len as u32)
     }
 
+    /// Encodes a packet, it is written after the payload of a streaming publish
     pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), error::EncodeError> {
-        self.check_streaming()?;
-        self.io.encode(Encoded::Packet(pkt), &self.codec)
+        self.io.encode(Encoded::Packet(pkt), self)
     }
 
     pub(super) fn encode_publish(
@@ -379,8 +383,11 @@ impl MqttShared {
         payload: Option<Bytes>,
     ) -> Result<(), error::EncodeError> {
         self.check_streaming()?;
-        self.enable_streaming(&pkt, payload.as_ref());
-        self.io.encode(Encoded::Publish(pkt, payload), &self.codec)
+        let remaining = Self::streaming_size(&pkt, payload.as_ref());
+        self.io
+            .encode(Encoded::Publish(pkt, payload), &self.codec)?;
+        self.streaming_remaining.set(remaining);
+        Ok(())
     }
 
     pub(super) fn encode_publish_payload(
@@ -393,8 +400,7 @@ impl MqttShared {
                 self.force_close();
                 Err(error::EncodeError::OverPublishSize)
             } else {
-                self.io
-                    .encode(Encoded::PayloadChunk(payload), &self.codec)?;
+                self.io.encode(Encoded::PayloadChunk(payload), self)?;
                 self.streaming_remaining
                     .set(num::NonZeroU32::new(remaining.get() - len));
                 Ok(self.streaming_remaining.get().is_some())
@@ -520,7 +526,7 @@ impl MqttShared {
         payload: Option<Bytes>,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
         self.check_streaming()?;
-        self.enable_streaming(&pkt, payload.as_ref());
+        let remaining = Self::streaming_size(&pkt, payload.as_ref());
 
         let mut queues = self.queues.borrow_mut();
         if queues.inflight_ids.contains(&id) {
@@ -528,6 +534,7 @@ impl MqttShared {
         } else {
             match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
                 Ok(()) => {
+                    self.streaming_remaining.set(remaining);
                     let (tx, rx) = self.pool.queue.channel();
                     queues.inflight.push_back((id, Some(tx), ack));
                     queues.inflight_ids.insert(id);
@@ -546,7 +553,7 @@ impl MqttShared {
         payload: Option<Bytes>,
     ) -> Result<(), SendPacketError> {
         self.check_streaming()?;
-        self.enable_streaming(&pkt, payload.as_ref());
+        let remaining = Self::streaming_size(&pkt, payload.as_ref());
 
         let mut queues = self.queues.borrow_mut();
         if queues.inflight_ids.contains(&id) {
@@ -554,6 +561,7 @@ impl MqttShared {
         } else {
             match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
                 Ok(()) => {
+                    self.streaming_remaining.set(remaining);
                     queues.inflight.push_back((id, None, ack));
                     queues.inflight_ids.insert(id);
                     Ok(())
@@ -585,10 +593,10 @@ impl MqttShared {
             return Err(SendPacketError::UnexpectedRelease);
         };
 
-        match self.io.encode(
-            Encoded::Packet(codec::Packet::PublishRelease(pkt)),
-            &self.codec,
-        ) {
+        match self
+            .io
+            .encode(Encoded::Packet(codec::Packet::PublishRelease(pkt)), self)
+        {
             Ok(()) => Ok(rx),
             Err(e) => Err(SendPacketError::Encode(e)),
         }
@@ -599,9 +607,30 @@ impl Encoder for MqttShared {
     type Item = Encoded;
     type Error = error::EncodeError;
 
-    #[inline]
     fn encode(&self, item: Self::Item, dst: &mut BytePages) -> Result<(), Self::Error> {
-        self.codec.encode(item, dst)
+        match item {
+            // packets cannot be written in the middle of a publish payload,
+            // they are written after the payload is complete
+            Encoded::Packet(pkt) if self.codec.is_encoding_payload() => {
+                let mut buf = self
+                    .deferred
+                    .take()
+                    .unwrap_or_else(|| BytePages::new(self.io.cfg().write_page_size()));
+                let res = self.codec.encode_packet(pkt, &mut buf);
+                self.deferred.set(Some(buf));
+                res
+            }
+            Encoded::PayloadChunk(_) => {
+                self.codec.encode(item, dst)?;
+                if !self.codec.is_encoding_payload()
+                    && let Some(mut buf) = self.deferred.take()
+                {
+                    buf.move_to(dst);
+                }
+                Ok(())
+            }
+            _ => self.codec.encode(item, dst),
+        }
     }
 }
 

@@ -62,6 +62,12 @@ impl Publish {
             Some(NonZeroU16::decode(src)?) // packet id = 0 encountered
         };
         let properties = parse_publish_properties(src)?;
+        // topic name must be at least one character long, [MQTT-4.7.3-1] (MQTT 5.0, 4.7.3),
+        // unless a topic alias is used (MQTT 5.0, 3.3.2.3.4)
+        ensure!(
+            !topic.is_empty() || properties.topic_alias.is_some(),
+            DecodeError::MalformedPacket
+        );
 
         Ok(Self {
             qos,
@@ -167,11 +173,7 @@ impl encode::EncodeLtd for Publish {
         let start_len = buf.len();
 
         self.topic.encode(buf)?;
-        if self.qos == QoS::AtMostOnce {
-            if self.packet_id.is_some() {
-                return Err(EncodeError::MalformedPacket); // packet id must not be set
-            }
-        } else {
+        if self.qos != QoS::AtMostOnce {
             self.packet_id
                 .ok_or(EncodeError::PacketIdRequired)?
                 .encode(buf)?;

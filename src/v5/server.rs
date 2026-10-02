@@ -1,6 +1,8 @@
 #![allow(clippy::type_complexity)]
-use std::{cmp, fmt, marker::PhantomData, num::NonZero, rc::Rc};
+use std::{cell::Cell, cmp, fmt, marker::PhantomData, num::NonZero, rc::Rc};
 
+use ntex_bytes::BytesMut;
+use ntex_codec::Decoder;
 use ntex_error::{Failure, IntoFailure};
 use ntex_io::IoBoxed;
 use ntex_service::cfg::Configuration;
@@ -8,10 +10,11 @@ use ntex_service::pipeline::PipelineFactory;
 use ntex_service::{
     Ctx, Identity, IntoService, IntoServiceFactory, Service, ServiceFactory, Stack,
 };
-use ntex_util::{time::Seconds, time::timeout_checked};
+use ntex_util::{future::Either, time::Seconds, time::timeout_checked};
 
-use crate::error::{DispatcherError, MqttConnectError, MqttError, MqttProtocolError};
+use crate::error::{DecodeError, DispatcherError, MqttConnectError, MqttError, MqttProtocolError};
 use crate::{ConnectPipeline, MqttServiceConfig, control, control::Control, service};
+use crate::{types::MQTT_LEVEL_3, version::peek_connect_level};
 
 use super::codec::{self as mqtt, Decoded, Encoded, Packet};
 use super::connect::{Connect, ConnectAck};
@@ -255,20 +258,30 @@ where
         shared.set_topic_alias_max(cfg.max_topic_alias);
 
         // read first packet
-        let packet = timeout_checked(cfg.connect_timeout, io.recv(&shared.codec))
+        let connect_codec = ConnectCodec {
+            codec: &shared.codec,
+            level: Cell::new(None),
+        };
+        let packet = match timeout_checked(cfg.connect_timeout, io.recv(&connect_codec))
             .await
             .map_err(|()| MqttError::Connect(MqttConnectError::Timeout))?
-            .map_err(|err| {
+        {
+            Ok(Some(packet)) => packet,
+            Ok(None) => {
+                log::trace!("{}: Server mqtt is disconnected during Connect", io.tag());
+                return Err(MqttError::Connect(MqttConnectError::Disconnected(None)));
+            }
+            Err(err) => {
                 log::trace!(
                     "{}: Error is received during mqtt Connect: {err:?}",
                     io.tag()
                 );
-                MqttError::Connect(MqttConnectError::from(err))
-            })?
-            .ok_or_else(|| {
-                log::trace!("{}: Server mqtt is disconnected during Connect", io.tag());
-                MqttError::Connect(MqttConnectError::Disconnected(None))
-            })?;
+                if let Either::Left(ref err) = err {
+                    reject_connect(&io, &shared.codec, err, connect_codec.level.get()).await;
+                }
+                return Err(MqttError::Connect(MqttConnectError::from(err)));
+            }
+        };
 
         match packet {
             Decoded::Packet(Packet::Connect(connect), size) => {
@@ -353,6 +366,48 @@ where
                 )))
             }
             Decoded::PayloadChunk(..) => unreachable!(),
+        }
+    }
+}
+
+/// Decodes the CONNECT packet and keeps its protocol level
+struct ConnectCodec<'a> {
+    codec: &'a mqtt::Codec,
+    level: Cell<Option<u8>>,
+}
+
+impl Decoder for ConnectCodec<'_> {
+    type Item = Decoded;
+    type Error = DecodeError;
+
+    fn decode(&self, src: &mut BytesMut) -> Result<Option<Decoded>, DecodeError> {
+        if self.level.get().is_none() {
+            self.level.set(peek_connect_level(src).ok().flatten());
+        }
+        self.codec.decode(src)
+    }
+}
+
+/// Send CONNACK for a CONNECT packet with an unsupported protocol level,
+/// and close the connection
+///
+/// Server MAY send CONNACK 0x84 if the Protocol Version is not 5,
+/// [MQTT-3.1.2-2] (MQTT 5.0, 3.1.2.2). MQTT 3.1 and 3.1.1 clients cannot
+/// decode v5 CONNACK, they get v3 CONNACK 0x01, [MQTT-3.1.2-2] (MQTT 3.1.1, 3.1.2.2)
+async fn reject_connect(io: &IoBoxed, codec: &mqtt::Codec, err: &DecodeError, level: Option<u8>) {
+    if *err != DecodeError::UnsupportedProtocolLevel {
+        return;
+    }
+    if matches!(level, Some(3 | MQTT_LEVEL_3)) {
+        crate::v3::reject_connect(io, &crate::v3::codec::Codec::default(), err).await;
+    } else {
+        let pkt = Packet::ConnectAck(Box::new(mqtt::ConnectAck {
+            reason_code: mqtt::ConnectAckReason::UnsupportedProtocolVersion,
+            ..Default::default()
+        }));
+        log::trace!("Sending failed handshake ack: {pkt:#?}");
+        if io.encode(Encoded::Packet(pkt), codec).is_ok() {
+            let _ = io.shutdown().await;
         }
     }
 }

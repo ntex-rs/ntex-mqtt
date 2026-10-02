@@ -21,11 +21,18 @@ pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, De
         packet_type::SUBACK => decode_subscribe_ack_packet(&mut src),
         packet_type::UNSUBSCRIBE => decode_unsubscribe_packet(&mut src),
         packet_type::UNSUBACK => decode_ack(src, |packet_id| Packet::UnsubscribeAck { packet_id }),
-        packet_type::PINGREQ => Ok(Packet::PingRequest),
-        packet_type::PINGRESP => Ok(Packet::PingResponse),
-        packet_type::DISCONNECT => Ok(Packet::Disconnect),
+        packet_type::PINGREQ => decode_empty(&src, Packet::PingRequest),
+        packet_type::PINGRESP => decode_empty(&src, Packet::PingResponse),
+        packet_type::DISCONNECT => decode_empty(&src, Packet::Disconnect),
         _ => Err(DecodeError::UnsupportedPacketType),
     }
+}
+
+/// PINGREQ, PINGRESP and DISCONNECT have no variable header and no payload
+/// (MQTT 3.1.1, 3.12.2 - 3.14.3)
+fn decode_empty(src: &Bytes, pkt: Packet) -> Result<Packet, DecodeError> {
+    ensure!(src.is_empty(), DecodeError::InvalidLength);
+    Ok(pkt)
 }
 
 #[inline]
@@ -50,6 +57,19 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
 
     let flags = ConnectFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnectReservedFlagSet)?;
 
+    // Will QoS and Will Retain must be 0 if Will Flag is 0,
+    // [MQTT-3.1.2-11], [MQTT-3.1.2-13], [MQTT-3.1.2-15] (MQTT 3.1.1, 3.1.2.5 - 3.1.2.7)
+    ensure!(
+        flags.contains(ConnectFlags::WILL)
+            || !flags.intersects(ConnectFlags::WILL_QOS | ConnectFlags::WILL_RETAIN),
+        DecodeError::MalformedPacket
+    );
+    // Password Flag must be 0 if User Name Flag is 0, [MQTT-3.1.2-22] (MQTT 3.1.1, 3.1.2.9)
+    ensure!(
+        flags.contains(ConnectFlags::USERNAME) || !flags.contains(ConnectFlags::PASSWORD),
+        DecodeError::MalformedPacket
+    );
+
     let keep_alive = u16::decode(src)?;
     let client_id = ByteString::decode(src)?;
 
@@ -62,6 +82,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
         let topic = ByteString::decode(src)?;
         let message = Bytes::decode(src)?;
         Some(LastWill {
+            // Will QoS 3 is rejected, [MQTT-3.1.2-14] (MQTT 3.1.1, 3.1.2.6)
             qos: QoS::try_from((flags & ConnectFlags::WILL_QOS).bits() >> WILL_QOS_SHIFT)?,
             retain: flags.contains(ConnectFlags::WILL_RETAIN),
             topic,
@@ -80,6 +101,9 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     } else {
         None
     };
+    // payload contains only the fields selected by the flags, [MQTT-3.1.3-1] (MQTT 3.1.1, 3.1.3)
+    ensure!(!src.has_remaining(), DecodeError::InvalidLength);
+
     Ok(Connect {
         clean_session: flags.contains(ConnectFlags::CLEAN_START),
         keep_alive,
@@ -97,6 +121,9 @@ fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
         ConnectAckFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnAckReservedFlagSet)?;
 
     let return_code = src.get_u8().try_into()?;
+    // remaining length of CONNACK is 2 (MQTT 3.1.1, 3.2.1)
+    ensure!(!src.has_remaining(), DecodeError::InvalidLength);
+
     Ok(Packet::ConnectAck(ConnectAck {
         return_code,
         session_present: flags.contains(ConnectAckFlags::SESSION_PRESENT),
@@ -109,6 +136,8 @@ pub(super) fn decode_publish_packet(
     payload_size: u32,
 ) -> Result<Publish, DecodeError> {
     let topic = ByteString::decode(src)?;
+    // topic name must be at least one character long, [MQTT-4.7.3-1] (MQTT 3.1.1, 4.7.3)
+    ensure!(!topic.is_empty(), DecodeError::MalformedPacket);
     let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
     let packet_id = if qos == QoS::AtMostOnce {
         None
@@ -147,9 +176,13 @@ fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     while src.has_remaining() {
         let topic = ByteString::decode(src)?;
         ensure!(src.remaining() >= 1, DecodeError::InvalidLength);
-        let qos = (src.get_u8() & 0b0000_0011).try_into()?;
+        // [MQTT-3.8.3-4] reserved bits of requested QoS must be zero,
+        // QoS must be 0, 1 or 2 (3.1.1, 3.8.3.1)
+        let qos = src.get_u8().try_into()?;
         topic_filters.push((topic, qos));
     }
+    // [MQTT-3.8.3-3] at least one topic filter is required (3.1.1, 3.8.3)
+    ensure!(!topic_filters.is_empty(), DecodeError::MalformedPacket);
 
     Ok(Packet::Subscribe {
         packet_id,
@@ -176,6 +209,9 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     while src.remaining() > 0 {
         topic_filters.push(ByteString::decode(src)?);
     }
+    // [MQTT-3.10.3-2] at least one topic filter is required (3.1.1, 3.10.3)
+    ensure!(!topic_filters.is_empty(), DecodeError::MalformedPacket);
+
     Ok(Packet::Unsubscribe {
         packet_id,
         topic_filters,
@@ -209,6 +245,27 @@ mod tests {
 
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
+    }
+
+    #[test]
+    fn test_decode_connect_flags() {
+        // will qos/retain without will flag, password without user name
+        for flags in *b"\x08\x10\x18\x20\x40" {
+            let mut buf = b"\x00\x04MQTT\x04\x00\x00\x3C\x00\x0512345\x00\x04pass".to_vec();
+            buf[7] = flags;
+            assert_eq!(
+                decode_connect_packet(&mut Bytes::from(buf)),
+                Err(DecodeError::MalformedPacket),
+                "flags: {flags:#x}"
+            );
+        }
+        // will qos 3
+        assert_eq!(
+            decode_connect_packet(&mut Bytes::from_static(
+                b"\x00\x04MQTT\x04\x1C\x00\x3C\x00\x0512345\x00\x05topic\x00\x07message"
+            )),
+            Err(DecodeError::MalformedPacket),
+        );
     }
 
     #[test]
@@ -296,6 +353,30 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_publish_empty_topic() {
+        assert_eq!(
+            decode_publish_packet(&mut Bytes::from_static(b"\x00\x00data"), 0x30, 4),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            decode_publish_packet(&mut Bytes::from_static(b"\x00\x00\x00\x01data"), 0x32, 4),
+            Err(DecodeError::MalformedPacket)
+        );
+    }
+
+    #[test]
+    fn test_decode_null_char() {
+        assert_eq!(
+            decode_publish_packet(&mut Bytes::from_static(b"\x00\x03a\x00bdata"), 0x30, 4),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            decode_packet(Bytes::from_static(b"\x00\x01\x00\x03a\x00b\x00"), 0x82),
+            Err(DecodeError::MalformedPacket)
+        );
+    }
+
+    #[test]
     fn test_decode_publish_packets() {
         //assert_eq!(
         //    decode_publish_packet(b"\x00\x05topic\x12\x34"),
@@ -354,6 +435,18 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_empty_subscribe_packets() {
+        assert_eq!(
+            decode_packet(Bytes::from_static(b"\x12\x34"), packet_type::SUBSCRIBE),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            decode_packet(Bytes::from_static(b"\x12\x34"), packet_type::UNSUBSCRIBE),
+            Err(DecodeError::MalformedPacket)
+        );
+    }
+
+    #[test]
     fn test_decode_subscribe_packets() {
         let p = Packet::Subscribe {
             packet_id: packet_id(0x1234),
@@ -376,6 +469,16 @@ mod tests {
             Ok(p.clone())
         );
         assert_decode_packet!(b"\x82\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02", p);
+
+        // reserved bits of requested QoS are set, or QoS is 3
+        for opts in [0b0000_0101, 0b1000_0001, 0b0100_0000, 0b0000_0011] {
+            let mut src = BytesMut::from(&b"\x12\x34\x00\x04test"[..]);
+            src.extend_from_slice(&[opts]);
+            assert_eq!(
+                decode_subscribe_packet(&mut src.freeze()),
+                Err(DecodeError::MalformedPacket)
+            );
+        }
 
         let p = Packet::SubscribeAck {
             packet_id: packet_id(0x1234),
@@ -414,6 +517,27 @@ mod tests {
                 packet_id: packet_id(0x4321)
             }
         );
+    }
+
+    #[test]
+    fn test_decode_trailing_bytes() {
+        let cases: [(u8, &[u8]); 5] = [
+            (
+                packet_type::CONNECT,
+                b"\x00\x04MQTT\x04\x02\x00\x3C\x00\x0512345\x00",
+            ),
+            (packet_type::CONNACK, b"\x00\x00\x00"),
+            (packet_type::PINGREQ, b"\x00"),
+            (packet_type::PINGRESP, b"\x00"),
+            (packet_type::DISCONNECT, b"\x00"),
+        ];
+        for (first_byte, src) in cases {
+            assert_eq!(
+                decode_packet(Bytes::copy_from_slice(src), first_byte),
+                Err(DecodeError::InvalidLength),
+                "packet type: {first_byte:#x}"
+            );
+        }
     }
 
     #[test]

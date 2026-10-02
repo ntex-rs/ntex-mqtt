@@ -23,3 +23,5 @@ pub use self::sink::{MqttSink, PublishBuilder, SubscribeBuilder, UnsubscribeBuil
 pub use crate::error::{self, MqttError};
 pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;
+
+pub(crate) use self::server::reject_connect;

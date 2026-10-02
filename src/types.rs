@@ -6,6 +6,10 @@ pub(crate) const WILL_QOS_SHIFT: u8 = 3;
 /// Max possible packet size
 pub(crate) const MAX_PACKET_SIZE: u32 = 0xF_FF_FF_FF;
 
+/// Max read buffer space reserved ahead for a non-publish packet,
+/// larger packets grow the buffer as data arrives
+pub(crate) const MAX_FRAME_RESERVE: usize = 8192;
+
 prim_enum! {
     /// Quality of Service
     #[derive(serde::Serialize, serde::Deserialize, PartialOrd, Ord, Hash)]

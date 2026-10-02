@@ -4,11 +4,11 @@ use ntex_bytes::{Buf, BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 use crate::error::{DecodeError, EncodeError};
-use crate::types::{FixedHeader, MAX_PACKET_SIZE, packet_type};
+use crate::types::{FixedHeader, MAX_FRAME_RESERVE, MAX_PACKET_SIZE, packet_type};
 use crate::utils::decode_variable_length;
 
 use super::{Decoded, Encoded};
-use super::{Packet, decode::decode_packet, encode::EncodeLtd, packet::Publish};
+use super::{Packet, decode::decode_packet, encode, encode::EncodeLtd, packet::Publish};
 
 pub struct Codec {
     state: Cell<DecodeState>,
@@ -122,6 +122,67 @@ impl Codec {
     pub(crate) fn is_payload_pending(&self) -> bool {
         matches!(self.state.get(), DecodeState::PublishPayload(_))
     }
+
+    /// Returns `true` while the payload of an encoded publish is not complete.
+    pub(crate) fn is_encoding_payload(&self) -> bool {
+        self.encoding_payload.get().is_some()
+    }
+
+    fn max_out_size(&self) -> u32 {
+        match self.max_out_size.get() {
+            0 => MAX_PACKET_SIZE,
+            size => size.min(MAX_PACKET_SIZE),
+        }
+    }
+
+    /// Encodes a packet, an incomplete publish payload is not checked.
+    pub(crate) fn encode_packet(
+        &self,
+        mut pkt: Packet,
+        dst: &mut BytePages,
+    ) -> Result<(), EncodeError> {
+        // handle [MQTT 3.1.2.11.7]
+        if self.flags.get().contains(CodecFlags::NO_PROBLEM_INFO) {
+            match pkt {
+                Packet::PublishAck(ref mut pkt) | Packet::PublishReceived(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::PublishRelease(ref mut pkt) | Packet::PublishComplete(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::Subscribe(ref mut pkt) => {
+                    pkt.user_properties.clear();
+                }
+                Packet::SubscribeAck(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::Unsubscribe(ref mut pkt) => {
+                    pkt.user_properties.clear();
+                }
+                Packet::UnsubscribeAck(ref mut pkt) => {
+                    pkt.properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                Packet::Auth(ref mut pkt) => {
+                    pkt.user_properties.clear();
+                    let _ = pkt.reason_string.take();
+                }
+                _ => (),
+            }
+        }
+
+        encode::validate(&pkt)?;
+        let max_size = self.max_out_size();
+        let content_size = pkt.encoded_size(max_size);
+        if content_size > max_size as usize {
+            Err(EncodeError::OverMaxPacketSize)
+        } else {
+            pkt.encode(dst, content_size as u32) // safe: max_size <= MAX_PACKET_SIZE
+        }
+    }
 }
 
 impl Default for Codec {
@@ -170,11 +231,12 @@ impl Decoder for Codec {
                                     remaining_length,
                                 }));
 
-                                // todo: validate remaining_length against max frame size config
                                 let remaining_length = remaining_length as usize;
                                 if src.len() < remaining_length {
-                                    // todo: subtract?
-                                    src.reserve(remaining_length); // extend receiving buffer to fit the whole frame -- todo: too eager?
+                                    src.reserve(min(
+                                        remaining_length - src.len(),
+                                        MAX_FRAME_RESERVE,
+                                    ));
                                     return Ok(None);
                                 }
                             }
@@ -186,6 +248,9 @@ impl Decoder for Codec {
                 }
                 DecodeState::PublishHeader(fixed) => {
                     if let Some(len) = Publish::packet_header_size(src, fixed.first_byte)? {
+                        if len > fixed.remaining_length {
+                            return Err(DecodeError::InvalidLength);
+                        }
                         self.state.set(DecodeState::PublishProperties(len, fixed));
                     } else {
                         return Ok(None);
@@ -273,72 +338,35 @@ impl Encoder for Codec {
     type Item = Encoded;
     type Error = EncodeError;
 
-    fn encode(&self, mut item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
-        // handle [MQTT 3.1.2.11.7]
-        if self.flags.get().contains(CodecFlags::NO_PROBLEM_INFO) {
-            match item {
-                Encoded::Packet(
-                    Packet::PublishAck(ref mut pkt) | Packet::PublishReceived(ref mut pkt),
-                ) => {
-                    pkt.properties.clear();
-                    let _ = pkt.reason_string.take();
-                }
-                Encoded::Packet(
-                    Packet::PublishRelease(ref mut pkt) | Packet::PublishComplete(ref mut pkt),
-                ) => {
-                    pkt.properties.clear();
-                    let _ = pkt.reason_string.take();
-                }
-                Encoded::Packet(Packet::Subscribe(ref mut pkt)) => {
-                    pkt.user_properties.clear();
-                }
-                Encoded::Packet(Packet::SubscribeAck(ref mut pkt)) => {
-                    pkt.properties.clear();
-                    let _ = pkt.reason_string.take();
-                }
-                Encoded::Packet(Packet::Unsubscribe(ref mut pkt)) => {
-                    pkt.user_properties.clear();
-                }
-                Encoded::Packet(Packet::UnsubscribeAck(ref mut pkt)) => {
-                    pkt.properties.clear();
-                    let _ = pkt.reason_string.take();
-                }
-                Encoded::Packet(Packet::Auth(ref mut pkt)) => {
-                    pkt.user_properties.clear();
-                    let _ = pkt.reason_string.take();
-                }
-                _ => (),
-            }
-        }
-
-        let max_out_size = self.max_out_size.get();
-        let max_size = if max_out_size != 0 {
-            max_out_size
-        } else {
-            MAX_PACKET_SIZE
-        };
+    fn encode(&self, item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
         match item {
             Encoded::Packet(pkt) => {
                 if self.encoding_payload.get().is_some() {
                     log::trace!("Expect payload, received {pkt:?}");
                     Err(EncodeError::ExpectPayload)
                 } else {
-                    let content_size = pkt.encoded_size(max_size);
-                    if content_size > max_size as usize {
-                        Err(EncodeError::OverMaxPacketSize)
-                    } else {
-                        pkt.encode(dst, content_size as u32)?; // safe: max_size <= u32 max value
-                        Ok(())
-                    }
+                    self.encode_packet(pkt, dst)
                 }
             }
             Encoded::Publish(pkt, buf) => {
-                let content_size = pkt.encoded_size(max_size) as u32;
-                if content_size > max_size {
+                if self.encoding_payload.get().is_some() {
+                    log::trace!("Expect payload, received {pkt:?}");
+                    return Err(EncodeError::ExpectPayload);
+                }
+                if buf
+                    .as_ref()
+                    .is_some_and(|buf| buf.len() > pkt.payload_size as usize)
+                {
+                    return Err(EncodeError::OverPublishSize);
+                }
+                encode::validate_publish(&pkt)?;
+                let max_size = self.max_out_size();
+                let content_size = pkt.encoded_size(max_size);
+                if content_size > max_size as usize {
                     return Err(EncodeError::OverMaxPacketSize);
                 }
 
-                pkt.encode(dst, content_size)?; // safe: max_size <= u32 max value
+                pkt.encode(dst, content_size as u32)?; // safe: max_size <= MAX_PACKET_SIZE
 
                 let remaining = if let Some(buf) = buf {
                     let remaining = pkt.payload_size - buf.len() as u32;
@@ -397,6 +425,29 @@ impl fmt::Debug for Codec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ntex_bytes::ByteString;
+    use std::num::NonZeroU16;
+
+    use crate::v5::codec::{
+        Auth, Connect, ConnectAck, Disconnect, LastWill, PublishAck, PublishAck2, QoS, Subscribe,
+        SubscribeAck, SubscribeAckReason, SubscriptionOptions, Unsubscribe, UnsubscribeAck,
+        UnsubscribeAckReason,
+    };
+
+    fn assert_rejected(codec: &Codec, item: Encoded) {
+        let mut buf = BytePages::default();
+        assert_eq!(
+            codec.encode(item, &mut buf),
+            Err(EncodeError::MalformedPacket)
+        );
+        assert!(buf.freeze().is_empty(), "nothing is written");
+    }
+
+    fn assert_encoded(codec: &Codec, item: Encoded) {
+        let mut buf = BytePages::default();
+        codec.encode(item, &mut buf).unwrap();
+        assert!(!buf.freeze().is_empty());
+    }
 
     #[test]
     fn test_max_size() {
@@ -454,5 +505,672 @@ mod tests {
             Some(Decoded::PayloadChunk(Bytes::from(vec![b'a'; 10]), true))
         );
         assert!(!codec.is_payload_pending());
+    }
+
+    #[test]
+    fn test_publish_header_over_remaining_length() {
+        // topic "abc" and properties length need 6 bytes, packet declares 5
+        let codec = Codec::new();
+        let mut src = BytesMut::from(&b"\x30\x05\x00\x03abc\x00"[..]);
+        assert_eq!(
+            codec.decode(&mut src).err(),
+            Some(DecodeError::InvalidLength)
+        );
+
+        // header without payload
+        let codec = Codec::new();
+        let mut src = BytesMut::from(&b"\x30\x06\x00\x03abc\x00"[..]);
+        let Some(Decoded::Publish(pkt, payload, 6)) = codec.decode(&mut src).unwrap() else {
+            panic!()
+        };
+        assert_eq!(pkt.topic, "abc");
+        assert_eq!(pkt.payload_size, 0);
+        assert!(payload.is_empty());
+        assert!(!codec.is_payload_pending());
+    }
+
+    #[test]
+    fn test_encode_payload_over_publish_size() {
+        use ntex_bytes::ByteString;
+
+        let codec = Codec::new();
+        let pkt = Publish {
+            topic: ByteString::from_static("/test"),
+            payload_size: 2,
+            ..Default::default()
+        };
+        let mut buf = BytePages::default();
+        assert_eq!(
+            codec.encode(
+                Encoded::Publish(pkt.clone(), Some(Bytes::from_static(b"abc"))),
+                &mut buf
+            ),
+            Err(EncodeError::OverPublishSize)
+        );
+        assert!(buf.freeze().is_empty());
+
+        // no payload is expected after the failed publish
+        assert_eq!(
+            codec.encode(Encoded::PayloadChunk(Bytes::from_static(b"a")), &mut buf),
+            Err(EncodeError::UnexpectedPayload)
+        );
+
+        codec
+            .encode(
+                Encoded::Publish(pkt, Some(Bytes::from_static(b"ab"))),
+                &mut buf,
+            )
+            .unwrap();
+        assert!(buf.freeze().ends_with(b"ab"));
+    }
+
+    #[test]
+    fn test_encode_over_protocol_max_size() {
+        use ntex_bytes::ByteString;
+        use std::num::NonZeroU16;
+
+        use crate::v5::codec::{Subscribe, SubscriptionOptions};
+
+        let codec = Codec::new();
+        let pkt = Publish {
+            topic: ByteString::from_static("/test"),
+            payload_size: MAX_PACKET_SIZE - 8,
+            ..Default::default()
+        };
+        let mut buf = BytePages::default();
+
+        // remaining length is limited by the protocol, regardless of max size
+        for max_size in [0, u32::MAX] {
+            codec.set_max_outbound_size(max_size);
+            for payload_size in [MAX_PACKET_SIZE - 7, u32::MAX] {
+                let pkt = Publish {
+                    payload_size,
+                    ..pkt.clone()
+                };
+                assert_eq!(
+                    codec.encode(Encoded::Publish(pkt, None), &mut buf),
+                    Err(EncodeError::OverMaxPacketSize)
+                );
+                assert!(buf.freeze().is_empty());
+                assert_eq!(
+                    codec.encode(Encoded::PayloadChunk(Bytes::from_static(b"a")), &mut buf),
+                    Err(EncodeError::UnexpectedPayload)
+                );
+            }
+        }
+
+        codec.encode(Encoded::Publish(pkt, None), &mut buf).unwrap();
+        assert_eq!(&buf.freeze()[..], b"\x30\xff\xff\xff\x7f\x00\x05/test\x00");
+
+        // 4097 * (2 + 65535 + 1) bytes, the filter is shared
+        let codec = Codec::new();
+        codec.set_max_outbound_size(u32::MAX);
+        let filter = ByteString::from("a".repeat(65_535));
+        let pkt = Packet::Subscribe(Subscribe {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            id: None,
+            user_properties: Vec::new(),
+            topic_filters: vec![(filter, SubscriptionOptions::default()); 4097],
+        });
+        assert_eq!(
+            codec.encode(Encoded::Packet(pkt), &mut buf),
+            Err(EncodeError::OverMaxPacketSize)
+        );
+        assert!(buf.freeze().is_empty());
+    }
+
+    #[test]
+    fn test_encode_expect_payload() {
+        use ntex_bytes::ByteString;
+
+        let codec = Codec::new();
+        let pkt = Publish {
+            topic: ByteString::from_static("/test"),
+            payload_size: 4,
+            ..Default::default()
+        };
+        let mut buf = BytePages::default();
+        codec
+            .encode(
+                Encoded::Publish(pkt.clone(), Some(Bytes::from_static(b"ab"))),
+                &mut buf,
+            )
+            .unwrap();
+        assert_eq!(&buf.freeze()[..], b"\x30\x0c\x00\x05/test\x00ab");
+
+        // nothing is written until the payload is complete
+        assert_eq!(
+            codec.encode(Encoded::Packet(Packet::PingRequest), &mut buf),
+            Err(EncodeError::ExpectPayload)
+        );
+        assert_eq!(
+            codec.encode(Encoded::Publish(pkt, None), &mut buf),
+            Err(EncodeError::ExpectPayload)
+        );
+        assert!(buf.freeze().is_empty());
+
+        codec
+            .encode(Encoded::PayloadChunk(Bytes::from_static(b"cd")), &mut buf)
+            .unwrap();
+        codec
+            .encode(Encoded::Packet(Packet::PingRequest), &mut buf)
+            .unwrap();
+        assert_eq!(&buf.freeze()[..], b"cd\xc0\x00");
+    }
+
+    #[test]
+    fn test_encode_sub_id_range() {
+        use std::num::NonZeroU32;
+
+        let codec = Codec::new();
+        let max = NonZeroU32::new(268_435_455).unwrap();
+        let over = NonZeroU32::new(268_435_456).unwrap();
+        let encode = |item| {
+            let mut buf = BytePages::default();
+            codec.encode(item, &mut buf).unwrap();
+            buf.freeze()
+        };
+
+        // [MQTT 5.0, 3.8.2.1.2] 1 to 268,435,455
+        let subscribe = |id| {
+            Encoded::Packet(Packet::Subscribe(Subscribe {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                id: Some(id),
+                user_properties: Vec::new(),
+                topic_filters: vec![(ByteString::from_static("a"), SubscriptionOptions::default())],
+            }))
+        };
+        assert_rejected(&codec, subscribe(over));
+        assert_rejected(&codec, subscribe(NonZeroU32::MAX));
+        assert_eq!(
+            &encode(subscribe(max))[..],
+            b"\x82\x0c\x00\x01\x05\x0b\xff\xff\xff\x7f\x00\x01a\x00"
+        );
+
+        // [MQTT 5.0, 3.3.2.3.8] 1 to 268,435,455
+        let publish = |id| {
+            let mut pkt = Publish {
+                topic: ByteString::from_static("a"),
+                ..Default::default()
+            };
+            pkt.properties.subscription_ids = vec![NonZeroU32::MIN, id];
+            Encoded::Publish(pkt, None)
+        };
+        assert_rejected(&codec, publish(over));
+        assert_eq!(
+            &encode(publish(max))[..],
+            b"\x30\x0b\x00\x01a\x07\x0b\x01\x0b\xff\xff\xff\x7f"
+        );
+    }
+
+    #[test]
+    fn test_no_problem_info() {
+        let ack = || {
+            Encoded::Packet(Packet::PublishAck(PublishAck {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                reason_code: crate::v5::codec::PublishAckReason::Success,
+                properties: vec![("k".into(), "v".into())],
+                reason_string: Some("reason".into()),
+            }))
+        };
+        let encode = |codec: &Codec, item| {
+            let mut buf = BytePages::default();
+            codec.encode(item, &mut buf).unwrap();
+            buf.freeze()
+        };
+
+        let codec = Codec::new();
+        let connect = Connect {
+            client_id: "user".into(),
+            request_problem_info: false,
+            ..Default::default()
+        };
+        let mut buf =
+            BytesMut::from(&encode(&Codec::new(), Packet::Connect(Box::new(connect)).into())[..]);
+        codec.decode(&mut buf).unwrap().unwrap();
+
+        // [MQTT-3.1.2-29] no reason string or user properties
+        assert_eq!(&encode(&codec, ack())[..], b"\x40\x04\x00\x01\x00\x00");
+        assert!(encode(&Codec::new(), ack()).len() > 6);
+    }
+
+    #[test]
+    fn test_frame_reserve() {
+        let codec = Codec::new();
+
+        // header of max size subscribe packet
+        let mut src = BytesMut::from(&b"\x82\xff\xff\xff\x7f"[..]);
+        assert_eq!(codec.decode(&mut src), Ok(None));
+        assert!(src.is_empty());
+        assert!(src.capacity() >= MAX_FRAME_RESERVE);
+        assert!(src.capacity() < MAX_FRAME_RESERVE * 4);
+
+        // small frames reserve the rest of the frame
+        let codec = Codec::new();
+        let mut src = BytesMut::from(&b"\x82\xe8\x07\x00\x01"[..]);
+        assert_eq!(codec.decode(&mut src), Ok(None));
+        assert_eq!(src.len(), 2);
+        assert!(src.capacity() >= 1000);
+        assert!(src.capacity() < MAX_FRAME_RESERVE);
+    }
+
+    #[test]
+    fn test_encode_publish_sender_rules() {
+        let codec = Codec::new();
+        let id = NonZeroU16::new(1);
+        let publish = Publish {
+            topic: ByteString::from_static("a/b"),
+            ..Default::default()
+        };
+        let invalid = [
+            Publish {
+                topic: ByteString::new(),
+                ..publish.clone()
+            },
+            Publish {
+                topic: ByteString::from_static("a/+"),
+                ..publish.clone()
+            },
+            Publish {
+                topic: ByteString::from_static("a/#"),
+                ..publish.clone()
+            },
+            Publish {
+                dup: true,
+                ..publish.clone()
+            },
+            Publish {
+                packet_id: id,
+                ..publish.clone()
+            },
+        ];
+        for pkt in invalid {
+            assert_rejected(&codec, Encoded::Publish(pkt, None));
+        }
+
+        assert_encoded(&codec, Encoded::Publish(publish.clone(), None));
+        let pkt = Publish {
+            dup: true,
+            qos: QoS::AtLeastOnce,
+            packet_id: id,
+            ..publish.clone()
+        };
+        assert_encoded(&codec, Encoded::Publish(pkt, None));
+
+        // empty topic is allowed with a topic alias
+        let mut pkt = Publish {
+            topic: ByteString::new(),
+            ..publish
+        };
+        pkt.properties.topic_alias = id;
+        assert_encoded(&codec, Encoded::Publish(pkt.clone(), None));
+        pkt.topic = ByteString::from_static("a/+");
+        assert_rejected(&codec, Encoded::Publish(pkt, None));
+    }
+
+    #[test]
+    fn test_encode_packet_sender_rules() {
+        let codec = Codec::new();
+        let packet_id = NonZeroU16::new(1).unwrap();
+        let connect = Connect {
+            client_id: ByteString::from_static("id"),
+            ..Connect::default()
+        };
+        let will = |topic| LastWill {
+            qos: QoS::AtMostOnce,
+            retain: false,
+            topic: ByteString::from_static(topic),
+            message: Bytes::new(),
+            will_delay_interval_sec: None,
+            correlation_data: None,
+            message_expiry_interval: None,
+            content_type: None,
+            user_properties: Vec::new(),
+            is_utf8_payload: None,
+            response_topic: None,
+        };
+        let opts = SubscriptionOptions::default();
+        let subscribe = |topic_filters| Subscribe {
+            packet_id,
+            id: None,
+            user_properties: Vec::new(),
+            topic_filters,
+        };
+        let unsubscribe = |topic_filters| Unsubscribe {
+            packet_id,
+            user_properties: Vec::new(),
+            topic_filters,
+        };
+        let invalid = [
+            Packet::Connect(Box::new(Connect {
+                last_will: Some(will("")),
+                ..connect.clone()
+            })),
+            Packet::Connect(Box::new(Connect {
+                last_will: Some(will("w/#")),
+                ..connect.clone()
+            })),
+            Packet::Subscribe(subscribe(vec![])),
+            Packet::Subscribe(subscribe(vec![
+                (ByteString::from_static("a"), opts),
+                (ByteString::new(), opts),
+            ])),
+            Packet::Unsubscribe(unsubscribe(vec![])),
+            Packet::Unsubscribe(unsubscribe(vec![
+                ByteString::from_static("a"),
+                ByteString::new(),
+            ])),
+        ];
+        for pkt in invalid {
+            assert_rejected(&codec, Encoded::Packet(pkt));
+        }
+
+        let valid = [
+            // password without username and empty client id are allowed in v5
+            Packet::Connect(Box::new(Connect {
+                client_id: ByteString::new(),
+                password: Some(Bytes::from_static(b"pwd")),
+                last_will: Some(will("w/t")),
+                ..connect
+            })),
+            Packet::Subscribe(subscribe(vec![
+                (ByteString::from_static("a/+"), opts),
+                (ByteString::from_static("#"), opts),
+            ])),
+            Packet::Unsubscribe(unsubscribe(vec![ByteString::from_static("a/#")])),
+        ];
+        for pkt in valid {
+            assert_encoded(&codec, Encoded::Packet(pkt));
+        }
+    }
+
+    /// Strings that must be rejected: one with the null character U+0000,
+    /// [MQTT-1.5.4-2], and one over 65,535 bytes (MQTT 5.0, 1.5.4)
+    fn invalid_strs() -> [ByteString; 2] {
+        [
+            ByteString::from_static("a\0b"),
+            ByteString::from("a".repeat(65_536)),
+        ]
+    }
+
+    fn props(key: ByteString) -> Vec<(ByteString, ByteString)> {
+        vec![(key, ByteString::from_static("v"))]
+    }
+
+    /// `pkt` is encoded, each setter puts an invalid string into one string field
+    fn assert_str_rejected<T: Clone>(
+        pkt: &T,
+        encoded: fn(T) -> Encoded,
+        setters: &[fn(&mut T, ByteString)],
+    ) {
+        let codec = Codec::new();
+        assert_encoded(&codec, encoded(pkt.clone()));
+        for set in setters {
+            for s in invalid_strs() {
+                let mut pkt = pkt.clone();
+                set(&mut pkt, s);
+                assert_rejected(&codec, encoded(pkt));
+            }
+            let mut pkt = pkt.clone();
+            set(&mut pkt, ByteString::from("a".repeat(65_535)));
+            assert_encoded(&codec, encoded(pkt));
+        }
+    }
+
+    fn will_connect() -> Connect {
+        Connect {
+            client_id: ByteString::from_static("id"),
+            last_will: Some(LastWill {
+                qos: QoS::AtMostOnce,
+                retain: false,
+                topic: ByteString::from_static("w"),
+                message: Bytes::new(),
+                will_delay_interval_sec: None,
+                correlation_data: None,
+                message_expiry_interval: None,
+                content_type: None,
+                user_properties: Vec::new(),
+                is_utf8_payload: None,
+                response_topic: None,
+            }),
+            ..Connect::default()
+        }
+    }
+
+    #[test]
+    fn test_encode_invalid_str_connect() {
+        let connect = will_connect();
+        assert_str_rejected(
+            &connect,
+            |p| Encoded::Packet(Packet::Connect(Box::new(p))),
+            &[
+                |p, s| p.client_id = s,
+                |p, s| p.username = Some(s),
+                |p, s| p.auth_method = Some(s),
+                |p, s| p.user_properties = props(s),
+                |p, s| p.user_properties = vec![(ByteString::from_static("k"), s)],
+                |p, s| p.last_will.as_mut().unwrap().topic = s,
+                |p, s| p.last_will.as_mut().unwrap().content_type = Some(s),
+                |p, s| p.last_will.as_mut().unwrap().response_topic = Some(s),
+                |p, s| p.last_will.as_mut().unwrap().user_properties = props(s),
+            ],
+        );
+        assert_str_rejected(
+            &ConnectAck::default(),
+            |p| Encoded::Packet(Packet::ConnectAck(Box::new(p))),
+            &[
+                |p, s| p.assigned_client_id = Some(s),
+                |p, s| p.response_info = Some(s),
+                |p, s| p.server_reference = Some(s),
+                |p, s| p.auth_method = Some(s),
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.user_properties = props(s),
+            ],
+        );
+        assert_str_rejected(
+            &Publish {
+                topic: ByteString::from_static("a/b"),
+                ..Publish::default()
+            },
+            |p| Encoded::Publish(p, None),
+            &[
+                |p, s| p.topic = s,
+                |p, s| p.properties.content_type = Some(s),
+                |p, s| p.properties.response_topic = Some(s),
+                |p, s| p.properties.user_properties = props(s),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_encode_invalid_str_packets() {
+        let packet_id = NonZeroU16::new(1).unwrap();
+        assert_str_rejected(
+            &PublishAck::default(),
+            |p| Encoded::Packet(Packet::PublishReceived(p)),
+            &[
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.properties = props(s),
+            ],
+        );
+        assert_str_rejected(
+            &PublishAck2::default(),
+            |p| Encoded::Packet(Packet::PublishRelease(p)),
+            &[
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.properties = props(s),
+            ],
+        );
+        assert_str_rejected(
+            &Subscribe {
+                packet_id,
+                id: None,
+                user_properties: Vec::new(),
+                topic_filters: vec![(ByteString::from_static("a"), SubscriptionOptions::default())],
+            },
+            |p| Encoded::Packet(Packet::Subscribe(p)),
+            &[
+                |p, s| p.topic_filters[0].0 = s,
+                |p, s| p.user_properties = props(s),
+            ],
+        );
+        assert_str_rejected(
+            &SubscribeAck {
+                packet_id,
+                properties: Vec::new(),
+                reason_string: None,
+                status: vec![SubscribeAckReason::GrantedQos0],
+            },
+            |p| Encoded::Packet(Packet::SubscribeAck(p)),
+            &[
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.properties = props(s),
+            ],
+        );
+        assert_str_rejected(
+            &Unsubscribe {
+                packet_id,
+                user_properties: Vec::new(),
+                topic_filters: vec![ByteString::from_static("a")],
+            },
+            |p| Encoded::Packet(Packet::Unsubscribe(p)),
+            &[
+                |p, s| p.topic_filters[0] = s,
+                |p, s| p.user_properties = props(s),
+            ],
+        );
+        assert_str_rejected(
+            &UnsubscribeAck {
+                packet_id,
+                properties: Vec::new(),
+                reason_string: None,
+                status: vec![UnsubscribeAckReason::Success],
+            },
+            |p| Encoded::Packet(Packet::UnsubscribeAck(p)),
+            &[
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.properties = props(s),
+            ],
+        );
+        assert_str_rejected(
+            &Disconnect::default(),
+            |p| Encoded::Packet(Packet::Disconnect(p)),
+            &[
+                |p, s| p.server_reference = Some(s),
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.user_properties = props(s),
+            ],
+        );
+        assert_str_rejected(
+            &Auth::default(),
+            |p| Encoded::Packet(Packet::Auth(p)),
+            &[
+                |p, s| p.auth_method = Some(s),
+                |p, s| p.reason_string = Some(s),
+                |p, s| p.user_properties = props(s),
+            ],
+        );
+    }
+
+    /// `pkt` is encoded, each setter puts binary data into one binary field,
+    /// it is limited to 65,535 bytes (MQTT 5.0, 1.5.6)
+    fn assert_bin_rejected<T: Clone>(
+        pkt: &T,
+        encoded: fn(T) -> Encoded,
+        setters: &[fn(&mut T, Bytes)],
+    ) {
+        let codec = Codec::new();
+        for set in setters {
+            let mut pkt = pkt.clone();
+            set(&mut pkt, Bytes::from(vec![b'a'; 65_535]));
+            assert_encoded(&codec, encoded(pkt.clone()));
+            set(&mut pkt, Bytes::from(vec![b'a'; 65_536]));
+            assert_rejected(&codec, encoded(pkt));
+        }
+    }
+
+    #[test]
+    fn test_encode_bin_too_long() {
+        assert_bin_rejected(
+            &will_connect(),
+            |p| Encoded::Packet(Packet::Connect(Box::new(p))),
+            &[
+                |p, b| p.password = Some(b),
+                |p, b| p.auth_data = Some(b),
+                |p, b| p.last_will.as_mut().unwrap().message = b,
+                |p, b| p.last_will.as_mut().unwrap().correlation_data = Some(b),
+            ],
+        );
+        assert_bin_rejected(
+            &ConnectAck::default(),
+            |p| Encoded::Packet(Packet::ConnectAck(Box::new(p))),
+            &[|p, b| p.auth_data = Some(b)],
+        );
+        assert_bin_rejected(
+            &Auth::default(),
+            |p| Encoded::Packet(Packet::Auth(p)),
+            &[|p, b| p.auth_data = Some(b)],
+        );
+        assert_bin_rejected(
+            &Publish {
+                topic: ByteString::from_static("a/b"),
+                ..Publish::default()
+            },
+            |p| Encoded::Publish(p, None),
+            &[|p, b| p.properties.correlation_data = Some(b)],
+        );
+    }
+
+    #[test]
+    fn test_encode_response_topic_wildcards() {
+        let codec = Codec::new();
+        let publish = |topic: &'static str| {
+            let mut p = Publish {
+                topic: ByteString::from_static("a/b"),
+                ..Publish::default()
+            };
+            p.properties.response_topic = Some(ByteString::from_static(topic));
+            Encoded::Publish(p, None)
+        };
+        let connect = |topic: &'static str| {
+            let mut p = will_connect();
+            p.last_will.as_mut().unwrap().response_topic = Some(ByteString::from_static(topic));
+            Encoded::Packet(Packet::Connect(Box::new(p)))
+        };
+        assert_encoded(&codec, publish("a/b"));
+        assert_encoded(&codec, connect("a/b"));
+        for topic in ["a/+", "+", "a/#", "#", ""] {
+            assert_rejected(&codec, publish(topic));
+            assert_rejected(&codec, connect(topic));
+        }
+    }
+
+    #[test]
+    fn test_encode_shared_subscription_no_local() {
+        let codec = Codec::new();
+        let subscribe = |filter: &'static str, no_local| {
+            Encoded::Packet(Packet::Subscribe(Subscribe {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                id: None,
+                user_properties: Vec::new(),
+                topic_filters: vec![
+                    (ByteString::from_static("a"), SubscriptionOptions::default()),
+                    (
+                        ByteString::from_static(filter),
+                        SubscriptionOptions {
+                            no_local,
+                            ..SubscriptionOptions::default()
+                        },
+                    ),
+                ],
+            }))
+        };
+        for filter in ["$share/g/a", "$share/g/#"] {
+            assert_encoded(&codec, subscribe(filter, false));
+            assert_rejected(&codec, subscribe(filter, true));
+        }
+        for filter in ["a", "$sharex/g/a", "$share", "a/$share/g"] {
+            assert_encoded(&codec, subscribe(filter, true));
+        }
     }
 }

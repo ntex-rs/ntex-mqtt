@@ -800,4 +800,90 @@ mod tests {
         let ub = sink.unsubscribe();
         assert!(format!("{ub:?}").contains("UnsubscribeBuilder"));
     }
+
+    #[ntex::test]
+    async fn test_rejected_publish_does_not_start_streaming() {
+        let (client, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::new(),
+            Rc::default(),
+        ));
+        shared.set_cap(16);
+        let sink = MqttSink::new(shared.clone());
+        let err = Err(SendPacketError::Encode(
+            crate::error::EncodeError::MalformedPacket,
+        ));
+
+        let res = sink.publish("a/+").stream_at_most_once(10).map(|_| ());
+        assert_eq!(res, err);
+        assert!(!shared.is_streaming());
+
+        let (fut, _stream) = sink.publish("a/+").stream_at_least_once(10);
+        assert_eq!(fut.await.map(|_| ()), err);
+        assert!(!shared.is_streaming());
+
+        // sink is still usable
+        assert!(sink.is_open());
+        sink.publish("a/b")
+            .send_at_most_once(Bytes::from_static(b"data"))
+            .unwrap();
+        drop(client);
+    }
+
+    #[ntex::test]
+    async fn test_packets_deferred_while_streaming() {
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::new(),
+            Rc::default(),
+        ));
+        shared.set_cap(16);
+        let sink = MqttSink::new(shared.clone());
+
+        let stream = sink.publish("a/b").stream_at_most_once(6).unwrap();
+        stream.send(Bytes::from_static(b"ab")).await.unwrap();
+
+        // client keep-alive and dispatcher responses
+        assert!(sink.ping());
+        let ack = codec::Packet::PublishAck(codec::PublishAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            reason_code: codec::PublishAckReason::Success,
+            properties: codec::UserProperties::default(),
+            reason_string: None,
+        });
+        io.encode(codec::Encoded::Packet(ack), &shared).unwrap();
+
+        // publish cannot interleave with payload
+        assert_eq!(
+            sink.publish("c").send_at_most_once(Bytes::new()),
+            Err(SendPacketError::Encode(EncodeError::ExpectPayload))
+        );
+
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"\x30\x0c\x00\x03a/b\x00ab"));
+
+        // incomplete payload, packets are still deferred
+        stream.send(Bytes::from_static(b"cd")).await.unwrap();
+        assert!(shared.is_streaming());
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"cd"));
+
+        stream.send(Bytes::from_static(b"ef")).await.unwrap();
+        assert!(!shared.is_streaming());
+        let buf = client.read().await.unwrap();
+        assert_eq!(
+            buf,
+            Bytes::from_static(b"ef\xc0\x00\x40\x04\x00\x01\x00\x00")
+        );
+
+        // nothing left behind
+        assert!(sink.ping());
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"\xc0\x00"));
+    }
 }

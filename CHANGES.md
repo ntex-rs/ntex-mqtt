@@ -2,6 +2,50 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Reject encoding a v5 Shared Subscription with No Local set
+
+* codec: Reject encoding a v5 Response Topic with wildcard characters
+
+* codec: Check string and binary data lengths before encoding, packets with fields over
+  65,535 bytes fail without writing partial data
+
+* codec: Fail encoding subscription identifiers over 268,435,455 instead of panicking
+
+* v5: Send CONNACK 0x84 for an unsupported protocol level, v3 CONNACK 0x01 for MQTT 3.1.1 clients
+
+* codec: Reject publish packets with a header longer than the packet, reject
+  encoding a publish with a payload bigger than its payload size
+
+* codec: Fail encoding packets over the protocol size limit instead of panicking
+
+* codec: Fail encoding packets while a publish payload is incomplete
+
+* Write acks, pings and other packets sent while a publish payload is streamed after the payload
+  instead of failing with ExpectPayload
+
+* codec: Reserve at most 8kb of read buffer ahead for non-publish packets
+
+* codec: Reject SUBSCRIBE packets with reserved subscription options bits set
+
+* codec: Reject SUBSCRIBE and UNSUBSCRIBE packets without topic filters
+
+* codec: Reject CONNECT packets with invalid will or password flags
+
+* codec: Reject trailing bytes in CONNECT, CONNACK, PINGREQ, PINGRESP and DISCONNECT packets
+
+* codec: Reject PUBLISH packets with an empty topic name (v5: unless a topic alias is set)
+
+* codec: Enforce sender-side rules in the encoder: valid topic names in PUBLISH and Will, no DUP flag
+  for QoS 0, non-empty topic filter lists, v3 password requires username and empty client id requires
+  clean session
+
+* Fix sink being stuck in streaming state after a failed publish encode
+
+* codec: Reject strings containing the null character U+0000, on decode and encode
+
+* v3: Send CONNACK 0x01 for an unsupported protocol level and CONNACK 0x02 for an empty
+  client id without clean session before closing the connection
+
 * Update to ntex-io 4.1, ntex-codec 2.0
 
 * Stop the dispatcher on clean peer eof while the service is not ready
