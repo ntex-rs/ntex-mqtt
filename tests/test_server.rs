@@ -1275,6 +1275,46 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_handshake_rejected_by_decoder() -> std::io::Result<()> {
+    let srv = server::test_server(async || {
+        MqttServer::new(fn_service(async |_| Ok::<_, TestError>(()))).build(connect)
+    });
+
+    let cases: [(&[u8], _); 2] = [
+        // unsupported protocol level
+        (
+            b"\x10\x0c\x00\x04MQTT\x05\x02\x00\x3C\x00\x00",
+            codec::ConnectAckReason::UnacceptableProtocolVersion,
+        ),
+        // empty client id without clean session
+        (
+            b"\x10\x0c\x00\x04MQTT\x04\x00\x00\x3C\x00\x00",
+            codec::ConnectAckReason::IdentifierRejected,
+        ),
+    ];
+    for (connect, return_code) in cases {
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::default();
+        io.encode_slice(connect).unwrap();
+
+        let ack = io.recv(&codec).await.unwrap().unwrap();
+        assert_eq!(
+            ack,
+            codec::Decoded::Packet(
+                codec::Packet::ConnectAck(codec::ConnectAck {
+                    return_code,
+                    session_present: false
+                }),
+                2
+            )
+        );
+        assert!(io.recv(&codec).await.unwrap().is_none());
+    }
+
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_handshake_fail() -> std::io::Result<()> {
     let srv = server::test_server(async || {
         MqttServer::new(fn_service(async |_| Ok::<_, TestError>(()))).build(

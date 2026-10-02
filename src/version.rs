@@ -44,7 +44,7 @@ impl Decoder for VersionCodec {
                     match src[consumed + 6] {
                         MQTT_LEVEL_3 => Ok(Some(ProtocolVersion::MQTT3)),
                         MQTT_LEVEL_5 => Ok(Some(ProtocolVersion::MQTT5)),
-                        _ => Err(DecodeError::InvalidProtocol),
+                        _ => Err(DecodeError::UnsupportedProtocolLevel),
                     }
                 } else {
                     Err(DecodeError::UnsupportedPacketType)
@@ -76,6 +76,12 @@ mod tests {
         );
         assert_eq!(
             Err(DecodeError::InvalidProtocol),
+            VersionCodec.decode(&mut buf)
+        );
+
+        let mut buf = BytesMut::from(b"\x10\x0c\x00\x04MQTT\x06\x02\x00\x3C\x00\x00".as_ref());
+        assert_eq!(
+            Err(DecodeError::UnsupportedProtocolLevel),
             VersionCodec.decode(&mut buf)
         );
 

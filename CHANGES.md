@@ -17,6 +17,9 @@
 
 * codec: Reject CONNECT packets with invalid will or password flags
 
+* v3: Send CONNACK 0x01 for an unsupported protocol level and CONNACK 0x02 for an empty
+  client id without clean session before closing the connection
+
 * Update to ntex-io 4.1, ntex-codec 2.0
 
 * Stop the dispatcher on clean peer eof while the service is not ready

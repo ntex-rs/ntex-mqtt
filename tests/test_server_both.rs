@@ -67,3 +67,36 @@ async fn test_simple() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[ntex::test]
+async fn test_unsupported_protocol_level() -> std::io::Result<()> {
+    let srv = server::test_server(async || {
+        MqttServer::new()
+            .v3(v3::MqttServer::new(async |_| Ok::<_, TestError>(()))
+                .build(async move |con: v3::Connect| Ok::<_, TestError>(con.ack(St, false))))
+            .v5(
+                v5::MqttServer::new(async move |p: v5::Publish| Ok::<_, TestError>(p.ack()))
+                    .build(async move |con: v5::Connect| Ok::<_, TestError>(con.ack(St))),
+            )
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = v3::codec::Codec::default();
+    io.encode_slice(b"\x10\x0c\x00\x04MQTT\x06\x02\x00\x3C\x00\x00")
+        .unwrap();
+
+    let ack = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        ack,
+        v3::codec::Decoded::Packet(
+            v3::codec::Packet::ConnectAck(v3::codec::ConnectAck {
+                return_code: v3::codec::ConnectAckReason::UnacceptableProtocolVersion,
+                session_present: false
+            }),
+            2
+        )
+    );
+    assert!(io.recv(&codec).await.unwrap().is_none());
+
+    Ok(())
+}

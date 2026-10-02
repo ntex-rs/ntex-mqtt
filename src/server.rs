@@ -6,7 +6,7 @@ use ntex_util::future::{Either, join, select};
 use ntex_util::time::Deadline;
 
 use crate::MqttServiceConfig;
-use crate::error::{MqttConnectError, MqttError};
+use crate::error::{DecodeError, MqttConnectError, MqttError};
 use crate::version::{ProtocolVersion, VersionCodec};
 
 /// Mqtt Server
@@ -91,9 +91,10 @@ where
         let (state, req) = req.unpack();
 
         // try to read Version, buffer may already contain info
-        let res = req
-            .decode(&VersionCodec)
-            .map_err(|e| MqttError::Connect(MqttConnectError::Protocol(e.into())))?;
+        let res = match req.decode(&VersionCodec) {
+            Ok(res) => res,
+            Err(e) => return Err(reject_version(&req, e).await),
+        };
         if let Some(ver) = res {
             match ver {
                 ProtocolVersion::MQTT3 => ctx.call(&self.v3, State { req, state }).await,
@@ -103,9 +104,7 @@ where
             let fut = async {
                 match req.recv(&VersionCodec).await {
                     Ok(ver) => Ok(ver),
-                    Err(Either::Left(e)) => {
-                        Err(MqttError::Connect(MqttConnectError::Protocol(e.into())))
-                    }
+                    Err(Either::Left(e)) => Err(reject_version(&req, e).await),
                     Err(Either::Right(e)) => {
                         Err(MqttError::Connect(MqttConnectError::Disconnected(Some(e))))
                     }
@@ -133,6 +132,15 @@ where
         ctx.shutdown(&self.v3).await;
         ctx.shutdown(&self.v5).await;
     }
+}
+
+/// Reject CONNECT packet with unknown protocol level
+///
+/// Send v3 CONNACK 0x01 for an unsupported protocol level,
+/// [MQTT-3.1.2-2] (MQTT 3.1.1, 3.1.2.2)
+async fn reject_version<E>(io: &IoBoxed, err: DecodeError) -> MqttError<E> {
+    crate::v3::reject_connect(io, &crate::v3::codec::Codec::default(), &err).await;
+    MqttError::Connect(MqttConnectError::Protocol(err.into()))
 }
 
 pub struct DefaultProtoSrv<Err> {
@@ -170,6 +178,10 @@ impl<St, Req, Err> Service<St, Req> for DefaultProtoSrv<Err> {
 
 #[cfg(test)]
 mod tests {
+    use ntex_io::{Io, testing::IoTest};
+    use ntex_service::{Pipeline, cfg::SharedCfg};
+    use ntex_util::time::{Millis, sleep};
+
     use super::*;
 
     #[test]
@@ -177,5 +189,26 @@ mod tests {
         // Use the default constructor which fills in all type params automatically
         let server = MqttServer::<(), ntex_io::Io, super::DefaultProtoSrv<()>, _, _>::default();
         assert!(format!("{server:?}").contains("MqttServer"));
+    }
+
+    #[ntex::test]
+    async fn test_unsupported_protocol_level_buffered() {
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        client.write(b"\x10\x0c\x00\x04MQTT\x06\x02\x00\x3C\x00\x00");
+        let io = IoBoxed::from(Io::new(server, SharedCfg::new("test")));
+        // version is decoded from the read buffer
+        sleep(Millis(50)).await;
+
+        let srv = Pipeline::new(
+            (),
+            MqttServer::<(), ((), IoBoxed), DefaultProtoSrv<()>, DefaultProtoSrv<()>, ()>::new(),
+        );
+        let res = srv.call(((), io)).await;
+        assert!(matches!(
+            res,
+            Err(MqttError::Connect(MqttConnectError::Protocol(_)))
+        ));
+        assert_eq!(client.read_any(), b"\x20\x02\x00\x01".as_ref());
     }
 }
