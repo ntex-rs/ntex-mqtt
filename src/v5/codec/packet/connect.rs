@@ -170,6 +170,8 @@ impl Connect {
         } else {
             None
         };
+        // payload contains only the fields selected by the flags, [MQTT-3.1.3-1] (MQTT 5.0, 3.1.3)
+        ensure!(!src.has_remaining(), DecodeError::InvalidLength);
 
         Ok(Connect {
             clean_start: flags.contains(ConnectFlags::CLEAN_START),

@@ -1,4 +1,4 @@
-use ntex_bytes::{ByteString, Bytes};
+use ntex_bytes::{Buf, ByteString, Bytes};
 
 use super::{UserProperty, packet, packet::Packet};
 use crate::{error::DecodeError, types::packet_type, utils::Decode};
@@ -6,6 +6,11 @@ use crate::{error::DecodeError, types::packet_type, utils::Decode};
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
         packet_type::PUBACK => Ok(Packet::PublishAck(packet::PublishAck::decode(&mut src)?)),
+        // PINGREQ and PINGRESP have no variable header and no payload
+        // (MQTT 5.0, 3.12.2 - 3.13.3)
+        packet_type::PINGREQ | packet_type::PINGRESP if src.has_remaining() => {
+            Err(DecodeError::InvalidLength)
+        }
         packet_type::PINGREQ => Ok(Packet::PingRequest),
         packet_type::PINGRESP => Ok(Packet::PingResponse),
         packet_type::SUBSCRIBE => Ok(Packet::Subscribe(packet::Subscribe::decode(&mut src)?)),
@@ -478,6 +483,25 @@ mod tests {
                 status: vec![],
             }),
         );
+    }
+
+    #[test]
+    fn test_decode_trailing_bytes() {
+        let cases: [(u8, &[u8]); 3] = [
+            (
+                packet_type::CONNECT,
+                b"\x00\x04MQTT\x05\x02\x00\x3C\x00\x00\x0512345\x00",
+            ),
+            (packet_type::PINGREQ, b"\x00"),
+            (packet_type::PINGRESP, b"\x00"),
+        ];
+        for (first_byte, src) in cases {
+            assert_eq!(
+                decode_packet(Bytes::copy_from_slice(src), first_byte),
+                Err(DecodeError::InvalidLength),
+                "packet type: {first_byte:#x}"
+            );
+        }
     }
 
     #[test]

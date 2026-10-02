@@ -21,11 +21,18 @@ pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, De
         packet_type::SUBACK => decode_subscribe_ack_packet(&mut src),
         packet_type::UNSUBSCRIBE => decode_unsubscribe_packet(&mut src),
         packet_type::UNSUBACK => decode_ack(src, |packet_id| Packet::UnsubscribeAck { packet_id }),
-        packet_type::PINGREQ => Ok(Packet::PingRequest),
-        packet_type::PINGRESP => Ok(Packet::PingResponse),
-        packet_type::DISCONNECT => Ok(Packet::Disconnect),
+        packet_type::PINGREQ => decode_empty(&src, Packet::PingRequest),
+        packet_type::PINGRESP => decode_empty(&src, Packet::PingResponse),
+        packet_type::DISCONNECT => decode_empty(&src, Packet::Disconnect),
         _ => Err(DecodeError::UnsupportedPacketType),
     }
+}
+
+/// PINGREQ, PINGRESP and DISCONNECT have no variable header and no payload
+/// (MQTT 3.1.1, 3.12.2 - 3.14.3)
+fn decode_empty(src: &Bytes, pkt: Packet) -> Result<Packet, DecodeError> {
+    ensure!(src.is_empty(), DecodeError::InvalidLength);
+    Ok(pkt)
 }
 
 #[inline]
@@ -94,6 +101,9 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     } else {
         None
     };
+    // payload contains only the fields selected by the flags, [MQTT-3.1.3-1] (MQTT 3.1.1, 3.1.3)
+    ensure!(!src.has_remaining(), DecodeError::InvalidLength);
+
     Ok(Connect {
         clean_session: flags.contains(ConnectFlags::CLEAN_START),
         keep_alive,
@@ -111,6 +121,9 @@ fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
         ConnectAckFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnAckReservedFlagSet)?;
 
     let return_code = src.get_u8().try_into()?;
+    // remaining length of CONNACK is 2 (MQTT 3.1.1, 3.2.1)
+    ensure!(!src.has_remaining(), DecodeError::InvalidLength);
+
     Ok(Packet::ConnectAck(ConnectAck {
         return_code,
         session_present: flags.contains(ConnectAckFlags::SESSION_PRESENT),
@@ -478,6 +491,27 @@ mod tests {
                 packet_id: packet_id(0x4321)
             }
         );
+    }
+
+    #[test]
+    fn test_decode_trailing_bytes() {
+        let cases: [(u8, &[u8]); 5] = [
+            (
+                packet_type::CONNECT,
+                b"\x00\x04MQTT\x04\x02\x00\x3C\x00\x0512345\x00",
+            ),
+            (packet_type::CONNACK, b"\x00\x00\x00"),
+            (packet_type::PINGREQ, b"\x00"),
+            (packet_type::PINGRESP, b"\x00"),
+            (packet_type::DISCONNECT, b"\x00"),
+        ];
+        for (first_byte, src) in cases {
+            assert_eq!(
+                decode_packet(Bytes::copy_from_slice(src), first_byte),
+                Err(DecodeError::InvalidLength),
+                "packet type: {first_byte:#x}"
+            );
+        }
     }
 
     #[test]
