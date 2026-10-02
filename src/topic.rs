@@ -87,12 +87,19 @@ pub enum TopicFilterLevel {
 }
 
 impl TopicFilterLevel {
-    fn is_valid(&self) -> bool {
-        match *self {
-            TopicFilterLevel::Normal(ref s) | TopicFilterLevel::System(ref s) => {
-                !s.contains(['+', '#'])
+    /// Checks the level at `pos` of `len` levels, it must be the level
+    /// that parsing of the topic filter string produces
+    fn is_valid(&self, pos: usize, len: usize) -> bool {
+        match self {
+            // a non-empty level name without separators or wildcards (MQTT 5.0, 4.7.1)
+            // that starts with `$` only for a reserved topic (MQTT 5.0, 4.7.2)
+            TopicFilterLevel::Normal(s) => {
+                !s.is_empty() && !s.contains(['/', '+', '#']) && (pos != 0 || !is_system(s))
             }
-            _ => true,
+            TopicFilterLevel::System(s) => pos == 0 && is_system(s) && !s.contains(['/', '+', '#']),
+            TopicFilterLevel::Blank | TopicFilterLevel::SingleWildcard => true,
+            // [MQTT-4.7.1-1] the multi-level wildcard must be the last level
+            TopicFilterLevel::MultiWildcard => pos == len - 1,
         }
     }
 }
@@ -149,18 +156,8 @@ impl TopicFilter {
             && self
                 .0
                 .iter()
-                .position(|level| !level.is_valid())
-                .or_else(|| {
-                    self.0
-                        .iter()
-                        .enumerate()
-                        .position(|(pos, level)| match *level {
-                            TopicFilterLevel::MultiWildcard => pos != self.0.len() - 1,
-                            TopicFilterLevel::System(_) => pos != 0,
-                            _ => false,
-                        })
-                })
-                .is_none()
+                .enumerate()
+                .all(|(pos, level)| level.is_valid(pos, self.0.len()))
     }
 
     /// Check if the topic filter matches another topic filter
@@ -444,6 +441,15 @@ mod tests {
     #[test_case(vec![lvl_normal("sport"), TopicFilterLevel::MultiWildcard, lvl_normal("player1")] => false; "5")]
     #[test_case(vec![lvl_normal("sport"), lvl_sys("$SYS"), lvl_normal("player1")] => false; "6")]
     #[test_case(vec![] => false; "7")]
+    #[test_case(vec![lvl_normal("a/b")] => false; "8")]
+    #[test_case(vec![lvl_normal("a"), TopicFilterLevel::Normal("".into())] => false; "9")]
+    #[test_case(vec![TopicFilterLevel::Normal("$SYS".into()), TopicFilterLevel::MultiWildcard] => false; "10")]
+    #[test_case(vec![TopicFilterLevel::System("SYS".into())] => false; "11")]
+    #[test_case(vec![TopicFilterLevel::System("$SYS/a".into())] => false; "12")]
+    #[test_case(vec![TopicFilterLevel::System("$S+".into())] => false; "13")]
+    #[test_case(vec![lvl_normal("a"), lvl_normal("$b"), TopicFilterLevel::Blank] => true; "14")]
+    #[test_case(vec![TopicFilterLevel::Blank, TopicFilterLevel::SingleWildcard, TopicFilterLevel::MultiWildcard] => true; "15")]
+    #[test_case(vec![TopicFilterLevel::MultiWildcard] => true; "16")]
     fn topic_is_valid(levels: Vec<TopicFilterLevel>) -> bool {
         TopicFilter::try_from(levels).is_ok()
     }
@@ -473,6 +479,8 @@ mod tests {
             r#"["MultiWildcard","SingleWildcard"]"#,
             r#"[{"Normal":"a"},{"System":"$b"}]"#,
             r#"[{"Normal":"a+"}]"#,
+            r#"[{"Normal":"a/b"}]"#,
+            r#"[{"System":"a"}]"#,
         ] {
             assert!(serde_json::from_str::<TopicFilter>(json).is_err(), "{json}");
         }
