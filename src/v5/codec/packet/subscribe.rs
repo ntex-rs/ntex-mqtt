@@ -285,15 +285,12 @@ impl Encode for SubscriptionOptions {
 impl encode::EncodeLtd for SubscribeAck {
     fn encoded_size(&self, limit: u32) -> usize {
         let len = self.status.len();
-        if len > (u32::MAX - 2) as usize {
-            return usize::MAX; // bail to avoid overflow
-        }
-
-        2 + ack_props::encoded_size(
-            &self.properties,
-            &self.reason_string,
-            limit - 2 - len as u32,
-        ) + len
+        2 + len
+            + ack_props::encoded_size(
+                &self.properties,
+                &self.reason_string,
+                encode::reduce_limit(limit, 2 + len),
+            )
     }
 
     fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError> {

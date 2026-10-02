@@ -62,39 +62,33 @@ impl Codec {
         self.min_chunk_size.set(size);
     }
 
-    /// Get max inbound frame size.
+    /// Get max inbound packet size.
     pub fn max_inbound_size(&self) -> u32 {
         self.max_in_size.get()
     }
 
-    /// Get max outbound frame size.
-    ///
-    /// Returned value excludes fixed header size, see
-    /// [`set_max_outbound_size`](Self::set_max_outbound_size).
+    /// Get max outbound packet size.
     pub fn max_outbound_size(&self) -> u32 {
         self.max_out_size.get()
     }
 
-    /// Set max inbound frame size.
+    /// Set max inbound packet size.
     ///
+    /// The size is the total packet size, including the fixed header
+    /// (MQTT 5.0, 3.1.2.11.4, 3.2.2.3.6).
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`
     pub fn set_max_inbound_size(&self, size: u32) {
         self.max_in_size.set(size);
     }
 
-    /// Set max outbound frame size.
+    /// Set max outbound packet size.
     ///
+    /// The size is the total packet size, including the fixed header
+    /// (MQTT 5.0, 3.1.2.11.4, 3.2.2.3.6).
     /// If max size is set to `0`, size is unlimited.
     /// By default max size is set to `0`.
-    ///
-    /// Fixed header size (5 bytes) is subtracted from values greater than 5,
-    /// so `max_outbound_size()` returns `size - 5`.
-    pub fn set_max_outbound_size(&self, mut size: u32) {
-        if size > 5 {
-            // fixed header = 1, var_len(remaining.max_value()) = 4
-            size -= 5;
-        }
+    pub fn set_max_outbound_size(&self, size: u32) {
         self.max_out_size.set(size);
     }
 
@@ -130,10 +124,11 @@ impl Codec {
         self.encoding_payload.get().is_some()
     }
 
-    fn max_out_size(&self) -> u32 {
+    /// Max remaining length of an outbound packet, fails if no packet fits.
+    fn max_out_size(&self) -> Result<u32, EncodeError> {
         match self.max_out_size.get() {
-            0 => MAX_PACKET_SIZE,
-            size => size.min(MAX_PACKET_SIZE),
+            0 => Ok(MAX_PACKET_SIZE),
+            size => max_remaining_length(size).ok_or(EncodeError::OverMaxPacketSize),
         }
     }
 
@@ -185,7 +180,7 @@ impl Codec {
         }
 
         encode::validate(&pkt)?;
-        let max_size = self.max_out_size();
+        let max_size = self.max_out_size()?;
         let content_size = pkt.encoded_size(max_size);
         if content_size > max_size as usize {
             Err(EncodeError::OverMaxPacketSize)
@@ -193,6 +188,15 @@ impl Codec {
             pkt.encode(dst, content_size as u32) // safe: max_size <= MAX_PACKET_SIZE
         }
     }
+}
+
+/// Max remaining length of a packet with a total size of `size` or less, the fixed
+/// header is 1 byte and 1 to 4 bytes of the remaining length (MQTT 5.0, 2.1.1, 1.5.5)
+fn max_remaining_length(size: u32) -> Option<u32> {
+    (1..=4).find_map(|len| {
+        let remaining = size.checked_sub(1 + len)?.min(MAX_PACKET_SIZE);
+        (encode::var_int_len(remaining as usize) <= len).then_some(remaining)
+    })
 }
 
 impl Default for Codec {
@@ -217,14 +221,16 @@ impl Decoder for Codec {
                     let first_byte = src_slice[0];
                     match decode_variable_length(&src_slice[1..])? {
                         Some((remaining_length, consumed)) => {
-                            // check max message size
+                            // check max packet size, it is the total packet size,
+                            // (MQTT 5.0, 3.1.2.11.4, 3.2.2.3.6)
                             let max_in_size = self.max_in_size.get();
-                            if max_in_size != 0 && max_in_size < remaining_length {
+                            let size = remaining_length + consumed as u32 + 1; // safe: remaining_length <= MAX_PACKET_SIZE
+                            if max_in_size != 0 && max_in_size < size {
                                 log::debug!(
-                                    "MaxSizeExceeded max-size: {max_in_size}, remaining: {remaining_length}"
+                                    "MaxSizeExceeded max-size: {max_in_size}, size: {size}"
                                 );
                                 return Err(DecodeError::MaxSizeExceeded {
-                                    size: remaining_length,
+                                    size,
                                     max_size: max_in_size,
                                 });
                             }
@@ -371,7 +377,7 @@ impl Encoder for Codec {
                     return Err(EncodeError::OverPublishSize);
                 }
                 encode::validate_publish(&pkt)?;
-                let max_size = self.max_out_size();
+                let max_size = self.max_out_size()?;
                 let content_size = pkt.encoded_size(max_size);
                 if content_size > max_size as usize {
                     return Err(EncodeError::OverMaxPacketSize);
@@ -469,10 +475,51 @@ mod tests {
         assert_eq!(
             codec.decode(&mut buf).err(),
             Some(DecodeError::MaxSizeExceeded {
-                size: 9,
+                size: 11,
                 max_size: 5
             })
         );
+
+        // max size includes the fixed header
+        for (max_size, header, size) in [
+            (130_u32, &b"\x30\x7f"[..], 0),
+            (130, b"\x30\x80\x01", 131),
+            (131, b"\x30\x80\x01", 0),
+            (131, b"\x30\x81\x01", 132),
+        ] {
+            let codec = Codec::new();
+            codec.set_max_inbound_size(max_size);
+            let mut buf = BytesMut::from(header);
+            if size == 0 {
+                assert_eq!(codec.decode(&mut buf), Ok(None));
+            } else {
+                assert_eq!(
+                    codec.decode(&mut buf),
+                    Err(DecodeError::MaxSizeExceeded { size, max_size })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_max_remaining_length() {
+        for (size, remaining) in [
+            (1, None),
+            (2, Some(0)),
+            (6, Some(4)),
+            (129, Some(127)),
+            (130, Some(127)),
+            (131, Some(128)),
+            (16_386, Some(16_383)),
+            (16_387, Some(16_383)),
+            (16_388, Some(16_384)),
+            (2_097_156, Some(2_097_151)),
+            (2_097_157, Some(2_097_152)),
+            (MAX_PACKET_SIZE + 5, Some(MAX_PACKET_SIZE)),
+            (u32::MAX, Some(MAX_PACKET_SIZE)),
+        ] {
+            assert_eq!(max_remaining_length(size), remaining, "size: {size}");
+        }
     }
 
     #[test]
@@ -1409,5 +1456,111 @@ mod tests {
             &encode(true, ConnectAckReason::NotAuthorized)[..],
             b"\x20\x03\x00\x87\x00"
         );
+    }
+
+    #[test]
+    fn test_small_max_outbound_size() {
+        let encode = |max_size, pkt: Packet| {
+            let codec = Codec::new();
+            codec.set_max_outbound_size(max_size);
+            assert_eq!(codec.max_outbound_size(), max_size);
+            let mut buf = BytePages::default();
+            codec
+                .encode(Encoded::Packet(pkt), &mut buf)
+                .map(|()| buf.freeze())
+        };
+        let puback = || {
+            Packet::PublishAck(PublishAck {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                reason_string: Some(ByteString::from_static("reason")),
+                ..PublishAck::default()
+            })
+        };
+        let pubrel = || {
+            Packet::PublishRelease(PublishAck2 {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                reason_string: Some(ByteString::from_static("reason")),
+                ..PublishAck2::default()
+            })
+        };
+        let suback = || {
+            Packet::SubscribeAck(SubscribeAck {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                status: vec![SubscribeAckReason::GrantedQos0],
+                reason_string: Some(ByteString::from_static("reason")),
+                properties: Vec::new(),
+            })
+        };
+
+        assert_eq!(
+            encode(1, Packet::PingRequest),
+            Err(EncodeError::OverMaxPacketSize)
+        );
+        assert_eq!(&encode(2, Packet::PingRequest).unwrap()[..], b"\xC0\x00");
+        for size in [1, 2, 3, 4, 5] {
+            assert_eq!(encode(size, puback()), Err(EncodeError::OverMaxPacketSize));
+            assert_eq!(encode(size, pubrel()), Err(EncodeError::OverMaxPacketSize));
+            assert_eq!(encode(size, suback()), Err(EncodeError::OverMaxPacketSize));
+        }
+        // reason string doesn't fit
+        assert_eq!(
+            &encode(6, puback()).unwrap()[..],
+            b"\x40\x04\x00\x01\x00\x00"
+        );
+        assert_eq!(
+            &encode(6, pubrel()).unwrap()[..],
+            b"\x62\x04\x00\x01\x00\x00"
+        );
+        assert_eq!(
+            &encode(6, suback()).unwrap()[..],
+            b"\x90\x04\x00\x01\x00\x00"
+        );
+        // the whole packet fits
+        assert_eq!(
+            &encode(18, puback()).unwrap()[..],
+            b"\x40\x0D\x00\x01\x00\x09\x1F\x00\x06reason"
+        );
+        assert_eq!(
+            &encode(17, puback()).unwrap()[..],
+            b"\x40\x04\x00\x01\x00\x00"
+        );
+        assert_eq!(
+            &encode(18, suback()).unwrap()[..],
+            b"\x90\x0D\x00\x01\x09\x1F\x00\x06reason\x00"
+        );
+        assert_eq!(
+            &encode(17, suback()).unwrap()[..],
+            b"\x90\x04\x00\x01\x00\x00"
+        );
+
+        // publish
+        let codec = Codec::new();
+        codec.set_max_outbound_size(9);
+        let pkt = |payload_size| Publish {
+            topic: ByteString::from_static("t"),
+            payload_size,
+            ..Default::default()
+        };
+        let mut buf = BytePages::default();
+        for size in [1, 2] {
+            let codec = Codec::new();
+            codec.set_max_outbound_size(size);
+            assert_eq!(
+                codec.encode(Encoded::Publish(pkt(0), None), &mut buf),
+                Err(EncodeError::OverMaxPacketSize)
+            );
+        }
+        assert!(buf.is_empty());
+        assert_eq!(
+            codec.encode(Encoded::Publish(pkt(4), None), &mut buf),
+            Err(EncodeError::OverMaxPacketSize)
+        );
+        codec
+            .encode(
+                Encoded::Publish(pkt(3), Some(Bytes::from_static(b"abc"))),
+                &mut buf,
+            )
+            .unwrap();
+        assert_eq!(&buf.freeze()[..], b"\x30\x07\x00\x01t\x00abc");
     }
 }

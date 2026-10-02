@@ -2,6 +2,12 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Check the v5 max inbound and outbound packet size against the total packet size,
+  `Codec::max_outbound_size()` returns the configured size, `DecodeError::MaxSizeExceeded`
+  reports the total packet size
+
+* codec: Fix limit underflow for v5 PUBACK, PUBREC, PUBREL, PUBCOMP and SUBACK with small max packet size
+
 * Reject a v5 PUBLISH from a client with a Subscription Identifier or a Response Topic
   with wildcards, reject a malformed ShareName and No Local on a Shared Subscription
 
