@@ -249,6 +249,8 @@ impl Decode for SubscriptionOptions {
     fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         ensure!(src.has_remaining(), DecodeError::InvalidLength);
         let val = src.get_u8();
+        // [MQTT-3.8.3-5] reserved bits of subscription options must be zero (5.0, 3.8.3.1)
+        ensure!(val & 0b1100_0000 == 0, DecodeError::MalformedPacket);
         let qos = (val & 0b0000_0011).try_into()?;
         let retain_handling = ((val & 0b0011_0000) >> 4).try_into()?;
         Ok(SubscriptionOptions {

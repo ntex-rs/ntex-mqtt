@@ -147,7 +147,9 @@ fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     while src.has_remaining() {
         let topic = ByteString::decode(src)?;
         ensure!(src.remaining() >= 1, DecodeError::InvalidLength);
-        let qos = (src.get_u8() & 0b0000_0011).try_into()?;
+        // [MQTT-3.8.3-4] reserved bits of requested QoS must be zero,
+        // QoS must be 0, 1 or 2 (3.1.1, 3.8.3.1)
+        let qos = src.get_u8().try_into()?;
         topic_filters.push((topic, qos));
     }
 
@@ -376,6 +378,16 @@ mod tests {
             Ok(p.clone())
         );
         assert_decode_packet!(b"\x82\x12\x12\x34\x00\x04test\x01\x00\x06filter\x02", p);
+
+        // reserved bits of requested QoS are set, or QoS is 3
+        for opts in [0b0000_0101, 0b1000_0001, 0b0100_0000, 0b0000_0011] {
+            let mut src = BytesMut::from(&b"\x12\x34\x00\x04test"[..]);
+            src.extend_from_slice(&[opts]);
+            assert_eq!(
+                decode_subscribe_packet(&mut src.freeze()),
+                Err(DecodeError::MalformedPacket)
+            );
+        }
 
         let p = Packet::SubscribeAck {
             packet_id: packet_id(0x1234),

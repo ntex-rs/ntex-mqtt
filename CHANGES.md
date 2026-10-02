@@ -11,6 +11,8 @@
 
 * codec: Reserve at most 8kb of read buffer ahead for non-publish packets
 
+* codec: Reject SUBSCRIBE packets with reserved subscription options bits set
+
 * Update to ntex-io 4.1, ntex-codec 2.0
 
 * Stop the dispatcher on clean peer eof while the service is not ready

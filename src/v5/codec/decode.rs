@@ -297,6 +297,35 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_subscribe_options() {
+        // all non-reserved subscription options bits
+        let Packet::Subscribe(sub) =
+            decode_packet(Bytes::from_static(b"\x12\x34\x00\x00\x04test\x2e"), 0x82).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            sub.topic_filters[0].1,
+            SubscriptionOptions {
+                qos: QoS::ExactlyOnce,
+                no_local: true,
+                retain_as_published: true,
+                retain_handling: RetainHandling::NoAtSubscribe,
+            }
+        );
+
+        // reserved bits of subscription options are set
+        for opts in [0b0100_0001, 0b1000_0001] {
+            let mut src = BytesMut::from(&b"\x12\x34\x00\x00\x04test"[..]);
+            src.extend_from_slice(&[opts]);
+            assert_eq!(
+                decode_packet(src.freeze(), 0x82),
+                Err(DecodeError::MalformedPacket)
+            );
+        }
+    }
+
+    #[test]
     fn test_decode_subscribe_packets() {
         let p = Packet::Subscribe(Subscribe {
             packet_id: packet_id(0x1234),
