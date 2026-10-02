@@ -71,6 +71,9 @@ impl Publish {
     ) -> Result<Self, DecodeError> {
         let topic = ByteString::decode(src)?;
         let qos = QoS::try_from((packet_flags & 0b0110) >> 1)?;
+        let dup = (packet_flags & 0b1000) == 0b1000;
+        // DUP flag must be 0 for QoS 0 messages, [MQTT-3.3.1-2] (MQTT 5.0, 3.3.1.1)
+        ensure!(!dup || qos != QoS::AtMostOnce, DecodeError::MalformedPacket);
         let packet_id = if qos == QoS::AtMostOnce {
             None
         } else {
@@ -90,7 +93,7 @@ impl Publish {
             packet_id,
             properties,
             payload_size,
-            dup: (packet_flags & 0b1000) == 0b1000,
+            dup,
             retain: (packet_flags & 0b0001) == 0b0001,
         })
     }
