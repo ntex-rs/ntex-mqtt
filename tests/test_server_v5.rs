@@ -2236,3 +2236,78 @@ async fn test_handshake_unsupported_protocol_level() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[ntex::test]
+async fn test_handshake_invalid_will_topic() -> std::io::Result<()> {
+    let called = Arc::new(AtomicBool::new(false));
+    let called2 = called.clone();
+    let srv = server::test_server(async move || {
+        let called = called2.clone();
+        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
+            async move |msg: Connect| {
+                called.store(true, Relaxed);
+                Ok::<_, TestError>(msg.ack(St))
+            },
+        )
+    });
+    let connect_pkt = |topic: &str, response_topic: Option<&str>| {
+        let mut will_props = Vec::new();
+        if let Some(t) = response_topic {
+            will_props.push(0x08);
+            will_props.extend_from_slice(&(t.len() as u16).to_be_bytes());
+            will_props.extend_from_slice(t.as_bytes());
+        }
+        let mut body = vec![
+            0x00, 0x04, b'M', b'Q', b'T', b'T', 0x05, 0x06, 0x00, 0x3c, 0x00, 0x00, 0x02, b'i',
+            b'd',
+        ];
+        body.push(will_props.len() as u8);
+        body.extend(will_props);
+        body.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+        body.extend_from_slice(topic.as_bytes());
+        body.extend_from_slice(&[0x00, 0x00]);
+        let mut pkt = vec![0x10, body.len() as u8];
+        pkt.extend(body);
+        pkt
+    };
+
+    for (topic, response_topic, err) in [
+        ("", None, error::SpecViolation::Will_4_7_3_1),
+        ("a/#", None, error::SpecViolation::Will_4_7_0_1),
+        ("+", Some("r/t"), error::SpecViolation::Will_4_7_0_1),
+        ("t", Some("r/+"), error::SpecViolation::Will_3_3_2_14),
+        ("t", Some("#"), error::SpecViolation::Will_3_3_2_14),
+    ] {
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::default();
+        io.encode_slice(&connect_pkt(topic, response_topic))
+            .unwrap();
+
+        let Decoded::Packet(Packet::ConnectAck(ack), _) = io.recv(&codec).await.unwrap().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            *ack,
+            codec::ConnectAck {
+                reason_code: codec::ConnectAckReason::ProtocolError,
+                reason_string: Some(ByteString::from(err.to_string())),
+                ..Default::default()
+            }
+        );
+        assert!(io.recv(&codec).await.unwrap().is_none());
+    }
+    assert!(!called.load(Relaxed));
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode_slice(&connect_pkt("t", Some("r/t"))).unwrap();
+    let Decoded::Packet(Packet::ConnectAck(ack), _) = io.recv(&codec).await.unwrap().unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(ack.reason_code, codec::ConnectAckReason::Success);
+    assert!(called.load(Relaxed));
+
+    Ok(())
+}

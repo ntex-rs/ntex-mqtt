@@ -1,7 +1,7 @@
 #![allow(clippy::type_complexity)]
 use std::{cell::Cell, cmp, fmt, marker::PhantomData, num::NonZero, rc::Rc};
 
-use ntex_bytes::BytesMut;
+use ntex_bytes::{ByteString, BytesMut};
 use ntex_codec::Decoder;
 use ntex_error::{Failure, IntoFailure};
 use ntex_io::IoBoxed;
@@ -12,7 +12,9 @@ use ntex_service::{
 };
 use ntex_util::{future::Either, time::Seconds, time::timeout_checked};
 
-use crate::error::{DecodeError, DispatcherError, MqttConnectError, MqttError, MqttProtocolError};
+use crate::error::{
+    DecodeError, DispatcherError, MqttConnectError, MqttError, MqttProtocolError, SpecViolation,
+};
 use crate::{ConnectPipeline, MqttServiceConfig, control, control::Control, service};
 use crate::{types::MQTT_LEVEL_3, version::peek_connect_level};
 
@@ -289,6 +291,21 @@ where
                 if let Some(size) = connect.max_packet_size {
                     shared.codec.set_max_outbound_size(size.get());
                 }
+                if let Err(err) = check_will(&connect) {
+                    log::info!("{}: {err}", io.tag());
+                    let pkt = Packet::ConnectAck(Box::new(mqtt::ConnectAck {
+                        reason_code: mqtt::ConnectAckReason::ProtocolError,
+                        reason_string: Some(ByteString::from_static(err.as_str())),
+                        ..Default::default()
+                    }));
+                    log::trace!("Sending failed handshake ack: {pkt:#?}");
+                    if io.encode(Encoded::Packet(pkt), &shared.codec).is_ok() {
+                        let _ = io.shutdown().await;
+                    }
+                    return Err(MqttError::Connect(MqttConnectError::Protocol(
+                        MqttProtocolError::spec(err),
+                    )));
+                }
                 let keep_alive = connect.keep_alive;
                 let peer_receive_max = connect.receive_max.map(NonZero::get);
                 if connect.session_expiry_interval_secs == 0 {
@@ -368,6 +385,23 @@ where
             Decoded::PayloadChunk(..) => unreachable!(),
         }
     }
+}
+
+/// Will Topic is a Topic Name (MQTT 5.0, 3.1.3.3), Will Response Topic must not
+/// contain wildcards, [MQTT-3.3.2-14] (MQTT 5.0, 3.1.3.2.5)
+fn check_will(connect: &mqtt::Connect) -> Result<(), SpecViolation> {
+    let Some(will) = &connect.last_will else {
+        return Ok(());
+    };
+    crate::topic::check_will_topic(&will.topic)?;
+    if will
+        .response_topic
+        .as_ref()
+        .is_some_and(|t| t.contains(['+', '#']))
+    {
+        return Err(SpecViolation::Will_3_3_2_14);
+    }
+    Ok(())
 }
 
 /// Decodes the CONNECT packet and keeps its protocol level

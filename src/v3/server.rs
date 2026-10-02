@@ -304,6 +304,17 @@ where
 
         match packet {
             mqtt::Decoded::Packet(mqtt::Packet::Connect(connect), size) => {
+                // the Server must close the connection without CONNACK,
+                // [MQTT-3.1.4-1] (MQTT 3.1.1, 3.1.4)
+                if let Some(will) = &connect.last_will
+                    && let Err(err) = crate::topic::check_will_topic(&will.topic)
+                {
+                    log::info!("{}: {err}", io.tag());
+                    let _ = io.shutdown().await;
+                    return Err(MqttError::Connect(MqttConnectError::Protocol(
+                        MqttProtocolError::spec(err),
+                    )));
+                }
                 // authenticate mqtt connection
                 let ack = ctx
                     .call(&self.svc, Connect::new(connect, size, io, st, shared))
