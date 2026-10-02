@@ -173,6 +173,19 @@ where
                 if publish.topic.contains(['#', '+']) {
                     return Err(SpecViolation::Pub_3_3_2_2.into());
                 }
+                // (MQTT 5.0, 3.3.2.3.5)
+                if publish
+                    .properties
+                    .response_topic
+                    .as_ref()
+                    .is_some_and(|t| t.contains(['#', '+']))
+                {
+                    return Err(SpecViolation::Pub_3_3_2_14.into());
+                }
+                // (MQTT 5.0, 3.3.4)
+                if !publish.properties.subscription_ids.is_empty() {
+                    return Err(SpecViolation::Pub_3_3_4_6.into());
+                }
 
                 {
                     let mut inner = info.info.borrow_mut();
@@ -361,6 +374,19 @@ where
                     .any(|(tf, _)| !crate::topic::is_valid(tf))
                 {
                     Err(SpecViolation::Subs_4_7_1.into())
+                } else if pkt
+                    .topic_filters
+                    .iter()
+                    .any(|(tf, _)| !crate::topic::is_valid_shared(tf))
+                {
+                    Err(SpecViolation::Subs_4_8_2.into())
+                } else if pkt
+                    .topic_filters
+                    .iter()
+                    .any(|(tf, opts)| opts.no_local && crate::topic::is_shared(tf))
+                {
+                    // (MQTT 5.0, 3.8.3.1)
+                    Err(SpecViolation::Subs_3_8_3_4.into())
                 } else if pkt.id.is_some() && !self.inner.sink.codec.sub_ids_available() {
                     log::trace!(
                         "{}: Subscription Identifiers are not supported but was set",
@@ -397,6 +423,12 @@ where
                     .any(|tf| !crate::topic::is_valid(tf))
                 {
                     Err(SpecViolation::Subs_4_7_1.into())
+                } else if pkt
+                    .topic_filters
+                    .iter()
+                    .any(|tf| !crate::topic::is_valid_shared(tf))
+                {
+                    Err(SpecViolation::Subs_4_8_2.into())
                 } else if !self.inner.info.borrow_mut().inflight.insert(pkt.packet_id) {
                     // duplicated packet id, queued to keep acks in the order packets are received
                     Ok(Some(Encoded::Packet(codec::Packet::UnsubscribeAck(
@@ -750,5 +782,121 @@ mod tests {
             err.inner,
             error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1)
         );
+    }
+
+    #[ntex::test]
+    async fn test_spec_violations_v5() {
+        let cfg: SharedCfg = SharedCfg::new("DBG").add(MqttServiceConfig::new()).into();
+        let io = Io::new(IoTest::create().0, cfg.clone());
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            Rc::default(),
+        ));
+        let disp = Pipeline::new(
+            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
+            Dispatcher::new(
+                shared.clone(),
+                fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
+                fn_service(async |msg: ProtocolMessage| {
+                    Ok::<_, DispatcherError<TestError>>(msg.ack())
+                }),
+                cfg.get(),
+            ),
+        );
+        let violation = |res: Result<Option<Encoded>, DispatcherError<TestError>>| {
+            let Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err))) = res
+            else {
+                panic!("expected protocol violation")
+            };
+            assert_eq!(err.reason(), DisconnectReasonCode::ProtocolError);
+            let error::ViolationInner::Spec(err) = err.inner else {
+                panic!()
+            };
+            err
+        };
+        let publish = |response_topic: Option<&'static str>, sub_id: bool| {
+            let mut pkt = codec::Publish {
+                topic: ByteString::from_static("test"),
+                ..Default::default()
+            };
+            pkt.properties.response_topic = response_topic.map(ByteString::from_static);
+            if sub_id {
+                pkt.properties
+                    .subscription_ids
+                    .push(NonZeroU32::new(1).unwrap());
+            }
+            Decoded::Publish(pkt, Bytes::new(), 999)
+        };
+        let subscribe = |filter: &'static str, no_local: bool| {
+            Decoded::Packet(
+                Packet::Subscribe(codec::Subscribe {
+                    packet_id: NonZeroU16::new(1).unwrap(),
+                    id: None,
+                    user_properties: codec::UserProperties::default(),
+                    topic_filters: vec![(
+                        ByteString::from_static(filter),
+                        codec::SubscriptionOptions {
+                            no_local,
+                            ..Default::default()
+                        },
+                    )],
+                }),
+                999,
+            )
+        };
+        let unsubscribe = |filter: &'static str| {
+            Decoded::Packet(
+                Packet::Unsubscribe(codec::Unsubscribe {
+                    packet_id: NonZeroU16::new(2).unwrap(),
+                    user_properties: codec::UserProperties::default(),
+                    topic_filters: vec![ByteString::from_static(filter)],
+                }),
+                999,
+            )
+        };
+
+        // [MQTT-3.3.2-14] Response Topic must not contain wildcards
+        for topic in ["resp/+", "resp/#"] {
+            let err = violation(disp.call(publish(Some(topic), false)).await);
+            assert_eq!(err, error::SpecViolation::Pub_3_3_2_14);
+        }
+        assert!(disp.call(publish(Some("resp/a"), false)).await.is_ok());
+
+        // [MQTT-3.3.4-6] Client must not send a Subscription Identifier
+        let err = violation(disp.call(publish(None, true)).await);
+        assert_eq!(err, error::SpecViolation::Pub_3_3_4_6);
+
+        // [MQTT-4.8.2-1], [MQTT-4.8.2-2] ShareName format
+        for filter in ["$share//a", "$share/g", "$share/+/a"] {
+            let err = violation(disp.call(subscribe(filter, false)).await);
+            assert_eq!(err, error::SpecViolation::Subs_4_8_2);
+            let err = violation(disp.call(unsubscribe(filter)).await);
+            assert_eq!(err, error::SpecViolation::Subs_4_8_2);
+        }
+
+        // [MQTT-3.8.3-4] No Local must not be set on a Shared Subscription
+        let err = violation(disp.call(subscribe("$share/g/a", true)).await);
+        assert_eq!(err, error::SpecViolation::Subs_3_8_3_4);
+
+        let res = disp.call(subscribe("$share/g/a", false)).await.unwrap();
+        assert!(matches!(
+            res,
+            Some(Encoded::Packet(Packet::SubscribeAck(_)))
+        ));
+        let res = disp.call(unsubscribe("$share/g/a")).await.unwrap();
+        assert!(matches!(
+            res,
+            Some(Encoded::Packet(Packet::UnsubscribeAck(_)))
+        ));
+        let mut pkt = subscribe("a", true);
+        if let Decoded::Packet(Packet::Subscribe(ref mut pkt), _) = pkt {
+            pkt.packet_id = NonZeroU16::new(3).unwrap();
+        }
+        let res = disp.call(pkt).await.unwrap();
+        assert!(matches!(
+            res,
+            Some(Encoded::Packet(Packet::SubscribeAck(_)))
+        ));
     }
 }
