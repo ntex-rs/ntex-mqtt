@@ -429,9 +429,9 @@ mod tests {
     use std::num::NonZeroU16;
 
     use crate::v5::codec::{
-        Auth, Connect, ConnectAck, Disconnect, LastWill, PublishAck, PublishAck2, QoS, Subscribe,
-        SubscribeAck, SubscribeAckReason, SubscriptionOptions, Unsubscribe, UnsubscribeAck,
-        UnsubscribeAckReason,
+        Auth, AuthReasonCode, Connect, ConnectAck, Disconnect, LastWill, PublishAck, PublishAck2,
+        QoS, Subscribe, SubscribeAck, SubscribeAckReason, SubscriptionOptions, Unsubscribe,
+        UnsubscribeAck, UnsubscribeAckReason,
     };
 
     fn assert_rejected(codec: &Codec, item: Encoded) {
@@ -917,6 +917,13 @@ mod tests {
         }
     }
 
+    fn auth_with_method() -> Auth {
+        Auth {
+            auth_method: Some(ByteString::from_static("m")),
+            ..Auth::default()
+        }
+    }
+
     fn will_connect() -> Connect {
         Connect {
             client_id: ByteString::from_static("id"),
@@ -1062,7 +1069,7 @@ mod tests {
             ],
         );
         assert_str_rejected(
-            &Auth::default(),
+            &auth_with_method(),
             |p| Encoded::Packet(Packet::Auth(p)),
             &[
                 |p, s| p.auth_method = Some(s),
@@ -1096,7 +1103,10 @@ mod tests {
             |p| Encoded::Packet(Packet::Connect(Box::new(p))),
             &[
                 |p, b| p.password = Some(b),
-                |p, b| p.auth_data = Some(b),
+                |p, b| {
+                    p.auth_method = Some(ByteString::from_static("m"));
+                    p.auth_data = Some(b);
+                },
                 |p, b| p.last_will.as_mut().unwrap().message = b,
                 |p, b| p.last_will.as_mut().unwrap().correlation_data = Some(b),
             ],
@@ -1107,7 +1117,7 @@ mod tests {
             &[|p, b| p.auth_data = Some(b)],
         );
         assert_bin_rejected(
-            &Auth::default(),
+            &auth_with_method(),
             |p| Encoded::Packet(Packet::Auth(p)),
             &[|p, b| p.auth_data = Some(b)],
         );
@@ -1237,6 +1247,100 @@ mod tests {
                 Codec::new().decode(&mut src).err(),
                 Some(DecodeError::MalformedPacket)
             );
+        }
+    }
+
+    #[test]
+    fn test_connect_auth_data_requires_method() {
+        let codec = Codec::new();
+        let connect = |auth_method: Option<&'static str>| {
+            Encoded::Packet(Packet::Connect(Box::new(Connect {
+                client_id: ByteString::from_static("id"),
+                auth_method: auth_method.map(ByteString::from_static),
+                auth_data: Some(Bytes::from_static(b"x")),
+                ..Connect::default()
+            })))
+        };
+        assert_encoded(&codec, connect(Some("m")));
+        assert_rejected(&codec, connect(None));
+
+        let pkt = Connect::decode(&mut Bytes::from_static(
+            b"\x00\x04MQTT\x05\x02\x00\x3C\x08\x15\x00\x01m\x16\x00\x01x\x00\x02id",
+        ))
+        .unwrap();
+        assert_eq!(pkt.auth_method, Some(ByteString::from_static("m")));
+        assert_eq!(pkt.auth_data, Some(Bytes::from_static(b"x")));
+        assert_eq!(
+            Connect::decode(&mut Bytes::from_static(
+                b"\x00\x04MQTT\x05\x02\x00\x3C\x04\x16\x00\x01x\x00\x02id"
+            )),
+            Err(DecodeError::MalformedPacket)
+        );
+    }
+
+    #[test]
+    fn test_auth_method_required() {
+        let encode = |pkt: Auth| {
+            let mut buf = BytePages::default();
+            Codec::new()
+                .encode(Encoded::Packet(Packet::Auth(pkt)), &mut buf)
+                .map(|()| buf.freeze())
+        };
+        let decode = |data: &[u8]| match Codec::new().decode(&mut BytesMut::from(data)) {
+            Ok(Some(Decoded::Packet(Packet::Auth(pkt), _))) => Ok(pkt),
+            Ok(_) => panic!(),
+            Err(e) => Err(e),
+        };
+
+        // Success without properties uses Remaining Length of 0
+        assert_eq!(&encode(Auth::default()).unwrap()[..], b"\xF0\x00");
+        assert_eq!(decode(b"\xF0\x00"), Ok(Auth::default()));
+
+        let pkt = Auth {
+            reason_code: AuthReasonCode::ContinueAuth,
+            auth_data: Some(Bytes::from_static(b"x")),
+            ..auth_with_method()
+        };
+        let data = encode(pkt.clone()).unwrap();
+        assert_eq!(&data[..], b"\xF0\x0A\x18\x08\x15\x00\x01m\x16\x00\x01x");
+        assert_eq!(decode(&data), Ok(pkt));
+        let data = encode(auth_with_method()).unwrap();
+        assert_eq!(&data[..], b"\xF0\x06\x00\x04\x15\x00\x01m");
+        assert_eq!(decode(&data), Ok(auth_with_method()));
+
+        for pkt in [
+            Auth {
+                reason_code: AuthReasonCode::ContinueAuth,
+                ..Auth::default()
+            },
+            Auth {
+                reason_code: AuthReasonCode::ReAuth,
+                ..Auth::default()
+            },
+            Auth {
+                auth_data: Some(Bytes::from_static(b"x")),
+                ..Auth::default()
+            },
+            Auth {
+                reason_string: Some(ByteString::from_static("r")),
+                ..Auth::default()
+            },
+            Auth {
+                user_properties: vec![("a".into(), "b".into())],
+                ..Auth::default()
+            },
+        ] {
+            assert_eq!(encode(pkt), Err(EncodeError::MalformedPacket));
+        }
+
+        for data in [
+            &b"\xF0\x01\x00"[..],
+            b"\xF0\x01\x18",
+            b"\xF0\x02\x00\x00",
+            b"\xF0\x02\x18\x00",
+            b"\xF0\x06\x18\x04\x16\x00\x01x",
+        ] {
+            assert_eq!(decode(data), Err(DecodeError::MalformedPacket));
         }
     }
 }

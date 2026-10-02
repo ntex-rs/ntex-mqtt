@@ -56,6 +56,8 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
                 && is_valid_opt_bin(&connect.password)
                 && is_valid_opt_str(&connect.auth_method)
                 && is_valid_opt_bin(&connect.auth_data)
+                // Authentication Data requires Authentication Method (MQTT 5.0, 3.1.2.11.10)
+                && (connect.auth_data.is_none() || connect.auth_method.is_some())
                 && is_valid_props(&connect.user_properties)
                 // Will Topic is a topic name, [MQTT-4.7.3-1], [MQTT-4.7.0-1] (MQTT 5.0, 4.7)
                 && connect.last_will.as_ref().is_none_or(|will| {
@@ -116,8 +118,11 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
                 && is_valid_opt_str(&disconnect.reason_string)
                 && is_valid_props(&disconnect.user_properties)
         }
+        // Authentication Method is required, unless AUTH is encoded with
+        // a Remaining Length of 0 (MQTT 5.0, 3.15.2.1, 3.15.2.2.2)
         Packet::Auth(auth) => {
-            is_valid_opt_str(&auth.auth_method)
+            (auth.auth_method.is_some() || auth.is_short_form())
+                && is_valid_opt_str(&auth.auth_method)
                 && is_valid_opt_bin(&auth.auth_data)
                 && is_valid_opt_str(&auth.reason_string)
                 && is_valid_props(&auth.user_properties)

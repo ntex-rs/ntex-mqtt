@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Require a v5 Authentication Method in AUTH and with CONNECT Authentication Data,
+  encode AUTH Success without properties with a Remaining Length of 0
+
 * codec: Reject a v5 CONNACK Maximum QoS other than 0 or 1
 
 * codec: Reject a v5 CONNACK Maximum Packet Size of zero on decode and encode

@@ -151,6 +151,12 @@ impl Connect {
                 _ => return Err(DecodeError::MalformedPacket),
             }
         }
+        // Authentication Data without Authentication Method is a Protocol Error
+        // (MQTT 5.0, 3.1.2.11.10)
+        ensure!(
+            auth_data.is_none() || auth_method.is_some(),
+            DecodeError::MalformedPacket
+        );
 
         let client_id = ByteString::decode(src)?;
 
