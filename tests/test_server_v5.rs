@@ -2181,3 +2181,58 @@ async fn test_sink_close_with_no_reason() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[ntex::test]
+async fn test_handshake_unsupported_protocol_level() -> std::io::Result<()> {
+    let srv = server::test_server(async || {
+        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
+    });
+    let connect_pkt = |level| {
+        [
+            0x10, 0x0c, 0x00, 0x04, b'M', b'Q', b'T', b'T', level, 0x02, 0x00, 0x3c, 0x00, 0x00,
+        ]
+    };
+
+    // MQTT 3.1 and 3.1.1 clients get v3 CONNACK 0x01
+    for level in [3, 4] {
+        let io = srv.connect().await.unwrap();
+        let codec = ntex_mqtt::v3::codec::Codec::default();
+        io.encode_slice(&connect_pkt(level)).unwrap();
+
+        let ack = io.recv(&codec).await.unwrap().unwrap();
+        assert_eq!(
+            ack,
+            ntex_mqtt::v3::codec::Decoded::Packet(
+                ntex_mqtt::v3::codec::Packet::ConnectAck(ntex_mqtt::v3::codec::ConnectAck {
+                    session_present: false,
+                    return_code:
+                        ntex_mqtt::v3::codec::ConnectAckReason::UnacceptableProtocolVersion,
+                }),
+                2
+            )
+        );
+        assert!(io.recv(&codec).await.unwrap().is_none());
+    }
+
+    // other levels get v5 CONNACK 0x84
+    for level in [0, 6, 0xff] {
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::default();
+        io.encode_slice(&connect_pkt(level)).unwrap();
+
+        let ack = io.recv(&codec).await.unwrap().unwrap();
+        assert_eq!(
+            ack,
+            Decoded::Packet(
+                Packet::ConnectAck(Box::new(codec::ConnectAck {
+                    reason_code: codec::ConnectAckReason::UnsupportedProtocolVersion,
+                    ..Default::default()
+                })),
+                3
+            )
+        );
+        assert!(io.recv(&codec).await.unwrap().is_none());
+    }
+
+    Ok(())
+}

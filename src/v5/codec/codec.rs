@@ -659,6 +659,51 @@ mod tests {
     }
 
     #[test]
+    fn test_encode_sub_id_range() {
+        use std::num::NonZeroU32;
+
+        let codec = Codec::new();
+        let max = NonZeroU32::new(268_435_455).unwrap();
+        let over = NonZeroU32::new(268_435_456).unwrap();
+        let encode = |item| {
+            let mut buf = BytePages::default();
+            codec.encode(item, &mut buf).unwrap();
+            buf.freeze()
+        };
+
+        // [MQTT 5.0, 3.8.2.1.2] 1 to 268,435,455
+        let subscribe = |id| {
+            Encoded::Packet(Packet::Subscribe(Subscribe {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                id: Some(id),
+                user_properties: Vec::new(),
+                topic_filters: vec![(ByteString::from_static("a"), SubscriptionOptions::default())],
+            }))
+        };
+        assert_rejected(&codec, subscribe(over));
+        assert_rejected(&codec, subscribe(NonZeroU32::MAX));
+        assert_eq!(
+            &encode(subscribe(max))[..],
+            b"\x82\x0c\x00\x01\x05\x0b\xff\xff\xff\x7f\x00\x01a\x00"
+        );
+
+        // [MQTT 5.0, 3.3.2.3.8] 1 to 268,435,455
+        let publish = |id| {
+            let mut pkt = Publish {
+                topic: ByteString::from_static("a"),
+                ..Default::default()
+            };
+            pkt.properties.subscription_ids = vec![NonZeroU32::MIN, id];
+            Encoded::Publish(pkt, None)
+        };
+        assert_rejected(&codec, publish(over));
+        assert_eq!(
+            &encode(publish(max))[..],
+            b"\x30\x0b\x00\x01a\x07\x0b\x01\x0b\xff\xff\xff\x7f"
+        );
+    }
+
+    #[test]
     fn test_no_problem_info() {
         let ack = || {
             Encoded::Packet(Packet::PublishAck(PublishAck {

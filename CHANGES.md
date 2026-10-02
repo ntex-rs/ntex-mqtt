@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Fail encoding subscription identifiers over 268,435,455 instead of panicking
+
+* v5: Send CONNACK 0x84 for an unsupported protocol level, v3 CONNACK 0x01 for MQTT 3.1.1 clients
+
 * codec: Reject publish packets with a header longer than the packet, reject
   encoding a publish with a payload bigger than its payload size
 

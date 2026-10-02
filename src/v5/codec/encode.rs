@@ -1,10 +1,12 @@
 #![allow(clippy::ref_option, clippy::needless_pass_by_value)]
+use std::num::NonZeroU32;
+
 use ntex_bytes::{BufMut, BytePages, ByteString};
 
 use super::packet::{Packet, Publish, property_type as pt};
 use super::{UserProperties, UserProperty};
 use crate::error::EncodeError;
-use crate::types::{QoS, packet_type};
+use crate::types::{MAX_PACKET_SIZE, QoS, packet_type};
 use crate::utils::{Encode, is_valid_str, is_valid_topic_name, write_variable_length};
 
 fn is_valid_opt_str(s: &Option<ByteString>) -> bool {
@@ -15,6 +17,12 @@ fn is_valid_props(props: &UserProperties) -> bool {
     props
         .iter()
         .all(|(k, v)| is_valid_str(k) && is_valid_str(v))
+}
+
+/// Subscription Identifier is a Variable Byte Integer in the range 1 to 268,435,455,
+/// (MQTT 5.0, 3.3.2.3.8, 3.8.2.1.2, 1.5.5)
+fn is_valid_sub_id(id: NonZeroU32) -> bool {
+    id.get() <= MAX_PACKET_SIZE
 }
 
 /// Checks the rules a sender must follow before anything gets written,
@@ -59,6 +67,7 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
                     .topic_filters
                     .iter()
                     .all(|(f, _)| !f.is_empty() && is_valid_str(f))
+                && sub.id.is_none_or(is_valid_sub_id)
                 && is_valid_props(&sub.user_properties)
         }
         Packet::SubscribeAck(ack) => {
@@ -108,6 +117,14 @@ pub(super) fn validate_publish(publish: &Publish) -> Result<(), EncodeError> {
         is_valid_opt_str(&publish.properties.content_type)
             && is_valid_opt_str(&publish.properties.response_topic)
             && is_valid_props(&publish.properties.user_properties),
+        EncodeError::MalformedPacket
+    );
+    ensure!(
+        publish
+            .properties
+            .subscription_ids
+            .iter()
+            .all(|id| is_valid_sub_id(*id)),
         EncodeError::MalformedPacket
     );
     if publish.qos == QoS::AtMostOnce {
