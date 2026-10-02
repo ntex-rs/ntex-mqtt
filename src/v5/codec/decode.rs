@@ -262,6 +262,32 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_null_char() {
+        // topic
+        assert_eq!(
+            Publish::decode(&mut Bytes::from_static(b"\x00\x03a\x00b\x00data"), 0x30, 4),
+            Err(DecodeError::MalformedPacket)
+        );
+        // user property
+        assert_eq!(
+            Publish::decode(
+                &mut Bytes::from_static(b"\x00\x03a/b\x06\x26\x00\x01\x00\x00\x00data"),
+                0x30,
+                4
+            ),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert!(
+            Publish::decode(
+                &mut Bytes::from_static(b"\x00\x03a/b\x06\x26\x00\x01k\x00\x00data"),
+                0x30,
+                4
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn test_decode_publish_empty_topic() {
         // no topic alias
         assert_eq!(

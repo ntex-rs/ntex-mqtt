@@ -365,6 +365,18 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_null_char() {
+        assert_eq!(
+            decode_publish_packet(&mut Bytes::from_static(b"\x00\x03a\x00bdata"), 0x30, 4),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            decode_packet(Bytes::from_static(b"\x00\x01\x00\x03a\x00b\x00"), 0x82),
+            Err(DecodeError::MalformedPacket)
+        );
+    }
+
+    #[test]
     fn test_decode_publish_packets() {
         //assert_eq!(
         //    decode_publish_packet(b"\x00\x05topic\x12\x34"),

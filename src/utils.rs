@@ -115,7 +115,12 @@ impl Decode for Bytes {
 
 impl Decode for ByteString {
     fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
-        ByteString::try_from(Bytes::decode(src)?).map_err(|()| DecodeError::Utf8Error)
+        let bytes = Bytes::decode(src)?;
+        // strings must not include U+0000, [MQTT-1.5.3-2] (MQTT 3.1.1, 1.5.3),
+        // [MQTT-1.5.4-2] (MQTT 5.0, 1.5.4). 0x00 never occurs inside other
+        // utf-8 sequences, so checking raw bytes is enough
+        ensure!(!bytes.contains(&0), DecodeError::MalformedPacket);
+        ByteString::try_from(bytes).map_err(|()| DecodeError::Utf8Error)
     }
 }
 
@@ -309,6 +314,15 @@ pub(crate) fn write_variable_length(len: u32, dst: &mut BytePages) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_decode_string_null_char() {
+        let decode = |b: &'static [u8]| ByteString::decode(&mut Bytes::from_static(b));
+        assert_eq!(decode(b"\x00\x03a/b").unwrap(), "a/b");
+        assert_eq!(decode(b"\x00\x03a\x00b"), Err(DecodeError::MalformedPacket));
+        assert_eq!(decode(b"\x00\x01\x00"), Err(DecodeError::MalformedPacket));
+        assert_eq!(decode(b"\x00\x02\xc0\x80"), Err(DecodeError::Utf8Error));
+    }
 
     #[test]
     fn test_decode_variable_length() {
