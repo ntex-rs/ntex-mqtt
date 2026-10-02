@@ -205,6 +205,9 @@ impl Encoder for Codec {
     type Error = EncodeError;
 
     fn encode(&self, item: Self::Item, dst: &mut BytePages) -> Result<(), EncodeError> {
+        if self.encoding_payload.get().is_some() && !matches!(item, Encoded::PayloadChunk(_)) {
+            return Err(EncodeError::ExpectPayload);
+        }
         match item {
             Encoded::Packet(pkt) => {
                 let content_size = encode::get_encoded_size(&pkt);
@@ -471,5 +474,45 @@ mod tests {
             Err(EncodeError::OverMaxPacketSize)
         );
         assert!(buf.freeze().is_empty());
+    }
+
+    #[test]
+    fn test_encode_expect_payload() {
+        let codec = Codec::new();
+        let pkt = Publish {
+            dup: false,
+            retain: false,
+            qos: QoS::AtMostOnce,
+            topic: ByteString::from_static("/test"),
+            packet_id: None,
+            payload_size: 4,
+        };
+        let mut buf = BytePages::default();
+        codec
+            .encode(
+                Encoded::Publish(pkt.clone(), Some(Bytes::from_static(b"ab"))),
+                &mut buf,
+            )
+            .unwrap();
+        assert_eq!(&buf.freeze()[..], b"\x30\x0b\x00\x05/testab");
+
+        // nothing is written until the payload is complete
+        assert_eq!(
+            codec.encode(Encoded::Packet(Packet::PingRequest), &mut buf),
+            Err(EncodeError::ExpectPayload)
+        );
+        assert_eq!(
+            codec.encode(Encoded::Publish(pkt, None), &mut buf),
+            Err(EncodeError::ExpectPayload)
+        );
+        assert!(buf.freeze().is_empty());
+
+        codec
+            .encode(Encoded::PayloadChunk(Bytes::from_static(b"cd")), &mut buf)
+            .unwrap();
+        codec
+            .encode(Encoded::Packet(Packet::PingRequest), &mut buf)
+            .unwrap();
+        assert_eq!(&buf.freeze()[..], b"cd\xc0\x00");
     }
 }

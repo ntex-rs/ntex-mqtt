@@ -336,6 +336,10 @@ impl Encoder for Codec {
                 }
             }
             Encoded::Publish(pkt, buf) => {
+                if self.encoding_payload.get().is_some() {
+                    log::trace!("Expect payload, received {pkt:?}");
+                    return Err(EncodeError::ExpectPayload);
+                }
                 if buf
                     .as_ref()
                     .is_some_and(|buf| buf.len() > pkt.payload_size as usize)
@@ -575,5 +579,44 @@ mod tests {
             Err(EncodeError::OverMaxPacketSize)
         );
         assert!(buf.freeze().is_empty());
+    }
+
+    #[test]
+    fn test_encode_expect_payload() {
+        use ntex_bytes::ByteString;
+
+        let codec = Codec::new();
+        let pkt = Publish {
+            topic: ByteString::from_static("/test"),
+            payload_size: 4,
+            ..Default::default()
+        };
+        let mut buf = BytePages::default();
+        codec
+            .encode(
+                Encoded::Publish(pkt.clone(), Some(Bytes::from_static(b"ab"))),
+                &mut buf,
+            )
+            .unwrap();
+        assert_eq!(&buf.freeze()[..], b"\x30\x0c\x00\x05/test\x00ab");
+
+        // nothing is written until the payload is complete
+        assert_eq!(
+            codec.encode(Encoded::Packet(Packet::PingRequest), &mut buf),
+            Err(EncodeError::ExpectPayload)
+        );
+        assert_eq!(
+            codec.encode(Encoded::Publish(pkt, None), &mut buf),
+            Err(EncodeError::ExpectPayload)
+        );
+        assert!(buf.freeze().is_empty());
+
+        codec
+            .encode(Encoded::PayloadChunk(Bytes::from_static(b"cd")), &mut buf)
+            .unwrap();
+        codec
+            .encode(Encoded::Packet(Packet::PingRequest), &mut buf)
+            .unwrap();
+        assert_eq!(&buf.freeze()[..], b"cd\xc0\x00");
     }
 }
