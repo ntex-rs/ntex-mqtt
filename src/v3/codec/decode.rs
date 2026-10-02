@@ -152,6 +152,8 @@ fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
         let qos = src.get_u8().try_into()?;
         topic_filters.push((topic, qos));
     }
+    // [MQTT-3.8.3-3] at least one topic filter is required (3.1.1, 3.8.3)
+    ensure!(!topic_filters.is_empty(), DecodeError::MalformedPacket);
 
     Ok(Packet::Subscribe {
         packet_id,
@@ -178,6 +180,9 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     while src.remaining() > 0 {
         topic_filters.push(ByteString::decode(src)?);
     }
+    // [MQTT-3.10.3-2] at least one topic filter is required (3.1.1, 3.10.3)
+    ensure!(!topic_filters.is_empty(), DecodeError::MalformedPacket);
+
     Ok(Packet::Unsubscribe {
         packet_id,
         topic_filters,
@@ -352,6 +357,18 @@ mod tests {
             Packet::PublishComplete {
                 packet_id: packet_id(0x4321)
             }
+        );
+    }
+
+    #[test]
+    fn test_decode_empty_subscribe_packets() {
+        assert_eq!(
+            decode_packet(Bytes::from_static(b"\x12\x34"), packet_type::SUBSCRIBE),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            decode_packet(Bytes::from_static(b"\x12\x34"), packet_type::UNSUBSCRIBE),
+            Err(DecodeError::MalformedPacket)
         );
     }
 

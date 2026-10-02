@@ -133,6 +133,8 @@ impl Subscribe {
             let opts = SubscriptionOptions::decode(src)?;
             topic_filters.push((topic, opts));
         }
+        // [MQTT-3.8.3-2] at least one topic filter is required (5.0, 3.8.3)
+        ensure!(!topic_filters.is_empty(), DecodeError::MalformedPacket);
 
         Ok(Self {
             packet_id,
@@ -178,6 +180,8 @@ impl Unsubscribe {
         while src.remaining() > 0 {
             topic_filters.push(ByteString::decode(src)?);
         }
+        // [MQTT-3.10.3-2] at least one topic filter is required (5.0, 3.10.3)
+        ensure!(!topic_filters.is_empty(), DecodeError::MalformedPacket);
 
         Ok(Self {
             packet_id,

@@ -297,6 +297,21 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_empty_subscribe_packets() {
+        assert_eq!(
+            decode_packet(Bytes::from_static(b"\x12\x34\x00"), packet_type::SUBSCRIBE),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            decode_packet(
+                Bytes::from_static(b"\x12\x34\x00"),
+                packet_type::UNSUBSCRIBE
+            ),
+            Err(DecodeError::MalformedPacket)
+        );
+    }
+
+    #[test]
     fn test_decode_subscribe_options() {
         // all non-reserved subscription options bits
         let Packet::Subscribe(sub) =

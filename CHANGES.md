@@ -13,6 +13,8 @@
 
 * codec: Reject SUBSCRIBE packets with reserved subscription options bits set
 
+* codec: Reject SUBSCRIBE and UNSUBSCRIBE packets without topic filters
+
 * Update to ntex-io 4.1, ntex-codec 2.0
 
 * Stop the dispatcher on clean peer eof while the service is not ready
