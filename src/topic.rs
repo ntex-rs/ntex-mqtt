@@ -220,8 +220,11 @@ impl MatchLevel for &TopicFilterLevel {
 fn match_level_impl(
     subset_level: &TopicFilterLevel,
     superset_level: &TopicFilterLevel,
-    _index: usize,
+    index: usize,
 ) -> bool {
+    // a wildcard at the first level does not match a topic starting with `$`,
+    // [MQTT-4.7.2-1] (MQTT 5.0, 4.7.2), (MQTT 3.1.1, 4.7.2)
+    let is_sys = index == 0 && matches!(subset_level, TopicFilterLevel::System(_));
     match superset_level {
         TopicFilterLevel::Normal(rhs) => {
             matches!(subset_level, TopicFilterLevel::Normal(lhs) if lhs == rhs)
@@ -230,8 +233,10 @@ fn match_level_impl(
             matches!(subset_level, TopicFilterLevel::System(lhs) if lhs == rhs)
         }
         TopicFilterLevel::Blank => *subset_level == TopicFilterLevel::Blank,
-        TopicFilterLevel::SingleWildcard => *subset_level != TopicFilterLevel::MultiWildcard,
-        TopicFilterLevel::MultiWildcard => true,
+        TopicFilterLevel::SingleWildcard => {
+            !is_sys && *subset_level != TopicFilterLevel::MultiWildcard
+        }
+        TopicFilterLevel::MultiWildcard => !is_sys,
     }
 }
 
@@ -572,6 +577,15 @@ mod tests {
     #[test_case("a/#", "a/+/+" => true; "11")]
     #[test_case("a/+/normal/+", "a/$not_sys/normal/+" => true; "12")]
     #[test_case("a/+/#", "a/b" => true; "13")]
+    #[test_case("+/a", "$SYS/a" => false; "sys1")]
+    #[test_case("+", "$SYS" => false; "sys2")]
+    #[test_case("#", "$SYS/a" => false; "sys3")]
+    #[test_case("#", "$SYS/#" => false; "sys4")]
+    #[test_case("+/#", "$SYS/+" => false; "sys5")]
+    #[test_case("$SYS/#", "$SYS/+" => true; "sys6")]
+    #[test_case("$SYS/+", "$SYS/a" => true; "sys7")]
+    #[test_case("#", "a/$SYS" => true; "sys8")]
+    #[test_case("+/+", "a/$SYS" => true; "sys9")]
     fn matches_filter(superset_filter: &'static str, subset_filter: &'static str) -> bool {
         topic(superset_filter).matches_filter(&topic(subset_filter))
     }
