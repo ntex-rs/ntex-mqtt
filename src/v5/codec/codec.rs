@@ -1459,6 +1459,43 @@ mod tests {
     }
 
     #[test]
+    fn test_message_expiry_interval_zero() {
+        // a Message Expiry Interval of 0 is valid (MQTT 5.0, 3.3.2.3.3, 3.1.3.2.4)
+        let publish = b"\x30\x09\x00\x01t\x05\x02\x00\x00\x00\x00";
+        let connect = b"\x10\x1A\x00\x04MQTT\x05\x06\x00\x3C\x00\x00\x02id\
+\x05\x02\x00\x00\x00\x00\x00\x01t\x00\x00";
+
+        let codec = Codec::new();
+        let Some(Decoded::Publish(pkt, _, _)) =
+            codec.decode(&mut BytesMut::from(&publish[..])).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(pkt.properties.message_expiry_interval, Some(0));
+        let mut buf = BytePages::default();
+        codec
+            .encode(Encoded::Publish(pkt, Some(Bytes::new())), &mut buf)
+            .unwrap();
+        assert_eq!(&buf.freeze()[..], &publish[..]);
+
+        let codec = Codec::new();
+        let Some(Decoded::Packet(Packet::Connect(pkt), _)) =
+            codec.decode(&mut BytesMut::from(&connect[..])).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            pkt.last_will.as_ref().unwrap().message_expiry_interval,
+            Some(0)
+        );
+        let mut buf = BytePages::default();
+        codec
+            .encode(Encoded::Packet(Packet::Connect(pkt)), &mut buf)
+            .unwrap();
+        assert_eq!(&buf.freeze()[..], &connect[..]);
+    }
+
+    #[test]
     fn test_small_max_outbound_size() {
         let encode = |max_size, pkt: Packet| {
             let codec = Codec::new();

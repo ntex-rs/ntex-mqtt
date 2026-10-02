@@ -49,7 +49,8 @@ pub struct LastWill {
 
     pub will_delay_interval_sec: Option<u32>,
     pub correlation_data: Option<Bytes>,
-    pub message_expiry_interval: Option<NonZeroU32>,
+    /// Message Expiry Interval in seconds, 0 is a valid value (MQTT 5.0, 3.1.3.2.4)
+    pub message_expiry_interval: Option<u32>,
     pub content_type: Option<ByteString>,
     pub user_properties: UserProperties,
     pub is_utf8_payload: Option<bool>,
