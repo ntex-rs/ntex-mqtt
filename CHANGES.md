@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* Fix `TopicFilter` panicking in `Display` when created without levels, `TryFrom` rejects
+  an empty list of levels and `Deserialize` validates the levels like `TryFrom`
+
 * Fix in-flight limits being skipped for the request after a PUBLISH with a complete payload
   or after the last payload chunk, `SizedRequest::is_publish()` and `is_chunk()` are replaced
   by `has_more_chunks()`

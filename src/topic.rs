@@ -122,8 +122,20 @@ fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(superset: &TopicFilter, sub
 }
 
 /// Parsed mqtt topic filter
-#[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize)]
 pub struct TopicFilter(Vec<TopicFilterLevel>);
+
+impl<'de> serde::Deserialize<'de> for TopicFilter {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // same format as the derived impl, the levels are validated
+        #[derive(serde::Deserialize)]
+        #[serde(rename = "TopicFilter")]
+        struct Levels(Vec<TopicFilterLevel>);
+
+        let Levels(levels) = Levels::deserialize(deserializer)?;
+        TopicFilter::try_from(levels).map_err(|_| serde::de::Error::custom("invalid topic filter"))
+    }
+}
 
 impl TopicFilter {
     /// Returns levels of the topic filter
@@ -132,20 +144,23 @@ impl TopicFilter {
     }
 
     fn is_valid(&self) -> bool {
-        self.0
-            .iter()
-            .position(|level| !level.is_valid())
-            .or_else(|| {
-                self.0
-                    .iter()
-                    .enumerate()
-                    .position(|(pos, level)| match *level {
-                        TopicFilterLevel::MultiWildcard => pos != self.0.len() - 1,
-                        TopicFilterLevel::System(_) => pos != 0,
-                        _ => false,
-                    })
-            })
-            .is_none()
+        // a topic filter has at least one level (MQTT 5.0, 4.7.3)
+        !self.0.is_empty()
+            && self
+                .0
+                .iter()
+                .position(|level| !level.is_valid())
+                .or_else(|| {
+                    self.0
+                        .iter()
+                        .enumerate()
+                        .position(|(pos, level)| match *level {
+                            TopicFilterLevel::MultiWildcard => pos != self.0.len() - 1,
+                            TopicFilterLevel::System(_) => pos != 0,
+                            _ => false,
+                        })
+                })
+                .is_none()
     }
 
     /// Check if the topic filter matches another topic filter
@@ -428,8 +443,39 @@ mod tests {
     #[test_case(vec![lvl_normal("sport"), TopicFilterLevel::SingleWildcard, lvl_normal("player1")] => true; "4")]
     #[test_case(vec![lvl_normal("sport"), TopicFilterLevel::MultiWildcard, lvl_normal("player1")] => false; "5")]
     #[test_case(vec![lvl_normal("sport"), lvl_sys("$SYS"), lvl_normal("player1")] => false; "6")]
+    #[test_case(vec![] => false; "7")]
     fn topic_is_valid(levels: Vec<TopicFilterLevel>) -> bool {
         TopicFilter::try_from(levels).is_ok()
+    }
+
+    #[test]
+    fn test_empty_levels() {
+        assert_eq!(
+            TopicFilter::try_from(vec![]),
+            Err(TopicFilterError::InvalidTopic)
+        );
+        assert_eq!(
+            TopicFilter::try_from(&[][..]),
+            Err(TopicFilterError::InvalidTopic)
+        );
+    }
+
+    #[test]
+    fn test_serde() {
+        let tf = topic("$SYS/+/a//#");
+        let json = serde_json::to_string(&tf).unwrap();
+        let de: TopicFilter = serde_json::from_str(&json).unwrap();
+        assert_eq!(de, tf);
+        assert_eq!(de.to_string(), "$SYS/+/a//#");
+
+        for json in [
+            "[]",
+            r#"["MultiWildcard","SingleWildcard"]"#,
+            r#"[{"Normal":"a"},{"System":"$b"}]"#,
+            r#"[{"Normal":"a+"}]"#,
+        ] {
+            assert!(serde_json::from_str::<TopicFilter>(json).is_err(), "{json}");
+        }
     }
 
     #[test]
