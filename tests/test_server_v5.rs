@@ -923,6 +923,7 @@ async fn test_max_receive() {
             reason_code: codec::ConnectAckReason::Success,
             topic_alias_max: 32,
             server_keepalive_sec: Some(30),
+            max_packet_size: Some(256 * 1024),
             ..Default::default()
         }))
     );
@@ -962,6 +963,61 @@ async fn test_max_receive() {
             user_properties: Default::default(),
         })
     );
+}
+
+#[ntex::test]
+async fn test_default_max_size() {
+    let srv = server::test_server(async move || {
+        MqttServer::new(async move |p: Publish| {
+            let _ = p.read_all().await;
+            Ok::<_, TestError>(p.ack())
+        })
+        .control(async move |msg| {
+            if let Control::Stop(Reason::Protocol(err)) = msg {
+                Ok(Some(
+                    codec::Packet::from(codec::Disconnect::from_proto_error(err.get_ref())).into(),
+                ))
+            } else {
+                Ok::<_, TestError>(None)
+            }
+        })
+        .build(connect)
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        Packet::Connect(Box::new(codec::Connect::default().client_id("user"))).into(),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let ack = io.recv(&codec).await.unwrap().unwrap();
+    let Packet::ConnectAck(ack) = packet(ack) else {
+        panic!()
+    };
+    assert_eq!(ack.max_packet_size, Some(256 * 1024));
+
+    // 13 bytes of fixed header, topic, packet id and properties length
+    let publish = |payload_size: u32| {
+        Encoded::Publish(
+            codec::Publish {
+                payload_size,
+                ..pkt_publish()
+            },
+            Some(Bytes::from(vec![b'*'; payload_size as usize])),
+        )
+    };
+    io.send(publish(256 * 1024 - 13), &codec).await.unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert!(matches!(packet(pkt), Packet::PublishAck(_)));
+
+    io.send(publish(256 * 1024 - 12), &codec).await.unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    let Packet::Disconnect(pkt) = packet(pkt) else {
+        panic!()
+    };
+    assert_eq!(pkt.reason_code, codec::DisconnectReasonCode::PacketTooLarge);
 }
 
 #[ntex::test]
@@ -1705,6 +1761,7 @@ async fn test_sink_ready() -> std::io::Result<()> {
             receive_max: NonZeroU16::new(16).unwrap(),
             topic_alias_max: 32,
             server_keepalive_sec: Some(30),
+            max_packet_size: Some(256 * 1024),
             ..Default::default()
         }))
     );
@@ -1790,7 +1847,11 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
     .config(
         SharedCfg::new("MQTT")
             .add(IoConfig::new().set_frame_read_rate(Seconds(1), Seconds(2), 10))
-            .add(MqttServiceConfig::new().set_min_chunk_size(32 * 1024)),
+            .add(
+                MqttServiceConfig::new()
+                    .set_min_chunk_size(32 * 1024)
+                    .set_max_size(0),
+            ),
     )
     .start();
 
