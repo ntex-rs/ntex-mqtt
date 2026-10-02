@@ -440,9 +440,9 @@ mod tests {
     use std::num::NonZeroU16;
 
     use crate::v5::codec::{
-        Auth, AuthReasonCode, Connect, ConnectAck, Disconnect, LastWill, PublishAck, PublishAck2,
-        QoS, Subscribe, SubscribeAck, SubscribeAckReason, SubscriptionOptions, Unsubscribe,
-        UnsubscribeAck, UnsubscribeAckReason,
+        Auth, AuthReasonCode, Connect, ConnectAck, ConnectAckReason, Disconnect, LastWill,
+        PublishAck, PublishAck2, QoS, Subscribe, SubscribeAck, SubscribeAckReason,
+        SubscriptionOptions, Unsubscribe, UnsubscribeAck, UnsubscribeAckReason,
     };
 
     fn assert_rejected(codec: &Codec, item: Encoded) {
@@ -1379,5 +1379,35 @@ mod tests {
             panic!()
         };
         assert_eq!(&encode(&codec)[..], b"\xE0\x02\x00\x00");
+    }
+
+    #[test]
+    fn test_connack_session_present_with_error() {
+        let encode = |session_present, reason_code| {
+            let mut buf = BytePages::default();
+            Codec::new()
+                .encode(
+                    Encoded::Packet(Packet::ConnectAck(Box::new(ConnectAck {
+                        session_present,
+                        reason_code,
+                        ..ConnectAck::default()
+                    }))),
+                    &mut buf,
+                )
+                .unwrap();
+            buf.freeze()
+        };
+        assert_eq!(
+            &encode(true, ConnectAckReason::Success)[..],
+            b"\x20\x03\x01\x00\x00"
+        );
+        assert_eq!(
+            &encode(false, ConnectAckReason::Success)[..],
+            b"\x20\x03\x00\x00\x00"
+        );
+        assert_eq!(
+            &encode(true, ConnectAckReason::NotAuthorized)[..],
+            b"\x20\x03\x00\x87\x00"
+        );
     }
 }

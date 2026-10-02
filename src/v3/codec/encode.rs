@@ -6,7 +6,7 @@ use crate::utils::{
     Encode, is_valid_bin, is_valid_str, is_valid_topic_name, write_variable_length,
 };
 
-use super::packet::{Connect, LastWill, Packet, Publish, SubscribeReturnCode};
+use super::packet::{Connect, ConnectAckReason, LastWill, Packet, Publish, SubscribeReturnCode};
 
 pub(crate) fn get_encoded_publish_size(p: &Publish) -> usize {
     // Topic + Packet Id + Payload
@@ -165,7 +165,10 @@ pub(crate) fn encode(
         Packet::ConnectAck(ack) => {
             dst.put_u8(packet_type::CONNACK);
             write_variable_length(content_size, dst);
-            let flags_byte = u8::from(ack.session_present);
+            // Session Present must be 0 with a non-zero return code, [MQTT-3.2.2-4]
+            let flags_byte = u8::from(
+                ack.session_present && ack.return_code == ConnectAckReason::ConnectionAccepted,
+            );
             let code: u8 = From::from(ack.return_code);
             dst.put_slice(&[flags_byte, code]);
         }
@@ -486,5 +489,27 @@ mod tests {
     fn test_encode_ping_packets() {
         assert_encode_packet(&Packet::PingRequest, b"\xc0\x00");
         assert_encode_packet(&Packet::PingResponse, b"\xd0\x00");
+    }
+
+    #[test]
+    fn test_encode_connack_session_present() {
+        let ack = |session_present, return_code| {
+            Packet::ConnectAck(super::super::packet::ConnectAck {
+                return_code,
+                session_present,
+            })
+        };
+        assert_encode_packet(
+            &ack(true, ConnectAckReason::ConnectionAccepted),
+            b"\x20\x02\x01\x00",
+        );
+        assert_encode_packet(
+            &ack(false, ConnectAckReason::ConnectionAccepted),
+            b"\x20\x02\x00\x00",
+        );
+        assert_encode_packet(
+            &ack(true, ConnectAckReason::NotAuthorized),
+            b"\x20\x02\x00\x05",
+        );
     }
 }
