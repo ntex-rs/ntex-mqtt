@@ -164,7 +164,14 @@ impl ConnectAck {
         let flags =
             ConnectAckFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnAckReservedFlagSet)?;
 
-        let reason_code = src.get_u8().try_into()?;
+        let reason_code: ConnectAckReason = src.get_u8().try_into()?;
+        let session_present = flags.contains(ConnectAckFlags::SESSION_PRESENT);
+        // Session Present must be 0 with a non-zero Reason Code,
+        // [MQTT-3.2.2-6] (MQTT 5.0, 3.2.2.1.1)
+        ensure!(
+            !session_present || reason_code == ConnectAckReason::Success,
+            DecodeError::MalformedPacket
+        );
 
         let prop_src = &mut utils::take_properties(src)?;
 
@@ -219,7 +226,7 @@ impl ConnectAck {
         ensure!(!src.has_remaining(), DecodeError::InvalidLength);
 
         Ok(ConnectAck {
-            session_present: flags.contains(ConnectAckFlags::SESSION_PRESENT),
+            session_present,
             reason_code,
             session_expiry_interval_secs,
             receive_max: receive_max.unwrap_or(RECEIVE_MAX_DEFAULT),

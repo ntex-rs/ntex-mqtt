@@ -6,7 +6,9 @@ use crate::error::DecodeError;
 use crate::types::{MQTT, MQTT_LEVEL_3, QoS, WILL_QOS_SHIFT, packet_type};
 use crate::utils::Decode;
 
-use super::packet::{Connect, ConnectAck, LastWill, Packet, Publish, SubscribeReturnCode};
+use super::packet::{
+    Connect, ConnectAck, ConnectAckReason, LastWill, Packet, Publish, SubscribeReturnCode,
+};
 use super::{ConnectAckFlags, ConnectFlags};
 
 pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
@@ -120,13 +122,20 @@ fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let flags =
         ConnectAckFlags::from_bits(src.get_u8()).ok_or(DecodeError::ConnAckReservedFlagSet)?;
 
-    let return_code = src.get_u8().try_into()?;
+    let return_code: ConnectAckReason = src.get_u8().try_into()?;
     // remaining length of CONNACK is 2 (MQTT 3.1.1, 3.2.1)
     ensure!(!src.has_remaining(), DecodeError::InvalidLength);
 
+    let session_present = flags.contains(ConnectAckFlags::SESSION_PRESENT);
+    // Session Present must be 0 with a non-zero return code, [MQTT-3.2.2-4] (MQTT 3.1.1, 3.2.2.2)
+    ensure!(
+        !session_present || return_code == ConnectAckReason::ConnectionAccepted,
+        DecodeError::MalformedPacket
+    );
+
     Ok(Packet::ConnectAck(ConnectAck {
         return_code,
-        session_present: flags.contains(ConnectAckFlags::SESSION_PRESENT),
+        session_present,
     }))
 }
 
@@ -222,7 +231,6 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
 mod tests {
     use super::*;
     use crate::utils::decode_variable_length;
-    use crate::v3::codec::ConnectAckReason;
 
     macro_rules! assert_decode_packet (
         ($bytes:expr, $res:expr) => {{
@@ -329,12 +337,26 @@ mod tests {
         );
 
         assert_eq!(
-            decode_connect_ack_packet(&mut Bytes::from_static(b"\x01\x04")),
+            decode_connect_ack_packet(&mut Bytes::from_static(b"\x01\x00")),
             Ok(Packet::ConnectAck(ConnectAck {
                 session_present: true,
+                return_code: ConnectAckReason::ConnectionAccepted
+            }))
+        );
+        assert_eq!(
+            decode_connect_ack_packet(&mut Bytes::from_static(b"\x00\x04")),
+            Ok(Packet::ConnectAck(ConnectAck {
+                session_present: false,
                 return_code: ConnectAckReason::BadUserNameOrPassword
             }))
         );
+        // [MQTT-3.2.2-4] Session Present with a non-zero return code
+        for code in 1..=5u8 {
+            assert_eq!(
+                decode_connect_ack_packet(&mut Bytes::from(vec![1, code])),
+                Err(DecodeError::MalformedPacket)
+            );
+        }
 
         assert_eq!(
             decode_connect_ack_packet(&mut Bytes::from_static(b"\x03\x04")),
@@ -342,9 +364,9 @@ mod tests {
         );
 
         assert_decode_packet!(
-            b"\x20\x02\x01\x04",
+            b"\x20\x02\x00\x04",
             Packet::ConnectAck(ConnectAck {
-                session_present: true,
+                session_present: false,
                 return_code: ConnectAckReason::BadUserNameOrPassword,
             })
         );

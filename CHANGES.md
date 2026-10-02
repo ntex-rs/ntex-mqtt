@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Reject a CONNACK with Session Present set and a non-zero return code
+  [MQTT-3.2.2-4] (v3), [MQTT-3.2.2-6] (v5)
+
 * v5: Send `server_keepalive_sec` if the client's keep-alive is 0 [MQTT-3.2.2-22], and close
   the connection after 1.2 times of the advertised `server_keepalive_sec` instead of exactly it,
   a not advertised `ConnectAck::keep_alive()` timeout is enforced as is
