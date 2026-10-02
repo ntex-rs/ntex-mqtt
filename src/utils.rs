@@ -335,6 +335,14 @@ pub(crate) fn is_valid_topic_name(topic: &str) -> bool {
         && !topic.bytes().any(|b| matches!(b, b'+' | b'#' | 0))
 }
 
+/// Topic filters must be at least one character long, [MQTT-4.7.3-1], the multi-level
+/// wildcard must be the last character and the wildcards must occupy entire levels,
+/// [MQTT-4.7.1-2], [MQTT-4.7.1-3] (MQTT 3.1.1, 4.7.1), [MQTT-4.7.1-1], [MQTT-4.7.1-2]
+/// (MQTT 5.0, 4.7.1), and they are strings (MQTT 3.1.1, 1.5.3), (MQTT 5.0, 1.5.4)
+pub(crate) fn is_valid_topic_filter(filter: &str) -> bool {
+    crate::topic::is_valid(filter) && is_valid_str(filter)
+}
+
 pub(crate) fn write_variable_length(len: u32, dst: &mut BytePages) {
     match len {
         0..=127 => dst.put_u8(len as u8),

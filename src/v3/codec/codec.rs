@@ -757,6 +757,50 @@ mod tests {
     /// Strings must not include the null character U+0000, [MQTT-1.5.3-2],
     /// they are limited to 65,535 bytes (MQTT 3.1.1, 1.5.3)
     #[test]
+    fn test_encode_topic_filter_syntax() {
+        let codec = Codec::new();
+        let packet_id = NonZeroU16::new(1).unwrap();
+        let subscribe = |filter: &'static str| {
+            Encoded::Packet(Packet::Subscribe {
+                packet_id,
+                topic_filters: vec![
+                    (ByteString::from_static("a"), QoS::AtMostOnce),
+                    (ByteString::from_static(filter), QoS::AtMostOnce),
+                ],
+            })
+        };
+        let unsubscribe = |filter: &'static str| {
+            Encoded::Packet(Packet::Unsubscribe {
+                packet_id,
+                topic_filters: vec![
+                    ByteString::from_static("a"),
+                    ByteString::from_static(filter),
+                ],
+            })
+        };
+
+        // [MQTT-4.7.1-2] `#` must be the last character and follow a level separator,
+        // [MQTT-4.7.1-3] `+` must occupy an entire level (MQTT 3.1.1, 4.7.1)
+        for filter in ["a/#/b", "#/", "a#", "a/b#", "a+", "+a", "a/+b/c", "++"] {
+            assert_rejected(&codec, subscribe(filter));
+            assert_rejected(&codec, unsubscribe(filter));
+        }
+        for filter in [
+            "#",
+            "+",
+            "a/#",
+            "+/+",
+            "/+/",
+            "a//b",
+            "$SYS/#",
+            "$share/g/a",
+        ] {
+            assert_encoded(&codec, subscribe(filter));
+            assert_encoded(&codec, unsubscribe(filter));
+        }
+    }
+
+    #[test]
     fn test_encode_invalid_str() {
         let codec = Codec::new();
         for item in str_packets(&ByteString::from("a".repeat(65_535))) {

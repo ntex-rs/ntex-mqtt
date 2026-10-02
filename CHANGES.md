@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* Encoders reject SUBSCRIBE and UNSUBSCRIBE with malformed topic filters, misplaced
+  wildcards [MQTT-4.7.1-*] and, for v5, malformed Shared Subscriptions [MQTT-4.8.2-1],
+  [MQTT-4.8.2-2]
+
 * Client dispatchers reject PUBLISH with wildcards in the Topic Name [MQTT-3.3.2-2] and,
   for v5, in the Response Topic [MQTT-3.3.2-14]
 

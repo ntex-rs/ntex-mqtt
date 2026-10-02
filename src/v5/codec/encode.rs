@@ -8,7 +8,8 @@ use super::{UserProperties, UserProperty};
 use crate::error::EncodeError;
 use crate::types::{MAX_PACKET_SIZE, QoS, packet_type};
 use crate::utils::{
-    Encode, is_valid_bin, is_valid_str, is_valid_topic_name, write_variable_length,
+    Encode, is_valid_bin, is_valid_str, is_valid_topic_filter, is_valid_topic_name,
+    write_variable_length,
 };
 
 fn is_valid_opt_str(s: &Option<ByteString>) -> bool {
@@ -29,6 +30,12 @@ fn is_valid_props(props: &UserProperties) -> bool {
     props
         .iter()
         .all(|(k, v)| is_valid_str(k) && is_valid_str(v))
+}
+
+/// Shared Subscription Topic Filters must have a valid `ShareName` followed by
+/// a Topic Filter, [MQTT-4.8.2-1], [MQTT-4.8.2-2] (MQTT 5.0, 4.8.2)
+fn is_valid_filter(filter: &str) -> bool {
+    is_valid_topic_filter(filter) && crate::topic::is_valid_shared(filter)
 }
 
 /// Subscription Identifier is a Variable Byte Integer in the range 1 to 268,435,455,
@@ -82,14 +89,11 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
             is_valid_opt_str(&ack.reason_string) && is_valid_props(&ack.properties)
         }
         // [MQTT-3.8.3-2] at least one topic filter is required (5.0, 3.8.3)
-        // [MQTT-4.7.3-1] topic filters must be at least one character long (5.0, 4.7.3)
         // [MQTT-3.8.3-4] No Local must not be set on a Shared Subscription (5.0, 3.8.3.1)
         Packet::Subscribe(sub) => {
             !sub.topic_filters.is_empty()
                 && sub.topic_filters.iter().all(|(f, opts)| {
-                    !f.is_empty()
-                        && is_valid_str(f)
-                        && !(opts.no_local && crate::topic::is_shared(f))
+                    is_valid_filter(f) && !(opts.no_local && crate::topic::is_shared(f))
                 })
                 && sub.id.is_none_or(is_valid_sub_id)
                 && is_valid_props(&sub.user_properties)
@@ -98,13 +102,9 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
             is_valid_opt_str(&ack.reason_string) && is_valid_props(&ack.properties)
         }
         // [MQTT-3.10.3-2] at least one topic filter is required (5.0, 3.10.3)
-        // [MQTT-4.7.3-1] topic filters must be at least one character long (5.0, 4.7.3)
         Packet::Unsubscribe(unsub) => {
             !unsub.topic_filters.is_empty()
-                && unsub
-                    .topic_filters
-                    .iter()
-                    .all(|f| !f.is_empty() && is_valid_str(f))
+                && unsub.topic_filters.iter().all(|f| is_valid_filter(f))
                 && is_valid_props(&unsub.user_properties)
         }
         Packet::UnsubscribeAck(ack) => {
