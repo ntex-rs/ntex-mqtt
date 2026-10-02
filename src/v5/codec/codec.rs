@@ -1144,4 +1144,33 @@ mod tests {
             assert_rejected(&codec, connect(topic));
         }
     }
+
+    #[test]
+    fn test_encode_shared_subscription_no_local() {
+        let codec = Codec::new();
+        let subscribe = |filter: &'static str, no_local| {
+            Encoded::Packet(Packet::Subscribe(Subscribe {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                id: None,
+                user_properties: Vec::new(),
+                topic_filters: vec![
+                    (ByteString::from_static("a"), SubscriptionOptions::default()),
+                    (
+                        ByteString::from_static(filter),
+                        SubscriptionOptions {
+                            no_local,
+                            ..SubscriptionOptions::default()
+                        },
+                    ),
+                ],
+            }))
+        };
+        for filter in ["$share/g/a", "$share/g/#"] {
+            assert_encoded(&codec, subscribe(filter, false));
+            assert_rejected(&codec, subscribe(filter, true));
+        }
+        for filter in ["a", "$sharex/g/a", "$share", "a/$share/g"] {
+            assert_encoded(&codec, subscribe(filter, true));
+        }
+    }
 }

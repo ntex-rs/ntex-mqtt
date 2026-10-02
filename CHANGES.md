@@ -2,6 +2,8 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Reject encoding a v5 Shared Subscription with No Local set
+
 * codec: Reject encoding a v5 Response Topic with wildcard characters
 
 * codec: Check string and binary data lengths before encoding, packets with fields over
