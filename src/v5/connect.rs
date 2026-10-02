@@ -85,22 +85,14 @@ impl<St> Connect<St> {
         };
 
         let io = self.io;
-        let pkt = self.pkt;
         let shared = self.shared;
-
-        // [MQTT-3.1.2-22]
-        let keepalive = if pkt.keep_alive != 0 {
-            (pkt.keep_alive >> 1).saturating_add(pkt.keep_alive)
-        } else {
-            30
-        };
         let session = Session::new(st, MqttSink::new(shared.clone()), io.shared());
 
         (
             ConnectAck {
                 io,
                 shared,
-                keepalive,
+                keepalive: None,
                 packet,
                 session: Some(session.clone()),
                 max_send: None,
@@ -116,7 +108,7 @@ impl<St> Connect<St> {
             io: self.io,
             shared: self.shared,
             session: None,
-            keepalive: 30,
+            keepalive: None,
             max_send: None,
             packet: codec::ConnectAck {
                 reason_code,
@@ -134,8 +126,48 @@ impl<St> Connect<St> {
             session: None,
             packet: ack,
             max_send: None,
-            keepalive: 30,
+            keepalive: None,
         }
+    }
+}
+
+/// Server keep-alive if the client's keep-alive is 0
+const DEFAULT_KEEPALIVE: u16 = 30;
+
+/// Keep-alive timeout for a keep-alive interval, 1.2 times of it rounded up
+///
+/// It is below the 1.5 times limit of [MQTT-3.1.2-22] (MQTT 5.0, 3.1.2.10).
+fn keep_alive_timeout(keep_alive: u16) -> u16 {
+    keep_alive.saturating_add(keep_alive.div_ceil(5))
+}
+
+/// Set `server_keepalive_sec` and return the keep-alive timeout the server enforces
+///
+/// The server must use the client's keep-alive unless it sends Server Keep Alive
+/// [MQTT-3.2.2-22], so the server keep-alive is advertised if it is lower than
+/// the client's keep-alive or the client's keep-alive is 0.
+///
+/// The server enforces 1.2 times of the advertised keep-alive [MQTT-3.1.2-22],
+/// otherwise the timeout set by the application as is, or 1.2 times of
+/// the client's keep-alive.
+pub(crate) fn server_keep_alive(
+    client_keep_alive: u16,
+    timeout: Option<u16>,
+    server_keepalive_sec: &mut Option<u16>,
+) -> u16 {
+    if server_keepalive_sec.is_none() {
+        match timeout {
+            Some(t) if client_keep_alive == 0 || client_keep_alive > t => {
+                *server_keepalive_sec = Some(t);
+            }
+            None if client_keep_alive == 0 => *server_keepalive_sec = Some(DEFAULT_KEEPALIVE),
+            _ => (),
+        }
+    }
+    match (*server_keepalive_sec, timeout) {
+        (Some(keep_alive), _) => keep_alive_timeout(keep_alive),
+        (None, Some(timeout)) => timeout,
+        (None, None) => keep_alive_timeout(client_keep_alive),
     }
 }
 
@@ -151,7 +183,7 @@ pub struct ConnectAck<St> {
     pub(crate) session: Option<Session<St>>,
     pub(crate) shared: Rc<MqttShared>,
     pub(crate) packet: codec::ConnectAck,
-    pub(crate) keepalive: u16,
+    pub(crate) keepalive: Option<u16>,
     pub(crate) max_send: Option<u16>,
 }
 
@@ -172,10 +204,14 @@ impl<St> ConnectAck<St> {
     /// This method sets `server_keepalive_sec` property for `ConnectAck`
     /// response packet.
     ///
-    /// By default idle keep-alive is set to 1.5 times of the client's keep-alive
-    /// value, or to 30 seconds if the client's keep-alive is 0. `server_keepalive_sec`
-    /// is set only if it is not set explicitly and the value is lower than
-    /// the client's keep-alive.
+    /// `server_keepalive_sec` is set to the timeout only if it is not set explicitly
+    /// and the timeout is lower than the client's keep-alive, or the client's
+    /// keep-alive is 0. If `server_keepalive_sec` is set, the server closes
+    /// the connection after 1.2 times of it, otherwise after exactly this timeout.
+    ///
+    /// By default the server sets `server_keepalive_sec` to 30 seconds if the client's
+    /// keep-alive is 0, and closes the connection after 1.2 times of
+    /// `server_keepalive_sec` if it is set, or of the client's keep-alive.
     ///
     /// See [`MqttServiceConfig`](crate::MqttServiceConfig#read-timeouts) for how
     /// keep-alive interacts with the frame read rate.
@@ -185,7 +221,7 @@ impl<St> ConnectAck<St> {
     /// Panics if timeout is `0`.
     pub fn keep_alive(mut self, timeout: u16) -> Self {
         assert!(timeout != 0, "Timeout must be greater than 0");
-        self.keepalive = timeout;
+        self.keepalive = Some(timeout);
         self
     }
 
@@ -240,5 +276,65 @@ mod tests {
         let dbg = format!("{ack:?}");
         assert!(dbg.contains("ConnectAck"));
         assert!(dbg.contains("keepalive"));
+    }
+
+    #[test]
+    fn test_keep_alive_timeout() {
+        assert_eq!(keep_alive_timeout(0), 0);
+        assert_eq!(keep_alive_timeout(1), 2);
+        assert_eq!(keep_alive_timeout(2), 3);
+        assert_eq!(keep_alive_timeout(5), 6);
+        assert_eq!(keep_alive_timeout(6), 8);
+        assert_eq!(keep_alive_timeout(10), 12);
+        assert_eq!(keep_alive_timeout(60), 72);
+        assert_eq!(keep_alive_timeout(u16::MAX), u16::MAX);
+    }
+
+    #[test]
+    fn test_server_keep_alive() {
+        // default, client keep-alive 0, the server keep-alive is advertised
+        let mut ka = None;
+        assert_eq!(server_keep_alive(0, None, &mut ka), 36);
+        assert_eq!(ka, Some(30));
+
+        // default, 1.2 times of the client's keep-alive
+        let mut ka = None;
+        assert_eq!(server_keep_alive(10, None, &mut ka), 12);
+        assert_eq!(ka, None);
+        let mut ka = None;
+        assert_eq!(server_keep_alive(3, None, &mut ka), 4);
+        assert_eq!(ka, None);
+
+        // default, explicit server keep-alive
+        let mut ka = Some(60);
+        assert_eq!(server_keep_alive(10, None, &mut ka), 72);
+        assert_eq!(ka, Some(60));
+        let mut ka = Some(4);
+        assert_eq!(server_keep_alive(0, None, &mut ka), 5);
+        assert_eq!(ka, Some(4));
+        let mut ka = Some(0);
+        assert_eq!(server_keep_alive(10, None, &mut ka), 0);
+        assert_eq!(ka, Some(0));
+
+        // advertised application timeout, 1.2 times of it
+        let mut ka = None;
+        assert_eq!(server_keep_alive(0, Some(5), &mut ka), 6);
+        assert_eq!(ka, Some(5));
+        let mut ka = None;
+        assert_eq!(server_keep_alive(10, Some(4), &mut ka), 5);
+        assert_eq!(ka, Some(4));
+
+        // application timeout is not advertised, it is enforced as is
+        let mut ka = None;
+        assert_eq!(server_keep_alive(10, Some(10), &mut ka), 10);
+        assert_eq!(ka, None);
+        let mut ka = None;
+        assert_eq!(server_keep_alive(10, Some(20), &mut ka), 20);
+        assert_eq!(ka, None);
+
+        // explicit server keep-alive overrides application timeout
+        let mut ka = Some(60);
+        assert_eq!(server_keep_alive(10, Some(20), &mut ka), 72);
+        assert_eq!(ka, Some(60));
     }
 }

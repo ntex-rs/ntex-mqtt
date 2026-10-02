@@ -922,6 +922,7 @@ async fn test_max_receive() {
             max_qos: codec::QoS::AtLeastOnce,
             reason_code: codec::ConnectAckReason::Success,
             topic_alias_max: 32,
+            server_keepalive_sec: Some(30),
             ..Default::default()
         }))
     );
@@ -986,20 +987,23 @@ async fn test_keepalive() {
             .build(async move |con: Connect| Ok::<_, TestError>(con.ack(St).keep_alive(1)))
     });
 
-    // connect to server
+    // connect to server, client keep-alive is 0
     let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
         .call(client::Connect::new(srv.addr()).client_id("user"))
         .await
         .unwrap();
+    // [MQTT-3.2.2-22] server advertises its keep-alive
+    assert_eq!(client.packet().server_keepalive_sec, Some(1));
 
     let sink = client.sink();
 
     ntex::rt::spawn(client.start_default());
 
+    // client pings with the server keep-alive
     assert!(sink.is_open());
-    sleep(Duration::from_millis(2500)).await;
-    assert!(!sink.is_open());
-    assert!(ka.load(Relaxed));
+    sleep(Duration::from_millis(3500)).await;
+    assert!(sink.is_open());
+    assert!(!ka.load(Relaxed));
 }
 
 #[ntex::test]
@@ -1022,34 +1026,52 @@ async fn test_keepalive2() {
                     codec::Packet::from(codec::Disconnect::default()).into(),
                 )),
             })
-            .build(async move |con: Connect| Ok::<_, TestError>(con.ack(St).keep_alive(1)))
+            .build(async move |con: Connect| Ok::<_, TestError>(con.ack(St).keep_alive(2)))
     });
 
-    // connect to server
-    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
-        .call(client::Connect::new(srv.addr()).client_id("user"))
+    // client that does not ping
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        Encoded::Packet(
+            codec::Connect {
+                keep_alive: 10,
+                ..Default::default()
+            }
+            .client_id("user")
+            .into(),
+        ),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let ack = io.recv(&codec).await.unwrap().unwrap();
+    let Decoded::Packet(codec::Packet::ConnectAck(ack), _) = ack else {
+        panic!("{ack:?}")
+    };
+    assert_eq!(ack.server_keepalive_sec, Some(2));
+
+    for id in 1..=2 {
+        io.send(
+            Encoded::Publish(
+                codec::Publish {
+                    packet_id: NonZeroU16::new(id),
+                    ..pkt_publish()
+                },
+                None,
+            ),
+            &codec,
+        )
         .await
         .unwrap();
+        let _ = io.recv(&codec).await.unwrap().unwrap();
+        sleep(Duration::from_millis(500)).await;
+    }
 
-    let sink = client.sink();
-
-    ntex::rt::spawn(client.start_default());
-
-    assert!(sink.is_open());
-    let res = sink
-        .publish(ByteString::from_static("topic"))
-        .send_at_least_once(Bytes::new())
-        .await;
-    assert!(res.is_ok());
-    sleep(Duration::from_millis(500)).await;
-    let res = sink
-        .publish(ByteString::from_static("topic"))
-        .send_at_least_once(Bytes::new())
-        .await;
-    assert!(res.is_ok());
-    sleep(Duration::from_millis(2000)).await;
-
-    assert!(!sink.is_open());
+    // closed after 1.5 times of the server keep-alive
+    sleep(Duration::from_millis(1500)).await;
+    assert!(!ka.load(Relaxed));
+    sleep(Duration::from_millis(2500)).await;
     assert!(ka.load(Relaxed));
 }
 
@@ -1682,6 +1704,7 @@ async fn test_sink_ready() -> std::io::Result<()> {
             max_qos: QoS::AtLeastOnce,
             receive_max: NonZeroU16::new(16).unwrap(),
             topic_alias_max: 32,
+            server_keepalive_sec: Some(30),
             ..Default::default()
         }))
     );

@@ -2,6 +2,12 @@
 
 ## [9.1.0] - Unreleased
 
+* v5: Send `server_keepalive_sec` if the client's keep-alive is 0 [MQTT-3.2.2-22], and close
+  the connection after 1.2 times of the advertised `server_keepalive_sec` instead of exactly it,
+  a not advertised `ConnectAck::keep_alive()` timeout is enforced as is
+
+* v5: Default keep-alive timeout is 1.2 times of the client's keep-alive rounded up
+
 * codec: v5 `Codec::clone()` copies the decode state and flags, the codec returned by client
   `into_inner()` keeps the limits from the server's CONNACK
 
