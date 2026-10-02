@@ -1001,6 +1001,76 @@ mod tests {
     }
 
     #[test]
+    fn test_encode_topic_filter_syntax() {
+        let codec = Codec::new();
+        let packet_id = NonZeroU16::new(1).unwrap();
+        let subscribe = |filter: &'static str| {
+            Encoded::Packet(Packet::Subscribe(Subscribe {
+                packet_id,
+                id: None,
+                user_properties: Vec::new(),
+                topic_filters: vec![
+                    (ByteString::from_static("a"), SubscriptionOptions::default()),
+                    (
+                        ByteString::from_static(filter),
+                        SubscriptionOptions::default(),
+                    ),
+                ],
+            }))
+        };
+        let unsubscribe = |filter: &'static str| {
+            Encoded::Packet(Packet::Unsubscribe(Unsubscribe {
+                packet_id,
+                user_properties: Vec::new(),
+                topic_filters: vec![
+                    ByteString::from_static("a"),
+                    ByteString::from_static(filter),
+                ],
+            }))
+        };
+
+        // [MQTT-4.7.1-1] `#` must be the last character and follow a level separator,
+        // [MQTT-4.7.1-2] `+` must occupy an entire level (MQTT 5.0, 4.7.1),
+        // [MQTT-4.8.2-1], [MQTT-4.8.2-2] ShareName must be at least one character long,
+        // must not contain wildcards and must be followed by a Topic Filter (MQTT 5.0, 4.8.2)
+        for filter in [
+            "a/#/b",
+            "#/",
+            "a#",
+            "a/b#",
+            "a+",
+            "+a",
+            "a/+b/c",
+            "++",
+            "$share//a",
+            "$share/g",
+            "$share/g/",
+            "$share/g+/a",
+            "$share/#/a",
+            "$share/g/a#",
+        ] {
+            assert_rejected(&codec, subscribe(filter));
+            assert_rejected(&codec, unsubscribe(filter));
+        }
+        for filter in [
+            "#",
+            "+",
+            "a/#",
+            "+/+",
+            "/+/",
+            "a//b",
+            "$SYS/#",
+            "$share/g/a",
+            "$share/g/#",
+            "$share/g//",
+            "$sharex/+",
+        ] {
+            assert_encoded(&codec, subscribe(filter));
+            assert_encoded(&codec, unsubscribe(filter));
+        }
+    }
+
+    #[test]
     fn test_encode_invalid_str_connect() {
         let connect = will_connect();
         assert_str_rejected(

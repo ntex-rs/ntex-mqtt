@@ -3,7 +3,8 @@ use ntex_bytes::{BufMut, BytePages, ByteString};
 use crate::error::EncodeError;
 use crate::types::{ConnectFlags, MQTT, MQTT_LEVEL_3, QoS, WILL_QOS_SHIFT, packet_type};
 use crate::utils::{
-    Encode, is_valid_bin, is_valid_str, is_valid_topic_name, write_variable_length,
+    Encode, is_valid_bin, is_valid_str, is_valid_topic_filter, is_valid_topic_name,
+    write_variable_length,
 };
 
 use super::packet::{Connect, ConnectAckReason, LastWill, Packet, Publish, SubscribeReturnCode};
@@ -105,25 +106,16 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
         }
         Packet::Subscribe { topic_filters, .. } => {
             // [MQTT-3.8.3-3] at least one topic filter is required (3.1.1, 3.8.3)
-            // [MQTT-4.7.3-1] topic filters must be at least one character long (3.1.1, 4.7.3)
-            // [MQTT-1.5.3-2] strings must not include U+0000 (3.1.1, 1.5.3)
             ensure!(
                 !topic_filters.is_empty()
-                    && topic_filters
-                        .iter()
-                        .all(|(f, _)| !f.is_empty() && is_valid_str(f)),
+                    && topic_filters.iter().all(|(f, _)| is_valid_topic_filter(f)),
                 EncodeError::MalformedPacket
             );
         }
         Packet::Unsubscribe { topic_filters, .. } => {
             // [MQTT-3.10.3-2] at least one topic filter is required (3.1.1, 3.10.3)
-            // [MQTT-4.7.3-1] topic filters must be at least one character long (3.1.1, 4.7.3)
-            // [MQTT-1.5.3-2] strings must not include U+0000 (3.1.1, 1.5.3)
             ensure!(
-                !topic_filters.is_empty()
-                    && topic_filters
-                        .iter()
-                        .all(|f| !f.is_empty() && is_valid_str(f)),
+                !topic_filters.is_empty() && topic_filters.iter().all(|f| is_valid_topic_filter(f)),
                 EncodeError::MalformedPacket
             );
         }
