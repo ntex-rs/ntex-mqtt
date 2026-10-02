@@ -2,6 +2,8 @@
 
 ## [9.1.0] - Unreleased
 
+* codec: Reject a v5 CONNACK Maximum QoS other than 0 or 1
+
 * codec: Reject a v5 CONNACK Maximum Packet Size of zero on decode and encode
 
 * codec: Reject encoding a v5 Shared Subscription with No Local set

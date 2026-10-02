@@ -138,7 +138,11 @@ impl ConnectAck {
                 pt::MAX_QOS => {
                     ensure!(max_qos.is_none(), DecodeError::MalformedPacket); // property is set twice while not allowed
                     ensure!(prop_src.has_remaining(), DecodeError::InvalidLength);
-                    max_qos = Some(prop_src.get_u8().try_into()?);
+                    // Maximum QoS other than 0 or 1 is a Protocol Error (MQTT 5.0, 3.2.2.3.4),
+                    // absent property means QoS 2
+                    let qos = prop_src.get_u8();
+                    ensure!(qos <= 1, DecodeError::MalformedPacket);
+                    max_qos = Some(qos.try_into()?);
                 }
                 pt::RETAIN_AVAIL => retain_available.read_value(prop_src)?,
                 pt::MAX_PACKET_SIZE => max_packet_size.read_value(prop_src)?,
