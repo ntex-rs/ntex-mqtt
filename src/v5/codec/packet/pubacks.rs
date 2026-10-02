@@ -144,8 +144,8 @@ impl encode::EncodeLtd for PublishAck {
         let prop_len = ack_props::encoded_size(
             &self.properties,
             &self.reason_string,
-            limit - HEADER_LEN - 4,
-        ); // limit - HEADER_LEN - len(packet_len.max())
+            encode::reduce_limit(limit, HEADER_LEN as usize),
+        );
         HEADER_LEN as usize + prop_len
     }
 
@@ -168,8 +168,8 @@ impl encode::EncodeLtd for PublishAck2 {
         let prop_len = ack_props::encoded_size(
             &self.properties,
             &self.reason_string,
-            limit - HEADER_LEN - 4,
-        ); // limit - HEADER_LEN - prop_len.max()
+            encode::reduce_limit(limit, HEADER_LEN as usize),
+        );
         HEADER_LEN as usize + prop_len
     }
 
