@@ -1173,4 +1173,31 @@ mod tests {
             assert_encoded(&codec, subscribe(filter, true));
         }
     }
+
+    #[test]
+    fn test_connack_max_packet_size_zero() {
+        let codec = Codec::new();
+        let ack = |max_packet_size| {
+            Encoded::Packet(Packet::ConnectAck(Box::new(ConnectAck {
+                max_packet_size,
+                ..ConnectAck::default()
+            })))
+        };
+        assert_encoded(&codec, ack(None));
+        assert_encoded(&codec, ack(Some(1)));
+        assert_rejected(&codec, ack(Some(0)));
+
+        let mut src = BytesMut::from(&b"\x20\x08\x00\x00\x05\x27\x00\x00\x00\x01"[..]);
+        let Some(Decoded::Packet(Packet::ConnectAck(ack), _)) = codec.decode(&mut src).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(ack.max_packet_size, Some(1));
+
+        let mut src = BytesMut::from(&b"\x20\x08\x00\x00\x05\x27\x00\x00\x00\x00"[..]);
+        assert_eq!(
+            codec.decode(&mut src).err(),
+            Some(DecodeError::MalformedPacket)
+        );
+    }
 }

@@ -67,8 +67,10 @@ pub(super) fn validate(packet: &Packet) -> Result<(), EncodeError> {
                         && is_valid_props(&will.user_properties)
                 })
         }
+        // Maximum Packet Size of zero is a Protocol Error (MQTT 5.0, 3.2.2.3.6)
         Packet::ConnectAck(ack) => {
-            is_valid_opt_str(&ack.assigned_client_id)
+            ack.max_packet_size != Some(0)
+                && is_valid_opt_str(&ack.assigned_client_id)
                 && is_valid_opt_str(&ack.response_info)
                 && is_valid_opt_str(&ack.server_reference)
                 && is_valid_opt_str(&ack.auth_method)
