@@ -125,7 +125,7 @@ impl Decode for ByteString {
 }
 
 pub(crate) fn take_properties(src: &mut Bytes) -> Result<Bytes, DecodeError> {
-    let prop_len = decode_variable_length_cursor(src)?;
+    let prop_len = decode_variable_length_cursor_v5(src)?;
     ensure!(
         src.remaining() >= prop_len as usize,
         DecodeError::InvalidLength
@@ -134,9 +134,36 @@ pub(crate) fn take_properties(src: &mut Bytes) -> Result<Bytes, DecodeError> {
     Ok(src.split_to(prop_len as usize))
 }
 
+/// Decodes a Remaining Length (MQTT 3.1.1, 2.2.3)
+///
+/// Returns `Ok(None)` if `src` is incomplete. Non-minimal encodings are accepted,
+/// MQTT 3.1.1 does not forbid them.
 pub(crate) fn decode_variable_length(src: &[u8]) -> Result<Option<(u32, usize)>, DecodeError> {
+    decode_variable_length_slice(src, false)
+}
+
+/// Decodes a Variable Byte Integer (MQTT 5.0, 1.5.5)
+///
+/// Returns `Ok(None)` if `src` is incomplete. Non-minimal encodings
+/// are rejected with `InvalidLength` [MQTT-1.5.5-1].
+pub(crate) fn decode_variable_length_v5(src: &[u8]) -> Result<Option<(u32, usize)>, DecodeError> {
+    decode_variable_length_slice(src, true)
+}
+
+/// Decodes a Variable Byte Integer (MQTT 5.0, 1.5.5)
+///
+/// Non-minimal encodings are rejected with `InvalidLength` [MQTT-1.5.5-1].
+/// Incomplete input fails with `MalformedPacket`.
+pub(crate) fn decode_variable_length_cursor_v5<B: Buf>(src: &mut B) -> Result<u32, DecodeError> {
+    decode_variable_length_cursor(src, true)
+}
+
+fn decode_variable_length_slice(
+    src: &[u8],
+    minimal: bool,
+) -> Result<Option<(u32, usize)>, DecodeError> {
     let mut cur = Cursor::new(src);
-    match decode_variable_length_cursor(&mut cur) {
+    match decode_variable_length_cursor(&mut cur, minimal) {
         Ok(len) => Ok(Some((len, cur.position() as usize))),
         Err(DecodeError::MalformedPacket) => Ok(None),
         Err(e) => Err(e),
@@ -144,7 +171,7 @@ pub(crate) fn decode_variable_length(src: &[u8]) -> Result<Option<(u32, usize)>,
 }
 
 #[allow(clippy::cast_lossless)] // safe: allow cast through `as` because it is type-safe
-pub(crate) fn decode_variable_length_cursor<B: Buf>(src: &mut B) -> Result<u32, DecodeError> {
+fn decode_variable_length_cursor<B: Buf>(src: &mut B, minimal: bool) -> Result<u32, DecodeError> {
     let mut shift: u32 = 0;
     let mut len: u32 = 0;
     loop {
@@ -152,6 +179,12 @@ pub(crate) fn decode_variable_length_cursor<B: Buf>(src: &mut B) -> Result<u32, 
         let val = src.get_u8();
         len += ((val & 0b0111_1111u8) as u32) << shift;
         if val & 0b1000_0000 == 0 {
+            // a zero final byte of a multi-byte encoding adds nothing to the value,
+            // so a shorter encoding exists [MQTT-1.5.5-1]
+            ensure!(
+                !(minimal && val == 0 && shift > 0),
+                DecodeError::InvalidLength
+            );
             return Ok(len);
         }
         ensure!(shift < 21, DecodeError::InvalidLength);
@@ -363,6 +396,44 @@ mod tests {
         assert_variable_length(b"\xff\xff\x7f", (2_097_151, 3));
         assert_variable_length(b"\x80\x80\x80\x01", (2_097_152, 4));
         assert_variable_length(b"\xff\xff\xff\x7f", (268_435_455, 4));
+    }
+
+    #[test]
+    fn test_decode_variable_length_non_minimal() {
+        fn decode(b: &[u8]) -> u32 {
+            b.iter()
+                .enumerate()
+                .map(|(i, v)| u32::from(v & 0x7f) << (7 * i))
+                .sum()
+        }
+
+        for b in [
+            &b"\x80\x00"[..],
+            b"\xff\x00",
+            b"\x80\x80\x00",
+            b"\xff\xff\xff\x00",
+        ] {
+            // v3 accepts non-minimal encodings
+            assert_eq!(decode_variable_length(b), Ok(Some((decode(b), b.len()))));
+            // [MQTT-1.5.5-1]
+            assert_eq!(
+                decode_variable_length_v5(b),
+                Err(DecodeError::InvalidLength)
+            );
+            assert_eq!(
+                decode_variable_length_cursor_v5(&mut Bytes::copy_from_slice(b)),
+                Err(DecodeError::InvalidLength)
+            );
+        }
+        for (b, res) in [
+            (&b"\x00"[..], (0, 1)),
+            (b"\x7f", (127, 1)),
+            (b"\x80\x01", (128, 2)),
+            (b"\xff\xff\xff\x7f", (268_435_455, 4)),
+        ] {
+            assert_eq!(decode_variable_length_v5(b), Ok(Some(res)));
+        }
+        assert_eq!(decode_variable_length_v5(b"\x80\x80"), Ok(None));
     }
 
     #[test]

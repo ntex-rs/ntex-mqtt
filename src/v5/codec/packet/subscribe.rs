@@ -160,7 +160,7 @@ impl Subscribe {
             match prop_id {
                 pt::SUB_ID => {
                     ensure!(sub_id.is_none(), DecodeError::MalformedPacket); // can't appear twice
-                    let val = utils::decode_variable_length_cursor(prop_src)?;
+                    let val = utils::decode_variable_length_cursor_v5(prop_src)?;
                     sub_id = Some(NonZeroU32::new(val).ok_or(DecodeError::MalformedPacket)?);
                 }
                 pt::USER => user_properties.push(UserProperty::decode(prop_src)?),

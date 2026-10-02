@@ -56,7 +56,7 @@ mod tests {
     use std::num::{NonZeroU16, NonZeroU32};
 
     use super::*;
-    use crate::utils::decode_variable_length;
+    use crate::utils::decode_variable_length_v5;
     use crate::v5::codec::*;
 
     fn packet_id(v: u16) -> NonZeroU16 {
@@ -66,7 +66,7 @@ mod tests {
     fn assert_decode_packet<B: AsRef<[u8]>>(bytes: B, res: &Packet) {
         let bytes = bytes.as_ref();
         let fixed = bytes[0];
-        let (_len, consumed) = decode_variable_length(&bytes[1..]).unwrap().unwrap();
+        let (_len, consumed) = decode_variable_length_v5(&bytes[1..]).unwrap().unwrap();
         let cur = Bytes::copy_from_slice(&bytes[consumed + 1..]);
         let mut tmp = BytePages::default();
         ntex_codec::Encoder::encode(
@@ -611,5 +611,49 @@ mod tests {
     fn test_decode_ping_packets() {
         assert_decode_packet(b"\xc0\x00", &Packet::PingRequest);
         assert_decode_packet(b"\xd0\x00", &Packet::PingResponse);
+    }
+
+    #[test]
+    fn test_decode_non_minimal_varint() {
+        // variable byte integers must use the minimum number of bytes [MQTT-1.5.5-1]
+        let decode = |b: &'static [u8]| {
+            let codec = crate::v5::codec::Codec::new();
+            ntex_codec::Decoder::decode(&codec, &mut BytesMut::from(b))
+        };
+        let cases: [(&[u8], &[u8]); 5] = [
+            // remaining length
+            (b"\xc0\x00", b"\xc0\x80\x00"),
+            // properties length
+            (b"\xe0\x02\x00\x00", b"\xe0\x03\x00\x80\x00"),
+            // publish properties length
+            (b"\x30\x04\x00\x01a\x00", b"\x30\x05\x00\x01a\x80\x00"),
+            // publish subscription identifier
+            (
+                b"\x30\x06\x00\x01a\x02\x0b\x01",
+                b"\x30\x07\x00\x01a\x03\x0b\x81\x00",
+            ),
+            // subscribe subscription identifier
+            (
+                b"\x82\x09\x00\x01\x02\x0b\x01\x00\x01a\x00",
+                b"\x82\x0a\x00\x01\x03\x0b\x81\x00\x00\x01a\x00",
+            ),
+        ];
+        for (minimal, non_minimal) in cases {
+            assert!(
+                matches!(decode(minimal), Ok(Some(_))),
+                "{minimal:?}: {:?}",
+                decode(minimal)
+            );
+            assert!(
+                matches!(decode(non_minimal), Err(DecodeError::InvalidLength)),
+                "{non_minimal:?}: {:?}",
+                decode(non_minimal)
+            );
+        }
+        // publish properties length while the payload is incomplete
+        assert_eq!(
+            Publish::packet_header_size(&BytesMut::from(&b"\x00\x01a\x80\x00"[..]), 0),
+            Err(DecodeError::InvalidLength)
+        );
     }
 }
