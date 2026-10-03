@@ -43,8 +43,6 @@ impl<St, E> Service<St, ProtocolMessage> for DefaultProtoSrv<E> {
         pkt: ProtocolMessage,
         _: Ctx<'_, Self, St>,
     ) -> Result<Self::Res, Self::Error> {
-        log::warn!("MQTT3 Subscribe is not supported");
-
         Ok(match pkt {
             ProtocolMessage::Ping(ping) => ping.ack(),
             ProtocolMessage::Disconnect(disc) => disc.ack(),

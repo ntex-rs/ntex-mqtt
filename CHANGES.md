@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v3: Default protocol-message service no longer logs a "Subscribe is not supported" warning
+  for every message, only unsupported messages are logged
+
 * v3, v5: Drop the payload chunks of a PUBLISH that is dropped after disconnect, previously
   the next chunk failed with an unexpected payload error
 
