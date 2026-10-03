@@ -444,18 +444,36 @@ impl MqttShared {
                     pkt.packet_type(),
                     tp.expected_str(),
                 ))
-            } else if matches!(pkt, Ack::Receive(_)) {
+            } else if let Ack::Receive(ref ack) = pkt {
                 // get publish ack channel
                 log::trace!("Ack packet receive with id: {}", pkt.packet_id());
 
-                if let Some(tx) = tx {
-                    let _ = tx.send(pkt);
+                if u8::from(ack.reason_code) < 0x80 {
+                    if let Some(tx) = tx {
+                        let _ = tx.send(pkt);
+                    }
+                    let (tx, rx) = self.pool.queue.channel();
+                    queues.rx.insert(idx, rx);
+                    queues
+                        .inflight
+                        .push_back((idx, Some(tx), AckType::Complete));
+                } else {
+                    // PUBREL is sent only for a PUBREC with a reason code below 0x80
+                    // [MQTT-4.3.3-4], a failed PUBREC ends the QoS 2 flow and the packet id
+                    // is available for reuse (MQTT 5.0, 4.3.3)
+                    queues.inflight_ids.remove(&idx);
+
+                    if let Some(tx) = tx {
+                        let _ = tx.send(pkt);
+                    }
+
+                    // wake up queued request (receive max limit)
+                    while let Some(tx) = queues.waiters.pop_front() {
+                        if tx.send(()).is_ok() {
+                            break;
+                        }
+                    }
                 }
-                let (tx, rx) = self.pool.queue.channel();
-                queues.rx.insert(idx, rx);
-                queues
-                    .inflight
-                    .push_back((idx, Some(tx), AckType::Complete));
                 Ok(())
             } else if matches!(pkt, Ack::Complete(_)) {
                 // get publish ack channel

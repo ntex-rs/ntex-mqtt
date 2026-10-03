@@ -825,6 +825,117 @@ async fn test_qos2_release_multiple() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_qos2_rejected_pubrec() -> std::io::Result<()> {
+    let result = Arc::new(Mutex::new(None));
+    let result2 = result.clone();
+    let srv = server::test_server(async move || {
+        let result = result2.clone();
+        MqttServer::new(async move |ses: &Session<St>| {
+            let sink = ses.sink().clone();
+            let result = result.clone();
+            Ok::<_, Infallible>(fn_service(async move |p: Publish| {
+                let sink = sink.clone();
+                let result = result.clone();
+                rt::spawn(async move {
+                    let rec = sink
+                        .publish("a")
+                        .send_exactly_once(Bytes::new())
+                        .await
+                        .unwrap();
+                    let code = rec.packet().reason_code;
+                    let released = rec.release().await;
+                    // packet id is available for reuse
+                    let ack = sink
+                        .publish("b")
+                        .packet_id(1)
+                        .send_at_least_once(Bytes::new())
+                        .await
+                        .map(|ack| ack.reason_code);
+                    *result.lock().unwrap() = Some((code, released, ack));
+                });
+                Ok::<_, TestError>(p.ack())
+            }))
+        })
+        .build(connect)
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::new();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    // trigger server QoS 2 PUBLISH
+    io.send(
+        Encoded::Publish(
+            codec::Publish {
+                qos: codec::QoS::AtMostOnce,
+                packet_id: None,
+                ..pkt_publish()
+            },
+            None,
+        ),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert!(
+        matches!(pkt, Decoded::Publish(ref p, ..) if p.packet_id == NonZeroU16::new(1)),
+        "{pkt:?}"
+    );
+    io.send(
+        Encoded::Packet(Packet::PublishReceived(codec::PublishAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            reason_code: codec::PublishAckReason::NotAuthorized,
+            ..Default::default()
+        })),
+        &codec,
+    )
+    .await
+    .unwrap();
+
+    // no PUBREL for rejected PUBREC, next packet is QoS 1 PUBLISH with the same id
+    let pkt = ntex::time::timeout(Millis(1000), io.recv(&codec)).await;
+    assert!(
+        matches!(pkt, Ok(Ok(Some(Decoded::Publish(ref p, ..))))
+                 if p.topic == "b" && p.packet_id == NonZeroU16::new(1)),
+        "{pkt:?}"
+    );
+    io.send(
+        Encoded::Packet(Packet::PublishAck(codec::PublishAck {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            ..Default::default()
+        })),
+        &codec,
+    )
+    .await
+    .unwrap();
+
+    let mut res = None;
+    for _ in 0..50 {
+        res = result.lock().unwrap().take();
+        if res.is_some() {
+            break;
+        }
+        sleep(Millis(10)).await;
+    }
+    assert_eq!(
+        res,
+        Some((
+            codec::PublishAckReason::NotAuthorized,
+            Err(error::SendPacketError::UnexpectedRelease),
+            Ok(codec::PublishAckReason::Success)
+        ))
+    );
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_qos2_redelivery() -> std::io::Result<()> {
     let published = Arc::new(Mutex::new(0));
     let published2 = published.clone();
