@@ -853,6 +853,7 @@ mod tests {
             err.inner,
             error::ViolationInner::Spec(error::SpecViolation::Connack_3_2_2_17)
         );
+        assert_eq!(err.reason(), DisconnectReasonCode::TopicAliasInvalid);
 
         // unknown PublishRelease
         let pkt = disp

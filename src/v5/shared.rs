@@ -412,11 +412,10 @@ impl MqttShared {
     }
 
     pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), error::MqttProtocolError> {
-        self.pkt_ack_inner(ack).inspect_err(|_| {
-            self.close(Some(codec::Disconnect {
-                reason_code: codec::DisconnectReasonCode::ImplementationSpecificError,
-                ..Default::default()
-            }));
+        // invalid ack is a protocol error, DISCONNECT uses its reason code,
+        // 0x82 (Protocol Error) for unexpected or out of order acks (MQTT 5.0, 4.13.1)
+        self.pkt_ack_inner(ack).inspect_err(|e| {
+            self.close(Some(codec::Disconnect::from_proto_error(e)));
         })
     }
 
