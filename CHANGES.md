@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v3: Client handles a re-delivered PUBLISH (DUP) with a packet id in use instead of closing
+  the connection, it is ignored until PUBACK [MQTT-4.3.2-2] or acked by PUBREC without delivery
+  until PUBREL [MQTT-4.3.3-2], payload chunks of a not delivered PUBLISH are discarded
+
 * v5: Server and client handle a re-delivered PUBLISH (DUP) with a packet id in use, it is
   ignored until PUBACK [MQTT-4.3.2-5] or acked by PUBREC without delivery until PUBREL
   [MQTT-4.3.3-10]. Other packet id conflicts are answered by PUBREC for QoS 2 (server sent

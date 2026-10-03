@@ -499,6 +499,14 @@ async fn test_qos2_default_protocol() -> std::io::Result<()> {
     Ok(())
 }
 
+fn decoded_packet(res: Decoded) -> Option<Packet> {
+    if let Decoded::Packet(pkt, _) = res {
+        Some(pkt)
+    } else {
+        None
+    }
+}
+
 /// Server publishes QoS 2 message to the client on any client publish
 fn qos2_publisher() -> (server::TestServer, Arc<Mutex<Option<bool>>>) {
     let released = Arc::new(Mutex::new(None));
@@ -614,6 +622,111 @@ async fn test_qos2_server_to_client() -> std::io::Result<()> {
     );
     assert!(sink.is_open());
 
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_qos2_redelivery_to_client() -> std::io::Result<()> {
+    // raw server re-sends QoS 2 PUBLISH with DUP flag before PUBREL
+    let completed = Arc::new(Mutex::new(None));
+    let completed2 = completed.clone();
+    let srv = server::test_server(async move || {
+        let completed = completed2.clone();
+        fn_service(async move |io: ntex::io::Io| {
+            let codec = codec::Codec::default();
+            let _ = io.recv(&codec).await;
+            let ack = codec::ConnectAck {
+                session_present: false,
+                return_code: codec::ConnectAckReason::ConnectionAccepted,
+            };
+            io.send(Encoded::Packet(Packet::ConnectAck(ack)), &codec)
+                .await
+                .unwrap();
+
+            let packet_id = NonZeroU16::new(1).unwrap();
+            let mut responses = Vec::new();
+            for dup in [false, true, true] {
+                let pkt = codec::Publish {
+                    dup,
+                    retain: false,
+                    qos: QoS::ExactlyOnce,
+                    topic: ByteString::from_static("test/qos2"),
+                    packet_id: Some(packet_id),
+                    payload_size: 4,
+                };
+                io.send(
+                    Encoded::Publish(pkt, Some(Bytes::from_static(b"data"))),
+                    &codec,
+                )
+                .await
+                .unwrap();
+                responses.push(
+                    io.recv(&codec)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(decoded_packet),
+                );
+            }
+            io.send(
+                Encoded::Packet(Packet::PublishRelease { packet_id }),
+                &codec,
+            )
+            .await
+            .unwrap();
+            responses.push(
+                io.recv(&codec)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(decoded_packet),
+            );
+            *completed.lock().unwrap() = Some(responses);
+            let _ = io.recv(&codec).await;
+            Ok::<_, ()>(())
+        })
+    });
+
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap();
+    let sink = client.sink();
+    let received = Rc::new(RefCell::new(0));
+    let received2 = received.clone();
+    ntex::rt::spawn(
+        client
+            .resource(
+                "test/qos2",
+                fn_service(move |_: Publish| {
+                    *received2.borrow_mut() += 1;
+                    async { Ok::<_, TestError>(()) }
+                }),
+            )
+            .start_default(),
+    );
+
+    let mut responses = None;
+    for _ in 0..200 {
+        responses = completed.lock().unwrap().take();
+        if responses.is_some() {
+            break;
+        }
+        sleep(Millis(10)).await;
+    }
+    let packet_id = NonZeroU16::new(1).unwrap();
+    let pubrec = Some(Packet::PublishReceived { packet_id });
+    assert_eq!(
+        responses.unwrap(),
+        vec![
+            pubrec.clone(),
+            pubrec.clone(),
+            pubrec,
+            Some(Packet::PublishComplete { packet_id })
+        ]
+    );
+    assert_eq!(*received.borrow(), 1);
+    assert!(sink.is_open());
     Ok(())
 }
 
