@@ -637,6 +637,34 @@ async fn test_qos2_receive_max() -> std::io::Result<()> {
     Ok(())
 }
 
+#[ntex::test]
+async fn test_qos2_default_protocol() -> std::io::Result<()> {
+    let srv = server::TestServerBuilder::new(async || {
+        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_qos(QoS::ExactlyOnce)))
+    .start();
+
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap();
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    // default protocol service acknowledges PUBREL
+    for _ in 0..3 {
+        let received = sink
+            .publish(ByteString::from_static("test"))
+            .send_exactly_once(Bytes::new())
+            .await
+            .unwrap();
+        received.release().await.unwrap();
+    }
+    assert!(sink.is_open());
+    Ok(())
+}
+
 /// Server publishes QoS 2 message to the client on any client publish
 fn qos2_publisher() -> (server::TestServer, Arc<Mutex<Option<bool>>>) {
     let released = Arc::new(Mutex::new(None));
