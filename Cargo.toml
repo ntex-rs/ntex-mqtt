@@ -23,7 +23,7 @@ ntex-net = "4.1"
 ntex-service = "5.1"
 ntex-router = "2"
 ntex-rt = "4"
-ntex-util = "4.2"
+ntex-util = "4.2.1"
 
 bitflags = "2"
 log = "0.4"
