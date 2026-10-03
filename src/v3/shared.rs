@@ -355,6 +355,18 @@ impl MqttShared {
                     pkt.packet_id()
                 );
                 Err(MqttProtocolError::packet_id_mismatch())
+            } else if !pkt.is_match(tp) {
+                // ack type must match the in-flight packet, PUBREC acknowledges only
+                // a QoS 2 PUBLISH and PUBCOMP only a PUBREL (MQTT 3.1.1, 4.3.2, 4.3.3)
+                log::trace!(
+                    "MQTT protocol error, unexpected packet {}, {}",
+                    pkt.packet_type(),
+                    tp.expected_str()
+                );
+                Err(MqttProtocolError::unexpected_packet(
+                    pkt.packet_type(),
+                    tp.expected_str(),
+                ))
             } else if matches!(pkt, Ack::Receive(_)) {
                 // get publish ack channel
                 log::trace!("Ack packet with id: {}", pkt.packet_id());
@@ -390,29 +402,21 @@ impl MqttShared {
                 log::trace!("Ack packet with id: {}", pkt.packet_id());
                 queues.inflight_ids.remove(&pkt.packet_id());
 
-                if pkt.is_match(tp) {
-                    if let Some(tx) = tx {
-                        let _ = tx.send(pkt);
-                    } else {
-                        let cb = self.on_publish_ack.take().unwrap();
-                        (*cb)(pkt.packet_id(), false);
-                        self.on_publish_ack.set(Some(cb));
-                    }
-
-                    // wake up queued request (receive max limit)
-                    while let Some(tx) = queues.waiters.pop_front() {
-                        if tx.send(()).is_ok() {
-                            break;
-                        }
-                    }
-                    Ok(())
+                if let Some(tx) = tx {
+                    let _ = tx.send(pkt);
                 } else {
-                    log::trace!("MQTT protocol error, unexpected packet");
-                    Err(MqttProtocolError::unexpected_packet(
-                        pkt.packet_type(),
-                        tp.expected_str(),
-                    ))
+                    let cb = self.on_publish_ack.take().unwrap();
+                    (*cb)(pkt.packet_id(), false);
+                    self.on_publish_ack.set(Some(cb));
                 }
+
+                // wake up queued request (receive max limit)
+                while let Some(tx) = queues.waiters.pop_front() {
+                    if tx.send(()).is_ok() {
+                        break;
+                    }
+                }
+                Ok(())
             }
         } else {
             log::trace!("Unexpected PUBACK packet: {:?}", pkt.packet_id());
@@ -623,6 +627,7 @@ impl Ack {
         match (self, tp) {
             (Ack::Publish(_), AckType::Publish)
             | (Ack::Receive(_), AckType::Receive)
+            | (Ack::Complete(_), AckType::Complete)
             | (Ack::Subscribe { .. }, AckType::Subscribe)
             | (Ack::Unsubscribe(_), AckType::Unsubscribe) => true,
             (_, _) => false,

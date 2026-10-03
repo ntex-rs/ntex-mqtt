@@ -805,6 +805,122 @@ mod tests {
     }
 
     #[ntex::test]
+    async fn test_ack_type_mismatch() {
+        use std::{future::Future, pin::pin};
+
+        use ntex_util::future::lazy;
+
+        use crate::{error::MqttProtocolError, types::packet_type};
+
+        fn setup() -> ((IoTest, Io), Rc<MqttShared>, MqttSink) {
+            let (client, server) = IoTest::create();
+            client.remote_buffer_cap(1024);
+            let io = Io::new(server, SharedCfg::new("test"));
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                codec::Codec::new(),
+                Rc::default(),
+            ));
+            shared.set_cap(16);
+            ((client, io), shared.clone(), MqttSink::new(shared))
+        }
+        async fn is_pending<F: Future>(f: &mut std::pin::Pin<&mut F>) -> bool {
+            lazy(|cx| f.as_mut().poll(cx).is_pending()).await
+        }
+        fn id(id: u16) -> NonZeroU16 {
+            NonZeroU16::new(id).unwrap()
+        }
+        fn rec(packet_id: u16) -> Ack {
+            Ack::Receive(codec::PublishAck {
+                packet_id: id(packet_id),
+                ..Default::default()
+            })
+        }
+        fn comp(packet_id: u16) -> Ack {
+            Ack::Complete(codec::PublishAck2 {
+                packet_id: id(packet_id),
+                reason_code: codec::PublishAck2Reason::Success,
+                properties: codec::UserProperties::default(),
+                reason_string: None,
+            })
+        }
+        fn err(pkt: u8, expected: &'static str) -> Result<(), MqttProtocolError> {
+            Err(MqttProtocolError::unexpected_packet(pkt, expected))
+        }
+
+        // QoS 1 PUBLISH acknowledged with PUBREC or PUBCOMP
+        for (ack, expected) in [
+            (rec(1), err(packet_type::PUBREC, "Expected PUBACK packet")),
+            (comp(1), err(packet_type::PUBCOMP, "Expected PUBACK packet")),
+        ] {
+            let (_io, shared, sink) = setup();
+            let mut f = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
+            assert!(is_pending(&mut f).await);
+            assert_eq!(shared.pkt_ack(ack), expected);
+            assert!(!sink.is_open());
+            assert_eq!(f.await, Err(SendPacketError::Disconnected));
+        }
+
+        // SUBSCRIBE acknowledged with PUBREC
+        let (_io, shared, sink) = setup();
+        let mut f = pin!(
+            sink.subscribe(None)
+                .topic_filter("a".into(), codec::SubscriptionOptions::default())
+                .send()
+        );
+        assert!(is_pending(&mut f).await);
+        assert_eq!(
+            shared.pkt_ack(rec(1)),
+            err(packet_type::PUBREC, "Expected SUBACK packet")
+        );
+        assert_eq!(f.await, Err(SendPacketError::Disconnected));
+
+        // UNSUBSCRIBE acknowledged with PUBCOMP
+        let (_io, shared, sink) = setup();
+        let mut f = pin!(sink.unsubscribe().topic_filter("a".into()).send());
+        assert!(is_pending(&mut f).await);
+        assert_eq!(
+            shared.pkt_ack(comp(1)),
+            err(packet_type::PUBCOMP, "Expected UNSUBACK packet")
+        );
+        assert_eq!(f.await, Err(SendPacketError::Disconnected));
+
+        // QoS 2 PUBLISH acknowledged with PUBCOMP before PUBREC
+        let (_io, shared, sink) = setup();
+        let mut f = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
+        assert!(is_pending(&mut f).await);
+        assert_eq!(
+            shared.pkt_ack(comp(1)),
+            err(packet_type::PUBCOMP, "Expected PUBREC packet")
+        );
+        assert!(matches!(f.await, Err(SendPacketError::Disconnected)));
+
+        // QoS 2 PUBREL acknowledged with a second PUBREC
+        let (_io, shared, sink) = setup();
+        let mut f = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
+        assert!(is_pending(&mut f).await);
+        assert_eq!(shared.pkt_ack(rec(1)), Ok(()));
+        let mut f = pin!(f.await.unwrap().release());
+        assert!(is_pending(&mut f).await);
+        assert_eq!(
+            shared.pkt_ack(rec(1)),
+            err(packet_type::PUBREC, "Expected PUBCOMP packet")
+        );
+        assert_eq!(f.await, Err(SendPacketError::Disconnected));
+
+        // valid QoS 2 flow
+        let (_io, shared, sink) = setup();
+        let mut f = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
+        assert!(is_pending(&mut f).await);
+        assert_eq!(shared.pkt_ack(rec(1)), Ok(()));
+        let mut f = pin!(f.await.unwrap().release());
+        assert!(is_pending(&mut f).await);
+        assert_eq!(shared.pkt_ack(comp(1)), Ok(()));
+        assert_eq!(f.await, Ok(()));
+        assert!(sink.is_open());
+    }
+
+    #[ntex::test]
     async fn test_rejected_publish_does_not_start_streaming() {
         let (client, server) = IoTest::create();
         let io = Io::new(server, SharedCfg::new("test"));
