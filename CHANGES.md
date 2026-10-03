@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v3: Server accepts a re-delivered PUBLISH (DUP) with a packet id in use instead of closing
+  the connection, it is ignored until PUBACK [MQTT-4.3.2-2] or acked by PUBREC until PUBREL
+  without delivery [MQTT-4.3.3-2], PUBREL before PUBREC is a protocol violation
+
 * v3: Reply with PUBCOMP to a PUBREL with an unknown packet id instead of closing the
   connection, PUBREL is re-sent after a session resumes [MQTT-4.4.0-1]
 
