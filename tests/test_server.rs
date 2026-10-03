@@ -507,6 +507,100 @@ fn decoded_packet(res: Decoded) -> Option<Packet> {
     }
 }
 
+#[ntex::test]
+async fn test_unexpected_ack_type() -> std::io::Result<()> {
+    // QoS 1 PUBLISH acknowledged with PUBREC or PUBCOMP (MQTT 3.1.1, 4.3.2, 4.3.3)
+    let id = NonZeroU16::new(1).unwrap();
+    for ack in [
+        Packet::PublishReceived { packet_id: id },
+        Packet::PublishComplete { packet_id: id },
+    ] {
+        let error = Arc::new(Mutex::new(None));
+        let result = Arc::new(Mutex::new(None));
+        let (error2, result2) = (error.clone(), result.clone());
+        let srv = server::test_server(async move || {
+            let error = error2.clone();
+            let result = result2.clone();
+            MqttServer::new(async move |ses: &Session<St>| {
+                let sink = ses.sink().clone();
+                let result = result.clone();
+                Ok::<_, Infallible>(fn_service(async move |_: Publish| {
+                    let sink = sink.clone();
+                    let result = result.clone();
+                    ntex::rt::spawn(async move {
+                        let res = sink.publish("test").send_at_least_once(Bytes::new()).await;
+                        *result.lock().unwrap() = Some(res);
+                    });
+                    Ok::<_, TestError>(())
+                }))
+            })
+            .control(async move |msg| {
+                if let Control::Stop(Reason::Protocol(err)) = msg
+                    && let MqttProtocolError::ProtocolViolation(e) = err.get_ref()
+                {
+                    *error.lock().unwrap() = Some(e.message());
+                }
+                Ok::<_, TestError>(None)
+            })
+            .build(connect)
+        });
+
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::default();
+        io.send(
+            Encoded::Packet(Packet::Connect(
+                codec::Connect::default().client_id("user").into(),
+            )),
+            &codec,
+        )
+        .await
+        .unwrap();
+        io.recv(&codec).await.unwrap().unwrap();
+
+        // trigger server QoS 1 PUBLISH
+        io.send(
+            Encoded::Publish(
+                codec::Publish {
+                    dup: false,
+                    retain: false,
+                    qos: codec::QoS::AtMostOnce,
+                    topic: ByteString::from("test"),
+                    packet_id: None,
+                    payload_size: 0,
+                },
+                None,
+            ),
+            &codec,
+        )
+        .await
+        .unwrap();
+        let pkt = io.recv(&codec).await.unwrap().unwrap();
+        assert!(
+            matches!(pkt, Decoded::Publish(ref p, ..) if p.qos == codec::QoS::AtLeastOnce),
+            "{pkt:?}"
+        );
+
+        // connection is closed
+        io.send(Encoded::Packet(ack), &codec).await.unwrap();
+        let _ = io.send(Encoded::Packet(Packet::PingRequest), &codec).await;
+        let pkt = io.recv(&codec).await;
+        assert!(matches!(pkt, Ok(None) | Err(_)), "{pkt:?}");
+        assert_eq!(error.lock().unwrap().take(), Some("Expected PUBACK packet"));
+
+        // publish fails instead of being acknowledged
+        let mut res = None;
+        for _ in 0..50 {
+            res = result.lock().unwrap().take();
+            if res.is_some() {
+                break;
+            }
+            sleep(Millis(10)).await;
+        }
+        assert_eq!(res, Some(Err(v3::error::SendPacketError::Disconnected)));
+    }
+    Ok(())
+}
+
 /// Server publishes QoS 2 message to the client on any client publish
 fn qos2_publisher() -> (server::TestServer, Arc<Mutex<Option<bool>>>) {
     let released = Arc::new(Mutex::new(None));

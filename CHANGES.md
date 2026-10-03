@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Close the connection with a protocol error when PUBREC or PUBCOMP does not match
+  the type of the in-flight packet, previously publish and subscribe futures could panic
+
 * v5: Server closes the connection with DISCONNECT 0x9E or 0xA2 when a SUBSCRIBE contains
   a Shared or Wildcard Subscription that is not available in CONNACK
   (MQTT 5.0, 3.2.2.3.11, 3.2.2.3.13)

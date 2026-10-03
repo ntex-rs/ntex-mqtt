@@ -612,6 +612,113 @@ async fn test_unexpected_packet() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_unexpected_ack_type() -> std::io::Result<()> {
+    // QoS 1 PUBLISH acknowledged with PUBREC or PUBCOMP (MQTT 5.0, 4.3.2, 4.3.3)
+    for (ack, message) in [
+        (
+            Packet::PublishReceived(codec::PublishAck {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                ..Default::default()
+            }),
+            "Expected PUBACK packet",
+        ),
+        (
+            Packet::PublishComplete(codec::PublishAck2 {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                reason_code: codec::PublishAck2Reason::Success,
+                properties: Default::default(),
+                reason_string: None,
+            }),
+            "Expected PUBACK packet",
+        ),
+    ] {
+        let error = Arc::new(Mutex::new(None));
+        let result = Arc::new(Mutex::new(None));
+        let (error2, result2) = (error.clone(), result.clone());
+        let srv = server::test_server(async move || {
+            let error = error2.clone();
+            let result = result2.clone();
+            MqttServer::new(async move |ses: &Session<St>| {
+                let sink = ses.sink().clone();
+                let result = result.clone();
+                Ok::<_, Infallible>(fn_service(async move |p: Publish| {
+                    let sink = sink.clone();
+                    let result = result.clone();
+                    rt::spawn(async move {
+                        let res = sink.publish("test").send_at_least_once(Bytes::new()).await;
+                        *result.lock().unwrap() = Some(res.map(|_| ()));
+                    });
+                    Ok::<_, TestError>(p.ack())
+                }))
+            })
+            .control(async move |msg| {
+                if let Control::Stop(Reason::Protocol(err)) = msg {
+                    let pkt = codec::Disconnect::from_proto_error(err.get_ref());
+                    if let error::MqttProtocolError::ProtocolViolation(e) = err.get_ref() {
+                        *error.lock().unwrap() = Some(e.message());
+                    }
+                    Ok::<_, TestError>(Some(codec::Packet::from(pkt).into()))
+                } else {
+                    Ok(None)
+                }
+            })
+            .build(connect)
+        });
+
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::new();
+        io.send(
+            Encoded::Packet(codec::Connect::default().client_id("user").into()),
+            &codec,
+        )
+        .await
+        .unwrap();
+        let _ = io.recv(&codec).await.unwrap().unwrap();
+
+        // trigger server QoS 1 PUBLISH
+        io.send(
+            Encoded::Publish(
+                codec::Publish {
+                    qos: codec::QoS::AtMostOnce,
+                    packet_id: None,
+                    ..pkt_publish()
+                },
+                None,
+            ),
+            &codec,
+        )
+        .await
+        .unwrap();
+        let pkt = io.recv(&codec).await.unwrap().unwrap();
+        assert!(
+            matches!(pkt, Decoded::Publish(ref p, ..) if p.qos == codec::QoS::AtLeastOnce),
+            "{pkt:?}"
+        );
+
+        io.send(Encoded::Packet(ack), &codec).await.unwrap();
+        let pkt = io.recv(&codec).await;
+        assert!(
+            matches!(pkt, Ok(Some(Decoded::Packet(Packet::Disconnect(_), _)))),
+            "{pkt:?}"
+        );
+        assert!(matches!(io.recv(&codec).await, Ok(None) | Err(_)));
+        assert_eq!(error.lock().unwrap().take(), Some(message));
+
+        // publish fails instead of panicking
+        let mut res = None;
+        for _ in 0..50 {
+            res = result.lock().unwrap().take();
+            if res.is_some() {
+                break;
+            }
+            sleep(Millis(10)).await;
+        }
+        assert_eq!(res, Some(Err(error::SendPacketError::Disconnected)));
+    }
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_qos2_redelivery() -> std::io::Result<()> {
     let published = Arc::new(Mutex::new(0));
     let published2 = published.clone();
