@@ -4,7 +4,7 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, num, rc::Rc};
 use ntex_bytes::{BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
-use ntex_util::{HashSet, channel::pool};
+use ntex_util::{HashMap, HashSet, channel::pool};
 
 use crate::v5::codec::{self, Decoded, Encoded, Packet, Publish};
 use crate::{QoS, error, error::SendPacketError, payload::PlSender, types::packet_type};
@@ -56,7 +56,8 @@ pub(super) struct MqttSharedQueues {
     inflight: VecDeque<(num::NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
     inflight_ids: HashSet<num::NonZeroU16>,
     waiters: VecDeque<pool::Sender<()>>,
-    rx: Option<pool::Receiver<Ack>>,
+    // PUBCOMP receivers, one per QoS 2 PUBLISH awaiting release
+    rx: HashMap<num::NonZeroU16, pool::Receiver<Ack>>,
 }
 
 pub(super) struct MqttSinkPool {
@@ -84,7 +85,7 @@ impl MqttShared {
                 inflight: VecDeque::with_capacity(8),
                 inflight_ids: HashSet::default(),
                 waiters: VecDeque::new(),
-                rx: None,
+                rx: HashMap::default(),
             }),
             receive_max: Cell::new(0),
             topic_alias_max: Cell::new(0),
@@ -451,7 +452,7 @@ impl MqttShared {
                     let _ = tx.send(pkt);
                 }
                 let (tx, rx) = self.pool.queue.channel();
-                queues.rx = Some(rx);
+                queues.rx.insert(idx, rx);
                 queues
                     .inflight
                     .push_back((idx, Some(tx), AckType::Complete));
@@ -460,7 +461,7 @@ impl MqttShared {
                 // get publish ack channel
                 log::trace!("Ack packet complete with id: {}", pkt.packet_id());
                 queues.inflight_ids.remove(&pkt.packet_id());
-                queues.rx.take();
+                queues.rx.remove(&idx);
 
                 if let Some(tx) = tx {
                     let _ = tx.send(pkt);
@@ -593,7 +594,7 @@ impl MqttShared {
         &self,
         pkt: codec::PublishAck2,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
-        let Some(rx) = self.queues.borrow_mut().rx.take() else {
+        let Some(rx) = self.queues.borrow_mut().rx.remove(&pkt.packet_id) else {
             return Err(SendPacketError::UnexpectedRelease);
         };
 
