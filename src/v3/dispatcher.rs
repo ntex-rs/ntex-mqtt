@@ -250,6 +250,10 @@ where
                         .handle_qos_after_disconnect
                         .is_none_or(|max_qos| publish.qos > max_qos)
                 {
+                    // payload chunks of the dropped publish are dropped as well
+                    if publish.payload_size != payload.len() as u32 {
+                        self.discard_payload.set(true);
+                    }
                     return Ok(None);
                 }
 
@@ -1088,6 +1092,41 @@ mod tests {
         // the last chunk ends the dropped payload
         assert!(matches!(
             chunk(b"d", true).await,
+            Err(DispatcherError::Protocol(MqttProtocolError::Decode(
+                DecodeError::UnexpectedPayload
+            )))
+        ));
+    }
+
+    #[ntex::test]
+    async fn test_inactive_publish_payload() {
+        let counter = Rc::new(Cell::new(0));
+        let (io, shared, disp) = redelivery_dispatcher!(counter);
+        let chunk = |data: &'static [u8], eof| {
+            disp.call(Decoded::PayloadChunk(Bytes::from_static(data), eof))
+        };
+        io.close();
+        assert!(!shared.is_active());
+
+        // payload of a publish dropped after disconnect is dropped
+        let res = disp
+            .call(publish_chunk(
+                1,
+                QoS::AtLeastOnce,
+                false,
+                "publish",
+                4,
+                b"a",
+            ))
+            .await;
+        assert_eq!(res.unwrap(), None);
+        assert_eq!(chunk(b"b", false).await.unwrap(), None);
+        assert_eq!(chunk(b"cd", true).await.unwrap(), None);
+        assert_eq!(counter.get(), 0);
+
+        // the last chunk ends the dropped payload
+        assert!(matches!(
+            chunk(b"e", true).await,
             Err(DispatcherError::Protocol(MqttProtocolError::Decode(
                 DecodeError::UnexpectedPayload
             )))

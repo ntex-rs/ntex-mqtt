@@ -353,6 +353,10 @@ where
                             .handle_qos_after_disconnect
                             .is_none_or(|max_qos| publish.qos > max_qos)
                     {
+                        // payload chunks of the dropped publish are dropped as well
+                        if publish.payload_size != payload.len() as u32 {
+                            self.discard_payload.set(true);
+                        }
                         return Ok(None);
                     }
                 }
@@ -1417,6 +1421,32 @@ mod tests {
         let res = disp.call(redelivery(1, QoS::ExactlyOnce, false)).await;
         assert_eq!(res.unwrap(), Some(ack(1, true, Ack::Success)));
         assert_eq!(published.get(), 4);
+    }
+
+    #[ntex::test]
+    async fn test_inactive_publish_payload() {
+        let published = Rc::new(Cell::new(0));
+        let (io, disp) = qos2_dispatcher(Rc::default(), published.clone(), 16);
+        let chunk = |data: &'static [u8], eof| {
+            disp.call(Decoded::PayloadChunk(Bytes::from_static(data), eof))
+        };
+        io.close();
+        assert!(!io.is_active());
+
+        // payload of a publish dropped after disconnect is dropped
+        let res = disp.call(redelivery(1, QoS::AtLeastOnce, true)).await;
+        assert_eq!(res.unwrap(), None);
+        assert_eq!(chunk(b"d", false).await.unwrap(), None);
+        assert_eq!(chunk(b"ef", true).await.unwrap(), None);
+        assert_eq!(published.get(), 0);
+
+        // the last chunk ends the dropped payload
+        assert!(matches!(
+            chunk(b"g", true).await,
+            Err(DispatcherError::Protocol(MqttProtocolError::Decode(
+                DecodeError::UnexpectedPayload
+            )))
+        ));
     }
 
     fn assert_unexpected<E: std::fmt::Debug>(

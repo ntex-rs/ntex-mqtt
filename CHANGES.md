@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Drop the payload chunks of a PUBLISH that is dropped after disconnect, previously
+  the next chunk failed with an unexpected payload error
+
 * v5: Use DISCONNECT 0x94 (Topic Alias invalid) for a Topic Alias greater than the maximum
   and the error's reason code, 0x82 (Protocol Error), for invalid acks instead of 0x83
   (MQTT 5.0, 3.3.2.3.4, 4.13.1)
