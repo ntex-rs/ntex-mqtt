@@ -2,6 +2,11 @@
 
 ## [9.1.0] - Unreleased
 
+* v5: Server and client handle a re-delivered PUBLISH (DUP) with a packet id in use, it is
+  ignored until PUBACK [MQTT-4.3.2-5] or acked by PUBREC without delivery until PUBREL
+  [MQTT-4.3.3-10]. Other packet id conflicts are answered by PUBREC for QoS 2 (server sent
+  PUBACK) and payload chunks of a not delivered PUBLISH are discarded
+
 * v3, v5: Server default protocol service acknowledges PUBREL instead of closing the connection
 
 * v5: Server releases the packet id of a received QoS 2 PUBLISH after PUBCOMP [MQTT-4.3.3-12]
