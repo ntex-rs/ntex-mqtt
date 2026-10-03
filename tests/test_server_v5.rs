@@ -557,6 +557,61 @@ async fn test_qos2() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_unexpected_packet() -> std::io::Result<()> {
+    let connect_pkt = || Encoded::Packet(codec::Connect::default().client_id("user").into());
+    for (pkt, message) in [
+        // a second CONNECT is a protocol error [MQTT-3.1.0-2]
+        (
+            connect_pkt(),
+            "[MQTT-3.1.0-2] Second CONNECT packet is received",
+        ),
+        (
+            Encoded::Packet(Packet::PingResponse),
+            "Packet of the type is not expected from client",
+        ),
+    ] {
+        let error = Arc::new(Mutex::new(None));
+        let error2 = error.clone();
+        let srv = server::test_server(async move || {
+            let error = error2.clone();
+            MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
+                .control(async move |msg| {
+                    if let Control::Stop(Reason::Protocol(err)) = msg {
+                        let pkt = codec::Disconnect::from_proto_error(err.get_ref());
+                        if let error::MqttProtocolError::ProtocolViolation(e) = err.get_ref() {
+                            *error.lock().unwrap() = Some(e.message());
+                        }
+                        Ok::<_, TestError>(Some(codec::Packet::from(pkt).into()))
+                    } else {
+                        Ok(None)
+                    }
+                })
+                .build(connect)
+        });
+
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::new();
+        io.send(connect_pkt(), &codec).await.unwrap();
+        let _ = io.recv(&codec).await.unwrap().unwrap();
+
+        // control service is called with the protocol error
+        io.send(pkt, &codec).await.unwrap();
+        let result = io.recv(&codec).await;
+        assert!(
+            matches!(result, Ok(Some(Decoded::Packet(Packet::Disconnect(ref d), _)))
+                     if d.reason_code == codec::DisconnectReasonCode::ProtocolError
+            ),
+            "Unexpected result: {result:#?}"
+        );
+        assert!(matches!(io.recv(&codec).await, Ok(None) | Err(_)));
+
+        let err = error.lock().unwrap().take();
+        assert!(err == Some(message), "{err:?}");
+    }
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_qos2_redelivery() -> std::io::Result<()> {
     let published = Arc::new(Mutex::new(0));
     let published2 = published.clone();
