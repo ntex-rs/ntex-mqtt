@@ -596,6 +596,47 @@ async fn test_qos2_client() -> std::io::Result<()> {
     Ok(())
 }
 
+#[ntex::test]
+async fn test_qos2_receive_max() -> std::io::Result<()> {
+    let srv = server::TestServerBuilder::new(async || {
+        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
+            .protocol(async |msg: ProtocolMessage| Ok::<_, TestError>(msg.ack()))
+            .build(connect)
+    })
+    .config(
+        SharedCfg::new("MQTT").add(
+            MqttServiceConfig::new()
+                .set_max_qos(QoS::ExactlyOnce)
+                .set_max_receive(1),
+        ),
+    )
+    .start();
+
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap();
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    // packet id is released after PUBCOMP, receive maximum quota is restored
+    for _ in 0..3 {
+        let received = sink
+            .publish(ByteString::from_static("test"))
+            .send_exactly_once(Bytes::new())
+            .await
+            .unwrap();
+        received.release().await.unwrap();
+    }
+    let res = sink
+        .publish(ByteString::from_static("test"))
+        .send_at_least_once(Bytes::new())
+        .await;
+    assert!(res.is_ok());
+    assert!(sink.is_open());
+    Ok(())
+}
+
 /// Server publishes QoS 2 message to the client on any client publish
 fn qos2_publisher() -> (server::TestServer, Arc<Mutex<Option<bool>>>) {
     let released = Arc::new(Mutex::new(None));
