@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v5: Server releases the packet id of a received QoS 2 PUBLISH after PUBCOMP [MQTT-4.3.3-12]
+  or after PUBREC with an error reason code [MQTT-4.3.3-9], previously the id stayed in use and
+  consumed receive maximum quota. PUBREL before PUBREC is a protocol violation
+
 * v5: Client acknowledges a received QoS 2 PUBLISH with PUBREC instead of PUBACK, the packet
   id stays in use until PUBCOMP [MQTT-4.3.3-10] or is released after PUBREC with an error
   reason code [MQTT-4.3.3-9], PUBREL before PUBREC is a protocol violation.
