@@ -88,7 +88,10 @@ impl Publish {
     }
 
     #[inline]
-    /// Ack publish message, sends `PublishAck` packet if the publish has a packet id
+    /// Ack publish message
+    ///
+    /// Sends `PublishAck` packet for `QoS 1` publish and `PublishReceived` packet
+    /// for `QoS 2` publish.
     pub fn ack(self) -> ProtocolMessageAck {
         if let Some(id) = self.0.packet_id {
             ProtocolMessageAck {
@@ -103,6 +106,8 @@ impl Publish {
 
     #[inline]
     /// Ack publish message and return the publish packet, payload is dropped
+    ///
+    /// See [`Publish::ack`].
     pub fn into_inner(self) -> (ProtocolMessageAck, codec::Publish) {
         if let Some(id) = self.0.packet_id {
             (

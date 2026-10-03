@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v3: Client acknowledges a received QoS 2 PUBLISH with PUBREC instead of PUBACK, the packet
+  id stays in use until PUBREL [MQTT-4.3.3-2], PUBREL before PUBREC is a protocol violation.
+  `ClientRouter::start_default()` acknowledges PUBREL instead of closing the connection
+
 * v3: Server accepts a re-delivered PUBLISH (DUP) with a packet id in use instead of closing
   the connection, it is ignored until PUBACK [MQTT-4.3.2-2] or acked by PUBREC until PUBREL
   without delivery [MQTT-4.3.3-2], PUBREL before PUBREC is a protocol violation
