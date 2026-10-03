@@ -2030,6 +2030,59 @@ async fn test_max_qos() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_retain_not_available() -> std::io::Result<()> {
+    let srv = server::test_server(async || {
+        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
+            async |msg: Connect| {
+                Ok::<_, TestError>(msg.ack(St).with(|ack| ack.retain_available = false))
+            },
+        )
+    });
+
+    // RETAIN is not allowed for any QoS [MQTT-3.2.2-14]
+    for qos in [QoS::AtMostOnce, QoS::AtLeastOnce] {
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::default();
+        io.send(
+            Encoded::Packet(Packet::Connect(Box::new(
+                codec::Connect::default().client_id("user"),
+            ))),
+            &codec,
+        )
+        .await
+        .unwrap();
+        let ack = io.recv(&codec).await.unwrap().unwrap();
+        let Packet::ConnectAck(ack) = packet(ack) else {
+            panic!()
+        };
+        assert!(!ack.retain_available);
+
+        let pkt = codec::Publish {
+            retain: true,
+            qos,
+            packet_id: if qos == QoS::AtMostOnce {
+                None
+            } else {
+                NonZeroU16::new(1)
+            },
+            ..pkt_publish()
+        };
+        io.send(Encoded::Publish(pkt, None), &codec).await.unwrap();
+        let pkt = io.recv(&codec).await.unwrap().unwrap();
+        assert_eq!(
+            packet(pkt),
+            Packet::Disconnect(codec::Disconnect {
+                reason_code: codec::DisconnectReasonCode::RetainNotSupported,
+                ..Default::default()
+            }),
+            "{qos:?}"
+        );
+    }
+
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_sink_ready() -> std::io::Result<()> {
     let srv = server::test_server(async || {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(

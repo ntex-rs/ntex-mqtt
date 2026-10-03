@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v5: Server rejects a QoS 0 PUBLISH with RETAIN set when retain is not available
+  [MQTT-3.2.2-14], previously only QoS 1 and QoS 2 were checked
+
 * v3, v5: Server closes the connection on a second CONNECT [MQTT-3.1.0-2] and on CONNACK,
   SUBACK, UNSUBACK or PINGRESP from client, client closes the connection on CONNECT or a second
   CONNACK from server, control service is called with an unexpected packet protocol error,

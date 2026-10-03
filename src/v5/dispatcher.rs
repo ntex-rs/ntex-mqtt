@@ -213,6 +213,11 @@ where
                 if !publish.properties.subscription_ids.is_empty() {
                     return Err(SpecViolation::Pub_3_3_4_6.into());
                 }
+                // applies to PUBLISH of any QoS [MQTT-3.2.2-14]
+                if publish.retain && !self.inner.sink.codec.retain_available() {
+                    log::trace!("{}: Retain is not available but is set", self.tag());
+                    return Err(SpecViolation::Connack_3_2_2_14.into());
+                }
 
                 // response to a re-delivered PUBLISH with a packet id in use
                 let mut redelivered = None;
@@ -275,10 +280,6 @@ where
                                 publish.qos
                             );
                             return Err(SpecViolation::Connack_3_2_2_11.into());
-                        }
-                        if publish.retain && !state.codec.retain_available() {
-                            log::trace!("{}: Retain is not available but is set", self.tag());
-                            return Err(SpecViolation::Connack_3_2_2_14.into());
                         }
 
                         // check for duplicated packet id
@@ -749,29 +750,34 @@ mod tests {
             ),
         );
 
-        // retain not available
-        let err = disp
-            .call(Decoded::Publish(
-                codec::Publish {
-                    retain: true,
-                    qos: QoS::AtLeastOnce,
-                    packet_id: NonZeroU16::new(1),
-                    ..Default::default()
-                },
-                Bytes::new(),
-                999,
-            ))
-            .await
-            .err()
-            .unwrap();
+        // retain not available, for any QoS [MQTT-3.2.2-14]
+        for (qos, packet_id) in [
+            (QoS::AtMostOnce, None),
+            (QoS::AtLeastOnce, NonZeroU16::new(1)),
+        ] {
+            let err = disp
+                .call(Decoded::Publish(
+                    codec::Publish {
+                        retain: true,
+                        qos,
+                        packet_id,
+                        ..Default::default()
+                    },
+                    Bytes::new(),
+                    999,
+                ))
+                .await
+                .err()
+                .unwrap();
 
-        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
-            panic!()
-        };
-        assert_eq!(
-            err.inner,
-            error::ViolationInner::Spec(error::SpecViolation::Connack_3_2_2_14)
-        );
+            let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
+                panic!()
+            };
+            assert_eq!(
+                err.inner,
+                error::ViolationInner::Spec(error::SpecViolation::Connack_3_2_2_14)
+            );
+        }
 
         // topic aliases
         let mut pkt = codec::Publish::default();
