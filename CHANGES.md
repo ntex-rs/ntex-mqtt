@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Several received QoS 2 publishes can be released at the same time, previously
+  only the most recent PUBREC could be released and earlier ones never sent PUBREL
+
 * v3, v5: Close the connection with a protocol error when PUBREC or PUBCOMP does not match
   the type of the in-flight packet, previously publish and subscribe futures could panic
 

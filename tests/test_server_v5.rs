@@ -719,6 +719,112 @@ async fn test_unexpected_ack_type() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_qos2_release_multiple() -> std::io::Result<()> {
+    let result = Arc::new(Mutex::new(None));
+    let result2 = result.clone();
+    let srv = server::test_server(async move || {
+        let result = result2.clone();
+        MqttServer::new(async move |ses: &Session<St>| {
+            let sink = ses.sink().clone();
+            let result = result.clone();
+            Ok::<_, Infallible>(fn_service(async move |p: Publish| {
+                let sink = sink.clone();
+                let result = result.clone();
+                rt::spawn(async move {
+                    // both PUBREC packets are received before release
+                    let (r1, r2) = ntex::util::join(
+                        sink.publish("a").send_exactly_once(Bytes::new()),
+                        sink.publish("b").send_exactly_once(Bytes::new()),
+                    )
+                    .await;
+                    let res = ntex::util::join(r1.unwrap().release(), r2.unwrap().release()).await;
+                    *result.lock().unwrap() = Some(res);
+                });
+                Ok::<_, TestError>(p.ack())
+            }))
+        })
+        .build(connect)
+    });
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::new();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    // trigger server QoS 2 PUBLISH packets
+    io.send(
+        Encoded::Publish(
+            codec::Publish {
+                qos: codec::QoS::AtMostOnce,
+                packet_id: None,
+                ..pkt_publish()
+            },
+            None,
+        ),
+        &codec,
+    )
+    .await
+    .unwrap();
+    for id in [1, 2] {
+        let pkt = io.recv(&codec).await.unwrap().unwrap();
+        assert!(
+            matches!(pkt, Decoded::Publish(ref p, ..) if p.packet_id == NonZeroU16::new(id)),
+            "{pkt:?}"
+        );
+    }
+    for id in [1, 2] {
+        io.send(
+            Encoded::Packet(Packet::PublishReceived(codec::PublishAck {
+                packet_id: NonZeroU16::new(id).unwrap(),
+                ..Default::default()
+            })),
+            &codec,
+        )
+        .await
+        .unwrap();
+    }
+
+    // PUBREL is sent for each PUBLISH
+    for id in [1, 2] {
+        let pkt = ntex::time::timeout(Millis(1000), io.recv(&codec)).await;
+        assert!(
+            matches!(pkt, Ok(Ok(Some(Decoded::Packet(Packet::PublishRelease(ref p), _))))
+                     if p.packet_id.get() == id),
+            "{pkt:?}"
+        );
+    }
+    for id in [1, 2] {
+        io.send(
+            Encoded::Packet(Packet::PublishComplete(codec::PublishAck2 {
+                packet_id: NonZeroU16::new(id).unwrap(),
+                reason_code: codec::PublishAck2Reason::Success,
+                properties: Default::default(),
+                reason_string: None,
+            })),
+            &codec,
+        )
+        .await
+        .unwrap();
+    }
+
+    let mut res = None;
+    for _ in 0..50 {
+        res = result.lock().unwrap().take();
+        if res.is_some() {
+            break;
+        }
+        sleep(Millis(10)).await;
+    }
+    assert_eq!(res, Some((Ok(()), Ok(()))));
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_qos2_redelivery() -> std::io::Result<()> {
     let published = Arc::new(Mutex::new(0));
     let published2 = published.clone();

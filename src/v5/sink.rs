@@ -921,6 +921,84 @@ mod tests {
     }
 
     #[ntex::test]
+    async fn test_release_multiple() {
+        use std::{future::Future, pin::pin};
+
+        use ntex_util::future::lazy;
+
+        async fn is_pending<F: Future>(f: &mut std::pin::Pin<&mut F>) -> bool {
+            lazy(|cx| f.as_mut().poll(cx).is_pending()).await
+        }
+        fn id(id: u16) -> NonZeroU16 {
+            NonZeroU16::new(id).unwrap()
+        }
+        fn rec(packet_id: u16) -> Ack {
+            Ack::Receive(codec::PublishAck {
+                packet_id: id(packet_id),
+                ..Default::default()
+            })
+        }
+        fn comp(packet_id: u16) -> Ack {
+            Ack::Complete(codec::PublishAck2 {
+                packet_id: id(packet_id),
+                reason_code: codec::PublishAck2Reason::Success,
+                properties: codec::UserProperties::default(),
+                reason_string: None,
+            })
+        }
+
+        for drop_second in [false, true] {
+            let (client, server) = IoTest::create();
+            client.remote_buffer_cap(1024);
+            let io = Io::new(server, SharedCfg::new("test"));
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                codec::Codec::new(),
+                Rc::default(),
+            ));
+            shared.set_cap(16);
+            let sink = MqttSink::new(shared.clone());
+
+            // two QoS 2 PUBLISH packets are received before release
+            let mut f1 = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
+            let mut f2 = pin!(sink.publish("b").send_exactly_once(Bytes::new()));
+            assert!(is_pending(&mut f1).await);
+            assert!(is_pending(&mut f2).await);
+            let _ = client.read().await.unwrap();
+            assert_eq!(shared.pkt_ack(rec(1)), Ok(()));
+            assert_eq!(shared.pkt_ack(rec(2)), Ok(()));
+            let rec1 = f1.await.unwrap();
+            let rec2 = f2.await.unwrap();
+
+            // each release sends PUBREL with its own packet id
+            let mut r1 = pin!(rec1.release());
+            assert!(is_pending(&mut r1).await);
+            let mut r2 = if drop_second {
+                drop(rec2);
+                None
+            } else {
+                let mut r2 = Box::pin(rec2.release());
+                assert!(is_pending(&mut r2.as_mut()).await);
+                Some(r2)
+            };
+            let buf = client.read().await.unwrap();
+            assert_eq!(
+                buf,
+                Bytes::from_static(b"\x62\x04\x00\x01\x00\x00\x62\x04\x00\x02\x00\x00")
+            );
+
+            assert_eq!(shared.pkt_ack(comp(1)), Ok(()));
+            assert_eq!(shared.pkt_ack(comp(2)), Ok(()));
+            assert_eq!(r1.await, Ok(()));
+            if let Some(r2) = r2.take() {
+                assert_eq!(r2.await, Ok(()));
+            }
+            assert!(sink.is_open());
+            assert_eq!(shared.credit(), 16);
+        }
+    }
+
+    #[ntex::test]
     async fn test_rejected_publish_does_not_start_streaming() {
         let (client, server) = IoTest::create();
         let io = Io::new(server, SharedCfg::new("test"));

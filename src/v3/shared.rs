@@ -4,7 +4,7 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, num, rc::Rc};
 use ntex_bytes::{BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
-use ntex_util::{HashSet, channel::pool};
+use ntex_util::{HashMap, HashSet, channel::pool};
 
 use crate::error::{DecodeError, EncodeError, MqttProtocolError, PayloadError, SendPacketError};
 use crate::v3::codec::{self, Encoded, Publish};
@@ -85,7 +85,8 @@ struct MqttSharedQueues {
     inflight: VecDeque<(num::NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
     inflight_ids: HashSet<num::NonZeroU16>,
     waiters: VecDeque<pool::Sender<()>>,
-    rx: Option<pool::Receiver<Ack>>,
+    // PUBCOMP receivers, one per QoS 2 PUBLISH awaiting release
+    rx: HashMap<num::NonZeroU16, pool::Receiver<Ack>>,
 }
 
 impl MqttShared {
@@ -105,7 +106,7 @@ impl MqttShared {
                 inflight: VecDeque::with_capacity(8),
                 inflight_ids: HashSet::default(),
                 waiters: VecDeque::new(),
-                rx: None,
+                rx: HashMap::default(),
             }),
             inflight_idx: Cell::new(0),
             encode_error: Cell::new(None),
@@ -375,7 +376,7 @@ impl MqttShared {
                     let _ = tx.send(pkt);
                 }
                 let (tx, rx) = self.pool.queue.channel();
-                queues.rx = Some(rx);
+                queues.rx.insert(idx, rx);
                 queues
                     .inflight
                     .push_back((idx, Some(tx), AckType::Complete));
@@ -384,7 +385,7 @@ impl MqttShared {
                 // get publish ack channel
                 log::trace!("Ack packet with id: {}", pkt.packet_id());
                 queues.inflight_ids.remove(&pkt.packet_id());
-                queues.rx.take();
+                queues.rx.remove(&idx);
 
                 if let Some(tx) = tx {
                     let _ = tx.send(pkt);
@@ -520,7 +521,7 @@ impl MqttShared {
         &self,
         id: num::NonZeroU16,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
-        let Some(rx) = self.queues.borrow_mut().rx.take() else {
+        let Some(rx) = self.queues.borrow_mut().rx.remove(&id) else {
             return Err(SendPacketError::UnexpectedRelease);
         };
         match self.io.encode(
