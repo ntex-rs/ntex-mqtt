@@ -2,6 +2,8 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Server default protocol service acknowledges PUBREL instead of closing the connection
+
 * v5: Server releases the packet id of a received QoS 2 PUBLISH after PUBCOMP [MQTT-4.3.3-12]
   or after PUBREC with an error reason code [MQTT-4.3.3-9], previously the id stayed in use and
   consumed receive maximum quota. PUBREL before PUBREC is a protocol violation

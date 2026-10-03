@@ -11,8 +11,8 @@ use super::{Session, codec, codec::Encoded, shared::MqttShared};
 
 /// Default protocol-message service
 ///
-/// Responds to `Ping` and `Disconnect` messages, any other message closes
-/// the connection with `UnspecifiedError` disconnect reason.
+/// Responds to `Ping`, `Disconnect` and `PublishRelease` messages, any other message
+/// closes the connection with `UnspecifiedError` disconnect reason.
 #[derive(Debug)]
 pub struct DefaultProtoSrv<E>(PhantomData<E>);
 
@@ -46,6 +46,8 @@ impl<St, E> Service<St, ProtocolMessage> for DefaultProtoSrv<E> {
         match pkt {
             ProtocolMessage::Ping(pkt) => Ok(pkt.ack()),
             ProtocolMessage::Disconnect(pkt) => Ok(pkt.ack()),
+            // `QoS 2` publish is already handled by publish service [MQTT-4.3.3-11]
+            ProtocolMessage::PublishRelease(pkt) => Ok(pkt.ack()),
             _ => {
                 log::warn!("MQTT5 Control service is not configured, pkt: {pkt:?}");
                 Ok(pkt.disconnect_with(super::codec::Disconnect::new(

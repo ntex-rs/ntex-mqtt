@@ -11,8 +11,8 @@ use super::{Session, codec::Encoded, shared::MqttShared};
 
 /// Default protocol-message service
 ///
-/// Responds to `Ping` and `Disconnect` messages, `Subscribe`, `Unsubscribe` and
-/// `PublishRelease` messages close the connection.
+/// Responds to `Ping`, `Disconnect` and `PublishRelease` messages, `Subscribe` and
+/// `Unsubscribe` messages close the connection.
 #[derive(Debug)]
 pub struct DefaultProtoSrv<E>(PhantomData<E>);
 
@@ -48,6 +48,8 @@ impl<St, E> Service<St, ProtocolMessage> for DefaultProtoSrv<E> {
         Ok(match pkt {
             ProtocolMessage::Ping(ping) => ping.ack(),
             ProtocolMessage::Disconnect(disc) => disc.ack(),
+            // `QoS 2` publish is already handled by publish service [MQTT-4.3.3-2]
+            ProtocolMessage::PublishRelease(rel) => rel.ack(),
             pkt => {
                 log::warn!("MQTT3 Control service is not configured, pkt: {pkt:?}");
                 pkt.disconnect()
