@@ -475,6 +475,30 @@ where
                     .any(|(tf, _)| !crate::topic::is_valid_shared(tf))
                 {
                     Err(SpecViolation::Subs_4_8_2.into())
+                } else if !self.inner.sink.codec.shared_subs_available()
+                    && pkt
+                        .topic_filters
+                        .iter()
+                        .any(|(tf, _)| crate::topic::is_shared(tf))
+                {
+                    // (MQTT 5.0, 3.2.2.3.13)
+                    Err(MqttProtocolError::violation(
+                        DisconnectReasonCode::SharedSubscriptionNotSupported,
+                        "Shared Subscriptions are not supported",
+                    )
+                    .into())
+                } else if !self.inner.sink.codec.wildcard_subs_available()
+                    && pkt
+                        .topic_filters
+                        .iter()
+                        .any(|(tf, _)| tf.contains(['+', '#']))
+                {
+                    // (MQTT 5.0, 3.2.2.3.11)
+                    Err(MqttProtocolError::violation(
+                        DisconnectReasonCode::WildcardSubscriptionsNotSupported,
+                        "Wildcard Subscriptions are not supported",
+                    )
+                    .into())
                 } else if pkt
                     .topic_filters
                     .iter()
@@ -921,6 +945,115 @@ mod tests {
             err.inner,
             error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1)
         );
+    }
+
+    #[ntex::test]
+    async fn test_subscription_availability() {
+        let subscribe = |tf: &'static str| {
+            Decoded::Packet(
+                Packet::Subscribe(codec::Subscribe {
+                    packet_id: NonZeroU16::new(1).unwrap(),
+                    id: None,
+                    user_properties: codec::UserProperties::default(),
+                    topic_filters: vec![
+                        (
+                            ByteString::from_static("test"),
+                            codec::SubscriptionOptions::default(),
+                        ),
+                        (
+                            ByteString::from_static(tf),
+                            codec::SubscriptionOptions::default(),
+                        ),
+                    ],
+                }),
+                999,
+            )
+        };
+        let unsubscribe = |tf: &'static str| {
+            Decoded::Packet(
+                Packet::Unsubscribe(codec::Unsubscribe {
+                    packet_id: NonZeroU16::new(2).unwrap(),
+                    user_properties: codec::UserProperties::default(),
+                    topic_filters: vec![ByteString::from_static(tf)],
+                }),
+                999,
+            )
+        };
+
+        for available in [true, false] {
+            let cfg: SharedCfg = SharedCfg::new("DBG").add(MqttServiceConfig::new()).into();
+            let io = Io::new(IoTest::create().0, cfg.clone());
+            let codec = codec::Codec::default();
+            codec.set_shared_subs_available(available);
+            codec.set_wildcard_subs_available(available);
+            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
+            let disp = Pipeline::new(
+                Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
+                Dispatcher::new(
+                    shared.clone(),
+                    fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
+                    fn_service(async |msg: ProtocolMessage| {
+                        Ok::<_, DispatcherError<TestError>>(msg.ack())
+                    }),
+                    cfg.get(),
+                ),
+            );
+
+            for (tf, reason, message) in [
+                // (MQTT 5.0, 3.2.2.3.13)
+                (
+                    "$share/group/test",
+                    DisconnectReasonCode::SharedSubscriptionNotSupported,
+                    "Shared Subscriptions are not supported",
+                ),
+                (
+                    "$share/group/a/+",
+                    DisconnectReasonCode::SharedSubscriptionNotSupported,
+                    "Shared Subscriptions are not supported",
+                ),
+                // (MQTT 5.0, 3.2.2.3.11)
+                (
+                    "a/+",
+                    DisconnectReasonCode::WildcardSubscriptionsNotSupported,
+                    "Wildcard Subscriptions are not supported",
+                ),
+                (
+                    "a/#",
+                    DisconnectReasonCode::WildcardSubscriptionsNotSupported,
+                    "Wildcard Subscriptions are not supported",
+                ),
+            ] {
+                let res = disp.call(subscribe(tf)).await;
+                if available {
+                    assert!(
+                        matches!(res, Ok(Some(Encoded::Packet(Packet::SubscribeAck(_))))),
+                        "{tf}: {res:?}"
+                    );
+                } else {
+                    let Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err))) =
+                        res
+                    else {
+                        panic!("{tf}: {res:?}")
+                    };
+                    assert_eq!(err.reason(), reason, "{tf}");
+                    assert_eq!(err.message(), message, "{tf}");
+                }
+
+                // unsubscribe is not restricted
+                let res = disp.call(unsubscribe(tf)).await;
+                assert!(
+                    matches!(res, Ok(Some(Encoded::Packet(Packet::UnsubscribeAck(_))))),
+                    "{tf}: {res:?}"
+                );
+            }
+
+            // filters without wildcards are not restricted
+            let res = disp.call(subscribe("a/b")).await;
+            assert!(
+                matches!(res, Ok(Some(Encoded::Packet(Packet::SubscribeAck(_))))),
+                "{res:?}"
+            );
+        }
     }
 
     #[ntex::test]

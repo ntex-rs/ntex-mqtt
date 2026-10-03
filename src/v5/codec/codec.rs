@@ -30,6 +30,8 @@ bitflags::bitflags! {
         /// codec decoded a CONNECT packet, it is used by a server
         const SERVER          = 0b0000_0100;
         const NO_SUB_IDS      = 0b0000_1000;
+        const NO_SHARED_SUBS  = 0b0001_0000;
+        const NO_WILDCARD_SUBS = 0b0010_0000;
     }
 }
 
@@ -120,6 +122,26 @@ impl Codec {
     pub(crate) fn set_sub_ids_available(&self, val: bool) {
         let mut flags = self.flags.get();
         flags.set(CodecFlags::NO_SUB_IDS, !val);
+        self.flags.set(flags);
+    }
+
+    pub(crate) fn shared_subs_available(&self) -> bool {
+        !self.flags.get().contains(CodecFlags::NO_SHARED_SUBS)
+    }
+
+    pub(crate) fn set_shared_subs_available(&self, val: bool) {
+        let mut flags = self.flags.get();
+        flags.set(CodecFlags::NO_SHARED_SUBS, !val);
+        self.flags.set(flags);
+    }
+
+    pub(crate) fn wildcard_subs_available(&self) -> bool {
+        !self.flags.get().contains(CodecFlags::NO_WILDCARD_SUBS)
+    }
+
+    pub(crate) fn set_wildcard_subs_available(&self, val: bool) {
+        let mut flags = self.flags.get();
+        flags.set(CodecFlags::NO_WILDCARD_SUBS, !val);
         self.flags.set(flags);
     }
 }
@@ -1570,6 +1592,8 @@ mod tests {
         codec.set_max_outbound_size(200);
         codec.set_retain_available(false);
         codec.set_sub_ids_available(false);
+        codec.set_shared_subs_available(false);
+        codec.set_wildcard_subs_available(false);
 
         // partially decoded PUBACK
         let mut src = BytesMut::from(&b"\x40\x02"[..]);
@@ -1580,6 +1604,8 @@ mod tests {
         assert_eq!(cloned.max_outbound_size(), 200);
         assert!(!cloned.retain_available());
         assert!(!cloned.sub_ids_available());
+        assert!(!cloned.shared_subs_available());
+        assert!(!cloned.wildcard_subs_available());
         assert_eq!(cloned.flags.get(), codec.flags.get());
 
         src.extend_from_slice(b"\x00\x01");
