@@ -474,6 +474,10 @@ impl PublishBuilder {
 /// Call [`release`](Self::release) to send `PublishRelease` packet and wait for
 /// `PublishComplete`. If the value is dropped, `PublishRelease` is sent without
 /// waiting for `PublishComplete`.
+///
+/// If `PublishReceived` packet has a reason code of 0x80 or greater, the publish
+/// is rejected and `PublishRelease` is never sent, check
+/// [`packet`](Self::packet) for the reason code.
 pub struct PublishReceived {
     ack: codec::PublishAck,
     result: Option<codec::PublishAck2>,
@@ -528,18 +532,33 @@ impl PublishReceived {
     }
 
     /// Release publish
+    ///
+    /// Returns [`SendPacketError::UnexpectedRelease`] if the publish is rejected,
+    /// `PublishReceived` packet has a reason code of 0x80 or greater.
     pub async fn release(mut self) -> Result<(), SendPacketError> {
-        let rx = self.shared.release_publish(self.result.take().unwrap())?;
+        let ack = self.result.take().unwrap();
+        if self.is_rejected() {
+            return Err(SendPacketError::UnexpectedRelease);
+        }
+        let rx = self.shared.release_publish(ack)?;
 
         rx.await
             .map(|_| ())
             .map_err(|_| SendPacketError::Disconnected)
     }
+
+    // PUBREL must not be sent for a PUBREC with a reason code of 0x80 or greater,
+    // its packet id is already released (MQTT 5.0, 4.3.3 [MQTT-4.3.3-4])
+    fn is_rejected(&self) -> bool {
+        u8::from(self.ack.reason_code) >= 0x80
+    }
 }
 
 impl Drop for PublishReceived {
     fn drop(&mut self) {
-        if let Some(ack) = self.result.take() {
+        if let Some(ack) = self.result.take()
+            && !self.is_rejected()
+        {
             let _ = self.shared.release_publish(ack);
         }
     }
@@ -995,6 +1014,105 @@ mod tests {
             }
             assert!(sink.is_open());
             assert_eq!(shared.credit(), 16);
+        }
+    }
+
+    #[ntex::test]
+    async fn test_rejected_pubrec() {
+        use std::{future::Future, pin::pin};
+
+        use ntex_util::future::lazy;
+        use ntex_util::time::{Millis, timeout};
+
+        async fn is_pending<F: Future>(f: &mut std::pin::Pin<&mut F>) -> bool {
+            lazy(|cx| f.as_mut().poll(cx).is_pending()).await
+        }
+        fn id(id: u16) -> NonZeroU16 {
+            NonZeroU16::new(id).unwrap()
+        }
+        fn rec(packet_id: u16, reason_code: codec::PublishAckReason) -> Ack {
+            Ack::Receive(codec::PublishAck {
+                packet_id: id(packet_id),
+                reason_code,
+                ..Default::default()
+            })
+        }
+        fn comp(packet_id: u16) -> Ack {
+            Ack::Complete(codec::PublishAck2 {
+                packet_id: id(packet_id),
+                reason_code: codec::PublishAck2Reason::Success,
+                properties: codec::UserProperties::default(),
+                reason_string: None,
+            })
+        }
+        const PUBLISH: &[u8] = b"\x34\x06\x00\x01a\x00\x01\x00";
+
+        for drop_rejected in [false, true] {
+            let (client, server) = IoTest::create();
+            client.remote_buffer_cap(1024);
+            let io = Io::new(server, SharedCfg::new("test"));
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                codec::Codec::new(),
+                Rc::default(),
+            ));
+            shared.set_cap(1);
+            let sink = MqttSink::new(shared.clone());
+
+            // second PUBLISH waits for receive maximum and reuses packet id 1
+            let mut f1 = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
+            let mut f2 = pin!(
+                sink.publish("a")
+                    .packet_id(1)
+                    .send_exactly_once(Bytes::new())
+            );
+            assert!(is_pending(&mut f1).await);
+            assert!(is_pending(&mut f2).await);
+            assert_eq!(
+                timeout(Millis(1000), client.read()).await.unwrap().unwrap(),
+                Bytes::from_static(PUBLISH)
+            );
+
+            // rejected PUBREC ends the flow and releases packet id and quota
+            assert_eq!(
+                shared.pkt_ack(rec(1, codec::PublishAckReason::NotAuthorized)),
+                Ok(())
+            );
+            let rejected = f1.await.unwrap();
+            assert_eq!(
+                rejected.packet().reason_code,
+                codec::PublishAckReason::NotAuthorized
+            );
+            assert!(is_pending(&mut f2).await);
+            assert_eq!(
+                timeout(Millis(1000), client.read()).await.unwrap().unwrap(),
+                Bytes::from_static(PUBLISH)
+            );
+            assert_eq!(
+                shared.pkt_ack(rec(1, codec::PublishAckReason::Success)),
+                Ok(())
+            );
+            let received = f2.await.unwrap();
+
+            // rejected publish is not released and does not affect the new one
+            if drop_rejected {
+                drop(rejected);
+            } else {
+                assert_eq!(
+                    timeout(Millis(1000), rejected.release()).await,
+                    Ok(Err(SendPacketError::UnexpectedRelease))
+                );
+            }
+            let mut r = pin!(received.release());
+            assert!(is_pending(&mut r).await);
+            assert_eq!(
+                timeout(Millis(1000), client.read()).await.unwrap().unwrap(),
+                Bytes::from_static(b"\x62\x04\x00\x01\x00\x00")
+            );
+            assert_eq!(shared.pkt_ack(comp(1)), Ok(()));
+            assert_eq!(timeout(Millis(1000), r).await, Ok(Ok(())));
+            assert!(sink.is_open());
+            assert_eq!(shared.credit(), 1);
         }
     }
 

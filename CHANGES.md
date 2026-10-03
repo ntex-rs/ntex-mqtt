@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v5: PUBREC with a reason code of 0x80 or greater ends the QoS 2 flow, PUBREL is not sent,
+  the packet id is released and `PublishReceived::release()` returns `UnexpectedRelease`
+  (MQTT 5.0, 4.3.3)
+
 * v3, v5: Several received QoS 2 publishes can be released at the same time, previously
   only the most recent PUBREC could be released and earlier ones never sent PUBREL
 
