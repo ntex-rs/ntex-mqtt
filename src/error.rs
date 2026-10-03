@@ -210,10 +210,14 @@ impl SpecViolation {
             SpecViolation::Connack_3_2_2_3_12 => {
                 DisconnectReasonCode::SubscriptionIdentifiersNotSupported
             }
+            // Topic Alias greater than the Topic Alias Maximum is a Protocol Error, the receiver
+            // uses DISCONNECT with Reason Code 0x94 (MQTT 5.0, 3.3.2.3.4)
+            SpecViolation::Connect_3_1_2_26 | SpecViolation::Connack_3_2_2_17 => {
+                DisconnectReasonCode::TopicAliasInvalid
+            }
             SpecViolation::PacketId_2_2_1_3_Pub
             | SpecViolation::PacketId_2_2_1_3_Sub
             | SpecViolation::PacketId_2_2_1_3_Unsub
-            | SpecViolation::Connect_3_1_2_26
             | SpecViolation::Pub_3_3_2_2
             | SpecViolation::Pub_3_3_2_14
             | SpecViolation::Pub_3_3_4_6
@@ -223,7 +227,6 @@ impl SpecViolation {
             | SpecViolation::Will_4_7_3_1
             | SpecViolation::Will_4_7_0_1
             | SpecViolation::Will_3_3_2_14
-            | SpecViolation::Connack_3_2_2_17
             | SpecViolation::Disconnect_3_14_2_21
             | SpecViolation::Disconnect_3_14_2_22 => DisconnectReasonCode::ProtocolError,
         }
@@ -537,6 +540,21 @@ mod tests {
             violation.message(),
             "[MQTT-3.2.2-11] PUBLISH packet at a QoS level exceeding the Maximum QoS level specified in CONNACK"
         );
+    }
+
+    #[test]
+    fn test_topic_alias_violation_reason() {
+        // Topic Alias greater than the maximum uses 0x94 (MQTT 5.0, 3.3.2.3.4)
+        for spec in [
+            SpecViolation::Connect_3_1_2_26,
+            SpecViolation::Connack_3_2_2_17,
+        ] {
+            let MqttProtocolError::ProtocolViolation(violation) = MqttProtocolError::spec(spec)
+            else {
+                panic!("expected protocol violation");
+            };
+            assert_eq!(violation.reason(), DisconnectReasonCode::TopicAliasInvalid);
+        }
     }
 
     #[test]

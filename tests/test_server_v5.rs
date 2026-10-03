@@ -612,6 +612,54 @@ async fn test_unexpected_packet() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_topic_alias_max() -> std::io::Result<()> {
+    let srv = server::TestServerBuilder::new(async || {
+        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_topic_alias(2)))
+    .start();
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::new();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let ack = io.recv(&codec).await.unwrap().unwrap();
+    assert!(
+        matches!(ack, Decoded::Packet(Packet::ConnectAck(ref ack), _) if ack.topic_alias_max == 2),
+        "{ack:?}"
+    );
+
+    // alias equal to the maximum is accepted
+    let mut pkt = pkt_publish();
+    pkt.properties.topic_alias = NonZeroU16::new(2);
+    io.send(Encoded::Publish(pkt, None), &codec).await.unwrap();
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert!(
+        matches!(pkt, Decoded::Packet(Packet::PublishAck(_), _)),
+        "{pkt:?}"
+    );
+
+    // alias greater than the maximum, DISCONNECT 0x94 (MQTT 5.0, 3.3.2.3.4)
+    let mut pkt = codec::Publish {
+        packet_id: NonZeroU16::new(2),
+        ..pkt_publish()
+    };
+    pkt.properties.topic_alias = NonZeroU16::new(3);
+    io.send(Encoded::Publish(pkt, None), &codec).await.unwrap();
+    let pkt = io.recv(&codec).await;
+    assert!(
+        matches!(pkt, Ok(Some(Decoded::Packet(Packet::Disconnect(ref d), _)))
+                 if d.reason_code == codec::DisconnectReasonCode::TopicAliasInvalid),
+        "{pkt:?}"
+    );
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_unexpected_ack_type() -> std::io::Result<()> {
     // QoS 1 PUBLISH acknowledged with PUBREC or PUBCOMP (MQTT 5.0, 4.3.2, 4.3.3)
     for (ack, message) in [
@@ -698,7 +746,8 @@ async fn test_unexpected_ack_type() -> std::io::Result<()> {
         io.send(Encoded::Packet(ack), &codec).await.unwrap();
         let pkt = io.recv(&codec).await;
         assert!(
-            matches!(pkt, Ok(Some(Decoded::Packet(Packet::Disconnect(_), _)))),
+            matches!(pkt, Ok(Some(Decoded::Packet(Packet::Disconnect(ref d), _)))
+                     if d.reason_code == codec::DisconnectReasonCode::ProtocolError),
             "{pkt:?}"
         );
         assert!(matches!(io.recv(&codec).await, Ok(None) | Err(_)));
