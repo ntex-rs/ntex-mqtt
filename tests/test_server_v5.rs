@@ -2083,6 +2083,72 @@ async fn test_retain_not_available() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_subscription_not_available() -> std::io::Result<()> {
+    let srv = server::test_server(async || {
+        MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
+            async |msg: Connect| {
+                Ok::<_, TestError>(msg.ack(St).with(|ack| {
+                    ack.shared_subscription_available = false;
+                    ack.wildcard_subscription_available = false;
+                }))
+            },
+        )
+    });
+
+    for (tf, reason_code) in [
+        // (MQTT 5.0, 3.2.2.3.13)
+        (
+            "$share/group/test",
+            codec::DisconnectReasonCode::SharedSubscriptionNotSupported,
+        ),
+        // (MQTT 5.0, 3.2.2.3.11)
+        (
+            "test/#",
+            codec::DisconnectReasonCode::WildcardSubscriptionsNotSupported,
+        ),
+    ] {
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::default();
+        io.send(
+            Encoded::Packet(Packet::Connect(Box::new(
+                codec::Connect::default().client_id("user"),
+            ))),
+            &codec,
+        )
+        .await
+        .unwrap();
+        let ack = io.recv(&codec).await.unwrap().unwrap();
+        let Packet::ConnectAck(ack) = packet(ack) else {
+            panic!()
+        };
+        assert!(!ack.shared_subscription_available);
+        assert!(!ack.wildcard_subscription_available);
+
+        io.send(
+            Encoded::Packet(Packet::Subscribe(codec::Subscribe {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                id: None,
+                user_properties: codec::UserProperties::default(),
+                topic_filters: vec![(
+                    ByteString::from_static(tf),
+                    codec::SubscriptionOptions::default(),
+                )],
+            })),
+            &codec,
+        )
+        .await
+        .unwrap();
+        let pkt = io.recv(&codec).await.unwrap().unwrap();
+        let Packet::Disconnect(pkt) = packet(pkt) else {
+            panic!("{tf}")
+        };
+        assert_eq!(pkt.reason_code, reason_code, "{tf}");
+    }
+
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_sink_ready() -> std::io::Result<()> {
     let srv = server::test_server(async || {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(

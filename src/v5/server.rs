@@ -332,6 +332,12 @@ where
                     shared
                         .codec
                         .set_sub_ids_available(ack.packet.subscription_identifiers_available);
+                    shared
+                        .codec
+                        .set_shared_subs_available(ack.packet.shared_subscription_available);
+                    shared
+                        .codec
+                        .set_wildcard_subs_available(ack.packet.wildcard_subscription_available);
                     let keep_alive = super::connect::server_keep_alive(
                         keep_alive,
                         ack.keepalive,

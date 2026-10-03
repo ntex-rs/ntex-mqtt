@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v5: Server closes the connection with DISCONNECT 0x9E or 0xA2 when a SUBSCRIBE contains
+  a Shared or Wildcard Subscription that is not available in CONNACK
+  (MQTT 5.0, 3.2.2.3.11, 3.2.2.3.13)
+
 * v5: Server rejects a QoS 0 PUBLISH with RETAIN set when retain is not available
   [MQTT-3.2.2-14], previously only QoS 1 and QoS 2 were checked
 
