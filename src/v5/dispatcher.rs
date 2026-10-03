@@ -1,4 +1,4 @@
-use std::{cell::RefCell, marker::PhantomData, num, rc::Rc};
+use std::{cell::Cell, cell::RefCell, marker::PhantomData, num, rc::Rc};
 
 use ntex_bytes::ByteString;
 use ntex_error::{Failure, IntoFailure};
@@ -85,6 +85,8 @@ pub(crate) struct Dispatcher<St, T, C, E> {
     publish: T,
     inner: Inner<C>,
     cfg: Cfg<MqttServiceConfig>,
+    /// Payload chunks of an ignored PUBLISH are dropped
+    discard_payload: Cell<bool>,
     e: PhantomData<(St, E)>,
 }
 
@@ -103,7 +105,7 @@ struct PublishInfo {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum InFlight {
     /// PUBLISH is processed by the publish service
-    Publish,
+    Publish(QoS),
     /// PUBREC is sent, PUBREL is expected
     Received,
     /// SUBSCRIBE or UNSUBSCRIBE is processed by the control service
@@ -141,6 +143,7 @@ where
                     inflight: HashMap::default(),
                 }),
             },
+            discard_payload: Cell::new(false),
             e: PhantomData,
         }
     }
@@ -211,14 +214,49 @@ where
                     return Err(SpecViolation::Pub_3_3_4_6.into());
                 }
 
+                // response to a re-delivered PUBLISH with a packet id in use
+                let mut redelivered = None;
                 {
                     let mut inner = info.info.borrow_mut();
                     let state = &self.inner.sink;
 
                     if let Some(pid) = packet_id {
+                        redelivered = match inner.inflight.get(&pid).copied() {
+                            // a re-delivery keeps the packet id [MQTT-3.3.1-1] and is not
+                            // a new message until PUBACK is sent [MQTT-4.3.2-5],
+                            // the ack of the first delivery acks both
+                            Some(InFlight::Publish(qos)) if publish.dup && qos == publish.qos => {
+                                log::trace!(
+                                    "{}: Re-delivered publish packet is ignored: {pid:?}",
+                                    self.tag()
+                                );
+                                Some(None)
+                            }
+                            // until PUBREL, PUBLISH with the same packet id is acked by PUBREC
+                            // and is not delivered [MQTT-4.3.3-10]
+                            Some(InFlight::Received)
+                                if publish.dup && publish.qos == QoS::ExactlyOnce =>
+                            {
+                                log::trace!(
+                                    "{}: Re-delivered publish packet is received: {pid:?}",
+                                    self.tag()
+                                );
+                                Some(Some(Encoded::Packet(codec::Packet::PublishReceived(
+                                    codec::PublishAck {
+                                        packet_id: pid,
+                                        ..Default::default()
+                                    },
+                                ))))
+                            }
+                            _ => None,
+                        };
+
                         // check for receive maximum
                         let receive_max = state.receive_max();
-                        if receive_max != 0 && inner.inflight.len() >= receive_max as usize {
+                        if redelivered.is_none()
+                            && receive_max != 0
+                            && inner.inflight.len() >= receive_max as usize
+                        {
                             log::trace!(
                                 "{}: Receive maximum exceeded: max: {} in-flight: {}",
                                 self.tag(),
@@ -244,15 +282,25 @@ where
                         }
 
                         // check for duplicated packet id
-                        if !inner.insert_inflight(pid, InFlight::Publish) {
+                        if redelivered.is_none()
+                            && !inner.insert_inflight(pid, InFlight::Publish(publish.qos))
+                        {
+                            log::trace!(
+                                "{}: Duplicated packet id for publish packet: {pid:?}",
+                                self.tag()
+                            );
                             // queued to keep acks in the order packets are received
-                            return Ok(Some(Encoded::Packet(codec::Packet::PublishAck(
-                                codec::PublishAck {
-                                    packet_id: pid,
-                                    reason_code: codec::PublishAckReason::PacketIdentifierInUse,
-                                    ..Default::default()
-                                },
-                            ))));
+                            let ack = codec::PublishAck {
+                                packet_id: pid,
+                                reason_code: codec::PublishAckReason::PacketIdentifierInUse,
+                                ..Default::default()
+                            };
+                            redelivered =
+                                Some(Some(Encoded::Packet(if publish.qos == QoS::ExactlyOnce {
+                                    codec::Packet::PublishReceived(ack)
+                                } else {
+                                    codec::Packet::PublishAck(ack)
+                                })));
                         }
                     }
 
@@ -291,6 +339,13 @@ where
                         }
                     }
 
+                    if let Some(res) = redelivered {
+                        if publish.payload_size != payload.len() as u32 {
+                            self.discard_payload.set(true);
+                        }
+                        return Ok(res);
+                    }
+
                     if !state.is_active()
                         && self
                             .cfg
@@ -320,7 +375,12 @@ where
                 .await
             }
             Decoded::PayloadChunk(buf, eof) => {
-                if let Some(pl) = self.inner.sink.payload.take() {
+                if self.discard_payload.get() {
+                    if eof {
+                        self.discard_payload.set(false);
+                    }
+                    Ok(None)
+                } else if let Some(pl) = self.inner.sink.payload.take() {
                     pl.feed_data(buf);
                     if eof {
                         pl.feed_eof();
@@ -980,6 +1040,8 @@ mod tests {
 
     fn qos2_dispatcher(
         pubrel_calls: Rc<Cell<usize>>,
+        published: Rc<Cell<usize>>,
+        receive_max: u16,
     ) -> (
         Io,
         Pipeline<Decoded, Option<Encoded>, DispatcherError<TestError>>,
@@ -992,13 +1054,14 @@ mod tests {
             Rc::default(),
         ));
         shared.set_max_qos(QoS::ExactlyOnce);
-        shared.set_receive_max(1);
+        shared.set_receive_max(receive_max);
 
         let disp = Pipeline::new(
             Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
             Dispatcher::new(
                 shared,
-                fn_service(async |msg: Publish| {
+                fn_service(async move |msg: Publish| {
+                    published.set(published.get() + 1);
                     if msg.topic().path() == "slow" {
                         sleep(Millis(100)).await;
                     }
@@ -1069,7 +1132,7 @@ mod tests {
         use codec::{PublishAck2Reason as Ack2, PublishAckReason as Ack};
 
         let pubrel_calls = Rc::new(Cell::new(0));
-        let (_io, disp) = qos2_dispatcher(pubrel_calls.clone());
+        let (_io, disp) = qos2_dispatcher(pubrel_calls.clone(), Rc::default(), 1);
         let receive_max_exceeded = |res: Result<Option<Encoded>, DispatcherError<TestError>>| {
             matches!(
                 res,
@@ -1108,7 +1171,7 @@ mod tests {
     #[ntex::test]
     async fn test_pubrel_before_pubrec() {
         let pubrel_calls = Rc::new(Cell::new(0));
-        let (_io, disp) = qos2_dispatcher(pubrel_calls.clone());
+        let (_io, disp) = qos2_dispatcher(pubrel_calls.clone(), Rc::default(), 1);
 
         let mut f = Box::pin(disp.call(qos_publish(1, QoS::ExactlyOnce, "slow")));
         let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
@@ -1121,5 +1184,82 @@ mod tests {
                 if matches!(err.inner, error::ViolationInner::UnexpectedPacket { .. })
         ));
         assert_eq!(pubrel_calls.get(), 0);
+    }
+
+    fn redelivery(id: u16, qos: QoS, chunked: bool) -> Decoded {
+        Decoded::Publish(
+            codec::Publish {
+                dup: true,
+                qos,
+                packet_id: NonZeroU16::new(id),
+                topic: ByteString::from_static("test"),
+                payload_size: if chunked { 6 } else { 3 },
+                ..Default::default()
+            },
+            Bytes::from_static(b"abc"),
+            999,
+        )
+    }
+
+    #[ntex::test]
+    async fn test_publish_redelivery() {
+        use codec::{PublishAck2Reason as Ack2, PublishAckReason as Ack};
+
+        let pubrel_calls = Rc::new(Cell::new(0));
+        let published = Rc::new(Cell::new(0));
+        let (_io, disp) = qos2_dispatcher(pubrel_calls.clone(), published.clone(), 16);
+
+        // re-delivery is ignored until PUBACK [MQTT-4.3.2-5]
+        let mut f = Box::pin(disp.call(qos_publish(1, QoS::AtLeastOnce, "slow")));
+        let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
+        let res = disp.call(redelivery(1, QoS::AtLeastOnce, false)).await;
+        assert_eq!(res.unwrap(), None);
+        let res = disp.call(redelivery(1, QoS::ExactlyOnce, false)).await;
+        assert_eq!(res.unwrap(), Some(ack(1, true, Ack::PacketIdentifierInUse)));
+        let res = disp.call(qos_publish(1, QoS::AtLeastOnce, "test")).await;
+        assert_eq!(
+            res.unwrap(),
+            Some(ack(1, false, Ack::PacketIdentifierInUse))
+        );
+        assert_eq!(f.await.unwrap(), Some(ack(1, false, Ack::Success)));
+        assert_eq!(published.get(), 1);
+
+        // re-delivery is acked by PUBREC until PUBREL [MQTT-4.3.3-10]
+        let res = disp.call(qos_publish(2, QoS::ExactlyOnce, "test")).await;
+        assert_eq!(res.unwrap(), Some(ack(2, true, Ack::Success)));
+        let res = disp.call(redelivery(2, QoS::ExactlyOnce, true)).await;
+        assert_eq!(res.unwrap(), Some(ack(2, true, Ack::Success)));
+        let chunk = Decoded::PayloadChunk(Bytes::from_static(b"de"), false);
+        assert_eq!(disp.call(chunk).await.unwrap(), None);
+        let chunk = Decoded::PayloadChunk(Bytes::from_static(b"f"), true);
+        assert_eq!(disp.call(chunk).await.unwrap(), None);
+        let res = disp.call(redelivery(2, QoS::AtLeastOnce, false)).await;
+        assert_eq!(
+            res.unwrap(),
+            Some(ack(2, false, Ack::PacketIdentifierInUse))
+        );
+        let res = disp.call(qos_publish(2, QoS::ExactlyOnce, "test")).await;
+        assert_eq!(res.unwrap(), Some(ack(2, true, Ack::PacketIdentifierInUse)));
+        assert_eq!(published.get(), 2);
+
+        // after PUBCOMP re-delivery is a new message [MQTT-4.3.3-12]
+        let res = disp.call(pubrel(2)).await;
+        assert_eq!(res.unwrap(), Some(pubcomp(2, Ack2::Success)));
+        assert_eq!(pubrel_calls.get(), 1);
+        let res = disp.call(redelivery(2, QoS::ExactlyOnce, true)).await;
+        assert_eq!(res.unwrap(), Some(ack(2, true, Ack::Success)));
+        assert_eq!(published.get(), 3);
+        let chunk = Decoded::PayloadChunk(Bytes::from_static(b"def"), true);
+        assert_eq!(disp.call(chunk).await.unwrap(), None);
+        let chunk = Decoded::PayloadChunk(Bytes::from_static(b"g"), true);
+        assert!(disp.call(chunk).await.is_err());
+
+        // re-delivery does not use receive maximum quota
+        let (_io, disp) = qos2_dispatcher(pubrel_calls.clone(), published.clone(), 1);
+        let res = disp.call(qos_publish(1, QoS::ExactlyOnce, "test")).await;
+        assert_eq!(res.unwrap(), Some(ack(1, true, Ack::Success)));
+        let res = disp.call(redelivery(1, QoS::ExactlyOnce, false)).await;
+        assert_eq!(res.unwrap(), Some(ack(1, true, Ack::Success)));
+        assert_eq!(published.get(), 4);
     }
 }

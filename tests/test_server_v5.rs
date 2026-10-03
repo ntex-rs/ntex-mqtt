@@ -557,6 +557,76 @@ async fn test_qos2() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_qos2_redelivery() -> std::io::Result<()> {
+    let published = Arc::new(Mutex::new(0));
+    let published2 = published.clone();
+    let srv = server::TestServerBuilder::new(async move || {
+        let published = published2.clone();
+        MqttServer::new(async move |p: Publish| {
+            *published.lock().unwrap() += 1;
+            Ok::<_, TestError>(p.ack())
+        })
+        .build(connect)
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_qos(QoS::ExactlyOnce)))
+    .start();
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::new();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    let id = NonZeroU16::new(1).unwrap();
+    let pubrec = Decoded::Packet(
+        Packet::PublishReceived(codec::PublishAck {
+            packet_id: id,
+            ..Default::default()
+        }),
+        4,
+    );
+
+    // re-delivery is acked by PUBREC and is not delivered [MQTT-4.3.3-10]
+    for dup in [false, true] {
+        let pkt = codec::Publish {
+            dup,
+            packet_id: Some(id),
+            qos: QoS::ExactlyOnce,
+            ..pkt_publish()
+        };
+        io.send(Encoded::Publish(pkt, None), &codec).await.unwrap();
+        assert_eq!(io.recv(&codec).await.unwrap().unwrap(), pubrec);
+    }
+
+    io.send(
+        Encoded::Packet(Packet::PublishRelease(codec::PublishAck2 {
+            packet_id: id,
+            ..Default::default()
+        })),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let result = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        result,
+        Decoded::Packet(
+            Packet::PublishComplete(codec::PublishAck2 {
+                packet_id: id,
+                ..Default::default()
+            }),
+            4
+        )
+    );
+    assert_eq!(*published.lock().unwrap(), 1);
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_qos2_client() -> std::io::Result<()> {
     let release = Arc::new(AtomicBool::new(false));
     let release2 = release.clone();
