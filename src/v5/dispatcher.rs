@@ -554,7 +554,23 @@ where
                         .await
                 }
             }
-            Decoded::Packet(_, _) => Ok(None),
+            // a second CONNECT is a protocol error [MQTT-3.1.0-2]
+            Decoded::Packet(Packet::Connect(_), _) => Err(MqttProtocolError::unexpected_packet(
+                packet_type::CONNECT,
+                "[MQTT-3.1.0-2] Second CONNECT packet is received",
+            )
+            .into()),
+            Decoded::Packet(
+                pkt @ (Packet::ConnectAck(_)
+                | Packet::SubscribeAck(_)
+                | Packet::UnsubscribeAck(_)
+                | Packet::PingResponse),
+                _,
+            ) => Err(MqttProtocolError::unexpected_packet(
+                pkt.packet_type(),
+                "Packet of the type is not expected from client",
+            )
+            .into()),
         }
     }
 }
@@ -1261,5 +1277,57 @@ mod tests {
         let res = disp.call(redelivery(1, QoS::ExactlyOnce, false)).await;
         assert_eq!(res.unwrap(), Some(ack(1, true, Ack::Success)));
         assert_eq!(published.get(), 4);
+    }
+
+    fn assert_unexpected<E: std::fmt::Debug>(
+        res: &Result<Option<Encoded>, DispatcherError<E>>,
+        expected: u8,
+    ) {
+        assert!(
+            matches!(
+                res,
+                Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)))
+                    if matches!(
+                        err.inner,
+                        crate::error::ViolationInner::UnexpectedPacket { packet_type, .. }
+                            if packet_type == expected
+                    )
+            ),
+            "{res:?}"
+        );
+    }
+
+    #[ntex::test]
+    async fn test_unexpected_packets() {
+        let pid = NonZeroU16::new(1).unwrap();
+        let (_io, disp) = qos2_dispatcher(Rc::default(), Rc::default(), 1);
+
+        // a second CONNECT is a protocol error [MQTT-3.1.0-2], packets sent
+        // by the server only are not expected from client
+        for (pkt, tp) in [
+            (Packet::Connect(Box::default()), packet_type::CONNECT),
+            (Packet::ConnectAck(Box::default()), packet_type::CONNACK),
+            (
+                Packet::SubscribeAck(codec::SubscribeAck {
+                    packet_id: pid,
+                    properties: Vec::default(),
+                    reason_string: None,
+                    status: vec![],
+                }),
+                packet_type::SUBACK,
+            ),
+            (
+                Packet::UnsubscribeAck(codec::UnsubscribeAck {
+                    packet_id: pid,
+                    properties: Vec::default(),
+                    reason_string: None,
+                    status: vec![],
+                }),
+                packet_type::UNSUBACK,
+            ),
+            (Packet::PingResponse, packet_type::PINGRESP),
+        ] {
+            assert_unexpected(&disp.call(Decoded::Packet(pkt, 999)).await, tp);
+        }
     }
 }

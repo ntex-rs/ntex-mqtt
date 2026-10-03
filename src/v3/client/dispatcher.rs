@@ -306,8 +306,11 @@ where
                     Ok(None)
                 }
             }
+            Decoded::Packet(Packet::PingResponse, _) => Ok(None),
             Decoded::Packet(
-                pkt @ (Packet::PingRequest
+                pkt @ (Packet::Connect(_)
+                | Packet::ConnectAck(_)
+                | Packet::PingRequest
                 | Packet::Disconnect
                 | Packet::Subscribe { .. }
                 | Packet::Unsubscribe { .. }),
@@ -317,10 +320,6 @@ where
                 "Packet of the type is not expected from server",
             )
             .into()),
-            Decoded::Packet(pkt, _) => {
-                log::debug!("Unsupported packet: {pkt:?}");
-                Ok(None)
-            }
         }
     }
 }
@@ -787,5 +786,49 @@ mod tests {
             disp.call(publish(2, QoS::ExactlyOnce, "publish")).await
         ));
         assert_eq!(published.get(), 4);
+    }
+
+    fn assert_unexpected<E: std::fmt::Debug>(
+        res: &Result<Option<Encoded>, DispatcherError<E>>,
+        expected: u8,
+    ) {
+        assert!(
+            matches!(
+                res,
+                Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)))
+                    if matches!(
+                        err.inner,
+                        crate::error::ViolationInner::UnexpectedPacket { packet_type, .. }
+                            if packet_type == expected
+                    )
+            ),
+            "{res:?}"
+        );
+    }
+
+    #[ntex::test]
+    async fn test_unexpected_packets() {
+        let (_io, shared, disp) = qos2_dispatcher!(Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+
+        // PINGRESP is handled
+        let res = disp.call(Decoded::Packet(Packet::PingResponse, 999)).await;
+        assert_eq!(res.unwrap(), None);
+        assert!(shared.is_active());
+
+        // packets sent by the client only and a second CONNACK are not expected from server
+        for (pkt, tp) in [
+            (Packet::Connect(Box::default()), packet_type::CONNECT),
+            (
+                Packet::ConnectAck(codec::ConnectAck {
+                    return_code: codec::ConnectAckReason::ConnectionAccepted,
+                    session_present: false,
+                }),
+                packet_type::CONNACK,
+            ),
+            (Packet::PingRequest, packet_type::PINGREQ),
+            (Packet::Disconnect, packet_type::DISCONNECT),
+        ] {
+            assert_unexpected(&disp.call(Decoded::Packet(pkt, 999)).await, tp);
+        }
     }
 }

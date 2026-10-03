@@ -772,6 +772,57 @@ async fn test_ping() -> std::io::Result<()> {
 }
 
 #[ntex::test]
+async fn test_unexpected_packet() -> std::io::Result<()> {
+    let connect_pkt = || {
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        ))
+    };
+    for (pkt, message) in [
+        // a second CONNECT is a protocol violation [MQTT-3.1.0-2]
+        (
+            connect_pkt(),
+            "[MQTT-3.1.0-2] Second CONNECT packet is received",
+        ),
+        (
+            Encoded::Packet(Packet::PingResponse),
+            "Packet of the type is not expected from client",
+        ),
+    ] {
+        let error = Arc::new(Mutex::new(None));
+        let error2 = error.clone();
+        let srv = server::test_server(async move || {
+            let error = error2.clone();
+            MqttServer::new(async |_| Ok::<_, TestError>(()))
+                .control(async move |msg| {
+                    if let Control::Stop(Reason::Protocol(err)) = msg
+                        && let MqttProtocolError::ProtocolViolation(e) = err.get_ref()
+                    {
+                        *error.lock().unwrap() = Some(e.message());
+                    }
+                    Ok::<_, TestError>(None)
+                })
+                .build(connect)
+        });
+
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::default();
+        io.send(connect_pkt(), &codec).await.unwrap();
+        io.recv(&codec).await.unwrap().unwrap();
+
+        // control service is called with the protocol error, connection is closed
+        io.send(pkt, &codec).await.unwrap();
+        let _ = io.send(Encoded::Packet(Packet::PingRequest), &codec).await;
+        let result = io.recv(&codec).await;
+        assert!(matches!(result, Ok(None) | Err(_)), "{result:?}");
+
+        let err = error.lock().unwrap().take();
+        assert!(err == Some(message), "{err:?}");
+    }
+    Ok(())
+}
+
+#[ntex::test]
 async fn test_ack_order() -> std::io::Result<()> {
     let srv = server::test_server(async move || {
         MqttServer::new(async |p: Publish| {

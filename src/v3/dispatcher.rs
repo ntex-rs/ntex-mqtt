@@ -408,7 +408,24 @@ where
                     .control(ProtocolMessage::remote_disconnect(), ctx)
                     .await
             }
-            Decoded::Packet(..) => Ok(None),
+            // a second CONNECT is a protocol violation [MQTT-3.1.0-2], the connection is
+            // closed on a protocol violation [MQTT-4.8.0-1]
+            Decoded::Packet(Packet::Connect(_), _) => Err(MqttProtocolError::unexpected_packet(
+                packet_type::CONNECT,
+                "[MQTT-3.1.0-2] Second CONNECT packet is received",
+            )
+            .into()),
+            Decoded::Packet(
+                pkt @ (Packet::ConnectAck(_)
+                | Packet::SubscribeAck { .. }
+                | Packet::UnsubscribeAck { .. }
+                | Packet::PingResponse),
+                _,
+            ) => Err(MqttProtocolError::unexpected_packet(
+                pkt.packet_type(),
+                "Packet of the type is not expected from client",
+            )
+            .into()),
         }
     }
 }
@@ -1100,5 +1117,58 @@ mod tests {
         assert!(Decoded::PayloadChunk(Bytes::from_static(b"c"), false).has_more_chunks());
         assert!(!Decoded::PayloadChunk(Bytes::from_static(b"de"), true).has_more_chunks());
         assert!(!Decoded::Packet(codec::Packet::PingRequest, 2).has_more_chunks());
+    }
+
+    fn assert_unexpected<E: std::fmt::Debug>(
+        res: &Result<Option<Encoded>, DispatcherError<E>>,
+        expected: u8,
+    ) {
+        assert!(
+            matches!(
+                res,
+                Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)))
+                    if matches!(
+                        err.inner,
+                        crate::error::ViolationInner::UnexpectedPacket { packet_type, .. }
+                            if packet_type == expected
+                    )
+            ),
+            "{res:?}"
+        );
+    }
+
+    #[ntex::test]
+    async fn test_unexpected_packets() {
+        let pid = NonZeroU16::new(1).unwrap();
+        let counter = Rc::new(Cell::new(0));
+        let (_io, _, disp) = redelivery_dispatcher!(counter);
+
+        // a second CONNECT is a protocol violation [MQTT-3.1.0-2], packets sent
+        // by the server only are not expected from client [MQTT-4.8.0-1]
+        for (pkt, tp) in [
+            (Packet::Connect(Box::default()), packet_type::CONNECT),
+            (
+                Packet::ConnectAck(codec::ConnectAck {
+                    return_code: codec::ConnectAckReason::ConnectionAccepted,
+                    session_present: false,
+                }),
+                packet_type::CONNACK,
+            ),
+            (
+                Packet::SubscribeAck {
+                    packet_id: pid,
+                    status: vec![],
+                },
+                packet_type::SUBACK,
+            ),
+            (
+                Packet::UnsubscribeAck { packet_id: pid },
+                packet_type::UNSUBACK,
+            ),
+            (Packet::PingResponse, packet_type::PINGRESP),
+        ] {
+            assert_unexpected(&disp.call(Decoded::Packet(pkt, 999)).await, tp);
+        }
+        assert_eq!(counter.get(), 0);
     }
 }

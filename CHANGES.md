@@ -2,6 +2,11 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Server closes the connection on a second CONNECT [MQTT-3.1.0-2] and on CONNACK,
+  SUBACK, UNSUBACK or PINGRESP from client, client closes the connection on CONNECT or a second
+  CONNACK from server, control service is called with an unexpected packet protocol error,
+  previously these packets were ignored
+
 * v3: Client handles a re-delivered PUBLISH (DUP) with a packet id in use instead of closing
   the connection, it is ignored until PUBACK [MQTT-4.3.2-2] or acked by PUBREC without delivery
   until PUBREL [MQTT-4.3.3-2], payload chunks of a not delivered PUBLISH are discarded
