@@ -263,8 +263,8 @@ where
 
     /// Run client with default handlers.
     ///
-    /// Default handlers close connection on any unrouted publish or
-    /// protocol message.
+    /// Default handlers acknowledge `PublishRelease` of routed `QoS 2` publishes and
+    /// close connection on any unrouted publish or other protocol message.
     pub async fn start_default(self) {
         let sink = MqttSink::new(self.shared.clone());
         if self.keepalive.non_zero() {
@@ -277,7 +277,10 @@ where
                 self.shared.clone(),
                 dispatch(self.builder.build(), self.handlers),
                 fn_service(async |msg: ProtocolMessage| {
-                    Ok(msg.disconnect(codec::Disconnect::default()))
+                    Ok(match msg {
+                        ProtocolMessage::PublishRelease(msg) => msg.ack(),
+                        msg => msg.disconnect(codec::Disconnect::default()),
+                    })
                 }),
                 self.max_receive,
                 16,

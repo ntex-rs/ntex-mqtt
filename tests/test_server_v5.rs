@@ -596,6 +596,123 @@ async fn test_qos2_client() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Server publishes QoS 2 message to the client on any client publish
+fn qos2_publisher() -> (server::TestServer, Arc<Mutex<Option<bool>>>) {
+    let released = Arc::new(Mutex::new(None));
+    let released2 = released.clone();
+
+    let srv = server::test_server(async move || {
+        let released = released2.clone();
+        MqttServer::new(async move |con: &Session<St>| {
+            let sink = con.sink().clone();
+            let released = released.clone();
+            Ok::<_, Infallible>(fn_service(async move |p: Publish| {
+                let sink = sink.clone();
+                let released = released.clone();
+                ntex::rt::spawn(async move {
+                    let res = match sink
+                        .publish(ByteString::from_static("test/qos2"))
+                        .send_exactly_once(Bytes::from_static(b"data"))
+                        .await
+                    {
+                        Ok(rec) => rec.release().await.is_ok(),
+                        Err(_) => false,
+                    };
+                    *released.lock().unwrap() = Some(res);
+                });
+                Ok::<_, TestError>(p.ack())
+            }))
+        })
+        .build(connect)
+    });
+    (srv, released)
+}
+
+async fn wait_released(released: &Mutex<Option<bool>>) -> Option<bool> {
+    for _ in 0..200 {
+        if let Some(res) = *released.lock().unwrap() {
+            return Some(res);
+        }
+        sleep(Millis(10)).await;
+    }
+    None
+}
+
+#[ntex::test]
+async fn test_qos2_server_to_client() -> std::io::Result<()> {
+    // publish is handled by client router
+    let (srv, released) = qos2_publisher();
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap();
+    let sink = client.sink();
+    let received = Rc::new(RefCell::new(Vec::new()));
+    let received2 = received.clone();
+    ntex::rt::spawn(
+        client
+            .resource(
+                "test/qos2",
+                fn_service(move |p: Publish| {
+                    let received = received2.clone();
+                    async move {
+                        let payload = p.read_all().await.unwrap();
+                        received.borrow_mut().push((p.qos(), payload));
+                        Ok::<_, TestError>(p.ack())
+                    }
+                }),
+            )
+            .start_default(),
+    );
+
+    sink.publish(ByteString::from_static("trigger"))
+        .send_at_most_once(Bytes::new())
+        .unwrap();
+    assert_eq!(wait_released(&released).await, Some(true));
+    assert_eq!(
+        *received.borrow(),
+        vec![(QoS::ExactlyOnce, Bytes::from_static(b"data"))]
+    );
+    assert!(sink.is_open());
+
+    // publish is handled by client protocol service
+    let (srv, released) = qos2_publisher();
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap();
+    let sink = client.sink();
+    let received = Rc::new(RefCell::new(Vec::new()));
+    let received2 = received.clone();
+    ntex::rt::spawn(
+        client.start(fn_service(move |msg: client::ProtocolMessage| {
+            let received = received2.clone();
+            async move {
+                Ok::<_, ()>(match msg {
+                    client::ProtocolMessage::Publish(p) => {
+                        let payload = p.read_all().await.unwrap();
+                        received.borrow_mut().push((p.packet().qos, payload));
+                        p.ack(codec::PublishAckReason::Success)
+                    }
+                    msg => msg.ack(),
+                })
+            }
+        })),
+    );
+
+    sink.publish(ByteString::from_static("trigger"))
+        .send_at_most_once(Bytes::new())
+        .unwrap();
+    assert_eq!(wait_released(&released).await, Some(true));
+    assert_eq!(
+        *received.borrow(),
+        vec![(QoS::ExactlyOnce, Bytes::from_static(b"data"))]
+    );
+    assert!(sink.is_open());
+
+    Ok(())
+}
+
 #[ntex::test]
 async fn test_ping() -> std::io::Result<()> {
     let ping = Arc::new(AtomicBool::new(false));

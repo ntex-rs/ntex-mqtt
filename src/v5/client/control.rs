@@ -1,6 +1,6 @@
 use ntex_bytes::{ByteString, Bytes};
 
-use crate::{error, payload::Payload, v5::codec, v5::control::Pkt};
+use crate::{error, payload::Payload, types::QoS, v5::codec, v5::control::Pkt};
 
 pub use crate::v5::control::{Disconnect, Ping, ProtocolMessageAck, PublishRelease};
 
@@ -101,22 +101,17 @@ impl Publish {
 
     #[inline]
     /// Ack publish packet with the provided reason code
+    ///
+    /// Sends `PublishAck` packet for `QoS 1` publish and `PublishReceived` packet
+    /// for `QoS 2` publish.
     pub fn ack(self, reason_code: codec::PublishAckReason) -> ProtocolMessageAck {
-        ProtocolMessageAck {
-            packet: self.0.packet_id.map_or(Pkt::None, |packet_id| {
-                Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
-                    packet_id,
-                    reason_code,
-                    properties: codec::UserProperties::new(),
-                    reason_string: None,
-                }))
-            }),
-            disconnect: false,
-        }
+        self.ack_with(reason_code, codec::UserProperties::new(), None)
     }
 
     #[inline]
     /// Ack publish packet with the provided reason code, properties and reason string
+    ///
+    /// See [`Publish::ack`].
     pub fn ack_with(
         self,
         reason_code: codec::PublishAckReason,
@@ -124,36 +119,45 @@ impl Publish {
         reason_string: Option<ByteString>,
     ) -> ProtocolMessageAck {
         ProtocolMessageAck {
-            packet: self.0.packet_id.map_or(Pkt::None, |packet_id| {
-                Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
-                    packet_id,
-                    reason_code,
-                    properties,
-                    reason_string,
-                }))
-            }),
+            packet: ack_packet(&self.0, reason_code, properties, reason_string),
             disconnect: false,
         }
     }
 
     /// Ack publish packet with the provided reason code and return the publish packet
+    ///
+    /// See [`Publish::ack`].
     pub fn into_inner(
         self,
         reason_code: codec::PublishAckReason,
     ) -> (ProtocolMessageAck, codec::Publish) {
         (
             ProtocolMessageAck {
-                packet: self.0.packet_id.map_or(Pkt::None, |packet_id| {
-                    Pkt::Packet(codec::Packet::PublishAck(codec::PublishAck {
-                        packet_id,
-                        reason_code,
-                        properties: codec::UserProperties::new(),
-                        reason_string: None,
-                    }))
-                }),
+                packet: ack_packet(&self.0, reason_code, codec::UserProperties::new(), None),
                 disconnect: false,
             },
             self.0,
         )
     }
+}
+
+fn ack_packet(
+    pkt: &codec::Publish,
+    reason_code: codec::PublishAckReason,
+    properties: codec::UserProperties,
+    reason_string: Option<ByteString>,
+) -> Pkt {
+    pkt.packet_id.map_or(Pkt::None, |packet_id| {
+        let ack = codec::PublishAck {
+            packet_id,
+            reason_code,
+            properties,
+            reason_string,
+        };
+        Pkt::Packet(if pkt.qos == QoS::ExactlyOnce {
+            codec::Packet::PublishReceived(ack)
+        } else {
+            codec::Packet::PublishAck(ack)
+        })
+    })
 }

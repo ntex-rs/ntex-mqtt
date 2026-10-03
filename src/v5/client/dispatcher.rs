@@ -2,14 +2,14 @@ use std::{cell::RefCell, marker::PhantomData, num::NonZero, num::NonZeroU16, rc:
 
 use ntex_bytes::ByteString;
 use ntex_service::{Ctx, Service, cfg::Cfg};
-use ntex_util::{HashMap, HashSet, future::Either, future::join, hash_map};
+use ntex_util::{HashMap, future::Either, future::join, hash_map};
 
 use crate::error::{DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
 use crate::v5::codec::{Decoded, DisconnectReasonCode, Encoded, Packet};
 use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{Session, codec, control::Pkt, publish::Publish, publish::PublishAck};
-use crate::{MqttServiceConfig, types::packet_type};
+use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
 use super::control::{ProtocolMessage, ProtocolMessageAck};
 
@@ -38,7 +38,7 @@ where
             control: control.map_err(DispatcherError::Service),
             info: RefCell::new(PublishInfo {
                 aliases: HashMap::default(),
-                inflight: HashSet::default(),
+                inflight: HashMap::default(),
             }),
         },
         t: PhantomData,
@@ -62,8 +62,17 @@ struct Inner<C> {
 }
 
 struct PublishInfo {
-    inflight: HashSet<NonZeroU16>,
+    inflight: HashMap<NonZeroU16, InFlight>,
     aliases: HashMap<NonZeroU16, ByteString>,
+}
+
+/// State of an incoming publish packet id
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum InFlight {
+    /// Publish is being handled
+    Publish(QoS),
+    /// `QoS 2` publish is handled and `PublishReceived` is sent, waiting for `PublishRelease`
+    Received,
 }
 
 impl<St, T, C, E> Service<St, Decoded> for Dispatcher<St, T, C, E>
@@ -138,15 +147,25 @@ where
                         }
 
                         // check for duplicated packet id
-                        if !inner.inflight.insert(pid) {
-                            // queued to keep acks in the order packets are received
-                            return Ok(Some(Encoded::Packet(Packet::PublishAck(
-                                codec::PublishAck {
+                        match inner.inflight.entry(pid) {
+                            hash_map::Entry::Occupied(_) => {
+                                // queued to keep acks in the order packets are received
+                                let ack = codec::PublishAck {
                                     packet_id: pid,
                                     reason_code: codec::PublishAckReason::PacketIdentifierInUse,
                                     ..Default::default()
-                                },
-                            ))));
+                                };
+                                return Ok(Some(Encoded::Packet(
+                                    if publish.qos == QoS::ExactlyOnce {
+                                        Packet::PublishReceived(ack)
+                                    } else {
+                                        Packet::PublishAck(ack)
+                                    },
+                                )));
+                            }
+                            hash_map::Entry::Vacant(entry) => {
+                                entry.insert(InFlight::Publish(publish.qos));
+                            }
                         }
                     }
 
@@ -230,19 +249,29 @@ where
                 }
             }
             Decoded::Packet(Packet::PublishRelease(pkt), size) => {
-                if self.inner.info.borrow().inflight.contains(&pkt.packet_id) {
-                    self.inner
-                        .control(ProtocolMessage::pubrel(pkt, size), ctx)
-                        .await
-                } else {
-                    Ok(Some(Encoded::Packet(codec::Packet::PublishComplete(
+                let packet_id = pkt.packet_id;
+                let state = self.inner.info.borrow().inflight.get(&packet_id).copied();
+                match state {
+                    // packet id is released after PUBCOMP [MQTT-4.3.3-12]
+                    Some(InFlight::Received) => {
+                        self.inner
+                            .control_pkt(ProtocolMessage::pubrel(pkt, size), packet_id.get(), ctx)
+                            .await
+                    }
+                    // PUBREL is a response to PUBREC [MQTT-4.3.3-4]
+                    Some(InFlight::Publish(_)) => Err(MqttProtocolError::unexpected_packet(
+                        packet_type::PUBREL,
+                        "PublishRelease packet before PublishReceived",
+                    )
+                    .into()),
+                    None => Ok(Some(Encoded::Packet(codec::Packet::PublishComplete(
                         codec::PublishAck2 {
-                            packet_id: pkt.packet_id,
+                            packet_id,
                             reason_code: codec::PublishAck2Reason::PacketIdNotFound,
                             properties: codec::UserProperties::default(),
                             reason_string: None,
                         },
-                    ))))
+                    )))),
                 }
             }
             Decoded::Packet(Packet::PublishComplete(pkt), _) => {
@@ -329,20 +358,46 @@ where
 
     if let Some(id) = NonZeroU16::new(packet_id) {
         log::trace!("Sending publish ack for {packet_id:?} id");
-        inner.info.borrow_mut().inflight.remove(&id);
+        let qos2 =
+            inner.info.borrow().inflight.get(&id) == Some(&InFlight::Publish(QoS::ExactlyOnce));
         let ack = codec::PublishAck {
             packet_id: id,
             reason_code: ack.reason_code,
             reason_string: ack.reason_string,
             properties: ack.properties,
         };
-        Ok(Some(Encoded::Packet(Packet::PublishAck(ack))))
+        let pkt = if qos2 {
+            Packet::PublishReceived(ack)
+        } else {
+            Packet::PublishAck(ack)
+        };
+        inner.update_inflight(id, &pkt);
+        Ok(Some(Encoded::Packet(pkt)))
     } else {
         Ok(None)
     }
 }
 
 impl<C> Inner<C> {
+    /// Update state of the packet id after the response is sent
+    ///
+    /// `QoS 2` publish acknowledged by successful `PublishReceived` keeps the packet id in use
+    /// until `PublishRelease` [MQTT-4.3.3-10], otherwise the packet id is released
+    /// [MQTT-4.3.2-5], [MQTT-4.3.3-9], [MQTT-4.3.3-12]
+    fn update_inflight(&self, packet_id: NonZeroU16, pkt: &Packet) {
+        let mut info = self.info.borrow_mut();
+        match pkt {
+            Packet::PublishReceived(ack)
+                if ack.packet_id == packet_id && u8::from(ack.reason_code) < 0x80 =>
+            {
+                info.inflight.insert(packet_id, InFlight::Received);
+            }
+            _ => {
+                info.inflight.remove(&packet_id);
+            }
+        }
+    }
+
     async fn control<St, T, E>(
         &self,
         pkt: ProtocolMessage,
@@ -366,7 +421,12 @@ impl<C> Inner<C> {
         let result = match ctx.call(&self.control, pkt).await {
             Ok(result) => {
                 if let Some(id) = NonZeroU16::new(packet_id) {
-                    self.info.borrow_mut().inflight.remove(&id);
+                    match result.packet {
+                        Pkt::Packet(ref pkt) => self.update_inflight(id, pkt),
+                        _ => {
+                            self.info.borrow_mut().inflight.remove(&id);
+                        }
+                    }
                 }
                 result
             }
@@ -399,9 +459,12 @@ impl<C> Inner<C> {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::Cell, future::Future, pin::Pin};
+
     use ntex_bytes::Bytes;
     use ntex_io::{Io, testing::IoTest};
     use ntex_service::{Pipeline, cfg::SharedCfg, fn_service};
+    use ntex_util::{future::lazy, time::Millis, time::sleep};
 
     use super::*;
     use crate::{error::ViolationInner, v5::MqttSink};
@@ -457,5 +520,206 @@ mod tests {
             assert_eq!(err, SpecViolation::Pub_3_3_2_14);
         }
         assert!(disp.call(publish("a/b", Some("resp/a"))).await.is_ok());
+    }
+
+    /// Publish service handles topics "publish*", "publish/slow" waits 100ms,
+    /// other topics are passed to the control service, topics "*/err" are rejected
+    macro_rules! qos2_dispatcher {
+        ($pubrel:expr, $max_receive:expr) => {{
+            let cfg: SharedCfg = SharedCfg::new("DBG").add(MqttServiceConfig::new()).into();
+            let io = Io::new(IoTest::create().0, cfg.clone());
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                codec::Codec::default(),
+                Rc::default(),
+            ));
+            let pubrel = $pubrel.clone();
+            let reason = |topic: &str| {
+                if topic.ends_with("/err") {
+                    codec::PublishAckReason::UnspecifiedError
+                } else {
+                    codec::PublishAckReason::Success
+                }
+            };
+            let disp = Pipeline::new(
+                Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
+                create_dispatcher(
+                    shared.clone(),
+                    fn_service(async move |p: Publish| {
+                        if p.publish_topic() == "publish/slow" {
+                            sleep(Millis(100)).await;
+                        }
+                        if p.publish_topic().starts_with("publish") {
+                            Ok::<_, ()>(Either::Right(PublishAck::new(reason(p.publish_topic()))))
+                        } else {
+                            Ok(Either::Left(p))
+                        }
+                    }),
+                    fn_service(move |msg: ProtocolMessage| {
+                        let res = match msg {
+                            ProtocolMessage::Publish(p) => {
+                                let code = reason(&p.packet().topic);
+                                p.ack(code)
+                            }
+                            ProtocolMessage::PublishRelease(msg) => {
+                                pubrel.set(pubrel.get() + 1);
+                                msg.ack()
+                            }
+                            msg => msg.ack(),
+                        };
+                        async move { Ok::<_, ()>(res) }
+                    }),
+                    $max_receive,
+                    16,
+                    cfg.get(),
+                ),
+            );
+            (io, shared, disp)
+        }};
+    }
+
+    fn pid(id: u16) -> NonZeroU16 {
+        NonZeroU16::new(id).unwrap()
+    }
+
+    fn qos_publish(id: u16, qos: QoS, topic: &'static str) -> Decoded {
+        Decoded::Publish(
+            codec::Publish {
+                qos,
+                topic: ByteString::from_static(topic),
+                packet_id: NonZeroU16::new(id),
+                ..Default::default()
+            },
+            Bytes::new(),
+            999,
+        )
+    }
+
+    fn pubrel(id: u16) -> Decoded {
+        Decoded::Packet(
+            Packet::PublishRelease(codec::PublishAck2 {
+                packet_id: pid(id),
+                ..Default::default()
+            }),
+            999,
+        )
+    }
+
+    fn pubrec(id: u16, reason_code: codec::PublishAckReason) -> Encoded {
+        Encoded::Packet(Packet::PublishReceived(codec::PublishAck {
+            packet_id: pid(id),
+            reason_code,
+            ..Default::default()
+        }))
+    }
+
+    fn puback(id: u16) -> Encoded {
+        Encoded::Packet(Packet::PublishAck(codec::PublishAck {
+            packet_id: pid(id),
+            ..Default::default()
+        }))
+    }
+
+    fn pubcomp(id: u16, reason_code: codec::PublishAck2Reason) -> Encoded {
+        Encoded::Packet(Packet::PublishComplete(codec::PublishAck2 {
+            packet_id: pid(id),
+            reason_code,
+            ..Default::default()
+        }))
+    }
+
+    #[ntex::test]
+    async fn test_publish_qos2() {
+        use codec::{PublishAck2Reason as Ack2, PublishAckReason as Ack};
+
+        let pubrel_calls = Rc::new(Cell::new(0));
+        let (_io, shared, disp) = qos2_dispatcher!(pubrel_calls, 16);
+
+        for (topic, err_topic) in [("publish", "publish/err"), ("control", "control/err")] {
+            pubrel_calls.set(0);
+
+            // QoS 2 publish is acknowledged with PUBREC [MQTT-4.3.3-8]
+            let res = disp.call(qos_publish(1, QoS::ExactlyOnce, topic)).await;
+            assert_eq!(res.unwrap(), Some(pubrec(1, Ack::Success)));
+
+            // packet id stays in use until PUBREL
+            let res = disp.call(qos_publish(1, QoS::ExactlyOnce, topic)).await;
+            assert_eq!(res.unwrap(), Some(pubrec(1, Ack::PacketIdentifierInUse)));
+
+            // PUBREL is passed to the control service, PUBCOMP is sent [MQTT-4.3.3-11]
+            let res = disp.call(pubrel(1)).await;
+            assert_eq!(res.unwrap(), Some(pubcomp(1, Ack2::Success)));
+            assert_eq!(pubrel_calls.get(), 1);
+
+            // packet id is released after PUBCOMP [MQTT-4.3.3-12]
+            let res = disp.call(pubrel(1)).await;
+            assert_eq!(res.unwrap(), Some(pubcomp(1, Ack2::PacketIdNotFound)));
+            let res = disp.call(qos_publish(1, QoS::ExactlyOnce, topic)).await;
+            assert_eq!(res.unwrap(), Some(pubrec(1, Ack::Success)));
+            let res = disp.call(pubrel(1)).await;
+            assert_eq!(res.unwrap(), Some(pubcomp(1, Ack2::Success)));
+            assert_eq!(pubrel_calls.get(), 2);
+
+            // packet id is released after PUBREC with an error [MQTT-4.3.3-9]
+            let res = disp.call(qos_publish(2, QoS::ExactlyOnce, err_topic)).await;
+            assert_eq!(res.unwrap(), Some(pubrec(2, Ack::UnspecifiedError)));
+            let res = disp.call(pubrel(2)).await;
+            assert_eq!(res.unwrap(), Some(pubcomp(2, Ack2::PacketIdNotFound)));
+            assert_eq!(pubrel_calls.get(), 2);
+
+            // QoS 1 publish is acknowledged with PUBACK, packet id is released
+            let res = disp.call(qos_publish(3, QoS::AtLeastOnce, topic)).await;
+            assert_eq!(res.unwrap(), Some(puback(3)));
+            let res = disp.call(pubrel(3)).await;
+            assert_eq!(res.unwrap(), Some(pubcomp(3, Ack2::PacketIdNotFound)));
+            assert_eq!(pubrel_calls.get(), 2);
+        }
+        assert!(shared.is_active());
+    }
+
+    #[ntex::test]
+    async fn test_publish_qos2_receive_max() {
+        let pubrel_calls = Rc::new(Cell::new(0));
+        let (_io, _, disp) = qos2_dispatcher!(pubrel_calls, 1);
+
+        let res = disp.call(qos_publish(1, QoS::ExactlyOnce, "publish")).await;
+        assert_eq!(
+            res.unwrap(),
+            Some(pubrec(1, codec::PublishAckReason::Success))
+        );
+
+        // QoS 2 publish counts against Receive Maximum until PUBCOMP [MQTT-3.3.4-9]
+        let res = disp.call(qos_publish(2, QoS::AtLeastOnce, "publish")).await;
+        assert!(matches!(
+            res,
+            Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(ref err)))
+                if err.inner == ViolationInner::Spec(SpecViolation::Pub_3_3_4_9)
+        ));
+
+        let res = disp.call(pubrel(1)).await;
+        assert_eq!(
+            res.unwrap(),
+            Some(pubcomp(1, codec::PublishAck2Reason::Success))
+        );
+        let res = disp.call(qos_publish(2, QoS::AtLeastOnce, "publish")).await;
+        assert_eq!(res.unwrap(), Some(puback(2)));
+    }
+
+    #[ntex::test]
+    async fn test_pubrel_before_pubrec() {
+        let pubrel_calls = Rc::new(Cell::new(0));
+        let (_io, _, disp) = qos2_dispatcher!(pubrel_calls, 16);
+
+        let mut f = Box::pin(disp.call(qos_publish(1, QoS::ExactlyOnce, "publish/slow")));
+        let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
+
+        // PUBREL is a response to PUBREC [MQTT-4.3.3-4]
+        let res = disp.call(pubrel(1)).await;
+        assert!(matches!(
+            res,
+            Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(ref err)))
+                if matches!(err.inner, ViolationInner::UnexpectedPacket { .. })
+        ));
+        assert_eq!(pubrel_calls.get(), 0);
     }
 }
