@@ -7,6 +7,7 @@ use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
 use ntex_util::{HashMap, HashSet, channel::pool};
 
+use crate::io::{FrameState, QueueLimit};
 use crate::v5::codec::{self, Decoded, Encoded, Packet, Publish};
 use crate::{QoS, error, error::SendPacketError, payload::PlSender, types::packet_type};
 
@@ -841,7 +842,7 @@ impl Encoder for MqttShared {
     }
 }
 
-impl crate::io::FrameState for MqttShared {
+impl FrameState for MqttShared {
     #[inline]
     fn is_partial(&self) -> bool {
         self.codec.is_payload_pending()
@@ -860,6 +861,51 @@ impl crate::io::FrameState for MqttShared {
                     | Packet::PublishRelease(_)
             ),
             Decoded::PayloadChunk(..) => true,
+        }
+    }
+
+    #[inline]
+    fn queue_limit(&self, item: &Decoded) -> QueueLimit {
+        match item {
+            // publish handlers can wait for acks of outgoing packets, acks and
+            // pings are dispatched while publishes wait for the response queue.
+            // PUBREL follows the PUBREC of an already handled publish [MQTT-4.3.3-4]
+            Decoded::Packet(
+                Packet::PublishAck(_)
+                | Packet::PublishReceived(_)
+                | Packet::PublishRelease(_)
+                | Packet::PublishComplete(_)
+                | Packet::SubscribeAck(_)
+                | Packet::UnsubscribeAck(_)
+                | Packet::PingRequest
+                | Packet::PingResponse,
+                _,
+            ) => QueueLimit::Bypass,
+            // Receive Maximum bounds in-flight QoS 1 and QoS 2 publishes, more
+            // is a protocol error [MQTT-3.3.4-9]
+            Decoded::Publish(publish, ..)
+                if publish.qos != QoS::AtMostOnce && self.receive_max() != 0 =>
+            {
+                QueueLimit::Bounded
+            }
+            _ => QueueLimit::Hold,
+        }
+    }
+
+    #[inline]
+    fn bounded_slots(&self) -> usize {
+        self.receive_max() as usize
+    }
+
+    #[inline]
+    fn held_size(&self, item: &Decoded) -> usize {
+        match item {
+            // the frame size includes payload that is not received yet
+            Decoded::Publish(publish, payload, size) => {
+                (*size as usize).saturating_sub(publish.payload_size as usize - payload.len())
+            }
+            Decoded::Packet(_, size) => *size as usize,
+            Decoded::PayloadChunk(chunk, _) => chunk.len(),
         }
     }
 }
