@@ -7,6 +7,14 @@ use super::{Session, codec as mqtt, shared::MqttShared, sink::MqttSink};
 
 const DEFAULT_KEEPALIVE: Seconds = Seconds(30);
 
+/// Keep-alive timeout for a keep-alive interval, 1.5 times of it rounded up
+///
+/// Rounding down would close the connection before one and a half times
+/// the keep-alive interval for odd values (MQTT 3.1.1, 3.1.2.10).
+fn keep_alive_timeout(keep_alive: u16) -> Seconds {
+    Seconds(keep_alive.saturating_add(keep_alive.div_ceil(2)))
+}
+
 /// Connect message
 pub struct Connect<St = ()> {
     io: IoBoxed,
@@ -84,7 +92,7 @@ impl<St> Connect<St> {
         } = self;
         // [MQTT-3.1.2-24].
         let keepalive = if pkt.keep_alive != 0 {
-            Seconds((pkt.keep_alive >> 1).saturating_add(pkt.keep_alive))
+            keep_alive_timeout(pkt.keep_alive)
         } else {
             DEFAULT_KEEPALIVE
         };
@@ -216,6 +224,35 @@ mod tests {
 
     use super::*;
     use crate::v3::shared::MqttShared;
+
+    #[test]
+    fn test_keep_alive_timeout() {
+        assert_eq!(keep_alive_timeout(1), Seconds(2));
+        assert_eq!(keep_alive_timeout(2), Seconds(3));
+        assert_eq!(keep_alive_timeout(3), Seconds(5));
+        assert_eq!(keep_alive_timeout(10), Seconds(15));
+        assert_eq!(keep_alive_timeout(u16::MAX), Seconds(u16::MAX));
+    }
+
+    /// Server enforces 1.5 times of the client keep-alive (MQTT 3.1.1, 3.1.2.10)
+    #[ntex::test]
+    async fn test_ack_keep_alive() {
+        for (keep_alive, timeout) in [(0, DEFAULT_KEEPALIVE), (3, Seconds(5))] {
+            let io = Io::new(IoTest::create().0, SharedCfg::new("test"));
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                mqtt::Codec::default(),
+                false,
+                Rc::default(),
+            ));
+            let connect = Box::new(mqtt::Connect {
+                keep_alive,
+                ..Default::default()
+            });
+            let ack = Connect::new(connect, 0, IoBoxed::from(io), (), shared).ack((), false);
+            assert_eq!(ack.keepalive, timeout);
+        }
+    }
 
     #[ntex::test]
     async fn test_debug() {
