@@ -1073,6 +1073,46 @@ mod tests {
         }
     }
 
+    /// Publish waiting while the streaming payload is released first by
+    /// `disable_wr_backpressure` is sent once the payload is complete
+    #[ntex::test]
+    async fn test_streaming_completion_releases_waiters() {
+        use std::{future::Future, pin::pin};
+
+        use ntex_util::future::lazy;
+
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            true,
+            Rc::default(),
+        ));
+        shared.set_cap(16);
+        let sink = MqttSink::new(shared.clone());
+
+        let stream = sink.publish("a/b").stream_at_most_once(4).unwrap();
+        stream.send(Bytes::from_static(b"ab")).await.unwrap();
+        shared.enable_wr_backpressure();
+        let mut chunk = pin!(stream.send(Bytes::from_static(b"cd")));
+        assert!(lazy(|cx| chunk.as_mut().poll(cx).is_pending()).await);
+        let mut publish = pin!(sink.publish("c").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| publish.as_mut().poll(cx).is_pending()).await);
+
+        // the payload goes first, the publish cannot interleave with it
+        shared.disable_wr_backpressure();
+        assert!(lazy(|cx| publish.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(sink.credit(), 16);
+        chunk.await.unwrap();
+        assert!(!shared.is_streaming());
+
+        // the completed payload releases the waiting publish
+        assert!(lazy(|cx| publish.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(sink.credit(), 15);
+    }
+
     /// Dropped `QoS 2` publish future is released, PUBREL is sent and
     /// packet id and in-flight slot are freed (MQTT 3.1.1, 4.3.3)
     #[ntex::test]

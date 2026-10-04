@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Publishes waiting for write backpressure behind a streaming publish payload
+  are released once the payload is complete, previously they waited for the next ack
+
 * v3, v5: Server sink does not send SUBSCRIBE and UNSUBSCRIBE packets, these are client
   packets, the builders' `send()` returns the new `SendPacketError::NotAllowed` error
 

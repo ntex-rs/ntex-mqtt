@@ -254,9 +254,14 @@ impl MqttShared {
                 Err(EncodeError::OverPublishSize)
             } else {
                 self.io.encode(Encoded::PayloadChunk(payload), self)?;
-                self.streaming_remaining
-                    .set(num::NonZeroU32::new(remaining.get() - len));
-                Ok(self.streaming_remaining.get().is_some())
+                let remaining = num::NonZeroU32::new(remaining.get() - len);
+                self.streaming_remaining.set(remaining);
+                if remaining.is_none() {
+                    // waiters held back while the streaming payload was released
+                    // first by `disable_wr_backpressure` are woken
+                    self.wake_waiters();
+                }
+                Ok(remaining.is_some())
             }
         } else {
             Err(EncodeError::UnexpectedPayload)
@@ -293,14 +298,21 @@ impl MqttShared {
         flags.remove(Flags::WRB_ENABLED);
         self.flags.set(flags);
 
-        // streaming waiter
+        // streaming payload goes first, waiting publishes cannot be written
+        // until the payload is complete, `encode_publish_payload` wakes them
         if let Some(tx) = self.streaming_waiter.take()
             && tx.send(()).is_ok()
         {
             return;
         }
+        self.wake_waiters();
+    }
 
-        // check if there are waiters
+    /// Wake waiters within the send credit, unless write backpressure is enabled
+    fn wake_waiters(&self) {
+        if self.flags.get().contains(Flags::WRB_ENABLED) {
+            return;
+        }
         let mut queues = self.queues.borrow_mut();
         if queues.inflight.len() < self.cap.get() {
             let mut num = self.cap.get() - queues.inflight.len();
