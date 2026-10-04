@@ -394,7 +394,8 @@ impl MqttShared {
         flags.remove(Flags::WRB_ENABLED);
         self.flags.set(flags);
 
-        // streaming waiter
+        // streaming payload goes first, waiting publishes cannot be written
+        // until the payload is complete, `encode_publish_payload` grants them
         if let Some(tx) = self.streaming_waiter.take()
             && tx.send(()).is_ok()
         {
@@ -521,9 +522,14 @@ impl MqttShared {
                 Err(error::EncodeError::OverPublishSize)
             } else {
                 self.io.encode(Encoded::PayloadChunk(payload), self)?;
-                self.streaming_remaining
-                    .set(num::NonZeroU32::new(remaining.get() - len));
-                Ok(self.streaming_remaining.get().is_some())
+                let remaining = num::NonZeroU32::new(remaining.get() - len);
+                self.streaming_remaining.set(remaining);
+                if remaining.is_none() {
+                    // publishes waiting while the streaming payload was released
+                    // first by `disable_wr_backpressure` get their send credit
+                    self.grant(&mut self.queues.borrow_mut());
+                }
+                Ok(remaining.is_some())
             }
         } else {
             Err(error::EncodeError::UnexpectedPayload)
