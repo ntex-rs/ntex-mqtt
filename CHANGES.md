@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Payload of a held back streaming publish is read once the publish is dispatched,
+  previously the payload chunks were held back while the publish filled the response queue
+  and the publish handler waiting for them stalled the connection
+
 * v3, v5: Restore payload backpressure, reading pauses while the unread part of a streamed
   payload reaches `max_payload_buffer_size`, the connection is closed if the publish handler
   drops the payload before the stream ends. Previously the whole payload was buffered and

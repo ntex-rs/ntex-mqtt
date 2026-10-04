@@ -673,6 +673,12 @@ where
             Poll::Ready(Ok(())) => {
                 // held items are dispatched before new items are read
                 if !full && let Some(item) = self.held.pop_front() {
+                    // the unread parts of the frame follow the dispatched
+                    // item, such as the payload of a streaming publish
+                    // that the publish handler waits for
+                    if self.frame_hold.is_some() {
+                        self.frame_hold = Some(false);
+                    }
                     self.call_service(cx, item);
                     return Poll::Ready(PollService::Continue);
                 }
@@ -2891,6 +2897,57 @@ mod tests {
             let called: Vec<u8> = calls.borrow().iter().flat_map(|c| c.to_vec()).collect();
             assert_eq!(&called[..], data.as_bytes(), "{data}");
         }
+    }
+
+    /// The rest of a held frame is dispatched while the queue is full once
+    /// its first item is dispatched, the first item waits for it
+    #[ntex::test]
+    async fn held_frame_rest_follows_dispatched_item() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let calls2 = calls.clone();
+        let gate = Condition::new();
+        let gate2 = gate.clone();
+        let rest = Condition::new();
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, max_queue_cfg(1)),
+            ChunkCodec::default(),
+            fn_service(move |msg: Bytes| {
+                let calls = calls2.clone();
+                let gate = gate2.clone();
+                let rest = rest.clone();
+                async move {
+                    calls.borrow_mut().push(msg.clone());
+                    match &msg[..] {
+                        b"a" => {
+                            let _ = gate.wait().await;
+                        }
+                        b"p" => {
+                            let _ = rest.wait().await;
+                        }
+                        _ => {
+                            rest.notify_and_lock(());
+                            return Ok(None);
+                        }
+                    }
+                    Ok::<_, DispatcherError<()>>(Some(msg))
+                }
+            }),
+            ctl_srv(),
+        );
+        let _done = spawn_disp(disp);
+
+        // "p" is held, its rest "c" is not read
+        client.write("apc");
+        sleep(Millis(50)).await;
+        assert_eq!(&calls.borrow()[..], ["a"]);
+
+        // "p" fills the queue, "c" is dispatched
+        gate.notify_and_lock(());
+        assert_eq!(read_exact(&client, 2).await, b"ap"[..]);
+        assert_eq!(&calls.borrow()[..], ["a", "p", "c"]);
     }
 
     /// Acks are dispatched while the queue is full, limited items are held

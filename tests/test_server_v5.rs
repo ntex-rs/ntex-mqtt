@@ -3501,3 +3501,88 @@ async fn test_max_queue_bounded_publish() {
         ["block", "block", "qos1", "qos0", "qos1-2"]
     );
 }
+
+/// A held streaming publish gets its payload once it is dispatched, the
+/// payload is read while the publish fills the response queue
+#[ntex::test]
+async fn test_held_streaming_publish() {
+    const SIZE: usize = 64 * 1024;
+
+    let received = Arc::new(AtomicBool::new(false));
+    let received2 = received.clone();
+    let srv = server::TestServerBuilder::new(async move || {
+        let received = received2.clone();
+        MqttServer::new(async move |p: Publish| {
+            if p.payload_size() == 1 {
+                sleep(Millis(200)).await;
+            } else if p.read_all().await.map_err(|_| TestError)?.len() == SIZE {
+                received.store(true, Relaxed);
+            }
+            Ok::<_, TestError>(p.ack())
+        })
+        .build(connect)
+    })
+    .config(
+        SharedCfg::new("MQTT").add(
+            MqttServiceConfig::new()
+                .set_max_queue(1)
+                .set_min_chunk_size(0),
+        ),
+    )
+    .start();
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
+    io.recv(&codec).await.unwrap();
+
+    io.encode(
+        Encoded::Publish(
+            codec::Publish {
+                payload_size: 1,
+                ..pkt_publish()
+            },
+            Some(Bytes::from_static(b"1")),
+        ),
+        &codec,
+    )
+    .unwrap();
+
+    // at most once publishes are held while the queue is full, Receive
+    // Maximum bounds the others. The pending publish fills the queue, the
+    // rest of its payload arrives after it is dispatched
+    let mut buf = BytePages::default();
+    let p = Encoded::Publish(
+        codec::Publish {
+            qos: QoS::AtMostOnce,
+            packet_id: None,
+            payload_size: SIZE as u32,
+            ..pkt_publish()
+        },
+        Some(Bytes::from(vec![b'*'; SIZE])),
+    );
+    codec.encode(p, &mut buf).unwrap();
+    let mut buf = buf.freeze();
+    io.encode_slice(&buf[..1024]).unwrap();
+    buf.advance_to(1024);
+    io.flush(true).await.unwrap();
+    sleep(Millis(400)).await;
+    io.encode_slice(&buf).unwrap();
+
+    let res = ntex::time::timeout(Seconds(5), io.recv(&codec)).await;
+    assert!(
+        matches!(res, Ok(Ok(Some(Decoded::Packet(Packet::PublishAck(_), _))))),
+        "{res:?}"
+    );
+    for _ in 0..100 {
+        if received.load(Relaxed) {
+            break;
+        }
+        sleep(Millis(20)).await;
+    }
+    assert!(received.load(Relaxed));
+}
