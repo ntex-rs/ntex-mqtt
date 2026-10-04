@@ -89,7 +89,22 @@ impl MqttSink {
     #[inline]
     /// Send ping.
     pub(super) fn ping(&self) -> bool {
-        self.0.encode_packet(codec::Packet::PingRequest).is_ok()
+        if self.0.encode_packet(codec::Packet::PingRequest).is_ok() {
+            self.0.set_ping_pending(true);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if PINGREQ is sent and PINGRESP is not received yet
+    pub(super) fn is_ping_pending(&self) -> bool {
+        self.0.is_ping_pending()
+    }
+
+    /// Check if newly encoded packets wait behind a streaming payload or write backpressure
+    pub(super) fn is_write_blocked(&self) -> bool {
+        self.0.is_write_blocked()
     }
 
     #[inline]

@@ -367,7 +367,10 @@ where
                 "AUTH packet is not supported at this time",
             )
             .into()),
-            Decoded::Packet(Packet::PingResponse, ..) => Ok(None),
+            Decoded::Packet(Packet::PingResponse, ..) => {
+                self.inner.sink.set_ping_pending(false);
+                Ok(None)
+            }
             // CONNACK is sent once [MQTT-3.2.0-2]
             Decoded::Packet(
                 pkt @ (Packet::Connect(_)
@@ -904,10 +907,14 @@ mod tests {
 
     #[ntex::test]
     async fn test_unexpected_packets() {
-        let (_io, _, disp) = qos2_dispatcher!(Rc::new(Cell::new(0)), Rc::new(Cell::new(0)), 16);
+        let (_io, shared, disp) =
+            qos2_dispatcher!(Rc::new(Cell::new(0)), Rc::new(Cell::new(0)), 16);
 
+        // PINGRESP clears pending ping
+        shared.set_ping_pending(true);
         let res = disp.call(Decoded::Packet(Packet::PingResponse, 999)).await;
         assert_eq!(res.unwrap(), None);
+        assert!(!shared.is_ping_pending());
 
         // packets sent by the client only and a second CONNACK [MQTT-3.2.0-2]
         // are not expected from server
