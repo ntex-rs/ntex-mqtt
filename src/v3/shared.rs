@@ -587,6 +587,8 @@ impl FrameState for MqttShared {
     #[inline]
     fn is_ordered(&self, item: &codec::Decoded) -> bool {
         // mqtt orders acks of publish packets only
+        // payload chunks have no response, they do not keep a queue slot
+        // while the publish handler is pending
         match item {
             codec::Decoded::Publish(publish, ..) => publish.qos != QoS::AtMostOnce,
             codec::Decoded::Packet(pkt, _) => !matches!(
@@ -596,7 +598,7 @@ impl FrameState for MqttShared {
                     | codec::Packet::Unsubscribe { .. }
                     | codec::Packet::PublishRelease { .. }
             ),
-            codec::Decoded::PayloadChunk(..) => true,
+            codec::Decoded::PayloadChunk(..) => false,
         }
     }
 
