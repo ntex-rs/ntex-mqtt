@@ -271,11 +271,10 @@ where
                                 );
                                 Some(None)
                             }
-                            // until PUBREL, PUBLISH with the same packet id is acked by PUBREC
-                            // and is not delivered [MQTT-4.3.3-10]
-                            Some(InFlight::Received)
-                                if publish.dup && publish.qos == QoS::ExactlyOnce =>
-                            {
+                            // until PUBREL, any subsequent PUBLISH with the same packet id is
+                            // acked by PUBREC and is not delivered, irrespective of DUP
+                            // [MQTT-4.3.3-10]
+                            Some(InFlight::Received) if publish.qos == QoS::ExactlyOnce => {
                                 log::trace!(
                                     "{}: Re-delivered publish packet is received: {pid:?}",
                                     self.tag()
@@ -1606,8 +1605,9 @@ mod tests {
             res.unwrap(),
             Some(ack(2, false, Ack::PacketIdentifierInUse))
         );
+        // a subsequent PUBLISH without DUP as well
         let res = disp.call(qos_publish(2, QoS::ExactlyOnce, "test")).await;
-        assert_eq!(res.unwrap(), Some(ack(2, true, Ack::PacketIdentifierInUse)));
+        assert_eq!(res.unwrap(), Some(ack(2, true, Ack::Success)));
         assert_eq!(published.get(), 2);
 
         // after PUBCOMP re-delivery is a new message [MQTT-4.3.3-12]

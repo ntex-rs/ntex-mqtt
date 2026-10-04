@@ -224,11 +224,9 @@ where
                             }
                             return Ok(None);
                         }
-                        // until PUBREL, PUBLISH with the same packet id is acked by PUBREC
-                        // and is not delivered [MQTT-4.3.3-2]
-                        Some(InFlight::Received)
-                            if publish.dup && publish.qos == QoS::ExactlyOnce =>
-                        {
+                        // until PUBREL, any subsequent PUBLISH with the same packet id is
+                        // acked by PUBREC and is not delivered, irrespective of DUP [MQTT-4.3.3-2]
+                        Some(InFlight::Received) if publish.qos == QoS::ExactlyOnce => {
                             log::trace!(
                                 "{}: Re-delivered publish packet is received: {:?}",
                                 self.tag(),
@@ -930,6 +928,14 @@ mod tests {
         assert_eq!(res.unwrap(), pubrec);
         assert_eq!(counter.get(), 1);
 
+        // a subsequent PUBLISH without DUP as well
+        let res = disp
+            .call(publish(2, QoS::ExactlyOnce, false, "publish"))
+            .await;
+        assert_eq!(res.unwrap(), pubrec);
+        assert_eq!(counter.get(), 1);
+        assert!(shared.is_active());
+
         let res = disp
             .call(Decoded::Packet(
                 Packet::PublishRelease { packet_id: pid(2) },
@@ -975,18 +981,6 @@ mod tests {
         );
         let res = disp
             .call(publish(2, QoS::AtLeastOnce, true, "publish"))
-            .await;
-        assert_violation(&res, &in_use);
-
-        // a new PUBLISH with the packet id in use, PUBREL is expected
-        let (_io, _, disp) = redelivery_dispatcher!(counter);
-        assert!(
-            disp.call(publish(2, QoS::ExactlyOnce, false, "publish"))
-                .await
-                .is_ok()
-        );
-        let res = disp
-            .call(publish(2, QoS::ExactlyOnce, false, "publish"))
             .await;
         assert_violation(&res, &in_use);
 
