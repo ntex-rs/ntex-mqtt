@@ -643,17 +643,16 @@ impl SubscribeBuilder {
     }
 
     /// Send subscribe packet
+    ///
+    /// Receive Maximum does not apply to SUBSCRIBE packets, the packet waits
+    /// for write backpressure only and does not use send credit.
     pub async fn send(self) -> Result<codec::SubscribeAck, SendPacketError> {
         let shared = self.shared;
         let mut packet = self.packet;
 
         if shared.is_active() {
-            // handle client receive maximum
-            if let Some(rx) = shared.wait_readiness()
-                && rx.await.is_err()
-            {
-                return Err(SendPacketError::Disconnected);
-            }
+            // receive maximum does not apply, wait for write backpressure only
+            shared.wait_wr_readiness().await?;
 
             // allocate packet id
             packet.packet_id = self.id.unwrap_or_else(|| shared.next_id());
@@ -733,17 +732,16 @@ impl UnsubscribeBuilder {
     }
 
     /// Send unsubscribe packet
+    ///
+    /// Receive Maximum does not apply to UNSUBSCRIBE packets, the packet waits
+    /// for write backpressure only and does not use send credit.
     pub async fn send(self) -> Result<codec::UnsubscribeAck, SendPacketError> {
         let shared = self.shared;
         let mut packet = self.packet;
 
         if shared.is_active() {
-            // handle client receive maximum
-            if let Some(rx) = shared.wait_readiness()
-                && rx.await.is_err()
-            {
-                return Err(SendPacketError::Disconnected);
-            }
+            // receive maximum does not apply, wait for write backpressure only
+            shared.wait_wr_readiness().await?;
             // allocate packet id
             packet.packet_id = self.id.unwrap_or_else(|| shared.next_id());
 
@@ -1308,5 +1306,177 @@ mod tests {
             assert_eq!(timeout(Millis(1000), r).await, Ok(Ok(())));
             assert_eq!(shared.credit(), 1);
         }
+    }
+
+    /// Receive Maximum counts `QoS 1` and `QoS 2` PUBLISH packets only [MQTT-4.9.0-2],
+    /// SUBSCRIBE and UNSUBSCRIBE wait for write backpressure only
+    #[ntex::test]
+    async fn test_receive_max_subscribe() {
+        use std::{future::Future, pin::Pin};
+
+        use ntex_util::future::lazy;
+        use ntex_util::time::{Millis, timeout};
+
+        async fn is_pending<F: Future>(f: &mut Pin<Box<F>>) -> bool {
+            lazy(|cx| f.as_mut().poll(cx).is_pending()).await
+        }
+        async fn read(client: &IoTest) -> u8 {
+            timeout(Millis(1000), client.read()).await.unwrap().unwrap()[0]
+        }
+        fn id(id: u16) -> NonZeroU16 {
+            NonZeroU16::new(id).unwrap()
+        }
+        fn suback(packet_id: u16) -> Ack {
+            Ack::Subscribe(codec::SubscribeAck {
+                packet_id: id(packet_id),
+                properties: codec::UserProperties::default(),
+                reason_string: None,
+                status: vec![codec::SubscribeAckReason::GrantedQos0],
+            })
+        }
+        fn unsuback(packet_id: u16) -> Ack {
+            Ack::Unsubscribe(codec::UnsubscribeAck {
+                packet_id: id(packet_id),
+                properties: codec::UserProperties::default(),
+                reason_string: None,
+                status: vec![codec::UnsubscribeAckReason::Success],
+            })
+        }
+        fn puback(packet_id: u16) -> Ack {
+            Ack::Publish(codec::PublishAck {
+                packet_id: id(packet_id),
+                ..Default::default()
+            })
+        }
+        const SUBSCRIBE: u8 = 0x82;
+        const UNSUBSCRIBE: u8 = 0xa2;
+        const PUBLISH: u8 = 0x32;
+
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        // write backpressure at two SUBSCRIBE packets
+        let io = Io::new(
+            server,
+            SharedCfg::new("test").add(ntex_io::IoConfig::default().set_write_buf(16)),
+        );
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::new(),
+            Rc::default(),
+        ));
+        shared.set_cap(1);
+        let sink = MqttSink::new(shared.clone());
+        let sub = |packet_id| {
+            Box::pin(
+                sink.subscribe(None)
+                    .packet_id(packet_id)
+                    .topic_filter("a".into(), codec::SubscriptionOptions::default())
+                    .send(),
+            )
+        };
+        let unsub = |packet_id| {
+            Box::pin(
+                sink.unsubscribe()
+                    .packet_id(packet_id)
+                    .topic_filter("a".into())
+                    .send(),
+            )
+        };
+        let publish = |packet_id| {
+            Box::pin(
+                sink.publish("a")
+                    .packet_id(packet_id)
+                    .send_at_least_once(Bytes::new()),
+            )
+        };
+
+        // pending SUBSCRIBE and UNSUBSCRIBE do not use send credit
+        let mut s1 = sub(1);
+        assert!(is_pending(&mut s1).await);
+        assert_eq!(read(&client).await, SUBSCRIBE);
+        let mut u2 = unsub(2);
+        assert!(is_pending(&mut u2).await);
+        assert_eq!(read(&client).await, UNSUBSCRIBE);
+        assert_eq!(sink.credit(), 1);
+        assert!(sink.is_ready());
+
+        let mut p3 = publish(3);
+        assert!(is_pending(&mut p3).await);
+        assert_eq!(read(&client).await, PUBLISH);
+        assert_eq!(sink.credit(), 0);
+        assert!(!sink.is_ready());
+
+        // SUBSCRIBE and UNSUBSCRIBE do not wait for send credit
+        let mut s4 = sub(4);
+        assert!(is_pending(&mut s4).await);
+        assert_eq!(read(&client).await, SUBSCRIBE);
+        let mut u9 = unsub(9);
+        assert!(is_pending(&mut u9).await);
+        assert_eq!(read(&client).await, UNSUBSCRIBE);
+
+        assert_eq!(shared.pkt_ack(suback(1)), Ok(()));
+        assert!(s1.await.is_ok());
+        assert_eq!(shared.pkt_ack(unsuback(2)), Ok(()));
+        assert!(u2.await.is_ok());
+        assert_eq!(sink.credit(), 0);
+        assert_eq!(shared.pkt_ack(puback(3)), Ok(()));
+        assert!(p3.await.is_ok());
+        assert_eq!(sink.credit(), 1);
+
+        assert_eq!(shared.pkt_ack(suback(4)), Ok(()));
+        assert!(s4.await.is_ok());
+        assert_eq!(shared.pkt_ack(unsuback(9)), Ok(()));
+        assert!(u9.await.is_ok());
+
+        // SUBSCRIBE and UNSUBSCRIBE wait for io write backpressure
+        client.remote_buffer_cap(0);
+        let mut s5 = sub(5);
+        let mut s6 = sub(6);
+        assert!(is_pending(&mut s5).await);
+        assert!(is_pending(&mut s6).await);
+        assert!(io.is_wr_backpressure());
+        let mut s7 = sub(7);
+        let mut u8 = unsub(8);
+        assert!(is_pending(&mut s7).await);
+        assert!(is_pending(&mut u8).await);
+        // nothing is encoded while waiting
+        drop(s7);
+        client.remote_buffer_cap(1024);
+        let mut buf = Vec::new();
+        while buf.len() < 18 {
+            buf.extend_from_slice(&timeout(Millis(1000), client.read()).await.unwrap().unwrap());
+        }
+        assert_eq!(buf.len(), 18);
+        // the io write task releases waiters, the flag is cleared by the dispatcher
+        assert!(is_pending(&mut u8).await);
+        assert_eq!(read(&client).await, UNSUBSCRIBE);
+        assert_eq!(client.read_any(), Bytes::new());
+
+        assert_eq!(shared.pkt_ack(suback(5)), Ok(()));
+        assert!(s5.await.is_ok());
+        assert_eq!(shared.pkt_ack(suback(6)), Ok(()));
+        assert!(s6.await.is_ok());
+        assert_eq!(shared.pkt_ack(unsuback(8)), Ok(()));
+        assert!(u8.await.is_ok());
+        assert_eq!(sink.credit(), 1);
+
+        // SUBSCRIBE waiting for write backpressure fails on disconnect
+        client.remote_buffer_cap(0);
+        let mut s10 = sub(10);
+        let mut s11 = sub(11);
+        let mut s12 = sub(12);
+        assert!(is_pending(&mut s10).await);
+        assert!(is_pending(&mut s11).await);
+        assert!(io.is_wr_backpressure());
+        assert!(is_pending(&mut s12).await);
+        shared.close(None);
+        client.remote_buffer_cap(1024);
+        for f in [s10, s11, s12] {
+            assert_eq!(
+                timeout(Millis(1000), f).await.unwrap(),
+                Err(SendPacketError::Disconnected)
+            );
+        }
+        assert_eq!(sink.credit(), 1);
     }
 }

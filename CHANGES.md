@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v5: Receive Maximum counts `QoS 1` and `QoS 2` PUBLISH packets only, pending SUBSCRIBE and
+  UNSUBSCRIBE packets no longer use send credit or cause a false 0x93 disconnect, and
+  SUBSCRIBE/UNSUBSCRIBE wait for io write backpressure only (`IoRef::write_ready()`)
+
 * v3: Round up 1.5 times of the client keep-alive, previously odd keep-alive values
   closed the connection early
 
