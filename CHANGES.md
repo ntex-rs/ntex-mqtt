@@ -2,6 +2,15 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Payload chunk of a streaming publish that waits for write backpressure fails
+  with `Disconnected` when the connection is closed, previously it waited forever
+
+* v5: Send credit released by an ack is reserved for the first waiting publish, waiting
+  publishes, `ready()` and `stream_at_least_once` get the credit in the order of the calls,
+  previously a new publish could take the credit of a woken one and the peer received more
+  publishes than its Receive Maximum [MQTT-4.9.0-1]. `is_ready()` is false while publishes
+  wait, a cancelled waiter passes the credit on and waiters fail on disconnect
+
 * v3: `max_receive` limits incoming PUBLISH packets only, publishes over the limit wait
   for a slot while acks, pings and other packets are still read, previously a publish
   handler that awaited the ack of its own publish deadlocked at the limit. The v3 client

@@ -197,6 +197,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::task::Poll;
+
     use ntex_io::{Io, testing::IoTest};
     use ntex_service::{Pipeline, cfg::SharedCfg};
     use ntex_util::future::lazy;
@@ -230,17 +232,32 @@ mod tests {
         assert!(!sink.is_ready());
         shared.set_cap(1);
         assert!(sink.is_ready());
-        assert!(shared.wait_readiness().is_none());
 
         svc.call(Control::<bool>::wr(true)).await.unwrap();
         assert!(!sink.is_ready());
-        let rx = shared.wait_readiness();
-        let rx2 = shared.wait_readiness().unwrap();
-        assert!(rx.is_some());
+        let mut p1 = Box::pin(shared.send_permit());
+        let mut p2 = Box::pin(shared.send_permit());
+        assert!(lazy(|cx| p1.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| p2.as_mut().poll(cx).is_pending()).await);
 
-        let rx = rx.unwrap();
+        // the send credit is granted to the first waiter
         svc.call(Control::wr(false)).await.unwrap();
-        assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
-        assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
+        let permit = lazy(|cx| p1.as_mut().poll(cx)).await;
+        assert!(matches!(permit, Poll::Ready(Ok(_))));
+        assert!(lazy(|cx| p2.as_mut().poll(cx).is_pending()).await);
+
+        // dropped permit passes the credit to the next waiter
+        drop(permit);
+        assert!(lazy(|cx| p2.as_mut().poll(cx).is_ready()).await);
+
+        // the streaming payload is released first, waiting publish keeps its turn
+        svc.call(Control::wr(true)).await.unwrap();
+        let mut p3 = Box::pin(shared.send_permit());
+        let mut stream = Box::pin(shared.want_payload_stream());
+        assert!(lazy(|cx| p3.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| stream.as_mut().poll(cx).is_pending()).await);
+        svc.call(Control::wr(false)).await.unwrap();
+        assert!(lazy(|cx| stream.as_mut().poll(cx).is_ready()).await);
+        assert!(!sink.is_ready());
     }
 }

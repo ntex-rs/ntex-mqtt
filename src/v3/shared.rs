@@ -259,6 +259,10 @@ impl MqttShared {
     }
 
     fn clear_queues(&self) {
+        // the payload waiting for write backpressure fails, the connection
+        // is closed and backpressure would never be disabled
+        self.streaming_waiter.take();
+
         let mut queues = self.queues.borrow_mut();
         queues.waiters.clear();
 

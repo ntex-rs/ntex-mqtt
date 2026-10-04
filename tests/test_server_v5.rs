@@ -3198,3 +3198,87 @@ async fn test_handshake_invalid_will_topic() -> std::io::Result<()> {
 
     Ok(())
 }
+
+/// Payload chunk waiting for write backpressure fails when the peer is gone
+#[ntex::test]
+async fn test_streaming_waiter_peer_gone() {
+    let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let result = Arc::new(Mutex::new(None));
+    let (sent2, result2) = (sent.clone(), result.clone());
+    let srv = server::TestServerBuilder::new(async move || {
+        let sent = sent2.clone();
+        let result = result2.clone();
+        MqttServer::new(async move |ses: &Session<St>| {
+            let sink = ses.sink().clone();
+            let sent = sent.clone();
+            let result = result.clone();
+            Ok::<_, Infallible>(fn_service(async move |p: Publish| {
+                let sink = sink.clone();
+                let sent = sent.clone();
+                let result = result.clone();
+                rt::spawn(async move {
+                    let chunk = Bytes::from(vec![0u8; 65536]);
+                    let stream = sink
+                        .publish("test")
+                        .stream_at_most_once(4000 * 65536)
+                        .unwrap();
+                    let res = loop {
+                        if let Err(e) = stream.send(chunk.clone()).await {
+                            break e;
+                        }
+                        sent.fetch_add(1, Relaxed);
+                        // let the dispatcher process write backpressure
+                        sleep(Millis(1)).await;
+                    };
+                    *result.lock().unwrap() = Some(res);
+                });
+                Ok::<_, TestError>(p.ack())
+            }))
+        })
+        .build(connect)
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_size(0)))
+    .start();
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::new();
+    io.send(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let _ = io.recv(&codec).await.unwrap().unwrap();
+
+    // trigger server streaming PUBLISH, the payload is not read
+    let pkt = codec::Publish {
+        qos: QoS::AtMostOnce,
+        packet_id: None,
+        ..pkt_publish()
+    };
+    io.send(Encoded::Publish(pkt, None), &codec).await.unwrap();
+
+    // wait for write backpressure
+    let mut last = usize::MAX;
+    for _ in 0..50 {
+        sleep(Millis(200)).await;
+        let n = sent.load(Relaxed);
+        if n > 0 && n == last {
+            break;
+        }
+        last = n;
+    }
+    assert_eq!(sent.load(Relaxed), last);
+    assert!(result.lock().unwrap().is_none());
+
+    drop(io);
+    let mut res = None;
+    for _ in 0..50 {
+        sleep(Millis(100)).await;
+        res = result.lock().unwrap().take();
+        if res.is_some() {
+            break;
+        }
+    }
+    assert_eq!(res, Some(error::SendPacketError::Disconnected));
+}
