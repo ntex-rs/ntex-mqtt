@@ -3283,11 +3283,12 @@ async fn test_streaming_waiter_peer_gone() {
     assert_eq!(res, Some(error::SendPacketError::Disconnected));
 }
 
-/// Publish handlers wait for acks of their own publishes, more publishes
-/// than `max_queue` (64 by default) do not stop the acks from being read
+/// Publish handlers wait for acks of their own publishes, the acks are read
+/// while the publishes fill the response queue, `max_queue` is 64 by default.
+/// A packet beyond the limit is held back and pauses reading.
 #[ntex::test]
 async fn test_max_queue_acks() {
-    const COUNT: usize = 100;
+    const COUNT: usize = 64;
 
     let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let done2 = done.clone();
@@ -3361,12 +3362,12 @@ async fn test_max_queue_acks() {
     assert_eq!(done.load(Relaxed), COUNT);
 }
 
-/// Client publish handlers wait for acks of their own publishes, more
-/// publishes than `max_queue` (64 by default) do not stop the acks from
-/// being read
+/// Client publish handlers wait for acks of their own publishes, the acks are
+/// read while the publishes fill the response queue, `max_queue` is 64 by
+/// default
 #[ntex::test]
 async fn test_client_max_queue_acks() {
-    const COUNT: usize = 100;
+    const COUNT: usize = 64;
 
     let srv = server::TestServerBuilder::new(async move || {
         MqttServer::new(async move |ses: &Session<St>| {
@@ -3498,55 +3499,5 @@ async fn test_max_queue_bounded_publish() {
     assert_eq!(
         &handled.lock().unwrap()[..],
         ["block", "block", "qos1", "qos0", "qos1-2"]
-    );
-}
-
-/// Reading paused at the held back limit for longer than the held timeout
-/// disconnects with Server busy
-#[ntex::test]
-async fn test_held_timeout() {
-    let srv = server::TestServerBuilder::new(async move || {
-        MqttServer::new(async move |p: Publish| {
-            if p.topic().path() == "block" {
-                sleep(Millis(10_000)).await;
-            }
-            Ok::<_, TestError>(p.ack())
-        })
-        .build(connect)
-    })
-    .config(
-        SharedCfg::new("MQTT").add(
-            MqttServiceConfig::new()
-                .set_max_queue(1)
-                .set_max_held_size(0)
-                .set_held_timeout(Seconds(1)),
-        ),
-    )
-    .start();
-
-    let io = srv.connect().await.unwrap();
-    let codec = codec::Codec::new();
-    io.send(
-        Encoded::Packet(codec::Connect::default().client_id("user").into()),
-        &codec,
-    )
-    .await
-    .unwrap();
-    let _ = io.recv(&codec).await.unwrap().unwrap();
-
-    io.encode(publish_pkt("block", QoS::AtLeastOnce, 1), &codec)
-        .unwrap();
-    io.encode(publish_pkt("test", QoS::AtMostOnce, 0), &codec)
-        .unwrap();
-    io.flush(true).await.unwrap();
-
-    let pkt = ntex::time::timeout(Seconds(5), io.recv(&codec)).await;
-    assert!(
-        matches!(
-            pkt,
-            Ok(Ok(Some(Decoded::Packet(Packet::Disconnect(ref d), _))))
-                if d.reason_code == codec::DisconnectReasonCode::ServerBusy
-        ),
-        "{pkt:?}"
     );
 }

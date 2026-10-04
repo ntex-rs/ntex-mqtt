@@ -195,7 +195,11 @@ where
 
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
         let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
-        if (res1.is_err() || res2.is_err())
+        // payload backpressure, reading pauses while the streamed payload buffer
+        // is above its high watermark, the connection is closed if the payload
+        // receiver is dropped before the stream ends
+        if res1.is_ok()
+            && res2.is_ok()
             && let Some(pl) = self.inner.sink.payload.take()
         {
             self.inner.sink.payload.set(Some(pl.clone()));
@@ -1310,15 +1314,14 @@ mod tests {
         }
 
         // QoS 1 and QoS 2 publishes are bounded by Receive Maximum
-        let publish = |qos, payload_size| codec::Publish {
+        let publish = |qos| codec::Publish {
             qos,
             packet_id: Some(id),
-            payload_size,
             ..Default::default()
         };
-        let qos0 = Decoded::Publish(publish(QoS::AtMostOnce, 0), Bytes::new(), 10);
-        let qos1 = Decoded::Publish(publish(QoS::AtLeastOnce, 0), Bytes::new(), 10);
-        let qos2 = Decoded::Publish(publish(QoS::ExactlyOnce, 0), Bytes::new(), 10);
+        let qos0 = Decoded::Publish(publish(QoS::AtMostOnce), Bytes::new(), 10);
+        let qos1 = Decoded::Publish(publish(QoS::AtLeastOnce), Bytes::new(), 10);
+        let qos2 = Decoded::Publish(publish(QoS::ExactlyOnce), Bytes::new(), 10);
         assert_eq!(shared.queue_limit(&qos1), QueueLimit::Hold);
         assert_eq!(shared.bounded_slots(), 0);
         shared.set_receive_max(16);
@@ -1326,24 +1329,6 @@ mod tests {
         assert_eq!(shared.queue_limit(&qos0), QueueLimit::Hold);
         assert_eq!(shared.queue_limit(&qos1), QueueLimit::Bounded);
         assert_eq!(shared.queue_limit(&qos2), QueueLimit::Bounded);
-
-        // frame size without the payload that is not received yet
-        let pkt = Decoded::Publish(
-            publish(QoS::AtLeastOnce, 100),
-            Bytes::from_static(b"0123456789"),
-            120,
-        );
-        assert_eq!(shared.held_size(&pkt), 30);
-        let pkt = Decoded::Publish(
-            publish(QoS::AtLeastOnce, 5),
-            Bytes::from_static(b"01234"),
-            25,
-        );
-        assert_eq!(shared.held_size(&pkt), 25);
-        let pkt = Decoded::Packet(Packet::Disconnect(codec::Disconnect::default()), 2);
-        assert_eq!(shared.held_size(&pkt), 2);
-        let pkt = Decoded::PayloadChunk(Bytes::from_static(b"abc"), false);
-        assert_eq!(shared.held_size(&pkt), 3);
     }
 
     fn qos2_dispatcher(
@@ -1722,5 +1707,135 @@ mod tests {
         ] {
             assert_unexpected(&disp.call(Decoded::Packet(pkt, 999)).await, tp);
         }
+    }
+
+    #[ntex::test]
+    async fn test_payload_backpressure() {
+        use std::{cell::RefCell, task::Poll};
+
+        struct FailReady<E>(Rc<Cell<bool>>, fn() -> E);
+
+        impl<St, E> Service<St, ProtocolMessage> for FailReady<E> {
+            type Res = ProtocolMessageAck;
+            type Error = E;
+
+            async fn ready(&self, _: Ctx<'_, Self, St>) -> Result<(), E> {
+                if self.0.get() { Err((self.1)()) } else { Ok(()) }
+            }
+
+            async fn call(
+                &self,
+                msg: ProtocolMessage,
+                _: Ctx<'_, Self, St>,
+            ) -> Result<Self::Res, E> {
+                Ok(msg.ack())
+            }
+        }
+
+        struct Hold<R, E>(
+            Rc<RefCell<Option<Publish>>>,
+            Rc<Cell<bool>>,
+            fn() -> E,
+            fn() -> R,
+        );
+
+        impl<St, R, E> Service<St, Publish> for Hold<R, E> {
+            type Res = R;
+            type Error = E;
+
+            async fn ready(&self, _: Ctx<'_, Self, St>) -> Result<(), E> {
+                if self.1.get() { Err((self.2)()) } else { Ok(()) }
+            }
+
+            async fn call(&self, pkt: Publish, _: Ctx<'_, Self, St>) -> Result<R, E> {
+                *self.0.borrow_mut() = Some(pkt);
+                Ok((self.3)())
+            }
+        }
+
+        let fail = Rc::new(Cell::new(false));
+        let pfail = Rc::new(Cell::new(false));
+        let cfg: SharedCfg = SharedCfg::new("DBG")
+            .add(MqttServiceConfig::new().set_max_payload_buffer_size(4))
+            .into();
+        let io = Io::new(IoTest::create().0, cfg.clone());
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            Rc::default(),
+        ));
+        let held = Rc::new(RefCell::new(None));
+        let h = held.clone();
+        let disp = Pipeline::new(
+            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
+            Dispatcher::new(
+                shared.clone(),
+                Hold(
+                    h,
+                    pfail.clone(),
+                    || TestError,
+                    || PublishAck::new(codec::PublishAckReason::Success),
+                ),
+                FailReady(fail.clone(), || {
+                    DispatcherError::Protocol(MqttProtocolError::ReadTimeout)
+                }),
+                cfg.get(),
+            ),
+        );
+        let chunk = |data: &'static [u8]| {
+            disp.call_nowait(Decoded::PayloadChunk(Bytes::from_static(data), false))
+        };
+
+        // streamed payload below the high watermark
+        let res = disp
+            .call(Decoded::Publish(
+                codec::Publish {
+                    topic: ByteString::from_static("t"),
+                    payload_size: 16,
+                    ..Default::default()
+                },
+                Bytes::from_static(b"ab"),
+                999,
+            ))
+            .await;
+        assert_eq!(res.unwrap(), None);
+        assert!(matches!(
+            lazy(|cx| disp.poll_ready(cx)).await,
+            Poll::Ready(Ok(()))
+        ));
+
+        // the payload buffer reached the high watermark, reading pauses
+        assert_eq!(chunk(b"cd").await.unwrap(), None);
+        assert!(lazy(|cx| disp.poll_ready(cx)).await.is_pending());
+
+        // the payload buffer is drained to the low watermark
+        let pkt = held.borrow_mut().take().unwrap();
+        assert_eq!(pkt.read().await.unwrap(), Some(Bytes::from_static(b"ab")));
+        assert!(matches!(
+            lazy(|cx| disp.poll_ready(cx)).await,
+            Poll::Ready(Ok(()))
+        ));
+        assert!(io.is_active());
+
+        // a readiness error is not delayed by the paused payload
+        assert_eq!(chunk(b"efgh").await.unwrap(), None);
+        fail.set(true);
+        assert!(matches!(
+            lazy(|cx| disp.poll_ready(cx)).await,
+            Poll::Ready(Err(_))
+        ));
+        fail.set(false);
+        pfail.set(true);
+        assert!(matches!(
+            lazy(|cx| disp.poll_ready(cx)).await,
+            Poll::Ready(Err(_))
+        ));
+        pfail.set(false);
+
+        // the payload receiver is dropped before the stream ends
+        assert!(lazy(|cx| disp.poll_ready(cx)).await.is_pending());
+        drop(pkt);
+        assert!(disp.ready().await.is_ok());
+        assert!(!io.is_active());
     }
 }

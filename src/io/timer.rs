@@ -31,9 +31,6 @@ pub(super) enum Timer {
     FrameRead,
     /// Write timeout, from enabling write backpressure until it is disabled.
     Write,
-    /// Held timeout, while reading is paused because held back items reached
-    /// `max_held_size`.
-    Held,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

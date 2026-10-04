@@ -16,7 +16,6 @@ use self::timer::{Timer, Timers};
 use crate::config::MqttServiceConfig;
 use crate::control::Control;
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttProtocolError};
-use crate::v5::codec::DisconnectReasonCode;
 
 /// Io waiter tag, in-flight service calls are cancelled once it is woken.
 const STOP_TAG: usize = 0x6d71_7474;
@@ -54,8 +53,8 @@ pub trait FrameState: Decoder {
 
     /// Returns how the item is dispatched while the response queue is full.
     ///
-    /// Held back items are kept in read order, reading pauses once their size
-    /// reaches `max_held_size`.
+    /// Held back items are kept in read order, reading pauses while an item
+    /// is held back.
     fn queue_limit(&self, _: &<Self as Decoder>::Item) -> QueueLimit {
         QueueLimit::Hold
     }
@@ -65,9 +64,6 @@ pub trait FrameState: Decoder {
     fn bounded_slots(&self) -> usize {
         0
     }
-
-    /// Memory size of the item while it is held back.
-    fn held_size(&self, item: &<Self as Decoder>::Item) -> usize;
 }
 
 /// Dispatch of an item while the response queue is full.
@@ -102,11 +98,6 @@ impl<T: FrameState> FrameState for Rc<T> {
     #[inline]
     fn bounded_slots(&self) -> usize {
         (**self).bounded_slots()
-    }
-
-    #[inline]
-    fn held_size(&self, item: &T::Item) -> usize {
-        (**self).held_size(item)
     }
 }
 
@@ -155,8 +146,6 @@ where
     wr_call: Option<ControlCall<Codec, E, Err>>,
     /// Limited items read while the response queue is full, in read order
     held: VecDeque<Request<Codec>>,
-    /// Total size of the held back items
-    held_size: usize,
     /// Hold decision of the frame whose remaining parts are not read yet,
     /// the parts of a frame follow its first item
     frame_hold: Option<bool>,
@@ -181,8 +170,6 @@ where
     /// Pending unordered calls, they count towards `max_queue`
     unordered: Cell<usize>,
     max_queue: usize,
-    max_held_size: usize,
-    held_timeout: Seconds,
 }
 
 #[derive(Debug)]
@@ -224,8 +211,6 @@ where
             response_idx: Cell::new(None),
             unordered: Cell::new(0),
             max_queue: cfg.max_queue,
-            max_held_size: cfg.max_held_size,
-            held_timeout: cfg.held_timeout,
         });
         let keepalive_timeout = io.cfg().keepalive_timeout();
 
@@ -241,7 +226,6 @@ where
                 flags: Flags::empty(),
                 wr_call: None,
                 held: VecDeque::new(),
-                held_size: 0,
                 frame_hold: None,
                 st: IoDispatcherState::Processing,
             },
@@ -571,9 +555,9 @@ where
     /// queue is full.
     ///
     /// Pending calls can wait for acks of outgoing packets, reading continues
-    /// while the queue is full so that acks are still dispatched. Held items
-    /// are dispatched before new items are read, so items are held back only
-    /// while the queue is full.
+    /// while the queue is full so that acks are still dispatched, until an
+    /// item is held back. Held items are dispatched before new items are
+    /// read, so items are held back only while the queue is full.
     fn dispatch(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
         let hold = if let Some(hold) = self.frame_hold {
             hold
@@ -596,19 +580,10 @@ where
         self.frame_hold = self.codec.is_partial().then_some(hold);
 
         if hold {
-            self.held_size += self.codec.held_size(&item);
             self.held.push_back(item);
         } else {
             self.call_service(cx, item);
         }
-    }
-
-    /// Returns `true` if held items reached `max_held_size` while the
-    /// response queue is full, reading pauses then.
-    fn is_held_limit(&self) -> bool {
-        !self.held.is_empty()
-            && self.held_size >= self.state.max_held_size
-            && self.state.is_full(self.state.queue.borrow().len())
     }
 
     fn call_service(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
@@ -683,12 +658,10 @@ where
         }
 
         // check readiness, pause reading while the service or the control
-        // service is not ready, or the response queue is full and either
-        // held items reached `max_held_size` or a clean read eof waits for
-        // the held items
+        // service is not ready, or the response queue is full and an item
+        // is held back
         let full = self.state.is_full(self.state.queue.borrow().len());
-        let held_limit = self.is_held_limit();
-        let ready = if held_limit || (full && !self.held.is_empty() && self.io.is_read_eof()) {
+        let ready = if full && !self.held.is_empty() {
             Poll::Pending
         } else {
             match self.service.poll_ready(cx) {
@@ -700,13 +673,12 @@ where
             Poll::Ready(Ok(())) => {
                 // held items are dispatched before new items are read
                 if !full && let Some(item) = self.held.pop_front() {
-                    self.held_size -= self.codec.held_size(&item);
                     self.call_service(cx, item);
                     return Poll::Ready(PollService::Continue);
                 }
                 return Poll::Ready(PollService::Ready);
             }
-            Poll::Pending => match ready!(self.poll_read_pause(cx, held_limit)) {
+            Poll::Pending => match ready!(self.poll_read_pause(cx)) {
                 Some(msg) => msg,
                 None => return Poll::Ready(PollService::Continue),
             },
@@ -726,14 +698,7 @@ where
 
     /// Pauses reading while the service is not ready, returns the stop
     /// message if the dispatcher must stop.
-    ///
-    /// `held_limit` is set while reading is paused because held items reached
-    /// `max_held_size`, the held timeout applies then.
-    fn poll_read_pause(
-        &mut self,
-        cx: &mut Context<'_>,
-        held_limit: bool,
-    ) -> Poll<Option<Control<E>>> {
+    fn poll_read_pause(&mut self, cx: &mut Context<'_>) -> Poll<Option<Control<E>>> {
         log::trace!(
             "{}: Service is not ready, pause read task {:?}",
             self.io.tag(),
@@ -742,19 +707,7 @@ where
 
         // the write timeout keeps running while the service is paused
         if self.timers.active != Timer::Write {
-            if held_limit && !self.state.held_timeout.is_zero() {
-                if self.timers.active != Timer::Held {
-                    log::trace!(
-                        "{}: Start held timer {:?}",
-                        self.io.tag(),
-                        self.state.held_timeout
-                    );
-                    self.timers.active = Timer::Held;
-                    self.io.start_timer(self.state.held_timeout);
-                }
-            } else {
-                self.stop_timer();
-            }
+            self.stop_timer();
         }
         self.timers.reset_read(self.io.cfg());
 
@@ -774,7 +727,7 @@ where
         };
 
         Poll::Ready(match status {
-            // only the write and held timers can be armed during pause
+            // only the write timer can be armed during pause
             IoStatusUpdate::Timeout => self.handle_timeout().err().map(Control::proto),
             IoStatusUpdate::PeerGone(err) => {
                 log::trace!(
@@ -908,18 +861,6 @@ where
                 log::trace!("{}: Keep-alive error, stopping dispatcher", self.io.tag());
                 Err(MqttProtocolError::KeepAliveTimeout)
             }
-            // the limit can be released unnoticed while the timer fires
-            Timer::Held if !self.is_held_limit() => {
-                self.timers.active = Timer::Stopped;
-                Ok(())
-            }
-            Timer::Held => {
-                log::trace!("{}: Held items timeout, stopping dispatcher", self.io.tag());
-                Err(MqttProtocolError::violation(
-                    DisconnectReasonCode::ServerBusy,
-                    "Held back packets are not handled within the held timeout",
-                ))
-            }
             Timer::Stopped => Ok(()),
         }
     }
@@ -994,11 +935,7 @@ mod tests {
         }
     }
 
-    impl FrameState for BytesCodec {
-        fn held_size(&self, item: &Bytes) -> usize {
-            item.len()
-        }
-    }
+    impl FrameState for BytesCodec {}
 
     impl Decoder for BytesCodec {
         type Item = Bytes;
@@ -1762,11 +1699,7 @@ mod tests {
         }
     }
 
-    impl FrameState for BytesLenCodec {
-        fn held_size(&self, item: &Bytes) -> usize {
-            item.len()
-        }
-    }
+    impl FrameState for BytesLenCodec {}
 
     impl Decoder for BytesLenCodec {
         type Item = Bytes;
@@ -1831,10 +1764,6 @@ mod tests {
             } else {
                 QueueLimit::Hold
             }
-        }
-
-        fn held_size(&self, item: &Bytes) -> usize {
-            item.len()
         }
     }
 
@@ -1997,11 +1926,7 @@ mod tests {
             }
         }
 
-        impl FrameState for ConsumingCodec {
-            fn held_size(&self, item: &Bytes) -> usize {
-                item.len()
-            }
-        }
+        impl FrameState for ConsumingCodec {}
 
         impl Decoder for ConsumingCodec {
             type Item = Bytes;
@@ -2326,11 +2251,6 @@ mod tests {
 
         fn bounded_slots(&self) -> usize {
             2
-        }
-
-        // "L" is a large item
-        fn held_size(&self, item: &Bytes) -> usize {
-            if item == "L" { 100 } else { item.len() }
         }
     }
 
@@ -2895,109 +2815,11 @@ mod tests {
         })
     }
 
-    /// `max_queue` limit, held items are limited to the same size
     fn max_queue_cfg(max_queue: usize) -> SharedCfg {
-        held_cfg(max_queue, max_queue, Seconds::ZERO)
-    }
-
-    fn held_cfg(max_queue: usize, max_held_size: usize, held_timeout: Seconds) -> SharedCfg {
         SharedCfg::new("DBG")
             .add(IoConfig::new())
-            .add(
-                MqttServiceConfig::new()
-                    .set_max_queue(max_queue)
-                    .set_max_held_size(max_held_size)
-                    .set_held_timeout(held_timeout),
-            )
+            .add(MqttServiceConfig::new().set_max_queue(max_queue))
             .into()
-    }
-
-    /// Service that completes pending calls on each ack
-    fn step_srv(
-        calls: Rc<RefCell<Vec<Bytes>>>,
-    ) -> impl Service<(), Bytes, Res = Option<Bytes>, Error = DispatcherError<()>> {
-        let gate = Condition::new();
-        fn_service(move |msg: Bytes| {
-            let calls = calls.clone();
-            let gate = gate.clone();
-            async move {
-                calls.borrow_mut().push(msg.clone());
-                if msg == "k" {
-                    gate.notify(());
-                    return Ok(None);
-                }
-                let _ = gate.wait().await;
-                Ok::<_, DispatcherError<()>>(Some(msg))
-            }
-        })
-    }
-
-    /// Reading pauses once the size of held items reaches `max_held_size`
-    #[ntex::test]
-    async fn held_size_limit() {
-        // size, data, the ack is read
-        for (size, data, ack) in [
-            (3, "abcd", true),
-            (3, "abcde", false),
-            (3, "abL", false),
-            (0, "abc", false),
-            (0, "ab", true),
-        ] {
-            let (client, server) = Io::create();
-            client.remote_buffer_cap(1024);
-
-            let calls = Rc::new(RefCell::new(Vec::new()));
-            let (disp, _) = Dispatcher::new_debug(
-                nio::Io::new(server, held_cfg(2, size, Seconds::ZERO)),
-                ByteCodec,
-                ack_srv(calls.clone(), Condition::new()),
-                ctl_srv(),
-            );
-            let _done = spawn_disp(disp);
-
-            client.write(data);
-            client.write("k");
-            sleep(Millis(50)).await;
-            assert_eq!(
-                calls.borrow().contains(&Bytes::from_static(b"k")),
-                ack,
-                "{data}"
-            );
-        }
-    }
-
-    /// The size of dispatched held items is not counted
-    #[ntex::test]
-    async fn held_size_released() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
-
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, held_cfg(2, 3, Seconds::ZERO)),
-            ByteCodec,
-            step_srv(calls.clone()),
-            ctl_srv(),
-        );
-        let _done = spawn_disp(disp);
-
-        // "c" is held, the ack completes "a" and "b", "c" is dispatched
-        client.write("abc");
-        sleep(Millis(20)).await;
-        client.write("k");
-        assert_eq!(read_exact(&client, 2).await, b"ab"[..]);
-        assert!(wait_until(|| calls.borrow().len() == 4).await);
-
-        // "e" and "f" are held, size 2 is below the limit
-        client.write("def");
-        sleep(Millis(20)).await;
-        client.write("k");
-        assert_eq!(read_exact(&client, 2).await, b"cd"[..]);
-        assert!(wait_until(|| calls.borrow().len() == 8).await);
-        assert_eq!(
-            &calls.borrow()[..],
-            ["a", "b", "k", "c", "d", "k", "e", "f"]
-        );
     }
 
     /// Bounded items are dispatched while nothing is held back, up to
@@ -3017,7 +2839,7 @@ mod tests {
             let calls = Rc::new(RefCell::new(Vec::new()));
             let gate = Condition::new();
             let (disp, _) = Dispatcher::new_debug(
-                nio::Io::new(server, held_cfg(2, 1024, Seconds::ZERO)),
+                nio::Io::new(server, max_queue_cfg(2)),
                 ByteCodec,
                 ack_srv(calls.clone(), gate.clone()),
                 ctl_srv(),
@@ -3043,14 +2865,14 @@ mod tests {
     #[ntex::test]
     async fn frame_parts_follow_first_item() {
         // data, dispatched items
-        for (data, dispatched) in [("abPpc", "abPpc"), ("abpk", "ab"), ("abpck", "abkpc")] {
+        for (data, dispatched) in [("abPpc", "abPpc"), ("abpck", "ab")] {
             let (client, server) = Io::create();
             client.remote_buffer_cap(1024);
 
             let calls = Rc::new(RefCell::new(Vec::new()));
             let gate = Condition::new();
             let (disp, _) = Dispatcher::new_debug(
-                nio::Io::new(server, held_cfg(2, 1024, Seconds::ZERO)),
+                nio::Io::new(server, max_queue_cfg(2)),
                 ChunkCodec::default(),
                 ack_srv(calls.clone(), gate.clone()),
                 ctl_srv(),
@@ -3061,53 +2883,13 @@ mod tests {
             sleep(Millis(50)).await;
             let called: Vec<u8> = calls.borrow().iter().flat_map(|c| c.to_vec()).collect();
             assert_eq!(&called[..], dispatched.as_bytes(), "{data}");
-        }
-    }
 
-    /// Reading paused at the held limit for longer than the held timeout
-    /// stops the dispatcher
-    #[ntex::test]
-    async fn held_timeout() {
-        // held limit, the pause ends before the timeout
-        for (size, release) in [(0, false), (0, true), (1024, false)] {
-            let (client, server) = Io::create();
-            client.remote_buffer_cap(1024);
-
-            let calls = Rc::new(RefCell::new(Vec::new()));
-            let errs = Rc::new(RefCell::new(Vec::new()));
-            let errs2 = errs.clone();
-            let gate = Condition::new();
-            let (disp, state) = Dispatcher::new_debug(
-                nio::Io::new(server, held_cfg(2, size, Seconds(1))),
-                ByteCodec,
-                ack_srv(calls.clone(), gate.clone()),
-                fn_service(async move |msg: Control<()>| {
-                    if let Control::Stop(Reason::Protocol(err)) = msg {
-                        errs2.borrow_mut().push(err.get_ref().to_string());
-                    }
-                    Ok::<_, ()>(None)
-                }),
-            );
-            let _done = spawn_disp(disp);
-
-            client.write("abc");
-            sleep(Millis(300)).await;
-            if release {
-                gate.notify_and_lock(());
-                assert_eq!(read_exact(&client, 3).await, b"abc"[..]);
-            }
-            sleep(Millis(2200)).await;
-            let stopped = size == 0 && !release;
-            assert_eq!(state.is_active(), !stopped, "{size} {release}");
-            if stopped {
-                let err = MqttProtocolError::violation(
-                    DisconnectReasonCode::ServerBusy,
-                    "Held back packets are not handled within the held timeout",
-                );
-                assert_eq!(&errs.borrow()[..], [err.to_string()]);
-            } else {
-                assert!(errs.borrow().is_empty(), "{size} {release}");
-            }
+            // the rest of a held frame is dispatched in order once the queue
+            // has room
+            gate.notify_and_lock(());
+            assert!(wait_until(|| calls.borrow().len() == data.len()).await);
+            let called: Vec<u8> = calls.borrow().iter().flat_map(|c| c.to_vec()).collect();
+            assert_eq!(&called[..], data.as_bytes(), "{data}");
         }
     }
 
@@ -3127,21 +2909,22 @@ mod tests {
         );
         let _done = spawn_disp(disp);
 
-        client.write("abc");
+        client.write("ab");
         sleep(Millis(50)).await;
         assert_eq!(&calls.borrow()[..], ["a", "b"]);
         assert!(client.read_any().is_empty());
 
-        // the ack completes the pending calls
-        client.write("k");
+        // the ack is read while the queue is full and completes the pending
+        // calls
+        client.write("kc");
         assert_eq!(read_exact(&client, 3).await, b"abc"[..]);
         assert_eq!(&calls.borrow()[..], ["a", "b", "k", "c"]);
     }
 
-    /// Reading pauses once `max_queue` items are held back, held items are
-    /// dispatched before the items read after them
+    /// Reading pauses at the first held item, held items are dispatched
+    /// before the items read after them
     #[ntex::test]
-    async fn held_items_limit() {
+    async fn held_item_pauses_reading() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
 
@@ -3155,7 +2938,7 @@ mod tests {
         );
         let _done = spawn_disp(disp);
 
-        // "c" and "d" are held back, the ack is not read
+        // "c" is held back, "d" and the ack are not read
         client.write("abcdk");
         sleep(Millis(50)).await;
         assert_eq!(&calls.borrow()[..], ["a", "b"]);
@@ -3173,7 +2956,7 @@ mod tests {
     /// Held items are dispatched after a clean read eof
     #[ntex::test]
     async fn held_items_after_read_eof() {
-        // below and at the held items limit, eof with the data or later
+        // one or two items after the held item, eof with the data or later
         for (data, delay) in [("abc", 0), ("abcd", 0), ("abc", 20), ("abcd", 20)] {
             let (client, server) = Io::create();
             client.remote_buffer_cap(1024);
