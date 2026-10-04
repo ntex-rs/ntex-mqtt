@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v3: Round up 1.5 times of the client keep-alive, previously odd keep-alive values
+  closed the connection early
+
 * v3, v5: Release `QoS 2` publish if `send_exactly_once` future is dropped, previously
   PUBREL was never sent and the packet id and in-flight slot leaked
 
