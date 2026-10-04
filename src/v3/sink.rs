@@ -234,10 +234,15 @@ impl PublishBuilder {
         (codec::encode::get_encoded_publish_size(&self.packet) + payload_size) as u32
     }
 
-    #[inline]
     /// Send publish packet with `QoS 0`
-    pub fn send_at_most_once(mut self, payload: Bytes) -> Result<(), SendPacketError> {
-        if self.shared.is_active() {
+    ///
+    /// Waits while an outgoing streaming publish is in progress, packets cannot
+    /// interleave with its payload, and while write backpressure is enabled,
+    /// until the write buffer drains to half of the high watermark.
+    /// Fails with `SendPacketError::Disconnected` if the connection is closed
+    /// or the write timeout of the io expires.
+    pub async fn send_at_most_once(mut self, payload: Bytes) -> Result<(), SendPacketError> {
+        if self.shared.wait_publish_ready().await {
             log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
             self.packet.qos = codec::QoS::AtMostOnce;
             self.packet.payload_size = payload.len() as u32;
@@ -255,8 +260,17 @@ impl PublishBuilder {
     /// `size` is the total payload size, the payload must be sent via returned
     /// `StreamingPayload`. Dropping `StreamingPayload` before the entire payload
     /// is sent terminates the connection.
-    pub fn stream_at_most_once(mut self, size: u32) -> Result<StreamingPayload, SendPacketError> {
-        if self.shared.is_active() {
+    ///
+    /// Waits while an outgoing streaming publish is in progress, packets cannot
+    /// interleave with its payload, and while write backpressure is enabled,
+    /// until the write buffer drains to half of the high watermark.
+    /// Fails with `SendPacketError::Disconnected` if the connection is closed
+    /// or the write timeout of the io expires.
+    pub async fn stream_at_most_once(
+        mut self,
+        size: u32,
+    ) -> Result<StreamingPayload, SendPacketError> {
+        if self.shared.wait_publish_ready().await {
             log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
 
             let stream = StreamingPayload {
@@ -985,7 +999,11 @@ mod tests {
             crate::error::EncodeError::MalformedPacket,
         ));
 
-        let res = sink.publish("a/+").stream_at_most_once(10).map(|_| ());
+        let res = sink
+            .publish("a/+")
+            .stream_at_most_once(10)
+            .await
+            .map(|_| ());
         assert_eq!(res, err);
         assert!(!shared.is_streaming());
 
@@ -997,12 +1015,114 @@ mod tests {
         assert!(sink.is_open());
         sink.publish("a/b")
             .send_at_most_once(Bytes::from_static(b"data"))
+            .await
             .unwrap();
         drop(client);
     }
 
+    /// `QoS 0` publish waiting for the streaming payload fails once the
+    /// connection is closed
+    #[ntex::test]
+    async fn test_at_most_once_streaming_close() {
+        use std::task::Poll;
+
+        use ntex_util::future::lazy;
+
+        for close in 0..3 {
+            let (client, server) = IoTest::create();
+            client.remote_buffer_cap(1024);
+            let io = Io::new(server, SharedCfg::new("test"));
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                codec::Codec::default(),
+                true,
+                Rc::default(),
+            ));
+            shared.set_cap(16);
+            let sink = MqttSink::new(shared.clone());
+
+            let payload = sink.publish("a").stream_at_most_once(4).await.unwrap();
+            let mut send = Box::pin(sink.publish("b").send_at_most_once(Bytes::new()));
+            assert!(lazy(|cx| send.as_mut().poll(cx).is_pending()).await);
+
+            match close {
+                0 => shared.close(),
+                1 => sink.force_close(),
+                _ => drop(payload),
+            }
+            // waiting publish is woken by the close, not by the io shutdown
+            assert_eq!(
+                lazy(|cx| send.as_mut().poll(cx)).await,
+                Poll::Ready(Err(SendPacketError::Disconnected))
+            );
+        }
+    }
+
+    /// `QoS 0` publish waits for write backpressure to be released, and fails
+    /// once the connection is closed
+    #[ntex::test]
+    async fn test_at_most_once_write_backpressure() {
+        use ntex_util::future::lazy;
+        use ntex_util::time::{Millis, timeout};
+
+        for close in 0..3 {
+            let (client, server) = IoTest::create();
+            client.remote_buffer_cap(0);
+            let io = Io::new(server, SharedCfg::new("test"));
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                codec::Codec::default(),
+                true,
+                Rc::default(),
+            ));
+            shared.set_cap(16);
+            let sink = MqttSink::new(shared.clone());
+
+            sink.publish("a")
+                .send_at_most_once(Bytes::from(vec![0u8; 128 * 1024]))
+                .await
+                .unwrap();
+            assert!(lazy(|cx| io.poll_flush(cx, false).is_pending()).await);
+            assert!(io.is_wr_backpressure());
+
+            let mut send = Box::pin(sink.publish("b").send_at_most_once(Bytes::new()));
+            let mut stream = Box::pin(sink.publish("c").stream_at_most_once(2));
+            assert!(lazy(|cx| send.as_mut().poll(cx).is_pending()).await);
+            assert!(lazy(|cx| stream.as_mut().poll(cx).is_pending()).await);
+
+            if close == 0 {
+                client.remote_buffer_cap(1024 * 1024);
+                let _ = client.read().await;
+                timeout(Millis(1000), send).await.unwrap().unwrap();
+                let payload = timeout(Millis(1000), stream).await.unwrap().unwrap();
+                assert!(shared.is_streaming());
+                payload.send(Bytes::from_static(b"ab")).await.unwrap();
+                assert!(!shared.is_streaming());
+            } else {
+                if close == 1 {
+                    sink.force_close();
+                } else {
+                    // the write buffer drains during graceful shutdown
+                    shared.close();
+                    client.remote_buffer_cap(1024 * 1024);
+                    let _ = client.read().await;
+                }
+                assert_eq!(
+                    timeout(Millis(1000), send).await.unwrap(),
+                    Err(SendPacketError::Disconnected)
+                );
+                assert!(matches!(
+                    timeout(Millis(1000), stream).await.unwrap(),
+                    Err(SendPacketError::Disconnected)
+                ));
+            }
+        }
+    }
+
     #[ntex::test]
     async fn test_packets_deferred_while_streaming() {
+        use ntex_util::future::lazy;
+
         let (client, server) = IoTest::create();
         client.remote_buffer_cap(1024);
         let io = Io::new(server, SharedCfg::new("test"));
@@ -1015,7 +1135,7 @@ mod tests {
         shared.set_cap(16);
         let sink = MqttSink::new(shared.clone());
 
-        let stream = sink.publish("a/b").stream_at_most_once(6).unwrap();
+        let stream = sink.publish("a/b").stream_at_most_once(6).await.unwrap();
         stream.send(Bytes::from_static(b"ab")).await.unwrap();
 
         // client keep-alive and dispatcher responses
@@ -1025,11 +1145,9 @@ mod tests {
         };
         io.encode(codec::Encoded::Packet(ack), &shared).unwrap();
 
-        // publish cannot interleave with payload
-        assert_eq!(
-            sink.publish("c").send_at_most_once(Bytes::new()),
-            Err(SendPacketError::Encode(EncodeError::ExpectPayload))
-        );
+        // publish cannot interleave with payload, it waits for the payload
+        let mut qos0 = Box::pin(sink.publish("c").send_at_most_once(Bytes::new()));
+        assert!(lazy(|cx| qos0.as_mut().poll(cx).is_pending()).await);
 
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"\x30\x0b\x00\x03a/bab"));
@@ -1037,6 +1155,7 @@ mod tests {
         // incomplete payload, packets are still deferred
         stream.send(Bytes::from_static(b"cd")).await.unwrap();
         assert!(shared.is_streaming());
+        assert!(lazy(|cx| qos0.as_mut().poll(cx).is_pending()).await);
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"cd"));
 
@@ -1044,6 +1163,11 @@ mod tests {
         assert!(!shared.is_streaming());
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"ef\xc0\x00\x40\x02\x00\x01"));
+
+        // completed payload releases the waiting publish
+        qos0.await.unwrap();
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from_static(b"\x30\x03\x00\x01c"));
 
         // nothing left behind
         assert!(sink.ping());
@@ -1071,7 +1195,7 @@ mod tests {
             shared.set_cap(16);
             let sink = MqttSink::new(shared.clone());
 
-            let stream = sink.publish("a/b").stream_at_most_once(4).unwrap();
+            let stream = sink.publish("a/b").stream_at_most_once(4).await.unwrap();
             stream.send(Bytes::from_static(b"ab")).await.unwrap();
             shared.enable_wr_backpressure();
             let mut chunk = Box::pin(stream.send(Bytes::from_static(b"cd")));
@@ -1108,7 +1232,7 @@ mod tests {
         shared.set_cap(16);
         let sink = MqttSink::new(shared.clone());
 
-        let stream = sink.publish("a/b").stream_at_most_once(4).unwrap();
+        let stream = sink.publish("a/b").stream_at_most_once(4).await.unwrap();
         stream.send(Bytes::from_static(b"ab")).await.unwrap();
         shared.enable_wr_backpressure();
         let mut chunk = pin!(stream.send(Bytes::from_static(b"cd")));

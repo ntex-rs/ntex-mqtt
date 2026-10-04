@@ -1234,6 +1234,7 @@ async fn test_qos2_server_to_client() -> std::io::Result<()> {
 
     sink.publish(ByteString::from_static("trigger"))
         .send_at_most_once(Bytes::new())
+        .await
         .unwrap();
     assert_eq!(wait_released(&released).await, Some(true));
     assert_eq!(
@@ -1269,6 +1270,7 @@ async fn test_qos2_server_to_client() -> std::io::Result<()> {
 
     sink.publish(ByteString::from_static("trigger"))
         .send_at_most_once(Bytes::new())
+        .await
         .unwrap();
     assert_eq!(wait_released(&released).await, Some(true));
     assert_eq!(
@@ -1966,7 +1968,7 @@ async fn test_sink_encoder_error_pub_qos0() {
                     "ssssssssssssssssssssssssssssssssssss".into(),
                 ));
             });
-            let res = builder.send_at_most_once(Bytes::new());
+            let res = builder.send_at_most_once(Bytes::new()).await;
             assert_eq!(
                 res,
                 Err(error::SendPacketError::Encode(
@@ -2538,6 +2540,7 @@ async fn test_sink_ready() -> std::io::Result<()> {
                     assert!(sink.is_ready());
                     sink.publish("/test")
                         .send_at_most_once(Bytes::from_static(b"body"))
+                        .await
                         .unwrap();
                 });
 
@@ -3221,6 +3224,7 @@ async fn test_streaming_waiter_peer_gone() {
                     let stream = sink
                         .publish("test")
                         .stream_at_most_once(4000 * 65536)
+                        .await
                         .unwrap();
                     let res = loop {
                         if let Err(e) = stream.send(chunk.clone()).await {
@@ -3377,6 +3381,7 @@ async fn test_client_max_queue_acks() {
                 for _ in 0..COUNT {
                     sink.publish("test")
                         .send_at_most_once(Bytes::new())
+                        .await
                         .unwrap();
                 }
             });
