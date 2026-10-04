@@ -3754,3 +3754,76 @@ async fn test_client_max_queue_bounded_publish() {
     }
     assert_eq!(acked.get(), 2);
 }
+
+#[ntex::test]
+async fn test_subscribe_client_only() {
+    let server_res = Arc::new(Mutex::new(Vec::new()));
+    let server_res2 = server_res.clone();
+    let srv = server::test_server(async move || {
+        let server_res = server_res2.clone();
+        MqttServer::new(move |ses: &Session<St>| {
+            let sink = ses.sink().clone();
+            let server_res = server_res.clone();
+            async move {
+                // MQTT 5.0, 3.8 and 3.10: a server does not send SUBSCRIBE or UNSUBSCRIBE
+                let res = sink
+                    .subscribe(None)
+                    .topic_filter("a".into(), codec::SubscriptionOptions::default())
+                    .send()
+                    .await
+                    .map(|_| ());
+                server_res.lock().unwrap().push(res);
+                let res = sink
+                    .unsubscribe()
+                    .topic_filter("a".into())
+                    .send()
+                    .await
+                    .map(|_| ());
+                server_res.lock().unwrap().push(res);
+                Ok::<_, Infallible>(fn_service(async move |p: Publish| {
+                    Ok::<_, TestError>(p.ack())
+                }))
+            }
+        })
+        .protocol(async move |msg| match msg {
+            ProtocolMessage::Subscribe(mut msg) => {
+                for mut sub in &mut msg {
+                    sub.subscribe(codec::QoS::AtLeastOnce);
+                }
+                Ok::<_, TestError>(msg.ack())
+            }
+            msg => Ok(msg.ack()),
+        })
+        .build(connect)
+    });
+
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap();
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    let ack = sink
+        .subscribe(None)
+        .topic_filter("a".into(), codec::SubscriptionOptions::default())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ack.status, vec![codec::SubscribeAckReason::GrantedQos1]);
+    let ack = sink
+        .unsubscribe()
+        .topic_filter("a".into())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ack.status, vec![codec::UnsubscribeAckReason::Success]);
+
+    assert_eq!(
+        &server_res.lock().unwrap()[..],
+        [
+            Err(error::SendPacketError::NotAllowed),
+            Err(error::SendPacketError::NotAllowed)
+        ]
+    );
+}

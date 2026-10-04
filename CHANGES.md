@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Server sink does not send SUBSCRIBE and UNSUBSCRIBE packets, these are client
+  packets, the builders' `send()` returns the new `SendPacketError::NotAllowed` error
+
 * v3, v5: Client returns a protocol error for a payload chunk without a pending publish,
   such as the chunks of a rejected streaming publish, instead of panicking
 

@@ -130,6 +130,7 @@ where
             })?;
 
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, pool));
+        shared.set_client();
         match packet {
             Decoded::Packet(Packet::ConnectAck(pkt), ..) => {
                 log::trace!("Connect ack response from server: {pkt:#?}");
