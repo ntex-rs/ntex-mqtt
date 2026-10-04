@@ -140,7 +140,7 @@ where
                         shared,
                         pkt.session_present,
                         Seconds(keepalive_timeout),
-                        cfg.max_receive as usize,
+                        cfg.max_receive,
                         cfg.max_payload_buffer_size,
                     ))
                 } else {

@@ -167,7 +167,9 @@ impl MqttServiceConfig {
     /// Number of in-flight incoming publish packets. By default receive max is set
     /// to 16 packets.
     ///
-    /// For MQTT v3, `0` disables the limit. For MQTT v5, `0` means the protocol
+    /// For MQTT v3, publish packets over the limit wait for a slot in the order
+    /// of arrival, other packets such as acks and pings are still processed.
+    /// `0` disables the limit. For MQTT v5, `0` means the protocol
     /// default of 65535 packets.
     pub fn set_max_receive(mut self, val: u16) -> Self {
         self.max_receive = val;

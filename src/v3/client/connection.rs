@@ -20,7 +20,7 @@ pub struct Client {
     shared: Rc<MqttShared>,
     keepalive: Seconds,
     session_present: bool,
-    max_receive: usize,
+    max_receive: u16,
     max_buffer_size: usize,
 }
 
@@ -41,7 +41,7 @@ impl Client {
         shared: Rc<MqttShared>,
         session_present: bool,
         keepalive: Seconds,
-        max_receive: usize,
+        max_receive: u16,
         max_buffer_size: usize,
     ) -> Self {
         Client {
@@ -209,7 +209,7 @@ pub struct ClientRouter<Err, PErr> {
     io: IoBoxed,
     shared: Rc<MqttShared>,
     keepalive: Seconds,
-    max_receive: usize,
+    max_receive: u16,
     max_buffer_size: usize,
     _t: PhantomData<Err>,
 }

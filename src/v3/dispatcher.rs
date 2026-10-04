@@ -76,6 +76,21 @@ impl crate::inflight::SizedRequest for Decoded {
             Decoded::Packet(..) => false,
         }
     }
+
+    /// `max_receive` limits incoming publish packets only, acks and pings
+    /// are processed while publish handlers wait for them
+    fn is_limited(&self) -> bool {
+        matches!(self, Decoded::Publish(..))
+    }
+
+    /// Payload chunks follow their publish, publishes received before
+    /// DISCONNECT are processed before it
+    fn is_ordered(&self) -> bool {
+        matches!(
+            self,
+            Decoded::PayloadChunk(..) | Decoded::Packet(Packet::Disconnect, _)
+        )
+    }
 }
 
 /// Mqtt protocol dispatcher
@@ -1156,6 +1171,42 @@ mod tests {
         assert!(Decoded::PayloadChunk(Bytes::from_static(b"c"), false).has_more_chunks());
         assert!(!Decoded::PayloadChunk(Bytes::from_static(b"de"), true).has_more_chunks());
         assert!(!Decoded::Packet(codec::Packet::PingRequest, 2).has_more_chunks());
+    }
+
+    #[test]
+    fn test_inflight_kind() {
+        use crate::inflight::SizedRequest;
+
+        let id = NonZeroU16::new(1).unwrap();
+        let publish = Decoded::Publish(
+            codec::Publish {
+                dup: false,
+                retain: false,
+                qos: QoS::AtMostOnce,
+                topic: ByteString::new(),
+                packet_id: None,
+                payload_size: 0,
+            },
+            Bytes::new(),
+            10,
+        );
+        assert!(publish.is_limited() && !publish.is_ordered());
+
+        let chunk = Decoded::PayloadChunk(Bytes::from_static(b"c"), false);
+        assert!(!chunk.is_limited() && chunk.is_ordered());
+        let disconnect = Decoded::Packet(Packet::Disconnect, 2);
+        assert!(!disconnect.is_limited() && disconnect.is_ordered());
+
+        for pkt in [
+            Packet::PingRequest,
+            Packet::PublishAck { packet_id: id },
+            Packet::PublishReceived { packet_id: id },
+            Packet::PublishRelease { packet_id: id },
+            Packet::PublishComplete { packet_id: id },
+        ] {
+            let pkt = Decoded::Packet(pkt, 2);
+            assert!(!pkt.is_limited() && !pkt.is_ordered(), "{pkt:?}");
+        }
     }
 
     fn assert_unexpected<E: std::fmt::Debug>(

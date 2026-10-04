@@ -1,10 +1,11 @@
 use std::{cell::Cell, cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
 use ntex_service::{Ctx, Service};
+use ntex_util::HashMap;
 use ntex_util::future::{Either, join};
-use ntex_util::{HashMap, services::inflight::InFlightService};
 
 use crate::error::{DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
+use crate::inflight::InFlightServiceImpl;
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::types::packet_type;
 use crate::v3::codec::{self, Decoded, Encoded, Packet};
@@ -16,7 +17,7 @@ use super::control::{ProtocolMessage, ProtocolMessageAck};
 /// mqtt3 protocol dispatcher
 pub(super) fn create_dispatcher<St, T, C, E>(
     sink: Rc<MqttShared>,
-    inflight: usize,
+    inflight: u16,
     max_buffer_size: usize,
     publish: T,
     control: C,
@@ -27,9 +28,10 @@ where
     T: Service<Session<St>, Publish, Res = Either<(), Publish>, Error = E> + 'static,
     C: Service<Session<St>, ProtocolMessage, Res = ProtocolMessageAck, Error = E> + 'static,
 {
-    // limit number of in-flight messages
-    InFlightService::new(
+    // limit number of in-flight publish messages
+    InFlightServiceImpl::new(
         inflight,
+        0,
         Dispatcher::new(
             sink,
             publish,

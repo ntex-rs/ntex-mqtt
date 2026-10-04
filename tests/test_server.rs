@@ -970,6 +970,241 @@ async fn test_ping() -> std::io::Result<()> {
     Ok(())
 }
 
+fn qos1_publish(topic: &'static str, id: u16) -> Encoded {
+    Encoded::Publish(
+        codec::Publish {
+            dup: false,
+            retain: false,
+            qos: codec::QoS::AtLeastOnce,
+            topic: ByteString::from_static(topic),
+            packet_id: NonZeroU16::new(id),
+            payload_size: 0,
+        },
+        None,
+    )
+}
+
+async fn recv_pkt(io: &ntex::io::Io, codec: &codec::Codec) -> Decoded {
+    ntex::time::timeout(Millis(2000), io.recv(codec))
+        .await
+        .expect("packet is not received")
+        .unwrap()
+        .unwrap()
+}
+
+#[ntex::test]
+async fn test_max_receive_publish_only() -> std::io::Result<()> {
+    // publish handler waits for the ack of its own publish, the limit
+    // of in-flight publishes must not block acks and pings
+    let srv = server::TestServerBuilder::new(async || {
+        MqttServer::new(async |ses: &Session<St>| {
+            let sink = ses.sink().clone();
+            Ok::<_, Infallible>(fn_service(async move |_: Publish| {
+                sink.publish("echo")
+                    .send_at_least_once(Bytes::new())
+                    .await
+                    .unwrap();
+                Ok::<_, TestError>(())
+            }))
+        })
+        .build(connect)
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_receive(1)))
+    .start();
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
+        &codec,
+    )
+    .await
+    .unwrap();
+    recv_pkt(&io, &codec).await;
+
+    io.send(qos1_publish("test", 1), &codec).await.unwrap();
+    io.send(qos1_publish("test", 2), &codec).await.unwrap();
+    let Decoded::Publish(pkt, ..) = recv_pkt(&io, &codec).await else {
+        panic!()
+    };
+    let echo1 = pkt.packet_id.unwrap();
+
+    // ping is processed while the limit is reached, the second publish waits
+    io.send(Encoded::Packet(Packet::PingRequest), &codec)
+        .await
+        .unwrap();
+    assert_eq!(
+        recv_pkt(&io, &codec).await,
+        Decoded::Packet(Packet::PingResponse, 0)
+    );
+
+    io.send(
+        Encoded::Packet(Packet::PublishAck { packet_id: echo1 }),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let id = NonZeroU16::new(1).unwrap();
+    assert_eq!(
+        recv_pkt(&io, &codec).await,
+        Decoded::Packet(Packet::PublishAck { packet_id: id }, 2)
+    );
+    let Decoded::Publish(pkt, ..) = recv_pkt(&io, &codec).await else {
+        panic!()
+    };
+    let echo2 = pkt.packet_id.unwrap();
+
+    io.send(
+        Encoded::Packet(Packet::PublishAck { packet_id: echo2 }),
+        &codec,
+    )
+    .await
+    .unwrap();
+    let id = NonZeroU16::new(2).unwrap();
+    assert_eq!(
+        recv_pkt(&io, &codec).await,
+        Decoded::Packet(Packet::PublishAck { packet_id: id }, 2)
+    );
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_max_receive_disconnect_order() -> std::io::Result<()> {
+    // publishes that wait for a slot are passed to the handler before
+    // DISCONNECT is processed, as without the limit
+    let handled = Arc::new(Mutex::new(Vec::new()));
+    let handled2 = handled.clone();
+    let srv = server::TestServerBuilder::new(async move || {
+        let handled = handled2.clone();
+        MqttServer::new(async move |_: &Session<St>| {
+            let handled = handled.clone();
+            Ok::<_, Infallible>(fn_service(async move |p: Publish| {
+                handled.lock().unwrap().push(p.id().unwrap().get());
+                sleep(Millis(50)).await;
+                Ok::<_, TestError>(())
+            }))
+        })
+        .build(connect)
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_receive(1)))
+    .start();
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
+        &codec,
+    )
+    .await
+    .unwrap();
+    recv_pkt(&io, &codec).await;
+
+    io.send(qos1_publish("test", 1), &codec).await.unwrap();
+    io.send(qos1_publish("test", 2), &codec).await.unwrap();
+    io.send(Encoded::Packet(Packet::Disconnect), &codec)
+        .await
+        .unwrap();
+    for _ in 0..50 {
+        if handled.lock().unwrap().len() == 2 {
+            break;
+        }
+        sleep(Millis(10)).await;
+    }
+    assert_eq!(*handled.lock().unwrap(), [1, 2]);
+
+    Ok(())
+}
+
+#[ntex::test]
+async fn test_client_max_receive_publish_only() -> std::io::Result<()> {
+    // client publish handler reads the streamed payload and waits
+    // for the ack of its own publish
+    for max_receive in [1, 0] {
+        let result = Arc::new(Mutex::new(None));
+        let result2 = result.clone();
+        let srv = server::test_server(async move || {
+            let result = result2.clone();
+            MqttServer::new(async move |ses: &Session<St>| {
+                let sink = ses.sink().clone();
+                let result = result.clone();
+                Ok::<_, Infallible>(fn_service(async move |p: Publish| {
+                    if p.topic().path() == "trigger" {
+                        let sink = sink.clone();
+                        let result = result.clone();
+                        ntex::rt::spawn(async move {
+                            let res = sink
+                                .publish("test")
+                                .send_at_least_once(Bytes::from_static(b"0123456789abcdef"))
+                                .await;
+                            *result.lock().unwrap() = Some(res.is_ok());
+                        });
+                    }
+                    Ok::<_, TestError>(())
+                }))
+            })
+            .build(connect)
+        });
+
+        let client = Pipeline::new(
+            SharedCfg::new("MQTT")
+                .add(
+                    MqttServiceConfig::new()
+                        .set_max_receive(max_receive)
+                        .set_min_chunk_size(4),
+                )
+                .build(),
+            client::MqttConnector::new(),
+        )
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap();
+        let sink = client.sink();
+        let sink2 = sink.clone();
+        ntex::rt::spawn(
+            client
+                .resource(
+                    "test",
+                    fn_service(move |p: Publish| {
+                        let sink = sink2.clone();
+                        async move {
+                            // payload is streamed in chunks
+                            assert_eq!(&p.read_all().await.unwrap()[..], b"0123456789abcdef");
+                            sink.publish("echo")
+                                .send_at_least_once(Bytes::new())
+                                .await
+                                .unwrap();
+                            Ok::<_, TestError>(())
+                        }
+                    }),
+                )
+                .start_default(),
+        );
+
+        sink.publish("trigger")
+            .send_at_most_once(Bytes::new())
+            .unwrap();
+        for _ in 0..100 {
+            if result.lock().unwrap().is_some() {
+                break;
+            }
+            sleep(Millis(10)).await;
+        }
+        assert_eq!(
+            result.lock().unwrap().take(),
+            Some(true),
+            "max_receive {max_receive}"
+        );
+        sink.close();
+    }
+
+    Ok(())
+}
+
 #[ntex::test]
 async fn test_unexpected_packet() -> std::io::Result<()> {
     let connect_pkt = || {
