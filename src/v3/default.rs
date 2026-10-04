@@ -57,9 +57,10 @@ impl<St, E> Service<St, ProtocolMessage> for DefaultProtoSrv<E> {
 }
 
 #[derive(Copy, Clone, Debug)]
-/// Service that can limit number of in-flight async requests.
+/// Service that limits in-flight incoming packets.
 ///
-/// Default is 16 in-flight messages and 64kb size
+/// Limits the number of in-flight publish packets (`max_receive`, default 16)
+/// and the total size of in-flight packets (`max_receive_size`, default 64kb)
 pub struct InFlightService;
 
 impl<S, AppSt> Middleware<S, Session<AppSt>> for InFlightService {

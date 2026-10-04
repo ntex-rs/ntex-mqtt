@@ -2,6 +2,12 @@
 
 ## [9.1.0] - Unreleased
 
+* v3: `max_receive` limits incoming PUBLISH packets only, publishes over the limit wait
+  for a slot while acks, pings and other packets are still read, previously a publish
+  handler that awaited the ack of its own publish deadlocked at the limit. The v3 client
+  no longer blocks the payload chunks of a streaming publish, and `0` disables its limit
+  instead of blocking every packet
+
 * v5: Receive Maximum counts `QoS 1` and `QoS 2` PUBLISH packets only, pending SUBSCRIBE and
   UNSUBSCRIBE packets no longer use send credit or cause a false 0x93 disconnect, and
   SUBSCRIBE/UNSUBSCRIBE wait for io write backpressure only (`IoRef::write_ready()`)

@@ -78,6 +78,17 @@ impl crate::inflight::SizedRequest for Decoded {
             Decoded::Packet(..) => false,
         }
     }
+
+    fn is_limited(&self) -> bool {
+        matches!(self, Decoded::Publish(..))
+    }
+
+    fn is_ordered(&self) -> bool {
+        matches!(
+            self,
+            Decoded::PayloadChunk(..) | Decoded::Packet(Packet::Disconnect(_), _)
+        )
+    }
 }
 
 /// Mqtt protocol dispatcher
@@ -1215,6 +1226,20 @@ mod tests {
         assert!(Decoded::PayloadChunk(Bytes::from_static(b"c"), false).has_more_chunks());
         assert!(!Decoded::PayloadChunk(Bytes::from_static(b"de"), true).has_more_chunks());
         assert!(!Decoded::Packet(codec::Packet::PingRequest, 2).has_more_chunks());
+    }
+
+    #[test]
+    fn test_inflight_kind() {
+        use crate::inflight::SizedRequest;
+
+        let publish = Decoded::Publish(codec::Publish::default(), Bytes::new(), 10);
+        assert!(publish.is_limited() && !publish.is_ordered());
+        let chunk = Decoded::PayloadChunk(Bytes::from_static(b"c"), true);
+        assert!(!chunk.is_limited() && chunk.is_ordered());
+        let disconnect = Decoded::Packet(Packet::Disconnect(codec::Disconnect::default()), 2);
+        assert!(!disconnect.is_limited() && disconnect.is_ordered());
+        let ping = Decoded::Packet(Packet::PingRequest, 2);
+        assert!(!ping.is_limited() && !ping.is_ordered());
     }
 
     fn qos2_dispatcher(
