@@ -55,9 +55,19 @@ impl fmt::Debug for MqttShared {
 pub(super) struct MqttSharedQueues {
     inflight: VecDeque<(num::NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
     inflight_ids: HashSet<num::NonZeroU16>,
+    // SUBSCRIBE and UNSUBSCRIBE packets in `inflight`
+    subscribes: usize,
     waiters: VecDeque<pool::Sender<()>>,
     // PUBCOMP receivers, one per QoS 2 PUBLISH awaiting release
     rx: HashMap<num::NonZeroU16, pool::Receiver<Ack>>,
+}
+
+impl MqttSharedQueues {
+    /// In-flight `QoS 1` and `QoS 2` PUBLISH packets, Receive Maximum counts
+    /// PUBLISH packets only [MQTT-4.9.0-2]
+    fn publishes(&self) -> usize {
+        self.inflight.len() - self.subscribes
+    }
 }
 
 pub(super) struct MqttSinkPool {
@@ -84,6 +94,7 @@ impl MqttShared {
             queues: RefCell::new(MqttSharedQueues {
                 inflight: VecDeque::with_capacity(8),
                 inflight_ids: HashSet::default(),
+                subscribes: 0,
                 waiters: VecDeque::new(),
                 rx: HashMap::default(),
             }),
@@ -107,7 +118,7 @@ impl MqttShared {
     pub(super) fn credit(&self) -> usize {
         self.cap
             .get()
-            .saturating_sub(self.queues.borrow().inflight.len())
+            .saturating_sub(self.queues.borrow().publishes())
     }
 
     pub(super) fn receive_max(&self) -> u16 {
@@ -290,6 +301,7 @@ impl MqttShared {
     fn clear_queues(&self) {
         let mut queues = self.queues.borrow_mut();
         queues.waiters.clear();
+        queues.subscribes = 0;
 
         if let Some(cb) = self.on_publish_ack.take() {
             for (idx, tx, _) in queues.inflight.drain(..) {
@@ -328,8 +340,8 @@ impl MqttShared {
 
         // check if there are waiters
         let mut queues = self.queues.borrow_mut();
-        if queues.inflight.len() < self.cap.get() {
-            let mut num = self.cap.get() - queues.inflight.len();
+        if queues.publishes() < self.cap.get() {
+            let mut num = self.cap.get() - queues.publishes();
             while num > 0 {
                 if let Some(tx) = queues.waiters.pop_front() {
                     if tx.send(()).is_ok() {
@@ -424,6 +436,9 @@ impl MqttShared {
 
         // check ack order
         if let Some((idx, tx, tp)) = queues.inflight.pop_front() {
+            if matches!(tp, AckType::Subscribe | AckType::Unsubscribe) {
+                queues.subscribes -= 1;
+            }
             if idx != pkt.packet_id() {
                 log::trace!(
                     "MQTT protocol error, packet_id order does not match, expected {}, got: {}",
@@ -546,6 +561,9 @@ impl MqttShared {
             let (tx, rx) = self.pool.queue.channel();
             queues.inflight.push_back((id, Some(tx), ack));
             queues.inflight_ids.insert(id);
+            if matches!(ack, AckType::Subscribe | AckType::Unsubscribe) {
+                queues.subscribes += 1;
+            }
             Ok(rx)
         }
     }
@@ -607,13 +625,27 @@ impl MqttShared {
     pub(super) fn wait_readiness(&self) -> Option<pool::Receiver<()>> {
         let mut queues = self.queues.borrow_mut();
 
-        if queues.inflight.len() >= self.cap.get() || self.flags.get().contains(Flags::WRB_ENABLED)
-        {
+        if queues.publishes() >= self.cap.get() || self.flags.get().contains(Flags::WRB_ENABLED) {
             let (tx, rx) = self.pool.waiters.channel();
             queues.waiters.push_back(tx);
             Some(rx)
         } else {
             None
+        }
+    }
+
+    /// Wait for write backpressure only
+    ///
+    /// Receive Maximum limits `QoS 1` and `QoS 2` PUBLISH packets only
+    /// [MQTT-4.9.0-2], SUBSCRIBE and UNSUBSCRIBE do not wait for send credit.
+    /// The io write task wakes waiters directly, a write timeout is reported
+    /// as disconnect. Backpressure can be released while the io is closing,
+    /// a packet registered after `clear_queues` would never be acked.
+    pub(super) async fn wait_wr_readiness(&self) -> Result<(), SendPacketError> {
+        if self.io.write_ready().await.is_ok() && self.is_active() {
+            Ok(())
+        } else {
+            Err(SendPacketError::Disconnected)
         }
     }
 

@@ -98,6 +98,8 @@ struct Inner<C> {
 
 struct PublishInfo {
     inflight: HashMap<num::NonZeroU16, InFlight>,
+    // SUBSCRIBE and UNSUBSCRIBE packets in `inflight`
+    subscribes: usize,
     aliases: HashMap<num::NonZeroU16, ByteString>,
 }
 
@@ -119,9 +121,25 @@ impl PublishInfo {
             hash_map::Entry::Occupied(_) => false,
             hash_map::Entry::Vacant(entry) => {
                 entry.insert(state);
+                if state == InFlight::Subscribe {
+                    self.subscribes += 1;
+                }
                 true
             }
         }
+    }
+
+    /// Releases the packet id
+    fn remove_inflight(&mut self, packet_id: num::NonZeroU16) {
+        if self.inflight.remove(&packet_id) == Some(InFlight::Subscribe) {
+            self.subscribes -= 1;
+        }
+    }
+
+    /// In-flight `QoS 1` and `QoS 2` PUBLISH packets, Receive Maximum counts
+    /// PUBLISH packets only [MQTT-4.9.0-2]
+    fn publishes(&self) -> usize {
+        self.inflight.len() - self.subscribes
     }
 }
 
@@ -141,6 +159,7 @@ where
                 info: RefCell::new(PublishInfo {
                     aliases: HashMap::default(),
                     inflight: HashMap::default(),
+                    subscribes: 0,
                 }),
             },
             discard_payload: Cell::new(false),
@@ -260,13 +279,13 @@ where
                         let receive_max = state.receive_max();
                         if redelivered.is_none()
                             && receive_max != 0
-                            && inner.inflight.len() >= receive_max as usize
+                            && inner.publishes() >= receive_max as usize
                         {
                             log::trace!(
                                 "{}: Receive maximum exceeded: max: {} in-flight: {}",
                                 self.tag(),
                                 receive_max,
-                                inner.inflight.len()
+                                inner.publishes()
                             );
                             return Err(SpecViolation::Pub_3_3_4_7.into());
                         }
@@ -628,7 +647,7 @@ impl<C> Inner<C> {
         let result = match ctx.call(&self.control, pkt).await {
             Ok(result) => {
                 if let Some(id) = num::NonZeroU16::new(packet_id) {
-                    self.info.borrow_mut().inflight.remove(&id);
+                    self.info.borrow_mut().remove_inflight(id);
                 }
                 result
             }
@@ -700,7 +719,7 @@ where
                     .insert(id, InFlight::Received);
             } else {
                 // PUBREC with error code completes the flow [MQTT-4.3.3-9]
-                inner.info.borrow_mut().inflight.remove(&id);
+                inner.info.borrow_mut().remove_inflight(id);
             }
             codec::Packet::PublishReceived(codec::PublishAck {
                 packet_id: id,
@@ -709,7 +728,7 @@ where
                 properties: ack.properties,
             })
         } else {
-            inner.info.borrow_mut().inflight.remove(&id);
+            inner.info.borrow_mut().remove_inflight(id);
             codec::Packet::PublishAck(codec::PublishAck {
                 packet_id: id,
                 reason_code: ack.reason_code,
@@ -1235,7 +1254,15 @@ mod tests {
                     if matches!(msg, ProtocolMessage::PublishRelease(_)) {
                         pubrel_calls.set(pubrel_calls.get() + 1);
                     }
-                    async move { Ok::<_, DispatcherError<TestError>>(msg.ack()) }
+                    async move {
+                        if matches!(
+                            msg,
+                            ProtocolMessage::Subscribe(_) | ProtocolMessage::Unsubscribe(_)
+                        ) {
+                            sleep(Millis(100)).await;
+                        }
+                        Ok::<_, DispatcherError<TestError>>(msg.ack())
+                    }
                 }),
                 cfg.get(),
             ),
@@ -1326,6 +1353,73 @@ mod tests {
         let res = disp.call(pubrel(3)).await;
         assert_eq!(res.unwrap(), Some(pubcomp(3, Ack2::PacketIdNotFound)));
         assert_eq!(pubrel_calls.get(), 1);
+    }
+
+    /// Receive Maximum counts `QoS 1` and `QoS 2` PUBLISH packets only [MQTT-4.9.0-2]
+    #[ntex::test]
+    async fn test_receive_max_subscribe() {
+        let (_io, disp) = qos2_dispatcher(Rc::default(), Rc::default(), 1);
+        let receive_max_exceeded = |res: Result<Option<Encoded>, DispatcherError<TestError>>| {
+            matches!(
+                res,
+                Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(ref err)))
+                    if err.inner == error::ViolationInner::Spec(SpecViolation::Pub_3_3_4_7)
+            )
+        };
+
+        // SUBSCRIBE and UNSUBSCRIBE are processed by the control service
+        let mut sub = Box::pin(disp.call(Decoded::Packet(
+            Packet::Subscribe(codec::Subscribe {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                id: None,
+                user_properties: codec::UserProperties::default(),
+                topic_filters: vec![(
+                    ByteString::from_static("a"),
+                    codec::SubscriptionOptions::default(),
+                )],
+            }),
+            999,
+        )));
+        let mut unsub = Box::pin(disp.call(Decoded::Packet(
+            Packet::Unsubscribe(codec::Unsubscribe {
+                packet_id: NonZeroU16::new(2).unwrap(),
+                user_properties: codec::UserProperties::default(),
+                topic_filters: vec![ByteString::from_static("a")],
+            }),
+            999,
+        )));
+        assert!(lazy(|cx| Pin::new(&mut sub).poll(cx)).await.is_pending());
+        assert!(lazy(|cx| Pin::new(&mut unsub).poll(cx)).await.is_pending());
+
+        let res = disp.call(qos_publish(3, QoS::AtLeastOnce, "test")).await;
+        assert_eq!(
+            res.unwrap(),
+            Some(ack(3, false, codec::PublishAckReason::Success))
+        );
+
+        // PUBLISH packets are still limited
+        let mut f = Box::pin(disp.call(qos_publish(4, QoS::AtLeastOnce, "slow")));
+        assert!(lazy(|cx| Pin::new(&mut f).poll(cx)).await.is_pending());
+        let res = disp.call(qos_publish(5, QoS::AtLeastOnce, "test")).await;
+        assert!(receive_max_exceeded(res));
+
+        assert!(matches!(
+            sub.await.unwrap(),
+            Some(Encoded::Packet(Packet::SubscribeAck(_)))
+        ));
+        assert!(matches!(
+            unsub.await.unwrap(),
+            Some(Encoded::Packet(Packet::UnsubscribeAck(_)))
+        ));
+        assert_eq!(
+            f.await.unwrap(),
+            Some(ack(4, false, codec::PublishAckReason::Success))
+        );
+        let res = disp.call(qos_publish(5, QoS::AtLeastOnce, "test")).await;
+        assert_eq!(
+            res.unwrap(),
+            Some(ack(5, false, codec::PublishAckReason::Success))
+        );
     }
 
     #[ntex::test]
