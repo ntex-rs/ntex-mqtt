@@ -4,7 +4,7 @@ use ntex_bytes::ByteString;
 use ntex_service::{Ctx, Service, cfg::Cfg};
 use ntex_util::{HashMap, future::Either, future::join, hash_map};
 
-use crate::error::{DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
+use crate::error::{DecodeError, DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
 use crate::v5::codec::{Decoded, DisconnectReasonCode, Encoded, Packet};
 use crate::v5::shared::{Ack, MqttShared};
@@ -275,16 +275,19 @@ where
                     if eof {
                         self.discard_payload.set(false);
                     }
-                } else {
-                    let pl = self.inner.sink.payload.take().unwrap();
+                    Ok(None)
+                } else if let Some(pl) = self.inner.sink.payload.take() {
                     pl.feed_data(buf);
                     if eof {
                         pl.feed_eof();
                     } else {
                         self.inner.sink.payload.set(Some(pl));
                     }
+                    Ok(None)
+                } else {
+                    // the publish of the chunk failed, the connection is closing
+                    Err(MqttProtocolError::Decode(DecodeError::UnexpectedPayload).into())
                 }
-                Ok(None)
             }
             Decoded::Packet(Packet::PublishAck(pkt), ..) => {
                 if let Err(e) = self.inner.sink.pkt_ack(Ack::Publish(pkt)) {
@@ -791,6 +794,32 @@ mod tests {
             Bytes::from_static(b"abc"),
             999,
         )
+    }
+
+    /// Chunks of a failed publish are a protocol error, not a panic
+    #[ntex::test]
+    async fn test_unexpected_payload_chunk() {
+        let unexpected = |res: Result<Option<Encoded>, DispatcherError<()>>| {
+            matches!(
+                res,
+                Err(DispatcherError::Protocol(MqttProtocolError::Decode(
+                    DecodeError::UnexpectedPayload
+                )))
+            )
+        };
+        let chunk = |eof| Decoded::PayloadChunk(Bytes::from_static(b"def"), eof);
+        let (_io, _, disp) = qos2_dispatcher!(Rc::new(Cell::new(0)), Rc::new(Cell::new(0)), 16);
+
+        // the streaming publish is rejected before its payload is set up
+        let Decoded::Publish(mut pkt, payload, size) = redelivery(1, QoS::AtLeastOnce, true) else {
+            unreachable!()
+        };
+        pkt.dup = false;
+        pkt.topic = ByteString::from_static("a/+");
+        let res = disp.call(Decoded::Publish(pkt, payload, size)).await;
+        assert!(matches!(res, Err(DispatcherError::Protocol(_))), "{res:?}");
+        assert!(unexpected(disp.call(chunk(true)).await));
+        assert!(unexpected(disp.call(chunk(false)).await));
     }
 
     #[ntex::test]

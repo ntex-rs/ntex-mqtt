@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Client returns a protocol error for a payload chunk without a pending publish,
+  such as the chunks of a rejected streaming publish, instead of panicking
+
 * v5: Client applies its Receive Maximum to the response queue, `QoS 1` and `QoS 2`
   publishes within the limit are handled while the queue is full as on the server,
   previously these were held back and acks read after them waited
