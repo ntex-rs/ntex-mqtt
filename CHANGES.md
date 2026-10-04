@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Payload chunks do not keep response queue slots, previously each chunk received
+  while the publish handler was pending kept a slot until the publish completed and filled
+  the queue, holding back the packets after the publish
+
 * v3, v5: Payload of a held back streaming publish is read once the publish is dispatched,
   previously the payload chunks were held back while the publish filled the response queue
   and the publish handler waiting for them stalled the connection

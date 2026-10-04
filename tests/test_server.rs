@@ -2487,3 +2487,100 @@ async fn test_held_streaming_publish() {
         );
     }
 }
+
+/// Payload chunks do not keep queue slots while the publish handler is
+/// pending, packets after the publish are dispatched
+#[ntex::test]
+async fn test_streaming_publish_chunk_slots() {
+    // below the receive size limit, reading continues after the payload
+    const SIZE: usize = 16 * 1024;
+
+    let gate = Arc::new(AtomicBool::new(false));
+    let received = Arc::new(AtomicBool::new(false));
+    let (gate2, received2) = (gate.clone(), received.clone());
+    let srv = server::TestServerBuilder::new(async move || {
+        let (gate, received) = (gate2.clone(), received2.clone());
+        MqttServer::new(async move |p: Publish| {
+            if p.packet().payload_size == 1 {
+                received.store(true, Relaxed);
+                return Ok(());
+            }
+            if p.read_all().await.map_err(|_| TestError)?.len() != SIZE {
+                return Err(TestError);
+            }
+            while !gate.load(Relaxed) {
+                sleep(Millis(10)).await;
+            }
+            Ok(())
+        })
+        .build(connect)
+    })
+    .config(
+        SharedCfg::new("MQTT").add(
+            MqttServiceConfig::new()
+                .set_max_queue(2)
+                .set_min_chunk_size(0),
+        ),
+    )
+    .start();
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode(
+        Encoded::Packet(codec::Connect::default().client_id("user").into()),
+        &codec,
+    )
+    .unwrap();
+    let _ = io.recv(&codec).await;
+
+    let publish = |qos, id, payload_size| codec::Publish {
+        dup: false,
+        retain: false,
+        qos,
+        topic: ByteString::from("test"),
+        packet_id: NonZeroU16::new(id),
+        payload_size,
+    };
+
+    // the payload arrives in chunks after the publish is dispatched
+    let mut buf = BytePages::default();
+    let p = Encoded::Publish(
+        publish(codec::QoS::AtLeastOnce, 1, SIZE as u32),
+        Some(Bytes::from(vec![b'*'; SIZE])),
+    );
+    codec.encode(p, &mut buf).unwrap();
+    let mut buf = buf.freeze();
+    io.encode_slice(&buf[..1024]).unwrap();
+    buf.advance_to(1024);
+    io.flush(true).await.unwrap();
+    sleep(Millis(100)).await;
+    io.encode_slice(&buf).unwrap();
+    io.encode(
+        Encoded::Publish(
+            publish(codec::QoS::AtMostOnce, 0, 1),
+            Some(Bytes::from_static(b"1")),
+        ),
+        &codec,
+    )
+    .unwrap();
+    io.flush(true).await.unwrap();
+
+    for _ in 0..100 {
+        if received.load(Relaxed) {
+            break;
+        }
+        sleep(Millis(20)).await;
+    }
+    assert!(received.load(Relaxed));
+
+    gate.store(true, Relaxed);
+    let res = ntex::time::timeout(Seconds(5), io.recv(&codec)).await;
+    assert!(
+        matches!(
+            res,
+            Ok(Ok(Some(Decoded::Packet(Packet::PublishAck { packet_id }, _))))
+                if packet_id.get() == 1
+        ),
+        "{res:?}"
+    );
+}
