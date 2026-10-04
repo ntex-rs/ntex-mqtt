@@ -392,16 +392,106 @@ where
 }
 
 async fn keepalive(sink: MqttSink, timeout: Seconds) {
+    keepalive_interval(sink, Millis::from(timeout)).await;
+}
+
+async fn keepalive_interval(sink: MqttSink, interval: Millis) {
     log::debug!("start mqtt client keep-alive task");
 
-    let keepalive = Millis::from(timeout);
+    let mut blocked = false;
     loop {
-        sleep(keepalive).await;
+        sleep(interval).await;
 
-        if !sink.is_open() || !sink.ping() {
+        if !sink.is_open() {
             // connection is closed
             log::debug!("mqtt client connection is closed, stopping keep-alive task");
             break;
         }
+
+        if sink.is_ping_pending() {
+            // PINGREQ may still wait behind a streaming payload or a full write buffer,
+            // the timeout starts once it can be written
+            if sink.is_write_blocked() {
+                blocked = true;
+                continue;
+            }
+            if blocked {
+                blocked = false;
+                continue;
+            }
+
+            // PINGRESP is not received within the keep-alive interval,
+            // the client closes the connection (MQTT 5.0, 3.1.2.10),
+            // Keep Alive timeout reason code is sent by the server only
+            log::debug!("PINGRESP is not received within {interval:?}, closing connection");
+            sink.close_with_reason(codec::Disconnect {
+                reason_code: codec::DisconnectReasonCode::UnspecifiedError,
+                reason_string: Some(ByteString::from_static("Keep Alive timeout")),
+                ..Default::default()
+            });
+            break;
+        }
+        blocked = false;
+
+        if !sink.ping() {
+            // connection is closed
+            log::debug!("mqtt client connection is closed, stopping keep-alive task");
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex_bytes::Bytes;
+    use ntex_io::{Io, testing::IoTest};
+    use ntex_service::cfg::SharedCfg;
+
+    use super::*;
+
+    const PINGREQ: u8 = 0b1100_0000;
+
+    #[ntex::test]
+    async fn test_pingresp_timeout() {
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::new(),
+            Rc::default(),
+        ));
+        shared.set_client();
+        let sink = MqttSink::new(shared.clone());
+        ntex_util::spawn(keepalive_interval(sink.clone(), Millis(200)));
+
+        // PINGRESP clears pending ping
+        sleep(Millis(300)).await;
+        assert_eq!(client.read().await.unwrap()[0], PINGREQ);
+        assert!(sink.is_ping_pending());
+        shared.set_ping_pending(false);
+
+        // PINGREQ waits behind a streaming payload, the timeout does not start
+        let stream = sink.publish("a").stream_at_most_once(2).unwrap();
+        stream.send(Bytes::from_static(b"a")).await.unwrap();
+        let _ = client.read().await.unwrap();
+        sleep(Millis(400)).await;
+        assert!(sink.is_ping_pending());
+        assert!(sink.is_open());
+
+        // the timeout starts once PINGREQ can be written
+        stream.send(Bytes::from_static(b"b")).await.unwrap();
+        let res = client.read().await.unwrap();
+        assert_eq!(res[res.len() - 2], PINGREQ);
+        sleep(Millis(200)).await;
+        assert!(sink.is_open());
+
+        // PINGRESP is not received, DISCONNECT is sent and the connection is closed
+        sleep(Millis(200)).await;
+        assert!(!sink.is_open());
+        let res = client.read().await.unwrap();
+        assert_eq!(res[0], 0b1110_0000);
+        // Unspecified error reason code
+        assert_eq!(res[2], 0x80);
     }
 }

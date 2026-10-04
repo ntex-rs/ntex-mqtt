@@ -1134,6 +1134,44 @@ async fn test_ping() -> std::io::Result<()> {
     Ok(())
 }
 
+#[ntex::test]
+async fn test_client_keepalive() -> std::io::Result<()> {
+    let pings = Arc::new(Mutex::new(0));
+    let pings2 = pings.clone();
+
+    let srv = server::test_server(async move || {
+        let pings = pings2.clone();
+        MqttServer::new(async |_| Ok::<_, TestError>(()))
+            .protocol(async move |msg| {
+                if let ProtocolMessage::Ping(msg) = msg {
+                    *pings.lock().unwrap() += 1;
+                    Ok::<_, TestError>(msg.ack())
+                } else {
+                    Ok(msg.disconnect())
+                }
+            })
+            .build(connect)
+    });
+
+    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
+        .call(
+            client::Connect::new(srv.addr())
+                .client_id("user")
+                .keep_alive(Seconds(1)),
+        )
+        .await
+        .unwrap();
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    // PINGRESP is received, the client keeps pinging
+    sleep(Duration::from_millis(3500)).await;
+    assert!(sink.is_open());
+    assert!(*pings.lock().unwrap() >= 3);
+
+    Ok(())
+}
+
 fn qos1_publish(topic: &'static str, id: u16) -> Encoded {
     Encoded::Publish(
         codec::Publish {

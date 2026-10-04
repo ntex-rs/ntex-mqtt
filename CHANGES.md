@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Client closes the connection with DISCONNECT when PINGRESP is not received
+  within the keep-alive interval, the interval starts once PINGREQ can be written
+
 * v3, v5: A QoS 2 PUBLISH with a packet id awaiting PUBREL is acked by PUBREC and is not
   delivered whether or not DUP is set, previously a PUBLISH without DUP was a protocol error
 

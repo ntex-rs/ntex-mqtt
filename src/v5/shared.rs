@@ -26,6 +26,7 @@ bitflags::bitflags! {
         const DISCONNECT_RECV = 0b0100_0000; // Disconnect frame is received
         const STOPPED         = 0b1000_0000; // DispatchItem::Stop() is sent
         const CLIENT          = 0b1_0000_0000; // Client side of the connection
+        const PING_PENDING    = 0b10_0000_0000; // PINGREQ is sent, PINGRESP is expected
     }
 }
 
@@ -261,6 +262,22 @@ impl MqttShared {
 
     pub(super) fn is_streaming(&self) -> bool {
         self.streaming_remaining.get().is_some()
+    }
+
+    /// Marks whether PINGREQ is sent and PINGRESP is not received yet
+    pub(super) fn set_ping_pending(&self, pending: bool) {
+        let mut flags = self.flags.get();
+        flags.set(Flags::PING_PENDING, pending);
+        self.flags.set(flags);
+    }
+
+    pub(super) fn is_ping_pending(&self) -> bool {
+        self.flags.get().contains(Flags::PING_PENDING)
+    }
+
+    /// Check if newly encoded packets wait behind a streaming payload or write backpressure
+    pub(super) fn is_write_blocked(&self) -> bool {
+        self.is_streaming() || self.io.is_wr_backpressure()
     }
 
     /// Check if a `QoS 1` or `QoS 2` publish can be sent without waiting
