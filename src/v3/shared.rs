@@ -372,14 +372,22 @@ impl MqttShared {
                 // get publish ack channel
                 log::trace!("Ack packet with id: {}", pkt.packet_id());
 
-                if let Some(tx) = tx {
-                    let _ = tx.send(pkt);
+                if tx.is_none_or(|tx| tx.send(pkt).is_err()) {
+                    // the publish future is dropped, nothing can release the publish,
+                    // PUBREC must be answered with PUBREL (MQTT 3.1.1, 4.3.3)
+                    log::trace!("Release dropped publish with id: {idx}");
+                    let _ = self.io.encode(
+                        Encoded::Packet(codec::Packet::PublishRelease { packet_id: idx }),
+                        self,
+                    );
+                    queues.inflight.push_back((idx, None, AckType::Complete));
+                } else {
+                    let (tx, rx) = self.pool.queue.channel();
+                    queues.rx.insert(idx, rx);
+                    queues
+                        .inflight
+                        .push_back((idx, Some(tx), AckType::Complete));
                 }
-                let (tx, rx) = self.pool.queue.channel();
-                queues.rx.insert(idx, rx);
-                queues
-                    .inflight
-                    .push_back((idx, Some(tx), AckType::Complete));
                 Ok(())
             } else if matches!(pkt, Ack::Complete(_)) {
                 // get publish ack channel

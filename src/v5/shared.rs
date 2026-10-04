@@ -448,14 +448,25 @@ impl MqttShared {
                 log::trace!("Ack packet receive with id: {}", pkt.packet_id());
 
                 if u8::from(ack.reason_code) < 0x80 {
-                    if let Some(tx) = tx {
-                        let _ = tx.send(pkt);
+                    if tx.is_none_or(|tx| tx.send(pkt).is_err()) {
+                        // the publish future is dropped, nothing can release the publish,
+                        // PUBREL must be sent for a PUBREC below 0x80 [MQTT-4.3.3-4]
+                        log::trace!("Release dropped publish with id: {idx}");
+                        let _ = self.io.encode(
+                            Encoded::Packet(Packet::PublishRelease(codec::PublishAck2 {
+                                packet_id: idx,
+                                ..Default::default()
+                            })),
+                            self,
+                        );
+                        queues.inflight.push_back((idx, None, AckType::Complete));
+                    } else {
+                        let (tx, rx) = self.pool.queue.channel();
+                        queues.rx.insert(idx, rx);
+                        queues
+                            .inflight
+                            .push_back((idx, Some(tx), AckType::Complete));
                     }
-                    let (tx, rx) = self.pool.queue.channel();
-                    queues.rx.insert(idx, rx);
-                    queues
-                        .inflight
-                        .push_back((idx, Some(tx), AckType::Complete));
                 } else {
                     // PUBREL is sent only for a PUBREC with a reason code below 0x80
                     // [MQTT-4.3.3-4], a failed PUBREC ends the QoS 2 flow and the packet id

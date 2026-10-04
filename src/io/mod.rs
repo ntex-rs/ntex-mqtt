@@ -1226,19 +1226,27 @@ mod tests {
         assert_eq!(counter.get(), 1);
     }
 
-    struct Ctl(Rc<Cell<bool>>, bool);
+    /// Control service, `busy` makes it not ready until `gate` is opened
+    struct Ctl {
+        busy: Rc<Cell<bool>>,
+        gate: Rc<Cell<bool>>,
+        fail: bool,
+    }
 
     impl Service<(), Control<()>> for Ctl {
         type Res = Option<Bytes>;
         type Error = ();
 
         async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
-            if self.1 {
+            if self.fail {
                 return Err(());
             }
-            if self.0.get() {
-                sleep(Millis(250)).await;
-                self.0.set(false);
+            while self.busy.get() {
+                if self.gate.get() {
+                    self.busy.set(false);
+                } else {
+                    sleep(Millis(5)).await;
+                }
             }
             Ok(())
         }
@@ -1256,31 +1264,50 @@ mod tests {
         client.write("1");
 
         let busy = Rc::new(Cell::new(false));
-        let busy2 = busy.clone();
+        let gate = Rc::new(Cell::new(false));
+        let calls = Rc::new(Cell::new(0));
+        let (busy2, calls2) = (busy.clone(), calls.clone());
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(server, SharedCfg::new("DBG")),
             BytesCodec,
             fn_service(async move |msg: Bytes| {
                 busy2.set(true);
+                calls2.set(calls2.get() + 1);
                 sleep(Millis(50)).await;
                 Ok::<_, DispatcherError<()>>(Some(msg))
             }),
-            Ctl(busy, false),
+            Ctl {
+                busy: busy.clone(),
+                gate: gate.clone(),
+                fail: false,
+            },
         );
         let (tx, rx) = oneshot::channel();
         ntex_util::spawn(async move {
             let _ = tx.send(disp.await);
         });
 
-        let buf = timeout(Millis(150), client.read()).await.unwrap().unwrap();
+        // response is written while control is not ready
+        let buf = timeout(Millis(5_000), client.read())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(buf, Bytes::from_static(b"1"));
+        assert!(busy.get());
 
         // reading is paused until control is ready
         client.write("2");
         sleep(Millis(50)).await;
         assert_eq!(client.read_any(), Bytes::new());
-        let buf = client.read().await.unwrap();
+        assert_eq!(calls.get(), 1);
+
+        gate.set(true);
+        let buf = timeout(Millis(5_000), client.read())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(buf, Bytes::from_static(b"2"));
+        assert_eq!(calls.get(), 2);
 
         client.close().await;
         assert_eq!(rx.await.unwrap(), Ok(()));
@@ -1297,7 +1324,11 @@ mod tests {
             nio::Io::new(server, SharedCfg::new("DBG")),
             BytesCodec,
             fn_service(async move |msg: Bytes| Ok::<_, DispatcherError<()>>(Some(msg))),
-            Ctl(Rc::new(Cell::new(false)), true),
+            Ctl {
+                busy: Rc::default(),
+                gate: Rc::default(),
+                fail: true,
+            },
         );
         let res = timeout(Millis(500), disp).await.unwrap();
         assert_eq!(res, Err(()));
