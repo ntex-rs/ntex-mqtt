@@ -1209,6 +1209,84 @@ mod tests {
         }
     }
 
+    #[ntex::test]
+    async fn test_queue_limited() {
+        use crate::io::{FrameState, QueueLimit};
+
+        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
+        let shared = MqttShared::new(io.get_ref(), codec::Codec::default(), false, Rc::default());
+        let id = NonZeroU16::new(1).unwrap();
+
+        // acks and pings are dispatched while the response queue is full
+        for pkt in [
+            Packet::PublishAck { packet_id: id },
+            Packet::PublishReceived { packet_id: id },
+            Packet::PublishRelease { packet_id: id },
+            Packet::PublishComplete { packet_id: id },
+            Packet::SubscribeAck {
+                packet_id: id,
+                status: vec![],
+            },
+            Packet::UnsubscribeAck { packet_id: id },
+            Packet::PingRequest,
+            Packet::PingResponse,
+        ] {
+            let pkt = Decoded::Packet(pkt, 2);
+            assert_eq!(shared.queue_limit(&pkt), QueueLimit::Bypass, "{pkt:?}");
+        }
+
+        for pkt in [
+            Decoded::Publish(
+                codec::Publish {
+                    dup: false,
+                    retain: false,
+                    qos: QoS::AtLeastOnce,
+                    topic: ByteString::new(),
+                    packet_id: Some(id),
+                    payload_size: 0,
+                },
+                Bytes::new(),
+                10,
+            ),
+            Decoded::PayloadChunk(Bytes::from_static(b"c"), false),
+            Decoded::Packet(Packet::Disconnect, 2),
+            Decoded::Packet(
+                Packet::Subscribe {
+                    packet_id: id,
+                    topic_filters: vec![],
+                },
+                2,
+            ),
+            Decoded::Packet(
+                Packet::Unsubscribe {
+                    packet_id: id,
+                    topic_filters: vec![],
+                },
+                2,
+            ),
+        ] {
+            assert_eq!(shared.queue_limit(&pkt), QueueLimit::Hold, "{pkt:?}");
+        }
+        assert_eq!(shared.bounded_slots(), 0);
+
+        // frame size without the payload that is not received yet
+        let publish = |payload_size| codec::Publish {
+            dup: false,
+            retain: false,
+            qos: QoS::AtLeastOnce,
+            topic: ByteString::new(),
+            packet_id: Some(id),
+            payload_size,
+        };
+        let pkt = Decoded::Publish(publish(100), Bytes::from_static(b"0123456789"), 120);
+        assert_eq!(shared.held_size(&pkt), 30);
+        let pkt = Decoded::Publish(publish(5), Bytes::from_static(b"01234"), 25);
+        assert_eq!(shared.held_size(&pkt), 25);
+        assert_eq!(shared.held_size(&Decoded::Packet(Packet::Disconnect, 2)), 2);
+        let pkt = Decoded::PayloadChunk(Bytes::from_static(b"abc"), false);
+        assert_eq!(shared.held_size(&pkt), 3);
+    }
+
     fn assert_unexpected<E: std::fmt::Debug>(
         res: &Result<Option<Encoded>, DispatcherError<E>>,
         expected: u8,

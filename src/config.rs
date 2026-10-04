@@ -24,11 +24,14 @@ use crate::types::QoS;
 ///   packet.
 ///
 /// No read timer runs while reading is paused, because the service is not
-/// ready or the response queue is full (see [`set_max_queue`]). The frame read
+/// ready or the response queue is full and the held back packets reached the
+/// limit (see [`set_max_queue`]). Only the held timeout
+/// ([`set_held_timeout`]) applies at the held back limit. The frame read
 /// budget restarts when reading resumes. During write backpressure only the
 /// write timeout (`IoConfig::set_write_timeout()`) applies.
 ///
 /// [`set_max_queue`]: MqttServiceConfig::set_max_queue
+/// [`set_held_timeout`]: MqttServiceConfig::set_held_timeout
 /// [`v3::ConnectAck::idle_timeout()`]: crate::v3::ConnectAck::idle_timeout
 /// [`v5::ConnectAck::keep_alive()`]: crate::v5::ConnectAck::keep_alive
 #[derive(Debug)]
@@ -38,6 +41,8 @@ pub struct MqttServiceConfig {
     pub(crate) max_receive: u16,
     pub(crate) max_receive_size: usize,
     pub(crate) max_queue: usize,
+    pub(crate) max_held_size: usize,
+    pub(crate) held_timeout: Seconds,
     pub(crate) max_topic_alias: u16,
     pub(crate) max_send: u16,
     pub(crate) max_send_size: (u32, u32),
@@ -79,6 +84,8 @@ impl MqttServiceConfig {
             max_receive: 16,
             max_receive_size: 65535,
             max_queue: 64,
+            max_held_size: 256 * 1024,
+            held_timeout: Seconds::ZERO,
             max_topic_alias: 32,
             min_chunk_size: 32 * 1024,
             max_payload_buffer_size: 32 * 1024,
@@ -189,16 +196,59 @@ impl MqttServiceConfig {
     /// Set max number of queued responses.
     ///
     /// Publish acks are sent in the order of incoming packets. An ack that is
-    /// ready waits in the queue until all earlier acks are sent. When the
-    /// queue reaches this limit, the dispatcher stops reading new packets until
-    /// queued acks are sent. Responses to other packets, such as pings and
-    /// subscriptions, are sent once ready and at most once publishes have no
-    /// response, these are not queued but pending ones count towards the limit.
-    /// `0` disables the limit.
+    /// ready waits in the queue until all earlier acks are sent. Responses to
+    /// other packets, such as pings and subscriptions, are sent once ready and
+    /// at most once publishes have no response, these are not queued but
+    /// pending ones count towards the limit.
+    ///
+    /// When the queue reaches this limit, the dispatcher keeps reading packets
+    /// and handles acks and pings, so that publish handlers waiting for acks
+    /// of their own publishes can complete. Other packets are held back in
+    /// order and reading pauses once they reach [`set_max_held_size`]. In v5
+    /// `QoS 1` and `QoS 2` publishes are handled while nothing is held back,
+    /// Receive Maximum ([`set_max_receive`]) bounds them, the queue grows up
+    /// to `max_queue` plus Receive Maximum responses. `0` disables the limit.
     ///
     /// By default the limit is set to 64 responses.
+    ///
+    /// [`set_max_held_size`]: Self::set_max_held_size
+    /// [`set_max_receive`]: Self::set_max_receive
     pub fn set_max_queue(mut self, val: usize) -> Self {
         self.max_queue = val;
+        self
+    }
+
+    #[must_use]
+    /// Set max size of packets held back while the response queue is full.
+    ///
+    /// Packets read while the queue is full, other than acks and pings, are
+    /// held back in order until the queue has room. Reading pauses once their
+    /// total size reaches this limit, a peer that sends acks for pending
+    /// handlers after more packets than the limit allows stalls the
+    /// connection, see [`set_held_timeout`]. `0` pauses reading at the first
+    /// held back packet.
+    ///
+    /// By default the limit is set to 256Kb.
+    ///
+    /// [`set_held_timeout`]: Self::set_held_timeout
+    pub fn set_max_held_size(mut self, val: usize) -> Self {
+        self.max_held_size = val;
+        self
+    }
+
+    #[must_use]
+    /// Set timeout for reading paused at the held back limit.
+    ///
+    /// If reading stays paused because held back packets reached
+    /// [`set_max_held_size`] for longer than the timeout, the connection is
+    /// closed with a protocol error, v5 sends DISCONNECT with Server busy
+    /// (0x89) reason code.
+    ///
+    /// By default the timeout is disabled.
+    ///
+    /// [`set_max_held_size`]: Self::set_max_held_size
+    pub fn set_held_timeout(mut self, timeout: Seconds) -> Self {
+        self.held_timeout = timeout;
         self
     }
 

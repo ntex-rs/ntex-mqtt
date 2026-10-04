@@ -2,6 +2,20 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Acks and pings are read and handled while the response queue is full, other
+  packets are held back in order until their size reaches `max_held_size` (256Kb by
+  default) before reading pauses, previously reading stopped at the limit and publish
+  handlers that awaited acks of their own publishes deadlocked the connection. Payload
+  chunks of a streaming publish follow the publish
+
+* v3, v5: Add `MqttServiceConfig::set_max_held_size()` and `set_held_timeout()`, reading
+  paused at the held back limit for longer than the held timeout closes the connection
+  with a protocol error, v5 sends DISCONNECT with Server busy (0x89). Disabled by default
+
+* v5: `QoS 1` and `QoS 2` publishes are handled while the response queue is full and
+  nothing is held back, Receive Maximum bounds them, the queue grows up to `max_queue`
+  plus Receive Maximum responses
+
 * v3, v5: Payload chunk of a streaming publish that waits for write backpressure fails
   with `Disconnected` when the connection is closed, previously it waited forever
 

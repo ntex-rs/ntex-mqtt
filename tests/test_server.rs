@@ -375,6 +375,72 @@ async fn test_streaming_waiter_peer_gone() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Publish handlers wait for acks of their own publishes, more publishes
+/// than `max_queue` (64 by default) do not stop the acks from being read
+#[ntex::test]
+async fn test_max_queue_acks() -> std::io::Result<()> {
+    const COUNT: u16 = 100;
+
+    let srv = server::TestServerBuilder::new(async move || {
+        MqttServer::new(async move |ses: &Session<St>| {
+            let sink = ses.sink().clone();
+            Ok::<_, Infallible>(fn_service(async move |_: Publish| {
+                sink.publish("echo")
+                    .send_at_least_once(Bytes::new())
+                    .await
+                    .map_err(|_| TestError)
+            }))
+        })
+        .build(connect)
+    })
+    .start();
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
+        &codec,
+    )
+    .await
+    .unwrap();
+    io.recv(&codec).await.unwrap().unwrap();
+
+    for id in 1..=COUNT {
+        let pkt = codec::Publish {
+            dup: false,
+            retain: false,
+            qos: codec::QoS::AtLeastOnce,
+            topic: ByteString::from("test"),
+            packet_id: NonZeroU16::new(id),
+            payload_size: 0,
+        };
+        io.encode(Encoded::Publish(pkt, None), &codec).unwrap();
+    }
+    io.flush(true).await.unwrap();
+
+    let acks = ntex::time::timeout(Seconds(10), async {
+        let mut acks = 0;
+        while acks < COUNT {
+            match io.recv(&codec).await.unwrap().unwrap() {
+                Decoded::Publish(pkt, ..) => {
+                    let packet_id = pkt.packet_id.unwrap();
+                    io.send(Encoded::Packet(Packet::PublishAck { packet_id }), &codec)
+                        .await
+                        .unwrap();
+                }
+                Decoded::Packet(Packet::PublishAck { .. }, _) => acks += 1,
+                pkt => panic!("unexpected packet {pkt:?}"),
+            }
+        }
+        acks
+    })
+    .await;
+    assert_eq!(acks, Ok(COUNT));
+    Ok(())
+}
+
 #[ntex::test]
 async fn test_connect_fail() -> std::io::Result<()> {
     // bad user name or password
@@ -2298,4 +2364,77 @@ async fn test_handshake_invalid_will_topic() -> std::io::Result<()> {
     assert!(called.load(Relaxed));
 
     Ok(())
+}
+
+/// Reading paused at the held back limit for longer than the held timeout
+/// closes the connection
+#[ntex::test]
+async fn test_held_timeout() {
+    let errs = Arc::new(Mutex::new(Vec::new()));
+    let errs2 = errs.clone();
+    let srv = server::TestServerBuilder::new(async move || {
+        let errs = errs2.clone();
+        MqttServer::new(async move |p: Publish| {
+            if p.topic().path() == "block" {
+                sleep(Millis(10_000)).await;
+            }
+            Ok::<_, TestError>(())
+        })
+        .control(async move |msg| {
+            if let Control::Stop(Reason::Protocol(err)) = msg
+                && let MqttProtocolError::ProtocolViolation(e) = err.get_ref()
+            {
+                errs.lock().unwrap().push((e.reason(), e.message()));
+            }
+            Ok::<_, TestError>(None)
+        })
+        .build(connect)
+    })
+    .config(
+        SharedCfg::new("MQTT").add(
+            MqttServiceConfig::new()
+                .set_max_queue(1)
+                .set_max_held_size(0)
+                .set_held_timeout(Seconds(1)),
+        ),
+    )
+    .start();
+
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.send(
+        Encoded::Packet(Packet::Connect(
+            codec::Connect::default().client_id("user").into(),
+        )),
+        &codec,
+    )
+    .await
+    .unwrap();
+    io.recv(&codec).await.unwrap().unwrap();
+
+    for (topic, qos, id) in [
+        ("block", codec::QoS::AtLeastOnce, 1),
+        ("test", codec::QoS::AtMostOnce, 0),
+    ] {
+        let pkt = codec::Publish {
+            dup: false,
+            retain: false,
+            qos,
+            topic: ByteString::from_static(topic),
+            packet_id: NonZeroU16::new(id),
+            payload_size: 0,
+        };
+        io.encode(Encoded::Publish(pkt, None), &codec).unwrap();
+    }
+    io.flush(true).await.unwrap();
+
+    let res = ntex::time::timeout(Seconds(5), io.recv(&codec)).await;
+    assert!(matches!(res, Ok(Ok(None) | Err(_))), "{res:?}");
+    assert_eq!(
+        &errs.lock().unwrap()[..],
+        [(
+            ntex_mqtt::v5::codec::DisconnectReasonCode::ServerBusy,
+            "Held back packets are not handled within the held timeout"
+        )]
+    );
 }
