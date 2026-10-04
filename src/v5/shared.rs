@@ -7,7 +7,7 @@ use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
 use ntex_util::{HashMap, HashSet, channel::pool};
 
-use crate::io::{FrameState, QueueLimit};
+use crate::io::{FrameState, QueueLimit, STREAM_TAG};
 use crate::v5::codec::{self, Decoded, Encoded, Packet, Publish};
 use crate::{QoS, error, error::SendPacketError, payload::PlSender, types::packet_type};
 
@@ -264,6 +264,31 @@ impl MqttShared {
         self.streaming_remaining.get().is_some()
     }
 
+    /// Wait until a `QoS 0` publish can be encoded, returns `false` if the
+    /// connection is closed
+    ///
+    /// Waits for an outgoing streaming payload to complete, packets cannot
+    /// interleave with it, and for the write buffer to drain to the release
+    /// threshold of write backpressure.
+    pub(super) async fn wait_publish_ready(&self) -> bool {
+        loop {
+            if !self.is_active() {
+                return false;
+            }
+            if self.is_streaming() {
+                self.io.waiter(STREAM_TAG).await;
+                continue;
+            }
+            if self.io.write_ready().await.is_err() {
+                return false;
+            }
+            // a streaming publish may start while waiting for the write buffer
+            if !self.is_streaming() {
+                return self.is_active();
+            }
+        }
+    }
+
     /// Marks whether PINGREQ is sent and PINGRESP is not received yet
     pub(super) fn set_ping_pending(&self, pending: bool) {
         let mut flags = self.flags.get();
@@ -367,6 +392,8 @@ impl MqttShared {
         // the payload waiting for write backpressure fails, the connection
         // is closed and backpressure would never be disabled
         self.streaming_waiter.take();
+        // `QoS 0` publishes waiting for the streaming payload fail
+        self.io.wake(STREAM_TAG);
 
         let mut queues = self.queues.borrow_mut();
         queues.subscribes = 0;
@@ -545,6 +572,7 @@ impl MqttShared {
                     // publishes waiting while the streaming payload was released
                     // first by `disable_wr_backpressure` get their send credit
                     self.grant(&mut self.queues.borrow_mut());
+                    self.io.wake(STREAM_TAG);
                 }
                 Ok(remaining.is_some())
             }

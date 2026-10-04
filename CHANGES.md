@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: `send_at_most_once()` and `stream_at_most_once()` are async (breaking), they wait
+  for write backpressure to be released and for an outgoing streaming payload to complete,
+  previously QoS 0 publishes ignored write backpressure and failed during streaming
+
 * v3, v5: Client closes the connection with DISCONNECT when PINGRESP is not received
   within the keep-alive interval, the interval starts once PINGREQ can be written
 

@@ -415,7 +415,7 @@ mod tests {
         shared.set_ping_pending(false);
 
         // PINGREQ waits behind a streaming payload, the timeout does not start
-        let stream = sink.publish("a").stream_at_most_once(2).unwrap();
+        let stream = sink.publish("a").stream_at_most_once(2).await.unwrap();
         stream.send(Bytes::from_static(b"a")).await.unwrap();
         let _ = client.read().await.unwrap();
         sleep(Millis(400)).await;

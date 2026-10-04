@@ -20,6 +20,10 @@ use crate::error::{DecodeError, DispatcherError, EncodeError, MqttProtocolError}
 /// Io waiter tag, in-flight service calls are cancelled once it is woken.
 const STOP_TAG: usize = 0x6d71_7474;
 
+/// Io waiter tag, woken once an outgoing streaming publish payload is complete
+/// or the connection is closed.
+pub(crate) const STREAM_TAG: usize = 0x6d71_7475;
+
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     struct Flags: u8 {
