@@ -142,6 +142,10 @@ where
                     let keep_alive = pkt.server_keepalive_sec.unwrap_or(keep_alive);
 
                     shared.set_cap(pkt.receive_max.get() as usize);
+                    // the server sends at most Receive Maximum unacknowledged
+                    // QoS 1 and QoS 2 publishes [MQTT-3.3.4-9], these are handled
+                    // while the response queue is full
+                    shared.set_receive_max(max_receive);
 
                     Ok(Client::new(
                         io,

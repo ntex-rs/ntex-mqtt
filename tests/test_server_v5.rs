@@ -3679,3 +3679,78 @@ async fn test_streaming_publish_chunk_slots() {
         "{res:?}"
     );
 }
+
+/// The client handles `QoS 1` publishes bounded by its Receive Maximum while
+/// the response queue is full
+#[ntex::test]
+async fn test_client_max_queue_bounded_publish() {
+    let srv = server::TestServerBuilder::new(async move || {
+        MqttServer::new(async move |ses: &Session<St>| {
+            let sink = ses.sink().clone();
+            ntex::rt::spawn(async move {
+                sleep(Millis(50)).await;
+                for topic in ["block", "qos1"] {
+                    let fut = sink.publish(topic).send_at_least_once(Bytes::new());
+                    ntex::rt::spawn(async move {
+                        let _ = fut.await;
+                    });
+                }
+            });
+            Ok::<_, Infallible>(fn_service(async move |p: Publish| {
+                Ok::<_, TestError>(p.ack())
+            }))
+        })
+        .build(connect)
+    })
+    .start();
+
+    let client = Pipeline::new(
+        SharedCfg::new("CLIENT")
+            .add(MqttServiceConfig::new().set_max_queue(1))
+            .build(),
+        client::MqttConnector::new(),
+    )
+    .call(
+        client::Connect::new(srv.addr())
+            .client_id("user")
+            .max_receive(4),
+    )
+    .await
+    .unwrap();
+
+    let release = Rc::new(std::cell::Cell::new(false));
+    let handled = Rc::new(RefCell::new(Vec::new()));
+    let acked = Rc::new(std::cell::Cell::new(0));
+    let (release2, handled2, acked2) = (release.clone(), handled.clone(), acked.clone());
+    ntex::rt::spawn(
+        client.start(fn_service(move |msg: client::ProtocolMessage| {
+            let (release, handled, acked) = (release2.clone(), handled2.clone(), acked2.clone());
+            async move {
+                Ok::<_, ()>(match msg {
+                    client::ProtocolMessage::Publish(p) => {
+                        let topic = p.packet().topic.to_string();
+                        handled.borrow_mut().push(topic.clone());
+                        while topic == "block" && !release.get() {
+                            sleep(Millis(10)).await;
+                        }
+                        acked.set(acked.get() + 1);
+                        p.ack(codec::PublishAckReason::Success)
+                    }
+                    msg => msg.ack(),
+                })
+            }
+        })),
+    );
+
+    sleep(Millis(300)).await;
+    assert_eq!(&handled.borrow()[..], ["block", "qos1"]);
+
+    release.set(true);
+    for _ in 0..100 {
+        if acked.get() == 2 {
+            break;
+        }
+        sleep(Millis(10)).await;
+    }
+    assert_eq!(acked.get(), 2);
+}

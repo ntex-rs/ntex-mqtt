@@ -126,6 +126,8 @@ impl<A: Address> Connect<A> {
     ///
     /// Number of in-flight incoming publish packets. By default the property is
     /// not sent, so the limit is 65535 packets. Setting value to 0 has the same effect.
+    /// `QoS 1` and `QoS 2` publishes within the limit are handled while the
+    /// response queue is full.
     pub fn max_receive(mut self, val: u16) -> Self {
         if let Some(val) = NonZeroU16::new(val) {
             self.pkt.receive_max = Some(val);
