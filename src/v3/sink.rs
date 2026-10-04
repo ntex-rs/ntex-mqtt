@@ -982,6 +982,43 @@ mod tests {
         assert_eq!(buf, Bytes::from_static(b"\xc0\x00"));
     }
 
+    /// Payload chunk waiting for write backpressure fails when the connection
+    /// is closed, backpressure is never disabled after close
+    #[ntex::test]
+    async fn test_streaming_waiter_fails_on_close() {
+        use ntex_util::future::lazy;
+        use ntex_util::time::{Millis, timeout};
+
+        for close in 0..2 {
+            let (client, server) = IoTest::create();
+            client.remote_buffer_cap(1024);
+            let io = Io::new(server, SharedCfg::new("test"));
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                codec::Codec::default(),
+                true,
+                Rc::default(),
+            ));
+            shared.set_cap(16);
+            let sink = MqttSink::new(shared.clone());
+
+            let stream = sink.publish("a/b").stream_at_most_once(4).unwrap();
+            stream.send(Bytes::from_static(b"ab")).await.unwrap();
+            shared.enable_wr_backpressure();
+            let mut chunk = Box::pin(stream.send(Bytes::from_static(b"cd")));
+            assert!(lazy(|cx| chunk.as_mut().poll(cx).is_pending()).await);
+
+            match close {
+                0 => shared.close(),
+                _ => sink.force_close(),
+            }
+            assert_eq!(
+                timeout(Millis(1000), chunk).await.unwrap(),
+                Err(SendPacketError::Disconnected)
+            );
+        }
+    }
+
     /// Dropped `QoS 2` publish future is released, PUBREL is sent and
     /// packet id and in-flight slot are freed (MQTT 3.1.1, 4.3.3)
     #[ntex::test]

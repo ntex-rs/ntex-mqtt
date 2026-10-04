@@ -1,5 +1,6 @@
 #![allow(clippy::type_complexity)]
-use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, num, rc::Rc};
+use std::task::{Context, Poll, Waker};
+use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, num, pin::Pin, rc::Rc};
 
 use ntex_bytes::{BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
@@ -57,7 +58,11 @@ pub(super) struct MqttSharedQueues {
     inflight_ids: HashSet<num::NonZeroU16>,
     // SUBSCRIBE and UNSUBSCRIBE packets in `inflight`
     subscribes: usize,
-    waiters: VecDeque<pool::Sender<()>>,
+    // publishes that wait for send credit, in the order of arrival
+    waiters: VecDeque<Waiter>,
+    // send credit granted to waiters and held by permits, not in `inflight` yet
+    reserved: usize,
+    next_ticket: u64,
     // PUBCOMP receivers, one per QoS 2 PUBLISH awaiting release
     rx: HashMap<num::NonZeroU16, pool::Receiver<Ack>>,
 }
@@ -68,6 +73,38 @@ impl MqttSharedQueues {
     fn publishes(&self) -> usize {
         self.inflight.len() - self.subscribes
     }
+
+    /// Check if a publish waits for send credit
+    ///
+    /// Waiting entries follow the granted and closed ones.
+    fn has_waiting(&self) -> bool {
+        self.waiters
+            .back()
+            .is_some_and(|w| w.state == WaiterState::Waiting)
+    }
+
+    /// Position of the queued waiter, tickets of the queued waiters are ascending
+    fn find(&self, ticket: u64) -> usize {
+        self.waiters
+            .binary_search_by_key(&ticket, |w| w.ticket)
+            .expect("waiter is queued")
+    }
+}
+
+#[derive(Debug)]
+struct Waiter {
+    ticket: u64,
+    state: WaiterState,
+    waker: Option<Waker>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum WaiterState {
+    Waiting,
+    /// Send credit is reserved for the waiter
+    Granted,
+    /// Queues are cleared, the connection is closed
+    Closed,
 }
 
 pub(super) struct MqttSinkPool {
@@ -96,6 +133,8 @@ impl MqttShared {
                 inflight_ids: HashSet::default(),
                 subscribes: 0,
                 waiters: VecDeque::new(),
+                reserved: 0,
+                next_ticket: 0,
                 rx: HashMap::default(),
             }),
             receive_max: Cell::new(0),
@@ -115,10 +154,12 @@ impl MqttShared {
         self.io.tag()
     }
 
+    /// Send credit that is not in use or reserved, Receive Maximum [MQTT-4.9.0-1]
     pub(super) fn credit(&self) -> usize {
+        let queues = self.queues.borrow();
         self.cap
             .get()
-            .saturating_sub(self.queues.borrow().publishes())
+            .saturating_sub(queues.publishes() + queues.reserved)
     }
 
     pub(super) fn receive_max(&self) -> u16 {
@@ -210,8 +251,13 @@ impl MqttShared {
         self.streaming_remaining.get().is_some()
     }
 
+    /// Check if a `QoS 1` or `QoS 2` publish can be sent without waiting
+    ///
+    /// Waiting publishes get send credit first.
     pub(super) fn is_ready(&self) -> bool {
-        self.credit() > 0 && !self.flags.get().contains(Flags::WRB_ENABLED)
+        self.credit() > 0
+            && !self.flags.get().contains(Flags::WRB_ENABLED)
+            && !self.queues.borrow().has_waiting()
     }
 
     pub(super) fn is_disconnect_sent(&self) -> bool {
@@ -259,18 +305,8 @@ impl MqttShared {
     }
 
     pub(super) fn set_cap(&self, cap: usize) {
-        let mut queues = self.queues.borrow_mut();
-
-        // wake up queued request (receive max limit)
-        'outer: for _ in 0..cap {
-            while let Some(tx) = queues.waiters.pop_front() {
-                if tx.send(()).is_ok() {
-                    continue 'outer;
-                }
-            }
-            break;
-        }
         self.cap.set(cap);
+        self.grant(&mut self.queues.borrow_mut());
     }
 
     pub(super) fn set_publish_ack(&self, f: Box<dyn Fn(codec::PublishAck, bool)>) {
@@ -299,9 +335,24 @@ impl MqttShared {
     }
 
     fn clear_queues(&self) {
+        // the payload waiting for write backpressure fails, the connection
+        // is closed and backpressure would never be disabled
+        self.streaming_waiter.take();
+
         let mut queues = self.queues.borrow_mut();
-        queues.waiters.clear();
         queues.subscribes = 0;
+        let MqttSharedQueues {
+            waiters, reserved, ..
+        } = &mut *queues;
+        for waiter in waiters {
+            if waiter.state == WaiterState::Granted {
+                *reserved -= 1;
+            }
+            waiter.state = WaiterState::Closed;
+            if let Some(waker) = waiter.waker.take() {
+                waker.wake();
+            }
+        }
 
         if let Some(cb) = self.on_publish_ack.take() {
             for (idx, tx, _) in queues.inflight.drain(..) {
@@ -338,19 +389,63 @@ impl MqttShared {
             return;
         }
 
-        // check if there are waiters
-        let mut queues = self.queues.borrow_mut();
-        if queues.publishes() < self.cap.get() {
-            let mut num = self.cap.get() - queues.publishes();
-            while num > 0 {
-                if let Some(tx) = queues.waiters.pop_front() {
-                    if tx.send(()).is_ok() {
-                        num -= 1;
-                    }
-                } else {
-                    break;
-                }
+        self.grant(&mut self.queues.borrow_mut());
+    }
+
+    /// Reserve send credit for the waiting publishes in the order of arrival
+    ///
+    /// A granted waiter keeps the credit until its publish is in flight, so that
+    /// the number of in-flight publishes stays within the peer's Receive Maximum
+    /// [MQTT-4.9.0-1].
+    fn grant(&self, queues: &mut MqttSharedQueues) {
+        if self.flags.get().contains(Flags::WRB_ENABLED) {
+            return;
+        }
+        let publishes = queues.publishes();
+        let MqttSharedQueues {
+            waiters, reserved, ..
+        } = queues;
+        for waiter in waiters.iter_mut() {
+            if waiter.state != WaiterState::Waiting {
+                continue;
             }
+            if publishes + *reserved >= self.cap.get() {
+                break;
+            }
+            waiter.state = WaiterState::Granted;
+            *reserved += 1;
+            if let Some(waker) = waiter.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+
+    /// Wait for send credit of a `QoS 1` or `QoS 2` publish
+    ///
+    /// Publishes get the credit in the order of the calls, the waiter is queued
+    /// immediately, not on the first poll.
+    pub(super) fn send_permit(self: &Rc<Self>) -> WaitSendPermit {
+        if self.is_ready() {
+            self.queues.borrow_mut().reserved += 1;
+            return WaitSendPermit {
+                shared: self.clone(),
+                ticket: None,
+                permit: Some(SendPermit(self.clone())),
+            };
+        }
+
+        let mut queues = self.queues.borrow_mut();
+        let ticket = queues.next_ticket;
+        queues.next_ticket += 1;
+        queues.waiters.push_back(Waiter {
+            ticket,
+            state: WaiterState::Waiting,
+            waker: None,
+        });
+        WaitSendPermit {
+            shared: self.clone(),
+            ticket: Some(ticket),
+            permit: None,
         }
     }
 
@@ -493,11 +588,7 @@ impl MqttShared {
                     }
 
                     // wake up queued request (receive max limit)
-                    while let Some(tx) = queues.waiters.pop_front() {
-                        if tx.send(()).is_ok() {
-                            break;
-                        }
-                    }
+                    self.grant(&mut queues);
                 }
                 Ok(())
             } else if matches!(pkt, Ack::Complete(_)) {
@@ -511,11 +602,7 @@ impl MqttShared {
                 }
 
                 // wake up queued request (receive max limit)
-                while let Some(tx) = queues.waiters.pop_front() {
-                    if tx.send(()).is_ok() {
-                        break;
-                    }
-                }
+                self.grant(&mut queues);
                 Ok(())
             } else {
                 // get publish ack channel
@@ -533,11 +620,7 @@ impl MqttShared {
                 }
 
                 // wake up queued request (receive max limit)
-                while let Some(tx) = queues.waiters.pop_front() {
-                    if tx.send(()).is_ok() {
-                        break;
-                    }
-                }
+                self.grant(&mut queues);
                 Ok(())
             }
         } else {
@@ -622,18 +705,6 @@ impl MqttShared {
         }
     }
 
-    pub(super) fn wait_readiness(&self) -> Option<pool::Receiver<()>> {
-        let mut queues = self.queues.borrow_mut();
-
-        if queues.publishes() >= self.cap.get() || self.flags.get().contains(Flags::WRB_ENABLED) {
-            let (tx, rx) = self.pool.waiters.channel();
-            queues.waiters.push_back(tx);
-            Some(rx)
-        } else {
-            None
-        }
-    }
-
     /// Wait for write backpressure only
     ///
     /// Receive Maximum limits `QoS 1` and `QoS 2` PUBLISH packets only
@@ -664,6 +735,77 @@ impl MqttShared {
         {
             Ok(()) => Ok(rx),
             Err(e) => Err(SendPacketError::Encode(e)),
+        }
+    }
+}
+
+/// Send credit of a `QoS 1` or `QoS 2` publish, Receive Maximum [MQTT-4.9.0-1]
+///
+/// The credit is released on drop, the publish holds the credit once it is
+/// registered as in flight.
+pub(super) struct SendPermit(Rc<MqttShared>);
+
+impl Drop for SendPermit {
+    fn drop(&mut self) {
+        let mut queues = self.0.queues.borrow_mut();
+        queues.reserved -= 1;
+        self.0.grant(&mut queues);
+    }
+}
+
+/// Future of [`MqttShared::send_permit`]
+///
+/// Fails if the connection is closed while the publish waits. A dropped waiter
+/// passes granted credit to the next one.
+pub(super) struct WaitSendPermit {
+    shared: Rc<MqttShared>,
+    ticket: Option<u64>,
+    permit: Option<SendPermit>,
+}
+
+impl Future for WaitSendPermit {
+    type Output = Result<SendPermit, SendPacketError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        if let Some(permit) = this.permit.take() {
+            return Poll::Ready(Ok(permit));
+        }
+        let Some(ticket) = this.ticket else {
+            return Poll::Ready(Err(SendPacketError::Disconnected));
+        };
+
+        let mut queues = this.shared.queues.borrow_mut();
+        let idx = queues.find(ticket);
+        let waiter = &mut queues.waiters[idx];
+        let state = waiter.state;
+        if state == WaiterState::Waiting {
+            match waiter.waker {
+                Some(ref mut waker) => waker.clone_from(cx.waker()),
+                None => waiter.waker = Some(cx.waker().clone()),
+            }
+            return Poll::Pending;
+        }
+        queues.waiters.remove(idx);
+        this.ticket = None;
+
+        if state == WaiterState::Granted {
+            Poll::Ready(Ok(SendPermit(this.shared.clone())))
+        } else {
+            Poll::Ready(Err(SendPacketError::Disconnected))
+        }
+    }
+}
+
+impl Drop for WaitSendPermit {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.ticket.take() {
+            let mut queues = self.shared.queues.borrow_mut();
+            let idx = queues.find(ticket);
+            if queues.waiters.remove(idx).map(|w| w.state) == Some(WaiterState::Granted) {
+                queues.reserved -= 1;
+                self.shared.grant(&mut queues);
+            }
         }
     }
 }

@@ -5,7 +5,7 @@ use ntex_bytes::{ByteString, Bytes};
 use ntex_util::{channel::pool, future::Either};
 
 use super::codec::{self, EncodeLtd};
-use super::shared::{Ack, AckType, MqttShared};
+use super::shared::{Ack, AckType, MqttShared, SendPermit};
 use crate::{error::EncodeError, error::SendPacketError, types::QoS};
 
 /// Mqtt client/server sink, it is used to send packets to the peer
@@ -62,15 +62,17 @@ impl MqttSink {
 
     /// Get notification when packet could be send to the peer.
     ///
-    /// Result indicates if connection is alive
+    /// Result indicates if connection is alive. Waiting publishes get send credit
+    /// in the order of the calls. The credit is not reserved once the future
+    /// completes, the next waiting publish gets it.
     pub fn ready(&self) -> impl Future<Output = bool> {
-        if self.0.is_active() {
-            self.0.wait_readiness().map_or_else(
-                || Either::Left(ready(true)),
-                |rx| Either::Right(async move { rx.await.is_ok() }),
-            )
-        } else {
+        if !self.0.is_active() {
             Either::Left(ready(false))
+        } else if self.0.is_ready() {
+            Either::Left(ready(true))
+        } else {
+            let permit = self.0.send_permit();
+            Either::Right(async move { permit.await.is_ok() })
         }
     }
 
@@ -310,14 +312,8 @@ impl PublishBuilder {
             self.packet.payload_size = payload.len() as u32;
 
             // handle client receive maximum
-            if let Some(rx) = self.shared.wait_readiness() {
-                if rx.await.is_err() {
-                    return Err(SendPacketError::Disconnected);
-                }
-                self.send_at_least_once_inner(payload).await
-            } else {
-                self.send_at_least_once_inner(payload).await
-            }
+            let permit = self.shared.send_permit().await?;
+            self.send_at_least_once_inner(payload, permit).await
         } else {
             Err(SendPacketError::Disconnected)
         }
@@ -371,17 +367,12 @@ impl PublishBuilder {
             self.packet.payload_size = size;
 
             // handle client receive maximum
-            let fut = if let Some(rx) = self.shared.wait_readiness() {
-                Either::Left(Either::Left(async move {
-                    if rx.await.is_err() {
-                        return Err(SendPacketError::Disconnected);
-                    }
-                    self.stream_at_least_once_inner(tx, None).await
-                }))
-            } else {
-                Either::Left(Either::Right(self.stream_at_least_once_inner(tx, None)))
+            let permit = self.shared.send_permit();
+            let fut = async move {
+                let permit = permit.await?;
+                self.stream_at_least_once_inner(tx, None, permit).await
             };
-            (fut, stream)
+            (Either::Left(fut), stream)
         } else {
             (
                 Either::Right(async { Err(SendPacketError::Disconnected) }),
@@ -393,15 +384,18 @@ impl PublishBuilder {
     async fn send_at_least_once_inner(
         mut self,
         payload: Bytes,
+        permit: SendPermit,
     ) -> Result<codec::PublishAck, SendPacketError> {
         // packet id
         let idx = self.shared.set_publish_id(&mut self.packet);
 
-        // send publish to client
+        // send publish to client, the in-flight publish holds the send credit
         log::trace!("Publish (QoS1) to {:#?}", self.packet);
-        self.shared
-            .wait_publish_response(idx, AckType::Publish, self.packet, Some(payload))?
-            .await
+        let rx =
+            self.shared
+                .wait_publish_response(idx, AckType::Publish, self.packet, Some(payload));
+        drop(permit);
+        rx?.await
             .map(Ack::publish)
             .map_err(|_| SendPacketError::Disconnected)
     }
@@ -410,6 +404,7 @@ impl PublishBuilder {
         mut self,
         tx: pool::Sender<()>,
         chunk: Option<Bytes>,
+        permit: SendPermit,
     ) -> Result<codec::PublishAck, SendPacketError> {
         // packet id
         let idx = self.shared.set_publish_id(&mut self.packet);
@@ -423,6 +418,7 @@ impl PublishBuilder {
             let rx = self
                 .shared
                 .wait_publish_response(idx, AckType::Publish, self.packet, chunk);
+            drop(permit);
             let _ = tx.send(());
 
             rx?.await
@@ -444,14 +440,8 @@ impl PublishBuilder {
             self.packet.payload_size = payload.len() as u32;
 
             // handle client receive maximum
-            if let Some(rx) = self.shared.wait_readiness() {
-                if rx.await.is_err() {
-                    return Err(SendPacketError::Disconnected);
-                }
-                self.send_exactly_once_inner(payload).await
-            } else {
-                self.send_exactly_once_inner(payload).await
-            }
+            let permit = self.shared.send_permit().await?;
+            self.send_exactly_once_inner(payload, permit).await
         } else {
             Err(SendPacketError::Disconnected)
         }
@@ -460,12 +450,16 @@ impl PublishBuilder {
     async fn send_exactly_once_inner(
         mut self,
         payload: Bytes,
+        permit: SendPermit,
     ) -> Result<PublishReceived, SendPacketError> {
         let shared = self.shared.clone();
         let idx = shared.set_publish_id(&mut self.packet);
         log::trace!("Publish (QoS2) to {:#?}", self.packet);
 
-        let rx = shared.wait_publish_response(idx, AckType::Receive, self.packet, Some(payload))?;
+        // the in-flight publish holds the send credit
+        let rx = shared.wait_publish_response(idx, AckType::Receive, self.packet, Some(payload));
+        drop(permit);
+        let rx = rx?;
         let guard = ReleaseGuard(idx, &shared);
         let result = rx.await;
         std::mem::forget(guard);
@@ -1167,6 +1161,43 @@ mod tests {
         drop(client);
     }
 
+    /// Payload chunk waiting for write backpressure fails when the connection
+    /// is closed, backpressure is never disabled after close
+    #[ntex::test]
+    async fn test_streaming_waiter_fails_on_close() {
+        use ntex_util::future::lazy;
+        use ntex_util::time::{Millis, timeout};
+
+        for close in 0..3 {
+            let (client, server) = IoTest::create();
+            client.remote_buffer_cap(1024);
+            let io = Io::new(server, SharedCfg::new("test"));
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                codec::Codec::new(),
+                Rc::default(),
+            ));
+            shared.set_cap(16);
+            let sink = MqttSink::new(shared.clone());
+
+            let stream = sink.publish("a/b").stream_at_most_once(4).unwrap();
+            stream.send(Bytes::from_static(b"ab")).await.unwrap();
+            shared.enable_wr_backpressure();
+            let mut chunk = Box::pin(stream.send(Bytes::from_static(b"cd")));
+            assert!(lazy(|cx| chunk.as_mut().poll(cx).is_pending()).await);
+
+            match close {
+                0 => shared.close(None),
+                1 => sink.force_close(),
+                _ => shared.drop_sink(true),
+            }
+            assert_eq!(
+                timeout(Millis(1000), chunk).await.unwrap(),
+                Err(SendPacketError::Disconnected)
+            );
+        }
+    }
+
     #[ntex::test]
     async fn test_packets_deferred_while_streaming() {
         let (client, server) = IoTest::create();
@@ -1478,5 +1509,327 @@ mod tests {
             );
         }
         assert_eq!(sink.credit(), 1);
+    }
+
+    mod receive_max {
+        use std::{future::Future, pin::Pin};
+
+        use ntex_util::future::lazy;
+        use ntex_util::time::{Millis, sleep, timeout};
+
+        use super::*;
+
+        fn setup(cap: usize) -> (IoTest, Io, Rc<MqttShared>, MqttSink) {
+            let (client, server) = IoTest::create();
+            client.remote_buffer_cap(1024);
+            let io = Io::new(server, SharedCfg::new("test"));
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                codec::Codec::new(),
+                Rc::default(),
+            ));
+            shared.set_cap(cap);
+            (client, io, shared.clone(), MqttSink::new(shared))
+        }
+
+        fn send(
+            sink: &MqttSink,
+            id: u16,
+        ) -> Pin<Box<impl Future<Output = Result<codec::PublishAck, SendPacketError>>>> {
+            Box::pin(
+                sink.publish("a")
+                    .packet_id(id)
+                    .send_at_least_once(Bytes::new()),
+            )
+        }
+
+        fn ack(id: u16) -> Ack {
+            Ack::Publish(codec::PublishAck {
+                packet_id: NonZeroU16::new(id).unwrap(),
+                ..Default::default()
+            })
+        }
+
+        /// Encoded `QoS 1` PUBLISH packets
+        fn publishes(ids: &[u8]) -> Bytes {
+            let mut buf = Vec::new();
+            for id in ids {
+                buf.extend_from_slice(&[0x32, 0x06, 0x00, 0x01, b'a', 0x00, *id, 0x00]);
+            }
+            Bytes::from(buf)
+        }
+
+        async fn is_pending<F: Future>(f: &mut Pin<Box<F>>) -> bool {
+            lazy(|cx| f.as_mut().poll(cx).is_pending()).await
+        }
+
+        /// Read packets written to the peer
+        async fn written(client: &IoTest) -> Bytes {
+            sleep(Millis(25)).await;
+            client.read_any()
+        }
+
+        /// The send credit released by an ack is reserved for the first waiter,
+        /// the peer never receives more than Receive Maximum publishes [MQTT-4.9.0-1]
+        #[ntex::test]
+        async fn test_granted_waiter_keeps_credit() {
+            let (client, _io, shared, sink) = setup(1);
+
+            let mut a = send(&sink, 1);
+            let mut b = send(&sink, 2);
+            assert!(is_pending(&mut a).await);
+            assert!(is_pending(&mut b).await);
+            assert_eq!(written(&client).await, publishes(&[1]));
+
+            // the waiter is woken but is not polled yet
+            assert_eq!(shared.pkt_ack(ack(1)), Ok(()));
+            assert!(!sink.is_ready());
+            assert_eq!(sink.credit(), 0);
+            let mut c = send(&sink, 3);
+            assert!(is_pending(&mut c).await);
+            assert_eq!(written(&client).await, Bytes::new());
+
+            assert!(is_pending(&mut b).await);
+            assert_eq!(written(&client).await, publishes(&[2]));
+            assert_eq!(
+                timeout(Millis(1000), a)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .packet_id
+                    .get(),
+                1
+            );
+
+            assert_eq!(shared.pkt_ack(ack(2)), Ok(()));
+            assert!(is_pending(&mut c).await);
+            assert_eq!(written(&client).await, publishes(&[3]));
+            assert_eq!(shared.pkt_ack(ack(3)), Ok(()));
+            assert!(b.await.is_ok());
+            assert!(c.await.is_ok());
+            assert_eq!(sink.credit(), 1);
+        }
+
+        /// Cancelled granted waiter passes the send credit to the next waiter
+        #[ntex::test]
+        async fn test_cancelled_waiter_passes_credit() {
+            let (client, _io, shared, sink) = setup(1);
+
+            let mut a = send(&sink, 1);
+            let mut b = send(&sink, 2);
+            let mut c = send(&sink, 3);
+            let mut d = send(&sink, 4);
+            for f in [&mut a, &mut b, &mut c, &mut d] {
+                assert!(is_pending(f).await);
+            }
+            assert_eq!(written(&client).await, publishes(&[1]));
+
+            // waiting entry is removed
+            drop(c);
+            assert_eq!(shared.pkt_ack(ack(1)), Ok(()));
+            assert!(a.await.is_ok());
+            assert_eq!(sink.credit(), 0);
+
+            // granted entry passes the credit
+            drop(b);
+            assert_eq!(sink.credit(), 0);
+            let mut e = send(&sink, 5);
+            assert!(is_pending(&mut e).await);
+            assert!(is_pending(&mut d).await);
+            assert_eq!(written(&client).await, publishes(&[4]));
+
+            assert_eq!(shared.pkt_ack(ack(4)), Ok(()));
+            assert!(d.await.is_ok());
+            assert!(is_pending(&mut e).await);
+            assert_eq!(written(&client).await, publishes(&[5]));
+            assert_eq!(shared.pkt_ack(ack(5)), Ok(()));
+            assert!(e.await.is_ok());
+            assert_eq!(sink.credit(), 1);
+        }
+
+        /// `ready()` waits in order with publishes and passes the credit on
+        #[ntex::test]
+        async fn test_ready_waits_in_order() {
+            let (client, _io, shared, sink) = setup(1);
+
+            let mut a = send(&sink, 1);
+            assert!(is_pending(&mut a).await);
+            assert_eq!(written(&client).await, publishes(&[1]));
+
+            let mut r = Box::pin(sink.ready());
+            let mut b = send(&sink, 2);
+            assert!(is_pending(&mut r).await);
+            assert!(is_pending(&mut b).await);
+
+            assert_eq!(shared.pkt_ack(ack(1)), Ok(()));
+            assert!(a.await.is_ok());
+            assert!(is_pending(&mut b).await);
+            assert_eq!(written(&client).await, Bytes::new());
+
+            assert!(r.await);
+            assert!(is_pending(&mut b).await);
+            assert_eq!(written(&client).await, publishes(&[2]));
+            assert_eq!(shared.pkt_ack(ack(2)), Ok(()));
+            assert!(b.await.is_ok());
+            assert!(sink.ready().await);
+            assert_eq!(sink.credit(), 1);
+        }
+
+        /// Increased Receive Maximum grants the credit to the first waiters
+        #[ntex::test]
+        async fn test_set_cap_grants_in_order() {
+            let (client, _io, shared, sink) = setup(1);
+
+            let mut a = send(&sink, 1);
+            let mut b = send(&sink, 2);
+            let mut c = send(&sink, 3);
+            let mut d = send(&sink, 4);
+            for f in [&mut a, &mut b, &mut c, &mut d] {
+                assert!(is_pending(f).await);
+            }
+            assert_eq!(written(&client).await, publishes(&[1]));
+
+            // a publish is in flight
+            shared.set_cap(3);
+            assert_eq!(sink.credit(), 0);
+            assert!(is_pending(&mut d).await);
+            assert_eq!(written(&client).await, Bytes::new());
+
+            // granted entries are skipped
+            assert_eq!(shared.pkt_ack(ack(1)), Ok(()));
+            assert!(is_pending(&mut d).await);
+            assert!(is_pending(&mut c).await);
+            assert!(is_pending(&mut b).await);
+            assert_eq!(written(&client).await, publishes(&[4, 3, 2]));
+            assert_eq!(sink.credit(), 0);
+
+            assert_eq!(shared.pkt_ack(ack(4)), Ok(()));
+            assert_eq!(shared.pkt_ack(ack(3)), Ok(()));
+            assert_eq!(shared.pkt_ack(ack(2)), Ok(()));
+            for f in [a, b, c, d] {
+                assert!(f.await.is_ok());
+            }
+            assert_eq!(sink.credit(), 3);
+        }
+
+        /// `QoS 2` publish keeps the send credit until PUBCOMP
+        #[ntex::test]
+        async fn test_exactly_once_keeps_credit() {
+            let (client, _io, shared, sink) = setup(1);
+
+            let mut a = Box::pin(
+                sink.publish("a")
+                    .packet_id(1)
+                    .send_exactly_once(Bytes::new()),
+            );
+            let mut b = send(&sink, 2);
+            assert!(is_pending(&mut a).await);
+            assert!(is_pending(&mut b).await);
+            assert_eq!(
+                written(&client).await,
+                Bytes::from_static(&[0x34, 0x06, 0x00, 0x01, b'a', 0x00, 0x01, 0x00])
+            );
+
+            assert_eq!(
+                shared.pkt_ack(Ack::Receive(codec::PublishAck::default())),
+                Ok(())
+            );
+            let rec = timeout(Millis(1000), a).await.unwrap().unwrap();
+            let mut rel = Box::pin(rec.release());
+            assert!(is_pending(&mut rel).await);
+            assert!(is_pending(&mut b).await);
+            assert_eq!(
+                written(&client).await,
+                Bytes::from_static(&[0x62, 0x04, 0x00, 0x01, 0x00, 0x00])
+            );
+
+            assert_eq!(
+                shared.pkt_ack(Ack::Complete(codec::PublishAck2::default())),
+                Ok(())
+            );
+            assert!(rel.await.is_ok());
+            assert!(is_pending(&mut b).await);
+            assert_eq!(written(&client).await, publishes(&[2]));
+            assert_eq!(shared.pkt_ack(ack(2)), Ok(()));
+            assert!(b.await.is_ok());
+            assert_eq!(sink.credit(), 1);
+        }
+
+        /// Streaming publish gets the send credit in the order of the calls
+        #[ntex::test]
+        async fn test_stream_waits_in_call_order() {
+            let (client, _io, shared, sink) = setup(1);
+
+            let mut a = send(&sink, 1);
+            assert!(is_pending(&mut a).await);
+            assert_eq!(written(&client).await, publishes(&[1]));
+
+            let (s, stream) = sink.publish("a").packet_id(2).stream_at_least_once(1);
+            let mut s = Box::pin(s);
+            let mut b = send(&sink, 3);
+            assert!(is_pending(&mut b).await);
+
+            assert_eq!(shared.pkt_ack(ack(1)), Ok(()));
+            assert!(a.await.is_ok());
+            assert!(is_pending(&mut b).await);
+            assert_eq!(written(&client).await, Bytes::new());
+
+            assert!(is_pending(&mut s).await);
+            assert_eq!(
+                written(&client).await,
+                Bytes::from_static(&[0x32, 0x07, 0x00, 0x01, b'a', 0x00, 0x02, 0x00])
+            );
+            assert!(stream.send(Bytes::from_static(b"x")).await.is_ok());
+            assert_eq!(written(&client).await, Bytes::from_static(b"x"));
+
+            assert_eq!(shared.pkt_ack(ack(2)), Ok(()));
+            assert!(s.await.is_ok());
+            assert!(is_pending(&mut b).await);
+            assert_eq!(written(&client).await, publishes(&[3]));
+            assert_eq!(shared.pkt_ack(ack(3)), Ok(()));
+            assert!(b.await.is_ok());
+        }
+
+        /// Cleared queues fail waiting publishes and release the granted credit
+        #[ntex::test]
+        async fn test_drop_sink_fails_waiters() {
+            let (client, _io, shared, sink) = setup(1);
+
+            let mut a = send(&sink, 1);
+            let mut b = send(&sink, 2);
+            let mut c = send(&sink, 3);
+            for f in [&mut a, &mut b, &mut c] {
+                assert!(is_pending(f).await);
+            }
+            assert_eq!(written(&client).await, publishes(&[1]));
+            assert_eq!(shared.pkt_ack(ack(1)), Ok(()));
+            assert!(a.await.is_ok());
+
+            // `b` is granted, `c` is waiting
+            shared.drop_sink(false);
+            assert_eq!(sink.credit(), 1);
+            assert!(sink.is_ready());
+
+            // closed entries are skipped
+            let mut d = send(&sink, 4);
+            let mut e = send(&sink, 5);
+            assert!(is_pending(&mut d).await);
+            assert!(is_pending(&mut e).await);
+            assert_eq!(written(&client).await, publishes(&[4]));
+            assert_eq!(shared.pkt_ack(ack(4)), Ok(()));
+            assert!(d.await.is_ok());
+            assert!(is_pending(&mut e).await);
+            assert_eq!(written(&client).await, publishes(&[5]));
+
+            for f in [b, c] {
+                assert_eq!(
+                    timeout(Millis(1000), f).await.unwrap(),
+                    Err(SendPacketError::Disconnected)
+                );
+            }
+            assert_eq!(shared.pkt_ack(ack(5)), Ok(()));
+            assert!(e.await.is_ok());
+            assert_eq!(sink.credit(), 1);
+        }
     }
 }
