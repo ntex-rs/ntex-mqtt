@@ -315,6 +315,9 @@ impl PublishBuilder {
     }
 
     /// Send publish packet with `QoS 2`
+    ///
+    /// If the returned future is dropped after the publish is sent, the publish
+    /// is released, `PublishRelease` is sent once `PublishReceived` is received.
     pub async fn send_exactly_once(
         mut self,
         payload: Bytes,
@@ -344,9 +347,14 @@ impl PublishBuilder {
         let idx = self.shared.set_publish_id(&mut self.packet);
         log::trace!("Publish (QoS2) to {:#?}", self.packet);
 
-        self.shared
-            .wait_publish_response(idx, AckType::Receive, self.packet, Some(payload))?
-            .await
+        let rx =
+            self.shared
+                .wait_publish_response(idx, AckType::Receive, self.packet, Some(payload))?;
+        let guard = ReleaseGuard(idx, &self.shared);
+        let result = rx.await;
+        std::mem::forget(guard);
+
+        result
             .map(move |_| PublishReceived {
                 packet_id: Some(idx),
                 shared: self.shared,
@@ -454,6 +462,18 @@ impl Drop for PublishReceived {
         if let Some(id) = self.packet_id.take() {
             let _ = self.shared.release_publish(id);
         }
+    }
+}
+
+/// Releases `QoS 2` publish if the publish future is dropped after `PublishReceived`
+/// packet is delivered to it but before the future is polled, PUBREC must be
+/// answered with PUBREL (MQTT 3.1.1, 4.3.3). If the PUBREC is not received yet,
+/// the dispatcher releases the publish.
+struct ReleaseGuard<'a>(NonZeroU16, &'a MqttShared);
+
+impl Drop for ReleaseGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.1.release_publish(self.0);
     }
 }
 
@@ -960,5 +980,86 @@ mod tests {
         assert!(sink.ping());
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"\xc0\x00"));
+    }
+
+    /// Dropped `QoS 2` publish future is released, PUBREL is sent and
+    /// packet id and in-flight slot are freed (MQTT 3.1.1, 4.3.3)
+    #[ntex::test]
+    async fn test_dropped_exactly_once() {
+        use std::future::Future;
+
+        use ntex_util::future::lazy;
+        use ntex_util::time::{Millis, timeout};
+
+        fn id(id: u16) -> NonZeroU16 {
+            NonZeroU16::new(id).unwrap()
+        }
+        fn rec(packet_id: u16) -> Ack {
+            Ack::Receive(id(packet_id))
+        }
+        fn comp(packet_id: u16) -> Ack {
+            Ack::Complete(id(packet_id))
+        }
+        const PUBLISH: &[u8] = b"\x34\x05\x00\x01a\x00\x01";
+        const PUBREL: &[u8] = b"\x62\x02\x00\x01";
+
+        // PUBREC received before or after the future is dropped
+        for delivered in [false, true] {
+            let (client, server) = IoTest::create();
+            client.remote_buffer_cap(1024);
+            let io = Io::new(server, SharedCfg::new("test"));
+            let shared = Rc::new(MqttShared::new(
+                io.get_ref(),
+                codec::Codec::default(),
+                true,
+                Rc::default(),
+            ));
+            shared.set_cap(1);
+            let sink = MqttSink::new(shared.clone());
+
+            let mut f = Box::pin(sink.publish("a").send_exactly_once(Bytes::new()));
+            assert!(lazy(|cx| f.as_mut().poll(cx).is_pending()).await);
+            assert_eq!(
+                timeout(Millis(1000), client.read()).await.unwrap().unwrap(),
+                Bytes::from_static(PUBLISH)
+            );
+            if delivered {
+                assert_eq!(shared.pkt_ack(rec(1)), Ok(()));
+                drop(f);
+            } else {
+                drop(f);
+                assert_eq!(shared.pkt_ack(rec(1)), Ok(()));
+            }
+            assert_eq!(
+                timeout(Millis(1000), client.read()).await.unwrap().unwrap(),
+                Bytes::from_static(PUBREL)
+            );
+            assert_eq!(shared.credit(), 0);
+            assert_eq!(shared.pkt_ack(comp(1)), Ok(()));
+            assert_eq!(shared.credit(), 1);
+
+            // packet id and in-flight slot are available
+            let f = sink
+                .publish("a")
+                .packet_id(1)
+                .send_exactly_once(Bytes::new());
+            let mut f = Box::pin(f);
+            assert!(lazy(|cx| f.as_mut().poll(cx).is_pending()).await);
+            assert_eq!(
+                timeout(Millis(1000), client.read()).await.unwrap().unwrap(),
+                Bytes::from_static(PUBLISH)
+            );
+            assert_eq!(shared.pkt_ack(rec(1)), Ok(()));
+            let received = timeout(Millis(1000), f).await.unwrap().unwrap();
+            let mut r = Box::pin(received.release());
+            assert!(lazy(|cx| r.as_mut().poll(cx).is_pending()).await);
+            assert_eq!(
+                timeout(Millis(1000), client.read()).await.unwrap().unwrap(),
+                Bytes::from_static(PUBREL)
+            );
+            assert_eq!(shared.pkt_ack(comp(1)), Ok(()));
+            assert_eq!(timeout(Millis(1000), r).await, Ok(Ok(())));
+            assert_eq!(shared.credit(), 1);
+        }
     }
 }
