@@ -13,7 +13,7 @@ use crate::{QoS, error, error::SendPacketError, payload::PlSender, types::packet
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub(crate) struct Flags: u8 {
+    pub(crate) struct Flags: u16 {
         const WRB_ENABLED     = 0b0000_0001; // write-backpressure
         const ON_PUBLISH_ACK  = 0b0000_0010; // on-publish-ack callback
 
@@ -25,6 +25,7 @@ bitflags::bitflags! {
         const DISCONNECT      = 0b0010_0000; // Disconnect frame is sent
         const DISCONNECT_RECV = 0b0100_0000; // Disconnect frame is received
         const STOPPED         = 0b1000_0000; // DispatchItem::Stop() is sent
+        const CLIENT          = 0b1_0000_0000; // Client side of the connection
     }
 }
 
@@ -211,6 +212,16 @@ impl MqttShared {
 
     pub(super) fn is_zero_session_expiry(&self) -> bool {
         self.flags.get().contains(Flags::ZERO_SES_EXPIRY)
+    }
+
+    pub(super) fn is_client(&self) -> bool {
+        self.flags.get().contains(Flags::CLIENT)
+    }
+
+    pub(super) fn set_client(&self) {
+        let mut flags = self.flags.get();
+        flags.insert(Flags::CLIENT);
+        self.flags.set(flags);
     }
 
     pub(super) fn set_zero_session_expiry(&self) {

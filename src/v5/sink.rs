@@ -150,6 +150,9 @@ impl MqttSink {
     #[inline]
     #[allow(clippy::missing_panics_doc)]
     /// Create subscribe packet builder
+    ///
+    /// Only a client sink sends the packet, on a server sink
+    /// [`SubscribeBuilder::send`] returns [`SendPacketError::NotAllowed`].
     pub fn subscribe(&self, id: Option<NonZeroU32>) -> SubscribeBuilder {
         SubscribeBuilder {
             id: None,
@@ -166,6 +169,9 @@ impl MqttSink {
     #[inline]
     #[allow(clippy::missing_panics_doc)]
     /// Create unsubscribe packet builder
+    ///
+    /// Only a client sink sends the packet, on a server sink
+    /// [`UnsubscribeBuilder::send`] returns [`SendPacketError::NotAllowed`].
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
         UnsubscribeBuilder {
             id: None,
@@ -640,9 +646,16 @@ impl SubscribeBuilder {
     ///
     /// Receive Maximum does not apply to SUBSCRIBE packets, the packet waits
     /// for write backpressure only and does not use send credit.
+    ///
+    /// Only the client sends SUBSCRIBE packets (MQTT 5.0, 3.8), a server sink
+    /// returns [`SendPacketError::NotAllowed`].
     pub async fn send(self) -> Result<codec::SubscribeAck, SendPacketError> {
         let shared = self.shared;
         let mut packet = self.packet;
+
+        if !shared.is_client() {
+            return Err(SendPacketError::NotAllowed);
+        }
 
         if shared.is_active() {
             // receive maximum does not apply, wait for write backpressure only
@@ -729,9 +742,16 @@ impl UnsubscribeBuilder {
     ///
     /// Receive Maximum does not apply to UNSUBSCRIBE packets, the packet waits
     /// for write backpressure only and does not use send credit.
+    ///
+    /// Only the client sends UNSUBSCRIBE packets (MQTT 5.0, 3.10), a server
+    /// sink returns [`SendPacketError::NotAllowed`].
     pub async fn send(self) -> Result<codec::UnsubscribeAck, SendPacketError> {
         let shared = self.shared;
         let mut packet = self.packet;
+
+        if !shared.is_client() {
+            return Err(SendPacketError::NotAllowed);
+        }
 
         if shared.is_active() {
             // receive maximum does not apply, wait for write backpressure only
@@ -838,6 +858,44 @@ mod tests {
     }
 
     #[ntex::test]
+    async fn test_server_subscribe_not_allowed() {
+        use std::{future::Future, pin::pin, task::Poll};
+
+        use ntex_util::future::lazy;
+
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::new(),
+            Rc::default(),
+        ));
+        shared.set_cap(16);
+        let sink = MqttSink::new(shared);
+
+        // MQTT 5.0, 3.8 and 3.10: SUBSCRIBE and UNSUBSCRIBE are client packets
+        let mut f = pin!(
+            sink.subscribe(None)
+                .topic_filter("a".into(), codec::SubscriptionOptions::default())
+                .send()
+        );
+        let res = lazy(|cx| f.as_mut().poll(cx)).await;
+        assert_eq!(
+            res.map(|r| r.map(|_| ())),
+            Poll::Ready(Err(SendPacketError::NotAllowed))
+        );
+        let mut f = pin!(sink.unsubscribe().topic_filter("a".into()).send());
+        let res = lazy(|cx| f.as_mut().poll(cx)).await;
+        assert_eq!(
+            res.map(|r| r.map(|_| ())),
+            Poll::Ready(Err(SendPacketError::NotAllowed))
+        );
+        assert!(sink.is_open());
+        assert!(client.read_any().is_empty());
+    }
+
+    #[ntex::test]
     async fn test_ack_type_mismatch() {
         use std::{future::Future, pin::pin};
 
@@ -854,6 +912,7 @@ mod tests {
                 codec::Codec::new(),
                 Rc::default(),
             ));
+            shared.set_client();
             shared.set_cap(16);
             ((client, io), shared.clone(), MqttSink::new(shared))
         }
@@ -1395,6 +1454,7 @@ mod tests {
             codec::Codec::new(),
             Rc::default(),
         ));
+        shared.set_client();
         shared.set_cap(1);
         let sink = MqttSink::new(shared.clone());
         let sub = |packet_id| {

@@ -130,6 +130,9 @@ impl MqttSink {
 
     #[inline]
     /// Create subscribe packet builder
+    ///
+    /// Only a client sink sends the packet, on a server sink
+    /// [`SubscribeBuilder::send`] returns [`SendPacketError::NotAllowed`].
     pub fn subscribe(&self) -> SubscribeBuilder {
         SubscribeBuilder {
             id: None,
@@ -140,6 +143,9 @@ impl MqttSink {
 
     #[inline]
     /// Create unsubscribe packet builder
+    ///
+    /// Only a client sink sends the packet, on a server sink
+    /// [`UnsubscribeBuilder::send`] returns [`SendPacketError::NotAllowed`].
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
         UnsubscribeBuilder {
             id: None,
@@ -525,7 +531,13 @@ impl SubscribeBuilder {
     }
 
     /// Send subscribe packet
+    ///
+    /// Only the client sends SUBSCRIBE packets (MQTT 3.1.1, 3.8), a server sink
+    /// returns [`SendPacketError::NotAllowed`].
     pub async fn send(self) -> Result<Vec<codec::SubscribeReturnCode>, SendPacketError> {
+        if !self.shared.is_client() {
+            return Err(SendPacketError::NotAllowed);
+        }
         if self.shared.is_active() {
             // handle client receive maximum
             if let Some(rx) = self.shared.wait_readiness()
@@ -609,9 +621,16 @@ impl UnsubscribeBuilder {
     }
 
     /// Send unsubscribe packet
+    ///
+    /// Only the client sends UNSUBSCRIBE packets (MQTT 3.1.1, 3.10), a server
+    /// sink returns [`SendPacketError::NotAllowed`].
     pub async fn send(self) -> Result<(), SendPacketError> {
         let shared = self.shared;
         let filters = self.topic_filters;
+
+        if !shared.is_client() {
+            return Err(SendPacketError::NotAllowed);
+        }
 
         if shared.is_active() {
             // handle client receive maximum
@@ -721,6 +740,41 @@ mod tests {
         // UnsubscribeBuilder
         let ub = sink.unsubscribe();
         assert!(format!("{ub:?}").contains("UnsubscribeBuilder"));
+    }
+
+    #[ntex::test]
+    async fn test_server_subscribe_not_allowed() {
+        use std::{future::Future, pin::pin, task::Poll};
+
+        use ntex_util::future::lazy;
+
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            false,
+            Rc::default(),
+        ));
+        let sink = MqttSink::new(shared);
+
+        // MQTT 3.1.1, 3.8 and 3.10: SUBSCRIBE and UNSUBSCRIBE are client packets
+        let mut f = pin!(
+            sink.subscribe()
+                .topic_filter("a".into(), codec::QoS::AtLeastOnce)
+                .send()
+        );
+        let res = lazy(|cx| f.as_mut().poll(cx)).await;
+        assert_eq!(
+            res.map(|r| r.map(|_| ())),
+            Poll::Ready(Err(SendPacketError::NotAllowed))
+        );
+        let mut f = pin!(sink.unsubscribe().topic_filter("a".into()).send());
+        let res = lazy(|cx| f.as_mut().poll(cx)).await;
+        assert_eq!(res, Poll::Ready(Err(SendPacketError::NotAllowed)));
+        assert!(sink.is_open());
+        assert!(client.read_any().is_empty());
     }
 
     #[ntex::test]

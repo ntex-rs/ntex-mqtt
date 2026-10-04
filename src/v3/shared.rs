@@ -123,8 +123,12 @@ impl MqttShared {
         self.io.tag()
     }
 
+    pub(super) fn is_client(&self) -> bool {
+        self.flags.get().contains(Flags::CLIENT)
+    }
+
     pub(super) fn close(&self) {
-        if self.flags.get().contains(Flags::CLIENT) && !self.is_disconnect_sent() {
+        if self.is_client() && !self.is_disconnect_sent() {
             let _ = self.encode_packet(codec::Packet::Disconnect);
         }
         self.io.close();

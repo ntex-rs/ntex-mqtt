@@ -473,6 +473,10 @@ pub enum SendPacketError {
     /// Peer disconnected
     #[error("Peer is disconnected")]
     Disconnected,
+    /// The packet cannot be sent by this side of the connection, a server
+    /// does not send SUBSCRIBE and UNSUBSCRIBE packets
+    #[error("Packet is not allowed to be sent by the server")]
+    NotAllowed,
 }
 
 /// Errors which can occur when attempting to handle mqtt client connection.
