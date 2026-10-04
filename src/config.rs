@@ -200,8 +200,9 @@ impl MqttServiceConfig {
     /// of their own publishes can complete. Reading pauses at the first other
     /// packet, it is held back until the queue has room. In v5 `QoS 1` and
     /// `QoS 2` publishes are handled while nothing is held back, Receive
-    /// Maximum ([`set_max_receive`]) bounds them, the queue grows up to
-    /// `max_queue` plus Receive Maximum responses. `0` disables the limit.
+    /// Maximum bounds them ([`set_max_receive`] for the server,
+    /// [`v5::client::Connect::max_receive`] for the client), the queue grows up
+    /// to `max_queue` plus Receive Maximum responses. `0` disables the limit.
     ///
     /// Acks read after a held back packet wait for it. If the pending calls
     /// await these acks, the queue never gets room and the connection stalls,
@@ -211,6 +212,7 @@ impl MqttServiceConfig {
     /// By default the limit is set to 64 responses.
     ///
     /// [`set_max_receive`]: Self::set_max_receive
+    /// [`v5::client::Connect::max_receive`]: crate::v5::client::Connect::max_receive
     pub fn set_max_queue(mut self, val: usize) -> Self {
         self.max_queue = val;
         self

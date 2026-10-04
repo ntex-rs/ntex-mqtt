@@ -2,6 +2,10 @@
 
 ## [9.1.0] - Unreleased
 
+* v5: Client applies its Receive Maximum to the response queue, `QoS 1` and `QoS 2`
+  publishes within the limit are handled while the queue is full as on the server,
+  previously these were held back and acks read after them waited
+
 * v3, v5: Payload chunks do not keep response queue slots, previously each chunk received
   while the publish handler was pending kept a slot until the publish completed and filled
   the queue, holding back the packets after the publish
