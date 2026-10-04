@@ -620,18 +620,6 @@ impl FrameState for MqttShared {
             _ => QueueLimit::Hold,
         }
     }
-
-    #[inline]
-    fn held_size(&self, item: &codec::Decoded) -> usize {
-        match item {
-            // the frame size includes payload that is not received yet
-            codec::Decoded::Publish(publish, payload, size) => {
-                (*size as usize).saturating_sub(publish.payload_size as usize - payload.len())
-            }
-            codec::Decoded::Packet(_, size) => *size as usize,
-            codec::Decoded::PayloadChunk(chunk, _) => chunk.len(),
-        }
-    }
 }
 
 impl Decoder for MqttShared {

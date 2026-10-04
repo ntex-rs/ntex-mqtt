@@ -896,18 +896,6 @@ impl FrameState for MqttShared {
     fn bounded_slots(&self) -> usize {
         self.receive_max() as usize
     }
-
-    #[inline]
-    fn held_size(&self, item: &Decoded) -> usize {
-        match item {
-            // the frame size includes payload that is not received yet
-            Decoded::Publish(publish, payload, size) => {
-                (*size as usize).saturating_sub(publish.payload_size as usize - payload.len())
-            }
-            Decoded::Packet(_, size) => *size as usize,
-            Decoded::PayloadChunk(chunk, _) => chunk.len(),
-        }
-    }
 }
 
 impl Decoder for MqttShared {
