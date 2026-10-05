@@ -1329,6 +1329,10 @@ async fn test_ack_order() -> std::io::Result<()> {
         })
         .protocol(async move |msg| match msg {
             ProtocolMessage::Ping(msg) => Ok(msg.ack()),
+            ProtocolMessage::Auth(msg) => Ok(msg.ack(codec::Auth {
+                auth_method: Some(ByteString::from_static("m")),
+                ..Default::default()
+            })),
             ProtocolMessage::Subscribe(mut msg) => {
                 for mut sub in &mut msg {
                     sub.topic();
@@ -1390,8 +1394,21 @@ async fn test_ack_order() -> std::io::Result<()> {
     io.send(Encoded::Packet(Packet::PingRequest), &codec)
         .await
         .unwrap();
+    io.send(
+        Encoded::Packet(
+            codec::Auth {
+                reason_code: codec::AuthReasonCode::ReAuth,
+                auth_method: Some(ByteString::from_static("m")),
+                ..Default::default()
+            }
+            .into(),
+        ),
+        &codec,
+    )
+    .await
+    .unwrap();
 
-    // subscribe and ping responses do not wait for publish acks
+    // subscribe, ping and auth responses do not wait for publish acks
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         packet(pkt),
@@ -1405,6 +1422,15 @@ async fn test_ack_order() -> std::io::Result<()> {
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(packet(pkt), Packet::PingResponse);
+
+    let pkt = io.recv(&codec).await.unwrap().unwrap();
+    assert_eq!(
+        packet(pkt),
+        Packet::from(codec::Auth {
+            auth_method: Some(ByteString::from_static("m")),
+            ..Default::default()
+        })
+    );
 
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
@@ -1641,13 +1667,13 @@ async fn test_max_receive() {
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         packet(pkt),
-        Packet::Disconnect(codec::Disconnect {
+        Packet::Disconnect(Box::new(codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::ReceiveMaximumExceeded,
             session_expiry_interval_secs: None,
             server_reference: None,
             reason_string: None,
             user_properties: Default::default(),
-        })
+        }))
     );
 }
 
@@ -2211,13 +2237,13 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     io.encode(Encoded::Publish(pkt_publish(), Some(Bytes::new())), &codec)
         .unwrap();
     io.encode(
-        Packet::Disconnect(codec::Disconnect {
+        Packet::Disconnect(Box::new(codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::ReceiveMaximumExceeded,
             session_expiry_interval_secs: None,
             server_reference: None,
             reason_string: None,
             user_properties: Default::default(),
-        })
+        }))
         .into(),
         &codec,
     )
@@ -2311,13 +2337,13 @@ async fn handle_or_drop_publish_after_disconnect(
     .unwrap();
 
     io.encode(
-        Encoded::Packet(Packet::Disconnect(codec::Disconnect {
+        Encoded::Packet(Packet::Disconnect(Box::new(codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::ReceiveMaximumExceeded,
             session_expiry_interval_secs: None,
             server_reference: None,
             reason_string: None,
             user_properties: Default::default(),
-        })),
+        }))),
         &codec,
     )
     .unwrap();
@@ -2394,10 +2420,10 @@ async fn test_max_qos() -> std::io::Result<()> {
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert_eq!(
         packet(pkt),
-        Packet::Disconnect(codec::Disconnect {
+        Packet::Disconnect(Box::new(codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::QosNotSupported,
             ..Default::default()
-        })
+        }))
     );
     assert!(violated.load(Relaxed));
 
@@ -2446,10 +2472,10 @@ async fn test_retain_not_available() -> std::io::Result<()> {
         let pkt = io.recv(&codec).await.unwrap().unwrap();
         assert_eq!(
             packet(pkt),
-            Packet::Disconnect(codec::Disconnect {
+            Packet::Disconnect(Box::new(codec::Disconnect {
                 reason_code: codec::DisconnectReasonCode::RetainNotSupported,
                 ..Default::default()
-            }),
+            })),
             "{qos:?}"
         );
     }
@@ -2858,13 +2884,8 @@ async fn test_disconnect_once() -> std::io::Result<()> {
     let res = client.recv().await.unwrap().unwrap();
     assert!(matches!(
         res,
-        codec::Decoded::Packet(
-            codec::Packet::Disconnect(codec::Disconnect {
-                reason_code: codec::DisconnectReasonCode::ServerMoved,
-                ..
-            }),
-            _
-        )
+        codec::Decoded::Packet(codec::Packet::Disconnect(ref pkt), _)
+            if pkt.reason_code == codec::DisconnectReasonCode::ServerMoved
     ));
     // IO Close
     let res = client.recv().await.unwrap();

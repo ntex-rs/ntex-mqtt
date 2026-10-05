@@ -2,6 +2,22 @@
 
 ## [9.1.0] - Unreleased
 
+* v3, v5: Publish service and publish middleware return `Option<Packet>` instead of
+  `Option<Encoded>` (breaking), the response queue keeps packets, a queue slot is 32 bytes
+  instead of 64 for v3. v5 queue keeps publish acks, other responses of ordered calls are
+  boxed, a queue slot is 64 bytes instead of 200
+
+* v3, v5: Response of an unordered call that completes immediately is written right away,
+  previously it waited for pending ordered calls when the response queue was not empty
+
+* v3, v5: Response queue releases its memory once it drains after a burst of more than
+  16 responses, previously it kept the capacity of the largest burst
+
+* v5: `Packet::Disconnect` and `Packet::Auth` keep boxed packets (breaking)
+
+* v5: AUTH responses are not ordered behind pending publish acks, MQTT orders publish
+  acks only and allows other packets during re-authentication
+
 * v3, v5: `send_at_most_once()` and `stream_at_most_once()` are async (breaking), they wait
   for write backpressure to be released and for an outgoing streaming payload to complete,
   previously QoS 0 publishes ignored write backpressure and failed during streaming

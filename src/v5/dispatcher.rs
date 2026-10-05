@@ -11,7 +11,7 @@ use crate::error::{DecodeError, DispatcherError, MqttProtocolError, PayloadError
 use crate::payload::{Payload, PayloadStatus};
 use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
-use super::codec::{self, Decoded, DisconnectReasonCode, Encoded, Packet};
+use super::codec::{self, Decoded, DisconnectReasonCode, Packet};
 use super::control::{Pkt, ProtocolMessage, ProtocolMessageAck};
 use super::publish::{Publish, PublishAck};
 use super::{Session, ToPublishAck, shared::Ack, shared::MqttShared};
@@ -23,7 +23,7 @@ pub(super) fn factory<AppSt, E, Pub, Ctl>(
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
-    Res = Option<Encoded>,
+    Res = Option<Packet>,
     Error = DispatcherError<E>,
     InitError = Failure,
 >
@@ -190,7 +190,7 @@ where
     T::Error: ToPublishAck<Error = E>,
     C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
-    type Res = Option<Encoded>;
+    type Res = Option<Packet>;
     type Error = DispatcherError<E>;
 
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
@@ -279,12 +279,10 @@ where
                                     "{}: Re-delivered publish packet is received: {pid:?}",
                                     self.tag()
                                 );
-                                Some(Some(Encoded::Packet(codec::Packet::PublishReceived(
-                                    codec::PublishAck {
-                                        packet_id: pid,
-                                        ..Default::default()
-                                    },
-                                ))))
+                                Some(Some(codec::Packet::PublishReceived(codec::PublishAck {
+                                    packet_id: pid,
+                                    ..Default::default()
+                                })))
                             }
                             _ => None,
                         };
@@ -329,12 +327,11 @@ where
                                 reason_code: codec::PublishAckReason::PacketIdentifierInUse,
                                 ..Default::default()
                             };
-                            redelivered =
-                                Some(Some(Encoded::Packet(if publish.qos == QoS::ExactlyOnce {
-                                    codec::Packet::PublishReceived(ack)
-                                } else {
-                                    codec::Packet::PublishAck(ack)
-                                })));
+                            redelivered = Some(Some(if publish.qos == QoS::ExactlyOnce {
+                                codec::Packet::PublishReceived(ack)
+                            } else {
+                                codec::Packet::PublishAck(ack)
+                            }));
                         }
                     }
 
@@ -454,14 +451,12 @@ where
                     )
                     .into())
                 } else {
-                    Ok(Some(Encoded::Packet(codec::Packet::PublishComplete(
-                        codec::PublishAck2 {
-                            packet_id: ack.packet_id,
-                            reason_code: codec::PublishAck2Reason::PacketIdNotFound,
-                            properties: codec::UserProperties::default(),
-                            reason_string: None,
-                        },
-                    ))))
+                    Ok(Some(codec::Packet::PublishComplete(codec::PublishAck2 {
+                        packet_id: ack.packet_id,
+                        reason_code: codec::PublishAck2Reason::PacketIdNotFound,
+                        properties: codec::UserProperties::default(),
+                        reason_string: None,
+                    })))
                 }
             }
             Decoded::Packet(Packet::PublishComplete(pkt), _) => {
@@ -471,7 +466,7 @@ where
             Decoded::Packet(Packet::Auth(pkt), size) => {
                 if self.inner.sink.is_active() {
                     self.inner
-                        .control(ProtocolMessage::auth(pkt, size), ctx)
+                        .control(ProtocolMessage::auth(*pkt, size), ctx)
                         .await
                 } else {
                     Ok(None)
@@ -493,7 +488,7 @@ where
                     self.inner.sink.is_disconnect_sent();
                     self.inner.sink.close(None);
                     self.inner
-                        .control(ProtocolMessage::remote_disconnect(pkt, size), ctx)
+                        .control(ProtocolMessage::remote_disconnect(*pkt, size), ctx)
                         .await
                 }
             }
@@ -556,18 +551,16 @@ where
                     .insert_inflight(pkt.packet_id, InFlight::Subscribe)
                 {
                     // duplicated packet id, queued to keep acks in the order packets are received
-                    Ok(Some(Encoded::Packet(codec::Packet::SubscribeAck(
-                        codec::SubscribeAck {
-                            packet_id: pkt.packet_id,
-                            status: pkt
-                                .topic_filters
-                                .iter()
-                                .map(|_| codec::SubscribeAckReason::PacketIdentifierInUse)
-                                .collect(),
-                            properties: codec::UserProperties::new(),
-                            reason_string: None,
-                        },
-                    ))))
+                    Ok(Some(codec::Packet::SubscribeAck(codec::SubscribeAck {
+                        packet_id: pkt.packet_id,
+                        status: pkt
+                            .topic_filters
+                            .iter()
+                            .map(|_| codec::SubscribeAckReason::PacketIdentifierInUse)
+                            .collect(),
+                        properties: codec::UserProperties::new(),
+                        reason_string: None,
+                    })))
                 } else {
                     let id = pkt.packet_id;
                     self.inner
@@ -597,18 +590,16 @@ where
                     .insert_inflight(pkt.packet_id, InFlight::Subscribe)
                 {
                     // duplicated packet id, queued to keep acks in the order packets are received
-                    Ok(Some(Encoded::Packet(codec::Packet::UnsubscribeAck(
-                        codec::UnsubscribeAck {
-                            packet_id: pkt.packet_id,
-                            status: pkt
-                                .topic_filters
-                                .iter()
-                                .map(|_| codec::UnsubscribeAckReason::PacketIdentifierInUse)
-                                .collect(),
-                            properties: codec::UserProperties::new(),
-                            reason_string: None,
-                        },
-                    ))))
+                    Ok(Some(codec::Packet::UnsubscribeAck(codec::UnsubscribeAck {
+                        packet_id: pkt.packet_id,
+                        status: pkt
+                            .topic_filters
+                            .iter()
+                            .map(|_| codec::UnsubscribeAckReason::PacketIdentifierInUse)
+                            .collect(),
+                        properties: codec::UserProperties::new(),
+                        reason_string: None,
+                    })))
                 } else {
                     let id = pkt.packet_id;
                     self.inner
@@ -642,7 +633,7 @@ impl<C> Inner<C> {
         &self,
         pkt: ProtocolMessage,
         ctx: Ctx<'_, Dispatcher<St, T, C, E>, St>,
-    ) -> Result<Option<Encoded>, DispatcherError<E>>
+    ) -> Result<Option<Packet>, DispatcherError<E>>
     where
         C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
     {
@@ -654,7 +645,7 @@ impl<C> Inner<C> {
         pkt: ProtocolMessage,
         packet_id: u16,
         ctx: Ctx<'_, Dispatcher<St, T, C, E>, St>,
-    ) -> Result<Option<Encoded>, DispatcherError<E>>
+    ) -> Result<Option<Packet>, DispatcherError<E>>
     where
         C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
     {
@@ -673,12 +664,12 @@ impl<C> Inner<C> {
         };
 
         let response = match result.packet {
-            Pkt::Packet(pkt) => Ok(Some(Encoded::Packet(pkt))),
+            Pkt::Packet(pkt) => Ok(Some(pkt)),
             Pkt::Disconnect(pkt) => {
                 if self.sink.is_disconnect_sent() {
                     Ok(None)
                 } else {
-                    Ok(Some(Encoded::Packet(codec::Packet::from(pkt))))
+                    Ok(Some(codec::Packet::from(pkt)))
                 }
             }
             Pkt::None => Ok(None),
@@ -699,7 +690,7 @@ async fn publish_fn<'f, St, T, C, E>(
     packet_id: u16,
     inner: &'f Inner<C>,
     ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
-) -> Result<Option<Encoded>, DispatcherError<E>>
+) -> Result<Option<Packet>, DispatcherError<E>>
 where
     T: Service<St, Publish, Res = PublishAck>,
     T::Error: ToPublishAck<Error = E>,
@@ -750,7 +741,7 @@ where
                 properties: ack.properties,
             })
         };
-        Ok(Some(Encoded::Packet(ack)))
+        Ok(Some(ack))
     } else {
         Ok(None)
     }
@@ -768,6 +759,20 @@ mod tests {
     use super::*;
     use crate::{error, v5::MqttSink, v5::codec};
     use ntex_util::{future::lazy, time::Millis, time::sleep};
+
+    /// The response queue keeps packets, not the larger encoder items
+    #[test]
+    fn test_queue_slot_size() {
+        use std::mem::size_of;
+
+        // ordered calls respond with publish acks, other responses are boxed
+        type Slot = crate::io::QueueSlot<MqttShared>;
+        assert!(size_of::<Slot>() <= size_of::<codec::PublishAck>() + 8);
+        assert!(size_of::<Slot>() < size_of::<Packet>());
+        // large and rare packets are boxed
+        assert!(size_of::<Packet>() < size_of::<codec::Disconnect>() + 8);
+        assert!(size_of::<Packet>() < size_of::<codec::Auth>());
+    }
 
     #[derive(Debug)]
     struct TestError;
@@ -908,7 +913,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let Encoded::Packet(Packet::PublishComplete(pkt)) = pkt else {
+        let Packet::PublishComplete(pkt) = pkt else {
             panic!()
         };
         assert_eq!(pkt.reason_code, codec::PublishAck2Reason::PacketIdNotFound);
@@ -1064,7 +1069,7 @@ mod tests {
                 let res = disp.call(subscribe(tf)).await;
                 if available {
                     assert!(
-                        matches!(res, Ok(Some(Encoded::Packet(Packet::SubscribeAck(_))))),
+                        matches!(res, Ok(Some(Packet::SubscribeAck(_)))),
                         "{tf}: {res:?}"
                     );
                 } else {
@@ -1080,17 +1085,14 @@ mod tests {
                 // unsubscribe is not restricted
                 let res = disp.call(unsubscribe(tf)).await;
                 assert!(
-                    matches!(res, Ok(Some(Encoded::Packet(Packet::UnsubscribeAck(_))))),
+                    matches!(res, Ok(Some(Packet::UnsubscribeAck(_)))),
                     "{tf}: {res:?}"
                 );
             }
 
             // filters without wildcards are not restricted
             let res = disp.call(subscribe("a/b")).await;
-            assert!(
-                matches!(res, Ok(Some(Encoded::Packet(Packet::SubscribeAck(_))))),
-                "{res:?}"
-            );
+            assert!(matches!(res, Ok(Some(Packet::SubscribeAck(_)))), "{res:?}");
         }
     }
 
@@ -1114,7 +1116,7 @@ mod tests {
                 cfg.get(),
             ),
         );
-        let violation = |res: Result<Option<Encoded>, DispatcherError<TestError>>| {
+        let violation = |res: Result<Option<Packet>, DispatcherError<TestError>>| {
             let Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err))) = res
             else {
                 panic!("expected protocol violation")
@@ -1190,24 +1192,15 @@ mod tests {
         assert_eq!(err, error::SpecViolation::Subs_3_8_3_4);
 
         let res = disp.call(subscribe("$share/g/a", false)).await.unwrap();
-        assert!(matches!(
-            res,
-            Some(Encoded::Packet(Packet::SubscribeAck(_)))
-        ));
+        assert!(matches!(res, Some(Packet::SubscribeAck(_))));
         let res = disp.call(unsubscribe("$share/g/a")).await.unwrap();
-        assert!(matches!(
-            res,
-            Some(Encoded::Packet(Packet::UnsubscribeAck(_)))
-        ));
+        assert!(matches!(res, Some(Packet::UnsubscribeAck(_))));
         let mut pkt = subscribe("a", true);
         if let Decoded::Packet(Packet::Subscribe(ref mut pkt), _) = pkt {
             pkt.packet_id = NonZeroU16::new(3).unwrap();
         }
         let res = disp.call(pkt).await.unwrap();
-        assert!(matches!(
-            res,
-            Some(Encoded::Packet(Packet::SubscribeAck(_)))
-        ));
+        assert!(matches!(res, Some(Packet::SubscribeAck(_))));
     }
 
     #[test]
@@ -1239,7 +1232,7 @@ mod tests {
         assert!(publish.is_limited() && !publish.is_ordered());
         let chunk = Decoded::PayloadChunk(Bytes::from_static(b"c"), true);
         assert!(!chunk.is_limited() && chunk.is_ordered());
-        let disconnect = Decoded::Packet(Packet::Disconnect(codec::Disconnect::default()), 2);
+        let disconnect = Decoded::Packet(Packet::Disconnect(Box::default()), 2);
         assert!(!disconnect.is_limited() && disconnect.is_ordered());
         let ping = Decoded::Packet(Packet::PingRequest, 2);
         assert!(!ping.is_limited() && !ping.is_ordered());
@@ -1251,7 +1244,7 @@ mod tests {
         receive_max: u16,
     ) -> (
         Io,
-        Pipeline<Decoded, Option<Encoded>, DispatcherError<TestError>>,
+        Pipeline<Decoded, Option<Packet>, DispatcherError<TestError>>,
     ) {
         let cfg: SharedCfg = SharedCfg::new("DBG").add(MqttServiceConfig::new()).into();
         let io = Io::new(IoTest::create().0, cfg.clone());
@@ -1321,25 +1314,25 @@ mod tests {
         )
     }
 
-    fn ack(id: u16, qos2: bool, reason_code: codec::PublishAckReason) -> Encoded {
+    fn ack(id: u16, qos2: bool, reason_code: codec::PublishAckReason) -> Packet {
         let ack = codec::PublishAck {
             packet_id: NonZeroU16::new(id).unwrap(),
             reason_code,
             ..Default::default()
         };
-        Encoded::Packet(if qos2 {
+        if qos2 {
             Packet::PublishReceived(ack)
         } else {
             Packet::PublishAck(ack)
-        })
+        }
     }
 
-    fn pubcomp(id: u16, reason_code: codec::PublishAck2Reason) -> Encoded {
-        Encoded::Packet(Packet::PublishComplete(codec::PublishAck2 {
+    fn pubcomp(id: u16, reason_code: codec::PublishAck2Reason) -> Packet {
+        Packet::PublishComplete(codec::PublishAck2 {
             packet_id: NonZeroU16::new(id).unwrap(),
             reason_code,
             ..Default::default()
-        }))
+        })
     }
 
     #[ntex::test]
@@ -1348,7 +1341,7 @@ mod tests {
 
         let pubrel_calls = Rc::new(Cell::new(0));
         let (_io, disp) = qos2_dispatcher(pubrel_calls.clone(), Rc::default(), 1);
-        let receive_max_exceeded = |res: Result<Option<Encoded>, DispatcherError<TestError>>| {
+        let receive_max_exceeded = |res: Result<Option<Packet>, DispatcherError<TestError>>| {
             matches!(
                 res,
                 Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(ref err)))
@@ -1387,7 +1380,7 @@ mod tests {
     #[ntex::test]
     async fn test_receive_max_subscribe() {
         let (_io, disp) = qos2_dispatcher(Rc::default(), Rc::default(), 1);
-        let receive_max_exceeded = |res: Result<Option<Encoded>, DispatcherError<TestError>>| {
+        let receive_max_exceeded = |res: Result<Option<Packet>, DispatcherError<TestError>>| {
             matches!(
                 res,
                 Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(ref err)))
@@ -1431,13 +1424,10 @@ mod tests {
         let res = disp.call(qos_publish(5, QoS::AtLeastOnce, "test")).await;
         assert!(receive_max_exceeded(res));
 
-        assert!(matches!(
-            sub.await.unwrap(),
-            Some(Encoded::Packet(Packet::SubscribeAck(_)))
-        ));
+        assert!(matches!(sub.await.unwrap(), Some(Packet::SubscribeAck(_))));
         assert!(matches!(
             unsub.await.unwrap(),
-            Some(Encoded::Packet(Packet::UnsubscribeAck(_)))
+            Some(Packet::UnsubscribeAck(_))
         ));
         assert_eq!(
             f.await.unwrap(),
@@ -1573,7 +1563,7 @@ mod tests {
     }
 
     fn assert_unexpected<E: std::fmt::Debug>(
-        res: &Result<Option<Encoded>, DispatcherError<E>>,
+        res: &Result<Option<Packet>, DispatcherError<E>>,
         expected: u8,
     ) {
         assert!(

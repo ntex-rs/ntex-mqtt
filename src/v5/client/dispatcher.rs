@@ -6,7 +6,7 @@ use ntex_util::{HashMap, future::Either, future::join, hash_map};
 
 use crate::error::{DecodeError, DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
 use crate::payload::{Payload, PayloadStatus};
-use crate::v5::codec::{Decoded, DisconnectReasonCode, Encoded, Packet};
+use crate::v5::codec::{Decoded, DisconnectReasonCode, Packet};
 use crate::v5::shared::{Ack, MqttShared};
 use crate::v5::{Session, codec, control::Pkt, publish::Publish, publish::PublishAck};
 use crate::{MqttServiceConfig, types::QoS, types::packet_type};
@@ -21,7 +21,7 @@ pub(super) fn create_dispatcher<St, T, C, E>(
     max_receive: usize,
     max_topic_alias: u16,
     cfg: Cfg<MqttServiceConfig>,
-) -> impl Service<Session<St>, Decoded, Res = Option<Encoded>, Error = DispatcherError<E>>
+) -> impl Service<Session<St>, Decoded, Res = Option<Packet>, Error = DispatcherError<E>>
 where
     St: 'static,
     E: From<T::Error> + 'static,
@@ -84,7 +84,7 @@ where
     T: Service<St, Publish, Res = Either<Publish, PublishAck>, Error = E> + 'static,
     C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>> + 'static,
 {
-    type Res = Option<Encoded>;
+    type Res = Option<Packet>;
     type Error = DispatcherError<E>;
 
     #[inline]
@@ -159,12 +159,10 @@ where
                                 if publish.dup && publish.qos == QoS::ExactlyOnce =>
                             {
                                 log::trace!("Re-delivered publish packet is received: {pid:?}");
-                                Some(Some(Encoded::Packet(Packet::PublishReceived(
-                                    codec::PublishAck {
-                                        packet_id: pid,
-                                        ..Default::default()
-                                    },
-                                ))))
+                                Some(Some(Packet::PublishReceived(codec::PublishAck {
+                                    packet_id: pid,
+                                    ..Default::default()
+                                })))
                             }
                             _ => None,
                         };
@@ -193,13 +191,11 @@ where
                                         reason_code: codec::PublishAckReason::PacketIdentifierInUse,
                                         ..Default::default()
                                     };
-                                    redelivered = Some(Some(Encoded::Packet(
-                                        if publish.qos == QoS::ExactlyOnce {
-                                            Packet::PublishReceived(ack)
-                                        } else {
-                                            Packet::PublishAck(ack)
-                                        },
-                                    )));
+                                    redelivered = Some(Some(if publish.qos == QoS::ExactlyOnce {
+                                        Packet::PublishReceived(ack)
+                                    } else {
+                                        Packet::PublishAck(ack)
+                                    }));
                                 }
                                 hash_map::Entry::Vacant(entry) => {
                                     entry.insert(InFlight::Publish(publish.qos));
@@ -319,14 +315,12 @@ where
                         "PublishRelease packet before PublishReceived",
                     )
                     .into()),
-                    None => Ok(Some(Encoded::Packet(codec::Packet::PublishComplete(
-                        codec::PublishAck2 {
-                            packet_id,
-                            reason_code: codec::PublishAck2Reason::PacketIdNotFound,
-                            properties: codec::UserProperties::default(),
-                            reason_string: None,
-                        },
-                    )))),
+                    None => Ok(Some(codec::Packet::PublishComplete(codec::PublishAck2 {
+                        packet_id,
+                        reason_code: codec::PublishAck2Reason::PacketIdNotFound,
+                        properties: codec::UserProperties::default(),
+                        reason_string: None,
+                    }))),
                 }
             }
             Decoded::Packet(Packet::PublishComplete(pkt), _) => {
@@ -358,7 +352,7 @@ where
                     self.inner.sink.is_disconnect_sent();
                     self.inner.sink.close(None);
                     self.inner
-                        .control(ProtocolMessage::dis(pkt, size), ctx)
+                        .control(ProtocolMessage::dis(*pkt, size), ctx)
                         .await
                 }
             }
@@ -396,7 +390,7 @@ async fn publish_fn<'f, St, T, C, E: 'static>(
     packet_size: u32,
     inner: &'f Inner<C>,
     ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
-) -> Result<Option<Encoded>, DispatcherError<E>>
+) -> Result<Option<Packet>, DispatcherError<E>>
 where
     T: Service<St, Publish, Res = Either<Publish, PublishAck>, Error = E>,
     C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>> + 'static,
@@ -431,7 +425,7 @@ where
             Packet::PublishAck(ack)
         };
         inner.update_inflight(id, &pkt);
-        Ok(Some(Encoded::Packet(pkt)))
+        Ok(Some(pkt))
     } else {
         Ok(None)
     }
@@ -461,7 +455,7 @@ impl<C> Inner<C> {
         &self,
         pkt: ProtocolMessage,
         ctx: Ctx<'_, Dispatcher<St, T, C, E>, St>,
-    ) -> Result<Option<Encoded>, DispatcherError<E>>
+    ) -> Result<Option<Packet>, DispatcherError<E>>
     where
         C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
     {
@@ -473,7 +467,7 @@ impl<C> Inner<C> {
         pkt: ProtocolMessage,
         packet_id: u16,
         ctx: Ctx<'_, Dispatcher<St, T, C, E>, St>,
-    ) -> Result<Option<Encoded>, DispatcherError<E>>
+    ) -> Result<Option<Packet>, DispatcherError<E>>
     where
         C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
     {
@@ -498,12 +492,12 @@ impl<C> Inner<C> {
         };
 
         let response = match result.packet {
-            Pkt::Packet(pkt) => Ok(Some(Encoded::Packet(pkt))),
+            Pkt::Packet(pkt) => Ok(Some(pkt)),
             Pkt::Disconnect(pkt) => {
                 if self.sink.is_disconnect_sent() {
                     Ok(None)
                 } else {
-                    Ok(Some(Encoded::Packet(codec::Packet::from(pkt))))
+                    Ok(Some(codec::Packet::from(pkt)))
                 }
             }
             Pkt::None => Ok(None),
@@ -556,7 +550,7 @@ mod tests {
             pkt.properties.response_topic = response_topic.map(ByteString::from_static);
             Decoded::Publish(pkt, Bytes::new(), 999)
         };
-        let violation = |res: Result<Option<Encoded>, DispatcherError<()>>| {
+        let violation = |res: Result<Option<Packet>, DispatcherError<()>>| {
             let Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err))) = res
             else {
                 panic!("expected protocol violation")
@@ -666,27 +660,27 @@ mod tests {
         )
     }
 
-    fn pubrec(id: u16, reason_code: codec::PublishAckReason) -> Encoded {
-        Encoded::Packet(Packet::PublishReceived(codec::PublishAck {
+    fn pubrec(id: u16, reason_code: codec::PublishAckReason) -> Packet {
+        Packet::PublishReceived(codec::PublishAck {
             packet_id: pid(id),
             reason_code,
             ..Default::default()
-        }))
+        })
     }
 
-    fn puback(id: u16) -> Encoded {
-        Encoded::Packet(Packet::PublishAck(codec::PublishAck {
+    fn puback(id: u16) -> Packet {
+        Packet::PublishAck(codec::PublishAck {
             packet_id: pid(id),
             ..Default::default()
-        }))
+        })
     }
 
-    fn pubcomp(id: u16, reason_code: codec::PublishAck2Reason) -> Encoded {
-        Encoded::Packet(Packet::PublishComplete(codec::PublishAck2 {
+    fn pubcomp(id: u16, reason_code: codec::PublishAck2Reason) -> Packet {
+        Packet::PublishComplete(codec::PublishAck2 {
             packet_id: pid(id),
             reason_code,
             ..Default::default()
-        }))
+        })
     }
 
     #[ntex::test]
@@ -802,7 +796,7 @@ mod tests {
     /// Chunks of a failed publish are a protocol error, not a panic
     #[ntex::test]
     async fn test_unexpected_payload_chunk() {
-        let unexpected = |res: Result<Option<Encoded>, DispatcherError<()>>| {
+        let unexpected = |res: Result<Option<Packet>, DispatcherError<()>>| {
             matches!(
                 res,
                 Err(DispatcherError::Protocol(MqttProtocolError::Decode(
@@ -830,11 +824,11 @@ mod tests {
         use codec::{PublishAck2Reason as Ack2, PublishAckReason as Ack};
 
         let ack = |id, reason_code| {
-            Some(Encoded::Packet(Packet::PublishAck(codec::PublishAck {
+            Some(Packet::PublishAck(codec::PublishAck {
                 packet_id: pid(id),
                 reason_code,
                 ..Default::default()
-            })))
+            }))
         };
         let pubrel_calls = Rc::new(Cell::new(0));
         let published = Rc::new(Cell::new(0));
@@ -888,7 +882,7 @@ mod tests {
     }
 
     fn assert_unexpected<E: std::fmt::Debug>(
-        res: &Result<Option<Encoded>, DispatcherError<E>>,
+        res: &Result<Option<Packet>, DispatcherError<E>>,
         expected: u8,
     ) {
         assert!(

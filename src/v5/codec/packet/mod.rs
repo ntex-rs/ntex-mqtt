@@ -52,9 +52,9 @@ pub enum Packet {
     /// PING response
     PingResponse,
     /// Disconnection is advertised
-    Disconnect(Disconnect),
+    Disconnect(Box<Disconnect>),
     /// Auth exchange
-    Auth(Auth),
+    Auth(Box<Auth>),
 }
 
 impl Packet {
@@ -135,12 +135,24 @@ impl From<UnsubscribeAck> for Packet {
 
 impl From<Disconnect> for Packet {
     fn from(pkt: Disconnect) -> Self {
+        Self::Disconnect(Box::new(pkt))
+    }
+}
+
+impl From<Box<Disconnect>> for Packet {
+    fn from(pkt: Box<Disconnect>) -> Self {
         Self::Disconnect(pkt)
     }
 }
 
 impl From<Auth> for Packet {
     fn from(pkt: Auth) -> Self {
+        Self::Auth(Box::new(pkt))
+    }
+}
+
+impl From<Box<Auth>> for Packet {
+    fn from(pkt: Box<Auth>) -> Self {
         Self::Auth(pkt)
     }
 }

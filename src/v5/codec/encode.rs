@@ -571,13 +571,13 @@ mod tests {
         );
 
         assert_encode_packet(
-            &Packet::Disconnect(Disconnect {
+            &Packet::Disconnect(Box::new(Disconnect {
                 reason_code: DisconnectReasonCode::NormalDisconnection,
                 session_expiry_interval_secs: None,
                 server_reference: None,
                 reason_string: None,
                 user_properties: vec![],
-            }),
+            })),
             b"\xe0\x02\x00\x00",
         );
     }

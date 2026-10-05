@@ -640,6 +640,9 @@ impl Encoder for MqttShared {
 }
 
 impl FrameState for MqttShared {
+    type Response = codec::Packet;
+    type Queued = codec::Packet;
+
     #[inline]
     fn is_partial(&self) -> bool {
         self.codec.is_payload_pending()

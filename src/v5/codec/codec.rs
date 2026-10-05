@@ -1209,7 +1209,7 @@ mod tests {
         );
         assert_str_rejected(
             &Disconnect::default(),
-            |p| Encoded::Packet(Packet::Disconnect(p)),
+            |p| Encoded::Packet(Packet::Disconnect(Box::new(p))),
             &[
                 |p, s| p.server_reference = Some(s),
                 |p, s| p.reason_string = Some(s),
@@ -1218,7 +1218,7 @@ mod tests {
         );
         assert_str_rejected(
             &auth_with_method(),
-            |p| Encoded::Packet(Packet::Auth(p)),
+            |p| Encoded::Packet(Packet::Auth(Box::new(p))),
             &[
                 |p, s| p.auth_method = Some(s),
                 |p, s| p.reason_string = Some(s),
@@ -1266,7 +1266,7 @@ mod tests {
         );
         assert_bin_rejected(
             &auth_with_method(),
-            |p| Encoded::Packet(Packet::Auth(p)),
+            |p| Encoded::Packet(Packet::Auth(Box::new(p))),
             &[|p, b| p.auth_data = Some(b)],
         );
         assert_bin_rejected(
@@ -1431,11 +1431,11 @@ mod tests {
         let encode = |pkt: Auth| {
             let mut buf = BytePages::default();
             Codec::new()
-                .encode(Encoded::Packet(Packet::Auth(pkt)), &mut buf)
+                .encode(Encoded::Packet(Packet::Auth(Box::new(pkt))), &mut buf)
                 .map(|()| buf.freeze())
         };
         let decode = |data: &[u8]| match Codec::new().decode(&mut BytesMut::from(data)) {
-            Ok(Some(Decoded::Packet(Packet::Auth(pkt), _))) => Ok(pkt),
+            Ok(Some(Decoded::Packet(Packet::Auth(pkt), _))) => Ok(*pkt),
             Ok(_) => panic!(),
             Err(e) => Err(e),
         };
@@ -1495,10 +1495,10 @@ mod tests {
     #[test]
     fn test_server_disconnect_session_expiry() {
         let disconnect = || {
-            Encoded::Packet(Packet::Disconnect(Disconnect {
+            Encoded::Packet(Packet::Disconnect(Box::new(Disconnect {
                 session_expiry_interval_secs: Some(10),
                 ..Disconnect::default()
-            }))
+            })))
         };
         let encode = |codec: &Codec| {
             let mut buf = BytePages::default();
