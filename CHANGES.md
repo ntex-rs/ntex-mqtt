@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* Document read pause, handlers that await acks from the same peer can stall the
+  connection while reading is paused
+
 * v3, v5: Publish service and publish middleware return `Option<Packet>` instead of
   `Option<Encoded>` (breaking), the response queue keeps packets, a queue slot is 32 bytes
   instead of 64 for v3. v5 queue keeps publish acks, other responses of ordered calls are
