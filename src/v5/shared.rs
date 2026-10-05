@@ -298,9 +298,25 @@ impl MqttShared {
         self.flags.get().contains(Flags::PING_PENDING)
     }
 
-    /// Check if newly encoded packets wait behind a streaming payload or write backpressure
-    pub(super) fn is_write_blocked(&self) -> bool {
-        self.is_streaming() || self.io.is_wr_backpressure()
+    /// Wait until already encoded packets can be written, returns `false` if the
+    /// connection is closed
+    ///
+    /// Packets encoded during an outgoing streaming payload are written once the
+    /// payload completes, then the write buffer has to drain to the release threshold
+    /// of write backpressure. A streaming payload started later does not delay them.
+    pub(super) async fn wait_write_unblocked(&self) -> bool {
+        if self.is_streaming() && self.is_active() {
+            self.io.waiter(STREAM_TAG).await;
+        }
+        loop {
+            if !self.is_active() {
+                return false;
+            }
+            // write timeout does not close the connection, keep waiting
+            if self.io.write_ready().await.is_ok() {
+                return self.is_active();
+            }
+        }
     }
 
     /// Check if a `QoS 1` or `QoS 2` publish can be sent without waiting
