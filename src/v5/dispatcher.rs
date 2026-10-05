@@ -791,37 +791,103 @@ mod tests {
         }
     }
 
-    #[ntex::test]
-    async fn test_spec_violations() {
-        let cfg: SharedCfg = SharedCfg::new("DBG")
-            .add(MqttServiceConfig::new().set_max_qos(QoS::AtLeastOnce))
-            .into();
+    type Disp = Pipeline<Decoded, Option<Packet>, DispatcherError<TestError>>;
 
+    fn pid(id: u16) -> NonZeroU16 {
+        NonZeroU16::new(id).unwrap()
+    }
+
+    fn dispatcher<T, C>(
+        cfg: MqttServiceConfig,
+        publish: T,
+        control: C,
+    ) -> (Io, Rc<MqttShared>, Disp)
+    where
+        T: Service<Session<()>, Publish, Res = PublishAck, Error = TestError> + 'static,
+        C: Service<
+                Session<()>,
+                ProtocolMessage,
+                Res = ProtocolMessageAck,
+                Error = DispatcherError<TestError>,
+            > + 'static,
+    {
+        let cfg: SharedCfg = SharedCfg::new("DBG").add(cfg).into();
         let io = Io::new(IoTest::create().0, cfg.clone());
-        let codec = codec::Codec::default();
-        codec.set_retain_available(false);
-        codec.set_sub_ids_available(false);
-        let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
-        shared.set_topic_alias_max(1);
-
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            Rc::default(),
+        ));
         let disp = Pipeline::new(
             Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
-            Dispatcher::new(
-                shared.clone(),
-                fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
-                fn_service(async |msg: ProtocolMessage| {
-                    Ok::<_, DispatcherError<TestError>>(msg.ack())
-                }),
-                cfg.get(),
-            ),
+            Dispatcher::new(shared.clone(), publish, control, cfg.get()),
         );
+        (io, shared, disp)
+    }
+
+    /// Dispatcher that acks all packets
+    fn ack_dispatcher(cfg: MqttServiceConfig) -> (Io, Rc<MqttShared>, Disp) {
+        dispatcher(
+            cfg,
+            fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
+            fn_service(async |msg: ProtocolMessage| Ok::<_, DispatcherError<TestError>>(msg.ack())),
+        )
+    }
+
+    fn violation(
+        res: &Result<Option<Packet>, DispatcherError<TestError>>,
+    ) -> error::ProtocolViolationError {
+        let Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err))) = res else {
+            panic!("expected protocol violation, got {res:?}")
+        };
+        *err
+    }
+
+    fn subscribe(id: u16, filters: &[&'static str]) -> Decoded {
+        Decoded::Packet(
+            Packet::Subscribe(codec::Subscribe {
+                packet_id: pid(id),
+                id: None,
+                user_properties: codec::UserProperties::default(),
+                topic_filters: filters
+                    .iter()
+                    .map(|f| {
+                        (
+                            ByteString::from_static(f),
+                            codec::SubscriptionOptions::default(),
+                        )
+                    })
+                    .collect(),
+            }),
+            999,
+        )
+    }
+
+    fn unsubscribe(id: u16, filters: &[&'static str]) -> Decoded {
+        Decoded::Packet(
+            Packet::Unsubscribe(codec::Unsubscribe {
+                packet_id: pid(id),
+                user_properties: codec::UserProperties::default(),
+                topic_filters: filters.iter().map(|f| ByteString::from_static(f)).collect(),
+            }),
+            999,
+        )
+    }
+
+    #[ntex::test]
+    async fn test_spec_violations() {
+        let (_io, shared, disp) =
+            ack_dispatcher(MqttServiceConfig::new().set_max_qos(QoS::AtLeastOnce));
+        shared.codec.set_retain_available(false);
+        shared.codec.set_sub_ids_available(false);
+        shared.set_topic_alias_max(1);
 
         // retain not available, for any QoS [MQTT-3.2.2-14]
         for (qos, packet_id) in [
             (QoS::AtMostOnce, None),
             (QoS::AtLeastOnce, NonZeroU16::new(1)),
         ] {
-            let err = disp
+            let res = disp
                 .call(Decoded::Publish(
                     codec::Publish {
                         retain: true,
@@ -832,15 +898,9 @@ mod tests {
                     Bytes::new(),
                     999,
                 ))
-                .await
-                .err()
-                .unwrap();
-
-            let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
-                panic!()
-            };
+                .await;
             assert_eq!(
-                err.inner,
+                violation(&res).inner,
                 error::ViolationInner::Spec(error::SpecViolation::Connack_3_2_2_14)
             );
         }
@@ -849,14 +909,7 @@ mod tests {
         let mut pkt = codec::Publish::default();
         pkt.properties.topic_alias = NonZeroU16::new(1);
 
-        let err = disp
-            .call(Decoded::Publish(pkt, Bytes::new(), 999))
-            .await
-            .err()
-            .unwrap();
-        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
-            panic!()
-        };
+        let err = violation(&disp.call(Decoded::Publish(pkt, Bytes::new(), 999)).await);
         assert_eq!(
             err.inner,
             error::ViolationInner::Common {
@@ -883,14 +936,7 @@ mod tests {
         };
         pkt.properties.topic_alias = NonZeroU16::new(2);
 
-        let err = disp
-            .call(Decoded::Publish(pkt, Bytes::new(), 999))
-            .await
-            .err()
-            .unwrap();
-        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
-            panic!()
-        };
+        let err = violation(&disp.call(Decoded::Publish(pkt, Bytes::new(), 999)).await);
         assert_eq!(
             err.inner,
             error::ViolationInner::Spec(error::SpecViolation::Connack_3_2_2_17)
@@ -901,10 +947,8 @@ mod tests {
         let pkt = disp
             .call(Decoded::Packet(
                 Packet::PublishRelease(codec::PublishAck2 {
-                    packet_id: NonZeroU16::new(100).unwrap(),
-                    reason_code: codec::PublishAck2Reason::Success,
-                    properties: codec::UserProperties::default(),
-                    reason_string: None,
+                    packet_id: pid(100),
+                    ..Default::default()
                 }),
                 999,
             ))
@@ -919,71 +963,25 @@ mod tests {
         assert_eq!(pkt.reason_code, codec::PublishAck2Reason::PacketIdNotFound);
 
         // subscribe invalid topic
-        let err = disp
-            .call(Decoded::Packet(
-                Packet::Subscribe(codec::Subscribe {
-                    packet_id: NonZeroU16::new(1).unwrap(),
-                    id: None,
-                    user_properties: codec::UserProperties::default(),
-                    topic_filters: vec![(ByteString::new(), codec::SubscriptionOptions::default())],
-                }),
-                999,
-            ))
-            .await
-            .err()
-            .unwrap();
-
-        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
-            panic!()
-        };
+        let err = violation(&disp.call(subscribe(1, &[""])).await);
         assert_eq!(
             err.inner,
             error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1)
         );
 
         // subscribe sub id not available
-        let err = disp
-            .call(Decoded::Packet(
-                Packet::Subscribe(codec::Subscribe {
-                    packet_id: NonZeroU16::new(1).unwrap(),
-                    id: NonZeroU32::new(1),
-                    user_properties: codec::UserProperties::default(),
-                    topic_filters: vec![(
-                        ByteString::from_static("test"),
-                        codec::SubscriptionOptions::default(),
-                    )],
-                }),
-                999,
-            ))
-            .await
-            .err()
-            .unwrap();
-
-        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
-            panic!()
-        };
+        let mut pkt = subscribe(1, &["test"]);
+        if let Decoded::Packet(Packet::Subscribe(ref mut pkt), _) = pkt {
+            pkt.id = NonZeroU32::new(1);
+        }
+        let err = violation(&disp.call(pkt).await);
         assert_eq!(
             err.inner,
             error::ViolationInner::Spec(error::SpecViolation::Connack_3_2_2_3_12)
         );
 
         // unsubscribe invalid topic
-        let err = disp
-            .call(Decoded::Packet(
-                Packet::Unsubscribe(codec::Unsubscribe {
-                    packet_id: NonZeroU16::new(1).unwrap(),
-                    user_properties: codec::UserProperties::default(),
-                    topic_filters: vec![ByteString::new()],
-                }),
-                999,
-            ))
-            .await
-            .err()
-            .unwrap();
-
-        let DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err)) = err else {
-            panic!()
-        };
+        let err = violation(&disp.call(unsubscribe(1, &[""])).await);
         assert_eq!(
             err.inner,
             error::ViolationInner::Spec(error::SpecViolation::Subs_4_7_1)
@@ -992,55 +990,10 @@ mod tests {
 
     #[ntex::test]
     async fn test_subscription_availability() {
-        let subscribe = |tf: &'static str| {
-            Decoded::Packet(
-                Packet::Subscribe(codec::Subscribe {
-                    packet_id: NonZeroU16::new(1).unwrap(),
-                    id: None,
-                    user_properties: codec::UserProperties::default(),
-                    topic_filters: vec![
-                        (
-                            ByteString::from_static("test"),
-                            codec::SubscriptionOptions::default(),
-                        ),
-                        (
-                            ByteString::from_static(tf),
-                            codec::SubscriptionOptions::default(),
-                        ),
-                    ],
-                }),
-                999,
-            )
-        };
-        let unsubscribe = |tf: &'static str| {
-            Decoded::Packet(
-                Packet::Unsubscribe(codec::Unsubscribe {
-                    packet_id: NonZeroU16::new(2).unwrap(),
-                    user_properties: codec::UserProperties::default(),
-                    topic_filters: vec![ByteString::from_static(tf)],
-                }),
-                999,
-            )
-        };
-
         for available in [true, false] {
-            let cfg: SharedCfg = SharedCfg::new("DBG").add(MqttServiceConfig::new()).into();
-            let io = Io::new(IoTest::create().0, cfg.clone());
-            let codec = codec::Codec::default();
-            codec.set_shared_subs_available(available);
-            codec.set_wildcard_subs_available(available);
-            let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
-            let disp = Pipeline::new(
-                Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
-                Dispatcher::new(
-                    shared.clone(),
-                    fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
-                    fn_service(async |msg: ProtocolMessage| {
-                        Ok::<_, DispatcherError<TestError>>(msg.ack())
-                    }),
-                    cfg.get(),
-                ),
-            );
+            let (_io, shared, disp) = ack_dispatcher(MqttServiceConfig::new());
+            shared.codec.set_shared_subs_available(available);
+            shared.codec.set_wildcard_subs_available(available);
 
             for (tf, reason, message) in [
                 // (MQTT 5.0, 3.2.2.3.13)
@@ -1066,24 +1019,20 @@ mod tests {
                     "Wildcard Subscriptions are not supported",
                 ),
             ] {
-                let res = disp.call(subscribe(tf)).await;
+                let res = disp.call(subscribe(1, &["test", tf])).await;
                 if available {
                     assert!(
                         matches!(res, Ok(Some(Packet::SubscribeAck(_)))),
                         "{tf}: {res:?}"
                     );
                 } else {
-                    let Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err))) =
-                        res
-                    else {
-                        panic!("{tf}: {res:?}")
-                    };
+                    let err = violation(&res);
                     assert_eq!(err.reason(), reason, "{tf}");
                     assert_eq!(err.message(), message, "{tf}");
                 }
 
                 // unsubscribe is not restricted
-                let res = disp.call(unsubscribe(tf)).await;
+                let res = disp.call(unsubscribe(2, &[tf])).await;
                 assert!(
                     matches!(res, Ok(Some(Packet::UnsubscribeAck(_)))),
                     "{tf}: {res:?}"
@@ -1091,36 +1040,16 @@ mod tests {
             }
 
             // filters without wildcards are not restricted
-            let res = disp.call(subscribe("a/b")).await;
+            let res = disp.call(subscribe(1, &["test", "a/b"])).await;
             assert!(matches!(res, Ok(Some(Packet::SubscribeAck(_)))), "{res:?}");
         }
     }
 
     #[ntex::test]
     async fn test_spec_violations_v5() {
-        let cfg: SharedCfg = SharedCfg::new("DBG").add(MqttServiceConfig::new()).into();
-        let io = Io::new(IoTest::create().0, cfg.clone());
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            Rc::default(),
-        ));
-        let disp = Pipeline::new(
-            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
-            Dispatcher::new(
-                shared.clone(),
-                fn_service(async |msg: Publish| Ok::<_, TestError>(msg.ack())),
-                fn_service(async |msg: ProtocolMessage| {
-                    Ok::<_, DispatcherError<TestError>>(msg.ack())
-                }),
-                cfg.get(),
-            ),
-        );
-        let violation = |res: Result<Option<Packet>, DispatcherError<TestError>>| {
-            let Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err))) = res
-            else {
-                panic!("expected protocol violation")
-            };
+        let (_io, _, disp) = ack_dispatcher(MqttServiceConfig::new());
+        let violation = |res: &Result<_, _>| {
+            let err = violation(res);
             assert_eq!(err.reason(), DisconnectReasonCode::ProtocolError);
             let error::ViolationInner::Spec(err) = err.inner else {
                 panic!()
@@ -1143,7 +1072,7 @@ mod tests {
         let subscribe = |filter: &'static str, no_local: bool| {
             Decoded::Packet(
                 Packet::Subscribe(codec::Subscribe {
-                    packet_id: NonZeroU16::new(1).unwrap(),
+                    packet_id: pid(1),
                     id: None,
                     user_properties: codec::UserProperties::default(),
                     topic_filters: vec![(
@@ -1157,47 +1086,37 @@ mod tests {
                 999,
             )
         };
-        let unsubscribe = |filter: &'static str| {
-            Decoded::Packet(
-                Packet::Unsubscribe(codec::Unsubscribe {
-                    packet_id: NonZeroU16::new(2).unwrap(),
-                    user_properties: codec::UserProperties::default(),
-                    topic_filters: vec![ByteString::from_static(filter)],
-                }),
-                999,
-            )
-        };
 
         // [MQTT-3.3.2-14] Response Topic must not contain wildcards
         for topic in ["resp/+", "resp/#"] {
-            let err = violation(disp.call(publish(Some(topic), false)).await);
+            let err = violation(&disp.call(publish(Some(topic), false)).await);
             assert_eq!(err, error::SpecViolation::Pub_3_3_2_14);
         }
         assert!(disp.call(publish(Some("resp/a"), false)).await.is_ok());
 
         // [MQTT-3.3.4-6] Client must not send a Subscription Identifier
-        let err = violation(disp.call(publish(None, true)).await);
+        let err = violation(&disp.call(publish(None, true)).await);
         assert_eq!(err, error::SpecViolation::Pub_3_3_4_6);
 
         // [MQTT-4.8.2-1], [MQTT-4.8.2-2] ShareName format
         for filter in ["$share//a", "$share/g", "$share/+/a"] {
-            let err = violation(disp.call(subscribe(filter, false)).await);
+            let err = violation(&disp.call(subscribe(filter, false)).await);
             assert_eq!(err, error::SpecViolation::Subs_4_8_2);
-            let err = violation(disp.call(unsubscribe(filter)).await);
+            let err = violation(&disp.call(unsubscribe(2, &[filter])).await);
             assert_eq!(err, error::SpecViolation::Subs_4_8_2);
         }
 
         // [MQTT-3.8.3-4] No Local must not be set on a Shared Subscription
-        let err = violation(disp.call(subscribe("$share/g/a", true)).await);
+        let err = violation(&disp.call(subscribe("$share/g/a", true)).await);
         assert_eq!(err, error::SpecViolation::Subs_3_8_3_4);
 
         let res = disp.call(subscribe("$share/g/a", false)).await.unwrap();
         assert!(matches!(res, Some(Packet::SubscribeAck(_))));
-        let res = disp.call(unsubscribe("$share/g/a")).await.unwrap();
+        let res = disp.call(unsubscribe(2, &["$share/g/a"])).await.unwrap();
         assert!(matches!(res, Some(Packet::UnsubscribeAck(_))));
         let mut pkt = subscribe("a", true);
         if let Decoded::Packet(Packet::Subscribe(ref mut pkt), _) = pkt {
-            pkt.packet_id = NonZeroU16::new(3).unwrap();
+            pkt.packet_id = pid(3);
         }
         let res = disp.call(pkt).await.unwrap();
         assert!(matches!(res, Some(Packet::SubscribeAck(_))));
@@ -1242,52 +1161,37 @@ mod tests {
         pubrel_calls: Rc<Cell<usize>>,
         published: Rc<Cell<usize>>,
         receive_max: u16,
-    ) -> (
-        Io,
-        Pipeline<Decoded, Option<Packet>, DispatcherError<TestError>>,
-    ) {
-        let cfg: SharedCfg = SharedCfg::new("DBG").add(MqttServiceConfig::new()).into();
-        let io = Io::new(IoTest::create().0, cfg.clone());
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            Rc::default(),
-        ));
-        shared.set_max_qos(QoS::ExactlyOnce);
-        shared.set_receive_max(receive_max);
-
-        let disp = Pipeline::new(
-            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
-            Dispatcher::new(
-                shared,
-                fn_service(async move |msg: Publish| {
-                    published.set(published.get() + 1);
-                    if msg.topic().path() == "slow" {
+    ) -> (Io, Disp) {
+        let (io, shared, disp) = dispatcher(
+            MqttServiceConfig::new(),
+            fn_service(async move |msg: Publish| {
+                published.set(published.get() + 1);
+                if msg.topic().path() == "slow" {
+                    sleep(Millis(100)).await;
+                }
+                if msg.topic().path() == "err" {
+                    Ok(PublishAck::new(codec::PublishAckReason::UnspecifiedError))
+                } else {
+                    Ok::<_, TestError>(msg.ack())
+                }
+            }),
+            fn_service(move |msg: ProtocolMessage| {
+                if matches!(msg, ProtocolMessage::PublishRelease(_)) {
+                    pubrel_calls.set(pubrel_calls.get() + 1);
+                }
+                async move {
+                    if matches!(
+                        msg,
+                        ProtocolMessage::Subscribe(_) | ProtocolMessage::Unsubscribe(_)
+                    ) {
                         sleep(Millis(100)).await;
                     }
-                    if msg.topic().path() == "err" {
-                        Ok(PublishAck::new(codec::PublishAckReason::UnspecifiedError))
-                    } else {
-                        Ok::<_, TestError>(msg.ack())
-                    }
-                }),
-                fn_service(move |msg: ProtocolMessage| {
-                    if matches!(msg, ProtocolMessage::PublishRelease(_)) {
-                        pubrel_calls.set(pubrel_calls.get() + 1);
-                    }
-                    async move {
-                        if matches!(
-                            msg,
-                            ProtocolMessage::Subscribe(_) | ProtocolMessage::Unsubscribe(_)
-                        ) {
-                            sleep(Millis(100)).await;
-                        }
-                        Ok::<_, DispatcherError<TestError>>(msg.ack())
-                    }
-                }),
-                cfg.get(),
-            ),
+                    Ok::<_, DispatcherError<TestError>>(msg.ack())
+                }
+            }),
         );
+        shared.set_max_qos(QoS::ExactlyOnce);
+        shared.set_receive_max(receive_max);
         (io, disp)
     }
 
@@ -1307,7 +1211,7 @@ mod tests {
     fn pubrel(id: u16) -> Decoded {
         Decoded::Packet(
             Packet::PublishRelease(codec::PublishAck2 {
-                packet_id: NonZeroU16::new(id).unwrap(),
+                packet_id: pid(id),
                 ..Default::default()
             }),
             999,
@@ -1316,7 +1220,7 @@ mod tests {
 
     fn ack(id: u16, qos2: bool, reason_code: codec::PublishAckReason) -> Packet {
         let ack = codec::PublishAck {
-            packet_id: NonZeroU16::new(id).unwrap(),
+            packet_id: pid(id),
             reason_code,
             ..Default::default()
         };
@@ -1329,7 +1233,7 @@ mod tests {
 
     fn pubcomp(id: u16, reason_code: codec::PublishAck2Reason) -> Packet {
         Packet::PublishComplete(codec::PublishAck2 {
-            packet_id: NonZeroU16::new(id).unwrap(),
+            packet_id: pid(id),
             reason_code,
             ..Default::default()
         })
@@ -1389,26 +1293,8 @@ mod tests {
         };
 
         // SUBSCRIBE and UNSUBSCRIBE are processed by the control service
-        let mut sub = Box::pin(disp.call(Decoded::Packet(
-            Packet::Subscribe(codec::Subscribe {
-                packet_id: NonZeroU16::new(1).unwrap(),
-                id: None,
-                user_properties: codec::UserProperties::default(),
-                topic_filters: vec![(
-                    ByteString::from_static("a"),
-                    codec::SubscriptionOptions::default(),
-                )],
-            }),
-            999,
-        )));
-        let mut unsub = Box::pin(disp.call(Decoded::Packet(
-            Packet::Unsubscribe(codec::Unsubscribe {
-                packet_id: NonZeroU16::new(2).unwrap(),
-                user_properties: codec::UserProperties::default(),
-                topic_filters: vec![ByteString::from_static("a")],
-            }),
-            999,
-        )));
+        let mut sub = Box::pin(disp.call(subscribe(1, &["a"])));
+        let mut unsub = Box::pin(disp.call(unsubscribe(2, &["a"])));
         assert!(lazy(|cx| Pin::new(&mut sub).poll(cx)).await.is_pending());
         assert!(lazy(|cx| Pin::new(&mut unsub).poll(cx)).await.is_pending());
 
@@ -1582,7 +1468,7 @@ mod tests {
 
     #[ntex::test]
     async fn test_unexpected_packets() {
-        let pid = NonZeroU16::new(1).unwrap();
+        let pid = pid(1);
         let (_io, disp) = qos2_dispatcher(Rc::default(), Rc::default(), 1);
 
         // a second CONNECT is a protocol error [MQTT-3.1.0-2], packets sent
@@ -1660,32 +1546,18 @@ mod tests {
 
         let fail = Rc::new(Cell::new(false));
         let pfail = Rc::new(Cell::new(false));
-        let cfg: SharedCfg = SharedCfg::new("DBG")
-            .add(MqttServiceConfig::new().set_max_payload_buffer_size(4))
-            .into();
-        let io = Io::new(IoTest::create().0, cfg.clone());
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            Rc::default(),
-        ));
         let held = Rc::new(RefCell::new(None));
-        let h = held.clone();
-        let disp = Pipeline::new(
-            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
-            Dispatcher::new(
-                shared.clone(),
-                Hold(
-                    h,
-                    pfail.clone(),
-                    || TestError,
-                    || PublishAck::new(codec::PublishAckReason::Success),
-                ),
-                FailReady(fail.clone(), || {
-                    DispatcherError::Protocol(MqttProtocolError::ReadTimeout)
-                }),
-                cfg.get(),
+        let (io, _, disp) = dispatcher(
+            MqttServiceConfig::new().set_max_payload_buffer_size(4),
+            Hold(
+                held.clone(),
+                pfail.clone(),
+                || TestError,
+                || PublishAck::new(codec::PublishAckReason::Success),
             ),
+            FailReady(fail.clone(), || {
+                DispatcherError::Protocol(MqttProtocolError::ReadTimeout)
+            }),
         );
         let chunk = |data: &'static [u8]| {
             disp.call_nowait(Decoded::PayloadChunk(Bytes::from_static(data), false))

@@ -838,6 +838,13 @@ mod tests {
     use super::*;
     use crate::{control::Reason, error::DecodeError, error::EncodeError};
 
+    /// Test io pair, the peer accepts up to 1024 bytes
+    fn create() -> (Io, nio::Io) {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+        (client, nio::Io::new(server, SharedCfg::new("DBG")))
+    }
+
     /// Waits up to 1 second for the condition, returns its last value
     async fn wait_until(f: impl Fn() -> bool) -> bool {
         for _ in 0..100 {
@@ -943,12 +950,11 @@ mod tests {
 
     #[ntex::test]
     async fn test_basic() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
+        let (client, server) = create();
         client.write("GET /test HTTP/1\r\n\r\n");
 
         let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
+            server,
             BytesCodec,
             fn_service(async move |msg: Bytes| {
                 sleep(Millis(50)).await;
@@ -956,9 +962,7 @@ mod tests {
             }),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
         sleep(Millis(25)).await;
         client.write("GET /test HTTP/1\r\n\r\n");
 
@@ -978,8 +982,7 @@ mod tests {
 
     #[ntex::test]
     async fn test_drop_connection() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
+        let (client, server) = create();
         client.write("test");
 
         #[derive(Clone)]
@@ -995,7 +998,7 @@ mod tests {
         let on_drop = OnDrop(ops.clone());
 
         let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
+            server,
             BytesCodec,
             fn_service(async move |msg: Bytes| {
                 let _on_drop = on_drop.clone();
@@ -1006,9 +1009,7 @@ mod tests {
             }),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
         sleep(Millis(25)).await;
         client.write("pl1");
         client.close().await;
@@ -1019,15 +1020,14 @@ mod tests {
 
     #[ntex::test]
     async fn test_ordering() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
+        let (client, server) = create();
         client.write("test");
 
         let condition = Condition::new();
         let waiter = condition.wait();
 
         let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
+            server,
             BytesCodec,
             fn_service(async move |msg: Bytes| {
                 waiter.clone().await;
@@ -1035,9 +1035,7 @@ mod tests {
             }),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
         sleep(Millis(50)).await;
 
         client.write("test");
@@ -1162,19 +1160,16 @@ mod tests {
 
     #[ntex::test]
     async fn test_sink() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
+        let (client, server) = create();
         client.write("GET /test HTTP/1\r\n\r\n");
 
         let (disp, io) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
+            server,
             BytesCodec,
             fn_service(async move |msg: Bytes| Ok::<_, DispatcherError<()>>(Some(msg))),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         let buf = client.read().await.unwrap();
         assert_eq!(buf, Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"));
@@ -1200,9 +1195,7 @@ mod tests {
             fn_service(async move |_: Bytes| Err::<Option<Bytes>, _>(DispatcherError::Service(()))),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec)
             .unwrap();
@@ -1257,9 +1250,7 @@ mod tests {
         );
         io.encode(Bytes::from_static(b"GET /test HTTP/1\r\n\r\n"), &BytesCodec)
             .unwrap();
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         // buffer should be flushed
         client.remote_buffer_cap(1024);
@@ -1311,8 +1302,7 @@ mod tests {
     /// Responses are written and reading is paused while control is not ready
     #[ntex::test]
     async fn control_not_ready() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
+        let (client, server) = create();
         client.write("1");
 
         let busy = Rc::new(Cell::new(false));
@@ -1320,7 +1310,7 @@ mod tests {
         let calls = Rc::new(Cell::new(0));
         let (busy2, calls2) = (busy.clone(), calls.clone());
         let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
+            server,
             BytesCodec,
             fn_service(async move |msg: Bytes| {
                 busy2.set(true);
@@ -1368,12 +1358,11 @@ mod tests {
     /// Control readiness error shuts down the dispatcher
     #[ntex::test]
     async fn control_ready_err() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
+        let (client, server) = create();
         client.write("1");
 
         let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
+            server,
             BytesCodec,
             fn_service(async move |msg: Bytes| Ok::<_, DispatcherError<()>>(Some(msg))),
             Ctl {
@@ -1406,13 +1395,12 @@ mod tests {
             }
         }
 
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
+        let (client, server) = create();
 
         let errs = Rc::new(RefCell::new(Vec::new()));
         let errs2 = errs.clone();
         let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
+            server,
             BytesCodec,
             Srv,
             fn_service(async move |msg: Control<()>| {
@@ -1454,14 +1442,13 @@ mod tests {
             }
         }
 
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
+        let (client, server) = create();
 
         let stopped = Rc::new(Cell::new(false));
         let stopped2 = stopped.clone();
         let counter = Rc::new(Cell::new(0));
         let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
+            server,
             ByteCodec,
             Srv(stopped.clone(), counter.clone()),
             fn_service(async move |msg: Control<()>| {
@@ -1521,9 +1508,7 @@ mod tests {
             }),
         );
 
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         let buf = client.read_any();
         assert_eq!(buf, Bytes::from_static(b""));
@@ -1597,15 +1582,14 @@ mod tests {
     /// Update keep-alive timer after receiving frame
     #[ntex::test]
     async fn test_keepalive() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
+        let (client, server) = create();
 
         let data = Arc::new(Mutex::new(RefCell::new(Vec::new())));
         let data2 = data.clone();
         let data3 = data.clone();
 
         let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
+            server,
             BytesCodec,
             fn_service(async move |msg: Bytes| {
                 data2.lock().unwrap().borrow_mut().push(0);
@@ -1692,9 +1676,7 @@ mod tests {
                 Ok::<_, ()>(None)
             }),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
         (client, state, errs)
     }
 
@@ -1753,9 +1735,7 @@ mod tests {
                 Ok::<_, ()>(None)
             }),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
         (client, state, errs)
     }
 
@@ -1913,9 +1893,7 @@ mod tests {
                 Ok::<_, ()>(None)
             }),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         for _ in 0..6 {
             client.write("123");
@@ -1984,9 +1962,7 @@ mod tests {
                 Ok::<_, ()>(None)
             }),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("1");
         sleep(Millis(250)).await;
@@ -2046,9 +2022,7 @@ mod tests {
                 Ok::<_, ()>(None)
             }),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         // first period is extended, one second of the budget is left
         client.write("123");
@@ -2108,9 +2082,7 @@ mod tests {
                 Ok::<_, ()>(None)
             }),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("12345678");
         let buf = client.read().await.unwrap();
@@ -2165,9 +2137,7 @@ mod tests {
             }),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("1");
         client.close().await;
@@ -2267,9 +2237,7 @@ mod tests {
                 Ok::<_, ()>(None)
             }),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("aXc");
         sleep(Millis(300)).await;
@@ -2315,9 +2283,7 @@ mod tests {
                 Ok::<_, ()>(None)
             }),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("abc");
         sleep(Millis(300)).await;
@@ -2361,9 +2327,7 @@ mod tests {
                 Ok::<_, ()>(None)
             }),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         // the unordered response of "q" is written while "b" is pending
         client.write("bq");
@@ -2404,9 +2368,7 @@ mod tests {
 
         // decode, spawn and stop within a single dispatcher poll
         client.write("w12E");
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
         sleep(Millis(50)).await;
         assert!(!client.is_closed());
         assert!(dropped.get());
@@ -2477,11 +2439,10 @@ mod tests {
             }
         }
 
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
+        let (client, server) = create();
 
         let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, SharedCfg::new("DBG")),
+            server,
             BytesCodec,
             Srv(Cell::new(false), data2),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
@@ -2569,9 +2530,7 @@ mod tests {
             srv,
             control,
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("GET /test HTTP/1\r\n\r\n");
         sleep(Millis(500)).await;
@@ -2596,9 +2555,7 @@ mod tests {
             srv,
             control,
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("GET /test HTTP/1\r\n\r\n");
         sleep(Millis(500)).await;
@@ -2624,9 +2581,7 @@ mod tests {
             srv,
             control,
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("GET /test HTTP/1\r\n\r\n");
         sleep(Millis(500)).await;
@@ -2650,9 +2605,7 @@ mod tests {
             srv,
             control,
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("GET /test HTTP/1\r\n\r\n");
         sleep(Millis(300)).await;
@@ -2696,9 +2649,7 @@ mod tests {
             }),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("0123456789");
         sleep(Millis(50)).await;
@@ -2743,9 +2694,7 @@ mod tests {
             }),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         // the first call is polled by the dispatcher, others are spawned,
         // unordered calls complete one after another
@@ -2832,9 +2781,7 @@ mod tests {
             }),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
-        ntex_util::spawn(async move {
-            let _ = disp.await;
-        });
+        ntex_util::spawn(disp);
 
         client.write("aqqqq");
         assert!(wait_until(|| calls.get() == 3).await);

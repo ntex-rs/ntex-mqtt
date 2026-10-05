@@ -745,10 +745,11 @@ impl StreamingPayload {
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
+    use std::{future::Future, pin::Pin, pin::pin, rc::Rc, task::Poll};
 
     use ntex_io::{Io, testing::IoTest};
     use ntex_service::cfg::SharedCfg;
+    use ntex_util::{future::lazy, time::Millis, time::sleep, time::timeout};
 
     use super::*;
     use crate::v3::shared::MqttShared;
@@ -766,6 +767,40 @@ mod tests {
         client.remote_buffer_cap(1024 * 1024);
         io.write_ready().await.unwrap();
         assert!(io.is_wr_backpressure());
+    }
+
+    async fn is_pending<P>(f: &mut Pin<P>) -> bool
+    where
+        P: std::ops::DerefMut<Target: Future>,
+    {
+        lazy(|cx| f.as_mut().poll(cx).is_pending()).await
+    }
+
+    fn id(id: u16) -> NonZeroU16 {
+        NonZeroU16::new(id).unwrap()
+    }
+
+    fn rec(packet_id: u16) -> Ack {
+        Ack::Receive(id(packet_id))
+    }
+
+    fn comp(packet_id: u16) -> Ack {
+        Ack::Complete(id(packet_id))
+    }
+
+    /// Client sink with send capacity, the peer accepts 1KB
+    fn setup(cap: usize) -> (IoTest, Io, Rc<MqttShared>, MqttSink) {
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            true,
+            Rc::default(),
+        ));
+        shared.set_cap(cap);
+        (client, io, shared.clone(), MqttSink::new(shared))
     }
 
     #[ntex::test]
@@ -793,10 +828,6 @@ mod tests {
 
     #[ntex::test]
     async fn test_server_subscribe_not_allowed() {
-        use std::{future::Future, pin::pin, task::Poll};
-
-        use ntex_util::future::lazy;
-
         let (client, server) = IoTest::create();
         client.remote_buffer_cap(1024);
         let io = Io::new(server, SharedCfg::new("test"));
@@ -828,31 +859,8 @@ mod tests {
 
     #[ntex::test]
     async fn test_ack_type_mismatch() {
-        use std::{future::Future, pin::pin};
-
-        use ntex_util::future::lazy;
-
         use crate::{error::MqttProtocolError, types::packet_type};
 
-        fn setup() -> ((IoTest, Io), Rc<MqttShared>, MqttSink) {
-            let (client, server) = IoTest::create();
-            client.remote_buffer_cap(1024);
-            let io = Io::new(server, SharedCfg::new("test"));
-            let shared = Rc::new(MqttShared::new(
-                io.get_ref(),
-                codec::Codec::default(),
-                true,
-                Rc::default(),
-            ));
-            shared.set_cap(16);
-            ((client, io), shared.clone(), MqttSink::new(shared))
-        }
-        async fn is_pending<F: Future>(f: &mut std::pin::Pin<&mut F>) -> bool {
-            lazy(|cx| f.as_mut().poll(cx).is_pending()).await
-        }
-        fn id(id: u16) -> NonZeroU16 {
-            NonZeroU16::new(id).unwrap()
-        }
         fn err(pkt: u8, expected: &'static str) -> Result<(), MqttProtocolError> {
             Err(MqttProtocolError::unexpected_packet(pkt, expected))
         }
@@ -868,7 +876,7 @@ mod tests {
                 err(packet_type::PUBCOMP, "Expected PUBACK packet"),
             ),
         ] {
-            let (_io, shared, sink) = setup();
+            let (_client, _io, shared, sink) = setup(16);
             let mut f = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
             assert!(is_pending(&mut f).await);
             assert_eq!(shared.pkt_ack(ack), expected);
@@ -877,7 +885,7 @@ mod tests {
         }
 
         // SUBSCRIBE acknowledged with PUBREC
-        let (_io, shared, sink) = setup();
+        let (_client, _io, shared, sink) = setup(16);
         let mut f = pin!(
             sink.subscribe()
                 .topic_filter("a".into(), QoS::AtMostOnce)
@@ -891,7 +899,7 @@ mod tests {
         assert_eq!(f.await, Err(SendPacketError::Disconnected));
 
         // UNSUBSCRIBE acknowledged with PUBCOMP
-        let (_io, shared, sink) = setup();
+        let (_client, _io, shared, sink) = setup(16);
         let mut f = pin!(sink.unsubscribe().topic_filter("a".into()).send());
         assert!(is_pending(&mut f).await);
         assert_eq!(
@@ -901,7 +909,7 @@ mod tests {
         assert_eq!(f.await, Err(SendPacketError::Disconnected));
 
         // QoS 2 PUBLISH acknowledged with PUBCOMP before PUBREC
-        let (_io, shared, sink) = setup();
+        let (_client, _io, shared, sink) = setup(16);
         let mut f = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
         assert!(is_pending(&mut f).await);
         assert_eq!(
@@ -911,7 +919,7 @@ mod tests {
         assert!(matches!(f.await, Err(SendPacketError::Disconnected)));
 
         // QoS 2 PUBREL acknowledged with a second PUBREC
-        let (_io, shared, sink) = setup();
+        let (_client, _io, shared, sink) = setup(16);
         let mut f = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
         assert!(is_pending(&mut f).await);
         assert_eq!(shared.pkt_ack(Ack::Receive(id(1))), Ok(()));
@@ -924,7 +932,7 @@ mod tests {
         assert_eq!(f.await, Err(SendPacketError::Disconnected));
 
         // valid QoS 2 flow
-        let (_io, shared, sink) = setup();
+        let (_client, _io, shared, sink) = setup(16);
         let mut f = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
         assert!(is_pending(&mut f).await);
         assert_eq!(shared.pkt_ack(Ack::Receive(id(1))), Ok(()));
@@ -937,35 +945,8 @@ mod tests {
 
     #[ntex::test]
     async fn test_release_multiple() {
-        use std::{future::Future, pin::pin};
-
-        use ntex_util::future::lazy;
-
-        async fn is_pending<F: Future>(f: &mut std::pin::Pin<&mut F>) -> bool {
-            lazy(|cx| f.as_mut().poll(cx).is_pending()).await
-        }
-        fn id(id: u16) -> NonZeroU16 {
-            NonZeroU16::new(id).unwrap()
-        }
-        fn rec(packet_id: u16) -> Ack {
-            Ack::Receive(id(packet_id))
-        }
-        fn comp(packet_id: u16) -> Ack {
-            Ack::Complete(id(packet_id))
-        }
-
         for drop_second in [false, true] {
-            let (client, server) = IoTest::create();
-            client.remote_buffer_cap(1024);
-            let io = Io::new(server, SharedCfg::new("test"));
-            let shared = Rc::new(MqttShared::new(
-                io.get_ref(),
-                codec::Codec::default(),
-                true,
-                Rc::default(),
-            ));
-            shared.set_cap(16);
-            let sink = MqttSink::new(shared.clone());
+            let (client, _io, shared, sink) = setup(16);
 
             // two QoS 2 PUBLISH packets are received before release
             let mut f1 = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
@@ -1005,16 +986,7 @@ mod tests {
 
     #[ntex::test]
     async fn test_rejected_publish_does_not_start_streaming() {
-        let (client, server) = IoTest::create();
-        let io = Io::new(server, SharedCfg::new("test"));
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            true,
-            Rc::default(),
-        ));
-        shared.set_cap(16);
-        let sink = MqttSink::new(shared.clone());
+        let (client, _io, shared, sink) = setup(16);
         let err = Err(SendPacketError::Encode(
             crate::error::EncodeError::MalformedPacket,
         ));
@@ -1044,22 +1016,8 @@ mod tests {
     /// connection is closed
     #[ntex::test]
     async fn test_at_most_once_streaming_close() {
-        use std::task::Poll;
-
-        use ntex_util::future::lazy;
-
         for close in 0..3 {
-            let (client, server) = IoTest::create();
-            client.remote_buffer_cap(1024);
-            let io = Io::new(server, SharedCfg::new("test"));
-            let shared = Rc::new(MqttShared::new(
-                io.get_ref(),
-                codec::Codec::default(),
-                true,
-                Rc::default(),
-            ));
-            shared.set_cap(16);
-            let sink = MqttSink::new(shared.clone());
+            let (_client, _io, shared, sink) = setup(16);
 
             let payload = sink.publish("a").stream_at_most_once(4).await.unwrap();
             let mut send = Box::pin(sink.publish("b").send_at_most_once(Bytes::new()));
@@ -1082,21 +1040,9 @@ mod tests {
     /// once the connection is closed
     #[ntex::test]
     async fn test_at_most_once_write_backpressure() {
-        use ntex_util::future::lazy;
-        use ntex_util::time::{Millis, timeout};
-
         for close in 0..3 {
-            let (client, server) = IoTest::create();
+            let (client, io, shared, sink) = setup(16);
             client.remote_buffer_cap(0);
-            let io = Io::new(server, SharedCfg::new("test"));
-            let shared = Rc::new(MqttShared::new(
-                io.get_ref(),
-                codec::Codec::default(),
-                true,
-                Rc::default(),
-            ));
-            shared.set_cap(16);
-            let sink = MqttSink::new(shared.clone());
 
             sink.publish("a")
                 .send_at_most_once(Bytes::from(vec![0u8; 128 * 1024]))
@@ -1141,28 +1087,14 @@ mod tests {
 
     #[ntex::test]
     async fn test_packets_deferred_while_streaming() {
-        use ntex_util::future::lazy;
-
-        let (client, server) = IoTest::create();
-        client.remote_buffer_cap(1024);
-        let io = Io::new(server, SharedCfg::new("test"));
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            true,
-            Rc::default(),
-        ));
-        shared.set_cap(16);
-        let sink = MqttSink::new(shared.clone());
+        let (client, io, shared, sink) = setup(16);
 
         let stream = sink.publish("a/b").stream_at_most_once(6).await.unwrap();
         stream.send(Bytes::from_static(b"ab")).await.unwrap();
 
         // client keep-alive and dispatcher responses
         assert!(sink.ping());
-        let ack = codec::Packet::PublishAck {
-            packet_id: NonZeroU16::new(1).unwrap(),
-        };
+        let ack = codec::Packet::PublishAck { packet_id: id(1) };
         io.encode(codec::Encoded::Packet(ack), &shared).unwrap();
 
         // publish cannot interleave with payload, it waits for the payload
@@ -1199,21 +1131,8 @@ mod tests {
     /// is closed
     #[ntex::test]
     async fn test_streaming_waiter_fails_on_close() {
-        use ntex_util::future::lazy;
-        use ntex_util::time::{Millis, timeout};
-
         for close in 0..2 {
-            let (client, server) = IoTest::create();
-            client.remote_buffer_cap(1024);
-            let io = Io::new(server, SharedCfg::new("test"));
-            let shared = Rc::new(MqttShared::new(
-                io.get_ref(),
-                codec::Codec::default(),
-                true,
-                Rc::default(),
-            ));
-            shared.set_cap(16);
-            let sink = MqttSink::new(shared.clone());
+            let (client, io, shared, sink) = setup(16);
 
             let stream = sink.publish("a/b").stream_at_most_once(4).await.unwrap();
             stream.send(Bytes::from_static(b"ab")).await.unwrap();
@@ -1240,21 +1159,7 @@ mod tests {
     /// progress is sent once the payload is complete
     #[ntex::test]
     async fn test_streaming_completion_releases_waiters() {
-        use std::{future::Future, pin::pin};
-
-        use ntex_util::{future::lazy, time::Millis, time::sleep};
-
-        let (client, server) = IoTest::create();
-        client.remote_buffer_cap(1024);
-        let io = Io::new(server, SharedCfg::new("test"));
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            true,
-            Rc::default(),
-        ));
-        shared.set_cap(16);
-        let sink = MqttSink::new(shared.clone());
+        let (client, io, shared, sink) = setup(16);
 
         let stream = sink.publish("a/b").stream_at_most_once(4).await.unwrap();
         stream.send(Bytes::from_static(b"ab")).await.unwrap();
@@ -1282,36 +1187,12 @@ mod tests {
     /// packet id and in-flight slot are freed (MQTT 3.1.1, 4.3.3)
     #[ntex::test]
     async fn test_dropped_exactly_once() {
-        use std::future::Future;
-
-        use ntex_util::future::lazy;
-        use ntex_util::time::{Millis, timeout};
-
-        fn id(id: u16) -> NonZeroU16 {
-            NonZeroU16::new(id).unwrap()
-        }
-        fn rec(packet_id: u16) -> Ack {
-            Ack::Receive(id(packet_id))
-        }
-        fn comp(packet_id: u16) -> Ack {
-            Ack::Complete(id(packet_id))
-        }
         const PUBLISH: &[u8] = b"\x34\x05\x00\x01a\x00\x01";
         const PUBREL: &[u8] = b"\x62\x02\x00\x01";
 
         // PUBREC received before or after the future is dropped
         for delivered in [false, true] {
-            let (client, server) = IoTest::create();
-            client.remote_buffer_cap(1024);
-            let io = Io::new(server, SharedCfg::new("test"));
-            let shared = Rc::new(MqttShared::new(
-                io.get_ref(),
-                codec::Codec::default(),
-                true,
-                Rc::default(),
-            ));
-            shared.set_cap(1);
-            let sink = MqttSink::new(shared.clone());
+            let (client, _io, shared, sink) = setup(1);
 
             let mut f = Box::pin(sink.publish("a").send_exactly_once(Bytes::new()));
             assert!(lazy(|cx| f.as_mut().poll(cx).is_pending()).await);
@@ -1363,21 +1244,7 @@ mod tests {
     /// may take the freed credit first (MQTT 3.1.1, 4.4)
     #[ntex::test]
     async fn test_woken_waiter_rechecks_credit() {
-        use std::{future::Future, pin::pin};
-
-        use ntex_util::{future::lazy, time::Millis, time::sleep};
-
-        let (client, server) = IoTest::create();
-        client.remote_buffer_cap(1024);
-        let io = Io::new(server, SharedCfg::new("test"));
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            true,
-            Rc::default(),
-        ));
-        shared.set_cap(1);
-        let sink = MqttSink::new(shared.clone());
+        let (client, _io, shared, sink) = setup(1);
 
         let mut a = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
         assert!(lazy(|cx| a.as_mut().poll(cx).is_pending()).await);
@@ -1387,10 +1254,7 @@ mod tests {
         assert!(lazy(|cx| ready.as_mut().poll(cx).is_pending()).await);
 
         // ack wakes "b", "c" takes the credit before "b" is polled
-        assert_eq!(
-            shared.pkt_ack(Ack::Publish(NonZeroU16::new(1).unwrap())),
-            Ok(())
-        );
+        assert_eq!(shared.pkt_ack(Ack::Publish(id(1))), Ok(()));
         assert!(a.await.is_ok());
         let mut c = pin!(sink.publish("c").send_at_least_once(Bytes::new()));
         assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
@@ -1405,18 +1269,12 @@ mod tests {
         );
 
         // "b" is still first in line
-        assert_eq!(
-            shared.pkt_ack(Ack::Publish(NonZeroU16::new(2).unwrap())),
-            Ok(())
-        );
+        assert_eq!(shared.pkt_ack(Ack::Publish(id(2))), Ok(()));
         assert!(c.await.is_ok());
         assert!(lazy(|cx| ready.as_mut().poll(cx).is_pending()).await);
         assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
         assert_eq!(shared.credit(), 0);
-        assert_eq!(
-            shared.pkt_ack(Ack::Publish(NonZeroU16::new(3).unwrap())),
-            Ok(())
-        );
+        assert_eq!(shared.pkt_ack(Ack::Publish(id(3))), Ok(()));
         assert!(b.await.is_ok());
         assert!(ready.await);
     }
@@ -1424,21 +1282,7 @@ mod tests {
     /// Waiter woken by an ack waits for write backpressure to be released
     #[ntex::test]
     async fn test_ack_respects_write_backpressure() {
-        use std::{future::Future, pin::pin};
-
-        use ntex_util::future::lazy;
-
-        let (client, server) = IoTest::create();
-        client.remote_buffer_cap(1024);
-        let io = Io::new(server, SharedCfg::new("test"));
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            true,
-            Rc::default(),
-        ));
-        shared.set_cap(1);
-        let sink = MqttSink::new(shared.clone());
+        let (client, io, shared, sink) = setup(1);
 
         let mut a = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
         assert!(lazy(|cx| a.as_mut().poll(cx).is_pending()).await);
@@ -1446,10 +1290,7 @@ mod tests {
         assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
 
         block_writes(&client, &io);
-        assert_eq!(
-            shared.pkt_ack(Ack::Publish(NonZeroU16::new(1).unwrap())),
-            Ok(())
-        );
+        assert_eq!(shared.pkt_ack(Ack::Publish(id(1))), Ok(()));
         assert!(a.await.is_ok());
         assert!(!sink.is_ready());
         assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
@@ -1463,21 +1304,7 @@ mod tests {
     /// `set_cap` wakes waiters within the send credit only
     #[ntex::test]
     async fn test_set_cap_wakes_within_credit() {
-        use std::{future::Future, pin::pin};
-
-        use ntex_util::future::lazy;
-
-        let (client, server) = IoTest::create();
-        client.remote_buffer_cap(1024);
-        let io = Io::new(server, SharedCfg::new("test"));
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            true,
-            Rc::default(),
-        ));
-        shared.set_cap(1);
-        let sink = MqttSink::new(shared.clone());
+        let (client, io, shared, sink) = setup(1);
 
         let mut a = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
         assert!(lazy(|cx| a.as_mut().poll(cx).is_pending()).await);
@@ -1508,38 +1335,12 @@ mod tests {
     }
 
     mod ack_order {
-        use std::{future::Future, pin::Pin};
-
-        use ntex_util::future::lazy;
-        use ntex_util::time::{Millis, sleep};
 
         use super::*;
         use crate::error::MqttProtocolError;
 
-        fn setup(cap: usize) -> (IoTest, Io, Rc<MqttShared>, MqttSink) {
-            let (client, server) = IoTest::create();
-            client.remote_buffer_cap(1024);
-            let io = Io::new(server, SharedCfg::new("test"));
-            let shared = Rc::new(MqttShared::new(
-                io.get_ref(),
-                codec::Codec::default(),
-                true,
-                Rc::default(),
-            ));
-            shared.set_cap(cap);
-            (client, io, shared.clone(), MqttSink::new(shared))
-        }
-
-        fn id(id: u16) -> NonZeroU16 {
-            NonZeroU16::new(id).unwrap()
-        }
-
         fn send(sink: &MqttSink) -> Pin<Box<impl Future<Output = Result<(), SendPacketError>>>> {
             Box::pin(sink.publish("a").send_at_least_once(Bytes::new()))
-        }
-
-        async fn is_pending<F: Future>(f: &mut Pin<Box<F>>) -> bool {
-            lazy(|cx| f.as_mut().poll(cx).is_pending()).await
         }
 
         /// Read packets written to the peer
