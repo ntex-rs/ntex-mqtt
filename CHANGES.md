@@ -2,6 +2,9 @@
 
 ## [9.1.0] - Unreleased
 
+* A failed call during write backpressure stops the dispatcher, previously the stop
+  waited until the peer read enough to release backpressure
+
 * v3, v5: Acks are matched by packet id, acks of different flows may arrive in any
   order (MQTT 3.1.1 and 5.0, 4.6). Previously an ack that did not match the oldest
   in-flight packet closed the connection with a protocol error. An ack of a packet id

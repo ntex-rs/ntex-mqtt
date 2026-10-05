@@ -392,6 +392,13 @@ where
                 }
                 // handle write back-pressure
                 IoDispatcherState::Backpressure => {
+                    // a failed call stops the dispatcher, the queued output is
+                    // flushed by the io shutdown
+                    if let Some(msg) = inner.state.error.take() {
+                        log::trace!("{}: Error occurred, stopping dispatcher", inner.io.tag());
+                        inner.stop(msg);
+                        continue;
+                    }
                     // check write timeout
                     if let Poll::Ready(IoStatusUpdate::Timeout) = inner.io.poll_status_update(cx)
                         && let Err(err) = inner.handle_timeout()
@@ -2316,6 +2323,68 @@ mod tests {
         sleep(Millis(300)).await;
         assert!(!state.is_active());
         assert_eq!(&msgs.borrow()[..], &[true]);
+    }
+
+    /// A call error during write backpressure stops the dispatcher
+    #[ntex::test]
+    async fn error_during_write_backpressure() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(0);
+
+        let msgs = Rc::new(RefCell::new(Vec::new()));
+        let msgs2 = msgs.clone();
+        let condition = Condition::new();
+        let waiter = condition.wait();
+        let (disp, _io) = Dispatcher::new_debug(
+            nio::Io::new(
+                server,
+                SharedCfg::new("DBG").add(IoConfig::new().set_write_buf(1024)),
+            ),
+            ByteCodec,
+            fn_service(async move |msg: Bytes| match &msg[..] {
+                b"b" => {
+                    waiter.clone().await;
+                    Err(DispatcherError::Service(()))
+                }
+                _ => Ok(Some(Bytes::from(vec![b'x'; 64 * 1024]))),
+            }),
+            fn_service(async move |msg: Control<()>| {
+                match msg {
+                    Control::WrBackpressure(st) => msgs2.borrow_mut().push(if st.enabled() {
+                        "wr-enabled"
+                    } else {
+                        "wr-disabled"
+                    }),
+                    Control::Stop(Reason::Error(_)) => msgs2.borrow_mut().push("stop-error"),
+                    Control::Stop(_) => msgs2.borrow_mut().push("stop"),
+                }
+                Ok::<_, ()>(None)
+            }),
+        );
+        ntex_util::spawn(async move {
+            let _ = disp.await;
+        });
+
+        // the unordered response of "q" is written while "b" is pending
+        client.write("bq");
+        for _ in 0..100 {
+            if !msgs.borrow().is_empty() {
+                break;
+            }
+            sleep(Millis(10)).await;
+        }
+        assert_eq!(&msgs.borrow()[..], &["wr-enabled"]);
+
+        // the peer does not read, the error is not delayed by backpressure
+        condition.notify(());
+        for _ in 0..100 {
+            if msgs.borrow().len() > 1 {
+                break;
+            }
+            sleep(Millis(10)).await;
+        }
+        assert_eq!(&msgs.borrow()[..], &["wr-enabled", "stop-error"]);
+        assert!(client.read_any().is_empty());
     }
 
     /// Calls spawned in the same poll as the stop are cancelled on service shutdown
