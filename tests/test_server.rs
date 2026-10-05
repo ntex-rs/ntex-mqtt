@@ -376,73 +376,6 @@ async fn test_streaming_waiter_peer_gone() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Publish handlers wait for acks of their own publishes, the acks are read
-/// while the publishes fill the response queue, `max_queue` is 64 by default.
-/// A packet beyond the limit is held back and pauses reading.
-#[ntex::test]
-async fn test_max_queue_acks() -> std::io::Result<()> {
-    const COUNT: u16 = 64;
-
-    let srv = server::TestServerBuilder::new(async move || {
-        MqttServer::new(async move |ses: &Session<St>| {
-            let sink = ses.sink().clone();
-            Ok::<_, Infallible>(fn_service(async move |_: Publish| {
-                sink.publish("echo")
-                    .send_at_least_once(Bytes::new())
-                    .await
-                    .map_err(|_| TestError)
-            }))
-        })
-        .build(connect)
-    })
-    .start();
-
-    let io = srv.connect().await.unwrap();
-    let codec = codec::Codec::default();
-    io.send(
-        Encoded::Packet(Packet::Connect(
-            codec::Connect::default().client_id("user").into(),
-        )),
-        &codec,
-    )
-    .await
-    .unwrap();
-    io.recv(&codec).await.unwrap().unwrap();
-
-    for id in 1..=COUNT {
-        let pkt = codec::Publish {
-            dup: false,
-            retain: false,
-            qos: codec::QoS::AtLeastOnce,
-            topic: ByteString::from("test"),
-            packet_id: NonZeroU16::new(id),
-            payload_size: 0,
-        };
-        io.encode(Encoded::Publish(pkt, None), &codec).unwrap();
-    }
-    io.flush(true).await.unwrap();
-
-    let acks = ntex::time::timeout(Seconds(10), async {
-        let mut acks = 0;
-        while acks < COUNT {
-            match io.recv(&codec).await.unwrap().unwrap() {
-                Decoded::Publish(pkt, ..) => {
-                    let packet_id = pkt.packet_id.unwrap();
-                    io.send(Encoded::Packet(Packet::PublishAck { packet_id }), &codec)
-                        .await
-                        .unwrap();
-                }
-                Decoded::Packet(Packet::PublishAck { .. }, _) => acks += 1,
-                pkt => panic!("unexpected packet {pkt:?}"),
-            }
-        }
-        acks
-    })
-    .await;
-    assert_eq!(acks, Ok(COUNT));
-    Ok(())
-}
-
 #[ntex::test]
 async fn test_connect_fail() -> std::io::Result<()> {
     // bad user name or password
@@ -2454,16 +2387,15 @@ async fn test_handshake_invalid_will_topic() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A held streaming publish gets its payload once it is dispatched, the
-/// payload is read while the publish fills the response queue
+/// The payload of a streaming publish is read while the publish fills the
+/// response queue
 #[ntex::test]
-async fn test_held_streaming_publish() {
+async fn test_streaming_publish_full_queue() {
     const SIZE: usize = 64 * 1024;
 
     let srv = server::TestServerBuilder::new(async move || {
         MqttServer::new(async |p: Publish| {
             if p.packet().payload_size == 1 {
-                sleep(Millis(200)).await;
                 return Ok(());
             }
             match p.read_all().await {
@@ -2499,23 +2431,22 @@ async fn test_held_streaming_publish() {
         packet_id: NonZeroU16::new(id),
         payload_size,
     };
-    io.encode(
-        Encoded::Publish(publish(1, 1), Some(Bytes::from_static(b"1"))),
-        &codec,
-    )
-    .unwrap();
-
-    // the second publish is held while the first one is handled, the rest
-    // of its payload arrives after the publish is dispatched
+    // the publish fills the queue, the rest of its payload arrives after
+    // the publish is dispatched
     let mut buf = BytePages::default();
-    let p = Encoded::Publish(publish(2, SIZE as u32), Some(Bytes::from(vec![b'*'; SIZE])));
+    let p = Encoded::Publish(publish(1, SIZE as u32), Some(Bytes::from(vec![b'*'; SIZE])));
     codec.encode(p, &mut buf).unwrap();
     let mut buf = buf.freeze();
     io.encode_slice(&buf[..1024]).unwrap();
     buf.advance_to(1024);
     io.flush(true).await.unwrap();
-    sleep(Millis(400)).await;
+    sleep(Millis(100)).await;
     io.encode_slice(&buf).unwrap();
+    io.encode(
+        Encoded::Publish(publish(2, 1), Some(Bytes::from_static(b"1"))),
+        &codec,
+    )
+    .unwrap();
 
     for id in [1, 2] {
         let res = ntex::time::timeout(Seconds(5), io.recv(&codec)).await;

@@ -21,32 +21,18 @@
 * v3, v5: Client returns a protocol error for a payload chunk without a pending publish,
   such as the chunks of a rejected streaming publish, instead of panicking
 
-* v5: Client applies its Receive Maximum to the response queue, `QoS 1` and `QoS 2`
-  publishes within the limit are handled while the queue is full as on the server,
-  previously these were held back and acks read after them waited
-
 * v3, v5: Payload chunks do not keep response queue slots, previously each chunk received
-  while the publish handler was pending kept a slot until the publish completed and filled
-  the queue, holding back the packets after the publish
+  while the publish handler was pending kept a slot until the publish completed, filled
+  the queue and paused reading
 
-* v3, v5: Payload of a held back streaming publish is read once the publish is dispatched,
-  previously the payload chunks were held back while the publish filled the response queue
-  and the publish handler waiting for them stalled the connection
+* v3, v5: Payload of a streaming publish is read while the publish fills the response
+  queue, previously reading paused and the publish handler waiting for the payload stalled
+  the connection
 
 * v3, v5: Restore payload backpressure, reading pauses while the unread part of a streamed
   payload reaches `max_payload_buffer_size`, the connection is closed if the publish handler
   drops the payload before the stream ends. Previously the whole payload was buffered and
   the readiness error of a service waited for the payload handler
-
-* v3, v5: Acks and pings are read and handled while the response queue is full, reading
-  pauses at the first other packet, it is held back until the queue has room. Previously
-  reading stopped at the limit and publish handlers that awaited acks of their own
-  publishes deadlocked the connection, they still do if a held back packet precedes the
-  acks. Payload chunks of a streaming publish follow the publish
-
-* v5: `QoS 1` and `QoS 2` publishes are handled while the response queue is full and
-  nothing is held back, Receive Maximum bounds them, the queue grows up to `max_queue`
-  plus Receive Maximum responses
 
 * v3, v5: Payload chunk of a streaming publish that waits for write backpressure fails
   with `Disconnected` when the connection is closed, previously it waited forever
