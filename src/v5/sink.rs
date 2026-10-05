@@ -43,6 +43,10 @@ impl MqttSink {
 
     #[inline]
     /// Check if sink is ready
+    ///
+    /// Send credit is available and write backpressure is not enabled for the
+    /// connection. The backpressure state is updated by the connection
+    /// dispatcher, it may stay enabled briefly after the write buffer drains.
     pub fn is_ready(&self) -> bool {
         if self.0.is_active() {
             self.0.is_ready()
@@ -71,7 +75,7 @@ impl MqttSink {
         } else if self.0.is_ready() {
             Either::Left(ready(true))
         } else {
-            let permit = self.0.send_permit();
+            let permit = self.0.wait_send_ready();
             Either::Right(async move { permit.await.is_ok() })
         }
     }
@@ -352,7 +356,7 @@ impl PublishBuilder {
             self.packet.payload_size = payload.len() as u32;
 
             // handle client receive maximum
-            let permit = self.shared.send_permit().await?;
+            let permit = self.shared.wait_send_ready().await?;
             self.send_at_least_once_inner(payload, permit).await
         } else {
             Err(SendPacketError::Disconnected)
@@ -407,7 +411,7 @@ impl PublishBuilder {
             self.packet.payload_size = size;
 
             // handle client receive maximum
-            let permit = self.shared.send_permit();
+            let permit = self.shared.wait_send_ready();
             let fut = async move {
                 let permit = permit.await?;
                 self.stream_at_least_once_inner(tx, None, permit).await
@@ -484,7 +488,7 @@ impl PublishBuilder {
             self.packet.payload_size = payload.len() as u32;
 
             // handle client receive maximum
-            let permit = self.shared.send_permit().await?;
+            let permit = self.shared.wait_send_ready().await?;
             self.send_exactly_once_inner(payload, permit).await
         } else {
             Err(SendPacketError::Disconnected)
@@ -871,6 +875,21 @@ mod tests {
 
     use super::*;
     use crate::v5::shared::MqttShared;
+
+    /// Fill the write buffer over the high watermark, the peer does not read
+    fn block_writes(client: &IoTest, io: &Io) {
+        client.remote_buffer_cap(0);
+        io.encode_slice(&vec![0u8; 128 * 1024]).unwrap();
+        assert!(io.is_wr_backpressure());
+    }
+
+    /// The write buffer drains, the backpressure flag stays set until the
+    /// connection dispatcher clears it
+    async fn unblock_writes(client: &IoTest, io: &Io) {
+        client.remote_buffer_cap(1024 * 1024);
+        io.write_ready().await.unwrap();
+        assert!(io.is_wr_backpressure());
+    }
 
     #[ntex::test]
     async fn test_debug() {
@@ -1264,7 +1283,7 @@ mod tests {
     }
 
     /// Payload chunk waiting for write backpressure fails when the connection
-    /// is closed, backpressure is never disabled after close
+    /// is closed
     #[ntex::test]
     async fn test_streaming_waiter_fails_on_close() {
         use ntex_util::future::lazy;
@@ -1284,7 +1303,7 @@ mod tests {
 
             let stream = sink.publish("a/b").stream_at_most_once(4).await.unwrap();
             stream.send(Bytes::from_static(b"ab")).await.unwrap();
-            shared.enable_wr_backpressure();
+            block_writes(&client, &io);
             let mut chunk = Box::pin(stream.send(Bytes::from_static(b"cd")));
             assert!(lazy(|cx| chunk.as_mut().poll(cx).is_pending()).await);
 
@@ -1293,6 +1312,8 @@ mod tests {
                 1 => sink.force_close(),
                 _ => shared.drop_sink(true),
             }
+            // the write buffer drains during graceful shutdown
+            client.remote_buffer_cap(1024 * 1024);
             assert_eq!(
                 timeout(Millis(1000), chunk).await.unwrap(),
                 Err(SendPacketError::Disconnected)
@@ -1300,13 +1321,13 @@ mod tests {
         }
     }
 
-    /// Publish waiting while the streaming payload is released first by
-    /// `disable_wr_backpressure` is sent once the payload is complete
+    /// Publish waiting for write backpressure while a streaming payload is in
+    /// progress is sent once the payload is complete
     #[ntex::test]
     async fn test_streaming_completion_releases_waiters() {
         use std::{future::Future, pin::pin};
 
-        use ntex_util::future::lazy;
+        use ntex_util::{future::lazy, time::Millis, time::sleep};
 
         let (client, server) = IoTest::create();
         client.remote_buffer_cap(1024);
@@ -1321,22 +1342,30 @@ mod tests {
 
         let stream = sink.publish("a/b").stream_at_most_once(4).await.unwrap();
         stream.send(Bytes::from_static(b"ab")).await.unwrap();
-        shared.enable_wr_backpressure();
+        block_writes(&client, &io);
         let mut chunk = pin!(stream.send(Bytes::from_static(b"cd")));
         assert!(lazy(|cx| chunk.as_mut().poll(cx).is_pending()).await);
         let mut publish = pin!(sink.publish("c").send_at_least_once(Bytes::new()));
         assert!(lazy(|cx| publish.as_mut().poll(cx).is_pending()).await);
 
-        // the payload goes first, the publish cannot interleave with it
-        shared.disable_wr_backpressure();
+        // the payload goes first, the publish cannot interleave with it,
+        // the publish holds its send credit
+        unblock_writes(&client, &io).await;
         assert!(lazy(|cx| publish.as_mut().poll(cx).is_pending()).await);
-        assert_eq!(sink.credit(), 16);
+        assert_eq!(sink.credit(), 15);
+        assert!(shared.is_streaming());
         chunk.await.unwrap();
         assert!(!shared.is_streaming());
 
         // the completed payload releases the waiting publish
         assert!(lazy(|cx| publish.as_mut().poll(cx).is_pending()).await);
         assert_eq!(sink.credit(), 15);
+        sleep(Millis(50)).await;
+        assert!(
+            client
+                .read_any()
+                .ends_with(b"cd\x32\x06\x00\x01c\x00\x01\x00")
+        );
     }
 
     /// `QoS 0` publish waiting for the streaming payload fails once the

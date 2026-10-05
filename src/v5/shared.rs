@@ -14,7 +14,6 @@ use crate::{QoS, error, error::SendPacketError, payload::PlSender, types::packet
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub(crate) struct Flags: u16 {
-        const WRB_ENABLED     = 0b0000_0001; // write-backpressure
         const ON_PUBLISH_ACK  = 0b0000_0010; // on-publish-ack callback
 
         const QOS_ATLEAST     = 0b0000_0100; // AtLeastOnce
@@ -38,7 +37,6 @@ pub struct MqttShared {
     inflight_idx: Cell<u16>,
     queues: RefCell<MqttSharedQueues>,
     encode_error: Cell<Option<error::EncodeError>>,
-    streaming_waiter: Cell<Option<pool::Sender<()>>>,
     streaming_remaining: Cell<Option<num::NonZeroU32>>,
     /// Packets encoded while a publish payload is incomplete
     deferred: Cell<Option<BytePages>>,
@@ -147,7 +145,6 @@ impl MqttShared {
             payload: Cell::new(None),
             on_publish_ack: Cell::new(None),
             encode_error: Cell::new(None),
-            streaming_waiter: Cell::new(None),
             streaming_remaining: Cell::new(None),
             deferred: Cell::new(None),
         }
@@ -308,6 +305,15 @@ impl MqttShared {
         if self.is_streaming() && self.is_active() {
             self.io.waiter(STREAM_TAG).await;
         }
+        self.wait_write_ready().await
+    }
+
+    /// Wait until the write buffer drains to the release threshold of write
+    /// backpressure, returns `false` if the connection is closed
+    ///
+    /// The backpressure flag is not checked again once the buffer is drained,
+    /// it is cleared only when the io dispatcher runs.
+    async fn wait_write_ready(&self) -> bool {
         loop {
             if !self.is_active() {
                 return false;
@@ -319,13 +325,41 @@ impl MqttShared {
         }
     }
 
+    /// Wait for write backpressure to be released, returns `false` if the
+    /// connection is closed
+    ///
+    /// Write backpressure is the io level flag, it is set as soon as the write
+    /// buffer reaches the high watermark. A streaming payload in progress goes
+    /// first, publishes cannot interleave with it.
+    async fn wait_writable(&self) -> bool {
+        loop {
+            if !self.is_active() {
+                return false;
+            }
+            if !self.io.is_wr_backpressure() {
+                return true;
+            }
+            if !self.wait_write_ready().await {
+                return false;
+            }
+            if !self.is_streaming() {
+                return true;
+            }
+            self.io.waiter(STREAM_TAG).await;
+        }
+    }
+
     /// Check if a `QoS 1` or `QoS 2` publish can be sent without waiting
     ///
     /// Waiting publishes get send credit first.
     pub(super) fn is_ready(&self) -> bool {
-        self.credit() > 0
-            && !self.flags.get().contains(Flags::WRB_ENABLED)
-            && !self.queues.borrow().has_waiting()
+        self.has_credit() && !self.io.is_wr_backpressure()
+    }
+
+    /// Check if send credit is available for a new publish, waiting publishes
+    /// get it first
+    fn has_credit(&self) -> bool {
+        self.credit() > 0 && !self.queues.borrow().has_waiting()
     }
 
     pub(super) fn is_disconnect_sent(&self) -> bool {
@@ -403,10 +437,7 @@ impl MqttShared {
     }
 
     fn clear_queues(&self) {
-        // the payload waiting for write backpressure fails, the connection
-        // is closed and backpressure would never be disabled
-        self.streaming_waiter.take();
-        // `QoS 0` publishes waiting for the streaming payload fail
+        // publishes waiting for the streaming payload fail
         self.io.wake(STREAM_TAG);
 
         let mut queues = self.queues.borrow_mut();
@@ -441,37 +472,12 @@ impl MqttShared {
         }
     }
 
-    pub(super) fn enable_wr_backpressure(&self) {
-        let mut flags = self.flags.get();
-        flags.insert(Flags::WRB_ENABLED);
-        self.flags.set(flags);
-    }
-
-    pub(super) fn disable_wr_backpressure(&self) {
-        let mut flags = self.flags.get();
-        flags.remove(Flags::WRB_ENABLED);
-        self.flags.set(flags);
-
-        // streaming payload goes first, waiting publishes cannot be written
-        // until the payload is complete, `encode_publish_payload` grants them
-        if let Some(tx) = self.streaming_waiter.take()
-            && tx.send(()).is_ok()
-        {
-            return;
-        }
-
-        self.grant(&mut self.queues.borrow_mut());
-    }
-
     /// Reserve send credit for the waiting publishes in the order of arrival
     ///
     /// A granted waiter keeps the credit until its publish is in flight, so that
     /// the number of in-flight publishes stays within the peer's Receive Maximum
     /// [MQTT-4.9.0-1].
     fn grant(&self, queues: &mut MqttSharedQueues) {
-        if self.flags.get().contains(Flags::WRB_ENABLED) {
-            return;
-        }
         let publishes = queues.publishes();
         let MqttSharedQueues {
             waiters, reserved, ..
@@ -496,7 +502,7 @@ impl MqttShared {
     /// Publishes get the credit in the order of the calls, the waiter is queued
     /// immediately, not on the first poll.
     pub(super) fn send_permit(self: &Rc<Self>) -> WaitSendPermit {
-        if self.is_ready() {
+        if self.has_credit() {
             self.queues.borrow_mut().reserved += 1;
             return WaitSendPermit {
                 shared: self.clone(),
@@ -520,19 +526,32 @@ impl MqttShared {
         }
     }
 
-    pub(super) async fn want_payload_stream(&self) -> Result<(), SendPacketError> {
-        if !self.is_active() {
-            Err(SendPacketError::Disconnected)
-        } else if self.flags.get().contains(Flags::WRB_ENABLED) {
-            let (tx, rx) = self.pool.waiters.channel();
-            self.streaming_waiter.set(Some(tx));
-            if rx.await.is_ok() {
-                Ok(())
+    /// Wait for send credit of a `QoS 1` or `QoS 2` publish and for write
+    /// backpressure to be released
+    ///
+    /// The publish is queued for send credit immediately, the permit is held
+    /// while waiting for write backpressure.
+    pub(super) fn wait_send_ready(
+        self: &Rc<Self>,
+    ) -> impl Future<Output = Result<SendPermit, SendPacketError>> + use<> {
+        let permit = self.send_permit();
+        let shared = self.clone();
+        async move {
+            let permit = permit.await?;
+            if shared.wait_writable().await {
+                Ok(permit)
             } else {
                 Err(SendPacketError::Disconnected)
             }
-        } else {
+        }
+    }
+
+    /// Wait until a payload chunk can be encoded
+    pub(super) async fn want_payload_stream(&self) -> Result<(), SendPacketError> {
+        if self.is_active() && (!self.io.is_wr_backpressure() || self.wait_write_ready().await) {
             Ok(())
+        } else {
+            Err(SendPacketError::Disconnected)
         }
     }
 
@@ -583,9 +602,7 @@ impl MqttShared {
                 let remaining = num::NonZeroU32::new(remaining.get() - len);
                 self.streaming_remaining.set(remaining);
                 if remaining.is_none() {
-                    // publishes waiting while the streaming payload was released
-                    // first by `disable_wr_backpressure` get their send credit
-                    self.grant(&mut self.queues.borrow_mut());
+                    // publishes waiting for the streaming payload to complete
                     self.io.wake(STREAM_TAG);
                 }
                 Ok(remaining.is_some())

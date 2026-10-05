@@ -549,4 +549,78 @@ mod tests {
         // Unspecified error reason code
         assert_eq!(res[2], 0x80);
     }
+
+    /// Sink follows io write backpressure while the control service is busy,
+    /// `Control::wr` messages wait behind pending control calls
+    #[ntex::test]
+    async fn test_sink_wr_backpressure_slow_control() {
+        use std::cell::Cell;
+
+        use ntex_util::{channel::condition::Condition, time::timeout};
+
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::new(),
+            Rc::default(),
+        ));
+        shared.set_client();
+        shared.set_cap(16);
+        let sink = MqttSink::new(shared.clone());
+        let cfg = io.shared().get::<MqttServiceConfig>();
+        let conn = Client::new(io.into(), shared, Box::default(), 16, Seconds::ZERO, cfg);
+
+        let gate = Condition::new();
+        let wr = Rc::new(Cell::new(None));
+        let (gate2, wr2) = (gate.clone(), wr.clone());
+        ntex_util::spawn(conn.start_with_control(
+            fn_service(async |_: ProtocolMessage| Err::<ProtocolMessageAck, _>(())),
+            fn_service(move |msg: control::Control<()>| {
+                let (gate, wr) = (gate2.clone(), wr2.clone());
+                async move {
+                    if let control::Control::WrBackpressure(st) = msg {
+                        wr.set(Some(st.enabled()));
+                        // control service is busy until the gate is open
+                        if st.enabled() {
+                            gate.wait().await;
+                        }
+                    }
+                    Ok::<_, ()>(None)
+                }
+            }),
+        ));
+
+        // fill the write buffer
+        client.remote_buffer_cap(0);
+        sink.publish("a")
+            .send_at_most_once(Bytes::from(vec![0u8; 128 * 1024]))
+            .await
+            .unwrap();
+        let mut n = 0;
+        while wr.get() != Some(true) {
+            n += 1;
+            assert!(n < 1000, "write backpressure is not enabled");
+            sleep(Millis(5)).await;
+        }
+        assert!(!sink.is_ready());
+
+        // backpressure is released, wr(false) waits for the control service
+        client.remote_buffer_cap(1024 * 1024);
+        let mut len = 0;
+        while len < 128 * 1024 {
+            len += client.read().await.unwrap().len();
+        }
+        let sink2 = sink.clone();
+        ntex_util::spawn(async move {
+            let _ = sink2.publish("b").send_at_least_once(Bytes::new()).await;
+        });
+        let mut buf = Vec::new();
+        while !buf.ends_with(b"\x32\x06\x00\x01b\x00\x01\x00") {
+            buf.extend_from_slice(&timeout(Millis(1000), client.read()).await.unwrap().unwrap());
+        }
+        assert_eq!(wr.get(), Some(true));
+        gate.notify(());
+    }
 }

@@ -146,13 +146,7 @@ where
             Control::Stop(Reason::PeerGone(_)) => {
                 self.shared.drop_payload(&PayloadError::Disconnected);
             }
-            Control::WrBackpressure(status) => {
-                if status.enabled() {
-                    self.shared.enable_wr_backpressure();
-                } else {
-                    self.shared.disable_wr_backpressure();
-                }
-            }
+            Control::WrBackpressure(_) => {}
         }
 
         ctx.call(&self.svc, req).await.map(|_| None)
@@ -164,6 +158,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use ntex_bytes::Bytes;
     use ntex_io::{Io, testing::IoTest};
     use ntex_service::{Pipeline, cfg::SharedCfg};
     use ntex_util::future::lazy;
@@ -172,9 +167,12 @@ mod tests {
     use super::*;
     use crate::{control, v3::MqttSink, v3::codec};
 
+    /// The sink follows the io write backpressure state, control messages do
+    /// not change it
     #[ntex::test]
     async fn test_wr_backpressure() {
-        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
+        let (client, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, false, Rc::default()));
         let sink = MqttSink::new(shared.clone());
@@ -193,16 +191,34 @@ mod tests {
         assert!(sink.is_ready());
         assert!(sink.ready().await);
 
-        svc.call(Control::<bool>::wr(true)).await.unwrap();
+        client.remote_buffer_cap(0);
+        sink.publish("a")
+            .send_at_most_once(Bytes::from(vec![0u8; 128 * 1024]))
+            .await
+            .unwrap();
+        assert!(io.is_wr_backpressure());
         assert!(!sink.is_ready());
         let mut rx = pin!(sink.ready());
         let mut rx2 = pin!(sink.ready());
         assert!(lazy(|cx| rx.as_mut().poll(cx).is_pending()).await);
         assert!(lazy(|cx| rx2.as_mut().poll(cx).is_pending()).await);
 
-        // send credit is 1, one waiter is woken
-        svc.call(Control::wr(false)).await.unwrap();
+        // a control message does not release waiters
+        svc.call(Control::<bool>::wr(false)).await.unwrap();
+        assert!(!sink.is_ready());
+        assert!(lazy(|cx| rx.as_mut().poll(cx).is_pending()).await);
+
+        // the write buffer drains
+        client.remote_buffer_cap(1024 * 1024);
+        io.write_ready().await.unwrap();
         assert_eq!(lazy(|cx| rx.as_mut().poll(cx)).await, Poll::Ready(true));
-        assert!(lazy(|cx| rx2.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(lazy(|cx| rx2.as_mut().poll(cx)).await, Poll::Ready(true));
+
+        // the dispatcher clears the flag
+        assert!(lazy(|cx| io.poll_flush(cx, false).is_ready()).await);
+        assert!(!io.is_wr_backpressure());
+        assert!(sink.is_ready());
+        svc.call(Control::<bool>::wr(true)).await.unwrap();
+        assert!(sink.is_ready());
     }
 }
