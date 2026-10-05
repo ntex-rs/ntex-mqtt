@@ -102,9 +102,10 @@ impl MqttSink {
         self.0.is_ping_pending()
     }
 
-    /// Check if newly encoded packets wait behind a streaming payload or write backpressure
-    pub(super) fn is_write_blocked(&self) -> bool {
-        self.0.is_write_blocked()
+    /// Wait until already encoded packets can be written, returns `false` if the
+    /// connection is closed
+    pub(super) async fn wait_write_unblocked(&self) -> bool {
+        self.0.wait_write_unblocked().await
     }
 
     #[inline]
