@@ -4,7 +4,7 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, num, rc::Rc};
 use ntex_bytes::{BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::IoRef;
-use ntex_util::{HashMap, HashSet, channel::pool};
+use ntex_util::{HashMap, channel::pool};
 
 use crate::error::{DecodeError, EncodeError, MqttProtocolError, PayloadError, SendPacketError};
 use crate::io::{FrameState, STREAM_TAG};
@@ -82,8 +82,9 @@ impl fmt::Debug for MqttShared {
 
 #[derive(Debug)]
 struct MqttSharedQueues {
-    inflight: VecDeque<(num::NonZeroU16, Option<pool::Sender<Ack>>, AckType)>,
-    inflight_ids: HashSet<num::NonZeroU16>,
+    // packets awaiting ack, acks of different flows may arrive in any order
+    // (MQTT 3.1.1 and 5.0, 4.6)
+    inflight: HashMap<num::NonZeroU16, (Option<pool::Sender<Ack>>, AckType)>,
     waiters: VecDeque<pool::Sender<()>>,
     // PUBCOMP receivers, one per QoS 2 PUBLISH awaiting release
     rx: HashMap<num::NonZeroU16, pool::Receiver<Ack>>,
@@ -103,8 +104,7 @@ impl MqttShared {
             cap: Cell::new(0),
             flags: Cell::new(if client { Flags::CLIENT } else { Flags::empty() }),
             queues: RefCell::new(MqttSharedQueues {
-                inflight: VecDeque::with_capacity(8),
-                inflight_ids: HashSet::default(),
+                inflight: HashMap::default(),
                 waiters: VecDeque::new(),
                 rx: HashMap::default(),
             }),
@@ -354,7 +354,7 @@ impl MqttShared {
         queues.waiters.clear();
 
         if let Some(cb) = self.on_publish_ack.take() {
-            for (idx, tx, _) in queues.inflight.drain(..) {
+            for (idx, (tx, _)) in queues.inflight.drain() {
                 if tx.is_none() {
                     (*cb)(idx, true);
                 }
@@ -416,84 +416,65 @@ impl MqttShared {
 
     fn pkt_ack_inner(&self, pkt: Ack) -> Result<(), MqttProtocolError> {
         let mut queues = self.queues.borrow_mut();
+        let idx = pkt.packet_id();
 
-        // check ack order
-        if let Some((idx, tx, tp)) = queues.inflight.pop_front() {
-            if idx != pkt.packet_id() {
-                log::trace!(
-                    "MQTT protocol error: packet id order does not match; expected {}, got: {}",
-                    idx,
-                    pkt.packet_id()
-                );
-                Err(MqttProtocolError::packet_id_mismatch())
-            } else if !pkt.is_match(tp) {
-                // ack type must match the in-flight packet, PUBREC acknowledges only
-                // a QoS 2 PUBLISH and PUBCOMP only a PUBREL (MQTT 3.1.1, 4.3.2, 4.3.3)
-                log::trace!(
-                    "MQTT protocol error, unexpected packet {}, {}",
-                    pkt.packet_type(),
-                    tp.expected_str()
-                );
-                Err(MqttProtocolError::unexpected_packet(
-                    pkt.packet_type(),
-                    tp.expected_str(),
-                ))
-            } else if matches!(pkt, Ack::Receive(_)) {
-                // get publish ack channel
-                log::trace!("Ack packet with id: {}", pkt.packet_id());
+        // acks are matched by packet id, the order is defined only within
+        // PUBACK, PUBREC and PUBREL flows (MQTT 3.1.1, 4.6)
+        let Some(&mut (ref mut tx, tp)) = queues.inflight.get_mut(&idx) else {
+            log::trace!("MQTT protocol error, unknown packet id: {idx}");
+            return Err(MqttProtocolError::unknown_packet_id());
+        };
 
-                if tx.is_none_or(|tx| tx.send(pkt).is_err()) {
-                    // the publish future is dropped, nothing can release the publish,
-                    // PUBREC must be answered with PUBREL (MQTT 3.1.1, 4.3.3)
-                    log::trace!("Release dropped publish with id: {idx}");
-                    let _ = self.io.encode(
-                        Encoded::Packet(codec::Packet::PublishRelease { packet_id: idx }),
-                        self,
-                    );
-                    queues.inflight.push_back((idx, None, AckType::Complete));
-                } else {
-                    let (tx, rx) = self.pool.queue.channel();
-                    queues.rx.insert(idx, rx);
-                    queues
-                        .inflight
-                        .push_back((idx, Some(tx), AckType::Complete));
-                }
-                Ok(())
-            } else if matches!(pkt, Ack::Complete(_)) {
-                // get publish ack channel
-                log::trace!("Ack packet with id: {}", pkt.packet_id());
-                queues.inflight_ids.remove(&pkt.packet_id());
-                queues.rx.remove(&idx);
-
-                if let Some(tx) = tx {
-                    let _ = tx.send(pkt);
-                }
-
-                // wake up queued request (receive max limit)
-                self.wake_waiters_inner(&mut queues);
-                Ok(())
-            } else {
-                // get publish ack channel
-                log::trace!("Ack packet with id: {}", pkt.packet_id());
-                queues.inflight_ids.remove(&pkt.packet_id());
-
-                if let Some(tx) = tx {
-                    let _ = tx.send(pkt);
-                } else {
-                    let cb = self.on_publish_ack.take().unwrap();
-                    (*cb)(pkt.packet_id(), false);
-                    self.on_publish_ack.set(Some(cb));
-                }
-
-                // wake up queued request (receive max limit)
-                self.wake_waiters_inner(&mut queues);
-                Ok(())
-            }
-        } else {
-            log::trace!("Unexpected PUBACK packet: {:?}", pkt.packet_id());
-            Err(MqttProtocolError::generic_violation(
-                "Received PUBACK packet while there are no unacknowledged PUBLISH packets",
+        if !pkt.is_match(tp) {
+            // ack type must match the in-flight packet, PUBREC acknowledges only
+            // a QoS 2 PUBLISH and PUBCOMP only a PUBREL (MQTT 3.1.1, 4.3.2, 4.3.3)
+            log::trace!(
+                "MQTT protocol error, unexpected packet {}, {}",
+                pkt.packet_type(),
+                tp.expected_str()
+            );
+            Err(MqttProtocolError::unexpected_packet(
+                pkt.packet_type(),
+                tp.expected_str(),
             ))
+        } else if matches!(pkt, Ack::Receive(_)) {
+            // get publish ack channel
+            log::trace!("Ack packet with id: {idx}");
+
+            if tx.take().is_none_or(|tx| tx.send(pkt).is_err()) {
+                // the publish future is dropped, nothing can release the publish,
+                // PUBREC must be answered with PUBREL (MQTT 3.1.1, 4.3.3)
+                log::trace!("Release dropped publish with id: {idx}");
+                let _ = self.io.encode(
+                    Encoded::Packet(codec::Packet::PublishRelease { packet_id: idx }),
+                    self,
+                );
+                queues.inflight.insert(idx, (None, AckType::Complete));
+            } else {
+                let (tx, rx) = self.pool.queue.channel();
+                queues.rx.insert(idx, rx);
+                queues.inflight.insert(idx, (Some(tx), AckType::Complete));
+            }
+            Ok(())
+        } else {
+            // get publish ack channel
+            log::trace!("Ack packet with id: {idx}");
+            let tx = queues.inflight.remove(&idx).and_then(|(tx, _)| tx);
+
+            if matches!(pkt, Ack::Complete(_)) {
+                queues.rx.remove(&idx);
+            }
+            if let Some(tx) = tx {
+                let _ = tx.send(pkt);
+            } else if matches!(pkt, Ack::Publish(_)) {
+                let cb = self.on_publish_ack.take().unwrap();
+                (*cb)(idx, false);
+                self.on_publish_ack.set(Some(cb));
+            }
+
+            // wake up queued request (receive max limit)
+            self.wake_waiters_inner(&mut queues);
+            Ok(())
         }
     }
 
@@ -504,12 +485,11 @@ impl MqttShared {
         ack: AckType,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
         let mut queues = self.queues.borrow_mut();
-        if queues.inflight_ids.contains(&id) {
+        if queues.inflight.contains_key(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
             let (tx, rx) = self.pool.queue.channel();
-            queues.inflight.push_back((id, Some(tx), ack));
-            queues.inflight_ids.insert(id);
+            queues.inflight.insert(id, (Some(tx), ack));
             Ok(rx)
         }
     }
@@ -526,15 +506,14 @@ impl MqttShared {
         let remaining = Self::streaming_size(&pkt, payload.as_ref());
 
         let mut queues = self.queues.borrow_mut();
-        if queues.inflight_ids.contains(&id) {
+        if queues.inflight.contains_key(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
             match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
                 Ok(()) => {
                     self.streaming_remaining.set(remaining);
                     let (tx, rx) = self.pool.queue.channel();
-                    queues.inflight.push_back((id, Some(tx), ack));
-                    queues.inflight_ids.insert(id);
+                    queues.inflight.insert(id, (Some(tx), ack));
                     Ok(rx)
                 }
                 Err(e) => Err(SendPacketError::Encode(e)),
@@ -554,7 +533,7 @@ impl MqttShared {
         let remaining = Self::streaming_size(&pkt, payload.as_ref());
 
         let mut queues = self.queues.borrow_mut();
-        if queues.inflight_ids.contains(&id) {
+        if queues.inflight.contains_key(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
             match self.io.encode(Encoded::Publish(pkt, payload), &self.codec) {
@@ -564,8 +543,7 @@ impl MqttShared {
                         self.flags.get().contains(Flags::ON_PUBLISH_ACK),
                         "Publish ack callback is not set"
                     );
-                    queues.inflight.push_back((id, None, ack));
-                    queues.inflight_ids.insert(id);
+                    queues.inflight.insert(id, (None, ack));
                     Ok(())
                 }
                 Err(e) => Err(SendPacketError::Encode(e)),
