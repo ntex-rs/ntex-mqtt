@@ -170,4 +170,20 @@ mod tests {
         assert!(format!("{:?}", Error { err: () }).contains("Error"));
         assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
     }
+
+    #[test]
+    fn test_accessors() {
+        let err = Error::new(1);
+        assert_eq!(*err.get_ref(), 1);
+        assert_eq!(err.into(), 1);
+
+        let err = ProtocolError::new(error::MqttProtocolError::KeepAliveTimeout);
+        assert_eq!(err.get_ref(), &error::MqttProtocolError::KeepAliveTimeout);
+        assert_eq!(err.into(), error::MqttProtocolError::KeepAliveTimeout);
+
+        let gone = PeerGone(Some(io::Error::other("gone")));
+        assert_eq!(gone.err().unwrap().to_string(), "gone");
+        assert_eq!(gone.into().unwrap().to_string(), "gone");
+        assert!(PeerGone(None).into().is_none());
+    }
 }

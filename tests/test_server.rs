@@ -1,7 +1,8 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::{Arc, Mutex, atomic::AtomicBool, atomic::Ordering::Relaxed};
-use std::{cell::RefCell, future::Future, num::NonZeroU16, pin::Pin, rc::Rc, time::Duration};
+use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, time::Duration};
 
 use ntex::service::{Pipeline, Service, cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
@@ -31,6 +32,12 @@ impl From<TestError> for () {
 
 impl From<()> for TestError {
     fn from(_: ()) -> Self {
+        TestError
+    }
+}
+
+impl From<v3::error::SendPacketError> for TestError {
+    fn from(_: v3::error::SendPacketError) -> Self {
         TestError
     }
 }
@@ -2316,4 +2323,1303 @@ async fn test_streaming_publish_chunk_slots() {
         ),
         "{res:?}"
     );
+}
+
+/// Raw mqtt server: reads the CONNECT packet and hands the connection to `f`
+fn raw_server<F, Fut>(f: F) -> server::TestServer
+where
+    F: Fn(ntex::io::Io, codec::Codec) -> Fut + Send + Clone + 'static,
+    Fut: Future<Output = ()> + 'static,
+{
+    server::test_server(move || {
+        let f = f.clone();
+        async move {
+            fn_service(move |io: ntex::io::Io| {
+                let f = f.clone();
+                async move {
+                    let codec = codec::Codec::default();
+                    let _ = io.recv(&codec).await;
+                    f(io, codec).await;
+                    Ok::<_, ()>(())
+                }
+            })
+        }
+    })
+}
+
+/// Server side `v3::Router` dispatches publishes to resources and to the default service
+#[ntex::test]
+async fn test_server_router() -> std::io::Result<()> {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let log2 = log.clone();
+
+    let srv = server::test_server(async move || {
+        let (def, res) = (log2.clone(), log2.clone());
+        let router = v3::Router::new(fn_service(move |p: Publish| {
+            let log = def.clone();
+            async move {
+                log.lock()
+                    .unwrap()
+                    .push(format!("default:{}", p.publish_topic()));
+                Ok::<_, TestError>(())
+            }
+        }))
+        .resource(
+            "topic/{id}",
+            fn_service(move |p: Publish| {
+                let log = res.clone();
+                async move {
+                    log.lock()
+                        .unwrap()
+                        .push(format!("topic:{}", p.topic().get("id").unwrap()));
+                    Ok::<_, TestError>(())
+                }
+            }),
+        )
+        .resource(
+            "other",
+            fn_service(move |_: Publish| async move { Err::<(), _>(TestError) }),
+        );
+        assert!(format!("{router:?}").contains("v3::Router"));
+        MqttServer::new(router).build(connect)
+    });
+
+    let (io, codec) = handshake(&srv).await;
+
+    // a matching resource handles the publish, the rest goes to the default service
+    for (id, topic) in [(1, "topic/one"), (2, "topic/a/b"), (3, "unknown")] {
+        io.send(qos1_publish(topic, id), &codec).await.unwrap();
+        assert_eq!(
+            recv_pkt(&io, &codec).await,
+            Decoded::Packet(Packet::PublishAck { packet_id: pid(id) }, 2)
+        );
+    }
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["topic:one", "default:topic/a/b", "default:unknown"]
+    );
+
+    // a failing resource closes the connection
+    io.send(qos1_publish("other", 4), &codec).await.unwrap();
+    let res = io.recv(&codec).await;
+    assert!(matches!(res, Ok(None) | Err(_)), "{res:?}");
+
+    Ok(())
+}
+
+/// Client `Connect` builder options are delivered to the server, the server
+/// applies `ConnectAck` options
+#[ntex::test]
+async fn test_connect_builder_and_ack() -> std::io::Result<()> {
+    let received = Arc::new(Mutex::new(None));
+    let received2 = received.clone();
+
+    let srv = server::test_server(async move || {
+        let received = received2.clone();
+        MqttServer::new(async |_: Publish| Ok::<_, TestError>(())).build(
+            async move |mut msg: Connect| {
+                assert_eq!(msg.st(), &());
+                assert!(msg.packet_size() > 0);
+                assert!(format!("{msg:?}").contains("packet-id"));
+                // the packet can be modified in place
+                msg.packet_mut().username = Some(ByteString::from_static("checked"));
+                *received.lock().unwrap() = Some(msg.packet().clone());
+
+                let ack = msg
+                    .ack(St, true)
+                    .max_send(Some(0))
+                    .max_send(Some(8))
+                    .max_packet_size(NonZeroU32::new(64).unwrap())
+                    .idle_timeout(Seconds(16));
+                assert!(format!("{ack:?}").contains("max_packet_size: Some(64)"));
+                Ok::<_, ()>(ack)
+            },
+        )
+    });
+
+    let will = codec::LastWill {
+        qos: codec::QoS::AtLeastOnce,
+        retain: true,
+        topic: ByteString::from_static("will/topic"),
+        message: Bytes::from_static(b"bye"),
+    };
+    let client = try_connect_client(
+        client::Connect::with(srv.addr(), codec::Connect::default())
+            .client_id("replaced")
+            .clean_session()
+            .keep_alive(Seconds(30))
+            .last_will(will.clone())
+            .username("user-name")
+            .password(Bytes::from_static(b"secret"))
+            .packet(|pkt| pkt.client_id = ByteString::from_static("packet-id")),
+    )
+    .await
+    .unwrap();
+
+    assert!(client.session_present());
+    assert!(format!("{client:?}").contains("v3::Client"));
+
+    assert_eq!(
+        received.lock().unwrap().take().unwrap(),
+        codec::Connect {
+            clean_session: true,
+            keep_alive: 30,
+            last_will: Some(will),
+            client_id: ByteString::from_static("packet-id"),
+            username: Some(ByteString::from_static("checked")),
+            password: Some(Bytes::from_static(b"secret")),
+        }
+    );
+
+    // `max_packet_size` is applied to the connection
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+    sink.publish("t")
+        .send_at_least_once(Bytes::from_static(b"small"))
+        .await
+        .unwrap();
+    let res = sink
+        .publish("t")
+        .send_at_least_once(Bytes::from(vec![b'*'; 128]))
+        .await;
+    assert_eq!(res, Err(v3::error::SendPacketError::Disconnected));
+
+    Ok(())
+}
+
+/// Client protocol-message service receives unrouted publishes and `PublishRelease`
+#[ntex::test]
+async fn test_client_publish_message() -> std::io::Result<()> {
+    let srv = server::test_server(async || {
+        MqttServer::new(async |ses: &Session<St>| {
+            let sink = ses.sink().clone();
+            Ok::<_, Infallible>(fn_service(async move |_: Publish| {
+                sink.publish("c/0a")
+                    .send_at_most_once(Bytes::from_static(b"zero-a"))
+                    .await
+                    .unwrap();
+                sink.publish("c/0b")
+                    .send_at_most_once(Bytes::from_static(b"zero-b"))
+                    .await
+                    .unwrap();
+                sink.publish("c/1")
+                    .send_at_least_once(Bytes::from_static(b"one"))
+                    .await
+                    .unwrap();
+                sink.publish("c/2")
+                    .send_exactly_once(Bytes::from_static(b"two"))
+                    .await
+                    .unwrap()
+                    .release()
+                    .await
+                    .unwrap();
+                Ok::<_, TestError>(())
+            }))
+        })
+        .build(connect)
+    });
+
+    let client = connect_client(srv.addr()).await;
+    let sink = client.sink();
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let log2 = log.clone();
+    ntex::rt::spawn(
+        client.start(fn_service(move |msg: client::ProtocolMessage| {
+            let log = log2.clone();
+            async move {
+                match msg {
+                    client::ProtocolMessage::Publish(mut p) => {
+                        assert!(p.packet_size() > p.payload_size() as u32);
+                        // the packet can be modified in place
+                        p.packet_mut().retain = true;
+                        let topic = p.packet().topic.clone();
+                        let qos = p.packet().qos;
+                        let size = p.payload_size();
+                        Ok::<_, TestError>(match topic.as_ref() {
+                            "c/0a" => {
+                                // payload is read chunk by chunk
+                                let mut payload = Vec::new();
+                                while let Some(chunk) = p.read().await.unwrap() {
+                                    payload.extend_from_slice(&chunk);
+                                }
+                                assert_eq!(payload.len(), size);
+                                log.borrow_mut().push((topic, qos, Bytes::from(payload)));
+                                client::ProtocolMessage::Publish(p).ack()
+                            }
+                            "c/1" => {
+                                let payload = p.read_all().await.unwrap();
+                                log.borrow_mut().push((topic, qos, payload));
+                                p.ack()
+                            }
+                            _ => {
+                                let payload = p.read_all().await.unwrap();
+                                let (ack, pkt) = p.into_inner();
+                                assert!(pkt.retain);
+                                log.borrow_mut().push((topic, qos, payload));
+                                ack
+                            }
+                        })
+                    }
+                    msg => {
+                        log.borrow_mut().push((
+                            ByteString::from_static("pubrel"),
+                            QoS::AtMostOnce,
+                            Bytes::new(),
+                        ));
+                        Ok(msg.ack())
+                    }
+                }
+            }
+        })),
+    );
+
+    sink.publish("trigger")
+        .send_at_most_once(Bytes::new())
+        .await
+        .unwrap();
+
+    for _ in 0..100 {
+        if log.borrow().len() == 5 {
+            break;
+        }
+        sleep(Millis(10)).await;
+    }
+    assert_eq!(
+        *log.borrow(),
+        vec![
+            (
+                ByteString::from_static("c/0a"),
+                QoS::AtMostOnce,
+                Bytes::from_static(b"zero-a")
+            ),
+            (
+                ByteString::from_static("c/0b"),
+                QoS::AtMostOnce,
+                Bytes::from_static(b"zero-b")
+            ),
+            (
+                ByteString::from_static("c/1"),
+                QoS::AtLeastOnce,
+                Bytes::from_static(b"one")
+            ),
+            (
+                ByteString::from_static("c/2"),
+                QoS::ExactlyOnce,
+                Bytes::from_static(b"two")
+            ),
+            (
+                ByteString::from_static("pubrel"),
+                QoS::AtMostOnce,
+                Bytes::new()
+            ),
+        ]
+    );
+    assert!(sink.is_open());
+    Ok(())
+}
+
+/// `middleware()` and `replace_middlewares()` change in-flight handling
+#[ntex::test]
+async fn test_server_middleware() -> std::io::Result<()> {
+    // in-flight limiting is removed, both publishes are handled concurrently
+    let max = Arc::new(Mutex::new((0usize, 0usize)));
+    let max2 = max.clone();
+
+    let srv = server::TestServerBuilder::new(async move || {
+        let max = max2.clone();
+        let srv = MqttServer::new(fn_service(move |_: Publish| {
+            let max = max.clone();
+            async move {
+                {
+                    let mut g = max.lock().unwrap();
+                    g.0 += 1;
+                    g.1 = g.1.max(g.0);
+                }
+                sleep(Millis(50)).await;
+                max.lock().unwrap().0 -= 1;
+                Ok::<_, TestError>(())
+            }
+        }))
+        .replace_middlewares(ntex::service::Identity)
+        .middleware(ntex::service::Identity);
+        assert_eq!(format!("{srv:?}"), "v3::MqttServer");
+        srv.build(connect)
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_receive(1)))
+    .start();
+
+    let (io, codec) = handshake(&srv).await;
+    io.send(qos1_publish("t", 1), &codec).await.unwrap();
+    io.send(qos1_publish("t", 2), &codec).await.unwrap();
+    for id in 1..=2 {
+        assert_eq!(
+            recv_pkt(&io, &codec).await,
+            Decoded::Packet(Packet::PublishAck { packet_id: pid(id) }, 2)
+        );
+    }
+    assert_eq!(max.lock().unwrap().1, 2);
+    Ok(())
+}
+
+/// Server closes the connection if the first packet is not CONNECT
+#[ntex::test]
+async fn test_first_packet_is_not_connect() -> std::io::Result<()> {
+    let srv = server::test_server(async || {
+        MqttServer::new(async |_: Publish| Ok::<_, TestError>(())).build(connect)
+    });
+
+    for first in [
+        Encoded::Packet(Packet::PingRequest),
+        Encoded::Packet(Packet::Disconnect),
+        Encoded::Publish(
+            codec::Publish {
+                payload_size: 1,
+                ..pkt_publish()
+            },
+            Some(Bytes::from_static(b"\x00")),
+        ),
+    ] {
+        let io = srv.connect().await.unwrap();
+        let codec = codec::Codec::default();
+        io.send(first, &codec).await.unwrap();
+        assert_eq!(io.recv(&codec).await.unwrap(), None);
+    }
+
+    // CONNECT rejected by the decoder, no CONNACK is sent for a generic decode error
+    let io = srv.connect().await.unwrap();
+    let codec = codec::Codec::default();
+    io.encode_slice(b"\x00\x00").unwrap();
+    assert_eq!(io.recv(&codec).await.unwrap(), None);
+
+    // peer disconnects during handshake, the server keeps accepting connections
+    drop(srv.connect().await.unwrap());
+    let (io, codec) = handshake(&srv).await;
+    io.send(Encoded::Packet(Packet::PingRequest), &codec)
+        .await
+        .unwrap();
+    assert_eq!(
+        recv_pkt(&io, &codec).await,
+        Decoded::Packet(Packet::PingResponse, 0)
+    );
+    Ok(())
+}
+
+/// Client connector failure paths
+#[ntex::test]
+async fn test_connector_errors() -> std::io::Result<()> {
+    // peer closes the connection without CONNACK
+    let srv = raw_server(async |io: ntex::io::Io, _| {
+        let _ = io.shutdown().await;
+    });
+    let err = try_connect_client(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(&*err, client::MqttClientError::Disconnected(None)),
+        "{err:?}"
+    );
+
+    // server sends a packet other than CONNACK
+    for first in [
+        Encoded::Packet(Packet::PingResponse),
+        Encoded::Publish(
+            codec::Publish {
+                payload_size: 1,
+                ..pkt_publish()
+            },
+            Some(Bytes::from_static(b"\x00")),
+        ),
+    ] {
+        let srv = raw_server(move |io: ntex::io::Io, codec: codec::Codec| {
+            let first = first.clone();
+            async move {
+                io.send(first, &codec).await.unwrap();
+                sleep(Millis(300)).await;
+            }
+        });
+        let err = try_connect_client(client::Connect::new(srv.addr()).client_id("user"))
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&*err, client::MqttClientError::Protocol(_)),
+            "{err:?}"
+        );
+    }
+
+    // custom connector
+    let srv = server::test_server(async || {
+        MqttServer::new(async |_: Publish| Ok::<_, TestError>(())).build(connect)
+    });
+    let connector = client::MqttConnector::new().connector(ntex::connect::Connector::default());
+    assert!(format!("{connector:?}").contains("v3::MqttConnector"));
+    let client = Pipeline::new(SharedCfg::default(), connector)
+        .call(client::Connect::new(srv.addr()).client_id("user"))
+        .await
+        .unwrap();
+    assert!(!client.session_present());
+
+    // negotiated io can be used directly
+    let (io, codec) = client.into_inner();
+    io.send(Encoded::Packet(Packet::PingRequest), &codec)
+        .await
+        .unwrap();
+    assert_eq!(
+        io.recv(&codec).await.unwrap(),
+        Some(Decoded::Packet(Packet::PingResponse, 0))
+    );
+    Ok(())
+}
+
+/// Server that publishes `topics` to the client as soon as it receives a publish
+fn publisher_server(topics: &'static [(&'static str, QoS)]) -> server::TestServer {
+    server::test_server(async move || {
+        MqttServer::new(async move |ses: &Session<St>| {
+            let sink = ses.sink().clone();
+            Ok::<_, Infallible>(fn_service(async move |_: Publish| {
+                for (topic, qos) in topics {
+                    let pub_ = sink.publish(*topic);
+                    let payload = Bytes::from_static(b"data");
+                    match qos {
+                        QoS::AtMostOnce => pub_.send_at_most_once(payload).await?,
+                        QoS::AtLeastOnce => pub_.send_at_least_once(payload).await?,
+                        QoS::ExactlyOnce => {
+                            pub_.send_exactly_once(payload).await?.release().await?
+                        }
+                    }
+                }
+                Ok::<_, TestError>(())
+            }))
+        })
+        .build(connect)
+    })
+}
+
+/// `ClientRouter` dispatches publishes to resources, the rest goes to the
+/// protocol-message service
+#[ntex::test]
+async fn test_client_router() -> std::io::Result<()> {
+    let srv = publisher_server(&[
+        ("topic/one", QoS::AtLeastOnce),
+        ("other", QoS::AtMostOnce),
+        ("unrouted", QoS::AtLeastOnce),
+        ("fail", QoS::AtMostOnce),
+    ]);
+
+    let client = connect_client(srv.addr()).await;
+    let sink = client.sink();
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let (l1, l2, l3) = (log.clone(), log.clone(), log.clone());
+
+    let router = client
+        .resource(
+            "topic/{id}",
+            fn_service(move |p: Publish| {
+                let log = l1.clone();
+                async move {
+                    log.borrow_mut()
+                        .push(format!("res:{}", p.topic().get("id").unwrap()));
+                    Ok::<_, TestError>(())
+                }
+            }),
+        )
+        .resource(
+            "other",
+            fn_service(move |p: Publish| {
+                let log = l2.clone();
+                async move {
+                    log.borrow_mut().push(format!("res:{}", p.publish_topic()));
+                    Ok::<_, TestError>(())
+                }
+            }),
+        )
+        .resource(
+            "fail",
+            fn_service(async |_: Publish| Err::<(), _>(TestError)),
+        );
+    assert!(format!("{router:?}").contains("v3::ClientRouter"));
+
+    ntex::rt::spawn(async move {
+        let _ = router
+            .start(fn_service(move |msg: client::ProtocolMessage| {
+                let log = l3.clone();
+                async move {
+                    if let client::ProtocolMessage::Publish(p) = &msg {
+                        log.borrow_mut().push(format!("proto:{}", p.packet().topic));
+                    }
+                    Ok::<_, TestError>(msg.ack())
+                }
+            }))
+            .await;
+    });
+
+    sink.publish("trigger")
+        .send_at_most_once(Bytes::new())
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if log.borrow().len() == 3 {
+            break;
+        }
+        sleep(Millis(10)).await;
+    }
+    assert_eq!(*log.borrow(), ["res:one", "res:other", "proto:unrouted"]);
+
+    // a failing resource closes the connection
+    for _ in 0..100 {
+        if !sink.is_open() {
+            break;
+        }
+        sleep(Millis(10)).await;
+    }
+    assert!(!sink.is_open());
+    Ok(())
+}
+
+/// `ClientRouter::start_default` acks routed `QoS 2` publishes and closes the
+/// connection on unrouted ones
+#[ntex::test]
+async fn test_client_router_default() -> std::io::Result<()> {
+    let srv = publisher_server(&[("topic/x", QoS::ExactlyOnce), ("unrouted", QoS::AtMostOnce)]);
+
+    let client = connect_client(srv.addr()).await;
+    let sink = client.sink();
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let log2 = log.clone();
+    ntex::rt::spawn(
+        client
+            .resource(
+                "topic/{id}",
+                fn_service(move |p: Publish| {
+                    let log = log2.clone();
+                    async move {
+                        log.borrow_mut().push(p.publish_topic().to_owned());
+                        Ok::<_, TestError>(())
+                    }
+                }),
+            )
+            .start_default(),
+    );
+
+    sink.publish("trigger")
+        .send_at_most_once(Bytes::new())
+        .await
+        .unwrap();
+
+    // the unrouted publish closes the connection
+    for _ in 0..100 {
+        if !sink.is_open() {
+            break;
+        }
+        sleep(Millis(10)).await;
+    }
+    assert!(!sink.is_open());
+    assert_eq!(*log.borrow(), ["topic/x"]);
+    Ok(())
+}
+
+/// Client control service receives `Stop` when the peer is gone
+#[ntex::test]
+async fn test_client_start_with_control() -> std::io::Result<()> {
+    let srv = server::test_server(async || {
+        MqttServer::new(async |_: Publish| Ok::<_, TestError>(())).build(async |msg: Connect| {
+            let sink = msg.sink();
+            ntex::rt::spawn(async move {
+                sleep(Millis(100)).await;
+                sink.force_close();
+            });
+            Ok::<_, ()>(msg.ack(St, false))
+        })
+    });
+
+    let client = connect_client(srv.addr()).await;
+    let stopped = Rc::new(RefCell::new(None));
+    let stopped2 = stopped.clone();
+
+    let res = client
+        .start_with_control(
+            fn_service(async |msg: client::ProtocolMessage| Ok::<_, TestError>(msg.ack())),
+            fn_service(move |msg: Control<TestError>| {
+                let stopped = stopped2.clone();
+                async move {
+                    if let Control::Stop(reason) = &msg {
+                        *stopped.borrow_mut() = Some(format!("{reason:?}"));
+                    }
+                    Ok::<_, TestError>(None)
+                }
+            }),
+        )
+        .await;
+    assert!(res.is_ok(), "{res:?}");
+    assert!(
+        stopped.borrow().as_deref().unwrap().starts_with("PeerGone"),
+        "{:?}",
+        stopped.borrow()
+    );
+    Ok(())
+}
+
+/// Server protocol-message service handles SUBSCRIBE/UNSUBSCRIBE/PUBREL/PINGREQ
+#[ntex::test]
+async fn test_proto_subscribe_unsubscribe() -> std::io::Result<()> {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let log2 = log.clone();
+
+    let srv = server::TestServerBuilder::new(async move || {
+        let log = log2.clone();
+        MqttServer::new(async |_: Publish| Ok::<_, TestError>(()))
+            .protocol(fn_service(move |msg: ProtocolMessage| {
+                let log = log.clone();
+                async move {
+                    Ok::<_, TestError>(match msg {
+                        ProtocolMessage::Subscribe(mut msg) => {
+                            log.lock()
+                                .unwrap()
+                                .push(format!("sub:{}", msg.packet_size()));
+                            let iter = msg.iter_mut();
+                            assert!(format!("{iter:?}").contains("SubscribeIter"));
+                            for mut sub in iter {
+                                if sub.topic().as_ref() == "bad" {
+                                    sub.fail();
+                                } else {
+                                    sub.confirm(sub.qos());
+                                }
+                            }
+                            msg.ack()
+                        }
+                        ProtocolMessage::Unsubscribe(msg) => {
+                            log.lock().unwrap().push(format!(
+                                "unsub:{}:{}",
+                                msg.packet_size(),
+                                msg.iter().count()
+                            ));
+                            msg.ack()
+                        }
+                        ProtocolMessage::PublishRelease(msg) => {
+                            log.lock().unwrap().push(format!("pubrel:{}", msg.id()));
+                            msg.ack()
+                        }
+                        msg => {
+                            log.lock().unwrap().push(format!("{msg:?}"));
+                            msg.ack()
+                        }
+                    })
+                }
+            }))
+            .build(connect)
+    })
+    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_qos(QoS::ExactlyOnce)))
+    .start();
+
+    let client = connect_client(srv.addr()).await;
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    let codes = sink
+        .subscribe()
+        .topic_filter(ByteString::from_static("bad"), QoS::AtLeastOnce)
+        .topic_filter(ByteString::from_static("good"), QoS::ExactlyOnce)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        codes,
+        vec![
+            codec::SubscribeReturnCode::Failure,
+            codec::SubscribeReturnCode::Success(QoS::ExactlyOnce)
+        ]
+    );
+
+    sink.unsubscribe()
+        .topic_filter(ByteString::from_static("bad"))
+        .topic_filter(ByteString::from_static("good"))
+        .send()
+        .await
+        .unwrap();
+
+    sink.publish("t")
+        .send_exactly_once(Bytes::from_static(b"d"))
+        .await
+        .unwrap()
+        .release()
+        .await
+        .unwrap();
+
+    assert_eq!(*log.lock().unwrap(), ["sub:15", "unsub:13:2", "pubrel:3"]);
+    sink.close();
+    Ok(())
+}
+
+/// Generic `ProtocolMessage::ack()` closes the connection for
+/// SUBSCRIBE/UNSUBSCRIBE, those must be acked explicitly
+#[ntex::test]
+async fn test_proto_ack_not_supported() -> std::io::Result<()> {
+    let srv = server::test_server(async || {
+        MqttServer::new(async |_: Publish| Ok::<_, TestError>(()))
+            .protocol(async |msg: ProtocolMessage| Ok::<_, TestError>(msg.ack()))
+            .build(connect)
+    });
+
+    for subscribe in [true, false] {
+        let client = connect_client(srv.addr()).await;
+        let sink = client.sink();
+        ntex::rt::spawn(client.start_default());
+
+        let res = if subscribe {
+            sink.subscribe()
+                .topic_filter(ByteString::from_static("t"), QoS::AtMostOnce)
+                .send()
+                .await
+                .map(|_| ())
+        } else {
+            sink.unsubscribe()
+                .topic_filter(ByteString::from_static("t"))
+                .send()
+                .await
+        };
+        assert_eq!(res, Err(v3::error::SendPacketError::Disconnected));
+        assert!(!sink.is_open());
+    }
+    Ok(())
+}
+
+/// Keep-alive task is started by every client run method
+#[ntex::test]
+async fn test_client_keepalive_variants() -> std::io::Result<()> {
+    let pings = Arc::new(Mutex::new(0));
+    let pings2 = pings.clone();
+
+    let srv = server::test_server(async move || {
+        let pings = pings2.clone();
+        MqttServer::new(async |_: Publish| Ok::<_, TestError>(()))
+            .protocol(move |msg: ProtocolMessage| {
+                let pings = pings.clone();
+                async move {
+                    if let ProtocolMessage::Ping(msg) = msg {
+                        *pings.lock().unwrap() += 1;
+                        Ok::<_, TestError>(msg.ack())
+                    } else {
+                        Ok(msg.disconnect())
+                    }
+                }
+            })
+            .build(connect)
+    });
+
+    let proto = || fn_service(async |msg: client::ProtocolMessage| Ok::<_, TestError>(msg.ack()));
+    let publish = || fn_service(async |_: Publish| Ok::<_, TestError>(()));
+    let mut sinks = Vec::new();
+    for idx in 0..4 {
+        let client = try_connect_client(
+            client::Connect::new(srv.addr())
+                .client_id("user")
+                .keep_alive(Seconds(1)),
+        )
+        .await
+        .unwrap();
+        sinks.push(client.sink());
+
+        match idx {
+            0 => ntex::rt::spawn(async move {
+                let _ = client.start(proto()).await;
+            }),
+            1 => ntex::rt::spawn(async move {
+                let _ = client
+                    .start_with_control(proto(), fn_service(async |_| Ok::<_, TestError>(None)))
+                    .await;
+            }),
+            2 => ntex::rt::spawn(client.resource("t", publish()).start_default()),
+            _ => ntex::rt::spawn(async move {
+                let _ = client.resource("t", publish()).start(proto()).await;
+            }),
+        };
+    }
+
+    for _ in 0..200 {
+        if *pings.lock().unwrap() >= 4 {
+            break;
+        }
+        sleep(Millis(20)).await;
+    }
+    assert!(*pings.lock().unwrap() >= 4, "{:?}", pings.lock().unwrap());
+    assert!(sinks.iter().all(|s| s.is_open()));
+
+    // the keep-alive task stops once the connection is closed
+    sinks.iter().for_each(|s| s.close());
+    sleep(Millis(1200)).await;
+    assert!(sinks.iter().all(|s| !s.is_open()));
+    Ok(())
+}
+
+/// Client closes the connection if PINGRESP is not received in time
+#[ntex::test]
+async fn test_client_keepalive_no_pingresp() -> std::io::Result<()> {
+    let srv = raw_server(async |io: ntex::io::Io, codec: codec::Codec| {
+        io.send(connect_ack(), &codec).await.unwrap();
+        sleep(Millis(5000)).await;
+    });
+
+    let client = try_connect_client(
+        client::Connect::new(srv.addr())
+            .client_id("user")
+            .keep_alive(Seconds(1)),
+    )
+    .await
+    .unwrap();
+    let sink = client.sink();
+    ntex::rt::spawn(client.start_default());
+
+    for _ in 0..300 {
+        if !sink.is_open() {
+            break;
+        }
+        sleep(Millis(20)).await;
+    }
+    assert!(!sink.is_open());
+    Ok(())
+}
+
+fn connect_ack() -> Encoded {
+    Encoded::Packet(Packet::ConnectAck(codec::ConnectAck {
+        session_present: false,
+        return_code: codec::ConnectAckReason::ConnectionAccepted,
+    }))
+}
+
+fn encode_pkts(pkts: Vec<Encoded>) -> Bytes {
+    let codec = codec::Codec::default();
+    let mut buf = BytePages::default();
+    for pkt in pkts {
+        codec.encode(pkt, &mut buf).unwrap();
+    }
+    buf.freeze()
+}
+
+/// Connects a client to a raw server that sends `data` right after CONNACK and
+/// returns the reason the client dispatcher stopped. `delay` keeps the protocol
+/// service busy so that the next packet is dispatched concurrently.
+async fn client_stop_reason(data: Bytes, delay: Millis) -> String {
+    let srv = raw_server(move |io: ntex::io::Io, codec: codec::Codec| {
+        let data = data.clone();
+        async move {
+            io.send(connect_ack(), &codec).await.unwrap();
+            let _ = io.encode_slice(&data);
+            sleep(Millis(300)).await;
+        }
+    });
+
+    let client = connect_client(srv.addr()).await;
+    let reason = Rc::new(RefCell::new(String::new()));
+    let reason2 = reason.clone();
+    let _ = client
+        .start_with_control(
+            fn_service(async move |msg: client::ProtocolMessage| {
+                sleep(delay).await;
+                Ok::<_, TestError>(msg.ack())
+            }),
+            fn_service(move |msg: Control<TestError>| {
+                let reason = reason2.clone();
+                async move {
+                    if let Control::Stop(r) = &msg {
+                        *reason.borrow_mut() = format!("{r:?}");
+                    }
+                    Ok::<_, TestError>(None)
+                }
+            }),
+        )
+        .await;
+    reason.take()
+}
+
+/// Client rejects packets a server must not send
+#[ntex::test]
+async fn test_client_protocol_errors() -> std::io::Result<()> {
+    let publish = |topic, id, dup, qos| {
+        Encoded::Publish(
+            codec::Publish {
+                dup,
+                qos,
+                topic: ByteString::from_static(topic),
+                packet_id: NonZeroU16::new(id),
+                ..pkt_publish()
+            },
+            None,
+        )
+    };
+
+    let cases: Vec<(Bytes, Millis, &str)> = vec![
+        // wildcards are not allowed in a publish topic
+        (
+            Bytes::from_static(b"\x30\x05\x00\x03a/#"),
+            Millis::ZERO,
+            "Pub_3_3_2_2",
+        ),
+        // packets of these types are never sent by a server
+        (
+            encode_pkts(vec![Encoded::Packet(Packet::PingRequest)]),
+            Millis::ZERO,
+            "UnexpectedPacket { packet_type: 192",
+        ),
+        (
+            encode_pkts(vec![Encoded::Packet(Packet::Unsubscribe {
+                packet_id: pid(1),
+                topic_filters: vec![ByteString::from_static("t")],
+            })]),
+            Millis::ZERO,
+            "UnexpectedPacket { packet_type: 162",
+        ),
+        // acks for packets that were never sent
+        (
+            encode_pkts(vec![Encoded::Packet(Packet::PublishAck {
+                packet_id: pid(5),
+            })]),
+            Millis::ZERO,
+            "ack with a packet id that is not in flight",
+        ),
+        (
+            encode_pkts(vec![Encoded::Packet(Packet::PublishComplete {
+                packet_id: pid(5),
+            })]),
+            Millis::ZERO,
+            "ack with a packet id that is not in flight",
+        ),
+        (
+            encode_pkts(vec![Encoded::Packet(Packet::PublishReceived {
+                packet_id: pid(5),
+            })]),
+            Millis::ZERO,
+            "ack with a packet id that is not in flight",
+        ),
+        (
+            encode_pkts(vec![Encoded::Packet(Packet::SubscribeAck {
+                packet_id: pid(5),
+                status: vec![codec::SubscribeReturnCode::Success(QoS::AtMostOnce)],
+            })]),
+            Millis::ZERO,
+            "ack with a packet id that is not in flight",
+        ),
+        (
+            encode_pkts(vec![Encoded::Packet(Packet::UnsubscribeAck {
+                packet_id: pid(5),
+            })]),
+            Millis::ZERO,
+            "ack with a packet id that is not in flight",
+        ),
+        // PUBREL before PUBREC
+        (
+            encode_pkts(vec![
+                publish("a", 1, false, QoS::AtLeastOnce),
+                Encoded::Packet(Packet::PublishRelease { packet_id: pid(1) }),
+            ]),
+            Millis(50),
+            "PublishRelease packet before PublishReceived",
+        ),
+        // duplicated packet id
+        (
+            encode_pkts(vec![
+                publish("a", 1, false, QoS::ExactlyOnce),
+                publish("a", 1, false, QoS::AtLeastOnce),
+            ]),
+            Millis::ZERO,
+            "PacketId_2_2_1_3_Pub",
+        ),
+    ];
+
+    for (data, delay, expect) in cases {
+        let reason = client_stop_reason(data, delay).await;
+        assert!(
+            reason.contains(expect),
+            "{reason:?} does not match {expect}"
+        );
+    }
+
+    // re-delivered publishes and an unknown PUBREL are not errors,
+    // the client stops when the server is gone
+    let reason = client_stop_reason(
+        encode_pkts(vec![
+            publish("a", 1, false, QoS::AtLeastOnce),
+            publish("a", 1, true, QoS::AtLeastOnce),
+            Encoded::Packet(Packet::PublishRelease { packet_id: pid(9) }),
+        ]),
+        Millis(50),
+    )
+    .await;
+    assert!(reason.starts_with("PeerGone"), "{reason:?}");
+    Ok(())
+}
+
+/// Generic `ProtocolMessage::ack()`/`disconnect()` for PINGREQ, PUBREL and DISCONNECT
+#[ntex::test]
+async fn test_proto_generic_ack_disconnect() -> std::io::Result<()> {
+    let proto_server = |ack: bool| {
+        server::TestServerBuilder::new(move || async move {
+            MqttServer::new(async |_: Publish| Ok::<_, TestError>(()))
+                .protocol(move |msg: ProtocolMessage| async move {
+                    Ok::<_, TestError>(if ack { msg.ack() } else { msg.disconnect() })
+                })
+                .build(connect)
+        })
+        .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_qos(QoS::ExactlyOnce)))
+        .start()
+    };
+
+    // generic ack: PINGREQ -> PINGRESP, PUBREL -> PUBCOMP, DISCONNECT -> close
+    let srv = proto_server(true);
+    let (io, codec) = handshake(&srv).await;
+
+    io.send(Encoded::Packet(Packet::PingRequest), &codec)
+        .await
+        .unwrap();
+    assert_eq!(
+        recv_pkt(&io, &codec).await,
+        Decoded::Packet(Packet::PingResponse, 0)
+    );
+
+    io.send(
+        Encoded::Publish(
+            codec::Publish {
+                qos: QoS::ExactlyOnce,
+                ..pkt_publish()
+            },
+            None,
+        ),
+        &codec,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        recv_pkt(&io, &codec).await,
+        Decoded::Packet(Packet::PublishReceived { packet_id: pid(1) }, 2)
+    );
+    io.send(
+        Encoded::Packet(Packet::PublishRelease { packet_id: pid(1) }),
+        &codec,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        recv_pkt(&io, &codec).await,
+        Decoded::Packet(Packet::PublishComplete { packet_id: pid(1) }, 2)
+    );
+
+    io.send(Encoded::Packet(Packet::Disconnect), &codec)
+        .await
+        .unwrap();
+    assert!(
+        ntex::time::timeout(Millis(1000), io.recv(&codec))
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
+
+    // generic disconnect: the connection is closed without a response
+    let srv = proto_server(false);
+    let (io, codec) = handshake(&srv).await;
+    io.send(Encoded::Packet(Packet::PingRequest), &codec)
+        .await
+        .unwrap();
+    assert!(
+        ntex::time::timeout(Millis(1000), io.recv(&codec))
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
+    Ok(())
+}
+
+/// Raw bytes of a PUBLISH packet
+fn publish_bytes(topic: &str, id: u16, dup: bool, qos: QoS, payload: &[u8]) -> Bytes {
+    let mut pkt = vec![0x30 | ((qos as u8) << 1) | ((dup as u8) << 3)];
+    let mut rest = vec![0u8, topic.len() as u8];
+    rest.extend_from_slice(topic.as_bytes());
+    if qos != QoS::AtMostOnce {
+        rest.extend_from_slice(&id.to_be_bytes());
+    }
+    rest.extend_from_slice(payload);
+    pkt.push(rest.len() as u8);
+    pkt.extend_from_slice(&rest);
+    Bytes::from(pkt)
+}
+
+/// Client receives a publish with a payload delivered in several chunks
+#[ntex::test]
+async fn test_client_payload_stream() -> std::io::Result<()> {
+    // "read": payload is consumed and acked, "skip": payload is dropped,
+    // "err": protocol service fails while the payload is still incomplete
+    for (mode, expect) in [("read", "ack"), ("skip", "closed"), ("err", "disconnect")] {
+        let log = Arc::new(Mutex::new(String::new()));
+        let log2 = log.clone();
+        let srv = raw_server(move |io: ntex::io::Io, codec: codec::Codec| {
+            let log = log2.clone();
+            async move {
+                io.send(connect_ack(), &codec).await.unwrap();
+                // the payload is delivered in three parts
+                let data = publish_bytes("t", 1, false, QoS::AtLeastOnce, b"0123456789");
+                for part in [
+                    &data[..data.len() - 6],
+                    &data[data.len() - 6..data.len() - 3],
+                    &data[data.len() - 3..],
+                ] {
+                    let _ = io.encode_slice(part);
+                    sleep(Millis(30)).await;
+                }
+
+                let res = match ntex::time::timeout(Millis(1000), io.recv(&codec)).await {
+                    Ok(Ok(Some(Decoded::Packet(Packet::PublishAck { .. }, _)))) => "ack",
+                    Ok(Ok(Some(Decoded::Packet(Packet::Disconnect, _)))) => "disconnect",
+                    // the client closes the connection, possibly with a reset
+                    Ok(Ok(None)) | Ok(Err(_)) => "closed",
+                    res => Box::leak(format!("{res:?}").into_boxed_str()),
+                };
+                *log.lock().unwrap() = res.to_string();
+            }
+        });
+
+        let payload = Rc::new(RefCell::new(Bytes::new()));
+        let payload2 = payload.clone();
+        let client = connect_client(srv.addr()).await;
+        let res = client
+            .start(fn_service(move |msg: client::ProtocolMessage| {
+                let payload = payload2.clone();
+                async move {
+                    let client::ProtocolMessage::Publish(p) = msg else {
+                        return Ok(msg.ack());
+                    };
+                    match mode {
+                        "read" => {
+                            *payload.borrow_mut() = p.read_all().await.unwrap();
+                            Ok(p.ack())
+                        }
+                        "skip" => Ok(p.ack()),
+                        _ => Err(TestError),
+                    }
+                }
+            }))
+            .await;
+
+        assert!(res.is_ok(), "{mode}: {res:?}");
+        for _ in 0..100 {
+            if !log.lock().unwrap().is_empty() {
+                break;
+            }
+            sleep(Millis(10)).await;
+        }
+        assert_eq!(*log.lock().unwrap(), expect, "{mode}");
+        if mode == "read" {
+            assert_eq!(payload.borrow().as_ref(), b"0123456789");
+        }
+    }
+    Ok(())
+}
+
+/// Default protocol-message service acks PINGREQ and closes on SUBSCRIBE
+#[ntex::test]
+async fn test_default_proto_service() -> std::io::Result<()> {
+    let retained = Arc::new(Mutex::new(false));
+    let retained2 = retained.clone();
+    let srv = server::test_server(move || {
+        let retained = retained2.clone();
+        async move {
+            let retained = retained.clone();
+            MqttServer::new(move |mut p: Publish| {
+                let retained = retained.clone();
+                async move {
+                    // the packet can be modified in place
+                    p.packet_mut().retain = true;
+                    *retained.lock().unwrap() = p.packet().retain;
+                    Ok::<_, TestError>(())
+                }
+            })
+            .build(connect)
+        }
+    });
+
+    let (io, codec) = handshake(&srv).await;
+    io.send(Encoded::Packet(Packet::PingRequest), &codec)
+        .await
+        .unwrap();
+    assert_eq!(
+        recv_pkt(&io, &codec).await,
+        Decoded::Packet(Packet::PingResponse, 0)
+    );
+
+    io.send(qos1_publish("t", 1), &codec).await.unwrap();
+    assert_eq!(
+        recv_pkt(&io, &codec).await,
+        Decoded::Packet(Packet::PublishAck { packet_id: pid(1) }, 2)
+    );
+    assert!(*retained.lock().unwrap());
+
+    // subscribe is not supported by the default service
+    io.send(
+        Encoded::Packet(Packet::Subscribe {
+            packet_id: pid(2),
+            topic_filters: vec![(ByteString::from_static("t"), QoS::AtMostOnce)],
+        }),
+        &codec,
+    )
+    .await
+    .unwrap();
+    assert!(
+        ntex::time::timeout(Millis(1000), io.recv(&codec))
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
+    Ok(())
+}
+
+/// Re-delivered publish with an incomplete payload is discarded
+#[ntex::test]
+async fn test_client_redelivered_payload() -> std::io::Result<()> {
+    // `QoS 1` is re-delivered while the first delivery is still handled,
+    // `QoS 2` is re-delivered after it has been acked with PUBREC
+    for (qos, delay, expect) in [
+        (QoS::AtLeastOnce, Millis(300), vec!["PublishAck"]),
+        (
+            QoS::ExactlyOnce,
+            Millis::ZERO,
+            vec!["PublishReceived", "PublishReceived"],
+        ),
+    ] {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let log2 = log.clone();
+        let srv = raw_server(move |io: ntex::io::Io, codec: codec::Codec| {
+            let log = log2.clone();
+            async move {
+                io.send(connect_ack(), &codec).await.unwrap();
+                let _ = io.encode_slice(&publish_bytes("t", 1, false, qos, b"0123456789"));
+                sleep(Millis(100)).await;
+
+                // re-delivery of the same packet id, the payload is incomplete
+                let data = publish_bytes("t", 1, true, qos, b"0123456789");
+                let _ = io.encode_slice(&data[..data.len() - 6]);
+                sleep(Millis(50)).await;
+                let _ = io.encode_slice(&data[data.len() - 6..]);
+
+                while let Ok(Ok(Some(Decoded::Packet(pkt, _)))) =
+                    ntex::time::timeout(Millis(500), io.recv(&codec)).await
+                {
+                    log.lock()
+                        .unwrap()
+                        .push(format!("{pkt:?}").split(' ').next().unwrap().to_string());
+                }
+            }
+        });
+
+        let client = connect_client(srv.addr()).await;
+        let res = client
+            .start(fn_service(move |msg: client::ProtocolMessage| async move {
+                sleep(delay).await;
+                Ok::<_, TestError>(msg.ack())
+            }))
+            .await;
+        assert!(res.is_ok(), "{qos:?}: {res:?}");
+        assert_eq!(*log.lock().unwrap(), expect, "{qos:?}");
+    }
+    Ok(())
 }

@@ -113,5 +113,22 @@ mod tests {
 
         let data = pl.read_all().await.unwrap();
         assert_eq!(data, b"chunk1chunk2chunk3");
+        assert!(!pl.is_fixed());
+        assert_eq!(format!("{pl:?}"), "StreamingPayload");
+        assert!(matches!(pl.read_all().await, Err(PayloadError::Consumed)));
+    }
+
+    #[ntex::test]
+    async fn test_fixed_payload() {
+        let mut pl = Payload::from_bytes(Bytes::from_static(b"data"));
+        assert!(pl.is_fixed());
+        assert_eq!(format!("{pl:?}"), "FixedPayload");
+
+        let taken = pl.take();
+        assert_eq!(pl.read().await.unwrap(), None);
+        assert!(matches!(pl.read_all().await, Err(PayloadError::Consumed)));
+        assert_eq!(taken.read_all().await.unwrap(), b"data".as_ref());
+        assert_eq!(taken.read().await.unwrap(), None);
+        assert!(Payload::default().is_fixed());
     }
 }

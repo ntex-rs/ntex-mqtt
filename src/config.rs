@@ -343,3 +343,45 @@ impl MqttServiceConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setters() {
+        let cfg = MqttServiceConfig::default()
+            .set_max_qos(QoS::ExactlyOnce)
+            .set_max_size(1)
+            .set_max_receive(2)
+            .set_max_receive_size(3)
+            .set_max_queue(4)
+            .set_max_topic_alias(5)
+            .set_max_send(6)
+            .set_max_send_size(70)
+            .set_min_chunk_size(8)
+            .set_max_payload_buffer_size(9)
+            .set_handle_qos_after_disconnect(Some(QoS::AtMostOnce))
+            .set_check_subs_availability(false)
+            .set_connect_timeout(Seconds(10))
+            .set_handshake_timeout(Seconds(11))
+            .protocol_version_timeout(Seconds(12));
+
+        assert_eq!(cfg.max_qos, QoS::ExactlyOnce);
+        assert_eq!(cfg.max_size, 1);
+        assert_eq!(cfg.max_receive, 2);
+        assert_eq!(cfg.max_receive_size, 3);
+        assert_eq!(cfg.max_queue, 4);
+        assert_eq!(cfg.max_topic_alias, 5);
+        assert_eq!(cfg.max_send, 6);
+        assert_eq!(cfg.max_send_size, (70, 7));
+        assert_eq!(cfg.min_chunk_size, 8);
+        assert_eq!(cfg.max_payload_buffer_size, 9);
+        assert_eq!(cfg.handle_qos_after_disconnect, Some(QoS::AtMostOnce));
+        assert!(!cfg.check_subs_availability);
+        assert_eq!(cfg.connect_timeout, Seconds(10));
+        assert_eq!(cfg.handshake_timeout, Seconds(11));
+        assert_eq!(cfg.protocol_version_timeout, Millis(12_000));
+        assert_eq!(MqttServiceConfig::NAME, "MQTT Service configuration");
+    }
+}
