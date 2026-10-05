@@ -265,18 +265,9 @@ impl MqttShared {
     }
 
     pub(super) fn set_cap(&self, cap: usize) {
-        let mut queues = self.queues.borrow_mut();
-
-        // wake up queued request (receive max limit)
-        'outer: for _ in 0..cap {
-            while let Some(tx) = queues.waiters.pop_front() {
-                if tx.send(()).is_ok() {
-                    continue 'outer;
-                }
-            }
-            break;
-        }
         self.cap.set(cap);
+        // wake up queued request (receive max limit)
+        self.wake_waiters();
     }
 
     pub(super) fn set_publish_ack(&self, f: Box<dyn Fn(num::NonZeroU16, bool)>) {
@@ -371,10 +362,13 @@ impl MqttShared {
 
     /// Wake waiters within the send credit, unless write backpressure is enabled
     fn wake_waiters(&self) {
+        self.wake_waiters_inner(&mut self.queues.borrow_mut());
+    }
+
+    fn wake_waiters_inner(&self, queues: &mut MqttSharedQueues) {
         if self.flags.get().contains(Flags::WRB_ENABLED) {
             return;
         }
-        let mut queues = self.queues.borrow_mut();
         if queues.inflight.len() < self.cap.get() {
             let mut num = self.cap.get() - queues.inflight.len();
             while num > 0 {
@@ -482,11 +476,7 @@ impl MqttShared {
                 }
 
                 // wake up queued request (receive max limit)
-                while let Some(tx) = queues.waiters.pop_front() {
-                    if tx.send(()).is_ok() {
-                        break;
-                    }
-                }
+                self.wake_waiters_inner(&mut queues);
                 Ok(())
             } else {
                 // get publish ack channel
@@ -502,11 +492,7 @@ impl MqttShared {
                 }
 
                 // wake up queued request (receive max limit)
-                while let Some(tx) = queues.waiters.pop_front() {
-                    if tx.send(()).is_ok() {
-                        break;
-                    }
-                }
+                self.wake_waiters_inner(&mut queues);
                 Ok(())
             }
         } else {
@@ -593,16 +579,37 @@ impl MqttShared {
         }
     }
 
-    pub(super) fn wait_readiness(&self) -> Option<pool::Receiver<()>> {
-        let mut queues = self.queues.borrow_mut();
-
-        if queues.inflight.len() >= self.cap.get() || self.flags.get().contains(Flags::WRB_ENABLED)
-        {
-            let (tx, rx) = self.pool.waiters.channel();
-            queues.waiters.push_back(tx);
-            Some(rx)
-        } else {
-            None
+    /// Wait for send credit and for write backpressure to be released, returns
+    /// `false` if the connection is closed
+    ///
+    /// A woken waiter checks again, a packet sent without waiting may take the
+    /// credit first or write backpressure may be enabled again, the waiter is
+    /// queued again in front of the others.
+    pub(super) async fn wait_readiness(&self) -> bool {
+        let mut woken = false;
+        loop {
+            if !self.is_active() {
+                return false;
+            }
+            let rx = {
+                let mut queues = self.queues.borrow_mut();
+                if queues.inflight.len() < self.cap.get()
+                    && !self.flags.get().contains(Flags::WRB_ENABLED)
+                {
+                    return true;
+                }
+                let (tx, rx) = self.pool.waiters.channel();
+                if woken {
+                    queues.waiters.push_front(tx);
+                } else {
+                    queues.waiters.push_back(tx);
+                }
+                rx
+            };
+            if rx.await.is_err() {
+                return false;
+            }
+            woken = true;
         }
     }
 

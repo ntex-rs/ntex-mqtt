@@ -57,13 +57,13 @@ impl MqttSink {
     ///
     /// Result indicates if connection is alive
     pub fn ready(&self) -> impl Future<Output = bool> {
-        if self.0.is_active() {
-            self.0.wait_readiness().map_or_else(
-                || Either::Left(ready(true)),
-                |rx| Either::Right(async move { rx.await.is_ok() }),
-            )
-        } else {
+        if !self.0.is_active() {
             Either::Left(ready(false))
+        } else if self.0.is_ready() {
+            Either::Left(ready(true))
+        } else {
+            let shared = self.0.clone();
+            Either::Right(async move { shared.wait_readiness().await })
         }
     }
 
@@ -303,14 +303,10 @@ impl PublishBuilder {
             self.packet.payload_size = payload.len() as u32;
 
             // handle client receive maximum
-            if let Some(rx) = self.shared.wait_readiness() {
-                if rx.await.is_err() {
-                    return Err(SendPacketError::Disconnected);
-                }
-                self.send_at_least_once_inner(payload).await
-            } else {
-                self.send_at_least_once_inner(payload).await
+            if !self.shared.wait_readiness().await {
+                return Err(SendPacketError::Disconnected);
             }
+            self.send_at_least_once_inner(payload).await
         } else {
             Err(SendPacketError::Disconnected)
         }
@@ -371,14 +367,10 @@ impl PublishBuilder {
             self.packet.payload_size = payload.len() as u32;
 
             // handle client receive maximum
-            if let Some(rx) = self.shared.wait_readiness() {
-                if rx.await.is_err() {
-                    return Err(SendPacketError::Disconnected);
-                }
-                self.send_exactly_once_inner(payload).await
-            } else {
-                self.send_exactly_once_inner(payload).await
+            if !self.shared.wait_readiness().await {
+                return Err(SendPacketError::Disconnected);
             }
+            self.send_exactly_once_inner(payload).await
         } else {
             Err(SendPacketError::Disconnected)
         }
@@ -426,16 +418,12 @@ impl PublishBuilder {
             self.packet.payload_size = size;
 
             // handle client receive maximum
-            let fut = if let Some(rx) = self.shared.wait_readiness() {
-                Either::Left(Either::Left(async move {
-                    if rx.await.is_err() {
-                        return Err(SendPacketError::Disconnected);
-                    }
-                    self.stream_at_least_once_inner(tx).await
-                }))
-            } else {
-                Either::Left(Either::Right(self.stream_at_least_once_inner(tx)))
-            };
+            let fut = Either::Left(async move {
+                if !self.shared.wait_readiness().await {
+                    return Err(SendPacketError::Disconnected);
+                }
+                self.stream_at_least_once_inner(tx).await
+            });
             (fut, stream)
         } else {
             (
@@ -578,9 +566,7 @@ impl SubscribeBuilder {
         }
         if self.shared.is_active() {
             // handle client receive maximum
-            if let Some(rx) = self.shared.wait_readiness()
-                && rx.await.is_err()
-            {
+            if !self.shared.wait_readiness().await {
                 return Err(SendPacketError::Disconnected);
             }
             let idx = self.id.unwrap_or_else(|| self.shared.next_id());
@@ -672,9 +658,7 @@ impl UnsubscribeBuilder {
 
         if shared.is_active() {
             // handle client receive maximum
-            if let Some(rx) = shared.wait_readiness()
-                && rx.await.is_err()
-            {
+            if !shared.wait_readiness().await {
                 return Err(SendPacketError::Disconnected);
             }
             // allocate packet id
@@ -1340,5 +1324,152 @@ mod tests {
             assert_eq!(timeout(Millis(1000), r).await, Ok(Ok(())));
             assert_eq!(shared.credit(), 1);
         }
+    }
+
+    /// Woken waiter checks send credit again, a publish sent without waiting
+    /// may take the freed credit first (MQTT 3.1.1, 4.4)
+    #[ntex::test]
+    async fn test_woken_waiter_rechecks_credit() {
+        use std::{future::Future, pin::pin};
+
+        use ntex_util::{future::lazy, time::Millis, time::sleep};
+
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            true,
+            Rc::default(),
+        ));
+        shared.set_cap(1);
+        let sink = MqttSink::new(shared.clone());
+
+        let mut a = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| a.as_mut().poll(cx).is_pending()).await);
+        let mut b = pin!(sink.publish("b").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
+        let mut ready = pin!(sink.ready());
+        assert!(lazy(|cx| ready.as_mut().poll(cx).is_pending()).await);
+
+        // ack wakes "b", "c" takes the credit before "b" is polled
+        assert_eq!(
+            shared.pkt_ack(Ack::Publish(NonZeroU16::new(1).unwrap())),
+            Ok(())
+        );
+        assert!(a.await.is_ok());
+        let mut c = pin!(sink.publish("c").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 0);
+        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| ready.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 0);
+        sleep(Millis(50)).await;
+        assert_eq!(
+            client.read_any(),
+            Bytes::from_static(b"\x32\x05\x00\x01a\x00\x01\x32\x05\x00\x01c\x00\x02")
+        );
+
+        // "b" is still first in line
+        assert_eq!(
+            shared.pkt_ack(Ack::Publish(NonZeroU16::new(2).unwrap())),
+            Ok(())
+        );
+        assert!(c.await.is_ok());
+        assert!(lazy(|cx| ready.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 0);
+        assert_eq!(
+            shared.pkt_ack(Ack::Publish(NonZeroU16::new(3).unwrap())),
+            Ok(())
+        );
+        assert!(b.await.is_ok());
+        assert!(ready.await);
+    }
+
+    /// Ack does not release waiters while write backpressure is enabled
+    #[ntex::test]
+    async fn test_ack_respects_write_backpressure() {
+        use std::{future::Future, pin::pin};
+
+        use ntex_util::future::lazy;
+
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            true,
+            Rc::default(),
+        ));
+        shared.set_cap(1);
+        let sink = MqttSink::new(shared.clone());
+
+        let mut a = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| a.as_mut().poll(cx).is_pending()).await);
+        let mut b = pin!(sink.publish("b").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
+
+        shared.enable_wr_backpressure();
+        assert_eq!(
+            shared.pkt_ack(Ack::Publish(NonZeroU16::new(1).unwrap())),
+            Ok(())
+        );
+        assert!(a.await.is_ok());
+        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 1);
+
+        shared.disable_wr_backpressure();
+        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 0);
+    }
+
+    /// `set_cap` wakes waiters within the send credit only
+    #[ntex::test]
+    async fn test_set_cap_wakes_within_credit() {
+        use std::{future::Future, pin::pin};
+
+        use ntex_util::future::lazy;
+
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            true,
+            Rc::default(),
+        ));
+        shared.set_cap(1);
+        let sink = MqttSink::new(shared.clone());
+
+        let mut a = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| a.as_mut().poll(cx).is_pending()).await);
+        let mut b = pin!(sink.publish("b").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
+        let mut c = pin!(sink.publish("c").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
+        let mut d = pin!(sink.publish("d").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
+
+        // one in flight, cap 3 leaves credit for "b" and "c"
+        shared.set_cap(3);
+        assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 2);
+        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 0);
+        assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
+
+        // no credit while write backpressure is enabled
+        shared.enable_wr_backpressure();
+        shared.set_cap(4);
+        assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 1);
+        shared.disable_wr_backpressure();
+        assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 0);
     }
 }

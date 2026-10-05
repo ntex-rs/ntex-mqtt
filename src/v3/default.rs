@@ -167,6 +167,7 @@ mod tests {
     use ntex_io::{Io, testing::IoTest};
     use ntex_service::{Pipeline, cfg::SharedCfg};
     use ntex_util::future::lazy;
+    use std::{future::Future, pin::pin, task::Poll};
 
     use super::*;
     use crate::{control, v3::MqttSink, v3::codec};
@@ -190,17 +191,18 @@ mod tests {
         assert!(!sink.is_ready());
         shared.set_cap(1);
         assert!(sink.is_ready());
-        assert!(shared.wait_readiness().is_none());
+        assert!(sink.ready().await);
 
         svc.call(Control::<bool>::wr(true)).await.unwrap();
         assert!(!sink.is_ready());
-        let rx = shared.wait_readiness();
-        let rx2 = shared.wait_readiness().unwrap();
-        assert!(rx.is_some());
+        let mut rx = pin!(sink.ready());
+        let mut rx2 = pin!(sink.ready());
+        assert!(lazy(|cx| rx.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| rx2.as_mut().poll(cx).is_pending()).await);
 
-        let rx = rx.unwrap();
+        // send credit is 1, one waiter is woken
         svc.call(Control::wr(false)).await.unwrap();
-        assert!(lazy(|cx| rx.poll_recv(cx).is_ready()).await);
-        assert!(!lazy(|cx| rx2.poll_recv(cx).is_ready()).await);
+        assert_eq!(lazy(|cx| rx.as_mut().poll(cx)).await, Poll::Ready(true));
+        assert!(lazy(|cx| rx2.as_mut().poll(cx).is_pending()).await);
     }
 }
