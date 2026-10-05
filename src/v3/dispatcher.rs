@@ -422,7 +422,6 @@ where
                 }
             }
             Decoded::Packet(Packet::Disconnect, _) => {
-                self.inner.sink.is_disconnect_sent();
                 self.inner
                     .control(ProtocolMessage::remote_disconnect(), ctx)
                     .await
