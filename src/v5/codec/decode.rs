@@ -27,8 +27,8 @@ pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, De
         packet_type::CONNACK => Ok(Packet::ConnectAck(Box::new(packet::ConnectAck::decode(
             &mut src,
         )?))),
-        packet_type::DISCONNECT => Ok(Packet::Disconnect(packet::Disconnect::decode(&mut src)?)),
-        packet_type::AUTH => Ok(Packet::Auth(packet::Auth::decode(&mut src)?)),
+        packet_type::DISCONNECT => Ok(Packet::from(packet::Disconnect::decode(&mut src)?)),
+        packet_type::AUTH => Ok(Packet::from(packet::Auth::decode(&mut src)?)),
         packet_type::PUBREC => Ok(Packet::PublishReceived(packet::PublishAck::decode(
             &mut src,
         )?)),
@@ -246,7 +246,7 @@ mod tests {
             })),
         );
 
-        assert_decode_packet([0b1110_0000, 0], &Packet::Disconnect(Disconnect::default()));
+        assert_decode_packet([0b1110_0000, 0], &Packet::Disconnect(Box::default()));
     }
 
     #[test]

@@ -10,10 +10,16 @@ use crate::error::{DecodeError, DispatcherError, EncodeError, MqttError};
 use crate::{ConnectPipeline, Session, control::Control, io::Dispatcher, io::FrameState};
 
 type Request<U> = <U as Decoder>::Item;
-type Response<U> = Option<<U as Encoder>::Item>;
+type Response<U> = Option<<U as FrameState>::Response>;
+type ControlResponse<U> = Option<<U as Encoder>::Item>;
 
-type ControlPipeline<AppSt, Codec, Cfg, Err, E> =
-    PipelineFactory<Session<Cfg, AppSt>, Control<E>, Response<Codec>, MqttError<Err>, Failure>;
+type ControlPipeline<AppSt, Codec, Cfg, Err, E> = PipelineFactory<
+    Session<Cfg, AppSt>,
+    Control<E>,
+    ControlResponse<Codec>,
+    MqttError<Err>,
+    Failure,
+>;
 
 pub struct MqttServer<St, Im, AppSt, Codec: Encoder, Cfg, Err, E, T, M> {
     connect: ConnectPipeline<St, Im, AppSt, Codec, Cfg, MqttError<Err>>,

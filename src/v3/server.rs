@@ -223,7 +223,7 @@ where
         impl ServiceFactory<
             Session<AppSt>,
             mqtt::Decoded,
-            Res = Option<mqtt::Encoded>,
+            Res = Option<mqtt::Packet>,
             Error = DispatcherError<Pub::Error>,
             InitError = Failure,
         >,

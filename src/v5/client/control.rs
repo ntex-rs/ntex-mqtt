@@ -33,7 +33,7 @@ impl ProtocolMessage {
     /// Disconnect from the server by sending the provided `Disconnect` packet
     pub fn disconnect(&self, pkt: codec::Disconnect) -> ProtocolMessageAck {
         ProtocolMessageAck {
-            packet: Pkt::Packet(codec::Packet::Disconnect(pkt)),
+            packet: Pkt::Packet(codec::Packet::from(pkt)),
             disconnect: true,
         }
     }

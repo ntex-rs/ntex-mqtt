@@ -9,7 +9,7 @@ use crate::error::{DecodeError, DispatcherError, MqttProtocolError, PayloadError
 use crate::payload::{Payload, PayloadStatus};
 use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
-use super::codec::{Decoded, Encoded, Packet};
+use super::codec::{Decoded, Packet};
 use super::control::{
     ProtocolMessage, ProtocolMessageAck, ProtocolMessageKind, Subscribe, Unsubscribe,
 };
@@ -22,7 +22,7 @@ pub(super) fn factory<AppSt, Sf, Ctl>(
 ) -> impl ServiceFactory<
     Session<AppSt>,
     Decoded,
-    Res = Option<Encoded>,
+    Res = Option<Packet>,
     Error = DispatcherError<Sf::Error>,
     InitError = Failure,
 >
@@ -155,7 +155,7 @@ where
     T: Service<St, Publish, Res = (), Error = E> + 'static,
     C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>> + 'static,
 {
-    type Res = Option<Encoded>;
+    type Res = Option<Packet>;
     type Error = DispatcherError<E>;
 
     #[inline]
@@ -235,9 +235,7 @@ where
                             if publish.payload_size != payload.len() as u32 {
                                 self.discard_payload.set(true);
                             }
-                            return Ok(Some(Encoded::Packet(Packet::PublishReceived {
-                                packet_id: pid,
-                            })));
+                            return Ok(Some(Packet::PublishReceived { packet_id: pid }));
                         }
                         Some(_) => {
                             log::trace!(
@@ -345,7 +343,7 @@ where
                         self.tag(),
                         packet_id
                     );
-                    Ok(Some(Encoded::Packet(Packet::PublishComplete { packet_id })))
+                    Ok(Some(Packet::PublishComplete { packet_id }))
                 }
             }
             Decoded::Packet(Packet::PublishComplete { packet_id }, _) => {
@@ -458,7 +456,7 @@ async fn publish_fn<'f, St, T, C, E>(
     packet_id: Option<NonZeroU16>,
     inner: &'f Inner<C>,
     ctx: Ctx<'f, Dispatcher<St, T, C, E>, St>,
-) -> Result<Option<Encoded>, DispatcherError<E>>
+) -> Result<Option<Packet>, DispatcherError<E>>
 where
     T: Service<St, Publish, Res = (), Error = E>,
     C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
@@ -478,10 +476,10 @@ where
                         .inflight
                         .borrow_mut()
                         .insert(packet_id, InFlight::Received);
-                    Ok(Some(Encoded::Packet(Packet::PublishReceived { packet_id })))
+                    Ok(Some(Packet::PublishReceived { packet_id }))
                 } else {
                     inner.inflight.borrow_mut().remove(&packet_id);
-                    Ok(Some(Encoded::Packet(Packet::PublishAck { packet_id })))
+                    Ok(Some(Packet::PublishAck { packet_id }))
                 }
             } else {
                 Ok(None)
@@ -507,26 +505,26 @@ impl<C> Inner<C> {
         &self,
         pkt: ProtocolMessage,
         ctx: Ctx<'_, Dispatcher<St, T, C, E>, St>,
-    ) -> Result<Option<Encoded>, DispatcherError<E>>
+    ) -> Result<Option<Packet>, DispatcherError<E>>
     where
         C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
     {
         match ctx.call(&self.control, pkt).await {
             Ok(item) => {
                 let packet = match item.result {
-                    ProtocolMessageKind::Ping => Some(Encoded::Packet(Packet::PingResponse)),
+                    ProtocolMessageKind::Ping => Some(Packet::PingResponse),
                     ProtocolMessageKind::Subscribe(res) => {
                         self.inflight.borrow_mut().remove(&res.packet_id);
-                        Some(Encoded::Packet(Packet::SubscribeAck {
+                        Some(Packet::SubscribeAck {
                             status: res.codes,
                             packet_id: res.packet_id,
-                        }))
+                        })
                     }
                     ProtocolMessageKind::Unsubscribe(res) => {
                         self.inflight.borrow_mut().remove(&res.packet_id);
-                        Some(Encoded::Packet(Packet::UnsubscribeAck {
+                        Some(Packet::UnsubscribeAck {
                             packet_id: res.packet_id,
-                        }))
+                        })
                     }
                     ProtocolMessageKind::Disconnect => {
                         self.sink.drop_payload(&PayloadError::Service);
@@ -536,7 +534,7 @@ impl<C> Inner<C> {
                     ProtocolMessageKind::Nothing => None,
                     ProtocolMessageKind::PublishRelease(packet_id) => {
                         self.inflight.borrow_mut().remove(&packet_id);
-                        Some(Encoded::Packet(Packet::PublishComplete { packet_id }))
+                        Some(Packet::PublishComplete { packet_id })
                     }
                     ProtocolMessageKind::PublishAck(_) => unreachable!(),
                 };
@@ -562,6 +560,16 @@ mod tests {
 
     use super::*;
     use crate::{error, v3::MqttSink, v3::codec};
+
+    /// The response queue keeps packets, not the larger encoder items
+    #[test]
+    fn test_queue_slot_size() {
+        use std::mem::size_of;
+
+        type Slot = crate::io::QueueSlot<MqttShared>;
+        assert!(size_of::<Slot>() <= size_of::<Packet>());
+        assert!(size_of::<Slot>() < size_of::<codec::Encoded>());
+    }
 
     #[ntex::test]
     async fn test_dup_packet_id() {
@@ -658,9 +666,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             pkt,
-            Some(Encoded::Packet(Packet::PublishComplete {
+            Some(Packet::PublishComplete {
                 packet_id: NonZeroU16::new(100).unwrap()
-            }))
+            })
         );
         assert!(shared.is_active());
 
@@ -892,17 +900,14 @@ mod tests {
         // the first delivery acks both
         assert_eq!(
             f.await.unwrap(),
-            Some(Encoded::Packet(Packet::PublishAck { packet_id: pid(1) }))
+            Some(Packet::PublishAck { packet_id: pid(1) })
         );
 
         // after PUBACK the packet id is a new publication, irrespective of DUP
         let res = disp
             .call(publish(1, QoS::AtLeastOnce, true, "publish"))
             .await;
-        assert_eq!(
-            res.unwrap(),
-            Some(Encoded::Packet(Packet::PublishAck { packet_id: pid(1) }))
-        );
+        assert_eq!(res.unwrap(), Some(Packet::PublishAck { packet_id: pid(1) }));
         assert_eq!(counter.get(), 2);
         assert!(shared.is_active());
     }
@@ -911,9 +916,7 @@ mod tests {
     async fn test_redelivered_publish_qos2() {
         let counter = Rc::new(Cell::new(0));
         let (_io, shared, disp) = redelivery_dispatcher!(counter);
-        let pubrec = Some(Encoded::Packet(Packet::PublishReceived {
-            packet_id: pid(2),
-        }));
+        let pubrec = Some(Packet::PublishReceived { packet_id: pid(2) });
 
         let res = disp
             .call(publish(2, QoS::ExactlyOnce, false, "publish"))
@@ -944,9 +947,7 @@ mod tests {
             .await;
         assert_eq!(
             res.unwrap(),
-            Some(Encoded::Packet(Packet::PublishComplete {
-                packet_id: pid(2)
-            }))
+            Some(Packet::PublishComplete { packet_id: pid(2) })
         );
 
         // after PUBCOMP the packet id is a new publication
@@ -1094,9 +1095,7 @@ mod tests {
             .await;
         assert_eq!(
             res.unwrap(),
-            Some(Encoded::Packet(Packet::PublishReceived {
-                packet_id: pid(2)
-            }))
+            Some(Packet::PublishReceived { packet_id: pid(2) })
         );
         assert_eq!(chunk(b"bc", true).await.unwrap(), None);
         assert_eq!(counter.get(), 2);
@@ -1208,7 +1207,7 @@ mod tests {
     }
 
     fn assert_unexpected<E: std::fmt::Debug>(
-        res: &Result<Option<Encoded>, DispatcherError<E>>,
+        res: &Result<Option<Packet>, DispatcherError<E>>,
         expected: u8,
     ) {
         assert!(

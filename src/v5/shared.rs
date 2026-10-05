@@ -236,9 +236,7 @@ impl MqttShared {
             if let Some(pkt) = pkt
                 && !self.is_disconnect_sent()
             {
-                let _ = self
-                    .io
-                    .encode(Encoded::Packet(Packet::Disconnect(pkt)), self);
+                let _ = self.io.encode(Encoded::Packet(Packet::from(pkt)), self);
             }
             self.io.close();
         }
@@ -904,7 +902,44 @@ impl Encoder for MqttShared {
     }
 }
 
+/// Response of an ordered call kept in the dispatcher response queue
+///
+/// Ordered calls respond with publish acks or a DISCONNECT, other responses
+/// are rare and are boxed.
+#[derive(Debug)]
+pub enum QueuedPacket {
+    PublishAck(codec::PublishAck),
+    PublishReceived(codec::PublishAck),
+    Disconnect(Box<codec::Disconnect>),
+    Other(Box<Packet>),
+}
+
+impl From<Packet> for QueuedPacket {
+    fn from(pkt: Packet) -> Self {
+        match pkt {
+            Packet::PublishAck(ack) => QueuedPacket::PublishAck(ack),
+            Packet::PublishReceived(ack) => QueuedPacket::PublishReceived(ack),
+            Packet::Disconnect(pkt) => QueuedPacket::Disconnect(pkt),
+            pkt => QueuedPacket::Other(Box::new(pkt)),
+        }
+    }
+}
+
+impl From<QueuedPacket> for Encoded {
+    fn from(pkt: QueuedPacket) -> Self {
+        Encoded::Packet(match pkt {
+            QueuedPacket::PublishAck(ack) => Packet::PublishAck(ack),
+            QueuedPacket::PublishReceived(ack) => Packet::PublishReceived(ack),
+            QueuedPacket::Disconnect(pkt) => Packet::Disconnect(pkt),
+            QueuedPacket::Other(pkt) => *pkt,
+        })
+    }
+}
+
 impl FrameState for MqttShared {
+    type Response = Packet;
+    type Queued = QueuedPacket;
+
     #[inline]
     fn is_partial(&self) -> bool {
         self.codec.is_payload_pending()
@@ -912,7 +947,8 @@ impl FrameState for MqttShared {
 
     #[inline]
     fn is_ordered(&self, item: &Decoded) -> bool {
-        // mqtt orders acks of publish packets only
+        // mqtt orders acks of publish packets only [MQTT-4.6.0-2..4], other
+        // packets flow during re-authentication [MQTT 5.0, 4.12.1]
         // payload chunks have no response, they do not keep a queue slot
         // while the publish handler is pending
         match item {
@@ -923,6 +959,7 @@ impl FrameState for MqttShared {
                     | Packet::Subscribe(_)
                     | Packet::Unsubscribe(_)
                     | Packet::PublishRelease(_)
+                    | Packet::Auth(_)
             ),
             Decoded::PayloadChunk(..) => false,
         }
@@ -1030,5 +1067,39 @@ impl AckType {
             AckType::Subscribe => "Expected SUBACK packet",
             AckType::Unsubscribe => "Expected UNSUBACK packet",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Queued responses are written as the packets they were created from
+    #[test]
+    fn queued_packet_roundtrip() {
+        let ack = codec::PublishAck {
+            packet_id: num::NonZeroU16::new(1).unwrap(),
+            ..Default::default()
+        };
+        for pkt in [
+            Packet::PublishAck(ack.clone()),
+            Packet::PublishReceived(ack),
+            Packet::from(codec::Disconnect::default()),
+            Packet::PingResponse,
+        ] {
+            assert_eq!(
+                Encoded::from(QueuedPacket::from(pkt.clone())),
+                Encoded::Packet(pkt)
+            );
+        }
+        assert!(matches!(
+            QueuedPacket::from(Packet::PublishReceived(codec::PublishAck::default())),
+            QueuedPacket::PublishReceived(_)
+        ));
+        // the boxed disconnect packet is kept, it is not boxed again
+        assert!(matches!(
+            QueuedPacket::from(Packet::from(codec::Disconnect::default())),
+            QueuedPacket::Disconnect(_)
+        ));
     }
 }

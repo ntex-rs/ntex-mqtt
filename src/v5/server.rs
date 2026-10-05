@@ -198,7 +198,7 @@ where
         impl ServiceFactory<
             Session<AppSt>,
             Decoded,
-            Res = Option<Encoded>,
+            Res = Option<Packet>,
             Error = DispatcherError<E>,
             InitError = Failure,
         >,

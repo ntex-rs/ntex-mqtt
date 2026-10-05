@@ -14,6 +14,10 @@ use crate::config::MqttServiceConfig;
 use crate::control::Control;
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttProtocolError};
 
+/// The response queue is released once it is empty and its capacity is above
+/// this number of slots.
+const QUEUE_SHRINK_CAP: usize = 16;
+
 /// Io waiter tag, in-flight service calls are cancelled once it is woken.
 const STOP_TAG: usize = 0x6d71_7474;
 
@@ -32,7 +36,16 @@ bitflags::bitflags! {
 }
 
 /// Decoder state the dispatcher needs for read timers and response ordering.
-pub trait FrameState: Decoder {
+pub trait FrameState: Decoder + Encoder {
+    /// Response of the service, it is converted to the encoder item when it
+    /// is written.
+    type Response: Into<<Self as Encoder>::Item> + 'static;
+
+    /// Response of an ordered call kept in the response queue, it can be
+    /// smaller than the service response if ordered calls respond with a
+    /// subset of packets.
+    type Queued: From<Self::Response> + Into<<Self as Encoder>::Item> + 'static;
+
     /// Returns `true` while the last decoded item is followed by more parts
     /// of the same packet, such as the payload chunks of a streamed publish.
     ///
@@ -54,19 +67,27 @@ pub trait FrameState: Decoder {
 }
 
 impl<T: FrameState> FrameState for Rc<T> {
+    type Response = T::Response;
+    type Queued = T::Queued;
+
     #[inline]
     fn is_partial(&self) -> bool {
         (**self).is_partial()
     }
 
     #[inline]
-    fn is_ordered(&self, item: &T::Item) -> bool {
+    fn is_ordered(&self, item: &<T as Decoder>::Item) -> bool {
         (**self).is_ordered(item)
     }
 }
 
 type Request<U> = <U as Decoder>::Item;
-type Response<U> = <U as Encoder>::Item;
+type Response<U> = <U as FrameState>::Response;
+type ControlResponse<U> = <U as Encoder>::Item;
+type Queued<U> = <U as FrameState>::Queued;
+/// Slot of an ordered call in the response queue, `None` while the call is
+/// pending
+pub(crate) type QueueSlot<U> = Option<Option<Queued<U>>>;
 type ServiceResult<Codec, E> = Result<Option<Response<Codec>>, DispatcherError<E>>;
 
 type ServiceCall<Codec, E> =
@@ -74,15 +95,14 @@ type ServiceCall<Codec, E> =
 type ServicePipeline<Codec, E> =
     Pipeline<Request<Codec>, Option<Response<Codec>>, DispatcherError<E>>;
 
-type ControlCall<Codec, E, Err> = PipelineCall<Control<E>, Option<Response<Codec>>, Err>;
-type ControlPipeline<Codec, E, Err> = Pipeline<Control<E>, Option<Response<Codec>>, Err>;
+type ControlCall<Codec, E, Err> = PipelineCall<Control<E>, Option<ControlResponse<Codec>>, Err>;
+type ControlPipeline<Codec, E, Err> = Pipeline<Control<E>, Option<ControlResponse<Codec>>, Err>;
 
 pin_project_lite::pin_project! {
     /// Dispatcher for mqtt protocol
     pub(crate) struct Dispatcher<U, E, Err>
     where
-        U: Encoder,
-        U: Decoder,
+        U: FrameState,
         U: 'static,
         E: 'static,
         Err: 'static,
@@ -93,7 +113,7 @@ pin_project_lite::pin_project! {
 
 struct DispatcherInner<Codec, E, Err>
 where
-    Codec: Encoder + Decoder + 'static,
+    Codec: FrameState + 'static,
     E: 'static,
     Err: 'static,
 {
@@ -112,7 +132,7 @@ where
 
 struct DispatcherState<Codec, E>
 where
-    Codec: Encoder + Decoder + 'static,
+    Codec: FrameState + 'static,
     E: 'static,
 {
     /// Stop message for the first error
@@ -120,7 +140,7 @@ where
     /// Index of the queue head
     base: Cell<usize>,
     /// Service results in request order, `None` is a pending call
-    queue: RefCell<VecDeque<Option<ServiceResult<Codec, E>>>>,
+    queue: RefCell<VecDeque<QueueSlot<Codec>>>,
     /// Pending call polled by the dispatcher, other pending calls are spawned
     response: Cell<Option<ServiceCall<Codec, E>>>,
     /// Queue index of the polled call, `None` for an unordered call
@@ -131,7 +151,7 @@ where
 }
 
 #[derive(Debug)]
-enum IoDispatcherState<Codec: Encoder + Decoder, E: 'static, Err: 'static> {
+enum IoDispatcherState<Codec: FrameState, E: 'static, Err: 'static> {
     Processing,
     Backpressure,
     Stop(ControlCall<Codec, E, Err>),
@@ -200,7 +220,7 @@ where
 
 impl<Codec, E> DispatcherState<Codec, E>
 where
-    Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError>,
+    Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError> + FrameState,
     <Codec as Encoder>::Item: 'static,
 {
     fn is_full(&self, len: usize) -> bool {
@@ -223,19 +243,26 @@ where
     /// Encodes the response of a completed call, returns `true` on error.
     fn write_result(&self, item: ServiceResult<Codec, E>, io: &IoRef, codec: &Codec) -> bool {
         match item {
-            Ok(Some(item)) => {
-                if let Err(err) = io.encode(item, codec) {
-                    self.set_stop(Control::proto(MqttProtocolError::Encode(err)));
-                    return true;
-                }
-                false
-            }
-            Ok(None) => false,
+            Ok(item) => self.write_response(item, io, codec),
             Err(err) => {
                 self.set_error(err);
                 true
             }
         }
+    }
+
+    /// Encodes a response, returns `true` on error.
+    fn write_response<T>(&self, item: Option<T>, io: &IoRef, codec: &Codec) -> bool
+    where
+        T: Into<<Codec as Encoder>::Item>,
+    {
+        if let Some(item) = item
+            && let Err(err) = io.encode(item.into(), codec)
+        {
+            self.set_stop(Control::proto(MqttProtocolError::Encode(err)));
+            return true;
+        }
+        false
     }
 
     /// Handles the result of a call, returns `true` if the dispatcher must be
@@ -272,22 +299,31 @@ where
         if idx == 0 {
             // write the head response and the completed responses after it
             let was_full = self.is_full(queue.len());
-            let mut err = false;
-            let mut item = Some(item);
-            while let Some(res) = item {
+            let _ = queue.pop_front();
+            self.base.set(self.base.get().wrapping_add(1));
+            let mut err = self.write_result(item, io, codec);
+            while let Some(res) = queue.front_mut().and_then(Option::take) {
                 let _ = queue.pop_front();
                 self.base.set(self.base.get().wrapping_add(1));
-                err |= self.write_result(res, io, codec);
-                item = queue.front_mut().and_then(Option::take);
+                err |= self.write_response(res, io, codec);
+            }
+            // release the memory of a burst
+            if queue.is_empty() && queue.capacity() > QUEUE_SHRINK_CAP {
+                queue.shrink_to_fit();
             }
             // the dispatcher waits for results only on errors and a full queue
             err || (was_full && !self.is_full(queue.len()))
-        } else if let Err(err) = item {
-            self.set_error(err);
-            true
         } else {
-            queue[idx] = Some(item);
-            false
+            match item {
+                Ok(res) => {
+                    queue[idx] = Some(res.map(Queued::<Codec>::from));
+                    false
+                }
+                Err(err) => {
+                    self.set_error(err);
+                    true
+                }
+            }
         }
     }
 }
@@ -418,7 +454,7 @@ where
 
 impl<Codec, E, Err> Drop for DispatcherInner<Codec, E, Err>
 where
-    Codec: Encoder + Decoder + 'static,
+    Codec: FrameState + 'static,
     E: 'static,
     Err: 'static,
 {
@@ -544,11 +580,14 @@ where
                 }
             });
         } else if let Poll::Ready(res) = Pin::new(&mut fut).poll(cx) {
-            // only responses wait for the calls before them
-            if queue.is_empty() || !matches!(res, Ok(Some(_))) {
-                self.state.write_result(res, self.io.as_ref(), &self.codec);
-            } else {
-                queue.push_back(Some(res));
+            // only responses of ordered calls wait for the calls before them
+            match res {
+                Ok(Some(res)) if ordered && !queue.is_empty() => {
+                    queue.push_back(Some(Some(Queued::<Codec>::from(res))));
+                }
+                res => {
+                    self.state.write_result(res, self.io.as_ref(), &self.codec);
+                }
             }
         } else {
             let response_idx = push_pending();
@@ -844,7 +883,10 @@ mod tests {
         }
     }
 
-    impl FrameState for BytesCodec {}
+    impl FrameState for BytesCodec {
+        type Response = Bytes;
+        type Queued = Bytes;
+    }
 
     impl Decoder for BytesCodec {
         type Item = Bytes;
@@ -879,7 +921,7 @@ mod tests {
         where
             P: Service<(), Request<U>, Res = Option<Response<U>>, Error = DispatcherError<E>>
                 + 'static,
-            C: Service<(), Control<E>, Res = Option<Response<U>>, Error = Err> + 'static,
+            C: Service<(), Control<E>, Res = Option<ControlResponse<U>>, Error = Err> + 'static,
         {
             let rio = io.get_ref();
             let disp = Dispatcher::new(
@@ -1608,7 +1650,10 @@ mod tests {
         }
     }
 
-    impl FrameState for BytesLenCodec {}
+    impl FrameState for BytesLenCodec {
+        type Response = Bytes;
+        type Queued = Bytes;
+    }
 
     impl Decoder for BytesLenCodec {
         type Item = Bytes;
@@ -1662,6 +1707,9 @@ mod tests {
     }
 
     impl FrameState for ChunkCodec {
+        type Response = Bytes;
+        type Queued = Bytes;
+
         fn is_partial(&self) -> bool {
             self.0.get()
         }
@@ -1826,7 +1874,10 @@ mod tests {
             }
         }
 
-        impl FrameState for ConsumingCodec {}
+        impl FrameState for ConsumingCodec {
+            type Response = Bytes;
+            type Queued = Bytes;
+        }
 
         impl Decoder for ConsumingCodec {
             type Item = Bytes;
@@ -2135,6 +2186,9 @@ mod tests {
     }
 
     impl FrameState for ByteCodec {
+        type Response = Bytes;
+        type Queued = Bytes;
+
         fn is_ordered(&self, item: &Bytes) -> bool {
             item != "q"
         }
@@ -2638,6 +2692,48 @@ mod tests {
         assert_eq!(calls.borrow().len(), 6);
     }
 
+    /// Response of an unordered call that completes when it is called is
+    /// written before the pending ordered calls
+    #[ntex::test]
+    async fn unordered_ready_response_skips_queue() {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024);
+
+        let gate = Condition::new();
+        let gate2 = gate.clone();
+        let (disp, _) = Dispatcher::new_debug(
+            nio::Io::new(server, max_queue_cfg(0)),
+            ByteCodec,
+            fn_service(move |msg: Bytes| {
+                let gate = gate2.clone();
+                async move {
+                    if msg == "b" {
+                        let _ = gate.wait().await;
+                    } else if msg == "a" {
+                        sleep(Millis(10)).await;
+                    }
+                    Ok::<_, DispatcherError<()>>(Some(msg))
+                }
+            }),
+            ctl_srv(),
+        );
+        let state = disp.inner.state.clone();
+        let _done = spawn_disp(disp);
+
+        // "a" is polled by the dispatcher, "b" is spawned and keeps the queue
+        client.write("ab");
+        assert_eq!(read_exact(&client, 1).await, b"a"[..]);
+        assert_eq!(state.queue.borrow().len(), 1);
+
+        // "q" completes when it is called
+        client.write("q");
+        assert_eq!(read_exact(&client, 1).await, b"q"[..]);
+        assert_eq!(state.queue.borrow().len(), 1);
+
+        gate.notify_and_lock(());
+        assert_eq!(read_exact(&client, 1).await, b"b"[..]);
+    }
+
     /// Pending unordered calls count towards the queue limit
     #[ntex::test]
     async fn unordered_calls_limit() {
@@ -2737,6 +2833,40 @@ mod tests {
             );
             let called: Vec<u8> = calls.borrow().iter().flat_map(|c| c.to_vec()).collect();
             assert_eq!(&called[..], data.as_bytes(), "{data}");
+        }
+    }
+
+    /// The queue memory is released once a burst above `QUEUE_SHRINK_CAP`
+    /// responses is written, smaller queues keep their capacity
+    #[ntex::test]
+    async fn queue_shrinks_after_burst() {
+        for (count, shrinks) in [(QUEUE_SHRINK_CAP + 8, true), (8, false)] {
+            let (client, server) = Io::create();
+            client.remote_buffer_cap(1024);
+
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let gate = Condition::new();
+            let (disp, _) = Dispatcher::new_debug(
+                nio::Io::new(server, max_queue_cfg(0)),
+                ByteCodec,
+                gate_srv(calls.clone(), gate.clone()),
+                ctl_srv(),
+            );
+            let state = disp.inner.state.clone();
+            let _done = spawn_disp(disp);
+
+            let data = "a".repeat(count);
+            client.write(data.as_str());
+            sleep(Millis(50)).await;
+            assert_eq!(state.queue.borrow().len(), count);
+            let cap = state.queue.borrow().capacity();
+            assert!(cap >= count, "{count}");
+
+            gate.notify_and_lock(());
+            assert_eq!(read_exact(&client, count).await, data.as_bytes());
+            assert!(state.queue.borrow().is_empty());
+            let expected = if shrinks { 0 } else { cap };
+            assert_eq!(state.queue.borrow().capacity(), expected, "{count}");
         }
     }
 

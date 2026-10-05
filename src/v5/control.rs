@@ -133,7 +133,7 @@ impl Auth {
     /// Ack auth message with the provided `Auth` packet
     pub fn ack(self, response: codec::Auth) -> ProtocolMessageAck {
         ProtocolMessageAck {
-            packet: Pkt::Packet(codec::Packet::Auth(response)),
+            packet: Pkt::Packet(codec::Packet::from(response)),
             disconnect: false,
         }
     }

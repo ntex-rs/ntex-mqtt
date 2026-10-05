@@ -8,7 +8,7 @@ use crate::error::{DecodeError, DispatcherError, MqttProtocolError, PayloadError
 use crate::inflight::InFlightServiceImpl;
 use crate::payload::{Payload, PayloadStatus, PlSender};
 use crate::types::packet_type;
-use crate::v3::codec::{self, Decoded, Encoded, Packet};
+use crate::v3::codec::{self, Decoded, Packet};
 use crate::v3::shared::{Ack, MqttShared};
 use crate::v3::{QoS, Session, control::ProtocolMessageKind, publish::Publish};
 
@@ -21,7 +21,7 @@ pub(super) fn create_dispatcher<St, T, C, E>(
     max_buffer_size: usize,
     publish: T,
     control: C,
-) -> impl Service<Session<St>, Decoded, Res = Option<Encoded>, Error = DispatcherError<E>>
+) -> impl Service<Session<St>, Decoded, Res = Option<Packet>, Error = DispatcherError<E>>
 where
     St: 'static,
     E: 'static,
@@ -109,14 +109,14 @@ impl<C> Inner<C> {
     ///
     /// `QoS 1` publish is acknowledged with `PublishAck` [MQTT-4.3.2-2], `QoS 2` publish
     /// with `PublishReceived`, the packet id stays in use until `PublishRelease` [MQTT-4.3.3-2]
-    fn publish_ack(&self, packet_id: NonZeroU16) -> Encoded {
+    fn publish_ack(&self, packet_id: NonZeroU16) -> Packet {
         let mut inflight = self.inflight.borrow_mut();
         if inflight.get(&packet_id) == Some(&InFlight::Publish(QoS::ExactlyOnce)) {
             inflight.insert(packet_id, InFlight::Received);
-            Encoded::Packet(Packet::PublishReceived { packet_id })
+            Packet::PublishReceived { packet_id }
         } else {
             inflight.remove(&packet_id);
-            Encoded::Packet(Packet::PublishAck { packet_id })
+            Packet::PublishAck { packet_id }
         }
     }
 }
@@ -128,7 +128,7 @@ where
     C: Service<Session<St>, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
     E: 'static,
 {
-    type Res = Option<Encoded>;
+    type Res = Option<Packet>;
     type Error = DispatcherError<E>;
 
     #[inline]
@@ -207,9 +207,7 @@ where
                             if publish.payload_size != payload.len() as u32 {
                                 inner.discard_payload.set(true);
                             }
-                            return Ok(Some(Encoded::Packet(Packet::PublishReceived {
-                                packet_id: pid,
-                            })));
+                            return Ok(Some(Packet::PublishReceived { packet_id: pid }));
                         }
                         Some(_) => {
                             log::trace!("Duplicated packet id for publish packet: {pid:?}");
@@ -293,7 +291,7 @@ where
                         // PUBREL is re-sent after a session resumes [MQTT-4.4.0-1], the
                         // release could be already completed, PUBCOMP is required [MQTT-4.3.3-2]
                         log::trace!("Unknown packet-id in PublishRelease packet: {packet_id:?}");
-                        Ok(Some(Encoded::Packet(Packet::PublishComplete { packet_id })))
+                        Ok(Some(Packet::PublishComplete { packet_id }))
                     }
                 }
             }
@@ -342,7 +340,7 @@ async fn publish_fn<'f, St, T, C, E>(
     packet_id: Option<NonZeroU16>,
     inner: &'f Inner<C>,
     ctx: Ctx<'f, Dispatcher<St, T, C, E>, Session<St>>,
-) -> Result<Option<Encoded>, DispatcherError<E>>
+) -> Result<Option<Packet>, DispatcherError<E>>
 where
     E: 'static,
     T: Service<Session<St>, Publish, Res = Either<(), Publish>, Error = E>,
@@ -369,7 +367,7 @@ impl<C> Inner<C> {
         &self,
         pkt: ProtocolMessage,
         ctx: Ctx<'_, Dispatcher<St, T, C, E>, Session<St>>,
-    ) -> Result<Option<Encoded>, DispatcherError<E>>
+    ) -> Result<Option<Packet>, DispatcherError<E>>
     where
         C: Service<
                 Session<St>,
@@ -387,11 +385,11 @@ impl<C> Inner<C> {
             })?
             .result
         {
-            ProtocolMessageKind::Ping => Some(Encoded::Packet(codec::Packet::PingResponse)),
+            ProtocolMessageKind::Ping => Some(codec::Packet::PingResponse),
             ProtocolMessageKind::PublishAck(id) => Some(self.publish_ack(id)),
             ProtocolMessageKind::PublishRelease(id) => {
                 self.inflight.borrow_mut().remove(&id);
-                Some(Encoded::Packet(Packet::PublishComplete { packet_id: id }))
+                Some(Packet::PublishComplete { packet_id: id })
             }
             ProtocolMessageKind::Subscribe(_) | ProtocolMessageKind::Unsubscribe(_) => {
                 unreachable!()
@@ -564,10 +562,7 @@ mod tests {
             .call(Decoded::Packet(Packet::PublishRelease { packet_id }, 999))
             .await
             .unwrap();
-        assert_eq!(
-            pkt,
-            Some(Encoded::Packet(Packet::PublishComplete { packet_id }))
-        );
+        assert_eq!(pkt, Some(Packet::PublishComplete { packet_id }));
         assert!(shared.is_active());
     }
 
@@ -652,10 +647,6 @@ mod tests {
         )
     }
 
-    fn encoded(pkt: Packet) -> Encoded {
-        Encoded::Packet(pkt)
-    }
-
     #[ntex::test]
     async fn test_publish_qos2() {
         let pid = |id| NonZeroU16::new(id).unwrap();
@@ -669,7 +660,7 @@ mod tests {
             let res = disp.call(publish(1, QoS::ExactlyOnce, topic)).await;
             assert_eq!(
                 res.unwrap(),
-                Some(encoded(Packet::PublishReceived { packet_id: pid(1) }))
+                Some(Packet::PublishReceived { packet_id: pid(1) })
             );
 
             // packet id stays in use until PUBREL
@@ -680,7 +671,7 @@ mod tests {
             let res = disp.call(pubrel(1)).await;
             assert_eq!(
                 res.unwrap(),
-                Some(encoded(Packet::PublishComplete { packet_id: pid(1) }))
+                Some(Packet::PublishComplete { packet_id: pid(1) })
             );
             assert_eq!(pubrel_calls.get(), 1);
 
@@ -688,25 +679,22 @@ mod tests {
             let res = disp.call(publish(1, QoS::ExactlyOnce, topic)).await;
             assert_eq!(
                 res.unwrap(),
-                Some(encoded(Packet::PublishReceived { packet_id: pid(1) }))
+                Some(Packet::PublishReceived { packet_id: pid(1) })
             );
             let res = disp.call(pubrel(1)).await;
             assert_eq!(
                 res.unwrap(),
-                Some(encoded(Packet::PublishComplete { packet_id: pid(1) }))
+                Some(Packet::PublishComplete { packet_id: pid(1) })
             );
             assert_eq!(pubrel_calls.get(), 2);
 
             // QoS 1 publish is acknowledged with PUBACK, packet id is released
             let res = disp.call(publish(2, QoS::AtLeastOnce, topic)).await;
-            assert_eq!(
-                res.unwrap(),
-                Some(encoded(Packet::PublishAck { packet_id: pid(2) }))
-            );
+            assert_eq!(res.unwrap(), Some(Packet::PublishAck { packet_id: pid(2) }));
             let res = disp.call(pubrel(2)).await;
             assert_eq!(
                 res.unwrap(),
-                Some(encoded(Packet::PublishComplete { packet_id: pid(2) }))
+                Some(Packet::PublishComplete { packet_id: pid(2) })
             );
             assert_eq!(pubrel_calls.get(), 2);
         }
@@ -734,7 +722,7 @@ mod tests {
     /// Chunks of a failed publish are a protocol error, not a panic
     #[ntex::test]
     async fn test_unexpected_payload_chunk() {
-        let unexpected = |res: Result<Option<Encoded>, DispatcherError<()>>| {
+        let unexpected = |res: Result<Option<Packet>, DispatcherError<()>>| {
             matches!(
                 res,
                 Err(DispatcherError::Protocol(MqttProtocolError::Decode(
@@ -760,7 +748,7 @@ mod tests {
     #[ntex::test]
     async fn test_publish_redelivery() {
         let pid = |id| NonZeroU16::new(id).unwrap();
-        let is_err = |res: Result<Option<Encoded>, DispatcherError<()>>| {
+        let is_err = |res: Result<Option<Packet>, DispatcherError<()>>| {
             matches!(res, Err(DispatcherError::Protocol(_)))
         };
         let pubrel_calls = Rc::new(Cell::new(0));
@@ -782,13 +770,13 @@ mod tests {
         ));
         assert_eq!(
             f.await.unwrap(),
-            Some(encoded(Packet::PublishAck { packet_id: pid(1) }))
+            Some(Packet::PublishAck { packet_id: pid(1) })
         );
         assert_eq!(published.get(), 1);
 
         // re-delivery is acked by PUBREC until PUBREL [MQTT-4.3.3-2]
         let (_io, _, disp) = qos2_dispatcher!(pubrel_calls, published);
-        let pubrec = Some(encoded(Packet::PublishReceived { packet_id: pid(2) }));
+        let pubrec = Some(Packet::PublishReceived { packet_id: pid(2) });
         let res = disp.call(publish(2, QoS::ExactlyOnce, "publish")).await;
         assert_eq!(res.unwrap(), pubrec);
         let res = disp.call(redelivery(2, QoS::ExactlyOnce, true)).await;
@@ -803,7 +791,7 @@ mod tests {
         let res = disp.call(pubrel(2)).await;
         assert_eq!(
             res.unwrap(),
-            Some(encoded(Packet::PublishComplete { packet_id: pid(2) }))
+            Some(Packet::PublishComplete { packet_id: pid(2) })
         );
         assert_eq!(pubrel_calls.get(), 1);
         let mut f = Box::pin(disp.call(redelivery(2, QoS::ExactlyOnce, true)));
@@ -827,7 +815,7 @@ mod tests {
     }
 
     fn assert_unexpected<E: std::fmt::Debug>(
-        res: &Result<Option<Encoded>, DispatcherError<E>>,
+        res: &Result<Option<Packet>, DispatcherError<E>>,
         expected: u8,
     ) {
         assert!(
