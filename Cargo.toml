@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "9.1.0"
+version = "9.1.1"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -18,7 +18,7 @@ features = ["ntex-net/tokio"]
 ntex-bytes = "1.10"
 ntex-codec = "2.0"
 ntex-error = "3.0"
-ntex-io = "4.2"
+ntex-io = "4.2.1"
 ntex-net = "4.2"
 ntex-service = "5.1"
 ntex-router = "2.1"
