@@ -507,7 +507,8 @@ where
                     .any(|(tf, _)| !crate::topic::is_valid_shared(tf))
                 {
                     Err(SpecViolation::Subs_4_8_2.into())
-                } else if !self.inner.sink.codec.shared_subs_available()
+                } else if self.cfg.check_subs_availability
+                    && !self.inner.sink.codec.shared_subs_available()
                     && pkt
                         .topic_filters
                         .iter()
@@ -519,7 +520,8 @@ where
                         "Shared Subscriptions are not supported",
                     )
                     .into())
-                } else if !self.inner.sink.codec.wildcard_subs_available()
+                } else if self.cfg.check_subs_availability
+                    && !self.inner.sink.codec.wildcard_subs_available()
                     && pkt
                         .topic_filters
                         .iter()
@@ -1042,6 +1044,22 @@ mod tests {
             // filters without wildcards are not restricted
             let res = disp.call(subscribe(1, &["test", "a/b"])).await;
             assert!(matches!(res, Ok(Some(Packet::SubscribeAck(_)))), "{res:?}");
+        }
+    }
+
+    #[ntex::test]
+    async fn test_subscription_availability_unchecked() {
+        let (_io, shared, disp) =
+            ack_dispatcher(MqttServiceConfig::new().set_check_subs_availability(false));
+        shared.codec.set_shared_subs_available(false);
+        shared.codec.set_wildcard_subs_available(false);
+
+        for tf in ["$share/group/test", "a/+", "a/#"] {
+            let res = disp.call(subscribe(1, &["test", tf])).await;
+            assert!(
+                matches!(res, Ok(Some(Packet::SubscribeAck(_)))),
+                "{tf}: {res:?}"
+            );
         }
     }
 

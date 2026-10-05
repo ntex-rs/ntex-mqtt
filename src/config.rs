@@ -65,6 +65,7 @@ pub struct MqttServiceConfig {
     pub(crate) min_chunk_size: u32,
     pub(crate) max_payload_buffer_size: usize,
     pub(crate) handle_qos_after_disconnect: Option<QoS>,
+    pub(crate) check_subs_availability: bool,
     pub(crate) connect_timeout: Seconds,
     pub(crate) handshake_timeout: Seconds,
     pub(crate) protocol_version_timeout: Millis,
@@ -104,6 +105,7 @@ impl MqttServiceConfig {
             min_chunk_size: 32 * 1024,
             max_payload_buffer_size: 32 * 1024,
             handle_qos_after_disconnect: None,
+            check_subs_availability: true,
             connect_timeout: Seconds(5),
             handshake_timeout: Seconds::ZERO,
             protocol_version_timeout: Millis(5_000),
@@ -323,6 +325,21 @@ impl MqttServiceConfig {
     /// By default handle-qos-after-disconnect is set to `None`
     pub fn set_handle_qos_after_disconnect(mut self, max_handle_qos: Option<QoS>) -> Self {
         self.handle_qos_after_disconnect = max_handle_qos;
+        self
+    }
+
+    #[must_use]
+    /// Check shared and wildcard subscriptions availability, v5 only.
+    ///
+    /// If enabled, `Subscribe` packet with a shared or wildcard topic filter closes
+    /// the connection with a protocol error when the `ConnectAck` reported such
+    /// subscriptions as not available (MQTT 5.0, 3.2.2.3.11 and 3.2.2.3.13).
+    /// If disabled, the packet is passed to the control service, which can reject
+    /// individual topic filters with `SubscribeAck` reason codes.
+    ///
+    /// By default the check is enabled.
+    pub fn set_check_subs_availability(mut self, val: bool) -> Self {
+        self.check_subs_availability = val;
         self
     }
 }

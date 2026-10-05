@@ -1,6 +1,15 @@
 # Changes
 
-## [9.1.0] - Unreleased
+## [9.1.1] - 2026-10-05
+
+* Suspend keep-alive and frame read timers while the filter chain pauses reads, and the
+  write timeout while it pauses writes, the peer is not charged for the pause
+
+* v5: Add `MqttServiceConfig::set_check_subs_availability()`, disabled check passes
+  shared and wildcard subscriptions to the control service when `ConnectAck` reported
+  them as not available, instead of closing the connection with a protocol error
+
+## [9.1.0] - 2026-10-05
 
 * A failed call during write backpressure stops the dispatcher, previously the stop
   waited until the peer read enough to release backpressure
