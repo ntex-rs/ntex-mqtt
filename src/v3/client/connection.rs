@@ -391,6 +391,20 @@ mod tests {
     const PINGREQ: u8 = 0b1100_0000;
     const INTERVAL: Millis = Millis(200);
 
+    fn setup() -> (IoTest, Io, Rc<MqttShared>, MqttSink) {
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            true,
+            Rc::default(),
+        ));
+        let sink = MqttSink::new(shared.clone());
+        (client, io, shared, sink)
+    }
+
     async fn wait_ping_pending(sink: &MqttSink) {
         let mut n = 0;
         while !sink.is_ping_pending() {
@@ -402,16 +416,7 @@ mod tests {
 
     #[ntex::test]
     async fn test_pingresp_timeout() {
-        let (client, server) = IoTest::create();
-        client.remote_buffer_cap(1024);
-        let io = Io::new(server, SharedCfg::new("test"));
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            true,
-            Rc::default(),
-        ));
-        let sink = MqttSink::new(shared.clone());
+        let (client, _io, shared, sink) = setup();
         ntex_util::spawn(keepalive_interval(sink.clone(), INTERVAL));
 
         // PINGRESP clears pending ping
@@ -446,16 +451,7 @@ mod tests {
     async fn test_pingresp_timeout_write_backpressure() {
         use ntex_util::future::lazy;
 
-        let (client, server) = IoTest::create();
-        client.remote_buffer_cap(1024);
-        let io = Io::new(server, SharedCfg::new("test"));
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            true,
-            Rc::default(),
-        ));
-        let sink = MqttSink::new(shared.clone());
+        let (client, io, shared, sink) = setup();
         ntex_util::spawn(keepalive_interval(sink.clone(), INTERVAL));
 
         assert_eq!(client.read().await.unwrap()[0], PINGREQ);
@@ -497,17 +493,8 @@ mod tests {
 
         use ntex_util::{channel::condition::Condition, time::timeout};
 
-        let (client, server) = IoTest::create();
-        client.remote_buffer_cap(1024);
-        let io = Io::new(server, SharedCfg::new("test"));
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            true,
-            Rc::default(),
-        ));
+        let (client, io, shared, sink) = setup();
         shared.set_cap(16);
-        let sink = MqttSink::new(shared.clone());
         let conn = Client::new(io.into(), shared, false, Seconds::ZERO, 16, 0);
 
         let gate = Condition::new();

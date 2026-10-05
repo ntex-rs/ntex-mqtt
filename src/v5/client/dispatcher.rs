@@ -522,9 +522,19 @@ mod tests {
     use super::*;
     use crate::{error::ViolationInner, v5::MqttSink};
 
-    #[ntex::test]
-    async fn test_publish_topic_wildcards() {
-        let cfg: SharedCfg = SharedCfg::new("DBG").add(MqttServiceConfig::new()).into();
+    type Disp = Pipeline<Decoded, Option<Packet>, DispatcherError<()>>;
+
+    fn dispatcher<T, C>(
+        cfg: MqttServiceConfig,
+        publish: T,
+        control: C,
+        max_receive: usize,
+    ) -> (Io, Rc<MqttShared>, Disp)
+    where
+        T: Service<Session<()>, Publish, Res = Either<Publish, PublishAck>, Error = ()> + 'static,
+        C: Service<Session<()>, ProtocolMessage, Res = ProtocolMessageAck, Error = ()> + 'static,
+    {
+        let cfg: SharedCfg = SharedCfg::new("DBG").add(cfg).into();
         let io = Io::new(IoTest::create().0, cfg.clone());
         let shared = Rc::new(MqttShared::new(
             io.get_ref(),
@@ -533,14 +543,18 @@ mod tests {
         ));
         let disp = Pipeline::new(
             Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
-            create_dispatcher(
-                shared.clone(),
-                fn_service(async |p: Publish| Ok::<_, ()>(Either::Right(p.ack()))),
-                fn_service(async |msg: ProtocolMessage| Ok::<_, ()>(msg.ack())),
-                16,
-                16,
-                cfg.get(),
-            ),
+            create_dispatcher(shared.clone(), publish, control, max_receive, 16, cfg.get()),
+        );
+        (io, shared, disp)
+    }
+
+    #[ntex::test]
+    async fn test_publish_topic_wildcards() {
+        let (_io, _, disp) = dispatcher(
+            MqttServiceConfig::new(),
+            fn_service(async |p: Publish| Ok(Either::Right(p.ack()))),
+            fn_service(async |msg: ProtocolMessage| Ok(msg.ack())),
+            16,
         );
         let publish = |topic: &'static str, response_topic: Option<&'static str>| {
             let mut pkt = codec::Publish {
@@ -577,60 +591,49 @@ mod tests {
 
     /// Publish service handles topics "publish*", "publish/slow" waits 100ms,
     /// other topics are passed to the control service, topics "*/err" are rejected
-    macro_rules! qos2_dispatcher {
-        ($pubrel:expr, $published:expr, $max_receive:expr) => {{
-            let cfg: SharedCfg = SharedCfg::new("DBG").add(MqttServiceConfig::new()).into();
-            let io = Io::new(IoTest::create().0, cfg.clone());
-            let shared = Rc::new(MqttShared::new(
-                io.get_ref(),
-                codec::Codec::default(),
-                Rc::default(),
-            ));
-            let pubrel = $pubrel.clone();
-            let published = $published.clone();
-            let reason = |topic: &str| {
-                if topic.ends_with("/err") {
-                    codec::PublishAckReason::UnspecifiedError
-                } else {
-                    codec::PublishAckReason::Success
+    fn qos2_dispatcher(
+        pubrel: &Rc<Cell<usize>>,
+        published: &Rc<Cell<usize>>,
+        max_receive: usize,
+    ) -> (Io, Rc<MqttShared>, Disp) {
+        let pubrel = pubrel.clone();
+        let published = published.clone();
+        let reason = |topic: &str| {
+            if topic.ends_with("/err") {
+                codec::PublishAckReason::UnspecifiedError
+            } else {
+                codec::PublishAckReason::Success
+            }
+        };
+        dispatcher(
+            MqttServiceConfig::new(),
+            fn_service(async move |p: Publish| {
+                published.set(published.get() + 1);
+                if p.publish_topic() == "publish/slow" {
+                    sleep(Millis(100)).await;
                 }
-            };
-            let disp = Pipeline::new(
-                Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
-                create_dispatcher(
-                    shared.clone(),
-                    fn_service(async move |p: Publish| {
-                        published.set(published.get() + 1);
-                        if p.publish_topic() == "publish/slow" {
-                            sleep(Millis(100)).await;
-                        }
-                        if p.publish_topic().starts_with("publish") {
-                            Ok::<_, ()>(Either::Right(PublishAck::new(reason(p.publish_topic()))))
-                        } else {
-                            Ok(Either::Left(p))
-                        }
-                    }),
-                    fn_service(move |msg: ProtocolMessage| {
-                        let res = match msg {
-                            ProtocolMessage::Publish(p) => {
-                                let code = reason(&p.packet().topic);
-                                p.ack(code)
-                            }
-                            ProtocolMessage::PublishRelease(msg) => {
-                                pubrel.set(pubrel.get() + 1);
-                                msg.ack()
-                            }
-                            msg => msg.ack(),
-                        };
-                        async move { Ok::<_, ()>(res) }
-                    }),
-                    $max_receive,
-                    16,
-                    cfg.get(),
-                ),
-            );
-            (io, shared, disp)
-        }};
+                if p.publish_topic().starts_with("publish") {
+                    Ok(Either::Right(PublishAck::new(reason(p.publish_topic()))))
+                } else {
+                    Ok(Either::Left(p))
+                }
+            }),
+            fn_service(move |msg: ProtocolMessage| {
+                let res = match msg {
+                    ProtocolMessage::Publish(p) => {
+                        let code = reason(&p.packet().topic);
+                        p.ack(code)
+                    }
+                    ProtocolMessage::PublishRelease(msg) => {
+                        pubrel.set(pubrel.get() + 1);
+                        msg.ack()
+                    }
+                    msg => msg.ack(),
+                };
+                async move { Ok(res) }
+            }),
+            max_receive,
+        )
     }
 
     fn pid(id: u16) -> NonZeroU16 {
@@ -688,7 +691,7 @@ mod tests {
         use codec::{PublishAck2Reason as Ack2, PublishAckReason as Ack};
 
         let pubrel_calls = Rc::new(Cell::new(0));
-        let (_io, shared, disp) = qos2_dispatcher!(pubrel_calls, Rc::new(Cell::new(0)), 16);
+        let (_io, shared, disp) = qos2_dispatcher(&pubrel_calls, &Rc::default(), 16);
 
         for (topic, err_topic) in [("publish", "publish/err"), ("control", "control/err")] {
             pubrel_calls.set(0);
@@ -735,7 +738,7 @@ mod tests {
     #[ntex::test]
     async fn test_publish_qos2_receive_max() {
         let pubrel_calls = Rc::new(Cell::new(0));
-        let (_io, _, disp) = qos2_dispatcher!(pubrel_calls, Rc::new(Cell::new(0)), 1);
+        let (_io, _, disp) = qos2_dispatcher(&pubrel_calls, &Rc::default(), 1);
 
         let res = disp.call(qos_publish(1, QoS::ExactlyOnce, "publish")).await;
         assert_eq!(
@@ -763,7 +766,7 @@ mod tests {
     #[ntex::test]
     async fn test_pubrel_before_pubrec() {
         let pubrel_calls = Rc::new(Cell::new(0));
-        let (_io, _, disp) = qos2_dispatcher!(pubrel_calls, Rc::new(Cell::new(0)), 16);
+        let (_io, _, disp) = qos2_dispatcher(&pubrel_calls, &Rc::default(), 16);
 
         let mut f = Box::pin(disp.call(qos_publish(1, QoS::ExactlyOnce, "publish/slow")));
         let _ = lazy(|cx| Pin::new(&mut f).poll(cx)).await;
@@ -805,7 +808,7 @@ mod tests {
             )
         };
         let chunk = |eof| Decoded::PayloadChunk(Bytes::from_static(b"def"), eof);
-        let (_io, _, disp) = qos2_dispatcher!(Rc::new(Cell::new(0)), Rc::new(Cell::new(0)), 16);
+        let (_io, _, disp) = qos2_dispatcher(&Rc::default(), &Rc::default(), 16);
 
         // the streaming publish is rejected before its payload is set up
         let Decoded::Publish(mut pkt, payload, size) = redelivery(1, QoS::AtLeastOnce, true) else {
@@ -832,7 +835,7 @@ mod tests {
         };
         let pubrel_calls = Rc::new(Cell::new(0));
         let published = Rc::new(Cell::new(0));
-        let (_io, shared, disp) = qos2_dispatcher!(pubrel_calls, published, 16);
+        let (_io, shared, disp) = qos2_dispatcher(&pubrel_calls, &published, 16);
 
         // re-delivery is ignored until PUBACK [MQTT-4.3.2-5]
         let mut f = Box::pin(disp.call(qos_publish(1, QoS::AtLeastOnce, "publish/slow")));
@@ -873,7 +876,7 @@ mod tests {
         assert!(shared.payload.take().is_none());
 
         // re-delivery does not use receive maximum quota
-        let (_io, _, disp) = qos2_dispatcher!(pubrel_calls, published, 1);
+        let (_io, _, disp) = qos2_dispatcher(&pubrel_calls, &published, 1);
         let res = disp.call(qos_publish(1, QoS::ExactlyOnce, "publish")).await;
         assert_eq!(res.unwrap(), Some(pubrec(1, Ack::Success)));
         let res = disp.call(redelivery(1, QoS::ExactlyOnce, false)).await;
@@ -901,8 +904,7 @@ mod tests {
 
     #[ntex::test]
     async fn test_unexpected_packets() {
-        let (_io, shared, disp) =
-            qos2_dispatcher!(Rc::new(Cell::new(0)), Rc::new(Cell::new(0)), 16);
+        let (_io, shared, disp) = qos2_dispatcher(&Rc::default(), &Rc::default(), 16);
 
         // PINGRESP clears pending ping
         shared.set_ping_pending(true);
@@ -967,32 +969,17 @@ mod tests {
 
         let fail = Rc::new(Cell::new(false));
         let pfail = Rc::new(Cell::new(false));
-        let cfg: SharedCfg = SharedCfg::new("DBG")
-            .add(MqttServiceConfig::new().set_max_payload_buffer_size(4))
-            .into();
-        let io = Io::new(IoTest::create().0, cfg.clone());
-        let shared = Rc::new(MqttShared::new(
-            io.get_ref(),
-            codec::Codec::default(),
-            Rc::default(),
-        ));
         let held = Rc::new(RefCell::new(None));
-        let h = held.clone();
-        let disp = Pipeline::new(
-            Session::new((), MqttSink::new(shared.clone()), SharedCfg::default()),
-            create_dispatcher(
-                shared.clone(),
-                Hold(
-                    h,
-                    pfail.clone(),
-                    || (),
-                    || Either::Right(PublishAck::new(codec::PublishAckReason::Success)),
-                ),
-                FailReady(fail.clone(), || ()),
-                16,
-                16,
-                cfg.get(),
+        let (io, _, disp) = dispatcher(
+            MqttServiceConfig::new().set_max_payload_buffer_size(4),
+            Hold(
+                held.clone(),
+                pfail.clone(),
+                || (),
+                || Either::Right(PublishAck::new(codec::PublishAckReason::Success)),
             ),
+            FailReady(fail.clone(), || ()),
+            16,
         );
         let chunk = |data: &'static [u8]| {
             disp.call_nowait(Decoded::PayloadChunk(Bytes::from_static(data), false))
