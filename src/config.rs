@@ -28,7 +28,28 @@ use crate::types::QoS;
 /// budget restarts when reading resumes. During write backpressure only the
 /// write timeout (`IoConfig::set_write_timeout()`) applies.
 ///
+/// # Read pause
+///
+/// The dispatcher stops reading new packets while:
+///
+/// * the response queue is full, see [`set_max_queue`],
+/// * the total size of in-flight publishes reaches [`set_max_receive_size`],
+/// * the unread part of a streamed payload reaches [`set_max_payload_buffer_size`],
+/// * the publish or control service is not ready.
+///
+/// Acks of outgoing publishes and the peer's PINGREQ are packets on the same
+/// connection, they are not read while reading is paused. A handler that awaits
+/// an ack from the same peer, for example a publish handler that awaits
+/// `send_at_least_once()` to the client it serves, can hold the pause forever:
+/// the ack cannot be read until the handler completes. No read timer runs
+/// during the pause, the connection stalls until the peer closes it, typically
+/// when its PINGREQ is not answered within keep-alive. Do not await acks from
+/// the same peer in handlers that can be paused, spawn the send or use
+/// `send_at_least_once_no_block()` instead.
+///
 /// [`set_max_queue`]: MqttServiceConfig::set_max_queue
+/// [`set_max_receive_size`]: MqttServiceConfig::set_max_receive_size
+/// [`set_max_payload_buffer_size`]: MqttServiceConfig::set_max_payload_buffer_size
 /// [`v3::ConnectAck::idle_timeout()`]: crate::v3::ConnectAck::idle_timeout
 /// [`v5::ConnectAck::keep_alive()`]: crate::v5::ConnectAck::keep_alive
 #[derive(Debug)]
@@ -179,6 +200,10 @@ impl MqttServiceConfig {
     #[must_use]
     /// Total size of received in-flight messages.
     ///
+    /// The dispatcher stops reading new packets while the limit is reached,
+    /// handlers that await acks from the same peer can stall the connection,
+    /// see [read pause](MqttServiceConfig#read-pause).
+    ///
     /// By default total in-flight size is set to 65535 bytes
     pub fn set_max_receive_size(mut self, val: usize) -> Self {
         self.max_receive_size = val;
@@ -202,7 +227,8 @@ impl MqttServiceConfig {
     /// Acks of outgoing packets are not read while reading is paused. If the
     /// pending calls await these acks, the queue never gets room and the
     /// connection stalls, no read timer runs while reading is paused. Set the
-    /// limit above the number of handlers that can await acks at the same time.
+    /// limit above the number of handlers that can await acks at the same time,
+    /// see [read pause](MqttServiceConfig#read-pause).
     ///
     /// By default the limit is set to 64 responses.
     pub fn set_max_queue(mut self, val: usize) -> Self {

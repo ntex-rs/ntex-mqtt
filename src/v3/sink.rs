@@ -292,6 +292,10 @@ impl PublishBuilder {
     }
 
     /// Send publish packet with `QoS 1`
+    ///
+    /// The ack is read by the connection dispatcher, awaiting it in a handler of
+    /// the same connection can stall it while reading is paused, see
+    /// [read pause](crate::MqttServiceConfig#read-pause).
     pub async fn send_at_least_once(mut self, payload: Bytes) -> Result<(), SendPacketError> {
         if self.shared.is_active() {
             self.packet.qos = codec::QoS::AtLeastOnce;
@@ -353,6 +357,10 @@ impl PublishBuilder {
     ///
     /// If the returned future is dropped after the publish is sent, the publish
     /// is released, `PublishRelease` is sent once `PublishReceived` is received.
+    ///
+    /// The ack is read by the connection dispatcher, awaiting it in a handler of
+    /// the same connection can stall it while reading is paused, see
+    /// [read pause](crate::MqttServiceConfig#read-pause).
     pub async fn send_exactly_once(
         mut self,
         payload: Bytes,
