@@ -2,10 +2,15 @@
 
 ## [9.1.0] - Unreleased
 
+* Sink uses the io write backpressure state directly, waiting publishes and payload
+  chunks are released as soon as the write buffer drains. Previously the state was
+  updated by `Control::WrBackpressure` messages that wait behind pending control calls,
+  a slow control handler kept the sink blocked after backpressure was released.
+  `Control::WrBackpressure` no longer changes sink readiness
+
 * v3: Woken sink waiters check send credit and write backpressure again, previously a
   packet sent without waiting could take the freed credit and the woken waiter exceeded
-  the receive maximum. Acks do not wake waiters while write backpressure is enabled and
-  a larger receive maximum wakes waiters within the new credit only
+  the receive maximum. A larger receive maximum wakes waiters within the new credit only
 
 * Document read pause, handlers that await acks from the same peer can stall the
   connection while reading is paused

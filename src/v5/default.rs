@@ -160,14 +160,8 @@ where
                 self.shared.drop_payload(&PayloadError::Disconnected);
                 None
             }
-            Control::WrBackpressure(status) => {
-                if status.enabled() {
-                    self.shared.enable_wr_backpressure();
-                } else {
-                    self.shared.disable_wr_backpressure();
-                }
-                None
-            }
+            // the sink follows the io write backpressure state directly
+            Control::WrBackpressure(_) => None,
         };
 
         match ctx.call(&self.svc, req).await {
@@ -197,8 +191,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::task::Poll;
+    use std::{pin::pin, task::Poll};
 
+    use ntex_bytes::Bytes;
     use ntex_io::{Io, testing::IoTest};
     use ntex_service::{Pipeline, cfg::SharedCfg};
     use ntex_util::future::lazy;
@@ -217,9 +212,12 @@ mod tests {
         }
     }
 
+    /// The sink follows the io write backpressure state, control messages do
+    /// not change it
     #[ntex::test]
     async fn test_wr_backpressure() {
-        let io = Io::new(IoTest::create().0, SharedCfg::new("DBG"));
+        let (client, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::new("DBG"));
         let codec = codec::Codec::default();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec, Rc::default()));
         let sink = MqttSink::new(shared.clone());
@@ -233,31 +231,36 @@ mod tests {
         shared.set_cap(1);
         assert!(sink.is_ready());
 
+        client.remote_buffer_cap(0);
+        sink.publish("a")
+            .send_at_most_once(Bytes::from(vec![0u8; 128 * 1024]))
+            .await
+            .unwrap();
+        assert!(io.is_wr_backpressure());
+        assert!(!sink.is_ready());
+        let mut rx = pin!(sink.ready());
+        let mut rx2 = pin!(sink.ready());
+        assert!(lazy(|cx| rx.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| rx2.as_mut().poll(cx).is_pending()).await);
+
+        // the send credit is granted to the first waiter, it waits for the
+        // write buffer, a control message does not release it
+        svc.call(Control::<bool>::wr(false)).await.unwrap();
+        assert_eq!(sink.credit(), 0);
+        assert!(lazy(|cx| rx.as_mut().poll(cx).is_pending()).await);
+
+        // the write buffer drains
+        client.remote_buffer_cap(1024 * 1024);
+        io.write_ready().await.unwrap();
+        assert_eq!(lazy(|cx| rx.as_mut().poll(cx)).await, Poll::Ready(true));
+        assert_eq!(lazy(|cx| rx2.as_mut().poll(cx)).await, Poll::Ready(true));
+        assert_eq!(sink.credit(), 1);
+
+        // the dispatcher clears the flag
+        assert!(lazy(|cx| io.poll_flush(cx, false).is_ready()).await);
+        assert!(!io.is_wr_backpressure());
+        assert!(sink.is_ready());
         svc.call(Control::<bool>::wr(true)).await.unwrap();
-        assert!(!sink.is_ready());
-        let mut p1 = Box::pin(shared.send_permit());
-        let mut p2 = Box::pin(shared.send_permit());
-        assert!(lazy(|cx| p1.as_mut().poll(cx).is_pending()).await);
-        assert!(lazy(|cx| p2.as_mut().poll(cx).is_pending()).await);
-
-        // the send credit is granted to the first waiter
-        svc.call(Control::wr(false)).await.unwrap();
-        let permit = lazy(|cx| p1.as_mut().poll(cx)).await;
-        assert!(matches!(permit, Poll::Ready(Ok(_))));
-        assert!(lazy(|cx| p2.as_mut().poll(cx).is_pending()).await);
-
-        // dropped permit passes the credit to the next waiter
-        drop(permit);
-        assert!(lazy(|cx| p2.as_mut().poll(cx).is_ready()).await);
-
-        // the streaming payload is released first, waiting publish keeps its turn
-        svc.call(Control::wr(true)).await.unwrap();
-        let mut p3 = Box::pin(shared.send_permit());
-        let mut stream = Box::pin(shared.want_payload_stream());
-        assert!(lazy(|cx| p3.as_mut().poll(cx).is_pending()).await);
-        assert!(lazy(|cx| stream.as_mut().poll(cx).is_pending()).await);
-        svc.call(Control::wr(false)).await.unwrap();
-        assert!(lazy(|cx| stream.as_mut().poll(cx).is_ready()).await);
-        assert!(!sink.is_ready());
+        assert!(sink.is_ready());
     }
 }
