@@ -160,6 +160,14 @@ impl MqttSink {
     ///
     /// First argument is received `PublishAck` packet (on disconnect, a synthetic
     /// ack that carries only packet id), second argument is "disconnected" state.
+    ///
+    /// The callback runs synchronously while the sink state is borrowed, it must
+    /// not call any sink method (`credit()`, `is_ready()`, `publish()`, `close()`,
+    /// `publish_ack_cb()`, etc), such a call panics or is lost. Hand off
+    /// the work instead, for example via a channel or a spawned task.
+    ///
+    /// Acks are reported in the order of arrival, on disconnect the in-flight
+    /// publishes are reported in no particular order.
     pub fn publish_ack_cb<F>(&self, f: F)
     where
         F: Fn(codec::PublishAck, bool) + 'static,
@@ -2104,6 +2112,176 @@ mod tests {
             assert_eq!(shared.pkt_ack(ack(5)), Ok(()));
             assert!(e.await.is_ok());
             assert_eq!(sink.credit(), 1);
+        }
+
+        fn pid(id: u16) -> NonZeroU16 {
+            NonZeroU16::new(id).unwrap()
+        }
+
+        /// Acks are matched by packet id (MQTT 5.0, 4.6)
+        #[ntex::test]
+        async fn test_ack_out_of_order() {
+            let (client, _io, shared, sink) = setup(2);
+
+            let mut a = send(&sink, 1);
+            let mut b = send(&sink, 2);
+            let mut c = send(&sink, 3);
+            for f in [&mut a, &mut b, &mut c] {
+                assert!(is_pending(f).await);
+            }
+            assert_eq!(written(&client).await, publishes(&[1, 2]));
+
+            // ack of "b" releases the credit for "c"
+            assert_eq!(shared.pkt_ack(ack(2)), Ok(()));
+            assert!(b.await.is_ok());
+            assert!(is_pending(&mut a).await);
+            assert!(is_pending(&mut c).await);
+            assert_eq!(written(&client).await, publishes(&[3]));
+            assert_eq!(sink.credit(), 0);
+
+            assert_eq!(shared.pkt_ack(ack(3)), Ok(()));
+            assert!(c.await.is_ok());
+            assert_eq!(shared.pkt_ack(ack(1)), Ok(()));
+            assert!(a.await.is_ok());
+            assert_eq!(sink.credit(), 2);
+            assert!(sink.is_open());
+        }
+
+        /// PUBACK of a later publish arrives before PUBCOMP of a released one
+        #[ntex::test]
+        async fn test_ack_qos2_interleaved() {
+            let (client, _io, shared, sink) = setup(16);
+
+            let mut a = Box::pin(
+                sink.publish("a")
+                    .packet_id(1)
+                    .send_exactly_once(Bytes::new()),
+            );
+            assert!(is_pending(&mut a).await);
+            let pubrec = codec::PublishAck {
+                packet_id: pid(1),
+                ..Default::default()
+            };
+            assert_eq!(shared.pkt_ack(Ack::Receive(pubrec)), Ok(()));
+            let received = a.await.unwrap();
+
+            let mut b = send(&sink, 2);
+            assert!(is_pending(&mut b).await);
+            let mut rel = Box::pin(received.release());
+            assert!(is_pending(&mut rel).await);
+            assert_eq!(
+                written(&client).await,
+                Bytes::from_static(
+                    b"\x34\x06\x00\x01a\x00\x01\x00\x32\x06\x00\x01a\x00\x02\x00\x62\x04\x00\x01\x00\x00"
+                )
+            );
+
+            assert_eq!(shared.pkt_ack(ack(2)), Ok(()));
+            assert!(b.await.is_ok());
+            assert!(is_pending(&mut rel).await);
+            let pubcomp = codec::PublishAck2 {
+                packet_id: pid(1),
+                ..Default::default()
+            };
+            assert_eq!(shared.pkt_ack(Ack::Complete(pubcomp)), Ok(()));
+            assert!(rel.await.is_ok());
+            assert_eq!(sink.credit(), 16);
+            assert!(sink.is_open());
+        }
+
+        /// SUBACK arrives after PUBACK of a later publish, Receive Maximum
+        /// counts publishes only [MQTT-4.9.0-2]
+        #[ntex::test]
+        async fn test_suback_after_puback() {
+            let (_client, _io, shared, sink) = setup(1);
+            shared.set_client();
+
+            let mut sub = Box::pin(
+                sink.subscribe(None)
+                    .packet_id(1)
+                    .topic_filter("a".into(), codec::SubscriptionOptions::default())
+                    .send(),
+            );
+            assert!(is_pending(&mut sub).await);
+            let mut a = send(&sink, 2);
+            assert!(is_pending(&mut a).await);
+            assert_eq!(sink.credit(), 0);
+
+            assert_eq!(shared.pkt_ack(ack(2)), Ok(()));
+            assert!(a.await.is_ok());
+            assert_eq!(sink.credit(), 1);
+            let suback = Ack::Subscribe(codec::SubscribeAck {
+                packet_id: pid(1),
+                properties: codec::UserProperties::default(),
+                reason_string: None,
+                status: vec![codec::SubscribeAckReason::GrantedQos0],
+            });
+            assert_eq!(shared.pkt_ack(suback), Ok(()));
+            assert!(sub.await.is_ok());
+            assert_eq!(sink.credit(), 1);
+
+            // the next publish takes the credit
+            let mut b = send(&sink, 3);
+            assert!(is_pending(&mut b).await);
+            assert_eq!(sink.credit(), 0);
+            assert!(sink.is_open());
+        }
+
+        /// Ack of a packet id that is not in flight is a protocol error
+        #[ntex::test]
+        async fn test_ack_unknown_id() {
+            let err = Err(crate::error::MqttProtocolError::unknown_packet_id());
+
+            // nothing in flight
+            let (_client, _io, shared, sink) = setup(16);
+            assert_eq!(shared.pkt_ack(ack(1)), err);
+            assert!(!sink.is_open());
+
+            // other packet id in flight
+            let (_client, _io, shared, sink) = setup(16);
+            let mut a = send(&sink, 1);
+            assert!(is_pending(&mut a).await);
+            assert_eq!(shared.pkt_ack(ack(2)), err);
+            assert!(!sink.is_open());
+            assert_eq!(
+                timeout(Millis(1000), a).await.unwrap(),
+                Err(SendPacketError::Disconnected)
+            );
+
+            // second ack of the same packet id
+            let (_client, _io, shared, sink) = setup(16);
+            let mut a = send(&sink, 1);
+            assert!(is_pending(&mut a).await);
+            assert_eq!(shared.pkt_ack(ack(1)), Ok(()));
+            assert!(a.await.is_ok());
+            assert_eq!(shared.pkt_ack(ack(1)), err);
+            assert!(!sink.is_open());
+        }
+
+        /// Ack callback is called in the order of acks
+        #[ntex::test]
+        async fn test_ack_cb_out_of_order() {
+            let (_client, _io, shared, sink) = setup(3);
+            let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let calls2 = calls.clone();
+            sink.publish_ack_cb(move |ack, disconnected| {
+                calls2
+                    .borrow_mut()
+                    .push((ack.packet_id.get(), disconnected));
+            });
+
+            for _ in 0..3 {
+                sink.publish("a")
+                    .send_at_least_once_no_block(Bytes::new())
+                    .unwrap();
+            }
+            assert_eq!(sink.credit(), 0);
+            assert_eq!(shared.pkt_ack(ack(2)), Ok(()));
+            assert_eq!(sink.credit(), 1);
+            assert_eq!(shared.pkt_ack(ack(3)), Ok(()));
+            assert_eq!(sink.credit(), 2);
+            sink.close();
+            assert_eq!(*calls.borrow(), [(2, false), (3, false), (1, true)]);
         }
     }
 }
