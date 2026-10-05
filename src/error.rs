@@ -644,4 +644,74 @@ mod tests {
             MqttClientError::Protocol(MqttProtocolError::Encode(EncodeError::UnexpectedPayload))
         ));
     }
+
+    #[test]
+    fn test_all_spec_violations() {
+        use DisconnectReasonCode as R;
+        use SpecViolation as S;
+
+        for (spec, reason) in [
+            (S::PacketId_2_2_1_3_Pub, R::ProtocolError),
+            (S::PacketId_2_2_1_3_Sub, R::ProtocolError),
+            (S::PacketId_2_2_1_3_Unsub, R::ProtocolError),
+            (S::Connect_3_1_2_26, R::TopicAliasInvalid),
+            (S::Connack_3_2_2_11, R::QosNotSupported),
+            (S::Connack_3_2_2_14, R::RetainNotSupported),
+            (S::Connack_3_2_2_17, R::TopicAliasInvalid),
+            (
+                S::Connack_3_2_2_3_12,
+                R::SubscriptionIdentifiersNotSupported,
+            ),
+            (S::Pub_3_3_2_2, R::ProtocolError),
+            (S::Pub_3_3_2_14, R::ProtocolError),
+            (S::Pub_3_3_4_6, R::ProtocolError),
+            (S::Pub_3_3_4_7, R::ReceiveMaximumExceeded),
+            (S::Pub_3_3_4_9, R::ReceiveMaximumExceeded),
+            (S::Subs_4_7_1, R::ProtocolError),
+            (S::Subs_4_8_2, R::ProtocolError),
+            (S::Subs_3_8_3_4, R::ProtocolError),
+            (S::Will_4_7_3_1, R::ProtocolError),
+            (S::Will_4_7_0_1, R::ProtocolError),
+            (S::Will_3_3_2_14, R::ProtocolError),
+            (S::Disconnect_3_14_2_21, R::ProtocolError),
+            (S::Disconnect_3_14_2_22, R::ProtocolError),
+        ] {
+            let MqttProtocolError::ProtocolViolation(err) = MqttProtocolError::spec(spec) else {
+                unreachable!()
+            };
+            assert_eq!(err.reason(), reason, "{spec:?}");
+            assert!(err.message().starts_with("[MQTT-"), "{spec:?}");
+            assert_eq!(err.to_string(), err.message(), "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn test_mqtt_error_from_either_io() {
+        let err: MqttError<()> =
+            Either::<io::Error, io::Error>::Right(io::Error::other("io")).into();
+        assert!(matches!(
+            err,
+            MqttError::Connect(MqttConnectError::Disconnected(Some(_)))
+        ));
+    }
+
+    #[test]
+    fn test_client_error_clone() {
+        let errs: [MqttClientError<u8>; 5] = [
+            MqttClientError::Ack(1),
+            MqttClientError::Protocol(MqttProtocolError::KeepAliveTimeout),
+            MqttClientError::ConnectTimeout,
+            MqttClientError::Disconnected(Some(io::Error::other("io"))),
+            MqttClientError::Connect(ntex_net::connect::ConnectError::Unresolved),
+        ];
+        for err in &errs {
+            let cloned = err.clone();
+            assert_eq!(std::mem::discriminant(err), std::mem::discriminant(&cloned));
+        }
+        assert!(matches!(errs[0].clone(), MqttClientError::Ack(1)));
+        assert!(matches!(
+            errs[3].clone(),
+            MqttClientError::Disconnected(None)
+        ));
+    }
 }

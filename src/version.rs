@@ -113,5 +113,27 @@ mod tests {
 
         let mut buf = BytesMut::from(b"\x10\x98\x02\0\x04MQTT".as_ref());
         assert_eq!(None, VersionCodec.decode(&mut buf).unwrap());
+
+        // not a CONNECT packet
+        let mut buf = BytesMut::from(b"\x20\x02\0\0".as_ref());
+        assert_eq!(
+            Err(DecodeError::UnsupportedPacketType),
+            VersionCodec.decode(&mut buf)
+        );
+
+        // incomplete remaining length
+        let mut buf = BytesMut::from(b"\x10\x98".as_ref());
+        assert_eq!(None, VersionCodec.decode(&mut buf).unwrap());
+        let mut buf = BytesMut::from(b"\x10".as_ref());
+        assert_eq!(None, VersionCodec.decode(&mut buf).unwrap());
+    }
+
+    #[test]
+    fn test_encode() {
+        let mut buf = BytePages::default();
+        assert_eq!(
+            VersionCodec.encode(ProtocolVersion::MQTT5, &mut buf),
+            Err(EncodeError::UnsupportedVersion)
+        );
     }
 }

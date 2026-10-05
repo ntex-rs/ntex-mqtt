@@ -211,4 +211,111 @@ mod tests {
         ));
         assert_eq!(client.read_any(), b"\x20\x02\x00\x01".as_ref());
     }
+
+    const V3_CONNECT: &[u8] = b"\x10\x0c\x00\x04MQTT\x04\x02\x00\x3C\x00\x00";
+    const V5_CONNECT: &[u8] = b"\x10\x0d\x00\x04MQTT\x05\x02\x00\x3C\x00\x00\x00";
+
+    type DefaultSrv = MqttServer<(), ((), IoBoxed), DefaultProtoSrv<()>, DefaultProtoSrv<()>, ()>;
+
+    fn setup(timeout: Millis) -> (IoTest, IoBoxed, Pipeline<((), IoBoxed), (), MqttError<()>>) {
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let mut cfg = MqttServiceConfig::new();
+        cfg.protocol_version_timeout = timeout;
+        let io = IoBoxed::from(Io::new(server, SharedCfg::new("test").add(cfg)));
+        (client, io, Pipeline::new((), DefaultSrv::new()))
+    }
+
+    fn assert_not_supported(res: Result<(), MqttError<()>>, ver: &str) {
+        match res {
+            Err(MqttError::Connect(MqttConnectError::Disconnected(Some(err)))) => {
+                assert_eq!(err.to_string(), format!("Protocol is not supported: {ver}"));
+            }
+            res => panic!("unexpected {res:?}"),
+        }
+    }
+
+    #[ntex::test]
+    async fn test_default_proto_buffered() {
+        let (client, io, srv) = setup(Millis(5_000));
+        client.write(V3_CONNECT);
+        sleep(Millis(50)).await;
+        assert_not_supported(srv.call(((), io)).await, "MQTT3");
+        assert!(
+            format!("{:?}", DefaultProtoSrv::<()>::new(ProtocolVersion::MQTT5)).contains("MQTT5")
+        );
+    }
+
+    #[ntex::test]
+    async fn test_default_proto_delayed() {
+        for (pkt, ver) in [(V3_CONNECT, "MQTT3"), (V5_CONNECT, "MQTT5")] {
+            let (client, io, srv) = setup(Millis(5_000));
+            let fut = srv.call(((), io));
+            ntex::rt::spawn(async move {
+                sleep(Millis(50)).await;
+                client.write(&pkt[..4]);
+                sleep(Millis(50)).await;
+                client.write(&pkt[4..]);
+            });
+            assert_not_supported(fut.await, ver);
+        }
+    }
+
+    #[ntex::test]
+    async fn test_version_timeout() {
+        let (_client, io, srv) = setup(Millis(100));
+        let res = srv.call(((), io)).await;
+        assert!(matches!(
+            res,
+            Err(MqttError::Connect(MqttConnectError::Timeout))
+        ));
+    }
+
+    #[ntex::test]
+    async fn test_version_peer_gone() {
+        let (client, io, srv) = setup(Millis(5_000));
+        let fut = srv.call(((), io));
+        ntex::rt::spawn(async move {
+            sleep(Millis(50)).await;
+            client.close().await;
+        });
+        assert!(matches!(
+            fut.await,
+            Err(MqttError::Connect(MqttConnectError::Disconnected(None)))
+        ));
+    }
+
+    #[ntex::test]
+    async fn test_version_partial_eof() {
+        let (client, io, srv) = setup(Millis(5_000));
+        let fut = srv.call(((), io));
+        ntex::rt::spawn(async move {
+            sleep(Millis(50)).await;
+            client.write(&V3_CONNECT[..4]);
+            sleep(Millis(50)).await;
+            client.close().await;
+        });
+        match fut.await {
+            Err(MqttError::Connect(MqttConnectError::Disconnected(Some(err)))) => {
+                assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+            }
+            res => panic!("unexpected {res:?}"),
+        }
+    }
+
+    #[ntex::test]
+    async fn test_version_delayed_decode_error() {
+        let (client, io, srv) = setup(Millis(5_000));
+        let fut = srv.call(((), io));
+        let client2 = client.clone();
+        ntex::rt::spawn(async move {
+            sleep(Millis(50)).await;
+            client2.write(b"\x10\x0c\x00\x04MQTT\x06\x02\x00\x3C\x00\x00");
+        });
+        assert!(matches!(
+            fut.await,
+            Err(MqttError::Connect(MqttConnectError::Protocol(_)))
+        ));
+        assert_eq!(client.read_any(), b"\x20\x02\x00\x01".as_ref());
+    }
 }

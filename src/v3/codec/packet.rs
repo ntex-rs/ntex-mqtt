@@ -240,5 +240,52 @@ mod tests {
             ConnectAckReason::NotAuthorized.reason(),
             "Connection Refused, not authorized"
         );
+        assert_eq!(ConnectAckReason::Reserved.reason(), "Connection Refused");
+    }
+
+    #[test]
+    fn test_packet_type() {
+        let packet_id = NonZeroU16::new(1).unwrap();
+        for (pkt, ty) in [
+            (Connect::default().into(), packet_type::CONNECT),
+            (
+                Packet::ConnectAck(ConnectAck {
+                    return_code: ConnectAckReason::ConnectionAccepted,
+                    session_present: false,
+                }),
+                packet_type::CONNACK,
+            ),
+            (Packet::PublishAck { packet_id }, packet_type::PUBACK),
+            (Packet::PublishReceived { packet_id }, packet_type::PUBREC),
+            (Packet::PublishRelease { packet_id }, packet_type::PUBREL),
+            (Packet::PublishComplete { packet_id }, packet_type::PUBCOMP),
+            (
+                Packet::Subscribe {
+                    packet_id,
+                    topic_filters: Vec::new(),
+                },
+                packet_type::SUBSCRIBE,
+            ),
+            (
+                Packet::SubscribeAck {
+                    packet_id,
+                    status: Vec::new(),
+                },
+                packet_type::SUBACK,
+            ),
+            (
+                Packet::Unsubscribe {
+                    packet_id,
+                    topic_filters: Vec::new(),
+                },
+                packet_type::UNSUBSCRIBE,
+            ),
+            (Packet::UnsubscribeAck { packet_id }, packet_type::UNSUBACK),
+            (Packet::PingRequest, packet_type::PINGREQ),
+            (Packet::PingResponse, packet_type::PINGRESP),
+            (Packet::Disconnect, packet_type::DISCONNECT),
+        ] {
+            assert_eq!(pkt.packet_type(), ty, "{pkt:?}");
+        }
     }
 }
