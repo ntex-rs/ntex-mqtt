@@ -7,7 +7,7 @@ use ntex_io::IoRef;
 use ntex_util::{HashMap, HashSet, channel::pool};
 
 use crate::error::{DecodeError, EncodeError, MqttProtocolError, PayloadError, SendPacketError};
-use crate::io::{FrameState, QueueLimit, STREAM_TAG};
+use crate::io::{FrameState, STREAM_TAG};
 use crate::v3::codec::{self, Encoded, Publish};
 use crate::{QoS, payload::PlSender, types::packet_type};
 
@@ -660,27 +660,6 @@ impl FrameState for MqttShared {
                     | codec::Packet::PublishRelease { .. }
             ),
             codec::Decoded::PayloadChunk(..) => false,
-        }
-    }
-
-    #[inline]
-    fn queue_limit(&self, item: &codec::Decoded) -> QueueLimit {
-        match item {
-            // publish handlers can wait for acks of outgoing packets, acks and
-            // pings are dispatched while publishes wait for the response queue.
-            // PUBREL follows the PUBREC of an already handled publish [MQTT-4.3.3-1]
-            codec::Decoded::Packet(
-                codec::Packet::PublishAck { .. }
-                | codec::Packet::PublishReceived { .. }
-                | codec::Packet::PublishRelease { .. }
-                | codec::Packet::PublishComplete { .. }
-                | codec::Packet::SubscribeAck { .. }
-                | codec::Packet::UnsubscribeAck { .. }
-                | codec::Packet::PingRequest
-                | codec::Packet::PingResponse,
-                _,
-            ) => QueueLimit::Bypass,
-            _ => QueueLimit::Hold,
         }
     }
 }

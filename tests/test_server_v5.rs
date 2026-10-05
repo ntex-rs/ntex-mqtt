@@ -3287,230 +3287,10 @@ async fn test_streaming_waiter_peer_gone() {
     assert_eq!(res, Some(error::SendPacketError::Disconnected));
 }
 
-/// Publish handlers wait for acks of their own publishes, the acks are read
-/// while the publishes fill the response queue, `max_queue` is 64 by default.
-/// A packet beyond the limit is held back and pauses reading.
+/// The payload of a streaming publish is read while the publish fills the
+/// response queue
 #[ntex::test]
-async fn test_max_queue_acks() {
-    const COUNT: usize = 64;
-
-    let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let done2 = done.clone();
-    let srv = server::TestServerBuilder::new(async move || {
-        let done = done2.clone();
-        MqttServer::new(async move |ses: &Session<St>| {
-            let sink = ses.sink().clone();
-            let done = done.clone();
-            Ok::<_, Infallible>(fn_service(async move |p: Publish| {
-                sink.publish("echo")
-                    .send_at_least_once(Bytes::new())
-                    .await
-                    .map_err(|_| TestError)?;
-                done.fetch_add(1, Relaxed);
-                Ok::<_, TestError>(p.ack())
-            }))
-        })
-        .build(connect)
-    })
-    .start();
-
-    let io = srv.connect().await.unwrap();
-    let codec = codec::Codec::new();
-    io.send(
-        Encoded::Packet(codec::Connect::default().client_id("user").into()),
-        &codec,
-    )
-    .await
-    .unwrap();
-    let _ = io.recv(&codec).await.unwrap().unwrap();
-
-    // at most once publishes are not limited by receive maximum
-    for _ in 0..COUNT {
-        let pkt = codec::Publish {
-            qos: QoS::AtMostOnce,
-            packet_id: None,
-            ..pkt_publish()
-        };
-        io.encode(Encoded::Publish(pkt, None), &codec).unwrap();
-    }
-    io.flush(true).await.unwrap();
-
-    let acked = ntex::time::timeout(Seconds(10), async {
-        let mut acked = 0;
-        while acked < COUNT {
-            match io.recv(&codec).await.unwrap().unwrap() {
-                Decoded::Publish(pkt, ..) => {
-                    let ack = codec::PublishAck {
-                        packet_id: pkt.packet_id.unwrap(),
-                        ..Default::default()
-                    };
-                    io.send(Encoded::Packet(Packet::PublishAck(ack)), &codec)
-                        .await
-                        .unwrap();
-                    acked += 1;
-                }
-                pkt => panic!("unexpected packet {pkt:?}"),
-            }
-        }
-        acked
-    })
-    .await;
-    assert_eq!(acked, Ok(COUNT));
-
-    for _ in 0..100 {
-        if done.load(Relaxed) == COUNT {
-            break;
-        }
-        sleep(Millis(10)).await;
-    }
-    assert_eq!(done.load(Relaxed), COUNT);
-}
-
-/// Client publish handlers wait for acks of their own publishes, the acks are
-/// read while the publishes fill the response queue, `max_queue` is 64 by
-/// default
-#[ntex::test]
-async fn test_client_max_queue_acks() {
-    const COUNT: usize = 64;
-
-    let srv = server::TestServerBuilder::new(async move || {
-        MqttServer::new(async move |ses: &Session<St>| {
-            let sink = ses.sink().clone();
-            ntex::rt::spawn(async move {
-                sleep(Millis(50)).await;
-                for _ in 0..COUNT {
-                    sink.publish("test")
-                        .send_at_most_once(Bytes::new())
-                        .await
-                        .unwrap();
-                }
-            });
-            Ok::<_, Infallible>(fn_service(async move |p: Publish| {
-                Ok::<_, TestError>(p.ack())
-            }))
-        })
-        .build(connect)
-    })
-    .start();
-
-    let client = Pipeline::new(SharedCfg::default(), client::MqttConnector::new())
-        .call(client::Connect::new(srv.addr()).client_id("user"))
-        .await
-        .unwrap();
-    let sink = client.sink();
-    let done = Rc::new(std::cell::Cell::new(0));
-    let done2 = done.clone();
-    ntex::rt::spawn(
-        client.start(fn_service(move |msg: client::ProtocolMessage| {
-            let sink = sink.clone();
-            let done = done2.clone();
-            async move {
-                Ok::<_, ()>(match msg {
-                    client::ProtocolMessage::Publish(p) => {
-                        sink.publish("echo")
-                            .send_at_least_once(Bytes::new())
-                            .await
-                            .map_err(|_| ())?;
-                        done.set(done.get() + 1);
-                        p.ack(codec::PublishAckReason::Success)
-                    }
-                    msg => msg.ack(),
-                })
-            }
-        })),
-    );
-
-    for _ in 0..500 {
-        if done.get() == COUNT {
-            break;
-        }
-        sleep(Millis(10)).await;
-    }
-    assert_eq!(done.get(), COUNT);
-}
-
-fn publish_pkt(topic: &'static str, qos: QoS, id: u16) -> Encoded {
-    Encoded::Publish(
-        codec::Publish {
-            qos,
-            topic: ByteString::from_static(topic),
-            packet_id: NonZeroU16::new(id),
-            ..pkt_publish()
-        },
-        None,
-    )
-}
-
-/// `QoS 1` publishes bounded by Receive Maximum are handled while the
-/// response queue is full, other packets are held back
-#[ntex::test]
-async fn test_max_queue_bounded_publish() {
-    let release = Arc::new(AtomicBool::new(false));
-    let handled = Arc::new(Mutex::new(Vec::new()));
-    let (release2, handled2) = (release.clone(), handled.clone());
-    let srv = server::TestServerBuilder::new(async move || {
-        let (release, handled) = (release2.clone(), handled2.clone());
-        MqttServer::new(async move |_: &Session<St>| {
-            let (release, handled) = (release.clone(), handled.clone());
-            Ok::<_, Infallible>(fn_service(async move |p: Publish| {
-                let topic = p.topic().path().to_string();
-                handled.lock().unwrap().push(topic.clone());
-                while topic == "block" && !release.load(Relaxed) {
-                    sleep(Millis(10)).await;
-                }
-                Ok::<_, TestError>(p.ack())
-            }))
-        })
-        .build(connect)
-    })
-    .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_queue(2)))
-    .start();
-
-    let io = srv.connect().await.unwrap();
-    let codec = codec::Codec::new();
-    io.send(
-        Encoded::Packet(codec::Connect::default().client_id("user").into()),
-        &codec,
-    )
-    .await
-    .unwrap();
-    let _ = io.recv(&codec).await.unwrap().unwrap();
-
-    // the blocked publishes fill the queue
-    io.encode(publish_pkt("block", QoS::AtLeastOnce, 1), &codec)
-        .unwrap();
-    io.encode(publish_pkt("block", QoS::AtLeastOnce, 2), &codec)
-        .unwrap();
-    io.encode(publish_pkt("qos1", QoS::AtLeastOnce, 3), &codec)
-        .unwrap();
-    io.encode(publish_pkt("qos0", QoS::AtMostOnce, 0), &codec)
-        .unwrap();
-    io.encode(publish_pkt("qos1-2", QoS::AtLeastOnce, 4), &codec)
-        .unwrap();
-    io.flush(true).await.unwrap();
-    sleep(Millis(200)).await;
-    // the publish after the held one is held back too
-    assert_eq!(&handled.lock().unwrap()[..], ["block", "block", "qos1"]);
-
-    release.store(true, Relaxed);
-    for id in 1..=4 {
-        match io.recv(&codec).await.unwrap().unwrap() {
-            Decoded::Packet(Packet::PublishAck(ack), _) => {
-                assert_eq!(ack.packet_id.get(), id);
-            }
-            pkt => panic!("unexpected packet {pkt:?}"),
-        }
-    }
-    assert_eq!(
-        &handled.lock().unwrap()[..],
-        ["block", "block", "qos1", "qos0", "qos1-2"]
-    );
-}
-
-/// A held streaming publish gets its payload once it is dispatched, the
-/// payload is read while the publish fills the response queue
-#[ntex::test]
-async fn test_held_streaming_publish() {
+async fn test_streaming_publish_full_queue() {
     const SIZE: usize = 64 * 1024;
 
     let received = Arc::new(AtomicBool::new(false));
@@ -3518,9 +3298,7 @@ async fn test_held_streaming_publish() {
     let srv = server::TestServerBuilder::new(async move || {
         let received = received2.clone();
         MqttServer::new(async move |p: Publish| {
-            if p.payload_size() == 1 {
-                sleep(Millis(200)).await;
-            } else if p.read_all().await.map_err(|_| TestError)?.len() == SIZE {
+            if p.payload_size() != 1 && p.read_all().await.map_err(|_| TestError)?.len() == SIZE {
                 received.store(true, Relaxed);
             }
             Ok::<_, TestError>(p.ack())
@@ -3545,21 +3323,8 @@ async fn test_held_streaming_publish() {
     .unwrap();
     io.recv(&codec).await.unwrap();
 
-    io.encode(
-        Encoded::Publish(
-            codec::Publish {
-                payload_size: 1,
-                ..pkt_publish()
-            },
-            Some(Bytes::from_static(b"1")),
-        ),
-        &codec,
-    )
-    .unwrap();
-
-    // at most once publishes are held while the queue is full, Receive
-    // Maximum bounds the others. The pending publish fills the queue, the
-    // rest of its payload arrives after it is dispatched
+    // the pending at most once publish fills the queue, the rest of its
+    // payload arrives after it is dispatched
     let mut buf = BytePages::default();
     let p = Encoded::Publish(
         codec::Publish {
@@ -3575,8 +3340,19 @@ async fn test_held_streaming_publish() {
     io.encode_slice(&buf[..1024]).unwrap();
     buf.advance_to(1024);
     io.flush(true).await.unwrap();
-    sleep(Millis(400)).await;
+    sleep(Millis(100)).await;
     io.encode_slice(&buf).unwrap();
+    io.encode(
+        Encoded::Publish(
+            codec::Publish {
+                payload_size: 1,
+                ..pkt_publish()
+            },
+            Some(Bytes::from_static(b"1")),
+        ),
+        &codec,
+    )
+    .unwrap();
 
     let res = ntex::time::timeout(Seconds(5), io.recv(&codec)).await;
     assert!(
@@ -3653,7 +3429,7 @@ async fn test_streaming_publish_chunk_slots() {
     sleep(Millis(100)).await;
     io.encode_slice(&buf).unwrap();
 
-    // at most once publishes are held while the queue is full
+    // the at most once publish is read, the queue is not full
     io.encode(
         Encoded::Publish(
             codec::Publish {
@@ -3683,81 +3459,6 @@ async fn test_streaming_publish_chunk_slots() {
         matches!(res, Ok(Ok(Some(Decoded::Packet(Packet::PublishAck(_), _))))),
         "{res:?}"
     );
-}
-
-/// The client handles `QoS 1` publishes bounded by its Receive Maximum while
-/// the response queue is full
-#[ntex::test]
-async fn test_client_max_queue_bounded_publish() {
-    let srv = server::TestServerBuilder::new(async move || {
-        MqttServer::new(async move |ses: &Session<St>| {
-            let sink = ses.sink().clone();
-            ntex::rt::spawn(async move {
-                sleep(Millis(50)).await;
-                for topic in ["block", "qos1"] {
-                    let fut = sink.publish(topic).send_at_least_once(Bytes::new());
-                    ntex::rt::spawn(async move {
-                        let _ = fut.await;
-                    });
-                }
-            });
-            Ok::<_, Infallible>(fn_service(async move |p: Publish| {
-                Ok::<_, TestError>(p.ack())
-            }))
-        })
-        .build(connect)
-    })
-    .start();
-
-    let client = Pipeline::new(
-        SharedCfg::new("CLIENT")
-            .add(MqttServiceConfig::new().set_max_queue(1))
-            .build(),
-        client::MqttConnector::new(),
-    )
-    .call(
-        client::Connect::new(srv.addr())
-            .client_id("user")
-            .max_receive(4),
-    )
-    .await
-    .unwrap();
-
-    let release = Rc::new(std::cell::Cell::new(false));
-    let handled = Rc::new(RefCell::new(Vec::new()));
-    let acked = Rc::new(std::cell::Cell::new(0));
-    let (release2, handled2, acked2) = (release.clone(), handled.clone(), acked.clone());
-    ntex::rt::spawn(
-        client.start(fn_service(move |msg: client::ProtocolMessage| {
-            let (release, handled, acked) = (release2.clone(), handled2.clone(), acked2.clone());
-            async move {
-                Ok::<_, ()>(match msg {
-                    client::ProtocolMessage::Publish(p) => {
-                        let topic = p.packet().topic.to_string();
-                        handled.borrow_mut().push(topic.clone());
-                        while topic == "block" && !release.get() {
-                            sleep(Millis(10)).await;
-                        }
-                        acked.set(acked.get() + 1);
-                        p.ack(codec::PublishAckReason::Success)
-                    }
-                    msg => msg.ack(),
-                })
-            }
-        })),
-    );
-
-    sleep(Millis(300)).await;
-    assert_eq!(&handled.borrow()[..], ["block", "qos1"]);
-
-    release.set(true);
-    for _ in 0..100 {
-        if acked.get() == 2 {
-            break;
-        }
-        sleep(Millis(10)).await;
-    }
-    assert_eq!(acked.get(), 2);
 }
 
 #[ntex::test]

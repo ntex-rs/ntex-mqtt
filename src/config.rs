@@ -24,10 +24,9 @@ use crate::types::QoS;
 ///   packet.
 ///
 /// No read timer runs while reading is paused, because the service is not
-/// ready or the response queue is full and a packet is held back (see
-/// [`set_max_queue`]). The frame read budget restarts when reading resumes.
-/// During write backpressure only the write timeout
-/// (`IoConfig::set_write_timeout()`) applies.
+/// ready or the response queue is full (see [`set_max_queue`]). The frame read
+/// budget restarts when reading resumes. During write backpressure only the
+/// write timeout (`IoConfig::set_write_timeout()`) applies.
 ///
 /// [`set_max_queue`]: MqttServiceConfig::set_max_queue
 /// [`v3::ConnectAck::idle_timeout()`]: crate::v3::ConnectAck::idle_timeout
@@ -195,24 +194,17 @@ impl MqttServiceConfig {
     /// at most once publishes have no response, these are not queued but
     /// pending ones count towards the limit.
     ///
-    /// When the queue reaches this limit, the dispatcher keeps reading packets
-    /// and handles acks and pings, so that publish handlers waiting for acks
-    /// of their own publishes can complete. Reading pauses at the first other
-    /// packet, it is held back until the queue has room. In v5 `QoS 1` and
-    /// `QoS 2` publishes are handled while nothing is held back, Receive
-    /// Maximum bounds them ([`set_max_receive`] for the server,
-    /// [`v5::client::Connect::max_receive`] for the client), the queue grows up
-    /// to `max_queue` plus Receive Maximum responses. `0` disables the limit.
+    /// When the queue reaches this limit, the dispatcher stops reading new
+    /// packets until queued responses are sent, only the rest of a partially
+    /// read packet, such as the payload of a streaming publish, is read.
+    /// `0` disables the limit.
     ///
-    /// Acks read after a held back packet wait for it. If the pending calls
-    /// await these acks, the queue never gets room and the connection stalls,
-    /// no read timer runs while reading is paused. Set the limit above the
-    /// number of handlers that can await acks at the same time.
+    /// Acks of outgoing packets are not read while reading is paused. If the
+    /// pending calls await these acks, the queue never gets room and the
+    /// connection stalls, no read timer runs while reading is paused. Set the
+    /// limit above the number of handlers that can await acks at the same time.
     ///
     /// By default the limit is set to 64 responses.
-    ///
-    /// [`set_max_receive`]: Self::set_max_receive
-    /// [`v5::client::Connect::max_receive`]: crate::v5::client::Connect::max_receive
     pub fn set_max_queue(mut self, val: usize) -> Self {
         self.max_queue = val;
         self

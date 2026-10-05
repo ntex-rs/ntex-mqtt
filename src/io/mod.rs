@@ -6,11 +6,8 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin:
 
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Decoded, IoBoxed, IoRef, IoStatusUpdate, RecvError};
-use ntex_service::{
-    cfg::Configuration,
-    pipeline::{Pipeline, PipelineCall},
-};
-use ntex_util::{future::Either, future::select, spawn, task::LocalWaker, time::Seconds};
+use ntex_service::{cfg::Configuration, pipeline::Pipeline, pipeline::PipelineCall};
+use ntex_util::{future::Either, future::select, spawn, time::Seconds};
 
 use self::timer::{Timer, Timers};
 use crate::config::MqttServiceConfig;
@@ -54,33 +51,6 @@ pub trait FrameState: Decoder {
     fn is_ordered(&self, _: &<Self as Decoder>::Item) -> bool {
         true
     }
-
-    /// Returns how the item is dispatched while the response queue is full.
-    ///
-    /// Held back items are kept in read order, reading pauses while an item
-    /// is held back.
-    fn queue_limit(&self, _: &<Self as Decoder>::Item) -> QueueLimit {
-        QueueLimit::Hold
-    }
-
-    /// Extra response queue slots for [`QueueLimit::Bounded`] items, the
-    /// flow control limit of the peer.
-    fn bounded_slots(&self) -> usize {
-        0
-    }
-}
-
-/// Dispatch of an item while the response queue is full.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum QueueLimit {
-    /// Held back in read order until the queue has room.
-    Hold,
-    /// Dispatched, such as an ack that pending calls may wait for.
-    Bypass,
-    /// Dispatched unless earlier items are held back, up to `max_queue` plus
-    /// [`FrameState::bounded_slots()`] queued responses. For items the peer's
-    /// flow control bounds, such as v5 `QoS 1` and `QoS 2` publishes.
-    Bounded,
 }
 
 impl<T: FrameState> FrameState for Rc<T> {
@@ -92,16 +62,6 @@ impl<T: FrameState> FrameState for Rc<T> {
     #[inline]
     fn is_ordered(&self, item: &T::Item) -> bool {
         (**self).is_ordered(item)
-    }
-
-    #[inline]
-    fn queue_limit(&self, item: &T::Item) -> QueueLimit {
-        (**self).queue_limit(item)
-    }
-
-    #[inline]
-    fn bounded_slots(&self) -> usize {
-        (**self).bounded_slots()
     }
 }
 
@@ -148,11 +108,6 @@ where
     flags: Flags,
     /// Pending `Control::wr` call, messages are delivered one at a time
     wr_call: Option<ControlCall<Codec, E, Err>>,
-    /// Limited items read while the response queue is full, in read order
-    held: VecDeque<Request<Codec>>,
-    /// Hold decision of the frame whose remaining parts are not read yet,
-    /// the parts of a frame follow its first item
-    frame_hold: Option<bool>,
 }
 
 struct DispatcherState<Codec, E>
@@ -166,7 +121,6 @@ where
     base: Cell<usize>,
     /// Service results in request order, `None` is a pending call
     queue: RefCell<VecDeque<Option<ServiceResult<Codec, E>>>>,
-    waker: LocalWaker,
     /// Pending call polled by the dispatcher, other pending calls are spawned
     response: Cell<Option<ServiceCall<Codec, E>>>,
     /// Queue index of the polled call, `None` for an unordered call
@@ -210,7 +164,6 @@ where
             error: Cell::new(None),
             base: Cell::new(0),
             queue: RefCell::new(VecDeque::new()),
-            waker: LocalWaker::default(),
             response: Cell::new(None),
             response_idx: Cell::new(None),
             unordered: Cell::new(0),
@@ -229,8 +182,6 @@ where
                 keepalive_timeout,
                 flags: Flags::empty(),
                 wr_call: None,
-                held: VecDeque::new(),
-                frame_hold: None,
                 st: IoDispatcherState::Processing,
             },
         }
@@ -353,7 +304,6 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let inner = self.as_mut().project().inner;
-        inner.state.waker.register(cx.waker());
 
         // handle service response future
         if let Some(mut fut) = inner.state.response.take() {
@@ -387,7 +337,7 @@ where
                         Ok(decoded) => {
                             inner.update_timer(&decoded);
                             if let Some(el) = decoded.item {
-                                inner.dispatch(cx, el);
+                                inner.call_service(cx, el);
                             } else {
                                 return Poll::Pending;
                             }
@@ -555,41 +505,6 @@ where
         }
     }
 
-    /// Calls the service, limited items are held back while the response
-    /// queue is full.
-    ///
-    /// Pending calls can wait for acks of outgoing packets, reading continues
-    /// while the queue is full so that acks are still dispatched, until an
-    /// item is held back. Held items are dispatched before new items are
-    /// read, so items are held back only while the queue is full.
-    fn dispatch(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
-        let hold = if let Some(hold) = self.frame_hold {
-            hold
-        } else {
-            let len = self.state.queue.borrow().len();
-            let full = self.state.is_full(len);
-            match self.codec.queue_limit(&item) {
-                QueueLimit::Hold => full,
-                QueueLimit::Bypass => false,
-                // not reordered ahead of held items, the extra slots bound
-                // items the peer's flow control does not count, such as
-                // re-delivered publishes
-                QueueLimit::Bounded => {
-                    full && (!self.held.is_empty()
-                        || len + self.state.unordered.get()
-                            >= self.state.max_queue + self.codec.bounded_slots())
-                }
-            }
-        };
-        self.frame_hold = self.codec.is_partial().then_some(hold);
-
-        if hold {
-            self.held.push_back(item);
-        } else {
-            self.call_service(cx, item);
-        }
-    }
-
     fn call_service(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
         let ordered = self.codec.is_ordered(&item);
         let mut fut = self.service.call_nowait(item);
@@ -662,32 +577,20 @@ where
         }
 
         // check readiness, pause reading while the service or the control
-        // service is not ready, or the response queue is full and an item
-        // is held back
-        let full = self.state.is_full(self.state.queue.borrow().len());
-        let ready = if full && !self.held.is_empty() {
-            Poll::Pending
-        } else {
-            match self.service.poll_ready(cx) {
-                Poll::Ready(Ok(())) if control.is_pending() => Poll::Pending,
-                ready => ready,
-            }
-        };
-        let msg = match ready {
-            Poll::Ready(Ok(())) => {
-                // held items are dispatched before new items are read
-                if !full && let Some(item) = self.held.pop_front() {
-                    // the unread parts of the frame follow the dispatched
-                    // item, such as the payload of a streaming publish
-                    // that the publish handler waits for
-                    if self.frame_hold.is_some() {
-                        self.frame_hold = Some(false);
-                    }
-                    self.call_service(cx, item);
-                    return Poll::Ready(PollService::Continue);
+        // service is not ready, or the response queue is full. The rest of
+        // a partially read frame is read while the queue is full, such as
+        // the payload of a streaming publish that its handler waits for
+        let ready =
+            if !self.codec.is_partial() && self.state.is_full(self.state.queue.borrow().len()) {
+                Poll::Pending
+            } else {
+                match self.service.poll_ready(cx) {
+                    Poll::Ready(Ok(())) if control.is_pending() => Poll::Pending,
+                    ready => ready,
                 }
-                return Poll::Ready(PollService::Ready);
-            }
+            };
+        let msg = match ready {
+            Poll::Ready(Ok(())) => return Poll::Ready(PollService::Ready),
             Poll::Pending => match ready!(self.poll_read_pause(cx)) {
                 Some(msg) => msg,
                 None => return Poll::Ready(PollService::Continue),
@@ -725,12 +628,8 @@ where
             Poll::Ready(status) => status,
             // clean read eof does not close the connection, but a peer that
             // stopped sending cannot make progress while service is not ready,
-            // unless read or held back items are waiting
-            Poll::Pending
-                if self.io.is_read_eof()
-                    && self.held.is_empty()
-                    && self.io.with_read_dst(|b| b.is_empty()) =>
-            {
+            // unless read items are waiting
+            Poll::Pending if self.io.is_read_eof() && self.io.with_read_dst(|b| b.is_empty()) => {
                 IoStatusUpdate::PeerGone(None)
             }
             Poll::Pending => return Poll::Pending,
@@ -1766,15 +1665,6 @@ mod tests {
         fn is_partial(&self) -> bool {
             self.0.get()
         }
-
-        // a frame that starts with `P` is dispatched while the queue is full
-        fn queue_limit(&self, item: &Bytes) -> QueueLimit {
-            if item == "P" || item == "k" {
-                QueueLimit::Bypass
-            } else {
-                QueueLimit::Hold
-            }
-        }
     }
 
     impl Decoder for ChunkCodec {
@@ -2247,20 +2137,6 @@ mod tests {
     impl FrameState for ByteCodec {
         fn is_ordered(&self, item: &Bytes) -> bool {
             item != "q"
-        }
-
-        // "k" is an ack, it is dispatched while the queue is full, "p" is
-        // bounded by 2 extra slots
-        fn queue_limit(&self, item: &Bytes) -> QueueLimit {
-            match &item[..] {
-                b"k" => QueueLimit::Bypass,
-                b"p" => QueueLimit::Bounded,
-                _ => QueueLimit::Hold,
-            }
-        }
-
-        fn bounded_slots(&self) -> usize {
-            2
         }
     }
 
@@ -2805,8 +2681,8 @@ mod tests {
         assert!(wait_until(|| calls.get() == 5).await);
     }
 
-    /// Records calls, "k" opens the gate the other calls wait for
-    fn ack_srv(
+    /// Records calls, the calls wait for the gate
+    fn gate_srv(
         calls: Rc<RefCell<Vec<Bytes>>>,
         gate: Condition,
     ) -> impl Service<(), Bytes, Res = Option<Bytes>, Error = DispatcherError<()>> {
@@ -2815,10 +2691,6 @@ mod tests {
             let gate = gate.clone();
             async move {
                 calls.borrow_mut().push(msg.clone());
-                if msg == "k" {
-                    gate.notify_and_lock(());
-                    return Ok(None);
-                }
                 let _ = gate.wait().await;
                 Ok::<_, DispatcherError<()>>(Some(msg))
             }
@@ -2832,50 +2704,12 @@ mod tests {
             .into()
     }
 
-    /// Bounded items are dispatched while nothing is held back, up to
-    /// `max_queue` plus the bounded slots
+    /// The rest of a partially read frame is read while the queue is full,
+    /// reading pauses at the next frame
     #[ntex::test]
-    async fn bounded_items() {
+    async fn frame_rest_read_while_queue_is_full() {
         // data, dispatched items
-        for (data, dispatched) in [
-            ("abppp", "abpp"),
-            ("abcp", "ab"),
-            ("abpcp", "abp"),
-            ("pp", "pp"),
-        ] {
-            let (client, server) = Io::create();
-            client.remote_buffer_cap(1024);
-
-            let calls = Rc::new(RefCell::new(Vec::new()));
-            let gate = Condition::new();
-            let (disp, _) = Dispatcher::new_debug(
-                nio::Io::new(server, max_queue_cfg(2)),
-                ByteCodec,
-                ack_srv(calls.clone(), gate.clone()),
-                ctl_srv(),
-            );
-            let _done = spawn_disp(disp);
-
-            client.write(data);
-            sleep(Millis(50)).await;
-            let called: Vec<u8> = calls.borrow().iter().flat_map(|c| c.to_vec()).collect();
-            assert_eq!(&called[..], dispatched.as_bytes(), "{data}");
-
-            // responses follow the read order
-            gate.notify_and_lock(());
-            assert_eq!(
-                read_exact(&client, data.len()).await,
-                data.as_bytes(),
-                "{data}"
-            );
-        }
-    }
-
-    /// Parts of a frame follow the hold decision of its first item
-    #[ntex::test]
-    async fn frame_parts_follow_first_item() {
-        // data, dispatched items
-        for (data, dispatched) in [("abPpc", "abPpc"), ("abpck", "ab")] {
+        for (data, dispatched) in [("apcd", "apc"), ("abpc", "ab")] {
             let (client, server) = Io::create();
             client.remote_buffer_cap(1024);
 
@@ -2884,7 +2718,7 @@ mod tests {
             let (disp, _) = Dispatcher::new_debug(
                 nio::Io::new(server, max_queue_cfg(2)),
                 ChunkCodec::default(),
-                ack_srv(calls.clone(), gate.clone()),
+                gate_srv(calls.clone(), gate.clone()),
                 ctl_srv(),
             );
             let _done = spawn_disp(disp);
@@ -2894,130 +2728,23 @@ mod tests {
             let called: Vec<u8> = calls.borrow().iter().flat_map(|c| c.to_vec()).collect();
             assert_eq!(&called[..], dispatched.as_bytes(), "{data}");
 
-            // the rest of a held frame is dispatched in order once the queue
-            // has room
+            // the rest is dispatched in order once the queue has room
             gate.notify_and_lock(());
-            assert!(wait_until(|| calls.borrow().len() == data.len()).await);
+            assert_eq!(
+                read_exact(&client, data.len()).await,
+                data.as_bytes(),
+                "{data}"
+            );
             let called: Vec<u8> = calls.borrow().iter().flat_map(|c| c.to_vec()).collect();
             assert_eq!(&called[..], data.as_bytes(), "{data}");
         }
     }
 
-    /// The rest of a held frame is dispatched while the queue is full once
-    /// its first item is dispatched, the first item waits for it
+    /// Items read before a clean read eof are dispatched once the queue has
+    /// room
     #[ntex::test]
-    async fn held_frame_rest_follows_dispatched_item() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
-
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let calls2 = calls.clone();
-        let gate = Condition::new();
-        let gate2 = gate.clone();
-        let rest = Condition::new();
-        let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, max_queue_cfg(1)),
-            ChunkCodec::default(),
-            fn_service(move |msg: Bytes| {
-                let calls = calls2.clone();
-                let gate = gate2.clone();
-                let rest = rest.clone();
-                async move {
-                    calls.borrow_mut().push(msg.clone());
-                    match &msg[..] {
-                        b"a" => {
-                            let _ = gate.wait().await;
-                        }
-                        b"p" => {
-                            let _ = rest.wait().await;
-                        }
-                        _ => {
-                            rest.notify_and_lock(());
-                            return Ok(None);
-                        }
-                    }
-                    Ok::<_, DispatcherError<()>>(Some(msg))
-                }
-            }),
-            ctl_srv(),
-        );
-        let _done = spawn_disp(disp);
-
-        // "p" is held, its rest "c" is not read
-        client.write("apc");
-        sleep(Millis(50)).await;
-        assert_eq!(&calls.borrow()[..], ["a"]);
-
-        // "p" fills the queue, "c" is dispatched
-        gate.notify_and_lock(());
-        assert_eq!(read_exact(&client, 2).await, b"ap"[..]);
-        assert_eq!(&calls.borrow()[..], ["a", "p", "c"]);
-    }
-
-    /// Acks are dispatched while the queue is full, limited items are held
-    /// back and dispatched once the queue has room
-    #[ntex::test]
-    async fn acks_dispatched_while_queue_is_full() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
-
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, max_queue_cfg(2)),
-            ByteCodec,
-            ack_srv(calls.clone(), Condition::new()),
-            ctl_srv(),
-        );
-        let _done = spawn_disp(disp);
-
-        client.write("ab");
-        sleep(Millis(50)).await;
-        assert_eq!(&calls.borrow()[..], ["a", "b"]);
-        assert!(client.read_any().is_empty());
-
-        // the ack is read while the queue is full and completes the pending
-        // calls
-        client.write("kc");
-        assert_eq!(read_exact(&client, 3).await, b"abc"[..]);
-        assert_eq!(&calls.borrow()[..], ["a", "b", "k", "c"]);
-    }
-
-    /// Reading pauses at the first held item, held items are dispatched
-    /// before the items read after them
-    #[ntex::test]
-    async fn held_item_pauses_reading() {
-        let (client, server) = Io::create();
-        client.remote_buffer_cap(1024);
-
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let gate = Condition::new();
-        let (disp, _) = Dispatcher::new_debug(
-            nio::Io::new(server, max_queue_cfg(2)),
-            ByteCodec,
-            ack_srv(calls.clone(), gate.clone()),
-            ctl_srv(),
-        );
-        let _done = spawn_disp(disp);
-
-        // "c" is held back, "d" and the ack are not read
-        client.write("abcdk");
-        sleep(Millis(50)).await;
-        assert_eq!(&calls.borrow()[..], ["a", "b"]);
-
-        gate.notify_and_lock(());
-        assert_eq!(read_exact(&client, 4).await, b"abcd"[..]);
-        assert!(wait_until(|| calls.borrow().len() == 5).await);
-        // "k" can be dispatched before "d" if the queue is full again
-        let calls = calls.borrow();
-        let pos = |item| calls.iter().position(|c| c == item).unwrap();
-        assert!(pos("c") < pos("d"));
-        assert!(pos("k") > pos("c"));
-    }
-
-    /// Held items are dispatched after a clean read eof
-    #[ntex::test]
-    async fn held_items_after_read_eof() {
-        // one or two items after the held item, eof with the data or later
+    async fn queue_full_after_read_eof() {
+        // one or two items after the full queue, eof with the data or later
         for (data, delay) in [("abc", 0), ("abcd", 0), ("abc", 20), ("abcd", 20)] {
             let (client, server) = Io::create();
             client.remote_buffer_cap(1024);
@@ -3027,7 +2754,7 @@ mod tests {
             let (disp, _) = Dispatcher::new_debug(
                 nio::Io::new(server, max_queue_cfg(2)),
                 ByteCodec,
-                ack_srv(calls.clone(), gate.clone()),
+                gate_srv(calls.clone(), gate.clone()),
                 ctl_srv(),
             );
             let done = spawn_disp(disp);
