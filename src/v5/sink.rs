@@ -1495,7 +1495,7 @@ mod tests {
         // write backpressure at two SUBSCRIBE packets
         let io = Io::new(
             server,
-            SharedCfg::new("test").add(ntex_io::IoConfig::default().set_write_buf(16)),
+            SharedCfg::new("test").add(ntex_io::IoConfig::default().set_write_backpressure(16)),
         );
         let shared = Rc::new(MqttShared::new(
             io.get_ref(),

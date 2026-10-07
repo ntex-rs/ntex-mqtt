@@ -1505,8 +1505,8 @@ mod tests {
 
         let config = SharedCfg::new("DBG").add(
             IoConfig::new()
-                .set_read_buf(8 * 1024, 1024)
-                .set_write_buf(32 * 1024),
+                .set_read_backpressure(8 * 1024)
+                .set_write_backpressure(32 * 1024),
         );
 
         let (disp, io) = Dispatcher::new_debug(
@@ -2329,7 +2329,7 @@ mod tests {
         let (disp, _io) = Dispatcher::new_debug(
             nio::Io::new(
                 server,
-                SharedCfg::new("DBG").add(IoConfig::new().set_write_buf(1024)),
+                SharedCfg::new("DBG").add(IoConfig::new().set_write_backpressure(1024)),
             ),
             ByteCodec,
             fn_service(async move |msg: Bytes| match &msg[..] {
@@ -2536,7 +2536,7 @@ mod tests {
             .add(
                 IoConfig::new()
                     .set_keepalive_timeout(Seconds::ZERO)
-                    .set_write_buf(32 * 1024)
+                    .set_write_backpressure(32 * 1024)
                     .set_write_timeout(Seconds(1)),
             )
             .into()
@@ -3104,7 +3104,8 @@ mod tests {
                 let (disp, io) = Dispatcher::new_debug(
                     nio::Io::new(
                         server,
-                        SharedCfg::new("DBG").add(IoConfig::new().set_write_buf(32 * 1024)),
+                        SharedCfg::new("DBG")
+                            .add(IoConfig::new().set_write_backpressure(32 * 1024)),
                     ),
                     ByteCodec,
                     srv,
@@ -3157,7 +3158,7 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             nio::Io::new(
                 server,
-                SharedCfg::new("DBG").add(IoConfig::new().set_write_buf(2)),
+                SharedCfg::new("DBG").add(IoConfig::new().set_write_backpressure(2)),
             ),
             BytesCodec,
             Srv(Cell::new(false), Cell::new(Some(rx))),
@@ -3237,7 +3238,7 @@ mod tests {
         let cfg = SharedCfg::new("DBG").add(
             IoConfig::new()
                 .set_keepalive_timeout(Seconds::ZERO)
-                .set_write_buf(32 * 1024)
+                .set_write_backpressure(32 * 1024)
                 .set_write_timeout(write_timeout),
         );
         let (disp, io) = Dispatcher::new_debug(

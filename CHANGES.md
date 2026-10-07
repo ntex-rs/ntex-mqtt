@@ -1,6 +1,6 @@
 # Changes
 
-## [9.1.2] - 2026-10-06
+## [9.2.0] - 2026-10-07
 
 * `InFlightService` checks readiness of the inner service once per call, the call skips
   the check if no call entered the service since its last readiness check and the call
