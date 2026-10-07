@@ -12,8 +12,8 @@ pub trait SizedRequest {
 
     /// Check if more payload chunks of a streaming publish follow this request
     ///
-    /// While chunks are pending, readiness ignores the size limit so that
-    /// the payload can reach the publish handler.
+    /// Until a limited request with pending chunks completes, readiness ignores
+    /// the size limit so that the payload can reach the publish handler.
     fn has_more_chunks(&self) -> bool;
 
     /// Check if the request takes an in-flight slot
@@ -34,7 +34,7 @@ pub trait SizedRequest {
 pub struct InFlightServiceImpl<S> {
     count: Counter,
     service: S,
-    streaming: Cell<bool>,
+    streaming: Cell<u32>,
     ready: Cell<bool>,
     entered: Cell<u32>,
 }
@@ -54,7 +54,7 @@ impl<S> InFlightServiceImpl<S> {
     pub fn new(max_cap: u16, max_size: usize, service: S) -> Self {
         InFlightServiceImpl {
             service,
-            streaming: Cell::new(false),
+            streaming: Cell::new(0),
             count: Counter::new(max_cap, max_size),
             ready: Cell::new(false),
             entered: Cell::new(0),
@@ -73,7 +73,7 @@ where
     #[inline]
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), S::Error> {
         let entered = self.entered.get();
-        let result = if self.streaming.get() || self.count.is_available() {
+        let result = if self.streaming.get() > 0 || self.count.is_available() {
             ctx.ready(&self.service).await
         } else {
             join(self.count.available(), ctx.ready(&self.service))
@@ -88,7 +88,14 @@ where
 
     #[inline]
     async fn call(&self, req: Req, ctx: Ctx<'_, Self, St>) -> Result<S::Res, S::Error> {
-        self.streaming.set(req.has_more_chunks());
+        // the publish handler checks readiness of its services after the last chunk,
+        // the pipeline readiness check must not wait for the limits held by the publish
+        let _streaming = if req.is_limited() && req.has_more_chunks() {
+            self.streaming.set(self.streaming.get() + 1);
+            Some(StreamingGuard(&self.streaming))
+        } else {
+            None
+        };
 
         // the request is received, its size counts while it waits for a slot
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
@@ -115,6 +122,14 @@ where
     }
 
     ntex_service::forward_shutdown!(St, service);
+}
+
+struct StreamingGuard<'a>(&'a Cell<u32>);
+
+impl Drop for StreamingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
 }
 
 struct Counter(Rc<CounterInner>);
@@ -591,17 +606,29 @@ mod tests {
         assert_eq!(timeout(Millis(5000), rx).await, Ok(Ok(())));
     }
 
-    /// Request with a payload, the flag indicates that payload chunks follow
+    /// Publish or payload chunk, the flag indicates that payload chunks follow
     #[derive(Clone, Copy)]
-    struct Req(bool);
+    enum Req {
+        Publish(bool),
+        Chunk(bool),
+    }
 
     impl SizedRequest for Req {
         fn size(&self) -> u32 {
-            12
+            match self {
+                Req::Publish(_) => 12,
+                Req::Chunk(_) => 0,
+            }
         }
 
         fn has_more_chunks(&self) -> bool {
-            self.0
+            match self {
+                Req::Publish(more) | Req::Chunk(more) => *more,
+            }
+        }
+
+        fn is_limited(&self) -> bool {
+            matches!(self, Req::Publish(_))
         }
     }
 
@@ -633,15 +660,17 @@ mod tests {
         );
 
         // streaming publish exceeds the size limit, chunks must still pass
-        spawn_call(&srv, Req(true)).await;
+        spawn_call(&srv, Req::Publish(true)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
-        spawn_call(&srv, Req(true)).await;
+        spawn_call(&srv, Req::Chunk(true)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
-        // the last chunk restores the limits
-        spawn_call(&srv, Req(false)).await;
-        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
+        // the publish handler checks readiness after the last chunk,
+        // the limits are bypassed until the publish completes
+        spawn_call(&srv, Req::Chunk(false)).await;
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
 
+        // completed publishes restore the limits
         gate.notify_and_lock(());
         let res = timeout(Millis(5000), srv.ready()).await;
         assert_eq!(res, Ok(Ok(())));
@@ -650,6 +679,43 @@ mod tests {
     #[ntex::test]
     async fn test_inflight_streaming_size() {
         check_streaming(10).await;
+    }
+
+    /// Each call completes when its own gate is opened
+    struct QueueService(RefCell<VecDeque<oneshot::Receiver<()>>>);
+
+    impl Service<(), Req> for QueueService {
+        type Res = ();
+        type Error = ();
+
+        async fn call(&self, _r: Req, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
+            let rx = self.0.borrow_mut().pop_front().unwrap();
+            let _ = rx.await;
+            Ok(())
+        }
+    }
+
+    #[ntex::test]
+    async fn test_inflight_streaming_overlap() {
+        let (tx1, rx1) = oneshot::channel();
+        let (tx2, rx2) = oneshot::channel();
+        let srv = Pipeline::new(
+            (),
+            InFlightServiceImpl::new(0, 10, QueueService(RefCell::new([rx1, rx2].into()))),
+        );
+
+        // the next streaming publish starts before the previous one completes
+        spawn_call(&srv, Req::Publish(true)).await;
+        spawn_call(&srv, Req::Publish(true)).await;
+
+        // the second publish keeps bypassing the limits
+        let _ = tx1.send(());
+        sleep(Millis(25)).await;
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
+
+        let _ = tx2.send(());
+        sleep(Millis(25)).await;
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
     }
 
     #[ntex::test]
@@ -661,7 +727,7 @@ mod tests {
         );
 
         // publish with the whole payload does not bypass the limits
-        spawn_call(&srv, Req(false)).await;
+        spawn_call(&srv, Req::Publish(false)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Pending);
 
         gate.notify_and_lock(());
