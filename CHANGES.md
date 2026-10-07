@@ -1,5 +1,10 @@
 # Changes
 
+## [9.2.1] - 2026-10-07
+
+* `InFlightService` ignores the size limit until a streaming publish completes, the
+  readiness check after the last payload chunk waited for the limit held by the publish
+
 ## [9.2.0] - 2026-10-07
 
 * `InFlightService` checks readiness of the inner service once per call, the call skips
