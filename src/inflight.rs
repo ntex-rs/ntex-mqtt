@@ -35,6 +35,8 @@ pub struct InFlightServiceImpl<S> {
     count: Counter,
     service: S,
     streaming: Cell<bool>,
+    ready: Cell<bool>,
+    entered: Cell<u32>,
 }
 
 impl<S> fmt::Debug for InFlightServiceImpl<S> {
@@ -54,6 +56,8 @@ impl<S> InFlightServiceImpl<S> {
             service,
             streaming: Cell::new(false),
             count: Counter::new(max_cap, max_size),
+            ready: Cell::new(false),
+            entered: Cell::new(0),
         }
     }
 }
@@ -68,13 +72,18 @@ where
 
     #[inline]
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), S::Error> {
-        if self.streaming.get() || self.count.is_available() {
+        let entered = self.entered.get();
+        let result = if self.streaming.get() || self.count.is_available() {
             ctx.ready(&self.service).await
         } else {
             join(self.count.available(), ctx.ready(&self.service))
                 .await
                 .1
-        }
+        };
+        // valid only if no call entered the service during the check
+        self.ready
+            .set(result.is_ok() && entered == self.entered.get());
+        result
     }
 
     #[inline]
@@ -84,15 +93,22 @@ where
         // the request is received, its size counts while it waits for a slot
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
         let size_guard = self.count.get(size);
-        let slot_guard = if req.is_limited() {
-            self.count.slot(true).await
+        let limited = req.is_limited();
+        let mut waited = false;
+        let slot_guard = if limited || req.is_ordered() {
+            waited = !self.count.has_turn(limited);
+            self.count.slot(limited).await
         } else {
-            if req.is_ordered() {
-                self.count.slot(false).await;
-            }
             None
         };
-        let result = ctx.call(&self.service, req).await;
+
+        // the inner readiness can be stale after waiting for the turn
+        if waited || !self.ready.get() {
+            ctx.ready(&self.service).await?;
+        }
+        self.ready.set(false);
+        self.entered.set(self.entered.get().wrapping_add(1));
+        let result = ctx.call_nowait(&self.service, req).await;
         drop(slot_guard);
         drop(size_guard);
         result
@@ -154,13 +170,18 @@ impl Counter {
         .await;
     }
 
+    /// Check if a request takes its turn without waiting
+    fn has_turn(&self, limited: bool) -> bool {
+        self.0.waiters.borrow().is_empty() && (!limited || self.0.has_slot())
+    }
+
     /// Wait for the turn of a request
     ///
     /// Requests wait in the order of arrival, a limited request also waits
     /// for a free slot and takes it.
     async fn slot(&self, limited: bool) -> Option<SlotGuard> {
         let inner = &self.0;
-        if inner.waiters.borrow().is_empty() && (!limited || inner.has_slot()) {
+        if self.has_turn(limited) {
             return limited.then(|| SlotGuard::new(inner.clone()));
         }
 
@@ -910,5 +931,191 @@ mod tests {
         }
         let svc = InFlightServiceImpl::new(16, 0, NoopSvc);
         assert!(format!("{svc:?}").contains("InFlightServiceImpl"));
+    }
+
+    #[derive(Default)]
+    struct ProbeState {
+        active: Cell<usize>,
+        max: Cell<usize>,
+        checks: Cell<usize>,
+        closed: Cell<bool>,
+        waker: LocalWaker,
+    }
+
+    impl ProbeState {
+        fn set_closed(&self, closed: bool) {
+            self.closed.set(closed);
+            self.waker.wake();
+        }
+    }
+
+    /// Inner service with its own concurrency limit, calls complete when
+    /// the gate is opened if `blocking` is set
+    struct Probe {
+        st: Rc<ProbeState>,
+        cap: usize,
+        gate: Condition,
+        blocking: bool,
+    }
+
+    impl Service<(), ()> for Probe {
+        type Res = ();
+        type Error = ();
+
+        async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
+            let st = &self.st;
+            st.checks.set(st.checks.get() + 1);
+            poll_fn(|cx| {
+                if st.active.get() < self.cap && !st.closed.get() {
+                    Poll::Ready(Ok(()))
+                } else {
+                    st.waker.register(cx.waker());
+                    Poll::Pending
+                }
+            })
+            .await
+        }
+
+        async fn call(&self, (): (), _: Ctx<'_, Self, ()>) -> Result<(), ()> {
+            let st = &self.st;
+            st.active.set(st.active.get() + 1);
+            st.max.set(st.max.get().max(st.active.get()));
+            if self.blocking {
+                let _ = self.gate.wait().await;
+            }
+            st.active.set(st.active.get() - 1);
+            st.waker.wake();
+            Ok(())
+        }
+    }
+
+    fn probe(cap: usize, blocking: bool) -> (Probe, Rc<ProbeState>, Condition) {
+        let st = Rc::new(ProbeState::default());
+        let gate = Condition::new();
+        let srv = Probe {
+            st: st.clone(),
+            cap,
+            gate: gate.clone(),
+            blocking,
+        };
+        (srv, st, gate)
+    }
+
+    #[ntex::test]
+    async fn test_inner_readiness_checked_once() {
+        let (inner, st, _) = probe(4, false);
+        let srv = Pipeline::new((), InFlightServiceImpl::new(4, 0, inner));
+        for _ in 0..3 {
+            srv.call(()).await.unwrap();
+        }
+        assert_eq!(st.checks.get(), 3);
+
+        st.checks.set(0);
+        for _ in 0..3 {
+            srv.ready().await.unwrap();
+            srv.call(()).await.unwrap();
+        }
+        assert_eq!(st.checks.get(), 3);
+    }
+
+    /// Calls the inner service without checking its readiness, the inner
+    /// service has to enforce its limits
+    struct NoWait<S>(S);
+
+    impl<S: Service<(), (), Res = (), Error = ()>> Service<(), ()> for NoWait<S> {
+        type Res = ();
+        type Error = ();
+
+        async fn call(&self, req: (), ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {
+            ctx.call_nowait(&self.0, req).await
+        }
+    }
+
+    /// Returns the max number of concurrent calls of the inner service
+    async fn run_concurrent(max: u16, cap: usize) -> usize {
+        let (inner, st, gate) = probe(cap, true);
+        let srv = Pipeline::new((), NoWait(InFlightServiceImpl::new(max, 0, inner)));
+        let mut futs = Vec::new();
+        for _ in 0..4 {
+            futs.push(ntex_util::spawn(srv.call_static(())));
+        }
+        sleep(Millis(20)).await;
+        for _ in 0..4 {
+            gate.notify(());
+            sleep(Millis(5)).await;
+        }
+        for f in futs {
+            let _ = f.await;
+        }
+        st.max.get()
+    }
+
+    #[ntex::test]
+    async fn test_limits_without_readiness_check() {
+        assert_eq!(run_concurrent(1, 4).await, 1, "inflight limit");
+        assert_eq!(run_concurrent(2, 1).await, 1, "inner limit");
+        assert_eq!(run_concurrent(2, 4).await, 2, "inflight limit 2");
+        assert_eq!(
+            run_concurrent(0, 1).await,
+            1,
+            "inner limit, no inflight limit"
+        );
+    }
+
+    #[ntex::test]
+    async fn test_inner_readiness_after_slot_wait() {
+        let (inner, st, gate) = probe(4, true);
+        let srv = Pipeline::new((), InFlightServiceImpl::new(1, 0, inner));
+        drop(ntex_util::spawn(srv.call_static(())));
+        sleep(Millis(10)).await;
+        drop(ntex_util::spawn(srv.call_static(())));
+        sleep(Millis(10)).await;
+        assert_eq!(st.active.get(), 1);
+
+        // the readiness check passes, the call waits for a slot
+        assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
+
+        // the inner service is not ready when the slot is released
+        st.set_closed(true);
+        gate.notify(());
+        sleep(Millis(20)).await;
+        assert_eq!(st.active.get(), 0);
+
+        st.set_closed(false);
+        sleep(Millis(20)).await;
+        assert_eq!(st.active.get(), 1);
+        gate.notify(());
+    }
+
+    /// Calls the inner service twice after one readiness check
+    struct Twice<S>(S);
+
+    impl<S: Service<(), (), Res = (), Error = ()>> Service<(), ()> for Twice<S> {
+        type Res = ();
+        type Error = ();
+
+        async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {
+            ctx.ready(&self.0).await
+        }
+
+        async fn call(&self, (): (), ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {
+            let (a, b) = join(ctx.call_nowait(&self.0, ()), ctx.call_nowait(&self.0, ())).await;
+            a.and(b)
+        }
+    }
+
+    #[ntex::test]
+    async fn test_readiness_used_once() {
+        let (inner, st, gate) = probe(1, true);
+        let srv = Pipeline::new((), Twice(InFlightServiceImpl::new(0, 0, inner)));
+        let fut = ntex_util::spawn(srv.call_static(()));
+        sleep(Millis(20)).await;
+        assert_eq!(st.active.get(), 1);
+
+        gate.notify(());
+        sleep(Millis(20)).await;
+        gate.notify(());
+        let _ = fut.await;
+        assert_eq!(st.max.get(), 1);
     }
 }

@@ -1,5 +1,11 @@
 # Changes
 
+## [9.1.2] - 2026-10-06
+
+* `InFlightService` checks readiness of the inner service once per call, the call skips
+  the check if no call entered the service since its last readiness check and the call
+  did not wait for a slot
+
 ## [9.1.1] - 2026-10-05
 
 * Suspend keep-alive and frame read timers while the filter chain pauses reads, and the
