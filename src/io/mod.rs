@@ -547,7 +547,9 @@ where
 
     fn call_service(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
         let ordered = self.codec.is_ordered(&item);
-        let mut fut = self.service.call_nowait(item);
+        // the first poll uses the readiness of the last service check
+        let mut fut = self.service.call_static(item);
+        let result = Pin::new(&mut fut).poll(cx);
         let mut queue = self.state.queue.borrow_mut();
 
         // unordered calls do not keep a slot in the queue
@@ -561,8 +563,18 @@ where
             }
         };
 
-        // only one pending call is polled by the dispatcher, spawn the rest
-        if let Some(resp) = self.state.response.take() {
+        if let Poll::Ready(res) = result {
+            // only responses of ordered calls wait for the calls before them
+            match res {
+                Ok(Some(res)) if ordered && !queue.is_empty() => {
+                    queue.push_back(Some(Some(Queued::<Codec>::from(res))));
+                }
+                res => {
+                    self.state.write_result(res, self.io.as_ref(), &self.codec);
+                }
+            }
+        } else if let Some(resp) = self.state.response.take() {
+            // only one pending call is polled by the dispatcher, spawn the rest
             self.state.response.set(Some(resp));
             let response_idx = push_pending();
 
@@ -583,16 +595,6 @@ where
                     st.notify_dispatcher();
                 }
             });
-        } else if let Poll::Ready(res) = Pin::new(&mut fut).poll(cx) {
-            // only responses of ordered calls wait for the calls before them
-            match res {
-                Ok(Some(res)) if ordered && !queue.is_empty() => {
-                    queue.push_back(Some(Some(Queued::<Codec>::from(res))));
-                }
-                res => {
-                    self.state.write_result(res, self.io.as_ref(), &self.codec);
-                }
-            }
         } else {
             let response_idx = push_pending();
             self.state.response_idx.set(response_idx);

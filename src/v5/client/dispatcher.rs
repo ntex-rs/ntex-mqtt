@@ -982,7 +982,7 @@ mod tests {
             16,
         );
         let chunk = |data: &'static [u8]| {
-            disp.call_nowait(Decoded::PayloadChunk(Bytes::from_static(data), false))
+            disp.call_static(Decoded::PayloadChunk(Bytes::from_static(data), false))
         };
 
         // streamed payload below the high watermark
