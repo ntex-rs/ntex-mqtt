@@ -613,7 +613,7 @@ impl Encoder for MqttShared {
                 let mut buf = self
                     .deferred
                     .take()
-                    .unwrap_or_else(|| BytePages::new(self.io.cfg().write_page_size()));
+                    .unwrap_or_else(|| BytePages::new(self.io.cfg().write_size()));
                 let res = codec::Codec::encode_packet(&pkt, &mut buf);
                 self.deferred.set(Some(buf));
                 res
