@@ -94,6 +94,18 @@ async fn main() {
 }
 ```
 
+## Custom service readiness
+
+MQTT reuses successful service readiness across packets and calls. Custom services
+with mutable readiness must subscribe to a `ntex_service::ReadyNotifier` in
+`Service::bind` and notify when that readiness changes, before waking waiters.
+Composite services must bind every child using `BindCtx::bind`, `forward_bind!`,
+or a pipeline's `bind_to`; forwarding `ready()` alone is not sufficient.
+
+Built-in limits and streaming payloads provide these notifications automatically.
+See [`MqttServiceConfig`](https://docs.rs/ntex-mqtt/latest/ntex_mqtt/struct.MqttServiceConfig.html#read-pause)
+for read-pause behavior and the restrictions on handlers waiting for peer acks.
+
 ## Links
 
 - [API documentation](https://docs.rs/ntex-mqtt)

@@ -1,12 +1,12 @@
 use std::{cell::Cell, cell::RefCell, marker::PhantomData, num::NonZeroU16, rc::Rc};
 
-use ntex_service::{Ctx, Service};
+use ntex_service::{BindCtx, Ctx, Service};
 use ntex_util::HashMap;
 use ntex_util::future::{Either, join};
 
 use crate::error::{DecodeError, DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
 use crate::inflight::InFlightServiceImpl;
-use crate::payload::{Payload, PayloadStatus, PlSender};
+use crate::payload::{Payload, PayloadSource, PayloadStatus};
 use crate::types::packet_type;
 use crate::v3::codec::{self, Decoded, Packet};
 use crate::v3::shared::{Ack, MqttShared};
@@ -52,7 +52,7 @@ pub(crate) struct Dispatcher<St, T, C, E> {
 struct Inner<C> {
     control: C,
     sink: Rc<MqttShared>,
-    payload: Cell<Option<PlSender>>,
+    payload: PayloadSource,
     discard_payload: Cell<bool>,
     inflight: RefCell<HashMap<NonZeroU16, InFlight>>,
 }
@@ -85,7 +85,7 @@ where
             inner: Inner {
                 sink,
                 control,
-                payload: Cell::new(None),
+                payload: PayloadSource::default(),
                 discard_payload: Cell::new(false),
                 inflight: RefCell::new(HashMap::default()),
             },
@@ -100,9 +100,7 @@ impl<C> Inner<C> {
         PErr: Clone,
         PayloadError: From<PErr>,
     {
-        if let Some(pl) = self.payload.take() {
-            pl.set_error(err.clone().into());
-        }
+        self.payload.set_error(err.clone().into());
     }
 
     /// Acknowledge handled publish packet
@@ -131,20 +129,21 @@ where
     type Res = Option<Packet>;
     type Error = DispatcherError<E>;
 
+    fn bind(&self, ctx: BindCtx<'_>) {
+        self.inner.payload.bind(&ctx);
+        ctx.bind::<_, Session<St>, Publish>(&self.publish);
+        ctx.bind::<_, Session<St>, ProtocolMessage>(&self.inner.control);
+    }
+
     #[inline]
     async fn ready(&self, ctx: Ctx<'_, Self, Session<St>>) -> Result<(), Self::Error> {
         let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
         // payload backpressure, reading pauses while the streamed payload buffer
         // is above its high watermark, the connection is closed if the payload
         // receiver is dropped before the stream ends
-        if res1.is_ok()
-            && res2.is_ok()
-            && let Some(pl) = self.inner.payload.take()
+        if res1.is_ok() && res2.is_ok() && self.inner.payload.ready().await != PayloadStatus::Ready
         {
-            self.inner.payload.set(Some(pl.clone()));
-            if pl.ready().await != PayloadStatus::Ready {
-                self.inner.sink.force_close();
-            }
+            self.inner.sink.force_close();
         }
 
         res1.map_err(DispatcherError::Service)?;
@@ -219,9 +218,7 @@ where
                 let payload = if publish.payload_size == payload.len() as u32 {
                     Payload::from_bytes(payload)
                 } else {
-                    let (pl, sender) = Payload::from_stream(payload, self.max_buffer_size);
-                    self.inner.payload.set(Some(sender));
-                    pl
+                    self.inner.payload.start(payload, self.max_buffer_size)
                 };
 
                 publish_fn(
@@ -239,13 +236,7 @@ where
                         self.inner.discard_payload.set(false);
                     }
                     Ok(None)
-                } else if let Some(pl) = self.inner.payload.take() {
-                    pl.feed_data(buf);
-                    if eof {
-                        pl.feed_eof();
-                    } else {
-                        self.inner.payload.set(Some(pl));
-                    }
+                } else if self.inner.payload.feed(buf, eof) {
                     Ok(None)
                 } else {
                     // the publish of the chunk failed, the connection is closing
@@ -811,11 +802,15 @@ mod tests {
     async fn test_payload_backpressure() {
         use std::{cell::RefCell, task::Poll};
 
-        struct FailReady<E>(Rc<Cell<bool>>, fn() -> E);
+        struct FailReady<E>(Rc<Cell<bool>>, fn() -> E, ntex_service::ReadyNotifier);
 
         impl<St, E> Service<St, ProtocolMessage> for FailReady<E> {
             type Res = ProtocolMessageAck;
             type Error = E;
+
+            fn bind(&self, ctx: BindCtx<'_>) {
+                ctx.subscribe(&self.2);
+            }
 
             async fn ready(&self, _: Ctx<'_, Self, St>) -> Result<(), E> {
                 if self.0.get() { Err((self.1)()) } else { Ok(()) }
@@ -835,11 +830,16 @@ mod tests {
             Rc<Cell<bool>>,
             fn() -> E,
             fn() -> R,
+            ntex_service::ReadyNotifier,
         );
 
         impl<St, R, E> Service<St, Publish> for Hold<R, E> {
             type Res = R;
             type Error = E;
+
+            fn bind(&self, ctx: BindCtx<'_>) {
+                ctx.subscribe(&self.4);
+            }
 
             async fn ready(&self, _: Ctx<'_, Self, St>) -> Result<(), E> {
                 if self.1.get() { Err((self.2)()) } else { Ok(()) }
@@ -854,11 +854,20 @@ mod tests {
         let fail = Rc::new(Cell::new(false));
         let pfail = Rc::new(Cell::new(false));
         let held = Rc::new(RefCell::new(None));
+        let changed = ntex_service::ReadyNotifier::new();
         let (io, _, disp) = dispatcher(
-            Hold(held.clone(), pfail.clone(), || (), || Either::Left(())),
-            FailReady(fail.clone(), || {
-                DispatcherError::Protocol(MqttProtocolError::ReadTimeout)
-            }),
+            Hold(
+                held.clone(),
+                pfail.clone(),
+                || (),
+                || Either::Left(()),
+                changed.clone(),
+            ),
+            FailReady(
+                fail.clone(),
+                || DispatcherError::Protocol(MqttProtocolError::ReadTimeout),
+                changed.clone(),
+            ),
             4,
         );
         let chunk = |data: &'static [u8]| {
@@ -902,17 +911,20 @@ mod tests {
         // a readiness error is not delayed by the paused payload
         assert_eq!(chunk(b"efgh").await.unwrap(), None);
         fail.set(true);
+        changed.notify();
         assert!(matches!(
             lazy(|cx| disp.poll_ready(cx)).await,
             Poll::Ready(Err(_))
         ));
         fail.set(false);
         pfail.set(true);
+        changed.notify();
         assert!(matches!(
             lazy(|cx| disp.poll_ready(cx)).await,
             Poll::Ready(Err(_))
         ));
         pfail.set(false);
+        changed.notify();
 
         // the payload receiver is dropped before the stream ends
         assert!(lazy(|cx| disp.poll_ready(cx)).await.is_pending());

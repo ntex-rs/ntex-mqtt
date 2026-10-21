@@ -95,6 +95,8 @@ where
     type Res = ();
     type Error = MqttError<Err>;
 
+    ntex_service::forward_pl_bind!(St, connect);
+
     async fn call(&self, req: Req, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
         let (st, io) = req.unpack();
         let tag = io.tag();

@@ -237,6 +237,7 @@ where
     type Res = (IoBoxed, Rc<MqttShared>, Session<AppSt>, Seconds);
     type Error = MqttError<S::Error>;
 
+    ntex_service::forward_bind!(Hst, svc);
     ntex_service::forward_ready!(Hst, svc, MqttError::Service);
     ntex_service::forward_shutdown!(Hst, svc);
 

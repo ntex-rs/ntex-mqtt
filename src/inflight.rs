@@ -2,8 +2,8 @@
 use std::task::{Context, Poll, Waker};
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, future::poll_fn, rc::Rc};
 
-use ntex_service::{Ctx, Service};
-use ntex_util::{future::join, task::LocalWaker};
+use ntex_service::{BindCtx, Ctx, ReadyNotifier, Service, ServiceBinding};
+use ntex_util::{future::OnDropFn, future::join, task::LocalWaker};
 
 /// Trait for types that could be sized
 pub trait SizedRequest {
@@ -33,10 +33,8 @@ pub trait SizedRequest {
 
 pub struct InFlightServiceImpl<S> {
     count: Counter,
-    service: S,
+    service: ServiceBinding<S>,
     streaming: Cell<u32>,
-    ready: Cell<bool>,
-    entered: Cell<u32>,
 }
 
 impl<S> fmt::Debug for InFlightServiceImpl<S> {
@@ -51,13 +49,12 @@ impl<S> InFlightServiceImpl<S> {
     /// The number limit applies to limited requests only, they wait for a free slot
     /// in `call()` so that the other requests are still processed. The size limit
     /// applies to all requests and pauses readiness. `0` disables a limit.
+    /// The wrapped service retains its own readiness until it notifies a change.
     pub fn new(max_cap: u16, max_size: usize, service: S) -> Self {
         InFlightServiceImpl {
-            service,
+            service: ServiceBinding::new(service),
             streaming: Cell::new(0),
             count: Counter::new(max_cap, max_size),
-            ready: Cell::new(false),
-            entered: Cell::new(0),
         }
     }
 }
@@ -70,20 +67,26 @@ where
     type Res = S::Res;
     type Error = S::Error;
 
+    fn bind(&self, ctx: BindCtx<'_>) {
+        ctx.subscribe(&self.count.0.changed);
+        ctx.bind::<_, St, Req>(&self.service);
+    }
+
     #[inline]
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), S::Error> {
-        let entered = self.entered.get();
-        let result = if self.streaming.get() > 0 || self.count.is_available() {
+        if self.streaming.get() > 0 || self.count.is_available() {
             ctx.ready(&self.service).await
         } else {
-            join(self.count.available(), ctx.ready(&self.service))
-                .await
-                .1
-        };
-        // valid only if no call entered the service during the check
-        self.ready
-            .set(result.is_ok() && entered == self.entered.get());
-        result
+            let available = poll_fn(|cx| {
+                if self.streaming.get() > 0 || self.count.0.available(cx) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            });
+            join(available, ctx.ready(&self.service)).await.1?;
+            ctx.ready(&self.service).await
+        }
     }
 
     #[inline]
@@ -91,8 +94,12 @@ where
         // the publish handler checks readiness of its services after the last chunk,
         // the pipeline readiness check must not wait for the limits held by the publish
         let _streaming = if req.is_limited() && req.has_more_chunks() {
+            let guard = StreamingGuard(&self.streaming, &self.count.0);
             self.streaming.set(self.streaming.get() + 1);
-            Some(StreamingGuard(&self.streaming))
+            if self.streaming.get() == 1 {
+                self.count.0.notify();
+            }
+            Some(guard)
         } else {
             None
         };
@@ -101,21 +108,13 @@ where
         let size = if self.count.0.max_size > 0 { req.size() } else { 0 };
         let size_guard = self.count.get(size);
         let limited = req.is_limited();
-        let mut waited = false;
         let slot_guard = if limited || req.is_ordered() {
-            waited = !self.count.has_turn(limited);
             self.count.slot(limited).await
         } else {
             None
         };
 
-        // the inner readiness can be stale after waiting for the turn
-        if waited || !self.ready.get() {
-            ctx.ready(&self.service).await?;
-        }
-        self.ready.set(false);
-        self.entered.set(self.entered.get().wrapping_add(1));
-        let result = ctx.call_nowait(&self.service, req).await;
+        let result = ctx.call(&self.service, req).await;
         drop(slot_guard);
         drop(size_guard);
         result
@@ -124,11 +123,14 @@ where
     ntex_service::forward_shutdown!(St, service);
 }
 
-struct StreamingGuard<'a>(&'a Cell<u32>);
+struct StreamingGuard<'a>(&'a Cell<u32>, &'a CounterInner);
 
 impl Drop for StreamingGuard<'_> {
     fn drop(&mut self) {
         self.0.set(self.0.get() - 1);
+        if self.0.get() == 0 {
+            self.1.notify();
+        }
     }
 }
 
@@ -140,6 +142,7 @@ struct CounterInner {
     max_size: usize,
     cur_size: Cell<usize>,
     task: LocalWaker,
+    changed: ReadyNotifier,
     /// Requests that wait for their turn, in the order of arrival
     waiters: RefCell<VecDeque<Waiter>>,
     /// Ticket of the next waiter, tickets of the queued waiters are ascending
@@ -161,6 +164,7 @@ impl Counter {
             cur_cap: Cell::new(0),
             cur_size: Cell::new(0),
             task: LocalWaker::new(),
+            changed: ReadyNotifier::new(),
             waiters: RefCell::new(VecDeque::new()),
             next_ticket: Cell::new(0),
         }))
@@ -172,17 +176,6 @@ impl Counter {
 
     fn is_available(&self) -> bool {
         self.0.max_size == 0 || self.0.cur_size.get() <= self.0.max_size
-    }
-
-    async fn available(&self) {
-        poll_fn(|cx| {
-            if self.0.available(cx) {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
     }
 
     /// Check if a request takes its turn without waiting
@@ -263,8 +256,9 @@ struct SizeGuard(u32, Rc<CounterInner>);
 
 impl SizeGuard {
     fn new(size: u32, inner: Rc<CounterInner>) -> Self {
-        inner.inc(size);
-        SizeGuard(size, inner)
+        let guard = SizeGuard(size, inner);
+        guard.1.inc(size);
+        guard
     }
 }
 
@@ -292,11 +286,12 @@ impl Drop for SlotGuard {
 
 impl CounterInner {
     fn inc(&self, size: u32) {
-        let cur_size = self.cur_size.get() + size as usize;
+        let prev_size = self.cur_size.get();
+        let cur_size = prev_size + size as usize;
         self.cur_size.set(cur_size);
 
-        if self.max_size != 0 && cur_size > self.max_size {
-            self.task.wake();
+        if self.max_size != 0 && prev_size <= self.max_size && cur_size > self.max_size {
+            self.notify();
         }
     }
 
@@ -306,8 +301,13 @@ impl CounterInner {
         self.cur_size.set(new_size);
 
         if cur_size > self.max_size && new_size <= self.max_size {
-            self.task.wake();
+            self.notify();
         }
+    }
+
+    fn notify(&self) {
+        let _wake = OnDropFn::new(|| self.task.wake());
+        self.changed.notify();
     }
 
     fn available(&self, cx: &Context<'_>) -> bool {
@@ -532,11 +532,16 @@ mod tests {
         gate: Condition,
         cnt: Cell<bool>,
         waker: LocalWaker,
+        changed: ReadyNotifier,
     }
 
     impl Service<(), ()> for Srv2 {
         type Res = ();
         type Error = ();
+
+        fn bind(&self, ctx: BindCtx<'_>) {
+            ctx.subscribe(&self.changed);
+        }
 
         async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
             poll_fn(|cx| {
@@ -553,10 +558,12 @@ mod tests {
         async fn call(&self, _r: (), _: Ctx<'_, Self, ()>) -> Result<(), ()> {
             let fut = self.gate.wait();
             self.cnt.set(true);
+            self.changed.notify();
             self.waker.wake();
 
             let _ = fut.await;
             self.cnt.set(false);
+            self.changed.notify();
             self.waker.wake();
             Ok::<_, ()>(())
         }
@@ -577,6 +584,7 @@ mod tests {
                     gate: gate.clone(),
                     cnt: Cell::new(false),
                     waker: LocalWaker::new(),
+                    changed: ReadyNotifier::new(),
                 },
             ),
         );
@@ -716,6 +724,64 @@ mod tests {
         let _ = tx2.send(());
         sleep(Millis(25)).await;
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
+    }
+
+    #[ntex::test]
+    async fn test_streaming_cancellation_invalidates_shared_readiness() {
+        use std::future::Future;
+
+        let service = Rc::new(InFlightServiceImpl::new(
+            0,
+            10,
+            GateReqService(Condition::new()),
+        ));
+        let a = Pipeline::new((), service.clone());
+        let b = Pipeline::new((), service);
+        let mut streaming = Box::pin(a.call(Req::Publish(true)));
+        assert!(lazy(|cx| streaming.as_mut().poll(cx)).await.is_pending());
+        let mut complete = Box::pin(b.call(Req::Publish(false)));
+        assert!(lazy(|cx| complete.as_mut().poll(cx)).await.is_pending());
+        a.ready().await.unwrap();
+        b.ready().await.unwrap();
+
+        // Size remains above the limit, but the streaming exception ends.
+        drop(streaming);
+        assert!(!a.is_ready() && !b.is_ready());
+        assert!(lazy(|cx| a.poll_ready(cx)).await.is_pending());
+        assert!(lazy(|cx| b.poll_ready(cx)).await.is_pending());
+        drop(complete);
+        a.ready().await.unwrap();
+        b.ready().await.unwrap();
+    }
+
+    #[ntex::test]
+    async fn test_notification_panic_releases_limits() {
+        use std::future::Future;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        for streaming in [false, true] {
+            let service = Rc::new(InFlightServiceImpl::new(
+                1,
+                10,
+                ntex_service::fn_service(async |_: Req| Err::<(), ()>(())),
+            ));
+            let pipeline = Pipeline::new((), service.clone());
+            let armed = Cell::new(true);
+            let callback = ntex_service::ReadyCallback::new(move || {
+                assert!(!armed.replace(false), "callback panic");
+            });
+            pipeline.on_notify(&callback);
+            let mut call = Box::pin(pipeline.call(Req::Publish(streaming)));
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(catch_unwind(AssertUnwindSafe(|| call.as_mut().poll(&mut cx))).is_err());
+            drop(call);
+            assert_eq!(service.count.0.cur_size.get(), 0);
+            assert_eq!(service.count.0.cur_cap.get(), 0);
+            assert_eq!(service.streaming.get(), 0);
+
+            assert_eq!(pipeline.call(Req::Publish(streaming)).await, Err(()));
+            pipeline.ready().await.unwrap();
+        }
     }
 
     #[ntex::test]
@@ -1006,11 +1072,13 @@ mod tests {
         checks: Cell<usize>,
         closed: Cell<bool>,
         waker: LocalWaker,
+        changed: ReadyNotifier,
     }
 
     impl ProbeState {
         fn set_closed(&self, closed: bool) {
             self.closed.set(closed);
+            self.changed.notify();
             self.waker.wake();
         }
     }
@@ -1027,6 +1095,10 @@ mod tests {
     impl Service<(), ()> for Probe {
         type Res = ();
         type Error = ();
+
+        fn bind(&self, ctx: BindCtx<'_>) {
+            ctx.subscribe(&self.st.changed);
+        }
 
         async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
             let st = &self.st;
@@ -1046,10 +1118,16 @@ mod tests {
             let st = &self.st;
             st.active.set(st.active.get() + 1);
             st.max.set(st.max.get().max(st.active.get()));
+            if st.active.get() == self.cap {
+                st.changed.notify();
+            }
             if self.blocking {
                 let _ = self.gate.wait().await;
             }
             st.active.set(st.active.get() - 1);
+            if st.active.get() + 1 == self.cap {
+                st.changed.notify();
+            }
             st.waker.wake();
             Ok(())
         }
@@ -1068,29 +1146,38 @@ mod tests {
     }
 
     #[ntex::test]
-    async fn test_inner_readiness_checked_once() {
+    async fn test_inner_readiness_cached_until_notified() {
         let (inner, st, _) = probe(4, false);
         let srv = Pipeline::new((), InFlightServiceImpl::new(4, 0, inner));
         for _ in 0..3 {
             srv.call(()).await.unwrap();
         }
-        assert_eq!(st.checks.get(), 3);
+        assert_eq!(st.checks.get(), 1);
 
         st.checks.set(0);
         for _ in 0..3 {
             srv.ready().await.unwrap();
             srv.call(()).await.unwrap();
         }
-        assert_eq!(st.checks.get(), 3);
+        assert_eq!(st.checks.get(), 0);
+
+        st.set_closed(true);
+        assert!(lazy(|cx| srv.poll_ready(cx)).await.is_pending());
+        st.set_closed(false);
+        srv.call(()).await.unwrap();
+        assert!(st.checks.get() > 0);
     }
 
     /// Calls the inner service without checking its readiness, the inner
     /// service has to enforce its limits
     struct NoWait<S>(S);
 
+    #[allow(deprecated)]
     impl<S: Service<(), (), Res = (), Error = ()>> Service<(), ()> for NoWait<S> {
         type Res = ();
         type Error = ();
+
+        ntex_service::forward_bind!((), 0);
 
         async fn call(&self, req: (), ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {
             ctx.call_nowait(&self.0, req).await
@@ -1156,9 +1243,12 @@ mod tests {
     /// Calls the inner service twice after one readiness check
     struct Twice<S>(S);
 
+    #[allow(deprecated)]
     impl<S: Service<(), (), Res = (), Error = ()>> Service<(), ()> for Twice<S> {
         type Res = ();
         type Error = ();
+
+        ntex_service::forward_bind!((), 0);
 
         async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {
             ctx.ready(&self.0).await

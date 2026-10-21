@@ -79,6 +79,8 @@ where
     type Res = ();
     type Error = MqttError<Err>;
 
+    ntex_service::forward_bind!(St, v3, v5);
+
     #[inline]
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
         let (ready1, ready2) = join(ctx.ready(&self.v3), ctx.ready(&self.v5)).await;

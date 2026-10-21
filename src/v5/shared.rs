@@ -9,7 +9,7 @@ use ntex_util::{HashMap, channel::pool};
 
 use crate::io::{FrameState, STREAM_TAG};
 use crate::v5::codec::{self, Decoded, Encoded, Packet, Publish};
-use crate::{QoS, error, error::SendPacketError, payload::PlSender, types::packet_type};
+use crate::{QoS, error, error::SendPacketError, payload::PayloadSource, types::packet_type};
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -41,7 +41,7 @@ pub struct MqttShared {
     /// Packets encoded while a publish payload is incomplete
     deferred: Cell<Option<BytePages>>,
     on_publish_ack: Cell<Option<Box<dyn Fn(codec::PublishAck, bool)>>>,
-    pub(super) payload: Cell<Option<PlSender>>,
+    pub(super) payload: PayloadSource,
     pub(super) flags: Cell<Flags>,
     pub(super) pool: Rc<MqttSinkPool>,
     pub(super) codec: codec::Codec,
@@ -142,7 +142,7 @@ impl MqttShared {
             topic_alias_max: Cell::new(0),
             inflight_idx: Cell::new(0),
             flags: Cell::new(Flags::QOS_ATLEAST),
-            payload: Cell::new(None),
+            payload: PayloadSource::default(),
             on_publish_ack: Cell::new(None),
             encode_error: Cell::new(None),
             streaming_remaining: Cell::new(None),
@@ -431,9 +431,7 @@ impl MqttShared {
         E: Clone,
         error::PayloadError: From<E>,
     {
-        if let Some(pl) = self.payload.take() {
-            pl.set_error(err.clone().into());
-        }
+        self.payload.set_error(err.clone().into());
     }
 
     fn clear_queues(&self) {

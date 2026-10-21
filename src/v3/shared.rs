@@ -9,7 +9,7 @@ use ntex_util::{HashMap, channel::pool};
 use crate::error::{DecodeError, EncodeError, MqttProtocolError, PayloadError, SendPacketError};
 use crate::io::{FrameState, STREAM_TAG};
 use crate::v3::codec::{self, Encoded, Publish};
-use crate::{QoS, payload::PlSender, types::packet_type};
+use crate::{QoS, payload::PayloadSource, types::packet_type};
 
 #[derive(Debug)]
 pub(super) enum Ack {
@@ -69,7 +69,7 @@ pub struct MqttShared {
     /// Packets encoded while a publish payload is incomplete
     deferred: Cell<Option<BytePages>>,
     on_publish_ack: Cell<Option<Box<dyn Fn(num::NonZeroU16, bool)>>>,
-    pub(super) payload: Cell<Option<PlSender>>,
+    pub(super) payload: PayloadSource,
     pub(super) codec: codec::Codec,
     pub(super) pool: Rc<MqttSinkPool>,
 }
@@ -113,7 +113,7 @@ impl MqttShared {
             streaming_remaining: Cell::new(None),
             deferred: Cell::new(None),
             on_publish_ack: Cell::new(None),
-            payload: Cell::new(None),
+            payload: PayloadSource::default(),
         }
     }
 
@@ -148,9 +148,7 @@ impl MqttShared {
         E: Clone,
         PayloadError: From<E>,
     {
-        if let Some(pl) = self.payload.take() {
-            pl.set_error(err.clone().into());
-        }
+        self.payload.set_error(err.clone().into());
     }
 
     pub(super) fn is_streaming(&self) -> bool {

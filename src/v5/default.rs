@@ -185,6 +185,7 @@ where
         }
     }
 
+    ntex_service::forward_bind!(St, svc);
     ntex_service::forward_ready!(St, svc, MqttError::Service);
     ntex_service::forward_shutdown!(St, svc);
 }

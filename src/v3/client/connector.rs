@@ -68,6 +68,7 @@ where
     type Res = Client;
     type Error = Error<MqttClientError<codec::ConnectAck>>;
 
+    ntex_service::forward_bind!(SharedCfg, connector);
     ntex_service::forward_ready!(SharedCfg, connector, Error::map_err);
     ntex_service::forward_shutdown!(SharedCfg, connector);
 

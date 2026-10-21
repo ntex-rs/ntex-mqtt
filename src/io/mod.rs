@@ -547,7 +547,7 @@ where
 
     fn call_service(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
         let ordered = self.codec.is_ordered(&item);
-        // the first poll uses the readiness of the last service check
+        // Reuse cached readiness unless the service has notified a change.
         let mut fut = self.service.call_static(item);
         let result = Pin::new(&mut fut).poll(cx);
         let mut queue = self.state.queue.borrow_mut();
@@ -709,7 +709,7 @@ where
         );
 
         // the filter chain pauses reading, the peer is not charged for it
-        if decoded.item.is_none() && self.io.is_read_filter_paused() {
+        if decoded.item.is_none() && self.io.is_filter_paused() {
             if self.timers.active != Timer::Write {
                 self.stop_timer();
             }
@@ -732,7 +732,7 @@ where
     /// and starts over once writes resume.
     fn start_write_timer(&mut self) {
         let timeout = self.io.cfg().write_timeout();
-        if timeout.is_zero() || self.io.is_write_filter_paused() {
+        if timeout.is_zero() || self.io.is_filter_paused() {
             self.stop_timer();
         } else if self.timers.active != Timer::Write {
             log::trace!("{}: Start write timer {:?}", self.io.tag(), timeout);
@@ -829,7 +829,7 @@ where
                 Ok(())
             }
             // the filter chain paused writes before the dispatcher noticed
-            Timer::Write if self.io.is_write_filter_paused() => {
+            Timer::Write if self.io.is_filter_paused() => {
                 self.stop_timer();
                 Ok(())
             }
@@ -849,9 +849,9 @@ where
 #[cfg(test)]
 #[allow(clippy::items_after_statements)]
 mod tests {
-    use std::cell::Cell;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::{cell::Cell, io};
 
     use ntex_bytes::{BytePages, Bytes, BytesMut};
     use ntex_io::{self as nio, IoConfig, testing::IoTest as Io};
@@ -1294,16 +1294,76 @@ mod tests {
         assert_eq!(counter.get(), 1);
     }
 
+    #[ntex::test]
+    async fn test_cached_readiness_across_frames() {
+        struct CountReady<S>(S, Rc<Cell<usize>>, ntex_service::ReadyNotifier);
+
+        impl<S: Service<(), R>, R> Service<(), R> for CountReady<S> {
+            type Res = S::Res;
+            type Error = S::Error;
+
+            fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
+                ctx.subscribe(&self.2);
+                ctx.bind::<_, (), R>(&self.0);
+            }
+
+            async fn ready(&self, ctx: Ctx<'_, Self>) -> Result<(), Self::Error> {
+                self.1.set(self.1.get() + 1);
+                ctx.ready(&self.0).await
+            }
+
+            async fn call(&self, req: R, ctx: Ctx<'_, Self>) -> Result<Self::Res, Self::Error> {
+                ctx.call(&self.0, req).await
+            }
+        }
+
+        let checks = Rc::new(Cell::new(0));
+        let control_checks = Rc::new(Cell::new(0));
+        let changed = ntex_service::ReadyNotifier::new();
+        let (client, server) = create();
+        let (disp, _) = Dispatcher::new_debug(
+            server,
+            BytesCodec,
+            CountReady(
+                fn_service(async |msg: Bytes| Ok::<_, DispatcherError<()>>(Some(msg))),
+                checks.clone(),
+                changed.clone(),
+            ),
+            CountReady(
+                fn_service(async |_: Control<()>| Ok::<_, ()>(None)),
+                control_checks.clone(),
+                ntex_service::ReadyNotifier::new(),
+            ),
+        );
+        ntex_util::spawn(disp);
+
+        for _ in 0..3 {
+            client.write("1");
+            assert_eq!(client.read().await.unwrap(), Bytes::from_static(b"1"));
+        }
+        assert_eq!((checks.get(), control_checks.get()), (1, 1));
+        changed.notify();
+        client.write("2");
+        assert_eq!(client.read().await.unwrap(), Bytes::from_static(b"2"));
+        assert_eq!((checks.get(), control_checks.get()), (2, 1));
+        client.close().await;
+    }
+
     /// Control service, `busy` makes it not ready until `gate` is opened
     struct Ctl {
         busy: Rc<Cell<bool>>,
         gate: Rc<Cell<bool>>,
         fail: bool,
+        changed: ntex_service::ReadyNotifier,
     }
 
     impl Service<(), Control<()>> for Ctl {
         type Res = Option<Bytes>;
         type Error = ();
+
+        fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
+            ctx.subscribe(&self.changed);
+        }
 
         async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
             if self.fail {
@@ -1334,11 +1394,14 @@ mod tests {
         let gate = Rc::new(Cell::new(false));
         let calls = Rc::new(Cell::new(0));
         let (busy2, calls2) = (busy.clone(), calls.clone());
+        let changed = ntex_service::ReadyNotifier::new();
+        let changed2 = changed.clone();
         let (disp, _) = Dispatcher::new_debug(
             server,
             BytesCodec,
             fn_service(async move |msg: Bytes| {
                 busy2.set(true);
+                changed2.notify();
                 calls2.set(calls2.get() + 1);
                 sleep(Millis(50)).await;
                 Ok::<_, DispatcherError<()>>(Some(msg))
@@ -1347,6 +1410,7 @@ mod tests {
                 busy: busy.clone(),
                 gate: gate.clone(),
                 fail: false,
+                changed,
             },
         );
         let (tx, rx) = oneshot::channel();
@@ -1394,6 +1458,7 @@ mod tests {
                 busy: Rc::default(),
                 gate: Rc::default(),
                 fail: true,
+                changed: ntex_service::ReadyNotifier::new(),
             },
         );
         let res = timeout(Millis(500), disp).await.unwrap();
@@ -1447,11 +1512,15 @@ mod tests {
     /// Service readiness error while the control service handles the stop message
     #[ntex::test]
     async fn test_err_in_service_ready_during_stop() {
-        struct Srv(Rc<Cell<bool>>, Rc<Cell<usize>>);
+        struct Srv(Rc<Cell<bool>>, Rc<Cell<usize>>, ntex_service::ReadyNotifier);
 
         impl Service<(), Bytes> for Srv {
             type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
+
+            fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
+                ctx.subscribe(&self.2);
+            }
 
             async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
                 if self.0.get() {
@@ -1471,14 +1540,16 @@ mod tests {
 
         let stopped = Rc::new(Cell::new(false));
         let stopped2 = stopped.clone();
+        let changed = ntex_service::ReadyNotifier::new();
         let counter = Rc::new(Cell::new(0));
         let (disp, _) = Dispatcher::new_debug(
             server,
             ByteCodec,
-            Srv(stopped.clone(), counter.clone()),
+            Srv(stopped.clone(), counter.clone(), changed.clone()),
             fn_service(async move |msg: Control<()>| {
                 if let Control::Stop(Reason::Protocol(_)) = msg {
                     stopped2.set(true);
+                    changed.notify();
                     sleep(Millis(100)).await;
                 }
                 Ok::<_, ()>(None)
@@ -2002,11 +2073,15 @@ mod tests {
     /// Frame read budget restarts after the service pauses reading
     #[ntex::test]
     async fn test_read_rate_reset_on_pause() {
-        struct Srv(Rc<Cell<bool>>, Condition<()>);
+        struct Srv(Rc<Cell<bool>>, Condition<()>, ntex_service::ReadyNotifier);
 
         impl Service<(), Bytes> for Srv {
             type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
+
+            fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
+                ctx.subscribe(&self.2);
+            }
 
             async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
                 if self.0.get() {
@@ -2030,6 +2105,7 @@ mod tests {
         let errs = Rc::new(RefCell::new(Vec::new()));
         let errs2 = errs.clone();
         let paused = Rc::new(Cell::new(false));
+        let changed = ntex_service::ReadyNotifier::new();
         let cond = Condition::new();
         let config = SharedCfg::new("DBG").add(
             IoConfig::new()
@@ -2039,7 +2115,7 @@ mod tests {
         let (disp, state) = Dispatcher::new_debug(
             nio::Io::new(server, config),
             BytesLenCodec(16),
-            Srv(paused.clone(), cond.clone()),
+            Srv(paused.clone(), cond.clone(), changed.clone()),
             fn_service(async move |msg: Control<()>| {
                 if let Control::Stop(Reason::Protocol(err)) = msg {
                     errs2.borrow_mut().push(*err.get_ref());
@@ -2057,9 +2133,11 @@ mod tests {
 
         // pause restarts the budget
         paused.set(true);
+        changed.notify();
         client.write("7");
         sleep(Millis(300)).await;
         paused.set(false);
+        changed.notify();
         cond.notify(());
 
         // two more periods fit into the restarted budget
@@ -2439,11 +2517,15 @@ mod tests {
         let data = Arc::new(AtomicUsize::new(0));
         let data2 = OnDrop(data.clone());
 
-        struct Srv(Cell<bool>, OnDrop);
+        struct Srv(Cell<bool>, OnDrop, ntex_service::ReadyNotifier);
 
         impl Service<(), Bytes> for Srv {
             type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
+
+            fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
+                ctx.subscribe(&self.2);
+            }
 
             async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
                 if self.0.get() {
@@ -2459,6 +2541,7 @@ mod tests {
             ) -> Result<Option<Bytes>, Self::Error> {
                 let _data = self.1.clone();
                 self.0.set(true);
+                self.2.notify();
                 sleep(Millis(999_999)).await;
                 Ok(None)
             }
@@ -2469,7 +2552,7 @@ mod tests {
         let (disp, _) = Dispatcher::new_debug(
             server,
             BytesCodec,
-            Srv(Cell::new(false), data2),
+            Srv(Cell::new(false), data2, ntex_service::ReadyNotifier::new()),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         let (tx, rx) = ntex::channel::oneshot::channel();
@@ -2493,11 +2576,15 @@ mod tests {
         impl Service<(), Control<()>, Res = Option<Bytes>, Error = ()>,
         Rc<RefCell<Vec<u8>>>,
     ) {
-        struct Srv(bool, Cell<bool>);
+        struct Srv(bool, Cell<bool>, ntex_service::ReadyNotifier);
 
         impl Service<(), Bytes> for Srv {
             type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
+
+            fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
+                ctx.subscribe(&self.2);
+            }
 
             async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
                 if !self.0 && self.1.get() {
@@ -2508,6 +2595,7 @@ mod tests {
 
             async fn call(&self, _: Bytes, _: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
                 self.1.set(true);
+                self.2.notify();
                 Ok(Some(Bytes::from(vec![b'x'; 65_536])))
             }
         }
@@ -2528,7 +2616,11 @@ mod tests {
             }
             Ok::<_, ()>(None)
         });
-        (Srv(ready, Cell::new(false)), control, data)
+        (
+            Srv(ready, Cell::new(false), ntex_service::ReadyNotifier::new()),
+            control,
+            data,
+        )
     }
 
     fn write_timeout_cfg() -> SharedCfg {
@@ -3127,11 +3219,19 @@ mod tests {
     async fn service_is_not_ready_and_backpressure() {
         let (ctx, rx) = oneshot::channel();
 
-        struct Srv(Cell<bool>, Cell<Option<oneshot::Receiver<()>>>);
+        struct Srv(
+            Cell<bool>,
+            Cell<Option<oneshot::Receiver<()>>>,
+            ntex_service::ReadyNotifier,
+        );
 
         impl Service<(), Bytes> for Srv {
             type Res = Option<Bytes>;
             type Error = DispatcherError<()>;
+
+            fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
+                ctx.subscribe(&self.2);
+            }
 
             async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
                 if self.0.get()
@@ -3148,6 +3248,7 @@ mod tests {
                 _: Ctx<'_, Self, ()>,
             ) -> Result<Option<Bytes>, Self::Error> {
                 self.0.set(true);
+                self.2.notify();
                 Ok(Some(msg))
             }
         }
@@ -3161,7 +3262,11 @@ mod tests {
                 SharedCfg::new("DBG").add(IoConfig::new().set_write_backpressure(2)),
             ),
             BytesCodec,
-            Srv(Cell::new(false), Cell::new(Some(rx))),
+            Srv(
+                Cell::new(false),
+                Cell::new(Some(rx)),
+                ntex_service::ReadyNotifier::new(),
+            ),
             fn_service(async move |_: Control<()>| Ok::<_, ()>(None)),
         );
         let (tx, rx) = ntex::channel::oneshot::channel();
@@ -3320,33 +3425,31 @@ mod tests {
         assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "wr0"]);
     }
 
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     struct GateDir {
         blocked: Cell<bool>,
         waker: RefCell<Option<std::task::Waker>>,
     }
 
     impl GateDir {
-        fn poll(&self, res: Poll<nio::Readiness>, cx: &Context<'_>) -> Poll<nio::Readiness> {
+        fn poll(&self, res: Poll<io::Result<()>>, cx: &Context<'_>) -> Poll<io::Result<()>> {
+            *self.waker.borrow_mut() = Some(cx.waker().clone());
             match res {
-                Poll::Ready(nio::Readiness::Ready) if self.blocked.get() => {
-                    *self.waker.borrow_mut() = Some(cx.waker().clone());
-                    Poll::Pending
-                }
+                Poll::Ready(Ok(())) if self.blocked.get() => Poll::Pending,
                 res => res,
             }
         }
 
         fn set(&self, blocked: bool) {
             self.blocked.set(blocked);
-            if !blocked && let Some(waker) = self.waker.borrow_mut().take() {
+            if let Some(waker) = self.waker.borrow_mut().take() {
                 waker.wake();
             }
         }
     }
 
-    /// Gate control, a blocked filter chain is not ready for reads or writes
-    #[derive(Clone, Default)]
+    /// Gate control: pause input or hold output in the filter.
+    #[derive(Debug, Clone, Default)]
     struct GateCtl(Rc<(GateDir, GateDir)>);
 
     impl GateCtl {
@@ -3360,6 +3463,32 @@ mod tests {
     }
 
     struct GateFilter<F>(F, GateCtl);
+
+    #[derive(Debug)]
+    struct GateLayer(GateCtl);
+
+    impl nio::FilterLayer for GateLayer {
+        fn process_read_buf(&self, buf: &nio::FilterBuf<'_>) -> io::Result<()> {
+            buf.with_read_buffers(|src, dst| {
+                if let Some(src) = src {
+                    dst.extend_from_slice(src);
+                    src.clear();
+                }
+            });
+            Ok(())
+        }
+
+        fn process_write_buf(&self, buf: &nio::FilterBuf<'_>) -> io::Result<()> {
+            if !self.0.0.1.blocked.get() {
+                buf.with_write_buffers(ntex_bytes::BytePages::move_to);
+            }
+            Ok(())
+        }
+
+        fn shutdown(&self, _: &nio::FilterBuf<'_>) -> io::Result<Poll<()>> {
+            Ok(Poll::Ready(()))
+        }
+    }
 
     impl<F: nio::Filter> nio::Filter for GateFilter<F> {
         fn query(&self, id: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
@@ -3378,12 +3507,8 @@ mod tests {
             self.0.shutdown(ctx)
         }
 
-        fn poll_read_ready(&self, cx: &mut Context<'_>) -> Poll<nio::Readiness> {
-            self.1.0.0.poll(self.0.poll_read_ready(cx), cx)
-        }
-
-        fn poll_write_ready(&self, cx: &mut Context<'_>) -> Poll<nio::Readiness> {
-            self.1.0.1.poll(self.0.poll_write_ready(cx), cx)
+        fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.1.0.0.poll(self.0.poll_ready(cx), cx)
         }
     }
 
@@ -3407,7 +3532,9 @@ mod tests {
     {
         let gate = GateCtl::default();
         let g = gate.clone();
-        let io = nio::Io::new(server, cfg).map_filter(move |f| GateFilter(f, g));
+        let io = nio::Io::new(server, cfg)
+            .add_filter(GateLayer(gate.clone()))
+            .map_filter(move |f| GateFilter(f, g));
         let ioref = io.get_ref();
         let disp = Dispatcher::new(
             IoBoxed::from(io),
@@ -3457,7 +3584,7 @@ mod tests {
         gate.block_read(true);
         client.write("5678");
         sleep(Millis(100)).await;
-        assert!(io.is_read_filter_paused());
+        assert!(io.is_filter_paused());
 
         sleep(Millis(3000)).await;
         assert!(io.is_active());
@@ -3465,7 +3592,7 @@ mod tests {
 
         gate.block_read(false);
         assert_eq!(&read_exact(&client, 8).await[..], b"12345678");
-        assert!(!io.is_read_filter_paused());
+        assert!(!io.is_filter_paused());
         assert!(errs.borrow().is_empty());
     }
 
@@ -3480,7 +3607,7 @@ mod tests {
         gate.block_read(true);
         client.write("12345678");
         sleep(Millis(100)).await;
-        assert!(io.is_read_filter_paused());
+        assert!(io.is_filter_paused());
 
         sleep(Millis(2000)).await;
         assert!(io.is_active());
@@ -3518,7 +3645,9 @@ mod tests {
         gate.block_write(true);
         client.write("1");
         sleep(Millis(100)).await;
-        assert!(io.is_write_filter_paused());
+        gate.block_read(true);
+        sleep(Millis(100)).await;
+        assert!(io.is_filter_paused());
         assert_eq!(&data.borrow()[..], &[1]);
 
         sleep(Millis(2500)).await;
@@ -3526,8 +3655,9 @@ mod tests {
         assert_eq!(&data.borrow()[..], &[1]);
 
         gate.block_write(false);
+        gate.block_read(false);
         assert_eq!(read_exact(&client, 65_536).await.len(), 65_536);
-        assert!(!io.is_write_filter_paused());
+        assert!(!io.is_filter_paused());
         assert!(wait_until(|| data.borrow().len() == 2).await);
         assert_eq!(&data.borrow()[..], &[1, 2]);
     }
@@ -3539,14 +3669,17 @@ mod tests {
 
         gate.block_write(true);
         client.write("1");
+        sleep(Millis(100)).await;
+        gate.block_read(true);
         sleep(Millis(1500)).await;
-        assert!(io.is_write_filter_paused());
+        assert!(io.is_filter_paused());
         assert!(io.is_active());
 
         // the peer does not read, the timeout starts over once writes resume
         gate.block_write(false);
+        gate.block_read(false);
         sleep(Millis(500)).await;
-        assert!(!io.is_write_filter_paused());
+        assert!(!io.is_filter_paused());
         assert!(io.is_active());
         assert!(wait_until(|| !io.is_active()).await);
         assert_eq!(&data.borrow()[..], &[1, 3]);
