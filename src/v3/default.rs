@@ -152,6 +152,7 @@ where
         ctx.call(&self.svc, req).await.map(|_| None)
     }
 
+    ntex_service::forward_bind!(Session<AppSt>, svc);
     ntex_service::forward_ready!(Session<AppSt>, svc);
     ntex_service::forward_shutdown!(Session<AppSt>, svc);
 }

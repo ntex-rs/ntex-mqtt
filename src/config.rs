@@ -27,6 +27,8 @@ use crate::types::QoS;
 /// ready or the response queue is full (see [`set_max_queue`]). The frame read
 /// budget restarts when reading resumes. During write backpressure only the
 /// write timeout (`IoConfig::set_write_timeout()`) applies.
+/// Read and write timeouts are suspended while the io filter chain is paused
+/// (`IoRef::is_filter_paused()`), since that pause is not caused by the peer.
 ///
 /// # Read pause
 ///
@@ -36,6 +38,20 @@ use crate::types::QoS;
 /// * the total size of in-flight publishes reaches [`set_max_receive_size`],
 /// * the unread part of a streamed payload reaches [`set_max_payload_buffer_size`],
 /// * the publish or control service is not ready.
+///
+/// Successful service readiness is cached across packets and calls. Custom
+/// publish, protocol-message, connection-control, and handshake services whose
+/// readiness changes must subscribe to a [`ntex_service::ReadyNotifier`] in
+/// [`ntex_service::Service::bind`] and notify synchronously whenever the gate
+/// changes, before waking waiters. Middleware and other composite services must
+/// bind every child service or pipeline, including call-only children; forwarding
+/// `ready()` alone does not forward notifications.
+///
+/// Built-in in-flight limits and payload streams notify automatically, including
+/// cancellation, payload-buffer watermarks, and a dropped payload receiver.
+/// The in-flight count limit still queues publishes in `call()` rather than
+/// pausing acks and pings. A streaming publish bypasses the size limit until
+/// its handler completes, so its remaining payload can reach that handler.
 ///
 /// Acks of outgoing publishes and the peer's PINGREQ are packets on the same
 /// connection, they are not read while reading is paused. A handler that awaits

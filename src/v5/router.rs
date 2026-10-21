@@ -139,6 +139,13 @@ impl<AppSt, Err: 'static> Service<Session<AppSt>, Publish> for RouterService<App
     type Res = PublishAck;
     type Error = Err;
 
+    fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
+        for handler in &self.handlers {
+            ctx.bind::<_, Session<AppSt>, Publish>(handler);
+        }
+        ctx.bind::<_, Session<AppSt>, Publish>(&self.default);
+    }
+
     #[inline]
     async fn ready(&self, ctx: Ctx<'_, Self, Session<AppSt>>) -> Result<(), Self::Error> {
         for hnd in &self.handlers {

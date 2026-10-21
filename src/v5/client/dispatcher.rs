@@ -1,7 +1,7 @@
 use std::{cell::Cell, cell::RefCell, marker::PhantomData, num::NonZero, num::NonZeroU16, rc::Rc};
 
 use ntex_bytes::ByteString;
-use ntex_service::{Ctx, Service, cfg::Cfg};
+use ntex_service::{BindCtx, Ctx, Service, cfg::Cfg};
 use ntex_util::{HashMap, future::Either, future::join, hash_map};
 
 use crate::error::{DecodeError, DispatcherError, MqttProtocolError, PayloadError, SpecViolation};
@@ -87,6 +87,12 @@ where
     type Res = Option<Packet>;
     type Error = DispatcherError<E>;
 
+    fn bind(&self, ctx: BindCtx<'_>) {
+        self.inner.sink.payload.bind(&ctx);
+        ctx.bind::<_, St, Publish>(&self.publish);
+        ctx.bind::<_, St, ProtocolMessage>(&self.inner.control);
+    }
+
     #[inline]
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
         let (res1, res2) = join(ctx.ready(&self.publish), ctx.ready(&self.inner.control)).await;
@@ -95,12 +101,9 @@ where
         // receiver is dropped before the stream ends
         if res1.is_ok()
             && res2.is_ok()
-            && let Some(pl) = self.inner.sink.payload.take()
+            && self.inner.sink.payload.ready().await != PayloadStatus::Ready
         {
-            self.inner.sink.payload.set(Some(pl.clone()));
-            if pl.ready().await != PayloadStatus::Ready {
-                self.inner.sink.force_close();
-            }
+            self.inner.sink.force_close();
         }
 
         res1.map_err(DispatcherError::Service)?;
@@ -250,10 +253,10 @@ where
                 let payload = if publish.payload_size == payload.len() as u32 {
                     Payload::from_bytes(payload)
                 } else {
-                    let (pl, sender) =
-                        Payload::from_stream(payload, self.cfg.max_payload_buffer_size);
-                    self.inner.sink.payload.set(Some(sender));
-                    pl
+                    self.inner
+                        .sink
+                        .payload
+                        .start(payload, self.cfg.max_payload_buffer_size)
                 };
 
                 publish_fn(
@@ -272,13 +275,7 @@ where
                         self.discard_payload.set(false);
                     }
                     Ok(None)
-                } else if let Some(pl) = self.inner.sink.payload.take() {
-                    pl.feed_data(buf);
-                    if eof {
-                        pl.feed_eof();
-                    } else {
-                        self.inner.sink.payload.set(Some(pl));
-                    }
+                } else if self.inner.sink.payload.feed(buf, eof) {
                     Ok(None)
                 } else {
                     // the publish of the chunk failed, the connection is closing
@@ -873,7 +870,7 @@ mod tests {
         assert_eq!(published.get(), 3);
         let chunk = Decoded::PayloadChunk(Bytes::from_static(b"def"), true);
         assert_eq!(disp.call(chunk).await.unwrap(), None);
-        assert!(shared.payload.take().is_none());
+        assert!(!shared.payload.feed(Bytes::new(), true));
 
         // re-delivery does not use receive maximum quota
         let (_io, _, disp) = qos2_dispatcher(&pubrel_calls, &published, 1);
@@ -927,11 +924,15 @@ mod tests {
     async fn test_payload_backpressure() {
         use std::{cell::RefCell, task::Poll};
 
-        struct FailReady<E>(Rc<Cell<bool>>, fn() -> E);
+        struct FailReady<E>(Rc<Cell<bool>>, fn() -> E, ntex_service::ReadyNotifier);
 
         impl<St, E> Service<St, ProtocolMessage> for FailReady<E> {
             type Res = ProtocolMessageAck;
             type Error = E;
+
+            fn bind(&self, ctx: BindCtx<'_>) {
+                ctx.subscribe(&self.2);
+            }
 
             async fn ready(&self, _: Ctx<'_, Self, St>) -> Result<(), E> {
                 if self.0.get() { Err((self.1)()) } else { Ok(()) }
@@ -951,11 +952,16 @@ mod tests {
             Rc<Cell<bool>>,
             fn() -> E,
             fn() -> R,
+            ntex_service::ReadyNotifier,
         );
 
         impl<St, R, E> Service<St, Publish> for Hold<R, E> {
             type Res = R;
             type Error = E;
+
+            fn bind(&self, ctx: BindCtx<'_>) {
+                ctx.subscribe(&self.4);
+            }
 
             async fn ready(&self, _: Ctx<'_, Self, St>) -> Result<(), E> {
                 if self.1.get() { Err((self.2)()) } else { Ok(()) }
@@ -970,6 +976,7 @@ mod tests {
         let fail = Rc::new(Cell::new(false));
         let pfail = Rc::new(Cell::new(false));
         let held = Rc::new(RefCell::new(None));
+        let changed = ntex_service::ReadyNotifier::new();
         let (io, _, disp) = dispatcher(
             MqttServiceConfig::new().set_max_payload_buffer_size(4),
             Hold(
@@ -977,8 +984,9 @@ mod tests {
                 pfail.clone(),
                 || (),
                 || Either::Right(PublishAck::new(codec::PublishAckReason::Success)),
+                changed.clone(),
             ),
-            FailReady(fail.clone(), || ()),
+            FailReady(fail.clone(), || (), changed.clone()),
             16,
         );
         let chunk = |data: &'static [u8]| {
@@ -1019,17 +1027,20 @@ mod tests {
         // a readiness error is not delayed by the paused payload
         assert_eq!(chunk(b"efgh").await.unwrap(), None);
         fail.set(true);
+        changed.notify();
         assert!(matches!(
             lazy(|cx| disp.poll_ready(cx)).await,
             Poll::Ready(Err(_))
         ));
         fail.set(false);
         pfail.set(true);
+        changed.notify();
         assert!(matches!(
             lazy(|cx| disp.poll_ready(cx)).await,
             Poll::Ready(Err(_))
         ));
         pfail.set(false);
+        changed.notify();
 
         // the payload receiver is dropped before the stream ends
         assert!(lazy(|cx| disp.poll_ready(cx)).await.is_pending());

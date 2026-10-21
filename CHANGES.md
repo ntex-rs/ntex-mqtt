@@ -1,5 +1,21 @@
 # Changes
 
+## Unreleased
+
+* Reuse notification-invalidated readiness across MQTT packets and calls. Wire
+  handshake, routing, publish, protocol-message, and connection-control services
+  into the bind-time readiness graph. Custom mutable readiness must notify changes.
+
+* Replace the in-flight limiter's once-per-call readiness flag with an independent
+  inner service cache. Preserve publish-slot ordering, ack/ping progress, and the
+  size-limit exception until a streaming publish's handler completes.
+
+* Notify payload backpressure, terminal states, and receiver drops through a
+  stable source shared by successive streams and every bound dispatcher.
+
+* Require `ntex-service` 5.3, `ntex-util` 4.5, and `ntex-io` 4.5. Use the unified
+  io filter-pause state to suspend read and write timeouts.
+
 ## [9.2.1] - 2026-10-07
 
 * `InFlightService` ignores the size limit until a streaming publish completes, the

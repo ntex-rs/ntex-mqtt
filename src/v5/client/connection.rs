@@ -4,7 +4,7 @@ use ntex_bytes::ByteString;
 use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Path, Router, RouterBuilder};
 use ntex_service::pipeline::{Pipeline, PipelineState};
-use ntex_service::{IntoService, Service, cfg::Cfg, fn_service, fn_service_st};
+use ntex_service::{BindCtx, Ctx, IntoService, Service, cfg::Cfg, fn_service};
 use ntex_util::time::{Millis, Seconds, sleep};
 use ntex_util::{HashMap, future::Either};
 
@@ -347,28 +347,53 @@ where
     PErr: 'static,
     PublishAck: TryFrom<PErr, Error = PErr>,
 {
-    // let handlers =
-    let aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>> =
-        RefCell::new(HashMap::default());
-    let handlers = Rc::new(handlers);
+    RouteDispatch {
+        router,
+        handlers,
+        aliases: RefCell::new(HashMap::default()),
+    }
+}
 
-    fn_service_st(async move |st: &Session<()>, mut req: Publish| {
+struct RouteDispatch<E> {
+    router: Router<usize>,
+    handlers: Vec<PipelineState<Session<()>, Publish, PublishAck, E>>,
+    aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>>,
+}
+
+impl<E: 'static> Service<Session<()>, Publish> for RouteDispatch<E>
+where
+    PublishAck: TryFrom<E, Error = E>,
+{
+    type Res = Either<Publish, PublishAck>;
+    type Error = E;
+
+    fn bind(&self, ctx: BindCtx<'_>) {
+        for handler in &self.handlers {
+            handler.bind_to(&ctx);
+        }
+    }
+
+    async fn call(
+        &self,
+        mut req: Publish,
+        ctx: Ctx<'_, Self, Session<()>>,
+    ) -> Result<Self::Res, E> {
         let idx = if !req.publish_topic().is_empty() {
-            if let Some((idx, _info)) = router.recognize(req.topic_mut()) {
+            if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
                 // save info for topic alias
                 if let Some(alias) = req.packet().properties.topic_alias {
-                    aliases
+                    self.aliases
                         .borrow_mut()
                         .insert(alias, (*idx, req.topic().clone()));
                 }
                 *idx
             } else {
-                return Ok::<_, PErr>(Either::Left(req));
+                return Ok(Either::Left(req));
             }
         }
         // handle publish with topic alias
         else if let Some(ref alias) = req.packet().properties.topic_alias {
-            let aliases = aliases.borrow();
+            let aliases = self.aliases.borrow();
             if let Some(item) = aliases.get(alias) {
                 *req.topic_mut() = item.1.clone();
                 item.0
@@ -381,14 +406,14 @@ where
         };
 
         // exec handler
-        match handlers[idx].call(req, st).await {
+        match self.handlers[idx].call(req, ctx.st()).await {
             Ok(ack) => Ok(Either::Right(ack)),
             Err(err) => match PublishAck::try_from(err) {
                 Ok(ack) => Ok(Either::Right(ack)),
                 Err(err) => Err(err),
             },
         }
-    })
+    }
 }
 
 async fn keepalive(sink: MqttSink, timeout: Seconds) {

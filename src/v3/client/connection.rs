@@ -4,7 +4,7 @@ use std::{fmt, marker::PhantomData, rc::Rc};
 use ntex_io::IoBoxed;
 use ntex_router::{IntoPattern, Router, RouterBuilder};
 use ntex_service::pipeline::{Pipeline, PipelineState};
-use ntex_service::{IntoService, Service, fn_service, fn_service_st};
+use ntex_service::{BindCtx, Ctx, IntoService, Service, fn_service};
 use ntex_util::future::Either;
 use ntex_util::time::{Millis, Seconds, sleep};
 
@@ -323,20 +323,40 @@ where
     PErr: 'static,
     Err: From<PErr>,
 {
-    let handlers = Rc::new(handlers);
+    RouteDispatch { router, handlers }.map_err(Err::from)
+}
 
-    fn_service_st(async move |st: &Session<()>, mut req: Publish| {
-        if let Some((idx, _info)) = router.recognize(req.topic_mut()) {
+struct RouteDispatch<E> {
+    router: Router<usize>,
+    handlers: Vec<PipelineState<Session<()>, Publish, (), E>>,
+}
+
+impl<E: 'static> Service<Session<()>, Publish> for RouteDispatch<E> {
+    type Res = Either<(), Publish>;
+    type Error = E;
+
+    fn bind(&self, ctx: BindCtx<'_>) {
+        for handler in &self.handlers {
+            handler.bind_to(&ctx);
+        }
+    }
+
+    async fn call(
+        &self,
+        mut req: Publish,
+        ctx: Ctx<'_, Self, Session<()>>,
+    ) -> Result<Self::Res, E> {
+        if let Some((idx, _info)) = self.router.recognize(req.topic_mut()) {
             // exec handler
             let idx = *idx;
-            match handlers[idx].call(req, st).await {
+            match self.handlers[idx].call(req, ctx.st()).await {
                 Ok(()) => Ok(Either::Left(())),
-                Err(err) => Err(err.into()),
+                Err(err) => Err(err),
             }
         } else {
-            Ok::<_, Err>(Either::Right(req))
+            Ok(Either::Right(req))
         }
-    })
+    }
 }
 
 async fn keepalive(sink: MqttSink, timeout: Seconds) {
