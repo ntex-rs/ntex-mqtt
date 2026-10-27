@@ -27,20 +27,27 @@ async fn test_default_max_size() {
     assert_eq!(ack.max_packet_size, Some(256 * 1024));
 
     // 13 bytes of fixed header, topic, packet id and properties length
-    let publish = |payload_size: u32| {
-        Encoded::Publish(
-            codec::Publish {
-                payload_size,
-                ..pkt_publish()
-            },
-            Some(Bytes::from(vec![b'*'; payload_size as usize])),
-        )
+    let publish = |payload_size| codec::Publish {
+        payload_size,
+        ..pkt_publish()
     };
-    io.send(publish(256 * 1024 - 13), &codec).await.unwrap();
+    io.send(
+        Encoded::Publish(
+            publish(256 * 1024 - 13),
+            Some(Bytes::from(vec![b'*'; 256 * 1024 - 13])),
+        ),
+        &codec,
+    )
+    .await
+    .unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     assert!(matches!(packet(pkt), Packet::PublishAck(_)));
 
-    io.send(publish(256 * 1024 - 12), &codec).await.unwrap();
+    // The declared size is rejected before the payload is read. Sending the
+    // payload can cause a TCP reset that hides DISCONNECT on Windows.
+    io.send(Encoded::Publish(publish(256 * 1024 - 12), None), &codec)
+        .await
+        .unwrap();
     let pkt = io.recv(&codec).await.unwrap().unwrap();
     let Packet::Disconnect(pkt) = packet(pkt) else {
         panic!()

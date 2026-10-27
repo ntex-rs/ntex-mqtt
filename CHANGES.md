@@ -1,6 +1,10 @@
 # Changes
 
-## Unreleased
+## [9.3.1] - 2026-10-27
+
+* Use optimized spawn_detached()
+
+## [9.3.0] - 2026-10-21
 
 * Reuse notification-invalidated readiness across MQTT packets and calls. Wire
   handshake, routing, publish, protocol-message, and connection-control services
