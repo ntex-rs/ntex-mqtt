@@ -7,7 +7,7 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, future::Future, pin:
 use ntex_codec::{Decoder, Encoder};
 use ntex_io::{Decoded, IoBoxed, IoRef, IoStatusUpdate, RecvError};
 use ntex_service::{cfg::Configuration, pipeline::Pipeline, pipeline::PipelineCall};
-use ntex_util::{future::Either, future::select, spawn, time::Seconds};
+use ntex_util::{future::Either, future::select, spawn_detached, time::Seconds};
 
 use self::timer::{Timer, Timers};
 use crate::config::MqttServiceConfig;
@@ -586,7 +586,7 @@ where
             let stopping = st.waiter(STOP_TAG).into_static();
             let _ = stopping.poll_ready(cx);
 
-            spawn(async move {
+            spawn_detached(async move {
                 let item = match select(fut, stopping).await {
                     Either::Left(item) => item,
                     Either::Right(()) => Ok(None),
