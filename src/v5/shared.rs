@@ -58,6 +58,8 @@ pub(super) struct MqttSharedQueues {
     // packets awaiting ack, acks of different flows may arrive in any order
     // (MQTT 3.1.1 and 5.0, 4.6)
     inflight: HashMap<num::NonZeroU16, (Option<pool::Sender<Ack>>, AckType)>,
+    // QoS 1 PUBLISH packet ids in send order
+    pubacks: VecDeque<num::NonZeroU16>,
     // SUBSCRIBE and UNSUBSCRIBE packets in `inflight`
     subscribes: usize,
     // publishes that wait for send credit, in the order of arrival
@@ -132,6 +134,7 @@ impl MqttShared {
             cap: Cell::new(0),
             queues: RefCell::new(MqttSharedQueues {
                 inflight: HashMap::default(),
+                pubacks: VecDeque::new(),
                 subscribes: 0,
                 waiters: VecDeque::new(),
                 reserved: 0,
@@ -439,6 +442,7 @@ impl MqttShared {
         self.io.wake(STREAM_TAG);
 
         let mut queues = self.queues.borrow_mut();
+        queues.pubacks.clear();
         queues.subscribes = 0;
         let MqttSharedQueues {
             waiters, reserved, ..
@@ -669,6 +673,16 @@ impl MqttShared {
             return Ok(());
         }
 
+        if matches!(pkt, Ack::Publish(_)) {
+            if queues.pubacks.front() != Some(&idx) {
+                log::trace!("MQTT protocol error, out of order PUBACK: {idx}");
+                return Err(error::MqttProtocolError::generic_violation(
+                    "Received PUBACK out of order",
+                ));
+            }
+            queues.pubacks.pop_front();
+        }
+
         // PUBREL is sent only for a PUBREC with a reason code below 0x80
         // [MQTT-4.3.3-4], a failed PUBREC ends the QoS 2 flow and the packet id
         // is available for reuse (MQTT 5.0, 4.3.3)
@@ -733,6 +747,9 @@ impl MqttShared {
                     self.streaming_remaining.set(remaining);
                     let (tx, rx) = self.pool.queue.channel();
                     queues.inflight.insert(id, (Some(tx), ack));
+                    if matches!(ack, AckType::Publish) {
+                        queues.pubacks.push_back(id);
+                    }
                     Ok(rx)
                 }
                 Err(e) => Err(SendPacketError::Encode(e)),
@@ -758,6 +775,9 @@ impl MqttShared {
                 Ok(()) => {
                     self.streaming_remaining.set(remaining);
                     queues.inflight.insert(id, (None, ack));
+                    if matches!(ack, AckType::Publish) {
+                        queues.pubacks.push_back(id);
+                    }
                     Ok(())
                 }
                 Err(e) => Err(SendPacketError::Encode(e)),

@@ -1,5 +1,11 @@
 # Changes
 
+## [9.3.2] - 2026-10-29
+
+* v3, v5: Validate incoming QoS 1 PUBACKs in PUBLISH send order. An out-of-order
+  PUBACK closes the connection with a protocol error. Acks of different flows
+  remain independent.
+
 ## [9.3.1] - 2026-10-27
 
 * Use optimized spawn_detached()

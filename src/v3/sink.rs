@@ -1009,6 +1009,10 @@ mod tests {
             .send_at_most_once(Bytes::from_static(b"data"))
             .await
             .unwrap();
+        let mut publish = Box::pin(sink.publish("a/b").send_at_least_once(Bytes::new()));
+        assert!(is_pending(&mut publish).await);
+        assert_eq!(shared.pkt_ack(Ack::Publish(id(2))), Ok(()));
+        assert_eq!(publish.await, Ok(()));
         drop(client);
     }
 
@@ -1349,31 +1353,77 @@ mod tests {
             client.read_any()
         }
 
-        /// Acks are matched by packet id (MQTT 3.1.1, 4.6)
         #[ntex::test]
-        async fn test_ack_out_of_order() {
+        async fn test_ack_in_order() {
             let (_client, _io, shared, sink) = setup(2);
+            let send = |packet_id| {
+                Box::pin(
+                    sink.publish("a")
+                        .packet_id(packet_id)
+                        .send_at_least_once(Bytes::new()),
+                )
+            };
 
-            let mut a = send(&sink);
-            let mut b = send(&sink);
-            let mut c = send(&sink);
+            let mut a = send(3);
+            assert!(is_pending(&mut a).await);
+            assert_eq!(send(3).await, Err(SendPacketError::PacketIdInUse(id(3))));
+            let mut b = send(1);
+            let mut c = send(3);
             for f in [&mut a, &mut b, &mut c] {
                 assert!(is_pending(f).await);
             }
 
-            // ack of "b" releases the credit for "c"
-            assert_eq!(shared.pkt_ack(Ack::Publish(id(2))), Ok(()));
-            assert_eq!(b.await, Ok(()));
-            assert!(is_pending(&mut a).await);
+            sink.publish("a")
+                .send_at_most_once(Bytes::new())
+                .await
+                .unwrap();
+
+            // FIFO follows send order, not packet id, and permits id reuse.
+            assert_eq!(shared.pkt_ack(Ack::Publish(id(3))), Ok(()));
+            assert_eq!(a.await, Ok(()));
+            assert!(is_pending(&mut b).await);
             assert!(is_pending(&mut c).await);
             assert_eq!(sink.credit(), 0);
 
+            assert_eq!(shared.pkt_ack(Ack::Publish(id(1))), Ok(()));
+            assert_eq!(b.await, Ok(()));
             assert_eq!(shared.pkt_ack(Ack::Publish(id(3))), Ok(()));
             assert_eq!(c.await, Ok(()));
-            assert_eq!(shared.pkt_ack(Ack::Publish(id(1))), Ok(()));
-            assert_eq!(a.await, Ok(()));
             assert_eq!(sink.credit(), 2);
             assert!(sink.is_open());
+        }
+
+        #[ntex::test]
+        async fn test_ack_out_of_order() {
+            for drop_first in [false, true] {
+                let (_client, _io, shared, sink) = setup(2);
+                let mut a = send(&sink);
+                let mut b = send(&sink);
+                let mut c = send(&sink);
+                for f in [&mut a, &mut b, &mut c] {
+                    assert!(is_pending(f).await);
+                }
+                let a = if drop_first {
+                    drop(a);
+                    None
+                } else {
+                    Some(a)
+                };
+
+                assert_eq!(
+                    shared.pkt_ack(Ack::Publish(id(2))),
+                    Err(MqttProtocolError::generic_violation(
+                        "Received PUBACK out of order"
+                    ))
+                );
+                assert!(!sink.is_open());
+                if let Some(a) = a {
+                    assert_eq!(a.await, Err(SendPacketError::Disconnected));
+                }
+                for f in [b, c] {
+                    assert_eq!(f.await, Err(SendPacketError::Disconnected));
+                }
+            }
         }
 
         /// PUBACK of a later publish arrives before PUBCOMP of a released one
@@ -1460,7 +1510,6 @@ mod tests {
             assert!(!sink.is_open());
         }
 
-        /// Ack callback is called in the order of acks
         #[ntex::test]
         async fn test_ack_cb_out_of_order() {
             use std::cell::RefCell;
@@ -1478,12 +1527,21 @@ mod tests {
                     .unwrap();
             }
             assert_eq!(sink.credit(), 0);
-            assert_eq!(shared.pkt_ack(Ack::Publish(id(2))), Ok(()));
+            assert_eq!(shared.pkt_ack(Ack::Publish(id(1))), Ok(()));
             assert_eq!(sink.credit(), 1);
-            assert_eq!(shared.pkt_ack(Ack::Publish(id(3))), Ok(()));
-            assert_eq!(sink.credit(), 2);
+            assert_eq!(*calls.borrow(), [(1, false)]);
+            assert_eq!(
+                shared.pkt_ack(Ack::Publish(id(3))),
+                Err(MqttProtocolError::generic_violation(
+                    "Received PUBACK out of order"
+                ))
+            );
+            assert!(!sink.is_open());
             sink.close();
-            assert_eq!(*calls.borrow(), [(2, false), (3, false), (1, true)]);
+            let mut calls = calls.borrow_mut();
+            assert_eq!(calls[0], (1, false));
+            calls[1..].sort_unstable();
+            assert_eq!(*calls, [(1, false), (2, true), (3, true)]);
         }
     }
 }

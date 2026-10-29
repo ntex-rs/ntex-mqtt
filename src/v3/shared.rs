@@ -85,6 +85,8 @@ struct MqttSharedQueues {
     // packets awaiting ack, acks of different flows may arrive in any order
     // (MQTT 3.1.1 and 5.0, 4.6)
     inflight: HashMap<num::NonZeroU16, (Option<pool::Sender<Ack>>, AckType)>,
+    // QoS 1 PUBLISH packet ids in send order
+    pubacks: VecDeque<num::NonZeroU16>,
     waiters: VecDeque<pool::Sender<()>>,
     // PUBCOMP receivers, one per QoS 2 PUBLISH awaiting release
     rx: HashMap<num::NonZeroU16, pool::Receiver<Ack>>,
@@ -105,6 +107,7 @@ impl MqttShared {
             flags: Cell::new(if client { Flags::CLIENT } else { Flags::empty() }),
             queues: RefCell::new(MqttSharedQueues {
                 inflight: HashMap::default(),
+                pubacks: VecDeque::new(),
                 waiters: VecDeque::new(),
                 rx: HashMap::default(),
             }),
@@ -349,6 +352,7 @@ impl MqttShared {
         self.io.wake(STREAM_TAG);
 
         let mut queues = self.queues.borrow_mut();
+        queues.pubacks.clear();
         queues.waiters.clear();
 
         if let Some(cb) = self.on_publish_ack.take() {
@@ -455,6 +459,16 @@ impl MqttShared {
             }
             Ok(())
         } else {
+            if matches!(pkt, Ack::Publish(_)) {
+                if queues.pubacks.front() != Some(&idx) {
+                    log::trace!("MQTT protocol error, out of order PUBACK: {idx}");
+                    return Err(MqttProtocolError::generic_violation(
+                        "Received PUBACK out of order",
+                    ));
+                }
+                queues.pubacks.pop_front();
+            }
+
             // get publish ack channel
             log::trace!("Ack packet with id: {idx}");
             let tx = queues.inflight.remove(&idx).and_then(|(tx, _)| tx);
@@ -512,6 +526,9 @@ impl MqttShared {
                     self.streaming_remaining.set(remaining);
                     let (tx, rx) = self.pool.queue.channel();
                     queues.inflight.insert(id, (Some(tx), ack));
+                    if matches!(ack, AckType::Publish) {
+                        queues.pubacks.push_back(id);
+                    }
                     Ok(rx)
                 }
                 Err(e) => Err(SendPacketError::Encode(e)),
@@ -542,6 +559,9 @@ impl MqttShared {
                         "Publish ack callback is not set"
                     );
                     queues.inflight.insert(id, (None, ack));
+                    if matches!(ack, AckType::Publish) {
+                        queues.pubacks.push_back(id);
+                    }
                     Ok(())
                 }
                 Err(e) => Err(SendPacketError::Encode(e)),
