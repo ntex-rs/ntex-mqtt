@@ -1,5 +1,12 @@
 # Changes
 
+## [9.4.0] - 2026-10-30
+
+* InFlightService applies its limits once the last payload chunk of a streaming
+  publish is received, instead of when the publish completes. A publish that
+  stalls after receiving its payload no longer lets reading continue without
+  limits. Add `SizedRequest::is_last_chunk()`.
+
 ## [9.3.2] - 2026-10-29
 
 * v3, v5: Validate incoming QoS 1 PUBACKs in PUBLISH send order. An out-of-order
