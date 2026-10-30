@@ -79,6 +79,10 @@ impl crate::inflight::SizedRequest for Decoded {
         }
     }
 
+    fn is_last_chunk(&self) -> bool {
+        matches!(self, Decoded::PayloadChunk(_, true))
+    }
+
     fn is_limited(&self) -> bool {
         matches!(self, Decoded::Publish(..))
     }
@@ -1155,6 +1159,9 @@ mod tests {
         assert!(publish(5).has_more_chunks());
         assert!(Decoded::PayloadChunk(Bytes::from_static(b"c"), false).has_more_chunks());
         assert!(!Decoded::PayloadChunk(Bytes::from_static(b"de"), true).has_more_chunks());
+        assert!(Decoded::PayloadChunk(Bytes::from_static(b"de"), true).is_last_chunk());
+        assert!(!Decoded::PayloadChunk(Bytes::from_static(b"c"), false).is_last_chunk());
+        assert!(!publish(5).is_last_chunk());
         assert!(!Decoded::Packet(codec::Packet::PingRequest, 2).has_more_chunks());
     }
 
