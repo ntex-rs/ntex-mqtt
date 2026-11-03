@@ -1,7 +1,7 @@
 use std::{fmt, io, marker};
 
 use ntex_io::IoBoxed;
-use ntex_service::{Ctx, IntoService, RequestState, Service, State, cfg::Configuration};
+use ntex_service::{BindCtx, Ctx, IntoService, RequestState, Service, State, cfg::Configuration};
 use ntex_util::future::{Either, join, select};
 use ntex_util::time::Deadline;
 
@@ -79,7 +79,10 @@ where
     type Res = ();
     type Error = MqttError<Err>;
 
-    ntex_service::forward_bind!(St, v3, v5);
+    fn bind(&self, ctx: BindCtx<'_>) {
+        ctx.bind::<_, St, _>(&self.v3);
+        ctx.bind::<_, St, _>(&self.v5);
+    }
 
     #[inline]
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {

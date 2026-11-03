@@ -4,7 +4,7 @@ use ntex_error::Error;
 use ntex_io::IoBoxed;
 use ntex_net::connect::{self, Address, Connector};
 use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Ctx, IntoService, Service};
+use ntex_service::{BindCtx, Ctx, IntoService, Service};
 use ntex_util::time::{Seconds, timeout_checked};
 
 use super::{Connect, connection::Client, error::MqttClientError, error::MqttProtocolError};
@@ -68,9 +68,17 @@ where
     type Res = Client;
     type Error = Error<MqttClientError<codec::ConnectAck>>;
 
-    ntex_service::forward_bind!(SharedCfg, connector);
-    ntex_service::forward_ready!(SharedCfg, connector, Error::map_err);
-    ntex_service::forward_shutdown!(SharedCfg, connector);
+    fn bind(&self, ctx: BindCtx<'_>) {
+        ctx.bind::<_, SharedCfg, _>(&self.connector);
+    }
+
+    async fn ready(&self, ctx: Ctx<'_, Self, SharedCfg>) -> Result<(), Self::Error> {
+        ctx.ready(&self.connector).await.map_err(Error::map_err)
+    }
+
+    async fn shutdown(&self, ctx: Ctx<'_, Self, SharedCfg>) {
+        ctx.shutdown(&self.connector).await;
+    }
 
     /// Connect to mqtt server
     async fn call(
