@@ -146,6 +146,13 @@ impl<AppSt, Err> Service<Session<AppSt>, Publish> for RouterService<AppSt, Err> 
         ctx.ready(&self.default).await
     }
 
+    async fn shutdown(&self, ctx: Ctx<'_, Self, Session<AppSt>>) {
+        for hnd in &self.handlers {
+            ctx.shutdown(hnd).await;
+        }
+        ctx.shutdown(&self.default).await;
+    }
+
     #[inline]
     async fn call(
         &self,
@@ -170,5 +177,54 @@ mod tests {
     fn test_debug() {
         let router: Router<(), ()> = Router::new(fn_service(async |_: Publish| Ok::<_, ()>(())));
         assert!(format!("{router:?}").contains("v3::Router"));
+    }
+
+    struct Tracked(Rc<std::cell::Cell<usize>>);
+
+    impl Service<Session<()>, Publish> for Tracked {
+        type Res = ();
+        type Error = ();
+
+        async fn call(&self, _: Publish, _: Ctx<'_, Self, Session<()>>) -> Result<(), ()> {
+            Ok(())
+        }
+
+        async fn shutdown(&self, _: Ctx<'_, Self, Session<()>>) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    #[ntex::test]
+    async fn test_shutdown() {
+        use ntex_io::{Io, testing::IoTest};
+        use ntex_service::{Pipeline, cfg::SharedCfg, fn_factory};
+
+        use crate::v3::{MqttSink, codec, shared::MqttShared};
+
+        let (_client, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::new("DBG"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            false,
+            Rc::default(),
+        ));
+        let ses = Session::new((), MqttSink::new(shared), io.shared());
+
+        let count = Rc::new(std::cell::Cell::new(0));
+        let c1 = count.clone();
+        let c2 = count.clone();
+        let factory = Router::new(fn_factory(async move |_: &Session<()>| {
+            Ok::<_, Failure>(Tracked(c1.clone()))
+        }))
+        .resource(
+            "topic",
+            fn_factory(async move |_: &Session<()>| Ok::<_, Failure>(Tracked(c2.clone()))),
+        )
+        .into_factory();
+
+        let svc = Pipeline::new(ses.clone(), factory.create(&ses).await.unwrap());
+        svc.shutdown().await;
+        assert_eq!(count.get(), 2);
     }
 }

@@ -1,5 +1,12 @@
 # Changes
 
+## [9.5.0] - 2026-11-04
+
+* Use `ReadyBinding` instead of the removed `ServiceBinding` alias, require ntex-service 5.5
+
+* v3, v5: Router services shut down their handlers. Client publish routing waits for
+  handler readiness and shuts down handlers
+
 ## [9.4.0] - 2026-10-30
 
 * InFlightService applies its limits once the last payload chunk of a streaming
