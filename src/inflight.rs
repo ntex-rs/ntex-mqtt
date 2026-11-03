@@ -2,7 +2,7 @@
 use std::task::{Context, Poll, Waker};
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, future::poll_fn, rc::Rc};
 
-use ntex_service::{BindCtx, Ctx, ReadyNotifier, Service, ServiceBinding};
+use ntex_service::{BindCtx, Ctx, ReadyBinding, ReadyNotifier, Service};
 use ntex_util::{future::OnDropFn, future::join, task::LocalWaker};
 
 /// Trait for types that could be sized
@@ -42,7 +42,7 @@ pub trait SizedRequest {
 
 pub struct InFlightServiceImpl<S> {
     count: Counter,
-    service: ServiceBinding<S>,
+    service: ReadyBinding<S>,
     /// Id of the publish whose payload is being received
     streaming: Cell<Option<u64>>,
     next_streaming: Cell<u64>,
@@ -63,7 +63,7 @@ impl<S> InFlightServiceImpl<S> {
     /// The wrapped service retains its own readiness until it notifies a change.
     pub fn new(max_cap: u16, max_size: usize, service: S) -> Self {
         InFlightServiceImpl {
-            service: ServiceBinding::new(service),
+            service: ReadyBinding::new(service),
             streaming: Cell::new(None),
             next_streaming: Cell::new(0),
             count: Counter::new(max_cap, max_size),
@@ -380,6 +380,26 @@ mod tests {
         }
     }
 
+    /// Forwards to a shared pipeline, so several pipelines can share one service
+    struct Shared<R>(Rc<Pipeline<R, (), ()>>);
+
+    impl<R: 'static> Service<(), R> for Shared<R> {
+        type Res = ();
+        type Error = ();
+
+        fn bind(&self, ctx: BindCtx<'_>) {
+            self.0.bind_to(&ctx);
+        }
+
+        async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
+            self.0.ready().await
+        }
+
+        async fn call(&self, req: R, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
+            self.0.call(req).await
+        }
+    }
+
     /// Counts started calls, calls complete when the gate is opened
     struct CountService(Condition, Rc<Cell<usize>>);
 
@@ -458,15 +478,13 @@ mod tests {
     /// Readiness waiter must be woken by the in-flight counter when a call completes
     async fn check_ready_woken(max_size: usize) {
         let gate = Condition::new();
-        let svc = Rc::new(InFlightServiceImpl::new(
-            1,
-            max_size,
-            GateService(gate.clone()),
+        let svc = Rc::new(Pipeline::new(
+            (),
+            InFlightServiceImpl::new(1, max_size, GateService(gate.clone())),
         ));
-        // a completed pipeline call wakes the pipeline readiness waiters,
-        // the call uses a separate pipeline so only the counter can wake `srv`
-        let srv = Pipeline::new((), svc.clone());
-        let srv2 = Pipeline::new((), svc);
+        // the call uses a separate outer pipeline so only the counter can wake `srv`
+        let srv = Pipeline::new((), Shared(svc.clone()));
+        let srv2 = Pipeline::new((), Shared(svc));
 
         ntex_util::spawn(async move {
             let _ = srv2.call(()).await;
@@ -758,13 +776,12 @@ mod tests {
     async fn test_streaming_cancellation_invalidates_shared_readiness() {
         use std::future::Future;
 
-        let service = Rc::new(InFlightServiceImpl::new(
-            0,
-            10,
-            GateReqService(Condition::new()),
+        let service = Rc::new(Pipeline::new(
+            (),
+            InFlightServiceImpl::new(0, 10, GateReqService(Condition::new())),
         ));
-        let a = Pipeline::new((), service.clone());
-        let b = Pipeline::new((), service);
+        let a = Pipeline::new((), Shared(service.clone()));
+        let b = Pipeline::new((), Shared(service));
         let mut streaming = Box::pin(a.call(Req::Publish(true)));
         assert!(lazy(|cx| streaming.as_mut().poll(cx)).await.is_pending());
         let mut complete = Box::pin(b.call(Req::Publish(false)));
@@ -795,7 +812,7 @@ mod tests {
             ));
             let pipeline = Pipeline::new((), service.clone());
             let armed = Cell::new(true);
-            let callback = ntex_service::ReadyCallback::new(move || {
+            let callback = ntex_service::ReadyCallback::new(move |_| {
                 assert!(!armed.replace(false), "callback panic");
             });
             pipeline.on_notify(&callback);
@@ -1196,11 +1213,10 @@ mod tests {
         assert!(st.checks.get() > 0);
     }
 
-    /// Calls the inner service without checking its readiness, the inner
-    /// service has to enforce its limits
+    /// Does not check inner readiness, calls reuse this scope's cached
+    /// readiness, so the inner service has to enforce its limits
     struct NoWait<S>(S);
 
-    #[allow(deprecated)]
     impl<S: Service<(), (), Res = (), Error = ()>> Service<(), ()> for NoWait<S> {
         type Res = ();
         type Error = ();
@@ -1208,7 +1224,7 @@ mod tests {
         ntex_service::forward_bind!((), 0);
 
         async fn call(&self, req: (), ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {
-            ctx.call_nowait(&self.0, req).await
+            ctx.call(&self.0, req).await
         }
     }
 
@@ -1271,7 +1287,6 @@ mod tests {
     /// Calls the inner service twice after one readiness check
     struct Twice<S>(S);
 
-    #[allow(deprecated)]
     impl<S: Service<(), (), Res = (), Error = ()>> Service<(), ()> for Twice<S> {
         type Res = ();
         type Error = ();
@@ -1283,7 +1298,7 @@ mod tests {
         }
 
         async fn call(&self, (): (), ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {
-            let (a, b) = join(ctx.call_nowait(&self.0, ()), ctx.call_nowait(&self.0, ())).await;
+            let (a, b) = join(ctx.call(&self.0, ()), ctx.call(&self.0, ())).await;
             a.and(b)
         }
     }

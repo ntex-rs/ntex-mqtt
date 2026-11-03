@@ -4,7 +4,7 @@ use ntex_codec::{Decoder, Encoder};
 use ntex_error::Failure;
 use ntex_io::IoBoxed;
 use ntex_service::pipeline::{Pipeline, PipelineFactory};
-use ntex_service::{Ctx, Middleware, RequestState, Service, ServiceFactory};
+use ntex_service::{BindCtx, Ctx, Middleware, RequestState, Service, ServiceFactory};
 
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttError};
 use crate::{ConnectPipeline, Session, control::Control, io::Dispatcher, io::FrameState};
@@ -95,7 +95,9 @@ where
     type Res = ();
     type Error = MqttError<Err>;
 
-    ntex_service::forward_pl_bind!(St, connect);
+    fn bind(&self, ctx: BindCtx<'_>) {
+        self.connect.bind_to(&ctx);
+    }
 
     async fn call(&self, req: Req, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
         let (st, io) = req.unpack();

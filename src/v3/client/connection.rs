@@ -341,6 +341,19 @@ impl<E: 'static> Service<Session<()>, Publish> for RouteDispatch<E> {
         }
     }
 
+    async fn ready(&self, ctx: Ctx<'_, Self, Session<()>>) -> Result<(), E> {
+        for handler in &self.handlers {
+            handler.ready(ctx.st()).await?;
+        }
+        Ok(())
+    }
+
+    async fn shutdown(&self, ctx: Ctx<'_, Self, Session<()>>) {
+        for handler in &self.handlers {
+            handler.shutdown(ctx.st()).await;
+        }
+    }
+
     async fn call(
         &self,
         mut req: Publish,

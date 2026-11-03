@@ -154,6 +154,13 @@ impl<AppSt, Err: 'static> Service<Session<AppSt>, Publish> for RouterService<App
         ctx.ready(&self.default).await
     }
 
+    async fn shutdown(&self, ctx: Ctx<'_, Self, Session<AppSt>>) {
+        for hnd in &self.handlers {
+            ctx.shutdown(hnd).await;
+        }
+        ctx.shutdown(&self.default).await;
+    }
+
     #[allow(clippy::await_holding_refcell_ref)]
     async fn call(
         &self,
