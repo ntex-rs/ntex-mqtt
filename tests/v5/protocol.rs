@@ -471,9 +471,17 @@ where
         ctx.call(&self.svc, req).await
     }
 
-    ntex_service::forward_bind!(St, svc);
-    ntex_service::forward_ready!(St, svc);
-    ntex_service::forward_shutdown!(St, svc);
+    fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
+        ctx.bind::<_, St, R>(&self.svc);
+    }
+
+    async fn ready(&self, ctx: ntex_service::Ctx<'_, Self, St>) -> Result<(), Self::Error> {
+        ctx.ready(&self.svc).await
+    }
+
+    async fn shutdown(&self, ctx: ntex_service::Ctx<'_, Self, St>) {
+        ctx.shutdown(&self.svc).await;
+    }
 }
 
 /// Checks that every dispatched packet is seen by the `CountMw` middleware

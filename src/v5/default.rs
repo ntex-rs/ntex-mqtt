@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, rc::Rc};
 
 use ntex_error::Failure;
-use ntex_service::{Ctx, Middleware, Service, ServiceFactory, cfg::Cfg};
+use ntex_service::{BindCtx, Ctx, Middleware, Service, ServiceFactory, cfg::Cfg};
 
 use crate::error::{MqttError, PayloadError};
 use crate::{Control, MqttServiceConfig, Reason, inflight::InFlightServiceImpl};
@@ -185,9 +185,17 @@ where
         }
     }
 
-    ntex_service::forward_bind!(St, svc);
-    ntex_service::forward_ready!(St, svc, MqttError::Service);
-    ntex_service::forward_shutdown!(St, svc);
+    fn bind(&self, ctx: BindCtx<'_>) {
+        ctx.bind::<_, St, _>(&self.svc);
+    }
+
+    async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
+        ctx.ready(&self.svc).await.map_err(MqttError::Service)
+    }
+
+    async fn shutdown(&self, ctx: Ctx<'_, Self, St>) {
+        ctx.shutdown(&self.svc).await;
+    }
 }
 
 #[cfg(test)]

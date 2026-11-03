@@ -8,7 +8,7 @@ use ntex_io::IoBoxed;
 use ntex_service::cfg::Configuration;
 use ntex_service::pipeline::PipelineFactory;
 use ntex_service::{
-    Ctx, Identity, IntoService, IntoServiceFactory, Service, ServiceFactory, Stack,
+    BindCtx, Ctx, Identity, IntoService, IntoServiceFactory, Service, ServiceFactory, Stack,
 };
 use ntex_util::{future::Either, time::Seconds, time::timeout_checked};
 
@@ -237,9 +237,17 @@ where
     type Res = (IoBoxed, Rc<MqttShared>, Session<AppSt>, Seconds);
     type Error = MqttError<S::Error>;
 
-    ntex_service::forward_bind!(Hst, svc);
-    ntex_service::forward_ready!(Hst, svc, MqttError::Service);
-    ntex_service::forward_shutdown!(Hst, svc);
+    fn bind(&self, ctx: BindCtx<'_>) {
+        ctx.bind::<_, Hst, _>(&self.svc);
+    }
+
+    async fn ready(&self, ctx: Ctx<'_, Self, Hst>) -> Result<(), Self::Error> {
+        ctx.ready(&self.svc).await.map_err(MqttError::Service)
+    }
+
+    async fn shutdown(&self, ctx: Ctx<'_, Self, Hst>) {
+        ctx.shutdown(&self.svc).await;
+    }
 
     #[allow(clippy::too_many_lines)]
     async fn call(

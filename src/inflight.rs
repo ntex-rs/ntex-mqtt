@@ -137,7 +137,9 @@ where
         result
     }
 
-    ntex_service::forward_shutdown!(St, service);
+    async fn shutdown(&self, ctx: Ctx<'_, Self, St>) {
+        ctx.shutdown(&self.service).await;
+    }
 }
 
 struct StreamingGuard<'a>(u64, &'a Cell<Option<u64>>, &'a CounterInner);
@@ -1221,7 +1223,9 @@ mod tests {
         type Res = ();
         type Error = ();
 
-        ntex_service::forward_bind!((), 0);
+        fn bind(&self, ctx: BindCtx<'_>) {
+            ctx.bind::<_, (), _>(&self.0);
+        }
 
         async fn call(&self, req: (), ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {
             ctx.call(&self.0, req).await
@@ -1291,7 +1295,9 @@ mod tests {
         type Res = ();
         type Error = ();
 
-        ntex_service::forward_bind!((), 0);
+        fn bind(&self, ctx: BindCtx<'_>) {
+            ctx.bind::<_, (), _>(&self.0);
+        }
 
         async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {
             ctx.ready(&self.0).await

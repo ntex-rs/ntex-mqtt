@@ -194,6 +194,7 @@ mod tests {
         }
     }
 
+    /// Shutting down the router shuts down resource handlers and the default handler
     #[ntex::test]
     async fn test_shutdown() {
         use ntex_io::{Io, testing::IoTest};

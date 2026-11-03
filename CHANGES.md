@@ -7,6 +7,9 @@
 * v3, v5: Router services shut down their handlers. Client publish routing waits for
   handler readiness and shuts down handlers
 
+* Implement `bind`, `ready`, and `shutdown` forwarding manually instead of using
+  `ntex_service` forwarding macros
+
 ## [9.4.0] - 2026-10-30
 
 * InFlightService applies its limits once the last payload chunk of a streaming

@@ -447,6 +447,43 @@ mod tests {
         }
     }
 
+    struct Handler(Rc<std::cell::Cell<usize>>);
+
+    impl Service<Session<()>, Publish> for Handler {
+        type Res = ();
+        type Error = ();
+
+        async fn ready(&self, _: Ctx<'_, Self, Session<()>>) -> Result<(), ()> {
+            Err(())
+        }
+
+        async fn call(&self, _: Publish, _: Ctx<'_, Self, Session<()>>) -> Result<(), ()> {
+            Ok(())
+        }
+
+        async fn shutdown(&self, _: Ctx<'_, Self, Session<()>>) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    /// Publish routing reports handler readiness errors and shuts down handlers
+    #[ntex::test]
+    async fn test_route_dispatch_ready_shutdown() {
+        let (_client, io, _shared, sink) = setup();
+        let count = Rc::new(std::cell::Cell::new(0));
+        let svc = Pipeline::new(
+            Session::new((), sink, io.shared()),
+            dispatch::<(), ()>(
+                Router::<usize>::builder().build(),
+                vec![PipelineState::new(Handler(count.clone()))],
+            ),
+        );
+
+        assert_eq!(svc.ready().await, Err(()));
+        svc.shutdown().await;
+        assert_eq!(count.get(), 1);
+    }
+
     #[ntex::test]
     async fn test_pingresp_timeout() {
         let (client, _io, shared, sink) = setup();

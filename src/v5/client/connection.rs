@@ -509,6 +509,58 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct TestError;
+
+    impl TryFrom<TestError> for PublishAck {
+        type Error = TestError;
+
+        fn try_from(err: TestError) -> Result<Self, TestError> {
+            Err(err)
+        }
+    }
+
+    struct Handler(Rc<std::cell::Cell<usize>>);
+
+    impl Service<Session<()>, Publish> for Handler {
+        type Res = PublishAck;
+        type Error = TestError;
+
+        async fn ready(&self, _: Ctx<'_, Self, Session<()>>) -> Result<(), TestError> {
+            Err(TestError)
+        }
+
+        async fn call(
+            &self,
+            _: Publish,
+            _: Ctx<'_, Self, Session<()>>,
+        ) -> Result<PublishAck, TestError> {
+            Err(TestError)
+        }
+
+        async fn shutdown(&self, _: Ctx<'_, Self, Session<()>>) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    /// Publish routing reports handler readiness errors and shuts down handlers
+    #[ntex::test]
+    async fn test_route_dispatch_ready_shutdown() {
+        let (_client, io, _shared, sink) = setup();
+        let count = Rc::new(std::cell::Cell::new(0));
+        let svc = Pipeline::new(
+            Session::new((), sink, io.shared()),
+            dispatch(
+                Router::<usize>::builder().build(),
+                vec![PipelineState::new(Handler(count.clone()))],
+            ),
+        );
+
+        assert!(svc.ready().await.is_err());
+        svc.shutdown().await;
+        assert_eq!(count.get(), 1);
+    }
+
     #[ntex::test]
     async fn test_pingresp_timeout() {
         let (client, _io, shared, sink) = setup();
