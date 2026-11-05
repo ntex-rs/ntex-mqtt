@@ -81,7 +81,7 @@ where
 
     fn bind(&self, ctx: BindCtx<'_>) {
         ctx.subscribe(&self.count.0.changed);
-        ctx.bind::<_, St, Req>(&self.service);
+        ctx.bind(&self.service);
     }
 
     #[inline]
@@ -1224,7 +1224,7 @@ mod tests {
         type Error = ();
 
         fn bind(&self, ctx: BindCtx<'_>) {
-            ctx.bind::<_, (), _>(&self.0);
+            ctx.bind(&self.0);
         }
 
         async fn call(&self, req: (), ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {
@@ -1296,7 +1296,7 @@ mod tests {
         type Error = ();
 
         fn bind(&self, ctx: BindCtx<'_>) {
-            ctx.bind::<_, (), _>(&self.0);
+            ctx.bind(&self.0);
         }
 
         async fn ready(&self, ctx: Ctx<'_, Self, ()>) -> Result<(), ()> {

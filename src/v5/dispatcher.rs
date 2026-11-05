@@ -199,8 +199,8 @@ where
 
     fn bind(&self, ctx: BindCtx<'_>) {
         self.inner.sink.payload.bind(&ctx);
-        ctx.bind::<_, St, Publish>(&self.publish);
-        ctx.bind::<_, St, ProtocolMessage>(&self.inner.control);
+        ctx.bind(&self.publish);
+        ctx.bind(&self.inner.control);
     }
 
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {

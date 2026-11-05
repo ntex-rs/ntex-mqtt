@@ -80,8 +80,8 @@ where
     type Error = MqttError<Err>;
 
     fn bind(&self, ctx: BindCtx<'_>) {
-        ctx.bind::<_, St, _>(&self.v3);
-        ctx.bind::<_, St, _>(&self.v5);
+        ctx.bind(&self.v3);
+        ctx.bind(&self.v5);
     }
 
     #[inline]
