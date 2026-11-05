@@ -133,9 +133,9 @@ impl<AppSt, Err> Service<Session<AppSt>, Publish> for RouterService<AppSt, Err> 
 
     fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
         for handler in &self.handlers {
-            ctx.bind::<_, Session<AppSt>, Publish>(handler);
+            ctx.bind(handler);
         }
-        ctx.bind::<_, Session<AppSt>, Publish>(&self.default);
+        ctx.bind(&self.default);
     }
 
     #[inline]

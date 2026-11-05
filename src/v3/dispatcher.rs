@@ -164,8 +164,8 @@ where
 
     fn bind(&self, ctx: BindCtx<'_>) {
         self.inner.sink.payload.bind(&ctx);
-        ctx.bind::<_, St, Publish>(&self.publish);
-        ctx.bind::<_, St, ProtocolMessage>(&self.inner.control);
+        ctx.bind(&self.publish);
+        ctx.bind(&self.inner.control);
     }
 
     #[inline]

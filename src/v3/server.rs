@@ -262,7 +262,7 @@ where
     type Error = MqttError<S::Error>;
 
     fn bind(&self, ctx: BindCtx<'_>) {
-        ctx.bind::<_, Hst, _>(&self.svc);
+        ctx.bind(&self.svc);
     }
 
     async fn ready(&self, ctx: Ctx<'_, Self, Hst>) -> Result<(), Self::Error> {

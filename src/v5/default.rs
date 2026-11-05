@@ -186,7 +186,7 @@ where
     }
 
     fn bind(&self, ctx: BindCtx<'_>) {
-        ctx.bind::<_, St, _>(&self.svc);
+        ctx.bind(&self.svc);
     }
 
     async fn ready(&self, ctx: Ctx<'_, Self, St>) -> Result<(), Self::Error> {

@@ -153,7 +153,7 @@ where
     }
 
     fn bind(&self, ctx: BindCtx<'_>) {
-        ctx.bind::<_, Session<AppSt>, _>(&self.svc);
+        ctx.bind(&self.svc);
     }
 
     async fn ready(&self, ctx: Ctx<'_, Self, Session<AppSt>>) -> Result<(), Self::Error> {

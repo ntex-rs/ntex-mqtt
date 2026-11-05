@@ -1304,7 +1304,7 @@ mod tests {
 
             fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
                 ctx.subscribe(&self.2);
-                ctx.bind::<_, (), R>(&self.0);
+                ctx.bind(&self.0);
             }
 
             async fn ready(&self, ctx: Ctx<'_, Self>) -> Result<(), Self::Error> {

@@ -472,7 +472,7 @@ where
     }
 
     fn bind(&self, ctx: ntex_service::BindCtx<'_>) {
-        ctx.bind::<_, St, R>(&self.svc);
+        ctx.bind(&self.svc);
     }
 
     async fn ready(&self, ctx: ntex_service::Ctx<'_, Self, St>) -> Result<(), Self::Error> {

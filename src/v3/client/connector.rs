@@ -69,7 +69,7 @@ where
     type Error = Error<MqttClientError<codec::ConnectAck>>;
 
     fn bind(&self, ctx: BindCtx<'_>) {
-        ctx.bind::<_, SharedCfg, _>(&self.connector);
+        ctx.bind(&self.connector);
     }
 
     async fn ready(&self, ctx: Ctx<'_, Self, SharedCfg>) -> Result<(), Self::Error> {
