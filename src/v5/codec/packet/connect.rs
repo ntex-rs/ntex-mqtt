@@ -10,9 +10,9 @@ use crate::v5::codec::{UserProperties, UserProperty, encode, property_type as pt
 #[derive(Debug, PartialEq, Eq, Clone)]
 /// Connect packet content
 pub struct Connect {
-    /// the handling of the Session state.
+    /// Discards an existing session before starting this connection when `true`.
     pub clean_start: bool,
-    /// a time interval measured in seconds.
+    /// Maximum interval between outgoing control packets, in seconds; zero disables keep-alive.
     pub keep_alive: u16,
 
     /// Session Expiry Interval property, in seconds.
@@ -23,8 +23,10 @@ pub struct Connect {
     pub auth_method: Option<ByteString>,
     /// Authentication Data property, its content is defined by the authentication method.
     pub auth_data: Option<Bytes>,
-    /// Request Problem Information property, whether the Server may send a Reason String
-    /// and User Properties on failures.
+    /// Whether optional diagnostic properties are requested, including on successful acknowledgments.
+    ///
+    /// When `false`, the server codec strips reason strings and user properties from
+    /// applicable outgoing packets; connection acknowledgments and disconnects are exempt.
     pub request_problem_info: bool,
     /// Request Response Information property, whether the Server should return
     /// Response Information in the CONNACK.
@@ -45,18 +47,18 @@ pub struct Connect {
     /// `None` means no limit beyond the one imposed by the protocol.
     pub max_packet_size: Option<NonZeroU32>,
 
-    /// `Will Message` be stored on the Server and associated with the Network Connection.
+    /// Optional Will message registered with the server for this network connection.
     pub last_will: Option<LastWill>,
-    /// identifies the Client to the Server.
+    /// Client identifier used by the server to associate this connection with its session.
     pub client_id: ByteString,
-    /// username can be used by the Server for authentication and authorization.
+    /// Optional username for server authentication and authorization.
     pub username: Option<ByteString>,
-    /// password can be used by the Server for authentication and authorization.
+    /// Optional binary password; MQTT v5 permits it without a username.
     pub password: Option<Bytes>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-/// Connection Will
+/// Will message registered by a connection request.
 pub struct LastWill {
     /// the `QoS` level to be used when publishing the `Will Message`.
     pub qos: QoS,
@@ -87,6 +89,7 @@ pub struct LastWill {
 }
 
 impl LastWill {
+    /// Counts Will property bytes, excluding the variable-length property-length prefix.
     fn properties_len(&self) -> usize {
         encode::encoded_property_size(&self.will_delay_interval_sec)
             + encode::encoded_property_size(&self.correlation_data)
@@ -100,7 +103,7 @@ impl LastWill {
 
 impl Connect {
     #[must_use]
-    /// Set `client_id` value
+    /// Sets the client identifier, consuming and returning this request.
     pub fn client_id<T>(mut self, client_id: T) -> Self
     where
         ByteString: From<T>,
@@ -110,7 +113,7 @@ impl Connect {
     }
 
     #[must_use]
-    /// Set `receive_max` value
+    /// Sets the receive maximum, treating `0` as absence and the protocol default of 65,535.
     pub fn receive_max(mut self, max: u16) -> Self {
         if let Some(num) = NonZeroU16::new(max) {
             self.receive_max = Some(num);
@@ -120,6 +123,7 @@ impl Connect {
         self
     }
 
+    /// Counts connection property bytes, omitting properties equal to their protocol defaults.
     fn properties_len(&self) -> usize {
         encode::encoded_property_size(&self.auth_method)
             + encode::encoded_property_size(&self.auth_data)
@@ -132,6 +136,7 @@ impl Connect {
             + self.user_properties.encoded_size()
     }
 
+    /// Decodes a complete `CONNECT` body, checking flags, properties, and optional payload fields.
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
         let len = src.get_u16();
@@ -252,6 +257,7 @@ impl Default for Connect {
     }
 }
 
+/// Reads Will properties, topic, and payload using the `CONNECT` Will flags.
 fn decode_last_will(src: &mut Bytes, flags: ConnectFlags) -> Result<LastWill, DecodeError> {
     let mut will_delay_interval_sec = None;
     let mut correlation_data = None;

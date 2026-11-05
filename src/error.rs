@@ -5,10 +5,12 @@ use ntex_util::future::Either;
 
 use crate::v5::codec::DisconnectReasonCode;
 
+/// Diagnostic for an unhandled publish delivered as a control message.
 pub(crate) const ERR_PUB_NOT_SUP: &str = "Publish control message is not supported";
+/// Diagnostic for an authentication message without an authentication handler.
 pub(crate) const ERR_AUTH_NOT_SUP: &str = "Auth control message is not supported";
 
-/// Errors which can occur when attempting to handle mqtt connection.
+/// Errors from MQTT connection setup and application services.
 #[derive(Debug, thiserror::Error)]
 pub enum MqttError<E> {
     /// Application service error (handshake, publish or control service)
@@ -30,7 +32,7 @@ pub enum MqttError<E> {
     ),
 }
 
-/// Errors which can occur during mqtt connection handshake.
+/// Errors from MQTT connection handshakes.
 #[derive(Debug, thiserror::Error)]
 pub enum MqttConnectError<E> {
     /// Handshake service error
@@ -64,7 +66,7 @@ impl<E> From<SpecViolation> for DispatcherError<E> {
     }
 }
 
-/// Errors related to payload processing
+/// Errors reported while consuming a streamed publish payload.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PayloadError {
     /// Protocol error
@@ -73,7 +75,7 @@ pub enum PayloadError {
     /// Service error
     #[error("Service error")]
     Service,
-    /// Payload is consumed
+    /// No unread payload chunk remains for collection.
     #[error("Payload is consumed")]
     Consumed,
     /// Peer is disconnected
@@ -81,7 +83,7 @@ pub enum PayloadError {
     Disconnected,
 }
 
-/// Protocol level errors
+/// Protocol codec errors, specification violations, and connection timeouts.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MqttProtocolError {
     /// MQTT decoding error
@@ -108,21 +110,30 @@ pub enum MqttProtocolError {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(transparent)]
 pub struct ProtocolViolationError {
+    /// Structured violation details used for reason codes and diagnostic formatting.
     pub(crate) inner: ViolationInner,
 }
 
+/// Internal representation of specification, generic, and unexpected-packet violations.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ViolationInner {
+    /// A violation with a known MQTT specification clause.
     #[error("{0}")]
     Spec(SpecViolation),
+    /// A caller-supplied disconnect reason and static diagnostic.
     #[error("{message}")]
     Common {
+        /// MQTT v5 reason code sent when disconnecting for this violation.
         reason: DisconnectReasonCode,
+        /// Static diagnostic describing the violation.
         message: &'static str,
     },
+    /// A packet received in a protocol state where it is not allowed.
     #[error("{message}; received packet with type `{packet_type:08b}`")]
     UnexpectedPacket {
+        /// Received fixed-header byte, included in the formatted error.
         packet_type: u8,
+        /// Static diagnostic describing why this packet was unexpected.
         message: &'static str,
     },
 }
@@ -200,6 +211,7 @@ pub enum SpecViolation {
 }
 
 impl SpecViolation {
+    /// Map a specification clause to the corresponding v5 disconnect reason.
     const fn reason(self) -> DisconnectReasonCode {
         match self {
             SpecViolation::Pub_3_3_4_7 | SpecViolation::Pub_3_3_4_9 => {
@@ -232,6 +244,7 @@ impl SpecViolation {
         }
     }
 
+    /// Return the specification reference and static violation description.
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             SpecViolation::PacketId_2_2_1_3_Pub => {
@@ -296,7 +309,7 @@ impl SpecViolation {
 }
 
 impl ProtocolViolationError {
-    /// Protocol violation reason code
+    /// Return the MQTT v5 disconnect reason code for this violation.
     pub const fn reason(&self) -> DisconnectReasonCode {
         match self.inner {
             ViolationInner::Spec(err) => err.reason(),
@@ -305,7 +318,7 @@ impl ProtocolViolationError {
         }
     }
 
-    /// Protocol violation reason message
+    /// Return the static diagnostic message, without unexpected-packet type details.
     pub const fn message(&self) -> &'static str {
         match self.inner {
             ViolationInner::Common { message, .. }
@@ -316,6 +329,7 @@ impl ProtocolViolationError {
 }
 
 impl MqttProtocolError {
+    /// Construct a protocol violation with an explicit disconnect reason and message.
     pub(crate) fn violation(reason: DisconnectReasonCode, message: &'static str) -> Self {
         Self::ProtocolViolation(ProtocolViolationError {
             inner: ViolationInner::Common { reason, message },
@@ -334,6 +348,7 @@ impl MqttProtocolError {
         Self::violation(DisconnectReasonCode::ProtocolError, message)
     }
 
+    /// Construct an unexpected-packet violation retaining its fixed-header byte.
     pub(crate) fn unexpected_packet(packet_type: u8, message: &'static str) -> MqttProtocolError {
         Self::ProtocolViolation(ProtocolViolationError {
             inner: ViolationInner::UnexpectedPacket {
@@ -342,6 +357,7 @@ impl MqttProtocolError {
             },
         })
     }
+    /// Report an acknowledgement whose packet identifier has no in-flight exchange.
     pub(crate) fn unknown_packet_id() -> Self {
         Self::generic_violation("Received ack with a packet id that is not in flight")
     }
@@ -413,7 +429,7 @@ pub enum DecodeError {
         /// Configured maximum packet size
         max_size: u32,
     },
-    /// String field does not contain valid utf-8 data
+    /// String field does not contain valid UTF-8 data.
     #[error("utf8 error")]
     Utf8Error,
     /// Packet contains more data than expected
@@ -462,7 +478,7 @@ pub enum SendPacketError {
     /// Provided packet id is in use
     #[error("Provided packet id is in use")]
     PacketIdInUse(NonZeroU16),
-    /// Unexpected release publish
+    /// A quality-of-service 2 publish was rejected or is no longer registered for release.
     #[error("Unexpected publish release")]
     UnexpectedRelease,
     /// Streaming has been cancelled
@@ -477,7 +493,10 @@ pub enum SendPacketError {
     NotAllowed,
 }
 
-/// Errors which can occur when attempting to handle mqtt client connection.
+/// Errors from establishing an MQTT client connection.
+///
+/// `Ack` carries the rejected CONNACK value. Cloning a disconnection error
+/// preserves its variant but drops the underlying non-cloneable I/O error.
 #[derive(Debug, thiserror::Error)]
 pub enum MqttClientError<T: fmt::Debug> {
     /// Connect negotiation failed
@@ -524,12 +543,18 @@ impl<T: fmt::Debug> From<Either<DecodeError, std::io::Error>> for MqttClientErro
     }
 }
 
+/// Unit tests for error conversion, violation reason codes, and diagnostic messages.
 #[cfg(test)]
 mod tests {
     use std::io;
 
     use super::*;
 
+    /// STATEMENT: A maximum-quality-of-service violation exposes its MQTT reason and diagnostic.
+    ///
+    /// HOW:
+    /// - Construct `SpecViolation::Connack_3_2_2_11` as a protocol error.
+    /// - Assert `QosNotSupported` and the complete specification diagnostic.
     #[test]
     fn test_spec_violation_reason_and_message() {
         let err = MqttProtocolError::spec(SpecViolation::Connack_3_2_2_11);
@@ -544,6 +569,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Topic aliases above either advertised maximum use the topic-alias-invalid reason.
+    ///
+    /// HOW:
+    /// - Wrap both CONNECT and CONNACK topic-alias violations.
+    /// - Assert that each reports `DisconnectReasonCode::TopicAliasInvalid`.
     #[test]
     fn test_topic_alias_violation_reason() {
         // Topic Alias greater than the maximum uses 0x94 (MQTT 5.0, 3.3.2.3.4)
@@ -559,6 +589,10 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Generic protocol violations retain their diagnostic and use the protocol-error reason.
+    ///
+    /// HOW:
+    /// - Create a generic violation with `"broken"` and inspect its reason and message.
     #[test]
     fn test_generic_violation_reason_and_message() {
         let err = MqttProtocolError::generic_violation("broken");
@@ -570,6 +604,11 @@ mod tests {
         assert_eq!(violation.message(), "broken");
     }
 
+    /// STATEMENT: Unexpected-packet errors retain packet details in display output but not in the message accessor.
+    ///
+    /// HOW:
+    /// - Construct an unexpected PUBLISH violation and check its reason and message.
+    /// - Assert that display output additionally includes the binary fixed-header byte.
     #[test]
     fn test_unexpected_packet_reason_and_message() {
         let err = MqttProtocolError::unexpected_packet(0b0011_0000, "unexpected");
@@ -585,6 +624,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Transport and encoding errors convert into the corresponding connection-error variants.
+    ///
+    /// HOW:
+    /// - Convert an I/O error and verify the disconnected variant preserves its error kind.
+    /// - Convert `EncodeError::MalformedPacket` and verify the nested protocol error.
     #[test]
     fn test_mqtt_error_from_io_and_encode() {
         let io_err = io::Error::other("io");
@@ -605,6 +649,11 @@ mod tests {
         ));
     }
 
+    /// STATEMENT: Handshake conversion distinguishes decoder failures from peer transport errors.
+    ///
+    /// HOW:
+    /// - Convert the decode and I/O branches of `Either`.
+    /// - Check the nested decode error and the preserved transport error kind.
     #[test]
     fn test_connect_error_from_decode_or_io() {
         let err: MqttConnectError<()> = Either::Left(DecodeError::MalformedPacket).into();
@@ -622,6 +671,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Client error conversions preserve decoder, transport, and encoder failure categories.
+    ///
+    /// HOW:
+    /// - Convert both branches of a decode-or-I/O result and an encoding error.
+    /// - Assert the nested protocol variants and preserved transport error kind.
     #[test]
     fn test_client_error_from_decode_or_io_and_encode() {
         let err: MqttClientError<()> = Either::Left(DecodeError::InvalidLength).into();
@@ -645,6 +699,11 @@ mod tests {
         ));
     }
 
+    /// STATEMENT: Every specification violation has the expected disconnect reason and a consistent diagnostic.
+    ///
+    /// HOW:
+    /// - Iterate over every `SpecViolation` and its expected v5 reason code.
+    /// - Assert the reason, the MQTT specification prefix, and equality of display and message text.
     #[test]
     fn test_all_spec_violations() {
         use DisconnectReasonCode as R;
@@ -685,6 +744,10 @@ mod tests {
         }
     }
 
+    /// STATEMENT: An I/O error in the right branch converts to a disconnected handshake error.
+    ///
+    /// HOW:
+    /// - Convert `Either::Right` containing an I/O error and check the nested disconnection variant.
     #[test]
     fn test_mqtt_error_from_either_io() {
         let err: MqttError<()> =
@@ -695,6 +758,11 @@ mod tests {
         ));
     }
 
+    /// STATEMENT: Cloning client errors preserves variants and acknowledgement data but discards transport error details.
+    ///
+    /// HOW:
+    /// - Clone one value of every `MqttClientError` variant and compare discriminants.
+    /// - Check the acknowledgement payload survives and the cloned disconnection contains no I/O error.
     #[test]
     fn test_client_error_clone() {
         let errs: [MqttClientError<u8>; 5] = [

@@ -9,14 +9,21 @@ use ntex_util::HashMap;
 
 use super::{Session, publish::Publish, publish::PublishAck};
 
+/// Type-erased publish handler factory with normalized initialization failures.
 type Handler<AppSt, E> = BoxServiceFactory<Session<AppSt>, Publish, PublishAck, E, Failure>;
+/// Type-erased publish handler instantiated for one application session.
 type HandlerService<AppSt, E> = BoxService<Session<AppSt>, Publish, PublishAck, E>;
 
-/// Router - structure that follows the builder pattern
-/// for building publish packet router instances for mqtt server.
+/// Builder for routing inbound publishes to topic-pattern handlers.
+///
+/// Unmatched topics use a required default handler. Matching updates the publish
+/// routing path with captured parameters; handler readiness gates the entire router.
 pub struct Router<AppSt, Err> {
+    /// Topic patterns mapped to indices in the handler factory list.
     router: RouterBuilder<usize>,
+    /// Resource factories in the same order as their route indices.
     handlers: Vec<Handler<AppSt, Err>>,
+    /// Fallback factory for publishes without a matching resource.
     default: Handler<AppSt, Err>,
 }
 
@@ -31,9 +38,9 @@ where
     AppSt: 'static,
     Err: 'static,
 {
-    /// Create mqtt application router.
+    /// Creates a topic router with a fallback publish handler.
     ///
-    /// Default service to be used if no matching resource could be found.
+    /// The default handler is used when no resource pattern matches.
     pub fn new<U>(default: impl IntoServiceFactory<U, Session<AppSt>, Publish>) -> Self
     where
         U: ServiceFactory<Session<AppSt>, Publish, Res = PublishAck, Error = Err> + 'static,
@@ -47,7 +54,13 @@ where
     }
 
     #[must_use]
-    /// Configure mqtt resource for a specific topic.
+    /// Registers a publish handler for a topic path pattern.
+    ///
+    /// Patterns use `ntex_router` path syntax, not MQTT subscription wildcards.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a pattern has malformed dynamic segments or invalid regular expressions.
     pub fn resource<T, F, U>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
@@ -62,7 +75,7 @@ where
         self
     }
 
-    /// Finish router configuration and create router service factory
+    /// Finishes route configuration and returns a per-session service factory.
     pub fn build(self) -> RouterFactory<AppSt, Err> {
         RouterFactory {
             router: self.router.build(),
@@ -83,9 +96,13 @@ where
     }
 }
 
+/// Compiled topic routes and factories used to create per-session handlers.
 pub struct RouterFactory<AppSt, Err> {
+    /// Compiled patterns returning indices into the handler list.
     router: ntex_router::Router<usize>,
+    /// Shared resource factories instantiated for each new session.
     handlers: Rc<Vec<Handler<AppSt, Err>>>,
+    /// Fallback factory instantiated alongside the resource handlers.
     default: Handler<AppSt, Err>,
 }
 
@@ -122,10 +139,15 @@ where
     }
 }
 
+/// Per-session topic router with handler services and cached alias routing paths.
 pub struct RouterService<AppSt, Err> {
+    /// Compiled patterns selecting resource handler indices.
     router: ntex_router::Router<usize>,
+    /// Fallback handler for unmatched topics and aliases without cached routes.
     default: HandlerService<AppSt, Err>,
+    /// Instantiated resource services indexed by the compiled routes.
     handlers: Vec<HandlerService<AppSt, Err>>,
+    /// Session-local topic aliases caching a matched handler and captured routing path.
     aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>>,
 }
 
@@ -193,11 +215,17 @@ impl<AppSt, Err: 'static> Service<Session<AppSt>, Publish> for RouterService<App
     }
 }
 
+/// Unit tests for router formatting and handler shutdown propagation.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::v5::codec::PublishAckReason;
 
+    /// STATEMENT: Router debug output identifies the MQTT 5 router type.
+    ///
+    /// HOW:
+    /// - Create a router with a successful fallback publish handler.
+    /// - Format it and check that the output contains `v5::Router`.
     #[test]
     fn test_debug() {
         let router: Router<(), ()> =
@@ -205,6 +233,7 @@ mod tests {
         assert!(format!("{router:?}").contains("v5::Router"));
     }
 
+    /// Publish service incrementing a shared counter each time it is shut down.
     struct Tracked(Rc<std::cell::Cell<usize>>);
 
     impl Service<Session<()>, Publish> for Tracked {
@@ -220,7 +249,11 @@ mod tests {
         }
     }
 
-    /// Shutting down the router shuts down resource handlers and the default handler
+    /// STATEMENT: Router shutdown reaches resource handlers and the default handler.
+    ///
+    /// HOW:
+    /// - Create a session and a router with one tracked resource and one tracked fallback.
+    /// - Shut down its service pipeline and assert the shared shutdown counter is two.
     #[ntex::test]
     async fn test_shutdown() {
         use ntex_io::{Io, testing::IoTest};

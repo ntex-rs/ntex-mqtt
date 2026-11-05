@@ -11,7 +11,8 @@ pub struct Auth {
     pub reason_code: AuthReasonCode,
     /// Authentication Method property, the name of the authentication method in use.
     ///
-    /// It is a Protocol Error to omit it, so it is always set on a decoded packet.
+    /// Required except for a successful, property-free `AUTH` packet whose remaining
+    /// length is zero; that short form decodes with `None`.
     pub auth_method: Option<ByteString>,
     /// Authentication Data property, its content is defined by the authentication method.
     pub auth_data: Option<Bytes>,
@@ -34,6 +35,7 @@ prim_enum! {
 }
 
 impl Auth {
+    /// Decodes a complete `AUTH` body, rejecting invalid properties and trailing bytes.
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         // Reason Code and Property Length are omitted for Success without properties,
         // the AUTH has a Remaining Length of 0 (MQTT 5.0, 3.15.2.1)

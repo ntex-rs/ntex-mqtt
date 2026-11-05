@@ -8,35 +8,37 @@ use crate::payload::Payload;
 pub use crate::v3::control::{Disconnect, Ping, ProtocolMessageAck, PublishRelease};
 use crate::v3::{codec, control::ProtocolMessageKind, error};
 
-/// MQTT protocol–related messages.
+/// Incoming protocol messages not consumed by client-side packet handling.
 #[derive(Debug)]
 pub enum ProtocolMessage {
-    /// Unhandled publish packet
+    /// Incoming publication not handled by a topic route.
     Publish(Publish),
-    /// `PublishRelease` packet from the server
+    /// Release step of an incoming `QoS` 2 publication acknowledged with `PUBREC`.
     PublishRelease(PublishRelease),
-    /// Ping packet from the server
+    /// Ping request; broker `PINGREQ` packets are rejected rather than delivered here.
     Ping(Ping),
 }
 
 impl ProtocolMessage {
+    /// Wrap an unrouted publication with its payload and packet body size.
     pub(super) fn publish(pkt: codec::Publish, pl: Payload, size: u32) -> Self {
         ProtocolMessage::Publish(Publish(pkt, pl, size))
     }
 
+    /// Wrap the release step of an incoming `QoS` 2 exchange.
     pub(super) fn pubrel(packet_id: NonZeroU16) -> Self {
         ProtocolMessage::PublishRelease(PublishRelease { packet_id })
     }
 
     #[inline]
-    /// Initiate clean disconnect
+    /// Request a clean disconnect from the dispatcher.
     pub(super) fn disconnect() -> ProtocolMessageAck {
         ProtocolMessageAck {
             result: ProtocolMessageKind::Disconnect,
         }
     }
 
-    /// Ack control message
+    /// Build the default dispatcher response for this protocol message.
     pub fn ack(self) -> ProtocolMessageAck {
         match self {
             ProtocolMessage::Publish(msg) => msg.ack(),
@@ -46,7 +48,10 @@ impl ProtocolMessage {
     }
 }
 
-/// Unhandled publish packet from the server
+/// Incoming publication not handled by a topic route.
+///
+/// Read streamed payloads to completion before consuming this message; dropping an
+/// unread streamed payload can close the connection.
 #[derive(Debug)]
 pub struct Publish(codec::Publish, Payload, u32);
 
@@ -64,34 +69,36 @@ impl Publish {
     }
 
     #[inline]
-    /// Returns size of the packet
+    /// Return the MQTT remaining length in bytes, excluding the fixed header.
     pub fn packet_size(&self) -> u32 {
         self.2
     }
 
     #[inline]
-    /// Returns size of the payload
+    /// Return the total declared payload size in bytes, including unread chunks.
     pub fn payload_size(&self) -> usize {
         self.0.payload_size as usize
     }
 
     #[inline]
-    /// Read next chunk of the published payload.
+    /// Read the next unread payload chunk, or `None` when the payload is complete.
     pub async fn read(&self) -> Result<Option<Bytes>, error::PayloadError> {
         self.1.read().await
     }
 
     #[inline]
-    /// Read complete payload.
+    /// Collect all remaining unread payload chunks into a single buffer.
+    ///
+    /// Returns `PayloadError::Consumed` if the payload has already been fully read.
     pub async fn read_all(&self) -> Result<Bytes, error::PayloadError> {
         self.1.read_all().await
     }
 
     #[inline]
-    /// Ack publish message
+    /// Build an acknowledgement for the dispatcher to send.
     ///
-    /// Sends `PublishAck` packet for `QoS 1` publish and `PublishReceived` packet
-    /// for `QoS 2` publish.
+    /// The dispatcher sends `PublishAck` for `QoS` 1 and `PublishReceived` for `QoS` 2.
+    /// No packet is sent for `QoS` 0.
     pub fn ack(self) -> ProtocolMessageAck {
         if let Some(id) = self.0.packet_id {
             ProtocolMessageAck {
@@ -105,7 +112,7 @@ impl Publish {
     }
 
     #[inline]
-    /// Ack publish message and return the publish packet, payload is dropped
+    /// Return the acknowledgement and publish header, dropping unread payload.
     ///
     /// See [`Publish::ack`].
     pub fn into_inner(self) -> (ProtocolMessageAck, codec::Publish) {

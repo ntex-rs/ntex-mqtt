@@ -3,7 +3,7 @@ use ntex_util::time::{Millis, Seconds};
 
 use crate::types::QoS;
 
-/// Mqtt server and client configuration.
+/// Shared MQTT server and client connection configuration.
 ///
 /// # Read timeouts
 ///
@@ -70,21 +70,37 @@ use crate::types::QoS;
 /// [`v5::ConnectAck::keep_alive()`]: crate::v5::ConnectAck::keep_alive
 #[derive(Debug)]
 pub struct MqttServiceConfig {
+    /// Highest accepted incoming publish quality of service.
     pub(crate) max_qos: QoS,
+    /// Maximum inbound packet size in bytes; zero removes the configured limit.
     pub(crate) max_size: u32,
+    /// Maximum incoming in-flight publish count, with protocol-specific zero semantics.
     pub(crate) max_receive: u16,
+    /// Incoming in-flight byte budget; reaching it pauses new packet reads.
     pub(crate) max_receive_size: usize,
+    /// Maximum outstanding dispatcher responses; zero disables this limit.
     pub(crate) max_queue: usize,
+    /// Maximum incoming topic alias advertised by a v5 server.
     pub(crate) max_topic_alias: u16,
+    /// Configured outgoing in-flight publish count before handshake overrides.
     pub(crate) max_send: u16,
+    /// Reserved outgoing byte limit and low-water mark; currently unused.
     pub(crate) max_send_size: (u32, u32),
+    /// Minimum bytes accumulated before emitting an incoming payload chunk.
     pub(crate) min_chunk_size: u32,
+    /// Unread streaming-payload byte threshold that pauses connection reads.
     pub(crate) max_payload_buffer_size: usize,
+    /// Highest publish quality of service still dispatched after disconnection, if configured.
     pub(crate) handle_qos_after_disconnect: Option<QoS>,
+    /// Whether v5 subscription requests must respect advertised capabilities.
     pub(crate) check_subs_availability: bool,
+    /// Server timeout in seconds for receiving the complete CONNECT packet.
     pub(crate) connect_timeout: Seconds,
+    /// Client CONNECT/CONNACK exchange timeout in seconds; zero disables it.
     pub(crate) handshake_timeout: Seconds,
+    /// Combined-server timeout in milliseconds for detecting the CONNECT protocol level.
     pub(crate) protocol_version_timeout: Millis,
+    /// Shared configuration context attached by the configuration registry.
     config: CfgContext,
 }
 
@@ -107,7 +123,7 @@ impl Configuration for MqttServiceConfig {
 }
 
 impl MqttServiceConfig {
-    /// Create mqtt configuration with default settings
+    /// Create the default packet limits, streaming thresholds, and timeouts.
     pub fn new() -> Self {
         Self {
             max_qos: QoS::AtLeastOnce,
@@ -130,10 +146,10 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Set client timeout reading protocol version.
+    /// Set the combined server timeout for detecting the incoming protocol version.
     ///
-    /// Defines a timeout for reading protocol version. If a client does not transmit
-    /// version of the protocol within this time, the connection is terminated with
+    /// Applies when using `MqttServer` to select between v3.1.1 and v5. If a client
+    /// does not transmit the protocol level in time, the connection is terminated with
     /// `MqttError::Connect(MqttConnectError::Timeout)` error.
     ///
     /// By default, timeout is 5 seconds.
@@ -143,7 +159,7 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Set client timeout for first `Connect` frame.
+    /// Set the server timeout for receiving the first CONNECT packet.
     ///
     /// Defines a timeout for reading `Connect` frame. If a client does not transmit
     /// the entire frame within this time, the connection is terminated with
@@ -159,7 +175,7 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Set client handshake timeout.
+    /// Set the client timeout for the CONNECT/CONNACK exchange.
     ///
     /// Used by the client connectors only. Handshake includes `connect` packet and
     /// response `connect-ack`. If it does not complete in time, connect fails with
@@ -173,7 +189,7 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Set max allowed `QoS`.
+    /// Set the highest accepted incoming publish `QoS`.
     ///
     /// If peer sends publish with higher qos, the connection is terminated with
     /// `MqttProtocolError::ProtocolViolation` error (`SpecViolation::Connack_3_2_2_11`).
@@ -185,7 +201,7 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Set max inbound packet size.
+    /// Set the maximum inbound packet size in bytes.
     ///
     /// Larger packets close the connection with a `MaxSizeExceeded` decode error.
     /// Applies to MQTT v3 servers and clients and MQTT v5 servers, a v5 server advertises
@@ -201,7 +217,7 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Set `receive max`
+    /// Set the incoming in-flight publish count limit.
     ///
     /// Number of in-flight incoming publish packets. By default receive max is set
     /// to 16 packets.
@@ -216,7 +232,7 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Total size of received in-flight messages.
+    /// Set the incoming in-flight publish size limit in bytes.
     ///
     /// The dispatcher stops reading new packets while the limit is reached,
     /// handlers that await acks from the same peer can stall the connection,
@@ -229,7 +245,7 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Set max number of queued responses.
+    /// Set the maximum number of outstanding dispatcher responses.
     ///
     /// Publish acks are sent in the order of incoming packets. An ack that is
     /// ready waits in the queue until all earlier acks are sent. Responses to
@@ -255,16 +271,16 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Number of topic aliases.
+    /// Set the maximum incoming topic alias advertised by a v5 server.
     ///
-    /// By default value is set to 32
+    /// Zero disables incoming aliases. The default maximum is 32.
     pub fn set_max_topic_alias(mut self, val: u16) -> Self {
         self.max_topic_alias = val;
         self
     }
 
     #[must_use]
-    /// Maximum number of concurrent outgoing messages.
+    /// Set the maximum number of in-flight outgoing acknowledged publishes.
     ///
     /// For MQTT v5, this is an upper bound for in-flight outgoing messages, the
     /// effective value is the minimum of this value (or `ConnectAck::max_send()`)
@@ -277,7 +293,7 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Total size of outgoing messages.
+    /// Store the reserved outgoing message size limit in bytes.
     ///
     /// Note: this value is not used at the moment.
     pub fn set_max_send_size(mut self, val: u32) -> Self {
@@ -286,12 +302,12 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Set min payload chunk size.
+    /// Set the minimum incoming payload chunk size in bytes.
     ///
     /// If the minimum size is set to `0`, incoming payload chunks
     /// will be processed immediately. Otherwise, the codec will
     /// accumulate chunks until the total size reaches the specified minimum.
-    /// By default min size is set to 32Kb
+    /// The default minimum is 32 KiB; the final chunk can be smaller.
     ///
     /// Payload chunks are read as one publish packet, keep-alive and
     /// frame read rate timeouts apply to the whole publish, not to each chunk.
@@ -301,7 +317,7 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Max payload buffer size for payload streaming.
+    /// Set the unread streaming-payload buffer threshold in bytes.
     ///
     /// Reading from the connection pauses while the unread part of a streamed
     /// payload is at or above this size, and resumes once the publish handler
@@ -310,14 +326,14 @@ impl MqttServiceConfig {
     /// it reads the payload deadlocks the connection. The connection is closed
     /// if the handler drops the payload before the stream ends.
     ///
-    /// By default buffer size is set to 32Kb
+    /// The default buffer threshold is 32 KiB.
     pub fn set_max_payload_buffer_size(mut self, val: usize) -> Self {
         self.max_payload_buffer_size = val;
         self
     }
 
     #[must_use]
-    /// Handle max received `QoS` messages after client disconnect.
+    /// Set the highest received publish `QoS` still handled after disconnection.
     ///
     /// By default, messages received before dispatched to the publish service will be dropped
     /// once the connection is closing, either the client disconnected or the server
@@ -345,7 +361,7 @@ impl MqttServiceConfig {
     }
 
     #[must_use]
-    /// Check shared and wildcard subscriptions availability, v5 only.
+    /// Enable v5 validation of advertised shared and wildcard subscription support.
     ///
     /// If enabled, `Subscribe` packet with a shared or wildcard topic filter closes
     /// the connection with a protocol error when the `ConnectAck` reported such
@@ -360,10 +376,16 @@ impl MqttServiceConfig {
     }
 }
 
+/// Unit tests for configuration builder values and timeout conversions.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// STATEMENT: Configuration builders retain supplied limits and convert timeout units correctly.
+    ///
+    /// HOW:
+    /// - Build a configuration with nondefault values for every setter.
+    /// - Assert all stored limits, the outgoing low-water mark, timeout values, and configuration name.
     #[test]
     fn setters() {
         let cfg = MqttServiceConfig::default()

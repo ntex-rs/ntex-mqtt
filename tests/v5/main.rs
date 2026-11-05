@@ -1,3 +1,5 @@
+//! MQTT 5 integration tests with shared packet, connection, and polling helpers.
+
 use std::net::SocketAddr;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
@@ -18,17 +20,27 @@ use ntex_mqtt::v5::{
 };
 use ntex_mqtt::{Control, MqttServiceConfig, Reason};
 
+/// Connection handling, advertised capabilities, and basic protocol integration tests.
 mod basic;
+/// Client connection, routing, control, and keep-alive integration tests.
 mod client_api;
+/// Scripted wire-level checks for client and server dispatchers.
 mod dispatcher;
+/// Packet-size, keep-alive, frame-read, and outbound-credit integration tests.
 mod limits;
+/// Server routing, protocol acknowledgment, and middleware integration tests.
 mod protocol;
+/// Publish delivery, QoS exchanges, ordering, and acknowledgment-error integration tests.
 mod qos;
+/// Sink builders, readiness, encoding recovery, and shutdown integration tests.
 mod sink;
+/// Payload chunking, backpressure, and response-queue integration tests.
 mod streaming;
 
+/// Empty per-session state shared by the test servers.
 struct St;
 
+/// Nonconvertible service error used to exercise fatal handler failures.
 #[derive(Debug)]
 struct TestError;
 
@@ -46,6 +58,7 @@ impl TryFrom<TestError> for PublishAck {
     }
 }
 
+/// Builds an empty QoS 1 publish to `test` with packet identifier `1`.
 fn pkt_publish() -> codec::Publish {
     codec::Publish {
         dup: false,
@@ -58,6 +71,7 @@ fn pkt_publish() -> codec::Publish {
     }
 }
 
+/// Extracts a control packet, panicking if the decoded item is a publish or payload chunk.
 fn packet(res: Decoded) -> Packet {
     match res {
         Decoded::Packet(pkt, _) => pkt,
@@ -65,14 +79,17 @@ fn packet(res: Decoded) -> Packet {
     }
 }
 
+/// Accepts a test handshake with empty session state.
 async fn connect(msg: Connect) -> Result<ConnectAck<St>, TestError> {
     Ok(msg.ack(St))
 }
 
+/// Builds a nonzero packet identifier, panicking if `id` is zero.
 fn pid(id: u16) -> NonZeroU16 {
     NonZeroU16::new(id).unwrap()
 }
 
+/// Runs the default connector with the supplied connect builder, preserving connection errors.
 async fn try_connect_client(
     connect: client::Connect<SocketAddr>,
 ) -> Result<client::Client, ntex::error::Error<error::MqttClientError<Box<codec::ConnectAck>>>> {
@@ -81,13 +98,14 @@ async fn try_connect_client(
         .await
 }
 
+/// Connects an unstarted client named `user`, panicking if the handshake fails.
 async fn connect_client(addr: SocketAddr) -> client::Client {
     try_connect_client(client::Connect::new(addr).client_id("user"))
         .await
         .unwrap()
 }
 
-/// Opens a raw connection and sends CONNECT without waiting for CONNACK
+/// Opens a raw connection and sends a connect packet without waiting for acknowledgment.
 async fn connect_raw(srv: &server::TestServer) -> (ntex::io::Io, codec::Codec) {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
@@ -96,14 +114,14 @@ async fn connect_raw(srv: &server::TestServer) -> (ntex::io::Io, codec::Codec) {
     (io, codec)
 }
 
-/// Opens a raw connection and completes the handshake
+/// Opens a raw connection and consumes the first handshake response.
 async fn handshake(srv: &server::TestServer) -> (ntex::io::Io, codec::Codec) {
     let (io, codec) = connect_raw(srv).await;
     io.recv(&codec).await.unwrap().unwrap();
     (io, codec)
 }
 
-/// Polls `f` until it returns `true`, the result tells if it happened in time
+/// Polls `f` up to 300 times at ten-millisecond intervals and reports whether it became true.
 async fn poll_until(mut f: impl FnMut() -> bool) -> bool {
     for _ in 0..300 {
         if f() {
@@ -114,12 +132,12 @@ async fn poll_until(mut f: impl FnMut() -> bool) -> bool {
     false
 }
 
-/// Polls `f` until it returns `true`, panics if it does not happen in time
+/// Uses `poll_until` and panics if `f` never returns `true` within its retry budget.
 async fn wait_until(f: impl FnMut() -> bool) {
     assert!(poll_until(f).await, "condition is not met in time");
 }
 
-/// Publish packet for the topic
+/// Builds an empty publish with the supplied topic, QoS, and optional nonzero packet identifier.
 fn pkt_publish_to(topic: &str, qos: QoS, packet_id: Option<u16>) -> codec::Publish {
     codec::Publish {
         qos,
@@ -129,14 +147,14 @@ fn pkt_publish_to(topic: &str, qos: QoS, packet_id: Option<u16>) -> codec::Publi
     }
 }
 
-/// Sends a packet and returns the next packet received from the peer
+/// Sends an encoded item and extracts the next control packet, panicking on transport or
+/// decode failure.
 async fn send_recv(io: &ntex::io::Io, codec: &codec::Codec, pkt: Encoded) -> Packet {
     io.send(pkt, codec).await.unwrap();
     packet(io.recv(codec).await.unwrap().unwrap())
 }
 
-/// Publish error that can be converted to a `PublishAck`,
-/// `UnspecifiedError` is not convertible
+/// Publish error convertible to a reason-bearing acknowledgment except for `UnspecifiedError`.
 #[derive(Clone, Debug, PartialEq)]
 struct AckError(codec::PublishAckReason);
 
@@ -158,7 +176,7 @@ impl TryFrom<AckError> for PublishAck {
     }
 }
 
-/// Subscription options with the requested qos and `no_local` flag
+/// Builds subscription options with the requested QoS and `no_local` flag.
 fn sub_opts(qos: QoS, no_local: bool) -> codec::SubscriptionOptions {
     codec::SubscriptionOptions {
         qos,

@@ -1,11 +1,19 @@
 use super::*;
 
+/// STATEMENT: A raw QoS 2 exchange produces successful receipt and completion acknowledgments
+/// and invokes the release handler.
+///
+/// HOW:
+/// - Enable QoS 2 and send a publish with packet identifier `1`.
+/// - Compare the publish-received packet, send a publish-release packet, and compare the
+///   publish-complete packet.
+/// - Assert that the release protocol handler ran.
 #[ntex::test]
 async fn test_qos2() -> std::io::Result<()> {
     let release = Arc::new(AtomicBool::new(false));
     let release2 = release.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let release = release2.clone();
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async move |msg| match msg {
@@ -79,11 +87,18 @@ async fn test_qos2() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Multiple QoS 2 receipts can be held and released concurrently without losing
+/// either exchange.
+///
+/// HOW:
+/// - Trigger two concurrent server publishes and acknowledge both before either release begins.
+/// - Assert release packets for identifiers `1` and `2`, then complete both exchanges.
+/// - Wait for the recorded send results and assert that both releases succeeded.
 #[ntex::test]
 async fn test_qos2_release_multiple() -> std::io::Result<()> {
     let result = Arc::new(Mutex::new(None));
     let result2 = result.clone();
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let result = result2.clone();
         MqttServer::new(async move |ses: &Session<St>| {
             let sink = ses.sink().clone();
@@ -177,11 +192,19 @@ async fn test_qos2_release_multiple() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A rejected QoS 2 receipt prevents release and frees its packet identifier for reuse.
+///
+/// HOW:
+/// - Trigger a server QoS 2 publish and reject its receipt with `NotAuthorized`.
+/// - Assert the next packet is a QoS 1 publish reusing identifier `1`, not a release, and
+///   acknowledge it.
+/// - Check the recorded rejection reason, `UnexpectedRelease` result, and successful
+///   subsequent publish.
 #[ntex::test]
 async fn test_qos2_rejected_pubrec() -> std::io::Result<()> {
     let result = Arc::new(Mutex::new(None));
     let result2 = result.clone();
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let result = result2.clone();
         MqttServer::new(async move |ses: &Session<St>| {
             let sink = ses.sink().clone();
@@ -280,11 +303,17 @@ async fn test_qos2_rejected_pubrec() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A duplicate QoS 2 publish is acknowledged again without being delivered twice.
+///
+/// HOW:
+/// - Send an original and duplicate publish with the same packet identifier and compare both
+///   successful receipt acknowledgments.
+/// - Complete the release exchange and assert that the publish handler ran exactly once.
 #[ntex::test]
 async fn test_qos2_redelivery() -> std::io::Result<()> {
     let published = Arc::new(Mutex::new(0));
     let published2 = published.clone();
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let published = published2.clone();
         MqttServer::new(async move |p: Publish| {
             *published.lock().unwrap() += 1;
@@ -342,12 +371,18 @@ async fn test_qos2_redelivery() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: The client sink completes a QoS 2 publish through the release API.
+///
+/// HOW:
+/// - Enable QoS 2 and mark receipt of the release in the server protocol handler.
+/// - Send through `send_exactly_once`, assert receipt identifier `1`, release it, and check
+///   the server release flag.
 #[ntex::test]
 async fn test_qos2_client() -> std::io::Result<()> {
     let release = Arc::new(AtomicBool::new(false));
     let release2 = release.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let release = release2.clone();
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async move |msg| match msg {
@@ -379,9 +414,15 @@ async fn test_qos2_client() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Completing QoS 2 exchanges restores a receive quota of one for subsequent sends.
+///
+/// HOW:
+/// - Configure a server receive maximum of `1` with QoS 2 support.
+/// - Publish and release three QoS 2 messages sequentially, then assert a QoS 1 send succeeds
+///   and the sink remains open.
 #[ntex::test]
 async fn test_qos2_receive_max() -> std::io::Result<()> {
-    let srv = server::TestServerBuilder::new(async || {
+    let srv = server::TestServerBuilder::new(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async |msg: ProtocolMessage| Ok::<_, TestError>(msg.ack()))
             .build(connect)
@@ -417,9 +458,15 @@ async fn test_qos2_receive_max() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: The default server protocol service completes QoS 2 release exchanges.
+///
+/// HOW:
+/// - Enable QoS 2 without installing a custom protocol service.
+/// - Send and release three messages through the client sink and assert that the connection
+///   remains open.
 #[ntex::test]
 async fn test_qos2_default_protocol() -> std::io::Result<()> {
-    let srv = server::TestServerBuilder::new(async || {
+    let srv = server::TestServerBuilder::new(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_qos(QoS::ExactlyOnce)))
@@ -442,12 +489,13 @@ async fn test_qos2_default_protocol() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Server publishes QoS 2 message to the client on any client publish
+/// Starts a server that sends a QoS 2 message for every client publish and records release
+/// success.
 fn qos2_publisher() -> (server::TestServer, Arc<Mutex<Option<bool>>>) {
     let released = Arc::new(Mutex::new(None));
     let released2 = released.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let released = released2.clone();
         MqttServer::new(async move |con: &Session<St>| {
             let sink = con.sink().clone();
@@ -474,6 +522,7 @@ fn qos2_publisher() -> (server::TestServer, Arc<Mutex<Option<bool>>>) {
     (srv, released)
 }
 
+/// Polls the shared release result up to 200 times at ten-millisecond intervals.
 async fn wait_released(released: &Mutex<Option<bool>>) -> Option<bool> {
     for _ in 0..200 {
         if let Some(res) = *released.lock().unwrap() {
@@ -484,6 +533,14 @@ async fn wait_released(released: &Mutex<Option<bool>>) -> Option<bool> {
     None
 }
 
+/// STATEMENT: Both client routing and the client protocol service can complete
+/// server-originated QoS 2 publishes.
+///
+/// HOW:
+/// - Trigger a server QoS 2 publish once with a client route and once with a custom client
+///   protocol service.
+/// - In each case, assert successful server release, one captured QoS 2 payload equal to
+///   `data`, and an open client sink.
 #[ntex::test]
 async fn test_qos2_server_to_client() -> std::io::Result<()> {
     // publish is handled by client router
@@ -555,9 +612,17 @@ async fn test_qos2_server_to_client() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Subscription, ping, and authentication replies do not wait for a slow publish
+/// acknowledgment.
+///
+/// HOW:
+/// - Delay the publish handler and send a publish, subscription, ping, and authentication
+///   request on one connection.
+/// - Assert the subscription acknowledgment, ping response, and authentication response arrive
+///   before the successful publish acknowledgment.
 #[ntex::test]
 async fn test_ack_order() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async move |p: Publish| {
             sleep(Duration::from_millis(100)).await;
             Ok::<_, TestError>(p.ack())
@@ -664,9 +729,18 @@ async fn test_ack_order() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Packet identifiers already in use produce operation-specific errors while
+/// publish replies retain receive order.
+///
+/// HOW:
+/// - Keep a QoS 1 publish pending, then reuse its identifier for another publish, a
+///   subscription, and an unsubscription.
+/// - Assert immediate subscription and unsubscription `PacketIdentifierInUse` replies.
+/// - Assert the original successful publish acknowledgment precedes the duplicate publish
+///   rejection.
 #[ntex::test]
 async fn test_dups() {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async move |p: Publish| {
             sleep(Duration::from_millis(100)).await;
             Ok::<_, TestError>(p.ack())
@@ -788,9 +862,17 @@ async fn test_dups() {
     );
 }
 
+/// STATEMENT: Exceeding the advertised receive maximum disconnects the client before pending
+/// publishes finish.
+///
+/// HOW:
+/// - Configure a receive maximum of `1`, delay publish completion, and compare the advertised
+///   connection acknowledgment.
+/// - Send two QoS 1 publishes with distinct identifiers and assert a `ReceiveMaximumExceeded`
+///   disconnect.
 #[ntex::test]
 async fn test_max_receive() {
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         MqttServer::new(async move |p: Publish| {
             sleep(Duration::from_millis(10000)).await;
             Ok::<_, TestError>(p.ack())
@@ -860,9 +942,18 @@ async fn test_max_receive() {
     );
 }
 
+/// STATEMENT: Convertible publish errors become QoS-specific acknowledgments, while fatal or
+/// QoS 0 errors disconnect.
+///
+/// HOW:
+/// - Return `AckError` values from a server supporting QoS 2.
+/// - Send QoS 1 and QoS 2 messages and compare `QuotaExceeded` acknowledgments with the
+///   converted reason string.
+/// - Send a nonconvertible QoS 1 error and a QoS 0 error on separate connections; assert
+///   `ImplementationSpecificError` disconnects and closure.
 #[ntex::test]
 async fn test_publish_error_to_ack() {
-    let srv = server::TestServerBuilder::new(async || {
+    let srv = server::TestServerBuilder::new(async |_| {
         MqttServer::new(async |p: Publish| {
             Err::<PublishAck, _>(match p.publish_topic() {
                 "fatal" => AckError(codec::PublishAckReason::UnspecifiedError),
@@ -912,9 +1003,18 @@ async fn test_publish_error_to_ack() {
     }
 }
 
+/// STATEMENT: Wrapping a publish error preserves acknowledgment conversion and fatal-error
+/// disconnection behavior.
+///
+/// HOW:
+/// - Return `AckError` inside `ntex_error::Error` and assert a converted QoS 1 `NotAuthorized`
+///   acknowledgment.
+/// - For convertible and fatal QoS 0 errors, assert `ImplementationSpecificError` disconnects
+///   followed by closure.
+/// - Send a fatal QoS 1 publish on the original connection and assert the same disconnect reason.
 #[ntex::test]
 async fn test_publish_wrapped_error_to_ack() {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| {
             Err::<PublishAck, ntex_error::Error<AckError>>(
                 match p.publish_topic() {

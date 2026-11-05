@@ -7,14 +7,21 @@ use ntex_service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
 
 use super::{Session, publish::Publish};
 
+/// Type-erased factory for a session-scoped publish handler.
 type Handler<AppSt, E> = BoxServiceFactory<Session<AppSt>, Publish, (), E, Failure>;
+/// Type-erased publish handler instantiated for one session.
 type HandlerService<AppSt, E> = BoxService<Session<AppSt>, Publish, (), E>;
 
-/// Router - structure that follows the builder pattern
-/// for building publish packet router instances for mqtt server.
+/// Builder for routing incoming publish topics with `ntex_router` path patterns.
+///
+/// Matched path captures are available through `Publish::topic`. MQTT subscription
+/// wildcards are not routing patterns; use path captures such as `sensors/{id}`.
 pub struct Router<AppSt, Err> {
+    /// Topic patterns mapped to indices in `handlers`.
     router: RouterBuilder<usize>,
+    /// Resource factories in the same order as their router indices.
     handlers: Vec<Handler<AppSt, Err>>,
+    /// Fallback factory used when no topic pattern matches.
     default: Handler<AppSt, Err>,
 }
 
@@ -29,9 +36,10 @@ where
     AppSt: 'static,
     Err: 'static,
 {
-    /// Create mqtt application router.
+    /// Create a topic router with `f` as the fallback publish-service factory.
     ///
-    /// Default service to be used if no matching resource could be found.
+    /// Every resource service and the fallback are created for each session, and all
+    /// participate in router readiness and shutdown, even if they handle no messages.
     pub fn new<U>(f: impl IntoServiceFactory<U, Session<AppSt>, Publish>) -> Self
     where
         U: ServiceFactory<Session<AppSt>, Publish, Res = (), Error = Err> + 'static,
@@ -45,7 +53,13 @@ where
     }
 
     #[must_use]
-    /// Configure mqtt resource for a specific topic.
+    /// Register a publish-service factory for a topic path pattern.
+    ///
+    /// Matching uses `ntex_router` syntax, not MQTT subscription wildcards.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `address` contains a malformed path pattern.
     pub fn resource<T, F, U>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
@@ -76,9 +90,13 @@ where
     }
 }
 
+/// Factory that instantiates every resource handler and fallback for a session.
 pub struct RouterFactory<AppSt, Err> {
+    /// Compiled topic matcher shared by session-specific router services.
     router: Rc<ntex_router::Router<usize>>,
+    /// Resource factories indexed by the compiled matcher.
     handlers: Vec<Handler<AppSt, Err>>,
+    /// Fallback factory instantiated for each session.
     default: Handler<AppSt, Err>,
 }
 
@@ -115,9 +133,13 @@ where
     }
 }
 
+/// Session-scoped topic router forwarding readiness and shutdown to every handler.
 pub struct RouterService<AppSt, Err> {
+    /// Shared matcher that populates topic-path captures during recognition.
     router: Rc<ntex_router::Router<usize>>,
+    /// Session-specific handlers indexed by the matcher.
     handlers: Vec<HandlerService<AppSt, Err>>,
+    /// Session-specific fallback for unmatched publish topics.
     default: HandlerService<AppSt, Err>,
 }
 
@@ -167,18 +189,25 @@ impl<AppSt, Err> Service<Session<AppSt>, Publish> for RouterService<AppSt, Err> 
     }
 }
 
+/// Unit tests for router formatting and handler shutdown.
 #[cfg(test)]
 mod tests {
     use ntex_service::fn_service;
 
     use super::*;
 
+    /// STATEMENT: The publish router has an identifiable debug representation.
+    ///
+    /// HOW:
+    /// - Build a router with a successful default publish handler.
+    /// - Format it and assert the output contains `v3::Router`.
     #[test]
     fn test_debug() {
         let router: Router<(), ()> = Router::new(fn_service(async |_: Publish| Ok::<_, ()>(())));
         assert!(format!("{router:?}").contains("v3::Router"));
     }
 
+    /// Test publish service incrementing a shared counter when shut down.
     struct Tracked(Rc<std::cell::Cell<usize>>);
 
     impl Service<Session<()>, Publish> for Tracked {
@@ -194,7 +223,11 @@ mod tests {
         }
     }
 
-    /// Shutting down the router shuts down resource handlers and the default handler
+    /// STATEMENT: Router shutdown reaches both resource handlers and the default handler.
+    ///
+    /// HOW:
+    /// - Create a session router with two handlers sharing a shutdown counter.
+    /// - Shut down the pipeline and assert the counter records two shutdown calls.
     #[ntex::test]
     async fn test_shutdown() {
         use ntex_io::{Io, testing::IoTest};

@@ -6,17 +6,20 @@ use ntex_router::Path;
 use crate::{error::PayloadError, payload::Payload, v5::codec};
 
 #[derive(Debug)]
-/// Publish message
+/// Incoming publish metadata, routing path, and payload receiver.
 pub struct Publish {
+    /// Decoded publish metadata, including the declared payload length.
     pkt: codec::Publish,
+    /// PUBLISH Remaining Length in bytes, including the complete payload.
     pkt_size: u32,
+    /// Independent topic path used for routing and captured parameters.
     topic: Path<ByteString>,
+    /// Buffered or streamed payload receiver owned by this message.
     payload: Payload,
 }
 
 impl Publish {
-    /// Create a new `Publish` message from a PUBLISH
-    /// packet
+    /// Wraps decoded publish metadata and its payload, using Remaining Length for `pkt_size`.
     #[doc(hidden)]
     pub fn new(pkt: codec::Publish, payload: Payload, pkt_size: u32) -> Self {
         Self {
@@ -28,44 +31,43 @@ impl Publish {
     }
 
     #[inline]
-    /// this might be re-delivery of an earlier attempt to send the Packet.
+    /// Returns whether the client marked this publish as a possible redelivery.
     pub fn dup(&self) -> bool {
         self.pkt.dup
     }
 
     #[inline]
-    /// the Server must store the Application Message and deliver it to future
-    /// matching subscribers.
+    /// Returns whether the client requested retaining this message for future subscribers.
     pub fn retain(&self) -> bool {
         self.pkt.retain
     }
 
     #[inline]
-    /// the level of assurance for delivery of an Application Message.
+    /// Returns the publish delivery quality of service.
     pub fn qos(&self) -> codec::QoS {
         self.pkt.qos
     }
 
     #[inline]
-    /// the information channel to which payload data is published.
+    /// Returns the publish topic, after inbound topic-alias resolution.
     pub fn publish_topic(&self) -> &str {
         &self.pkt.topic
     }
 
     #[inline]
-    /// only present in PUBLISH Packets where the `QoS` level is 1 or 2.
+    /// Returns the packet identifier, present for `QoS 1` and `QoS 2` publishes.
     pub fn id(&self) -> Option<NonZeroU16> {
         self.pkt.packet_id
     }
 
     #[inline]
-    /// Returns reference to the parsed publish topic
+    /// Returns the routing path and any captured topic parameters.
     pub fn topic(&self) -> &Path<ByteString> {
         &self.topic
     }
 
     #[inline]
-    /// Returns mutable reference to the parsed publish topic
+    /// Returns mutable access to the routing path without changing the packet topic.
     pub fn topic_mut(&mut self) -> &mut Path<ByteString> {
         &mut self.topic
     }
@@ -77,31 +79,40 @@ impl Publish {
     }
 
     #[inline]
-    /// Returns mutable reference to publish packet
+    /// Returns mutable access to publish metadata.
+    ///
+    /// Changing the packet topic does not update the independent routing path; changing
+    /// `payload_size` does not change the payload receiver.
     pub fn packet_mut(&mut self) -> &mut codec::Publish {
         &mut self.pkt
     }
 
     #[inline]
-    /// Returns size of the packet
+    /// Returns Remaining Length in bytes, including the payload but excluding the fixed header.
     pub fn packet_size(&self) -> u32 {
         self.pkt_size
     }
 
     #[inline]
-    /// Returns size of the payload
+    /// Returns the declared payload length in bytes, including unread streamed chunks.
     pub fn payload_size(&self) -> usize {
         self.pkt.payload_size as usize
     }
 
     #[inline]
-    /// Read next chunk of the published payload.
+    /// Reads the next payload chunk, waiting for streamed data when necessary.
+    ///
+    /// Returns `None` at end of stream. Consuming chunks allows payload-buffer
+    /// backpressure to clear once the low watermark is reached.
     pub async fn read(&self) -> Result<Option<Bytes>, PayloadError> {
         self.payload.read().await
     }
 
     #[inline]
-    /// Read complete payload.
+    /// Collects all remaining payload bytes, waiting for the stream to end.
+    ///
+    /// Chunks already consumed by [`Self::read`] are not included. Returns
+    /// [`PayloadError::Consumed`] if no unread chunk remains.
     pub async fn read_all(&self) -> Result<Bytes, PayloadError> {
         self.payload.read_all().await
     }
@@ -111,7 +122,11 @@ impl Publish {
         mem::take(&mut self.payload)
     }
 
-    /// Create acknowledgement for this packet
+    /// Consumes this message and creates a successful publish acknowledgement.
+    ///
+    /// The dispatcher sends `PUBACK` for `QoS 1` or `PUBREC` for `QoS 2`; `QoS 0`
+    /// does not produce a wire acknowledgement. Read or take a streamed payload
+    /// before consuming the message to avoid dropping its receiver prematurely.
     pub fn ack(self) -> PublishAck {
         PublishAck {
             reason_code: codec::PublishAckReason::Success,
@@ -120,16 +135,20 @@ impl Publish {
         }
     }
 
+    /// Separates decoded metadata from its payload receiver, discarding routing state.
     pub(crate) fn into_inner(self) -> (codec::Publish, Payload) {
         (self.pkt, self.payload)
     }
 }
 
 #[derive(Debug)]
-/// Publish ack
+/// Application response used to construct a publish acknowledgement.
 pub struct PublishAck {
+    /// Reason used in `PUBACK` or `PUBREC` for this publish.
     pub(crate) reason_code: codec::PublishAckReason,
+    /// User properties included in the acknowledgement.
     pub(crate) properties: codec::UserProperties,
+    /// Optional diagnostic text included in the acknowledgement.
     pub(crate) reason_string: Option<ByteString>,
 }
 
@@ -145,7 +164,7 @@ impl PublishAck {
 
     #[inline]
     #[must_use]
-    /// Set Acknowledgement's Reason Code
+    /// Sets the reason code for the publish acknowledgement.
     pub fn reason_code(mut self, reason_code: codec::PublishAckReason) -> Self {
         self.reason_code = reason_code;
         self
@@ -153,7 +172,7 @@ impl PublishAck {
 
     #[inline]
     #[must_use]
-    /// Update user properties
+    /// Modifies user properties included in the publish acknowledgement.
     pub fn properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::UserProperties),
@@ -164,7 +183,7 @@ impl PublishAck {
 
     #[inline]
     #[must_use]
-    /// Set ack reason string
+    /// Sets diagnostic text included in the publish acknowledgement.
     pub fn reason(mut self, reason: ByteString) -> Self {
         self.reason_string = Some(reason);
         self

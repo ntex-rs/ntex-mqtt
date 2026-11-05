@@ -13,11 +13,11 @@ use crate::v5::codec::{UserProperties, UserProperty, encode, property_type as pt
 pub struct Subscribe {
     /// Packet Identifier
     pub packet_id: NonZeroU16,
-    /// Subscription Identifier
+    /// Optional identifier in the range 1 to 268,435,455, echoed on matching publications.
     pub id: Option<NonZeroU32>,
     /// User Property pairs, additional diagnostic or other information.
     pub user_properties: UserProperties,
-    /// the list of Topic Filters and `QoS` to which the Client wants to subscribe.
+    /// Nonempty list of topic filters and their delivery options, in request order.
     pub topic_filters: Vec<(ByteString, SubscriptionOptions)>,
 }
 
@@ -28,6 +28,8 @@ pub struct SubscriptionOptions {
     pub qos: QoS,
     /// No Local option, messages must not be forwarded to a connection with a Client Identifier
     /// equal to the Client Identifier of the publishing connection.
+    ///
+    /// Must be `false` for shared subscriptions.
     pub no_local: bool,
     /// Retain As Published option, keep the RETAIN flag of forwarded messages.
     pub retain_as_published: bool,
@@ -69,7 +71,7 @@ pub struct SubscribeAck {
     pub properties: UserProperties,
     /// Reason String property, a human readable string designed for diagnostics.
     pub reason_string: Option<ByteString>,
-    /// corresponds to a Topic Filter in the SUBSCRIBE Packet being acknowledged.
+    /// One reason code per requested topic filter, in the same order as the `SUBSCRIBE` request.
     pub status: Vec<SubscribeAckReason>,
 }
 
@@ -80,7 +82,7 @@ pub struct Unsubscribe {
     pub packet_id: NonZeroU16,
     /// User Property pairs, additional diagnostic or other information.
     pub user_properties: UserProperties,
-    /// the list of Topic Filters that the Client wishes to unsubscribe from.
+    /// Nonempty list of topic filters to remove, in request order.
     pub topic_filters: Vec<ByteString>,
 }
 
@@ -150,6 +152,7 @@ prim_enum! {
 }
 
 impl Subscribe {
+    /// Decodes subscription properties and a nonempty list of filters and options.
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
         let prop_src = &mut utils::take_properties(src)?;
@@ -187,6 +190,7 @@ impl Subscribe {
 }
 
 impl SubscribeAck {
+    /// Decodes acknowledgment properties and interprets the remaining bytes as per-filter status codes.
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
         let (properties, reason_string) = ack_props::decode(src)?;
@@ -204,6 +208,7 @@ impl SubscribeAck {
 }
 
 impl Unsubscribe {
+    /// Decodes unsubscribe properties and a nonempty list of topic filters.
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
 
@@ -233,6 +238,7 @@ impl Unsubscribe {
 }
 
 impl UnsubscribeAck {
+    /// Decodes acknowledgment properties and interprets the remaining bytes as per-filter status codes.
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
         let (properties, reason_string) = ack_props::decode(src)?;
@@ -396,6 +402,7 @@ impl encode::EncodeLtd for UnsubscribeAck {
     }
 }
 
+/// Unit tests for subscription bodies and codec framing.
 #[cfg(test)]
 mod tests {
     use ntex_codec::{Decoder, Encoder};
@@ -404,6 +411,7 @@ mod tests {
     // use crate::v5::codec::encode::EncodeLtd;
     use super::*;
 
+    /// Extracts a non-publish packet, panicking if the fixture decoded as a payload item.
     fn packet(res: Decoded) -> Packet {
         match res {
             Decoded::Packet(pkt, _) => pkt,
@@ -411,6 +419,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Subscribe and unsubscribe body sizing agrees with encoding and preserves packet fields.
+    ///
+    /// HOW:
+    /// - Encode requests carrying user properties and a filter, including a subscription identifier.
+    /// - Compare encoded byte counts with `encoded_size`, then decode and check packet equality.
     #[test]
     fn test_sub() {
         let pkt = Subscribe {
@@ -445,6 +458,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: A framed subscribe packet round-trips through the codec.
+    ///
+    /// HOW:
+    /// - Encode a subscription with a user property and topic filter using `Codec`.
+    /// - Decode the frame and compare its packet with the original.
     #[test]
     fn test_sub_pkt() {
         let pkt = Packet::Subscribe(Subscribe {
@@ -469,6 +487,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Subscription acknowledgment bodies preserve reason strings, user properties, and statuses.
+    ///
+    /// HOW:
+    /// - Encode and decode both acknowledgment types with a reason string or user properties and a success status.
+    /// - Compare the recovered acknowledgments with their originals, including the empty status-list cases.
     #[test]
     fn test_sub_ack() {
         let ack = SubscribeAck {

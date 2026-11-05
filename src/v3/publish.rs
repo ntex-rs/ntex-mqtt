@@ -6,17 +6,22 @@ use ntex_router::Path;
 use crate::{error::PayloadError, payload::Payload, v3::codec};
 
 #[derive(Debug)]
-/// Publish message
+/// Incoming publish metadata, routable topic path, and consumable payload receiver.
 pub struct Publish {
+    /// Decoded publish metadata, without its streamed payload.
     pkt: codec::Publish,
+    /// PUBLISH remaining length in bytes, excluding its fixed header.
     pkt_size: u32,
+    /// Independently parsed topic path and captures populated by the router.
     topic: Path<ByteString>,
+    /// Payload receiver consumed through reads or transferred with `take_payload`.
     payload: Payload,
 }
 
 impl Publish {
-    /// Create a new `Publish` message from a PUBLISH
-    /// packet
+    /// Wrap PUBLISH metadata and its payload receiver with an independent routing path.
+    ///
+    /// `pkt_size` is the remaining length in bytes, excluding the fixed header.
     #[doc(hidden)]
     pub fn new(pkt: codec::Publish, payload: Payload, pkt_size: u32) -> Self {
         Self {
@@ -28,44 +33,47 @@ impl Publish {
     }
 
     #[inline]
-    /// this might be re-delivery of an earlier attempt to send the Packet.
+    /// Return whether this packet may be a redelivery of an earlier publication.
     pub fn dup(&self) -> bool {
         self.pkt.dup
     }
 
     #[inline]
-    /// the Server must store the Application Message and its `QoS`, so it can be
-    /// delivered to future subscribers of the topic.
+    /// Return whether the sender requests retention for future subscribers.
+    ///
+    /// The application implements retained-message storage; this flag does not store data.
     pub fn retain(&self) -> bool {
         self.pkt.retain
     }
 
     #[inline]
-    /// the level of assurance for delivery of an Application Message.
+    /// Return the publication’s delivery quality.
     pub fn qos(&self) -> codec::QoS {
         self.pkt.qos
     }
 
     #[inline]
-    /// the information channel to which payload data is published.
+    /// Return the topic name from the packet metadata.
     pub fn publish_topic(&self) -> &str {
         &self.pkt.topic
     }
 
     #[inline]
-    /// only present in PUBLISH Packets where the `QoS` level is 1 or 2.
+    /// Return the packet identifier, present for `QoS 1` and `QoS 2` publications.
     pub fn id(&self) -> Option<NonZeroU16> {
         self.pkt.packet_id
     }
 
     #[inline]
-    /// Returns reference to the parsed publish topic
+    /// Return the routing path and any captures populated during topic recognition.
     pub fn topic(&self) -> &Path<ByteString> {
         &self.topic
     }
 
     #[inline]
-    /// Returns mutable reference to the parsed publish topic
+    /// Mutably access the routing path and its captures.
+    ///
+    /// This path is separate from the topic string in `packet`.
     pub fn topic_mut(&mut self) -> &mut Path<ByteString> {
         &mut self.topic
     }
@@ -77,31 +85,37 @@ impl Publish {
     }
 
     #[inline]
-    /// Returns mutable reference to the PUBLISH packet
+    /// Mutably access PUBLISH metadata.
+    ///
+    /// Changing its topic does not update the independently parsed routing path.
     pub fn packet_mut(&mut self) -> &mut codec::Publish {
         &mut self.pkt
     }
 
     #[inline]
-    /// Returns size of the publish
+    /// Return the PUBLISH remaining length in bytes, excluding its fixed header.
     pub fn packet_size(&self) -> u32 {
         self.pkt_size
     }
 
     #[inline]
-    /// Returns size of the payload
+    /// Return the declared payload size in bytes, including any bytes already consumed.
     pub fn payload_size(&self) -> usize {
         self.pkt.payload_size as usize
     }
 
     #[inline]
-    /// Read next chunk of the published payload.
+    /// Consume the next available payload chunk, waiting for more data if needed.
+    ///
+    /// Returns `None` after the payload is exhausted.
     pub async fn read(&self) -> Result<Option<Bytes>, PayloadError> {
         self.payload.read().await
     }
 
     #[inline]
-    /// Read complete payload.
+    /// Consume and collect all remaining payload bytes.
+    ///
+    /// Bytes consumed by earlier reads are not included.
     pub async fn read_all(&self) -> Result<Bytes, PayloadError> {
         self.payload.read_all().await
     }
@@ -111,6 +125,7 @@ impl Publish {
         mem::take(&mut self.payload)
     }
 
+    /// Consume the message, returning its metadata, payload receiver, and remaining length.
     pub(super) fn into_inner(self) -> (codec::Publish, Payload, u32) {
         (self.pkt, self.payload, self.pkt_size)
     }

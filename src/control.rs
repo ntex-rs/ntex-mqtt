@@ -1,4 +1,4 @@
-//! Control message for connection management service
+//! Connection lifecycle and write-backpressure messages for control services.
 use std::{io, marker::PhantomData};
 
 use ntex_error::Failure;
@@ -6,12 +6,12 @@ use ntex_service::{Ctx, Service, ServiceFactory};
 
 use crate::error;
 
-/// Connection control messages
+/// Connection lifecycle and transport backpressure notifications.
 #[derive(Debug)]
 pub enum Control<E> {
     /// Write back-pressure is enabled/disabled
     WrBackpressure(WrBackpressure),
-    /// Dispatcher is preparing for shutdown.
+    /// The dispatcher is stopping and reports the terminal reason.
     ///
     /// The control service will receive this message only once.
     /// After receiving this message dispatcher stops.
@@ -21,7 +21,7 @@ pub enum Control<E> {
 /// Dispatcher stop reasons
 #[derive(Debug)]
 pub enum Reason<E> {
-    /// Unhandled application level error from handshake, publish and control services
+    /// Unhandled application error from a connection service.
     Error(Error<E>),
     /// Protocol level error
     Protocol(ProtocolError),
@@ -30,18 +30,22 @@ pub enum Reason<E> {
 }
 
 impl<E> Control<E> {
+    /// Create a notification for the current write-backpressure state.
     pub(super) fn wr(state: bool) -> Self {
         Control::WrBackpressure(WrBackpressure(state))
     }
 
+    /// Create a terminal notification carrying an application error.
     pub(super) fn err(err: E) -> Self {
         Control::Stop(Reason::Error(Error::new(err)))
     }
 
+    /// Create a terminal peer-disconnection notification.
     pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
         Control::Stop(Reason::PeerGone(PeerGone(err)))
     }
 
+    /// Create a terminal protocol-error notification.
     pub(super) fn proto(err: error::MqttProtocolError) -> Self {
         Control::Stop(Reason::Protocol(ProtocolError::new(err)))
     }
@@ -62,6 +66,7 @@ impl WrBackpressure {
 /// Service level error
 #[derive(Debug, Clone)]
 pub struct Error<E> {
+    /// Owned application error reported by the connection service.
     err: E,
 }
 
@@ -72,7 +77,7 @@ impl<E> Error<E> {
     }
 
     #[inline]
-    /// Returns reference to mqtt error
+    /// Borrow the application service error.
     pub fn get_ref(&self) -> &E {
         &self.err
     }
@@ -87,6 +92,7 @@ impl<E> Error<E> {
 /// Protocol level error
 #[derive(Debug, Clone)]
 pub struct ProtocolError {
+    /// Protocol error that caused the dispatcher to stop.
     err: error::MqttProtocolError,
 }
 
@@ -110,24 +116,24 @@ impl ProtocolError {
 }
 
 #[derive(Debug)]
-/// Peer gone control message
+/// Peer disconnection, optionally carrying a transport error.
 pub struct PeerGone(pub(crate) Option<io::Error>);
 
 impl PeerGone {
     #[inline]
-    /// Returns error reference
+    /// Borrow the transport error, or return `None` for an orderly disconnect.
     pub fn err(&self) -> Option<&io::Error> {
         self.0.as_ref()
     }
 
     #[inline]
-    /// Take error
+    /// Consume the message and return its optional transport error.
     pub fn into(self) -> Option<io::Error> {
         self.0
     }
 }
 
-/// Default control service
+/// Default control service that logs unconfigured requests and returns no packet.
 #[derive(Debug)]
 pub struct DefaultControlService<E, R>(PhantomData<(E, R)>);
 
@@ -159,10 +165,15 @@ impl<St, E, Req, R> Service<St, Req> for DefaultControlService<E, R> {
     }
 }
 
+/// Unit tests for control message formatting and error ownership.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// STATEMENT: Control wrapper debug output identifies the represented message type.
+    ///
+    /// HOW:
+    /// - Format `WrBackpressure`, `Error`, and `PeerGone` values and check their type names.
     #[test]
     fn test_debug() {
         // WrBackpressure, Error, PeerGone
@@ -171,6 +182,11 @@ mod tests {
         assert!(format!("{:?}", PeerGone(None)).contains("PeerGone"));
     }
 
+    /// STATEMENT: Control error accessors borrow or transfer the original error values.
+    ///
+    /// HOW:
+    /// - Borrow and consume application and protocol errors, checking their values.
+    /// - Check both present and absent transport errors through `PeerGone`.
     #[test]
     fn test_accessors() {
         let err = Error::new(1);

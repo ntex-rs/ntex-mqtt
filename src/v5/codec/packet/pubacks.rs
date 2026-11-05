@@ -7,6 +7,7 @@ use crate::error::{DecodeError, EncodeError};
 use crate::utils::{Decode, Encode};
 use crate::v5::codec::{UserProperties, encode};
 
+/// Byte count of the packet identifier and explicit reason code before acknowledgment properties.
 const HEADER_LEN: u32 = 2 + 1; // packet id + reason code
 
 /// PUBACK/PUBREC message content
@@ -71,6 +72,7 @@ prim_enum! {
 }
 
 impl PublishAck {
+    /// Decodes a `PUBACK` or `PUBREC` body, defaulting omitted reason and properties.
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
 
@@ -115,6 +117,7 @@ impl Default for PublishAck {
 }
 
 impl PublishAck2 {
+    /// Decodes a `PUBREL` or `PUBCOMP` body, defaulting omitted reason and properties.
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let packet_id = NonZeroU16::decode(src)?;
         let ack = if src.has_remaining() {
@@ -199,11 +202,17 @@ impl encode::EncodeLtd for PublishAck2 {
     }
 }
 
+/// Unit tests for publish acknowledgment bodies.
 #[cfg(test)]
 mod tests {
     use super::*;
     use test_case::test_case;
 
+    /// STATEMENT: Publish acknowledgment decoding supports omitted defaults and populated diagnostic properties.
+    ///
+    /// HOW:
+    /// - Decode parameterized bodies covering explicit or omitted success reasons, failure reasons, and diagnostics.
+    /// - Compare every decoded field with its case expectation and check all input bytes were consumed.
     #[test_case(b"\xFF\xFF\x00\x00", 65535, PublishAckReason::Success, vec![], None; "success_empty")]
     #[test_case(b"\x00\x01", 1, PublishAckReason::Success, vec![], None; "success_no_reason")]
     #[test_case(b"\x01\x01\x00", 257, PublishAckReason::Success, vec![], None; "success_no_prop_len")]
@@ -234,6 +243,11 @@ mod tests {
         assert_eq!(input.len(), 0);
     }
 
+    /// STATEMENT: Publish acknowledgments reject a zero identifier and a truncated property block.
+    ///
+    /// HOW:
+    /// - Decode parameterized bodies with a zero packet identifier or an unfulfilled property length.
+    /// - Compare each result with the expected malformed-packet or invalid-length error.
     #[test_case(b"\x00\x00", DecodeError::MalformedPacket; "packet_id_zero")]
     #[test_case(b"\x00\x01\x00\x01", DecodeError::InvalidLength; "properties_promised")]
     fn puback_decode_must_fail(input: &'static [u8], error: DecodeError) {

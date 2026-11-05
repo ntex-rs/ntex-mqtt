@@ -7,7 +7,9 @@ use crate::v3::shared::{Ack, AckType, MqttShared};
 use crate::v3::{codec, error::SendPacketError};
 use crate::{error::EncodeError, types::QoS};
 
-/// Mqtt client/server sink, it is used to send packets to the peer
+/// Cloneable handle for sending MQTT packets on a client or server connection.
+///
+/// Clones share send credit, acknowledgement tracking, and connection shutdown.
 pub struct MqttSink(Rc<MqttShared>);
 
 impl Clone for MqttSink {
@@ -17,29 +19,34 @@ impl Clone for MqttSink {
 }
 
 impl MqttSink {
+    /// Creates a sink sharing the connection state and its outgoing packet queues.
     pub(crate) fn new(state: Rc<MqttShared>) -> Self {
         MqttSink(state)
     }
 
+    /// Clones the connection state for internal packet dispatch and flow control.
     pub(super) fn shared(&self) -> Rc<MqttShared> {
         self.0.clone()
     }
 
-    #[inline]
-    /// Check if connection is active
+    /// Returns whether the connection is active.
     ///
     /// Returns `false` as soon as the connection starts closing, either
     /// locally or because the peer has gone. Buffered data may still be flushing.
+    #[inline]
     pub fn is_open(&self) -> bool {
         self.0.is_active()
     }
 
-    #[inline]
-    /// Check if sink is ready
+    /// Returns whether an acknowledged publish can be sent without waiting.
     ///
-    /// Send credit is available and write backpressure is not enabled for the
-    /// connection. The backpressure state is updated by the connection
-    /// dispatcher, it may stay enabled briefly after the write buffer drains.
+    /// Requires an active connection, available send credit, and no write
+    /// backpressure.
+    /// The dispatcher clears the backpressure flag, so it may remain set briefly
+    /// after the buffer drains. This check does not account for an active streaming
+    /// payload; a new `QoS 1` or `QoS 2` publish can still fail with
+    /// [`EncodeError::ExpectPayload`].
+    #[inline]
     pub fn is_ready(&self) -> bool {
         if self.0.is_active() {
             self.0.is_ready()
@@ -48,18 +55,24 @@ impl MqttSink {
         }
     }
 
-    #[inline]
-    /// Get remaining send credit
+    /// Returns the number of available acknowledged-publish send slots.
     ///
-    /// Number of `QoS 1` and `QoS 2` publish packets that can be sent before
-    /// `max_send` in-flight limit is reached.
+    /// The configured in-flight limit counts `QoS 1` and `QoS 2` publishes,
+    /// subscriptions, and unsubscriptions until their final acknowledgements.
+    /// `QoS 0` does not consume credit.
+    #[inline]
     pub fn credit(&self) -> usize {
         self.0.credit()
     }
 
-    /// Get notification when packet could be send to the peer.
+    /// Waits for send credit and writable connection state.
     ///
-    /// Result indicates if connection is alive
+    /// Returns `false` when closure is observed, otherwise `true` when the
+    /// readiness check succeeds. Credit is not reserved for the caller; another
+    /// send can consume it before the caller sends.
+    /// An immediately ready result reflects state when this method is called,
+    /// not when its future is later polled. This notification does not ensure
+    /// that an active streaming payload has finished.
     pub fn ready(&self) -> impl Future<Output = bool> {
         if !self.0.is_active() {
             Either::Left(ready(false))
@@ -71,27 +84,27 @@ impl MqttSink {
         }
     }
 
-    #[inline]
-    /// Close mqtt connection.
+    /// Initiates graceful MQTT connection shutdown.
     ///
-    /// Client sink sends `Disconnect` packet first. Pending acks are cancelled
-    /// with `SendPacketError::Disconnected` error.
+    /// A client sink first attempts to queue `DISCONNECT`; a server sink does not.
+    /// Buffered data may still flush, but pending acknowledgement waits are cancelled
+    /// with [`SendPacketError::Disconnected`].
+    #[inline]
     pub fn close(&self) {
         self.0.close();
     }
 
-    #[inline]
-    /// Force close mqtt connection.
+    /// Aborts the MQTT connection immediately.
     ///
-    /// The connection is aborted immediately, mqtt dispatcher does not wait for
-    /// uncompleted responses and buffered data is discarded. Use
-    /// [`close`](Self::close) to close connection gracefully.
+    /// Pending acknowledgement waits are cancelled and buffered data is discarded.
+    /// Use [`close`](Self::close) to initiate graceful shutdown instead.
+    #[inline]
     pub fn force_close(&self) {
         self.0.force_close();
     }
 
+    /// Queues `PINGREQ` and marks a response pending only if encoding succeeds.
     #[inline]
-    /// Send ping.
     pub(super) fn ping(&self) -> bool {
         if self.0.encode_packet(codec::Packet::PingRequest).is_ok() {
             self.0.set_ping_pending(true);
@@ -101,19 +114,21 @@ impl MqttSink {
         }
     }
 
-    /// Check if PINGREQ is sent and PINGRESP is not received yet
+    /// Returns whether an encoded `PINGREQ` is still awaiting `PINGRESP`.
     pub(super) fn is_ping_pending(&self) -> bool {
         self.0.is_ping_pending()
     }
 
-    /// Wait until already encoded packets can be written, returns `false` if the
-    /// connection is closed
+    /// Waits for any active streaming payload and write backpressure to drain.
+    ///
+    /// Returns `false` if the connection closes; this does not wait for peer
+    /// acknowledgements.
     pub(super) async fn wait_write_unblocked(&self) -> bool {
         self.0.wait_write_unblocked().await
     }
 
+    /// Creates a publish builder for a topic with `QoS 0`, no payload, and cleared flags.
     #[inline]
-    /// Create publish message builder.
     pub fn publish<U>(&self, topic: U) -> PublishBuilder
     where
         ByteString: From<U>,
@@ -128,8 +143,11 @@ impl MqttSink {
         })
     }
 
+    /// Creates a builder from the supplied publish packet.
+    ///
+    /// The selected send method replaces its `QoS` and payload size. A supplied
+    /// packet identifier is preserved for `QoS 1` and `QoS 2` sends.
     #[inline]
-    /// Create publish builder with publish packet.
     pub fn publish_pkt(&self, packet: codec::Publish) -> PublishBuilder {
         PublishBuilder {
             packet,
@@ -137,18 +155,17 @@ impl MqttSink {
         }
     }
 
-    /// Set publish ack callback.
+    /// Sets the callback for nonblocking `QoS 1` publish acknowledgements.
     ///
-    /// Use non-blocking send, `PublishBuilder::send_at_least_once_no_block()`
-    /// First argument is packet id, second argument is "disconnected" state
+    /// Used by [`PublishBuilder::send_at_least_once_no_block`], not by awaited sends.
+    /// The first argument is the packet identifier; the second is `true` when
+    /// disconnection cancels the publish rather than an acknowledgement completing it.
     ///
-    /// The callback runs synchronously while the sink state is borrowed, it must
-    /// not call any sink method (`credit()`, `is_ready()`, `publish()`, `close()`,
-    /// `publish_ack_cb()`, etc), such a call panics or is lost. Hand off
-    /// the work instead, for example via a channel or a spawned task.
-    ///
-    /// Acks are reported in the order of arrival, on disconnect the in-flight
-    /// publishes are reported in no particular order.
+    /// The callback runs synchronously while the sink queues are mutably borrowed.
+    /// Do not call back into the sink: queue access panics and replacing the callback
+    /// may be lost. Hand off work through a channel or spawned task instead.
+    /// Acknowledgements are reported in arrival order; disconnection reports
+    /// in-flight nonblocking publishes in unspecified order.
     pub fn publish_ack_cb<F>(&self, f: F)
     where
         F: Fn(NonZeroU16, bool) + 'static,
@@ -156,11 +173,11 @@ impl MqttSink {
         self.0.set_publish_ack(Box::new(f));
     }
 
-    #[inline]
-    /// Create subscribe packet builder
+    /// Creates a subscribe packet builder.
     ///
-    /// Only a client sink sends the packet, on a server sink
+    /// Only a client sink sends the packet; on a server sink
     /// [`SubscribeBuilder::send`] returns [`SendPacketError::NotAllowed`].
+    #[inline]
     pub fn subscribe(&self) -> SubscribeBuilder {
         SubscribeBuilder {
             id: None,
@@ -169,11 +186,11 @@ impl MqttSink {
         }
     }
 
-    #[inline]
-    /// Create unsubscribe packet builder
+    /// Creates an unsubscribe packet builder.
     ///
-    /// Only a client sink sends the packet, on a server sink
+    /// Only a client sink sends the packet; on a server sink
     /// [`UnsubscribeBuilder::send`] returns [`SendPacketError::NotAllowed`].
+    #[inline]
     pub fn unsubscribe(&self) -> UnsubscribeBuilder {
         UnsubscribeBuilder {
             id: None,
@@ -189,9 +206,11 @@ impl fmt::Debug for MqttSink {
     }
 }
 
-/// Publish packet builder
+/// Builder for one publish packet, with payload and `QoS` chosen by its send method.
 pub struct PublishBuilder {
+    /// Publish header retained until the selected send method encodes it.
     packet: codec::Publish,
+    /// Connection state retained for encoding, send credit, and acknowledgement tracking.
     shared: Rc<MqttShared>,
 }
 
@@ -204,56 +223,61 @@ impl fmt::Debug for PublishBuilder {
 }
 
 impl PublishBuilder {
-    #[inline]
-    #[must_use]
-    /// Set packet id.
+    /// Sets the packet identifier for an acknowledged publish.
     ///
-    /// Note: if packet id is not set, it gets generated automatically.
-    /// Packet id management should not be mixed, it should be auto-generated
-    /// or set by user. Otherwise collisions could occure.
+    /// If unset, an identifier is generated when sending. Use either automatic
+    /// or manual identifier allocation consistently to avoid collisions; an
+    /// in-flight collision returns [`SendPacketError::PacketIdInUse`].
     ///
     /// # Panics
     ///
-    /// Panics if id is 0
+    /// Panics if `id` is zero.
+    #[inline]
+    #[must_use]
     pub fn packet_id(mut self, id: u16) -> Self {
         let id = NonZeroU16::new(id).expect("id 0 is not allowed");
         self.packet.packet_id = Some(id);
         self
     }
 
+    /// Sets whether this publish is a retransmission of an earlier packet.
     #[inline]
     #[must_use]
-    /// This might be re-delivery of an earlier attempt to send the Packet.
     pub fn dup(mut self, val: bool) -> Self {
         self.packet.dup = val;
         self
     }
 
+    /// Sets the retain flag so the peer can retain this publish.
     #[inline]
     #[must_use]
-    /// Set retain flag
     pub fn retain(mut self) -> Self {
         self.packet.retain = true;
         self
     }
 
-    #[inline]
-    /// Get size of the publish packet
+    /// Returns the publish body size in bytes, excluding the fixed header.
     ///
-    /// Size excludes fixed header. It is calculated with the current `QoS` of
-    /// the packet, which is `QoS 0` until the packet is sent. Add 2 bytes for
-    /// `QoS 1` and `QoS 2` packets.
+    /// Uses the packet's current `QoS` and stored payload size, then adds
+    /// `payload_size`. Builders from [`MqttSink::publish`] start with `QoS 0`
+    /// and a zero stored payload size; add two bytes for an acknowledged send.
+    /// Builders from [`MqttSink::publish_pkt`] retain the supplied packet values.
+    ///
+    /// # Panics
+    ///
+    /// Panics in builds with overflow checks if adding `payload_size` overflows `usize`.
+    #[inline]
     pub fn size(&self, payload_size: usize) -> u32 {
         (codec::encode::get_encoded_publish_size(&self.packet) + payload_size) as u32
     }
 
-    /// Send publish packet with `QoS 0`
+    /// Queues a complete publish with `QoS 0`, without waiting for acknowledgement.
     ///
-    /// Waits while an outgoing streaming publish is in progress, packets cannot
-    /// interleave with its payload, and while write backpressure is enabled,
-    /// until the write buffer drains to half of the high watermark.
-    /// Fails with `SendPacketError::Disconnected` if the connection is closed
-    /// or the write timeout of the io expires.
+    /// Waits for an outgoing streaming payload to finish and for the write buffer
+    /// to drain to the backpressure release threshold. Does not consume send credit.
+    /// Returns [`SendPacketError::Disconnected`] if the connection closes or the
+    /// write-readiness wait times out. Success means the packet is encoded, not
+    /// that the peer has received it.
     pub async fn send_at_most_once(mut self, payload: Bytes) -> Result<(), SendPacketError> {
         if self.shared.wait_publish_ready().await {
             log::trace!("Publish (QoS-0) to {:?}", self.packet.topic);
@@ -268,17 +292,16 @@ impl PublishBuilder {
         }
     }
 
-    /// Start streaming publish packet with `QoS 0`
+    /// Starts a streaming publish with `QoS 0`.
     ///
-    /// `size` is the total payload size, the payload must be sent via returned
-    /// `StreamingPayload`. Dropping `StreamingPayload` before the entire payload
-    /// is sent terminates the connection.
+    /// `size` is the total payload size in bytes. Send exactly that many bytes
+    /// through the returned `StreamingPayload`; no chunks are needed for zero.
+    /// Dropping the sender with an incomplete payload terminates the connection.
     ///
-    /// Waits while an outgoing streaming publish is in progress, packets cannot
-    /// interleave with its payload, and while write backpressure is enabled,
-    /// until the write buffer drains to half of the high watermark.
-    /// Fails with `SendPacketError::Disconnected` if the connection is closed
-    /// or the write timeout of the io expires.
+    /// Waits for any outgoing streaming payload to finish and for the write buffer
+    /// to drain to the backpressure release threshold, without consuming send credit.
+    /// Returns [`SendPacketError::Disconnected`] if the connection closes or the
+    /// write-readiness wait times out.
     pub async fn stream_at_most_once(
         mut self,
         size: u32,
@@ -304,10 +327,13 @@ impl PublishBuilder {
         }
     }
 
-    /// Send publish packet with `QoS 1`
+    /// Sends a complete `QoS 1` publish and waits for `PublishAck`.
     ///
-    /// The ack is read by the connection dispatcher, awaiting it in a handler of
-    /// the same connection can stall it while reading is paused, see
+    /// Waits for send credit and writable connection state before encoding.
+    /// An already active streaming payload can cause [`EncodeError::ExpectPayload`].
+    ///
+    /// The acknowledgement is read by the connection dispatcher. Awaiting it in a
+    /// handler of the same connection can stall while reading is paused; see
     /// [read pause](crate::MqttServiceConfig#read-pause).
     pub async fn send_at_least_once(mut self, payload: Bytes) -> Result<(), SendPacketError> {
         if self.shared.is_active() {
@@ -324,11 +350,17 @@ impl PublishBuilder {
         }
     }
 
-    /// Non-blocking send publish packet with `QoS 1`
+    /// Queues a complete `QoS 1` publish without waiting for acknowledgement.
+    ///
+    /// Install [`MqttSink::publish_ack_cb`] first to receive acknowledgement and
+    /// disconnection notifications. Success means the packet was encoded. An active
+    /// streaming payload returns [`EncodeError::ExpectPayload`]; a closed connection
+    /// returns [`SendPacketError::Disconnected`].
     ///
     /// # Panics
     ///
-    /// Panics if sink is not ready or publish ack callback is not set
+    /// Panics if the active sink is not ready. Panics after successful encoding if
+    /// the publish acknowledgement callback has not been installed.
     pub fn send_at_least_once_no_block(mut self, payload: Bytes) -> Result<(), SendPacketError> {
         if self.shared.is_active() {
             // check readiness
@@ -351,6 +383,7 @@ impl PublishBuilder {
         }
     }
 
+    /// Assigns an identifier, encodes a `QoS 1` publish, and awaits its acknowledgement.
     async fn send_at_least_once_inner(mut self, payload: Bytes) -> Result<(), SendPacketError> {
         let idx = self.shared.set_publish_id(&mut self.packet);
         log::trace!("Publish (QoS1) to {:#?}", self.packet);
@@ -362,13 +395,17 @@ impl PublishBuilder {
             .map_err(|_| SendPacketError::Disconnected)
     }
 
-    /// Send publish packet with `QoS 2`
+    /// Sends a complete `QoS 2` publish and waits for `PublishReceived`.
     ///
-    /// If the returned future is dropped after the publish is sent, the publish
-    /// is released, `PublishRelease` is sent once `PublishReceived` is received.
+    /// Waits for send credit and writable connection state before encoding.
+    /// An already active streaming payload can cause [`EncodeError::ExpectPayload`].
+    /// The returned handle controls release; send credit stays in use until
+    /// `PublishComplete`.
+    /// If the send future is dropped after encoding, the publish is automatically
+    /// released once an accepted `PublishReceived` arrives.
     ///
-    /// The ack is read by the connection dispatcher, awaiting it in a handler of
-    /// the same connection can stall it while reading is paused, see
+    /// The acknowledgement is read by the connection dispatcher. Awaiting it in a
+    /// handler of the same connection can stall while reading is paused; see
     /// [read pause](crate::MqttServiceConfig#read-pause).
     pub async fn send_exactly_once(
         mut self,
@@ -388,6 +425,7 @@ impl PublishBuilder {
         }
     }
 
+    /// Registers a `QoS 2` publish and guards its release while awaiting `PublishReceived`.
     async fn send_exactly_once_inner(
         mut self,
         payload: Bytes,
@@ -410,7 +448,20 @@ impl PublishBuilder {
             .map_err(|_| SendPacketError::Disconnected)
     }
 
-    /// Send publish packet with `QoS 1`
+    /// Creates a streaming `QoS 1` send future and its payload sender.
+    ///
+    /// `size` is the total payload size in bytes. Poll the returned future
+    /// concurrently with `StreamingPayload::send`: it waits for readiness, encodes
+    /// the header, then waits for `PublishAck`. Send exactly `size` payload bytes
+    /// in sequential chunks; no chunks are needed for zero.
+    /// The credit wait begins when the returned future is polled.
+    /// Dropping the sender before the header is encoded cancels the send. Once
+    /// payload sending has begun, dropping it with remaining bytes terminates the
+    /// connection. An already active stream can cause [`EncodeError::ExpectPayload`].
+    ///
+    /// The acknowledgement is read by the connection dispatcher. Awaiting it in a
+    /// handler of the same connection can stall while reading is paused; see
+    /// [read pause](crate::MqttServiceConfig#read-pause).
     pub fn stream_at_least_once(
         mut self,
         size: u32,
@@ -445,6 +496,7 @@ impl PublishBuilder {
         }
     }
 
+    /// Encodes a streaming `QoS 1` header, signals payload readiness, and awaits acknowledgement.
     async fn stream_at_least_once_inner(
         mut self,
         tx: pool::Sender<()>,
@@ -470,13 +522,15 @@ impl PublishBuilder {
     }
 }
 
-/// `PublishReceived` packet is received for `QoS 2` publish
+/// Handle for a `QoS 2` publish acknowledged with `PublishReceived`.
 ///
 /// Call [`release`](Self::release) to send `PublishRelease` packet and wait for
 /// `PublishComplete`. If the value is dropped, `PublishRelease` is sent without
 /// waiting for `PublishComplete`.
 pub struct PublishReceived {
+    /// Identifier awaiting release; taken by `release` so `Drop` does not send it twice.
     packet_id: Option<NonZeroU16>,
+    /// Connection state retained until release or automatic release on drop.
     shared: Rc<MqttShared>,
 }
 
@@ -489,7 +543,12 @@ impl fmt::Debug for PublishReceived {
 }
 
 impl PublishReceived {
-    /// Release publish
+    /// Queues `PublishRelease` and waits for `PublishComplete`.
+    ///
+    /// Returns [`SendPacketError::UnexpectedRelease`] if the publish has already
+    /// been released or is no longer registered for release.
+    /// Completion releases the in-flight credit. Dropping the future after encoding
+    /// does not retract the release packet.
     pub async fn release(mut self) -> Result<(), SendPacketError> {
         let rx = self
             .shared
@@ -521,10 +580,13 @@ impl Drop for ReleaseGuard<'_> {
     }
 }
 
-/// Subscribe packet builder
+/// Builder for a client subscription request and its acknowledgement wait.
 pub struct SubscribeBuilder {
+    /// Optional caller-selected identifier; otherwise allocated when sending.
     id: Option<NonZeroU16>,
+    /// Connection state retained for client-role checks, encoding, and acknowledgement tracking.
     shared: Rc<MqttShared>,
+    /// Ordered topic filters paired with their requested maximum `QoS`.
     topic_filters: Vec<(ByteString, codec::QoS)>,
 }
 
@@ -538,13 +600,13 @@ impl fmt::Debug for SubscribeBuilder {
 }
 
 impl SubscribeBuilder {
-    #[inline]
-    #[must_use]
-    /// Set packet id.
+    /// Sets the subscription packet identifier instead of generating one when sending.
     ///
     /// # Panics
     ///
-    /// Panics if id is 0
+    /// Panics if `id` is zero.
+    #[inline]
+    #[must_use]
     pub fn packet_id(mut self, id: u16) -> Self {
         if let Some(id) = NonZeroU16::new(id) {
             self.id = Some(id);
@@ -554,24 +616,28 @@ impl SubscribeBuilder {
         }
     }
 
+    /// Appends a topic filter and its requested maximum `QoS`.
     #[inline]
     #[must_use]
-    /// Add topic filter
     pub fn topic_filter(mut self, filter: ByteString, qos: codec::QoS) -> Self {
         self.topic_filters.push((filter, qos));
         self
     }
 
+    /// Returns the subscription packet body size in bytes, excluding the fixed header.
     #[inline]
-    /// Get size of the subscribe packet, excluding fixed header
     pub fn size(&self) -> u32 {
         codec::encode::get_encoded_subscribe_size(&self.topic_filters) as u32
     }
 
-    /// Send subscribe packet
+    /// Sends the subscription packet and waits for its acknowledgement.
     ///
-    /// Only the client sends SUBSCRIBE packets (MQTT 3.1.1, 3.8), a server sink
-    /// returns [`SendPacketError::NotAllowed`].
+    /// Waits for the configured in-flight credit and writable connection state;
+    /// the request consumes credit until its acknowledgement arrives.
+    ///
+    /// Only a client may send this packet; a server sink returns
+    /// [`SendPacketError::NotAllowed`]. A closed connection cancels the wait with
+    /// [`SendPacketError::Disconnected`].
     pub async fn send(self) -> Result<Vec<codec::SubscribeReturnCode>, SendPacketError> {
         if !self.shared.is_client() {
             return Err(SendPacketError::NotAllowed);
@@ -609,10 +675,13 @@ impl SubscribeBuilder {
     }
 }
 
-/// Unsubscribe packet builder
+/// Builder for a client unsubscription request and its acknowledgement wait.
 pub struct UnsubscribeBuilder {
+    /// Optional caller-selected identifier; otherwise allocated when sending.
     id: Option<NonZeroU16>,
+    /// Connection state retained for client-role checks, encoding, and acknowledgement tracking.
     shared: Rc<MqttShared>,
+    /// Ordered topic filters to remove from the peer's subscriptions.
     topic_filters: Vec<ByteString>,
 }
 
@@ -626,13 +695,13 @@ impl fmt::Debug for UnsubscribeBuilder {
 }
 
 impl UnsubscribeBuilder {
-    #[inline]
-    #[must_use]
-    /// Set packet id.
+    /// Sets the unsubscription packet identifier instead of generating one when sending.
     ///
     /// # Panics
     ///
-    /// Panics if id is 0
+    /// Panics if `id` is zero.
+    #[inline]
+    #[must_use]
     pub fn packet_id(mut self, id: u16) -> Self {
         if let Some(id) = NonZeroU16::new(id) {
             self.id = Some(id);
@@ -642,24 +711,28 @@ impl UnsubscribeBuilder {
         }
     }
 
+    /// Appends a topic filter to unsubscribe from.
     #[inline]
     #[must_use]
-    /// Add topic filter
     pub fn topic_filter(mut self, filter: ByteString) -> Self {
         self.topic_filters.push(filter);
         self
     }
 
+    /// Returns the unsubscription packet body size in bytes, excluding the fixed header.
     #[inline]
-    /// Get size of the unsubscribe packet, excluding fixed header
     pub fn size(&self) -> u32 {
         codec::encode::get_encoded_unsubscribe_size(&self.topic_filters) as u32
     }
 
-    /// Send unsubscribe packet
+    /// Sends the unsubscription packet and waits for its acknowledgement.
     ///
-    /// Only the client sends UNSUBSCRIBE packets (MQTT 3.1.1, 3.10), a server
-    /// sink returns [`SendPacketError::NotAllowed`].
+    /// Waits for the configured in-flight credit and writable connection state;
+    /// the request consumes credit until its acknowledgement arrives.
+    ///
+    /// Only a client may send this packet; a server sink returns
+    /// [`SendPacketError::NotAllowed`]. A closed connection cancels the wait with
+    /// [`SendPacketError::Disconnected`].
     pub async fn send(self) -> Result<(), SendPacketError> {
         let shared = self.shared;
         let filters = self.topic_filters;
@@ -698,9 +771,19 @@ impl UnsubscribeBuilder {
     }
 }
 
+/// Sender for the declared payload bytes of one streaming publish.
+///
+/// Send chunks sequentially with [`send`](Self::send). For `QoS 1`, drive the
+/// companion send future concurrently to encode the header and receive its
+/// acknowledgement. Once payload sending begins, dropping an incomplete sender
+/// terminates the connection.
 pub struct StreamingPayload {
+    /// Connection state owning the remaining-byte count and transport buffers.
     shared: Rc<MqttShared>,
+    /// One-shot header-ready notification for `QoS 1`; taken by the first `send` call.
     rx: Cell<Option<pool::Receiver<()>>>,
+    /// Active immediately for `QoS 0`, or after the header-ready wait for `QoS 1`.
+    /// Cleared on the final encoded chunk so dropping a completed sender does not abort.
     inprocess: Cell<bool>,
 }
 
@@ -719,7 +802,18 @@ impl Drop for StreamingPayload {
 }
 
 impl StreamingPayload {
-    /// Send payload chunk
+    /// Queues one chunk of the streaming payload, waiting for write capacity.
+    ///
+    /// For `QoS 1`, first waits until the companion send future has encoded the
+    /// header; poll that future concurrently. Send chunks sequentially and send
+    /// exactly the declared payload size. Success means bytes are encoded, not
+    /// that the peer has received or acknowledged them.
+    ///
+    /// Returns [`SendPacketError::StreamingCancelled`] if the header-ready channel
+    /// is cancelled, and [`SendPacketError::Disconnected`] if the connection closes.
+    /// A chunk exceeding the remaining size returns [`EncodeError::OverPublishSize`]
+    /// and terminates the connection. Sending after completion, including a
+    /// chunk for a zero-size payload, returns [`EncodeError::UnexpectedPayload`].
     pub async fn send(&self, chunk: Bytes) -> Result<(), SendPacketError> {
         if let Some(rx) = self.rx.take() {
             if rx.await.is_err() {
@@ -743,6 +837,7 @@ impl StreamingPayload {
     }
 }
 
+/// Unit tests for sink encoding, acknowledgements, streaming, and flow control.
 #[cfg(test)]
 mod tests {
     use std::{future::Future, pin::Pin, pin::pin, rc::Rc, task::Poll};
@@ -769,6 +864,7 @@ mod tests {
         assert!(io.is_wr_backpressure());
     }
 
+    /// Polls a pinned future once and reports whether it is still pending.
     async fn is_pending<P>(f: &mut Pin<P>) -> bool
     where
         P: std::ops::DerefMut<Target: Future>,
@@ -776,14 +872,21 @@ mod tests {
         lazy(|cx| f.as_mut().poll(cx).is_pending()).await
     }
 
+    /// Builds a nonzero packet identifier for test packets.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is zero.
     fn id(id: u16) -> NonZeroU16 {
         NonZeroU16::new(id).unwrap()
     }
 
+    /// Creates a successful `PublishReceived` acknowledgement for the specified identifier.
     fn rec(packet_id: u16) -> Ack {
         Ack::Receive(id(packet_id))
     }
 
+    /// Creates a successful `PublishComplete` acknowledgement for the specified identifier.
     fn comp(packet_id: u16) -> Ack {
         Ack::Complete(id(packet_id))
     }
@@ -803,6 +906,11 @@ mod tests {
         (client, io, shared.clone(), MqttSink::new(shared))
     }
 
+    /// STATEMENT: Sink handles and packet builders identify their types in debug output.
+    ///
+    /// HOW:
+    /// - Create a sink and publish, subscribe, and unsubscribe builders.
+    /// - Format each with `Debug` and assert that its type name appears.
     #[ntex::test]
     async fn test_debug() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("test"));
@@ -826,6 +934,11 @@ mod tests {
         assert!(format!("{ub:?}").contains("UnsubscribeBuilder"));
     }
 
+    /// STATEMENT: A server sink rejects client-only subscription packets without closing the connection.
+    ///
+    /// HOW:
+    /// - Poll subscribe and unsubscribe sends on a server sink.
+    /// - Assert immediate `SendPacketError::NotAllowed`, an open sink, and no bytes written to the peer.
     #[ntex::test]
     async fn test_server_subscribe_not_allowed() {
         let (client, server) = IoTest::create();
@@ -857,10 +970,17 @@ mod tests {
         assert!(client.read_any().is_empty());
     }
 
+    /// STATEMENT: Acknowledgements must match the current phase of each in-flight packet.
+    ///
+    /// HOW:
+    /// - Inject incorrect acknowledgement types into publish, subscribe, unsubscribe, and release flows.
+    /// - Assert the expected protocol errors and disconnected send futures.
+    /// - Complete a valid `QoS 2` exchange and assert success with the sink still open.
     #[ntex::test]
     async fn test_ack_type_mismatch() {
         use crate::{error::MqttProtocolError, types::packet_type};
 
+        /// Builds the expected acknowledgement-type mismatch error for a test assertion.
         fn err(pkt: u8, expected: &'static str) -> Result<(), MqttProtocolError> {
             Err(MqttProtocolError::unexpected_packet(pkt, expected))
         }
@@ -943,6 +1063,11 @@ mod tests {
         assert!(sink.is_open());
     }
 
+    /// STATEMENT: Independent `QoS 2` publishes release their own packet identifiers.
+    ///
+    /// HOW:
+    /// - Receive acknowledgements for two publishes, then explicitly release both or drop the second handle.
+    /// - Inspect both encoded `PublishRelease` identifiers, deliver completion acknowledgements, and assert restored credit.
     #[ntex::test]
     async fn test_release_multiple() {
         for drop_second in [false, true] {
@@ -984,6 +1109,12 @@ mod tests {
         }
     }
 
+    /// STATEMENT: A malformed publish does not leave the sink in streaming mode.
+    ///
+    /// HOW:
+    /// - Attempt `QoS 0` and `QoS 1` streams with a wildcard publish topic.
+    /// - Assert `EncodeError::MalformedPacket` and no active stream after each attempt.
+    /// - Send valid publishes and acknowledge the `QoS 1` publish to verify the sink remains usable.
     #[ntex::test]
     async fn test_rejected_publish_does_not_start_streaming() {
         let (client, _io, shared, sink) = setup(16);
@@ -1016,8 +1147,12 @@ mod tests {
         drop(client);
     }
 
-    /// `QoS 0` publish waiting for the streaming payload fails once the
-    /// connection is closed
+    /// STATEMENT: Closing an incomplete stream wakes a waiting `QoS 0` publish with a disconnect error.
+    ///
+    /// HOW:
+    /// - Start a four-byte stream and poll another publish until pending.
+    /// - Gracefully close, force-close, or drop the active payload sender.
+    /// - Poll the waiting publish immediately and assert `SendPacketError::Disconnected`.
     #[ntex::test]
     async fn test_at_most_once_streaming_close() {
         for close in 0..3 {
@@ -1040,8 +1175,12 @@ mod tests {
         }
     }
 
-    /// `QoS 0` publish waits for write backpressure to be released, and fails
-    /// once the connection is closed
+    /// STATEMENT: `QoS 0` sends wait for write capacity and reject a connection closed while waiting.
+    ///
+    /// HOW:
+    /// - Block peer reads and fill the write buffer, then poll buffered and streaming publishes.
+    /// - Resume reads and assert both sends proceed and the streaming payload completes.
+    /// - Repeat with graceful and forced shutdown and assert disconnect errors for both waiting sends.
     #[ntex::test]
     async fn test_at_most_once_write_backpressure() {
         for close in 0..3 {
@@ -1089,6 +1228,12 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Control packets and subsequent publishes cannot interleave with a streaming payload.
+    ///
+    /// HOW:
+    /// - Stream a six-byte payload in three chunks while queueing a ping, an acknowledgement, and another publish.
+    /// - Inspect peer bytes after each chunk and assert control packets follow only the final chunk.
+    /// - Complete the waiting publish and send another ping to verify no deferred bytes remain.
     #[ntex::test]
     async fn test_packets_deferred_while_streaming() {
         let (client, io, shared, sink) = setup(16);
@@ -1131,8 +1276,12 @@ mod tests {
         assert_eq!(buf, Bytes::from_static(b"\xc0\x00"));
     }
 
-    /// Payload chunk waiting for write backpressure fails when the connection
-    /// is closed
+    /// STATEMENT: A payload chunk waiting for write capacity fails when the connection closes.
+    ///
+    /// HOW:
+    /// - Start a stream, send part of its payload, block writes, and poll the final chunk until pending.
+    /// - Gracefully close and allow draining, or force-close the sink.
+    /// - Assert the chunk completes with `SendPacketError::Disconnected` within the timeout.
     #[ntex::test]
     async fn test_streaming_waiter_fails_on_close() {
         for close in 0..2 {
@@ -1159,8 +1308,12 @@ mod tests {
         }
     }
 
-    /// Publish waiting for write backpressure while a streaming payload is in
-    /// progress is sent once the payload is complete
+    /// STATEMENT: A backpressured publish follows the active streaming payload rather than interleaving with it.
+    ///
+    /// HOW:
+    /// - Start a stream, block writes, and poll its final chunk and a `QoS 1` publish.
+    /// - Drain the write buffer and verify the publish remains pending until the final chunk completes.
+    /// - Assert send-credit accounting and inspect the peer bytes for the final chunk followed by the publish.
     #[ntex::test]
     async fn test_streaming_completion_releases_waiters() {
         let (client, io, shared, sink) = setup(16);
@@ -1187,11 +1340,17 @@ mod tests {
         assert!(client.read_any().ends_with(b"cd\x32\x05\x00\x01c\x00\x01"));
     }
 
-    /// Dropped `QoS 2` publish future is released, PUBREL is sent and
-    /// packet id and in-flight slot are freed (MQTT 3.1.1, 4.3.3)
+    /// STATEMENT: Dropping a `QoS 2` send future still releases the publish and eventually frees its identifier and credit.
+    ///
+    /// HOW:
+    /// - Drop the future before or after delivering `PublishReceived` and inspect the resulting `PublishRelease` bytes.
+    /// - Deliver `PublishComplete` and assert restored send credit.
+    /// - Reuse the same packet identifier in a second exchange and explicitly release it successfully.
     #[ntex::test]
     async fn test_dropped_exactly_once() {
+        /// Expected encoded publish packet, or its fixed-header byte in packet-type assertions.
         const PUBLISH: &[u8] = b"\x34\x05\x00\x01a\x00\x01";
+        /// Expected encoded `PublishRelease` packet for identifier `1`.
         const PUBREL: &[u8] = b"\x62\x02\x00\x01";
 
         // PUBREC received before or after the future is dropped
@@ -1244,8 +1403,12 @@ mod tests {
         }
     }
 
-    /// Woken waiter checks send credit again, a publish sent without waiting
-    /// may take the freed credit first (MQTT 3.1.1, 4.4)
+    /// STATEMENT: A woken `QoS 1` waiter rechecks credit after another publish takes the freed slot.
+    ///
+    /// HOW:
+    /// - Fill the only send slot, then queue a second publish and a readiness notification.
+    /// - Acknowledge the first publish and start a third publish before polling the waiter.
+    /// - Inspect the sent bytes and assert the waiter and readiness notification remain pending until their turn.
     #[ntex::test]
     async fn test_woken_waiter_rechecks_credit() {
         let (client, _io, shared, sink) = setup(1);
@@ -1283,7 +1446,12 @@ mod tests {
         assert!(ready.await);
     }
 
-    /// Waiter woken by an ack waits for write backpressure to be released
+    /// STATEMENT: A publish woken by an acknowledgement still waits for write backpressure to drain.
+    ///
+    /// HOW:
+    /// - Fill the only send slot, queue another publish, and block writes.
+    /// - Acknowledge the first publish and assert the waiter remains pending with one free credit.
+    /// - Drain writes and assert the second publish consumes that credit while awaiting its acknowledgement.
     #[ntex::test]
     async fn test_ack_respects_write_backpressure() {
         let (client, io, shared, sink) = setup(1);
@@ -1305,7 +1473,12 @@ mod tests {
         assert_eq!(shared.credit(), 0);
     }
 
-    /// `set_cap` wakes waiters within the send credit only
+    /// STATEMENT: Increasing send capacity wakes only as many publishes as available credit permits.
+    ///
+    /// HOW:
+    /// - Start four sends with capacity one, increase capacity to three, and poll the waiters.
+    /// - Assert only the first two waiters consume the two new credits.
+    /// - Increase capacity under write backpressure and verify the final waiter consumes credit only after writes drain.
     #[ntex::test]
     async fn test_set_cap_wakes_within_credit() {
         let (client, io, shared, sink) = setup(1);
@@ -1338,11 +1511,13 @@ mod tests {
         assert_eq!(shared.credit(), 0);
     }
 
+    /// Tests of acknowledgement ordering and identifier matching across packet flows.
     mod ack_order {
 
         use super::*;
         use crate::error::MqttProtocolError;
 
+        /// Creates a pinned `QoS 1` send future for acknowledgement and flow-control tests.
         fn send(sink: &MqttSink) -> Pin<Box<impl Future<Output = Result<(), SendPacketError>>>> {
             Box::pin(sink.publish("a").send_at_least_once(Bytes::new()))
         }
@@ -1353,6 +1528,12 @@ mod tests {
             client.read_any()
         }
 
+        /// STATEMENT: `QoS 1` acknowledgements follow publish send order, not numeric packet-identifier order.
+        ///
+        /// HOW:
+        /// - Send publishes with identifiers `3` and `1`, reject a duplicate identifier, and queue reuse of `3`.
+        /// - Send a `QoS 0` publish and acknowledge the `QoS 1` publishes in their send order.
+        /// - Assert successful futures, identifier reuse, restored credit, and an open sink.
         #[ntex::test]
         async fn test_ack_in_order() {
             let (_client, _io, shared, sink) = setup(2);
@@ -1393,6 +1574,12 @@ mod tests {
             assert!(sink.is_open());
         }
 
+        /// STATEMENT: An out-of-order `QoS 1` acknowledgement closes the sink and cancels pending sends.
+        ///
+        /// HOW:
+        /// - Start two publishes and a credit waiter, optionally dropping the first send future.
+        /// - Acknowledge the second publish before the first and assert a protocol violation.
+        /// - Assert the sink closes and all remaining send futures report `SendPacketError::Disconnected`.
         #[ntex::test]
         async fn test_ack_out_of_order() {
             for drop_first in [false, true] {
@@ -1426,7 +1613,12 @@ mod tests {
             }
         }
 
-        /// PUBACK of a later publish arrives before PUBCOMP of a released one
+        /// STATEMENT: A later `QoS 1` acknowledgement may arrive before completion of an earlier `QoS 2` release.
+        ///
+        /// HOW:
+        /// - Receive a `QoS 2` publish acknowledgement, send a `QoS 1` publish, and begin the release.
+        /// - Inspect the encoded packets and acknowledge the `QoS 1` publish while the release remains pending.
+        /// - Complete the release and assert restored credit and an open sink.
         #[ntex::test]
         async fn test_ack_qos2_interleaved() {
             let (client, _io, shared, sink) = setup(16);
@@ -1456,7 +1648,12 @@ mod tests {
             assert!(sink.is_open());
         }
 
-        /// SUBACK arrives after PUBACK of a later publish
+        /// STATEMENT: A subscription acknowledgement may arrive after the acknowledgement of a later publish.
+        ///
+        /// HOW:
+        /// - Send a subscription followed by a `QoS 1` publish.
+        /// - Deliver the publish acknowledgement first, then the subscription acknowledgement.
+        /// - Assert both sends succeed, credit is restored, and the connection remains open.
         #[ntex::test]
         async fn test_suback_after_puback() {
             let (_client, _io, shared, sink) = setup(16);
@@ -1482,7 +1679,12 @@ mod tests {
             assert!(sink.is_open());
         }
 
-        /// Ack of a packet id that is not in flight is a protocol error
+        /// STATEMENT: An acknowledgement for an identifier not in flight is a connection-closing protocol error.
+        ///
+        /// HOW:
+        /// - Inject an acknowledgement with no sends, with a different identifier in flight, and after a completed send.
+        /// - Assert unknown-identifier errors and a closed sink in all three scenarios.
+        /// - Assert that the unrelated in-flight send is cancelled with `SendPacketError::Disconnected`.
         #[ntex::test]
         async fn test_ack_unknown_id() {
             let err = Err(MqttProtocolError::unknown_packet_id());
@@ -1510,6 +1712,12 @@ mod tests {
             assert!(!sink.is_open());
         }
 
+        /// STATEMENT: Nonblocking publish callbacks report valid acknowledgements and cancel remaining publishes on an ordering error.
+        ///
+        /// HOW:
+        /// - Install a recording callback and send three nonblocking publishes.
+        /// - Acknowledge the first publish, then inject an out-of-order acknowledgement for the third.
+        /// - Assert the first callback reports success, the sink closes, and the other identifiers each report disconnection once.
         #[ntex::test]
         async fn test_ack_cb_out_of_order() {
             use std::cell::RefCell;

@@ -9,10 +9,17 @@ use crate::MqttServiceConfig;
 use crate::error::{DecodeError, MqttConnectError, MqttError};
 use crate::version::{ProtocolVersion, VersionCodec};
 
-/// Mqtt Server
+/// Combined server that routes CONNECT packets to MQTT v3.1.1 or v5 services.
+///
+/// Protocol detection leaves the CONNECT packet available to the selected
+/// service. Both child services participate in readiness and shutdown;
+/// unconfigured versions are rejected by `DefaultProtoSrv`.
 pub struct MqttServer<St, Req, V3, V5, Err> {
+    /// Service selected for MQTT v3.1.1 connections.
     v3: V3,
+    /// Service selected for MQTT v5 connections.
     v5: V5,
+    /// Retains the shared state, request, and application error types.
     ph: marker::PhantomData<(St, Req, Err)>,
 }
 
@@ -23,7 +30,9 @@ impl<St, Req, V3, V5, Err> fmt::Debug for MqttServer<St, Req, V3, V5, Err> {
 }
 
 impl<St, Req, Err> MqttServer<St, Req, DefaultProtoSrv<Err>, DefaultProtoSrv<Err>, Err> {
-    /// Create mqtt server
+    /// Create a combined server with both protocol versions initially unsupported.
+    ///
+    /// Install version-specific services with `Self::v3` and `Self::v5`.
     pub fn new() -> Self {
         MqttServer {
             v3: DefaultProtoSrv::new(ProtocolVersion::MQTT3),
@@ -45,7 +54,7 @@ where
     V3: Service<St, State<Req::State, IoBoxed>, Res = (), Error = MqttError<Err>>,
     V5: Service<St, State<Req::State, IoBoxed>, Res = (), Error = MqttError<Err>>,
 {
-    /// Service to handle v3 protocol
+    /// Install the service for MQTT v3.1.1 connections.
     pub fn v3<S>(self, service: S) -> MqttServer<St, Req, S, V5, Err>
     where
         S: Service<St, State<Req::State, IoBoxed>, Res = (), Error = MqttError<Err>>,
@@ -57,7 +66,7 @@ where
         }
     }
 
-    /// Service to handle v5 protocol
+    /// Install the service for MQTT v5 connections.
     pub fn v5<S>(self, service: S) -> MqttServer<St, Req, V3, S, Err>
     where
         S: Service<St, State<Req::State, IoBoxed>, Res = (), Error = MqttError<Err>>,
@@ -139,17 +148,20 @@ where
     }
 }
 
-/// Reject CONNECT packet with unknown protocol level
+/// Reject a CONNECT decoding error and return the handshake protocol error.
 ///
-/// Send v3 CONNACK 0x01 for an unsupported protocol level,
+/// For an unsupported protocol level, send v3 CONNACK 0x01,
 /// [MQTT-3.1.2-2] (MQTT 3.1.1, 3.1.2.2)
 async fn reject_version<E>(io: &IoBoxed, err: DecodeError) -> MqttError<E> {
     crate::v3::reject_connect(io, &crate::v3::codec::Codec::default(), &err).await;
     MqttError::Connect(MqttConnectError::Protocol(err.into()))
 }
 
+/// Fallback service that rejects connections for an unconfigured protocol version.
 pub struct DefaultProtoSrv<Err> {
+    /// Unsupported version named in the disconnection error.
     ver: ProtocolVersion,
+    /// Retains the application error type without owning a value.
     _t: marker::PhantomData<Err>,
 }
 
@@ -162,6 +174,7 @@ impl<Err> fmt::Debug for DefaultProtoSrv<Err> {
 }
 
 impl<Err> DefaultProtoSrv<Err> {
+    /// Construct a rejecting service for the specified protocol version.
     fn new(ver: ProtocolVersion) -> Self {
         Self {
             ver,
@@ -181,6 +194,7 @@ impl<St, Req, Err> Service<St, Req> for DefaultProtoSrv<Err> {
     }
 }
 
+/// Unit tests for protocol selection, rejection, and detection deadlines.
 #[cfg(test)]
 mod tests {
     use ntex_io::{Io, testing::IoTest};
@@ -189,6 +203,10 @@ mod tests {
 
     use super::*;
 
+    /// STATEMENT: The default combined server has recognizable debug output.
+    ///
+    /// HOW:
+    /// - Construct the default `MqttServer` and assert that debug output includes its type name.
     #[test]
     fn test_debug() {
         // Use the default constructor which fills in all type params automatically
@@ -196,6 +214,11 @@ mod tests {
         assert!(format!("{server:?}").contains("MqttServer"));
     }
 
+    /// STATEMENT: An already-buffered unsupported CONNECT level receives a v3 rejection acknowledgement.
+    ///
+    /// HOW:
+    /// - Write a level-6 CONNECT packet before creating the server pipeline and allow it to buffer.
+    /// - Assert a handshake protocol error and the exact unsupported-version CONNACK bytes.
     #[ntex::test]
     async fn test_unsupported_protocol_level_buffered() {
         let (client, server) = IoTest::create();
@@ -217,11 +240,15 @@ mod tests {
         assert_eq!(client.read_any(), b"\x20\x02\x00\x01".as_ref());
     }
 
+    /// Minimal v3.1.1 CONNECT packet with an empty client identifier.
     const V3_CONNECT: &[u8] = b"\x10\x0c\x00\x04MQTT\x04\x02\x00\x3C\x00\x00";
+    /// Minimal v5 CONNECT packet with no properties and an empty client identifier.
     const V5_CONNECT: &[u8] = b"\x10\x0d\x00\x04MQTT\x05\x02\x00\x3C\x00\x00\x00";
 
+    /// Combined server with neither protocol-specific service installed.
     type DefaultSrv = MqttServer<(), ((), IoBoxed), DefaultProtoSrv<()>, DefaultProtoSrv<()>, ()>;
 
+    /// Create a test transport and combined server with the chosen detection timeout.
     fn setup(timeout: Millis) -> (IoTest, IoBoxed, Pipeline<((), IoBoxed), (), MqttError<()>>) {
         let (client, server) = IoTest::create();
         client.remote_buffer_cap(1024);
@@ -231,6 +258,7 @@ mod tests {
         (client, io, Pipeline::new((), DefaultSrv::new()))
     }
 
+    /// Assert that fallback rejection names the detected protocol version.
     fn assert_not_supported(res: Result<(), MqttError<()>>, ver: &str) {
         match res {
             Err(MqttError::Connect(MqttConnectError::Disconnected(Some(err)))) => {
@@ -240,6 +268,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: A buffered valid CONNECT reaches the fallback for its detected version.
+    ///
+    /// HOW:
+    /// - Buffer a v3.1.1 CONNECT and assert that the rejection names `MQTT3`.
+    /// - Check that v5 fallback debug output includes `MQTT5`.
     #[ntex::test]
     async fn test_default_proto_buffered() {
         let (client, io, srv) = setup(Millis(5_000));
@@ -251,6 +284,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Protocol detection handles CONNECT prefixes arriving in separate delayed writes.
+    ///
+    /// HOW:
+    /// - For v3.1.1 and v5, start the server before writing CONNECT in two fragments.
+    /// - Assert that the fallback error names the detected protocol version.
     #[ntex::test]
     async fn test_default_proto_delayed() {
         for (pkt, ver) in [(V3_CONNECT, "MQTT3"), (V5_CONNECT, "MQTT5")] {
@@ -266,6 +304,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: A peer that sends no protocol prefix exceeds the configured detection deadline.
+    ///
+    /// HOW:
+    /// - Keep the test peer open without writing data and use a 100-millisecond detection timeout.
+    /// - Assert that the server returns `MqttConnectError::Timeout`.
     #[ntex::test]
     async fn test_version_timeout() {
         let (_client, io, srv) = setup(Millis(100));
@@ -276,6 +319,11 @@ mod tests {
         ));
     }
 
+    /// STATEMENT: Closing before sending CONNECT is reported as an orderly handshake disconnection.
+    ///
+    /// HOW:
+    /// - Start protocol detection, then close the peer after a short delay.
+    /// - Assert a disconnection without an underlying I/O error.
     #[ntex::test]
     async fn test_version_peer_gone() {
         let (client, io, srv) = setup(Millis(5_000));
@@ -290,6 +338,11 @@ mod tests {
         ));
     }
 
+    /// STATEMENT: Closing with an incomplete CONNECT prefix reports an unexpected end of input.
+    ///
+    /// HOW:
+    /// - Send only the first four CONNECT bytes, then close the peer.
+    /// - Assert the disconnected handshake error contains `io::ErrorKind::UnexpectedEof`.
     #[ntex::test]
     async fn test_version_partial_eof() {
         let (client, io, srv) = setup(Millis(5_000));
@@ -308,6 +361,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: An unsupported CONNECT received after detection starts is rejected on the wire.
+    ///
+    /// HOW:
+    /// - Start the server, then write a level-6 CONNECT after a short delay.
+    /// - Assert a handshake protocol error and the exact unsupported-version CONNACK bytes.
     #[ntex::test]
     async fn test_version_delayed_decode_error() {
         let (client, io, srv) = setup(Millis(5_000));

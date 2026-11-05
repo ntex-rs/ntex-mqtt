@@ -1,20 +1,28 @@
-//! MQTT5 Client/Server framework
+//! MQTT 5 client and server framework.
 
 pub mod client;
 pub mod codec;
-/// Server side MQTT protocol messages
+/// Server-side MQTT protocol messages and response builders.
 pub mod control;
 
+/// Server handshake requests, acknowledgements, and keep-alive negotiation.
 mod connect;
+/// Default protocol handling and connection-control adapters.
 mod default;
+/// Inbound packet validation, dispatch, and acknowledgement state.
 mod dispatcher;
+/// Inbound publish messages and application acknowledgement builders.
 mod publish;
+/// Topic-pattern routing for inbound publish messages.
 mod router;
+/// MQTT 5 server construction and handshake processing.
 mod server;
+/// Per-connection send credits, acknowledgement tracking, and payload state.
 mod shared;
+/// Connection sink and outgoing packet builders.
 mod sink;
 
-/// MQTT v5 session, provides access to the application state and the server sink
+/// MQTT 5 session providing application state, configuration, and the connection sink.
 pub type Session<St> = crate::Session<MqttSink, St>;
 
 use ntex_error::Error;
@@ -30,8 +38,10 @@ pub use self::sink::{PublishBuilder, StreamingPayload};
 
 pub use crate::{error, topic::TopicFilter, topic::TopicFilterError, types::QoS};
 
+/// Receive Maximum used when no smaller limit is advertised: 65,535 publishes.
 const RECEIVE_MAX_DEFAULT: NonZeroU16 = NonZeroU16::new(65_535).unwrap();
 
+/// Logs an unsupported operation and requests an implementation-specific disconnect.
 fn disconnect(msg: &'static str) -> ProtocolMessageAck {
     log::error!("{msg}");
 
@@ -43,18 +53,19 @@ fn disconnect(msg: &'static str) -> ProtocolMessageAck {
     }
 }
 
-/// Converts a publish service error into a `PublishAck` packet.
+/// Converts a publish service error into an application publish acknowledgement.
 ///
-/// It allows the publish service to report an error to the client with a
-/// `PublishAck` packet instead of terminating the connection.
+/// For `QoS 1` and `QoS 2`, convertible errors are sent as `PUBACK` or `PUBREC`
+/// instead of terminating the connection. Errors for `QoS 0` and service readiness
+/// failures use [`Self::into_error`] because no publish acknowledgement can be sent.
 pub trait ToPublishAck {
-    /// Error type that is returned if the error cannot be converted to an ack
+    /// Error returned when conversion to an acknowledgement is impossible.
     type Error;
 
-    /// Try to convert the error into a `PublishAck`
+    /// Attempts to convert this error into an application publish acknowledgement.
     fn try_ack(self) -> Result<PublishAck, Self::Error>;
 
-    /// Convert the error into the resulting error type
+    /// Converts this error for propagation when no publish acknowledgement can be sent.
     fn into_error(self) -> Self::Error;
 }
 

@@ -59,8 +59,10 @@ impl<St, E> Service<St, ProtocolMessage> for DefaultProtoSrv<E> {
 #[derive(Copy, Clone, Debug)]
 /// Service that limits in-flight incoming packets.
 ///
-/// Limits the number of in-flight publish packets (`max_receive`, default 16)
-/// and the total size of in-flight packets (`max_receive_size`, default 64kb)
+/// Limits in-flight publications (`max_receive`, default 16) and pauses reads when
+/// all in-flight packet bodies exceed `max_receive_size` bytes (default 64 KiB).
+/// Acknowledgments and pings bypass the publish-count limit. Byte limiting is
+/// temporarily bypassed while receiving a streamed payload so it can finish.
 pub struct InFlightService;
 
 impl<S, AppSt> Middleware<S, Session<AppSt>> for InFlightService {
@@ -73,20 +75,28 @@ impl<S, AppSt> Middleware<S, Session<AppSt>> for InFlightService {
     }
 }
 
+/// Connection-control adapter that aborts pending payloads on stop notifications.
 #[derive(Clone, Debug)]
 pub struct ControlService<S, E> {
+    /// Application control service receiving stop and backpressure notifications.
     svc: S,
+    /// Connection state whose active payload is failed before forwarding stop messages.
     shared: Rc<MqttShared>,
+    /// Tracks the application error type without storing a value.
     _t: PhantomData<E>,
 }
 
+/// Factory binding a connection-control adapter to each session’s shared sink state.
 #[derive(Clone, Debug)]
 pub struct ControlFactory<AppSt, S, E> {
+    /// Factory for the application connection-control service.
     svc: S,
+    /// Tracks session-state and application-error types.
     _t: PhantomData<(AppSt, E)>,
 }
 
 impl<S, E> ControlService<S, E> {
+    /// Wrap a control service with the connection state used to abort streamed payloads.
     pub(super) fn new(svc: S, shared: Rc<MqttShared>) -> Self {
         Self {
             svc,
@@ -97,6 +107,7 @@ impl<S, E> ControlService<S, E> {
 }
 
 impl<AppSt, S, E> ControlFactory<AppSt, S, E> {
+    /// Wrap a control-service factory for per-session payload cleanup.
     pub(super) fn new(svc: S) -> Self {
         Self {
             svc,
@@ -165,6 +176,7 @@ where
     }
 }
 
+/// Unit tests for write-backpressure propagation.
 #[cfg(test)]
 mod tests {
     use ntex_bytes::Bytes;
@@ -176,8 +188,11 @@ mod tests {
     use super::*;
     use crate::{control, v3::MqttSink, v3::codec};
 
-    /// The sink follows the io write backpressure state, control messages do
-    /// not change it
+    /// STATEMENT: Sink readiness follows transport write backpressure rather than control notifications.
+    ///
+    /// HOW:
+    /// - Fill a blocked peer buffer and poll two pending sink-readiness futures.
+    /// - Send control notifications without releasing readiness, drain the transport, and verify both waiters and sink readiness recover.
     #[ntex::test]
     async fn test_wr_backpressure() {
         let (client, server) = IoTest::create();

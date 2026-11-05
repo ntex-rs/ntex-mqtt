@@ -3,6 +3,7 @@ use ntex_bytes::{Buf, ByteString, Bytes};
 use super::{UserProperty, packet, packet::Packet};
 use crate::{error::DecodeError, types::packet_type, utils::Decode};
 
+/// Decodes a complete non-publish body selected by the fixed-header byte.
 pub(super) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
         packet_type::PUBACK => Ok(Packet::PublishAck(packet::PublishAck::decode(&mut src)?)),
@@ -50,6 +51,7 @@ impl Decode for UserProperty {
     }
 }
 
+/// Unit tests for wire decoding and malformed input.
 #[cfg(test)]
 mod tests {
     use ntex_bytes::{BytePages, BytesMut};
@@ -59,10 +61,12 @@ mod tests {
     use crate::utils::decode_variable_length_v5;
     use crate::v5::codec::*;
 
+    /// Builds a nonzero packet identifier for fixed valid test fixtures.
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
     }
 
+    /// Compares a complete wire packet with expected contents, encoding the expectation for failure diagnostics.
     fn assert_decode_packet<B: AsRef<[u8]>>(bytes: B, res: &Packet) {
         let bytes = bytes.as_ref();
         let fixed = bytes[0];
@@ -84,6 +88,7 @@ mod tests {
         );
     }
 
+    /// Compares decoded publish metadata with expectations, encoding the supplied payload for diagnostics.
     fn assert_decode_publish<B: AsRef<[u8]>>(bytes: B, res: &Publish, pl: &Bytes) {
         let mut tmp = BytePages::default();
         ntex_codec::Encoder::encode(
@@ -110,6 +115,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Connection flags reject inconsistent Will settings while allowing password-only credentials.
+    ///
+    /// HOW:
+    /// - Decode missing-Will flag combinations and reserved Will quality-of-service bits, expecting malformed packets.
+    /// - Decode a password-only connection and check the username is absent and password present.
     #[test]
     fn test_decode_connect_flags() {
         // will qos/retain without will flag
@@ -142,6 +152,11 @@ mod tests {
         ));
     }
 
+    /// STATEMENT: Connection decoding recovers credentials and Will metadata and rejects invalid protocol headers.
+    ///
+    /// HOW:
+    /// - Compare decoded connections with expected fields, including a quality-of-service-two Will.
+    /// - Check invalid protocol names, levels, and reserved flags, then decode a refusal acknowledgment and short disconnect.
     #[test]
     fn test_decode_connect_packets() {
         assert_eq!(
@@ -249,6 +264,11 @@ mod tests {
         assert_decode_packet([0b1110_0000, 0], &Packet::Disconnect(Box::default()));
     }
 
+    /// STATEMENT: Only successful connection acknowledgments may carry the session-present flag.
+    ///
+    /// HOW:
+    /// - Decode a successful acknowledgment with the flag and compare its fields.
+    /// - Decode several failure reason codes with the same flag and expect malformed-packet errors.
     #[test]
     fn test_decode_connect_ack_session_present() {
         assert_eq!(
@@ -268,6 +288,7 @@ mod tests {
         }
     }
 
+    /// Builds baseline publish metadata for fixtures that override the relevant fields.
     fn default_test_publish() -> Publish {
         Publish {
             dup: false,
@@ -280,6 +301,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: MQTT string decoding rejects null characters in topics and user-property keys.
+    ///
+    /// HOW:
+    /// - Decode publishes containing a null in the topic or property key and expect malformed packets.
+    /// - Check that a non-null key with an empty property value is accepted.
     #[test]
     fn test_decode_null_char() {
         // topic
@@ -306,6 +332,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: An empty publish topic is accepted only when a topic alias is present.
+    ///
+    /// HOW:
+    /// - Decode empty-topic publishes without an alias at two quality-of-service levels and expect rejection.
+    /// - Decode an aliased example and compare the full publish metadata with the expected alias and payload size.
     #[test]
     fn test_decode_publish_empty_topic() {
         // no topic alias
@@ -341,6 +372,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: The duplicate-delivery flag is invalid at quality-of-service zero.
+    ///
+    /// HOW:
+    /// - Decode the invalid header directly and through `Codec`, expecting malformed-packet errors.
+    /// - Decode an identified quality-of-service-one publish and check its duplicate-delivery flag is retained.
     #[test]
     fn test_decode_publish_dup_qos0() {
         // DUP flag must be 0 for QoS 0 messages, [MQTT-3.3.1-2]
@@ -364,6 +400,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Publish decoding recovers header flags and identifiers across publish handshake packets.
+    ///
+    /// HOW:
+    /// - Decode quality-of-service-zero and quality-of-service-two examples and compare publish metadata.
+    /// - Decode short success forms of all four publish acknowledgment packet types and compare their identifiers and defaults.
     #[test]
     fn test_decode_publish_packets() {
         //assert_eq!(
@@ -436,6 +477,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Subscribe and unsubscribe packets require at least one topic filter.
+    ///
+    /// HOW:
+    /// - Decode bodies containing only a packet identifier and an empty property block.
+    /// - Check both packet types return `MalformedPacket`.
     #[test]
     fn test_decode_empty_subscribe_packets() {
         assert_eq!(
@@ -451,6 +497,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Subscription options preserve permitted bits and reject reserved high bits.
+    ///
+    /// HOW:
+    /// - Decode a filter with all supported option fields and compare the resulting `SubscriptionOptions`.
+    /// - Set each reserved high bit in turn and check malformed-packet errors.
     #[test]
     fn test_decode_subscribe_options() {
         // all non-reserved subscription options bits
@@ -480,6 +531,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Subscription packet decoding preserves filters, identifiers, and acknowledgment statuses.
+    ///
+    /// HOW:
+    /// - Decode subscribe examples with and without a subscription identifier and compare complete packets.
+    /// - Decode subscription acknowledgments and unsubscribe packets, including an empty unsubscribe status list.
     #[test]
     fn test_decode_subscribe_packets() {
         let p = Packet::Subscribe(Subscribe {
@@ -588,6 +644,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Connection requests and ping packets reject bytes beyond their permitted bodies.
+    ///
+    /// HOW:
+    /// - Decode a connection with an extra payload byte and pings with nonempty bodies.
+    /// - Check each returns `InvalidLength`.
     #[test]
     fn test_decode_trailing_bytes() {
         let cases: [(u8, &[u8]); 3] = [
@@ -607,12 +668,22 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Zero-length ping packets decode to their request and response variants.
+    ///
+    /// HOW:
+    /// - Decode the two fixed-header wire forms.
+    /// - Compare each result with `Packet::PingRequest` or `Packet::PingResponse`.
     #[test]
     fn test_decode_ping_packets() {
         assert_decode_packet(b"\xc0\x00", &Packet::PingRequest);
         assert_decode_packet(b"\xd0\x00", &Packet::PingResponse);
     }
 
+    /// STATEMENT: All tested variable-byte integer positions reject non-minimal encodings.
+    ///
+    /// HOW:
+    /// - Pair minimal and padded encodings of remaining length, property lengths, and subscription identifiers.
+    /// - Check minimal packets decode and padded packets return `InvalidLength`, including publish-header size probing.
     #[test]
     fn test_decode_non_minimal_varint() {
         // variable byte integers must use the minimum number of bytes [MQTT-1.5.5-1]

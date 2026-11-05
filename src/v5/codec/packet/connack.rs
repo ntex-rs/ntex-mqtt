@@ -11,8 +11,9 @@ use crate::v5::codec::{UserProperties, UserProperty, encode, property_type as pt
 /// Connect acknowledgment packet
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ConnectAck {
-    /// enables a Client to establish whether the Client and Server have a consistent view
-    /// about whether there is already stored Session state.
+    /// Whether the server resumed an existing session.
+    ///
+    /// Only valid with `ConnectAckReason::Success`; encoding clears it on a failure reason.
     pub session_present: bool,
     /// Connect Reason Code.
     pub reason_code: ConnectAckReason,
@@ -31,6 +32,7 @@ pub struct ConnectAck {
     /// Maximum Packet Size property, in bytes.
     ///
     /// `None` means the Server imposes no limit beyond the protocol one.
+    /// The limit includes the fixed header; `Some(0)` is rejected by the codec.
     pub max_packet_size: Option<u32>,
     /// Assigned Client Identifier property, set when the Server generated the client id.
     pub assigned_client_id: Option<ByteString>,
@@ -144,7 +146,7 @@ prim_enum! {
 }
 
 impl ConnectAckReason {
-    /// Human readable description of the reason code
+    /// Returns a human-readable description, falling back to a generic refusal for other codes.
     pub fn reason(self) -> &'static str {
         match self {
             ConnectAckReason::Success => "Connection Accepted",
@@ -159,6 +161,7 @@ impl ConnectAckReason {
 }
 
 impl ConnectAck {
+    /// Decodes a complete `CONNACK` body, rejecting invalid properties and trailing bytes.
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
         let flags =

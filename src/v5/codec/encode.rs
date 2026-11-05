@@ -12,10 +12,12 @@ use crate::utils::{
     write_variable_length,
 };
 
+/// Accepts an absent string or one valid for an MQTT UTF-8 string field.
 fn is_valid_opt_str(s: &Option<ByteString>) -> bool {
     s.as_deref().is_none_or(is_valid_str)
 }
 
+/// Accepts absent binary data or data fitting its two-byte length prefix.
 fn is_valid_opt_bin(b: &Option<Bytes>) -> bool {
     b.as_deref().is_none_or(is_valid_bin)
 }
@@ -26,6 +28,7 @@ fn is_valid_response_topic(topic: &Option<ByteString>) -> bool {
     topic.as_deref().is_none_or(is_valid_topic_name)
 }
 
+/// Checks that every user-property key and value is a valid MQTT string.
 fn is_valid_props(props: &UserProperties) -> bool {
     props
         .iter()
@@ -168,9 +171,23 @@ pub(super) fn validate_publish(publish: &Publish) -> Result<(), EncodeError> {
     Ok(())
 }
 
+/// Sizes and encodes packet bodies or property blocks under an outbound byte budget.
 pub(crate) trait EncodeLtd {
+    /// Returns the encoded body or property-block byte count, excluding any packet fixed header.
+    ///
+    /// Optional diagnostics may be omitted to fit `limit`; required fields may exceed it.
     fn encoded_size(&self, limit: u32) -> usize;
 
+    /// Appends the representation using the size selected by `encoded_size`.
+    ///
+    /// `Packet` and `Publish` also write fixed headers; other implementations write
+    /// only packet bodies or property blocks.
+    ///
+    /// Publish encoding writes only the header and properties; payload bytes follow separately.
+    ///
+    /// # Panics
+    ///
+    /// May panic if `size` is inconsistent with `encoded_size`, causing size arithmetic to underflow.
     fn encode(&self, buf: &mut BytePages, size: u32) -> Result<(), EncodeError>;
 }
 
@@ -266,6 +283,9 @@ impl EncodeLtd for Packet {
     }
 }
 
+/// Counts the prefix of user properties and then the reason string that fit `limit` bytes.
+///
+/// Stops at the first user property that does not fit, omitting it and later diagnostics.
 pub(crate) fn encoded_size_opt_props(
     user_props: &[UserProperty],
     reason_str: &Option<ByteString>,
@@ -291,6 +311,9 @@ pub(crate) fn encoded_size_opt_props(
     len
 }
 
+/// Writes the selected user-property prefix and optional reason string within `size` bytes.
+///
+/// Use the byte count selected by `encoded_size_opt_props` for `size`.
 pub(crate) fn encode_opt_props(
     user_props: &[UserProperty],
     reason_str: &Option<ByteString>,
@@ -319,10 +342,12 @@ pub(crate) fn encode_opt_props(
     Ok(())
 }
 
+/// Counts an optional property value and identifier byte, or zero when absent.
 pub(super) fn encoded_property_size<T: Encode>(v: &Option<T>) -> usize {
     v.as_ref().map_or(0, |v| 1 + v.encoded_size()) // 1 - property type byte
 }
 
+/// Counts a property value and identifier byte only when it differs from its default.
 pub(super) fn encoded_property_size_default<T: Encode + PartialEq>(v: &T, default: T) -> usize {
     if *v == default {
         0
@@ -331,6 +356,7 @@ pub(super) fn encoded_property_size_default<T: Encode + PartialEq>(v: &T, defaul
     }
 }
 
+/// Writes an identifier and value only when the property is present.
 pub(super) fn encode_property<T: Encode>(
     v: &Option<T>,
     prop_type: u8,
@@ -344,6 +370,7 @@ pub(super) fn encode_property<T: Encode>(
     }
 }
 
+/// Writes an identifier and value only when the property differs from its default.
 pub(super) fn encode_property_default<T: Encode + PartialEq>(
     v: &T,
     default: T,
@@ -358,7 +385,11 @@ pub(super) fn encode_property_default<T: Encode + PartialEq>(
     }
 }
 
-/// Calculates length of variable length integer based on its value
+/// Returns the base-128 byte count needed to represent `val`.
+///
+/// # Panics
+///
+/// Panics on unsupported 16-bit platforms.
 pub(crate) fn var_int_len(val: usize) -> u32 {
     #[cfg(target_pointer_width = "16")]
     panic!("16-bit platforms are not supported");
@@ -377,7 +408,7 @@ pub(crate) fn var_int_len(val: usize) -> u32 {
     unsafe { *MAP.get_unchecked(zeros as usize) } // safety: zeros will never be more than 65 by definition.
 }
 
-/// Calculates length of variable length integer based on its value
+/// Returns the base-128 byte count needed to represent a `u32` value.
 pub(crate) fn var_int_len_u32(val: u32) -> u32 {
     const MAP: [u32; 33] = [
         5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1,
@@ -387,7 +418,13 @@ pub(crate) fn var_int_len_u32(val: u32) -> u32 {
     unsafe { *MAP.get_unchecked(zeros as usize) } // safety: zeros will never be more than 32 by definition.
 }
 
-/// Calculates `len` from `var_int_len(len) + len` value
+/// Recovers a block length from its size including the variable-length prefix.
+///
+/// `val` must describe a nonempty length-prefixed block, including its prefix.
+///
+/// # Panics
+///
+/// Panics in debug builds if `val` is zero.
 pub(crate) fn var_int_len_from_size(val: u32) -> u32 {
     let over_size = var_int_len_u32(val);
     let res = val - over_size + 1;
@@ -411,6 +448,7 @@ impl Encode for UserProperties {
     }
 }
 
+/// Subtracts required bytes from a byte budget, saturating at zero.
 pub(super) fn reduce_limit(limit: u32, reduction: usize) -> u32 {
     if reduction > limit as usize {
         return 0;
@@ -418,6 +456,7 @@ pub(super) fn reduce_limit(limit: u32, reduction: usize) -> u32 {
     limit - (reduction as u32) // safe: by now we're sure `reduction` fits in u32
 }
 
+/// Unit tests for packet encoding and expected wire layouts.
 #[cfg(test)]
 mod tests {
     use ntex_bytes::Bytes;
@@ -427,10 +466,16 @@ mod tests {
     use crate::types::{MAX_PACKET_SIZE, QoS};
     use crate::v5::codec::*;
 
+    /// Builds a nonzero identifier for valid encoding fixtures.
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
     }
 
+    /// STATEMENT: Fixed headers encode packet types, publish flags, and variable remaining lengths correctly.
+    ///
+    /// HOW:
+    /// - Encode a ping and verify its zero body size and two-byte output.
+    /// - Encode a publish with duplicate, retained, and quality-of-service-two flags and compare its first three bytes.
     #[test]
     fn test_encode_fixed_header() {
         let mut v = BytePages::default();
@@ -457,6 +502,7 @@ mod tests {
         assert_eq!(&v.freeze()[..3], b"\x3d\x89\x02".as_ref());
     }
 
+    /// Checks complete packet encoding against the expected bytes and byte count.
     fn assert_encode_packet(packet: &Packet, expected: &[u8]) {
         let mut v = BytePages::default();
         packet
@@ -466,6 +512,7 @@ mod tests {
         assert_eq!(expected, &v.freeze()[..]);
     }
 
+    /// Appends a supplied payload to the encoded header and checks the complete wire bytes.
     fn assert_encode_publish(packet: &Publish, pl: &[u8], expected: &[u8]) {
         let mut v = BytePages::default();
         packet
@@ -476,6 +523,11 @@ mod tests {
         assert_eq!(expected, &v.freeze()[..]);
     }
 
+    /// STATEMENT: Connection encoding preserves credentials and optional Will data in the expected wire layout.
+    ///
+    /// HOW:
+    /// - Encode connections without a Will, with a basic Will, and with every tested Will property.
+    /// - Compare complete output bytes and lengths; also check a normal disconnect encoding.
     #[test]
     fn test_encode_connect_packets() {
         assert_encode_packet(
@@ -582,6 +634,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Publish encoding preserves quality-of-service flags, identifiers, and subscription properties.
+    ///
+    /// HOW:
+    /// - Encode quality-of-service-two and zero publishes, including one subscription identifier.
+    /// - Append the supplied payload and compare complete byte sequences and lengths.
     #[test]
     fn test_encode_publish_packets() {
         assert_encode_publish(
@@ -630,6 +687,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Subscription encoding emits filter options, identifiers, and per-filter acknowledgment statuses.
+    ///
+    /// HOW:
+    /// - Encode subscribe examples with and without a subscription identifier, plus both acknowledgment types and an unsubscribe.
+    /// - Compare complete output bytes and lengths with the expected wire forms.
     #[test]
     fn test_encode_subscribe_packets() {
         assert_encode_packet(
@@ -730,6 +792,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Ping encoding produces the fixed request and response wire forms.
+    ///
+    /// HOW:
+    /// - Encode `Packet::PingRequest` and `Packet::PingResponse`.
+    /// - Compare their complete output bytes and lengths with the two-byte expected packets.
     #[test]
     fn test_encode_ping_packets() {
         assert_encode_packet(&Packet::PingRequest, b"\xc0\x00");

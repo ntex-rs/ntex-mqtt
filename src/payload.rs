@@ -4,25 +4,35 @@ use ntex_bytes::{Bytes, BytesMut};
 use ntex_service::{BindCtx, ReadyNotifier};
 use ntex_util::{channel::bstream, future::Either};
 
+/// Readiness outcome for the active payload channel, including receiver cancellation.
 pub(crate) use ntex_util::channel::bstream::Status as PayloadStatus;
 
 use crate::error::PayloadError;
 
+/// Receiver of incoming payload chunks and terminal payload errors.
 type PlStream = bstream::Receiver<PayloadError>;
+/// Producer that feeds incoming payload chunks and observes buffer backpressure.
 type PlSender = bstream::Sender<PayloadError>;
 
 /// Stable readiness source shared by successive incoming payload streams.
 #[derive(Default)]
 pub(crate) struct PayloadSource {
+    /// Producer for the active stream, cleared on its final chunk or an error.
     sender: Cell<Option<PlSender>>,
+    /// Stable notifier shared with each new stream and all bound service scopes.
     changed: ReadyNotifier,
 }
 
 impl PayloadSource {
+    /// Subscribes a service scope to payload readiness changes across stream replacements.
     pub(crate) fn bind(&self, ctx: &BindCtx<'_>) {
         ctx.subscribe(&self.changed);
     }
 
+    /// Replaces the active stream and feeds its initial bytes.
+    ///
+    /// `buf_size` sets the high watermark in bytes, clamped to `u32::MAX`;
+    /// the low watermark is half that value.
     pub(crate) fn start(&self, buf: Bytes, buf_size: usize) -> Payload {
         let (tx, rx) = bstream::channel_with_notifier(self.changed.clone());
         let size = u32::try_from(buf_size).unwrap_or(u32::MAX);
@@ -37,6 +47,7 @@ impl PayloadSource {
         }
     }
 
+    /// Waits for active-stream buffer capacity, or returns ready when no stream is active.
     pub(crate) async fn ready(&self) -> PayloadStatus {
         if let Some(sender) = self.sender.take() {
             self.sender.set(Some(sender.clone()));
@@ -46,6 +57,9 @@ impl PayloadSource {
         }
     }
 
+    /// Feeds a chunk if a stream is active, returning whether a producer was present.
+    ///
+    /// `eof` closes the stream after this chunk and clears the active producer.
     pub(crate) fn feed(&self, buf: Bytes, eof: bool) -> bool {
         if let Some(sender) = self.sender.take() {
             if eof {
@@ -63,6 +77,7 @@ impl PayloadSource {
         }
     }
 
+    /// Terminates the active stream with an error and notifies bound readiness scopes.
     pub(crate) fn set_error(&self, err: PayloadError) {
         if let Some(sender) = self.sender.take() {
             sender.set_error(err);
@@ -71,8 +86,13 @@ impl PayloadSource {
     }
 }
 
-/// Payload for Publish packet
+/// Single-use payload of an incoming publish packet.
+///
+/// Payloads contain either fixed bytes or a stream of chunks. Reading consumes
+/// bytes even through a shared reference; subsequent reads observe only the
+/// remaining data. The default payload is empty and already consumed.
 pub struct Payload {
+    /// Single-use fixed bytes or the receiver of a chunked payload stream.
     pl: Either<Cell<Option<Bytes>>, PlStream>,
 }
 
@@ -85,19 +105,19 @@ impl Default for Payload {
 }
 
 impl Payload {
-    /// Create fixed payload from bytes
+    /// Creates a fixed payload that yields `buf` once, including when it is empty.
     pub fn from_bytes(buf: Bytes) -> Payload {
         Payload {
             pl: Either::Left(Cell::new(Some(buf))),
         }
     }
 
-    /// Check if payload is fixed
+    /// Returns whether the payload uses fixed storage, even after it is consumed.
     pub fn is_fixed(&self) -> bool {
         self.pl.is_left()
     }
 
-    /// Read next payload chunk
+    /// Reads and consumes the next chunk, returning `None` at the end of the payload.
     pub async fn read(&self) -> Result<Option<Bytes>, PayloadError> {
         match &self.pl {
             Either::Left(pl) => Ok(pl.take()),
@@ -105,10 +125,14 @@ impl Payload {
         }
     }
 
-    /// Read complete payload
+    /// Reads and consumes all remaining payload bytes.
     ///
-    /// Unlike [`read`](Self::read), returns `PayloadError::Consumed` error
-    /// if the payload has already been read.
+    /// Streaming chunks are concatenated until the stream ends. A prior
+    /// [`read`](Self::read) may have consumed a prefix; only the remainder is
+    /// returned. Unlike `read`, returns [`PayloadError::Consumed`] when no
+    /// unread chunk remains, including for the default empty payload.
+    /// A streaming error discards any bytes accumulated by this call; already
+    /// consumed chunks are not restored.
     pub async fn read_all(&self) -> Result<Bytes, PayloadError> {
         match &self.pl {
             Either::Left(pl) => pl.take().ok_or(PayloadError::Consumed),
@@ -141,6 +165,7 @@ impl fmt::Debug for Payload {
     }
 }
 
+/// Unit tests for fixed payload consumption and shared streaming readiness.
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
@@ -150,6 +175,7 @@ mod tests {
 
     use super::*;
 
+    /// Service exposing a shared payload source as a pipeline readiness dependency.
     struct Source(Rc<PayloadSource>);
 
     impl Service<(), ()> for Source {
@@ -172,6 +198,12 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Payload readiness changes reach every bound scope across stream replacements.
+    ///
+    /// HOW:
+    /// - Bind two pipelines to one `PayloadSource`, fill its buffer, and verify readiness blocks until a chunk is consumed.
+    /// - Feed the final chunk, replace the stream, then drop its receiver and verify both scopes report `PayloadStatus::Dropped`.
+    /// - Set an error to clear the active producer and verify readiness is restored.
     #[ntex::test]
     async fn test_shared_payload_readiness_and_replacement() {
         let source = Rc::new(PayloadSource::default());
@@ -209,6 +241,11 @@ mod tests {
         a.ready().await.unwrap();
     }
 
+    /// STATEMENT: Streaming payloads concatenate chunks once and report exhaustion on a second complete read.
+    ///
+    /// HOW:
+    /// - Start with `chunk1`, feed two delayed chunks, and end the stream with `chunk3`.
+    /// - Verify `read_all` returns the concatenated bytes, streaming storage and debug output are preserved, and another read reports `PayloadError::Consumed`.
     #[ntex::test]
     async fn test_payload() {
         let tx = PayloadSource::default();
@@ -228,6 +265,11 @@ mod tests {
         assert!(matches!(pl.read_all().await, Err(PayloadError::Consumed)));
     }
 
+    /// STATEMENT: Taking a fixed payload transfers its unread bytes and leaves consumed fixed storage behind.
+    ///
+    /// HOW:
+    /// - Create fixed `data`, verify its storage and debug output, and transfer it with `take`.
+    /// - Verify the original is exhausted, the taken payload yields `data` once, and the default payload uses fixed storage.
     #[ntex::test]
     async fn test_fixed_payload() {
         let mut pl = Payload::from_bytes(Bytes::from_static(b"data"));

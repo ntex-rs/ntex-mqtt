@@ -26,16 +26,23 @@ use super::publish::{Publish, PublishAck};
 use super::shared::{MqttShared, MqttSinkPool};
 use super::{MqttSink, Session, ToPublishAck, dispatcher::factory};
 
+/// Type-erased session control factory with MQTT errors and normalized initialization failures.
 type ControlPipeline<AppSt, E, Err> =
     PipelineFactory<Session<AppSt>, Control<E>, Option<Encoded>, MqttError<Err>, Failure>;
 
-/// Mqtt Server
+/// Builder for an MQTT 5 server with separate handshake, publish, and protocol services.
 pub struct MqttServer<Im, AppSt, Err, E, Pub, P, M = Identity> {
+    /// Factory for application services handling inbound publishes.
     publish: Pub,
+    /// Factory for services handling serialized protocol messages.
     protocol: P,
+    /// Middleware stack applied to the decoded-packet dispatcher.
     middleware: M,
+    /// Factory for connection stop and write-backpressure handling.
     control: ControlPipeline<AppSt, E, Err>,
+    /// Reusable acknowledgement and readiness channels shared across connections.
     pool: Rc<MqttSinkPool>,
+    /// Carries the intermediate handshake state type without storing a value.
     st: PhantomData<Im>,
 }
 
@@ -54,7 +61,9 @@ where
     Pub::Error: ToPublishAck<Error = E>,
     Pub::InitError: IntoFailure,
 {
-    /// Create mqtt v5 server and provide publish service
+    /// Creates an MQTT 5 server with the supplied inbound publish service.
+    ///
+    /// Uses unit intermediate handshake state and the default protocol handler.
     pub fn new<I>(publish: I) -> Self
     where
         I: IntoServiceFactory<Pub, Session<AppSt>, Publish>,
@@ -73,7 +82,11 @@ where
     Pub::Error: ToPublishAck<Error = E>,
     Pub::InitError: IntoFailure,
 {
-    /// Create mqtt v5 server with state
+    /// Creates an MQTT 5 server parameterized by intermediate handshake state `Im`.
+    ///
+    /// Application session state is supplied later by the connect service. The
+    /// default protocol service handles pings, disconnects, and `QoS 2` releases,
+    /// and disconnects on other protocol messages.
     pub fn with<I>(publish: I) -> Self
     where
         I: IntoServiceFactory<Pub, Session<AppSt>, Publish>,
@@ -105,13 +118,10 @@ where
     P::InitError: IntoFailure,
 {
     #[must_use]
-    /// Registers middleware, in the form of a middleware component (type),
-    /// that runs during inbound and/or outbound processing in the request
-    /// lifecycle (request -> response), modifying request/response as
-    /// necessary, across all requests managed by the *Server*.
+    /// Adds middleware around the decoded-packet dispatcher.
     ///
-    /// Use middleware when you need to read or modify *every* request or
-    /// response in some way.
+    /// It wraps publish and protocol packet processing, not the connect service
+    /// or the separate connection-control service. Existing middleware is retained.
     pub fn middleware<U>(self, mw: U) -> MqttServer<Im, AppSt, Err, E, Pub, P, Stack<M, U>> {
         MqttServer {
             middleware: Stack::new(self.middleware, mw),
@@ -124,7 +134,9 @@ where
     }
 
     #[must_use]
-    /// Replace middlewares
+    /// Replaces the dispatcher middleware stack.
+    ///
+    /// This also removes the default in-flight publish-size limiter.
     pub fn replace_middlewares<U>(self, mw: U) -> MqttServer<Im, AppSt, Err, E, Pub, P, U> {
         MqttServer {
             middleware: mw,
@@ -137,10 +149,10 @@ where
     }
 
     #[must_use]
-    /// Service to handle protocol control messages
+    /// Replaces the service factory handling inbound protocol messages.
     ///
-    /// All control packets are processed sequentially, max number of buffered
-    /// control packets is 16.
+    /// Protocol messages are processed one at a time with up to 16 buffered
+    /// requests. Publishes are handled separately and can run concurrently.
     pub fn protocol<F, Srv>(self, service: F) -> MqttServer<Im, AppSt, Err, E, Pub, Srv, M>
     where
         F: IntoServiceFactory<Srv, Session<AppSt>, ProtocolMessage>,
@@ -159,7 +171,11 @@ where
     }
 
     #[must_use]
-    /// Service to handle connection control messages
+    /// Replaces the service factory handling connection stop and write-backpressure events.
+    ///
+    /// The service may return an encoded response. The adapter supplies a default
+    /// disconnect for service or protocol errors if the service returns `None`,
+    /// and suppresses responses when a disconnect has already been sent.
     pub fn control<Srv>(
         self,
         f: impl IntoServiceFactory<Srv, Session<AppSt>, Control<E>>,
@@ -183,7 +199,12 @@ where
         }
     }
 
-    /// Set service to handle Connect packet and create mqtt server
+    /// Builds the transport server with a service handling incoming `CONNECT` packets.
+    ///
+    /// The connect service accepts by returning an acknowledgement containing a
+    /// session, or rejects by returning one without a session. Accepted `CONNACK`
+    /// properties configure the codec, inbound limits, and keep-alive; outgoing
+    /// credits are capped by the client's Receive Maximum.
     pub fn build<S, St>(
         self,
         connect: impl IntoService<S, St, Connect<Im>>,
@@ -223,9 +244,13 @@ where
     }
 }
 
+/// Transport handshake adapter validating `CONNECT` and applying the application response.
 struct ConnectService<ImSt, AppSt, S> {
+    /// Application connect service producing accepted or rejected acknowledgements.
     svc: S,
+    /// Shared pool used when allocating each connection's sink state.
     pool: Rc<MqttSinkPool>,
+    /// Carries intermediate handshake and accepted application state types.
     _t: PhantomData<(ImSt, AppSt)>,
 }
 
@@ -402,8 +427,9 @@ where
     }
 }
 
-/// Will Topic is a Topic Name (MQTT 5.0, 3.1.3.3), Will Response Topic must not
-/// contain wildcards, [MQTT-3.3.2-14] (MQTT 5.0, 3.1.3.2.5)
+/// Validates the will topic name and rejects wildcards in its response topic.
+///
+/// Enforces MQTT 5.0 section 3.1.3.3 and [MQTT-3.3.2-14] in section 3.1.3.2.5.
 fn check_will(connect: &mqtt::Connect) -> Result<(), SpecViolation> {
     let Some(will) = &connect.last_will else {
         return Ok(());
@@ -419,9 +445,11 @@ fn check_will(connect: &mqtt::Connect) -> Result<(), SpecViolation> {
     Ok(())
 }
 
-/// Decodes the CONNECT packet and keeps its protocol level
+/// Decodes the first packet while retaining the `CONNECT` protocol level.
 struct ConnectCodec<'a> {
+    /// Connection codec used to decode the first packet.
     codec: &'a mqtt::Codec,
+    /// Protocol level cached once enough `CONNECT` bytes arrive, for rejection format selection.
     level: Cell<Option<u8>>,
 }
 
@@ -437,8 +465,10 @@ impl Decoder for ConnectCodec<'_> {
     }
 }
 
-/// Send CONNACK for a CONNECT packet with an unsupported protocol level,
-/// and close the connection
+/// Sends a version-appropriate rejection for an unsupported protocol level.
+///
+/// Other decode errors are left to the caller; successful encoding is followed
+/// by transport shutdown.
 ///
 /// Server MAY send CONNACK 0x84 if the Protocol Version is not 5,
 /// [MQTT-3.1.2-2] (MQTT 5.0, 3.1.2.2). MQTT 3.1 and 3.1.1 clients cannot
@@ -461,12 +491,14 @@ async fn reject_connect(io: &IoBoxed, codec: &mqtt::Codec, err: &DecodeError, le
     }
 }
 
+/// Unit tests for server builder formatting.
 #[cfg(test)]
 mod tests {
     use std::{convert::Infallible, io};
 
     use super::*;
 
+    /// Unconvertible publish error used to instantiate the server builder.
     #[derive(Debug)]
     struct TestError;
 
@@ -484,6 +516,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Server builder debug output identifies the MQTT 5 server type.
+    ///
+    /// HOW:
+    /// - Construct a server with a publish handler that returns a successful acknowledgement.
+    /// - Format the builder and check that the output contains `v5::MqttServer`.
     #[test]
     fn test_debug() {
         let server = MqttServer::<(), (), io::Error, _, _, _, _>::new(ntex_service::fn_service(

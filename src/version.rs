@@ -5,12 +5,16 @@ use crate::error::{DecodeError, EncodeError};
 use crate::types::{MQTT, MQTT_LEVEL_3, MQTT_LEVEL_5, packet_type};
 use crate::utils;
 
+/// Supported MQTT versions selected from a CONNECT protocol level.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum ProtocolVersion {
+    /// MQTT v3.1.1, represented by protocol level 4.
     MQTT3,
+    /// MQTT v5, represented by protocol level 5.
     MQTT5,
 }
 
+/// Read-only codec that identifies CONNECT versions without consuming bytes.
 #[derive(Debug)]
 pub(super) struct VersionCodec;
 
@@ -67,10 +71,16 @@ impl Encoder for VersionCodec {
     }
 }
 
+/// Unit tests for non-consuming CONNECT version detection.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// STATEMENT: Version detection distinguishes supported levels, malformed prefixes, and incomplete input.
+    ///
+    /// HOW:
+    /// - Decode CONNECT prefixes with invalid names, unsupported levels, and valid v3.1.1 or v5 levels.
+    /// - Check partial prefixes return `None` and a non-CONNECT packet returns `UnsupportedPacketType`.
     #[test]
     fn test_decode_connect_packets() {
         let mut buf = BytesMut::from(
@@ -128,6 +138,10 @@ mod tests {
         assert_eq!(None, VersionCodec.decode(&mut buf).unwrap());
     }
 
+    /// STATEMENT: The version-detection codec cannot encode packets.
+    ///
+    /// HOW:
+    /// - Attempt to encode `ProtocolVersion::MQTT5` and assert `EncodeError::UnsupportedVersion`.
     #[test]
     fn test_encode() {
         let mut buf = BytePages::default();

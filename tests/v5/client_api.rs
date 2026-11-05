@@ -1,11 +1,21 @@
 use super::*;
 
+/// STATEMENT: Client connection builders preserve wire properties and expose successful and
+/// rejected acknowledgments.
+///
+/// HOW:
+/// - Connect with a will, authentication, credentials, limits, and user properties; compare
+///   the packet captured by the server.
+/// - Check handshake accessors, packet mutation, negotiated settings, and mutable
+///   session-present state.
+/// - Reconnect with zero limits and a rejected username; assert omitted limit properties and
+///   the `Banned` refusal with its reason string.
 #[ntex::test]
 async fn test_client_connect_packet() {
     let seen = Arc::new(Mutex::new(Vec::<codec::Connect>::new()));
     let seen2 = seen.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let seen = seen2.clone();
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
             async move |mut msg: Connect| {
@@ -122,9 +132,9 @@ async fn test_client_connect_packet() {
     assert!(pkt.receive_max.is_none());
 }
 
-/// Server that does not follow the protocol during the handshake
+/// Starts a raw server that closes early for kind `0` or sends an unexpected packet otherwise.
 fn bad_handshake_server(kind: u8) -> server::TestServer {
-    server::test_server(async move || {
+    server::test_server(async move |_| {
         fn_service(async move |io: ntex::io::Io| {
             let codec = codec::Codec::default();
             let _ = io.recv(&codec).await;
@@ -146,9 +156,17 @@ fn bad_handshake_server(kind: u8) -> server::TestServer {
     })
 }
 
+/// STATEMENT: A custom transport connector works and malformed server handshakes produce the
+/// appropriate client errors.
+///
+/// HOW:
+/// - Connect through a custom underlying connector and assert that its sink is open.
+/// - Use raw servers that close early or send a ping response or publish instead of a
+///   connection acknowledgment.
+/// - Assert a disconnected error for early closure and protocol errors for unexpected packets.
 #[ntex::test]
 async fn test_client_connector() {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
     });
 
@@ -176,16 +194,17 @@ async fn test_client_connector() {
     }
 }
 
+/// Shared results of server echo sends, containing acknowledgments only for QoS 1 or 2.
 type EchoAcks = Arc<Mutex<Vec<Result<Option<codec::PublishAck>, error::SendPacketError>>>>;
 
-/// Server that publishes a message back to the client. The topic and the retain flag
-/// (requests topic alias `1`) are taken from the client's publish, the qos is taken
-/// from the first byte of its payload.
+/// Starts a server that echoes the requested topic with payload `body` and records send results.
+///
+/// The first request payload byte selects QoS; its retain flag requests topic alias `1`.
 fn echo_publisher() -> (server::TestServer, EchoAcks) {
     let acks: EchoAcks = Arc::new(Mutex::new(Vec::new()));
     let acks2 = acks.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let acks = acks2.clone();
         MqttServer::new(async move |con: &Session<St>| {
             let sink = con.sink().clone();
@@ -242,6 +261,15 @@ async fn trigger(sink: &client::MqttSink, topic: &str, qos: QoS, alias: bool) {
     .unwrap();
 }
 
+/// STATEMENT: Client routing resolves topic parameters, supports error acknowledgments, and
+/// delegates unmatched publishes.
+///
+/// HOW:
+/// - Exercise `into_inner`, then trigger server publishes for parameterized routes, an aliased
+///   topic, and error routes.
+/// - Check captured parameters and payloads, successful acknowledgments, conversion to
+///   `QuotaExceeded`, and an unmatched publish handled by the protocol service.
+/// - Trigger a nonconvertible handler error and assert that the client sink closes.
 #[ntex::test]
 async fn test_client_router() {
     let (srv, acks) = echo_publisher();
@@ -357,6 +385,14 @@ async fn test_client_router() {
     wait_until(|| !sink.is_open()).await;
 }
 
+/// STATEMENT: The default client router handles matching publishes but disconnects on an
+/// unmatched topic.
+///
+/// HOW:
+/// - Mutate a routed publish packet and check the recorded topic and retain flag together with
+///   its successful QoS 1 acknowledgment.
+/// - Trigger a routed QoS 0 message and assert no acknowledgment, then trigger an unmatched
+///   message and wait for closure.
 #[ntex::test]
 async fn test_client_router_default() {
     let (srv, acks) = echo_publisher();
@@ -409,6 +445,15 @@ async fn test_client_router_default() {
     wait_until(|| !sink.is_open()).await;
 }
 
+/// STATEMENT: Client publish acknowledgment methods honor QoS and reason codes, while generic
+/// acknowledgment of a publish disconnects.
+///
+/// HOW:
+/// - Trigger QoS 0 and QoS 1 server publishes handled with `ack_qos0`, `into_inner`, and a
+///   reason-specific `ack`.
+/// - Assert the captured topics, packet mutation, missing QoS 0 acknowledgment, and QoS 1
+///   reason codes.
+/// - Handle a final publish through `ProtocolMessage::ack` and assert connection closure.
 #[ntex::test]
 async fn test_client_protocol_message() {
     let (srv, acks) = echo_publisher();
@@ -475,6 +520,14 @@ async fn test_client_protocol_message() {
     wait_until(|| !sink.is_open()).await;
 }
 
+/// STATEMENT: A client protocol-service error reaches the custom control service and
+/// terminates the pending publish.
+///
+/// HOW:
+/// - Run `start_with_control` with a protocol service that returns an `AckError` and a control
+///   service that records it.
+/// - Trigger a server publish; assert a failed server send, the recorded
+///   `ImplementationSpecificError`, and closure of the client sink.
 #[ntex::test]
 async fn test_client_start_with_control() {
     let (srv, acks) = echo_publisher();
@@ -528,13 +581,13 @@ async fn test_client_start_with_control() {
     wait_until(|| !sink.is_open()).await;
 }
 
-/// Raw server that completes the handshake and records received packets,
-/// optionally answering PINGREQ
+/// Starts a raw server that records packets after the handshake and optionally answers ping
+/// requests.
 fn ping_server(answer: bool) -> (server::TestServer, Arc<Mutex<Vec<Packet>>>) {
     let log = Arc::new(Mutex::new(Vec::new()));
     let log2 = log.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let log = log2.clone();
         fn_service(async move |io: ntex::io::Io| {
             let codec = codec::Codec::default();
@@ -560,6 +613,7 @@ fn ping_server(answer: bool) -> (server::TestServer, Arc<Mutex<Vec<Packet>>>) {
     (srv, log)
 }
 
+/// Connects a client requesting one-second keep-alive pings without starting its dispatcher.
 async fn keepalive_client(srv: &server::TestServer) -> client::Client {
     try_connect_client(
         client::Connect::new(srv.addr())
@@ -570,6 +624,15 @@ async fn keepalive_client(srv: &server::TestServer) -> client::Client {
     .unwrap()
 }
 
+/// STATEMENT: Client keep-alive pings repeat while answered, time out when unanswered, and
+/// stop after closure.
+///
+/// HOW:
+/// - Run one-second keep-alive clients against packet-recording servers that either answer or
+///   ignore ping requests.
+/// - Assert repeated pings and an open sink for the answering server, and a timeout disconnect
+///   for the silent server.
+/// - Close another client immediately and assert no ping is sent after the keep-alive interval.
 #[ntex::test]
 async fn test_client_keepalive() {
     // PINGREQ is sent periodically while the server answers

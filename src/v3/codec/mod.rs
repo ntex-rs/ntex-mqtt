@@ -2,10 +2,14 @@
 
 use ntex_bytes::Bytes;
 
+/// Stateful framing and streamed publish encoding.
 #[allow(clippy::module_inception)]
 mod codec;
+/// Packet-body parsing and wire-format validation.
 mod decode;
+/// Packet sizing, sender validation, and serialization.
 pub(crate) mod encode;
+/// MQTT 3.1.1 control packet representations.
 mod packet;
 
 pub use self::codec::Codec;
@@ -17,11 +21,11 @@ pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};
 /// Result of a decode operation
 #[derive(Clone, PartialEq, Eq)]
 pub enum Decoded {
-    /// Decoded control packet and its total size in bytes
+    /// Decoded control packet and its remaining length in bytes, excluding the fixed header.
     Packet(Packet, u32),
-    /// Decoded PUBLISH packet, the first payload chunk and the packet size in bytes
+    /// Decoded PUBLISH header, optional initial payload bytes, and remaining length in bytes.
     Publish(Publish, Bytes, u32),
-    /// Next chunk of a PUBLISH payload, the flag indicates the last chunk
+    /// Next payload chunk; the flag is `true` when the declared payload is complete.
     PayloadChunk(Bytes, bool),
 }
 
@@ -30,9 +34,9 @@ pub enum Decoded {
 pub enum Encoded {
     /// Control packet
     Packet(Packet),
-    /// PUBLISH packet with an optional first payload chunk
+    /// PUBLISH metadata and optional initial bytes; later chunks must complete `payload_size`.
     Publish(Publish, Option<Bytes>),
-    /// Next chunk of a PUBLISH payload
+    /// Next bytes of the current payload; no other packet can interleave until it is complete.
     PayloadChunk(Bytes),
 }
 

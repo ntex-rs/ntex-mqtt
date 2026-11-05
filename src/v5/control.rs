@@ -25,57 +25,63 @@ pub enum ProtocolMessage {
     Ping(Ping),
 }
 
+/// Internal wire-response selection for a protocol-service result.
 #[derive(Debug)]
 pub(crate) enum Pkt {
+    /// No response packet is sent.
     None,
+    /// Disconnect response suppressed if a disconnect has already been sent.
     Disconnect(codec::Disconnect),
+    /// Ordinary response returned to the ordered response queue.
     Packet(codec::Packet),
 }
 
-/// Protocol message handling result
+/// Protocol-service result containing a response packet and an optional close request.
 #[derive(Debug)]
 pub struct ProtocolMessageAck {
+    /// Optional response packet produced by the protocol handler.
     pub(crate) packet: Pkt,
+    /// Whether to close sink operations and fail any streamed payload after handling.
     pub(crate) disconnect: bool,
 }
 
 impl ProtocolMessage {
-    /// Create a new message from AUTH packet.
+    /// Wraps an `AUTH` packet and its Remaining Length in bytes.
     #[doc(hidden)]
     pub fn auth(pkt: codec::Auth, size: u32) -> Self {
         ProtocolMessage::Auth(Auth { pkt, size })
     }
 
+    /// Wraps a client `PUBREL` with its Remaining Length in bytes.
     pub(crate) fn pubrel(pkt: codec::PublishAck2, size: u32) -> Self {
         ProtocolMessage::PublishRelease(PublishRelease::new(pkt, size))
     }
 
-    /// Create a new message from SUBSCRIBE packet.
+    /// Wraps a `SUBSCRIBE` packet and its Remaining Length in bytes.
     #[doc(hidden)]
     pub fn subscribe(pkt: codec::Subscribe, size: u32) -> Self {
         ProtocolMessage::Subscribe(Subscribe::new(pkt, size))
     }
 
-    /// Create a new message from UNSUBSCRIBE packet.
+    /// Wraps an `UNSUBSCRIBE` packet and its Remaining Length in bytes.
     #[doc(hidden)]
     pub fn unsubscribe(pkt: codec::Unsubscribe, size: u32) -> Self {
         ProtocolMessage::Unsubscribe(Unsubscribe::new(pkt, size))
     }
 
-    /// Create a new PING message.
+    /// Creates a message for an incoming `PINGREQ`.
     #[doc(hidden)]
     pub fn ping() -> Self {
         ProtocolMessage::Ping(Ping)
     }
 
-    /// Create a new message from DISCONNECT packet.
+    /// Wraps a received `DISCONNECT` and its Remaining Length in bytes.
     #[doc(hidden)]
     pub fn remote_disconnect(pkt: codec::Disconnect, size: u32) -> Self {
         ProtocolMessage::Disconnect(Disconnect(pkt, size))
     }
 
-    /// Disconnects the client by sending DISCONNECT packet
-    /// with `NormalDisconnection` reason code.
+    /// Requests a normal disconnect, sending `DISCONNECT` unless one was already sent.
     pub fn disconnect(&self) -> ProtocolMessageAck {
         let pkt = codec::Disconnect {
             reason_code: codec::DisconnectReasonCode::NormalDisconnection,
@@ -90,8 +96,9 @@ impl ProtocolMessage {
         }
     }
 
-    /// Disconnects the client by sending DISCONNECT packet
-    /// with provided reason code.
+    /// Requests disconnection with the supplied `DISCONNECT` packet.
+    ///
+    /// The dispatcher suppresses the packet if a disconnect was already sent.
     pub fn disconnect_with(&self, pkt: codec::Disconnect) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::Disconnect(pkt),
@@ -99,7 +106,11 @@ impl ProtocolMessage {
         }
     }
 
-    /// Ack control message
+    /// Creates the default acknowledgement for this protocol message.
+    ///
+    /// Authentication is rejected with `ImplementationSpecificError`; unmodified
+    /// subscriptions are rejected per topic with `UnspecifiedError`, while
+    /// unsubscriptions succeed. A received disconnect closes without a reply.
     pub fn ack(self) -> ProtocolMessageAck {
         match self {
             ProtocolMessage::Auth(_) => super::disconnect(error::ERR_AUTH_NOT_SUP),
@@ -112,25 +123,27 @@ impl ProtocolMessage {
     }
 }
 
-/// `Auth` control message
+/// Incoming authentication message requiring an application-provided response.
 #[derive(Debug)]
 pub struct Auth {
+    /// Authentication packet received from the peer.
     pkt: codec::Auth,
+    /// Packet Remaining Length in bytes, excluding the fixed header.
     size: u32,
 }
 
 impl Auth {
-    /// Returns reference to auth packet
+    /// Returns the received authentication packet.
     pub fn packet(&self) -> &codec::Auth {
         &self.pkt
     }
 
-    /// Returns size of the packet
+    /// Returns the packet's Remaining Length in bytes, excluding the fixed header.
     pub fn packet_size(&self) -> u32 {
         self.size
     }
 
-    /// Ack auth message with the provided `Auth` packet
+    /// Responds with the supplied `AUTH` packet without closing the connection.
     pub fn ack(self, response: codec::Auth) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::from(response)),
@@ -139,15 +152,19 @@ impl Auth {
     }
 }
 
-/// `PublishRelease` control message
+/// Incoming `PUBREL` with a configurable successful `PUBCOMP` response.
 #[derive(Debug, Clone)]
 pub struct PublishRelease {
+    /// Client `PUBREL` packet completing the incoming `QoS 2` exchange.
     pkt: codec::PublishAck2,
+    /// Pending `PUBCOMP`, initially successful with the same packet identifier.
     result: codec::PublishAck2,
+    /// Packet Remaining Length in bytes, excluding the fixed header.
     size: u32,
 }
 
 impl PublishRelease {
+    /// Prepares a successful `PUBCOMP` response to the received `PUBREL`.
     pub(crate) fn new(pkt: codec::PublishAck2, size: u32) -> Self {
         let packet_id = pkt.packet_id;
         Self {
@@ -167,14 +184,14 @@ impl PublishRelease {
         &self.pkt
     }
 
-    /// Returns size of the packet
+    /// Returns the packet's Remaining Length in bytes, excluding the fixed header.
     pub fn packet_size(&self) -> u32 {
         self.size
     }
 
     #[inline]
     #[must_use]
-    /// Update user properties
+    /// Modifies user properties in the pending `PUBCOMP` response.
     pub fn properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::UserProperties),
@@ -185,13 +202,13 @@ impl PublishRelease {
 
     #[inline]
     #[must_use]
-    /// Set ack reason string
+    /// Sets diagnostic text in the pending `PUBCOMP` response.
     pub fn reason(mut self, reason: ByteString) -> Self {
         self.result.reason_string = Some(reason);
         self
     }
 
-    /// Ack publish release
+    /// Responds with `PUBCOMP` to complete the incoming `QoS 2` exchange.
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::PublishComplete(self.result)),
@@ -200,12 +217,12 @@ impl PublishRelease {
     }
 }
 
-/// `Ping` control message
+/// Incoming `PINGREQ` keep-alive message.
 #[derive(Debug, Copy, Clone)]
 pub struct Ping;
 
 impl Ping {
-    /// Ack ping message with a `PingResponse` packet
+    /// Responds with a `PINGRESP` packet.
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::PingResponse),
@@ -214,7 +231,7 @@ impl Ping {
     }
 }
 
-/// `Disconnect` control message
+/// Received `DISCONNECT` packet and its Remaining Length in bytes.
 #[derive(Debug, Clone)]
 pub struct Disconnect(pub(crate) codec::Disconnect, pub(crate) u32);
 
@@ -224,12 +241,12 @@ impl Disconnect {
         &self.0
     }
 
-    /// Returns size of the packet
+    /// Returns the packet's Remaining Length in bytes, excluding the fixed header.
     pub fn packet_size(&self) -> u32 {
         self.1
     }
 
-    /// Ack disconnect message
+    /// Requests connection closure without sending a reply to the received disconnect.
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::None,
@@ -238,17 +255,24 @@ impl Disconnect {
     }
 }
 
-/// `Subscribe` control message
+/// Incoming subscription request with one configurable acknowledgement status per filter.
+///
+/// Updating statuses does not install subscriptions; the application manages its
+/// subscriptions and confirms or rejects each filter before acknowledging.
 #[derive(Debug, Clone)]
 pub struct Subscribe {
+    /// Client request containing the topic filters and subscription options.
     packet: codec::Subscribe,
+    /// Pending response with one status per filter, initially `UnspecifiedError`.
     result: codec::SubscribeAck,
+    /// Packet Remaining Length in bytes, excluding the fixed header.
     size: u32,
 }
 
 impl Subscribe {
-    /// Create a new `Subscribe` control message from a Subscribe
-    /// packet
+    /// Prepares a `SUBACK` with `UnspecifiedError` for every requested topic filter.
+    ///
+    /// `size` is the incoming packet's Remaining Length in bytes.
     pub fn new(packet: codec::Subscribe, size: u32) -> Self {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
@@ -270,7 +294,7 @@ impl Subscribe {
 
     #[inline]
     #[must_use]
-    /// returns iterator over subscription topics
+    /// Iterates over filters and options with mutable access to their `SUBACK` statuses.
     pub fn iter_mut(&mut self) -> SubscribeIter<'_> {
         SubscribeIter {
             subs: ptr::from_ref(self).cast_mut(),
@@ -281,7 +305,7 @@ impl Subscribe {
 
     #[inline]
     #[must_use]
-    /// Reason string for ack packet
+    /// Sets the diagnostic reason string for the acknowledgement packet.
     pub fn ack_reason(mut self, reason: ByteString) -> Self {
         self.result.reason_string = Some(reason);
         self
@@ -289,7 +313,7 @@ impl Subscribe {
 
     #[inline]
     #[must_use]
-    /// Properties for ack packet
+    /// Modifies user properties for the acknowledgement packet.
     pub fn ack_properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::UserProperties),
@@ -299,7 +323,7 @@ impl Subscribe {
     }
 
     #[inline]
-    /// Ack Subscribe packet
+    /// Responds with the configured `SUBACK`, leaving unconfirmed filters rejected.
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::SubscribeAck(self.result)),
@@ -314,7 +338,7 @@ impl Subscribe {
     }
 
     #[inline]
-    /// Returns size of the packet
+    /// Returns the packet's Remaining Length in bytes, excluding the fixed header.
     pub fn packet_size(&self) -> u32 {
         self.size
     }
@@ -329,10 +353,13 @@ impl<'a> IntoIterator for &'a mut Subscribe {
     }
 }
 
-/// Iterator over subscription topics
+/// Iterator over requested filters, options, and mutable `SUBACK` statuses.
 pub struct SubscribeIter<'a> {
+    /// Exclusively borrowed request whose filter and status entries are yielded.
     subs: *mut Subscribe,
+    /// Index of the next filter/status pair; only advances during iteration.
     entry: usize,
+    /// Keeps the request exclusively borrowed for the lifetime of yielded entries.
     lt: PhantomData<&'a mut Subscribe>,
 }
 
@@ -343,6 +370,7 @@ impl fmt::Debug for SubscribeIter<'_> {
 }
 
 impl<'a> SubscribeIter<'a> {
+    /// Yields the next filter, options, and mutable acknowledgement status using the stored pointer.
     fn next_unsafe(&mut self) -> Option<Subscription<'a>> {
         let subs = unsafe { &mut *self.subs };
 
@@ -369,35 +397,40 @@ impl<'a> Iterator for SubscribeIter<'a> {
     }
 }
 
-/// Subscription topic
+/// Borrowed subscription filter, requested options, and mutable acknowledgement status.
 #[derive(Debug)]
 pub struct Subscription<'a> {
+    /// Topic filter from the incoming subscription request.
     topic: &'a ByteString,
+    /// Requested delivery and retain options for this filter.
     options: &'a codec::SubscriptionOptions,
+    /// This filter's response status, updated by confirmation or rejection.
     status: &'a mut codec::SubscribeAckReason,
 }
 
 impl<'a> Subscription<'a> {
     #[inline]
-    /// subscription topic
+    /// Returns the requested topic filter.
     pub fn topic(&self) -> &'a ByteString {
         self.topic
     }
 
     #[inline]
-    /// subscription options for current topic
+    /// Returns the client's options for this topic filter.
     pub fn options(&self) -> &codec::SubscriptionOptions {
         self.options
     }
 
     #[inline]
-    /// fail to subscribe to the topic
+    /// Sets this filter's `SUBACK` status to the supplied reason code.
     pub fn fail(&mut self, status: codec::SubscribeAckReason) {
         *self.status = status;
     }
 
     #[inline]
-    /// confirm subscription to a topic with specific qos
+    /// Sets this filter's successful `SUBACK` status to the granted `QoS`.
+    ///
+    /// The application must install the subscription itself.
     pub fn confirm(&mut self, qos: QoS) {
         match qos {
             QoS::AtMostOnce => *self.status = codec::SubscribeAckReason::GrantedQos0,
@@ -408,22 +441,32 @@ impl<'a> Subscription<'a> {
 
     #[inline]
     #[doc(hidden)]
-    /// confirm subscription to a topic with specific qos
+    /// Sets this filter's successful `SUBACK` status to the granted `QoS`.
+    ///
+    /// The application must install the subscription itself.
     pub fn subscribe(&mut self, qos: QoS) {
         self.confirm(qos);
     }
 }
 
-/// `Unsubscribe` control message
+/// Incoming unsubscribe request with a configurable acknowledgement status per filter.
+///
+/// Status changes do not remove application subscriptions; the application manages
+/// that state before acknowledging.
 #[derive(Debug, Clone)]
 pub struct Unsubscribe {
+    /// Client request containing the filters to remove.
     packet: codec::Unsubscribe,
+    /// Pending response with one status per filter, initially `Success`.
     result: codec::UnsubscribeAck,
+    /// Packet Remaining Length in bytes, excluding the fixed header.
     size: u32,
 }
 
 impl Unsubscribe {
-    /// Create a new `Unsubscribe` control message from an UNSUBSCRIBE packet
+    /// Prepares an `UNSUBACK` with `Success` for every requested topic filter.
+    ///
+    /// `size` is the incoming packet's Remaining Length in bytes.
     pub fn new(packet: codec::Unsubscribe, size: u32) -> Self {
         let mut status = Vec::with_capacity(packet.topic_filters.len());
         (0..packet.topic_filters.len())
@@ -444,19 +487,19 @@ impl Unsubscribe {
     }
 
     #[inline]
-    /// Unsubscribe packet user properties
+    /// Returns user properties from the incoming unsubscribe request.
     pub fn properties(&self) -> &codec::UserProperties {
         &self.packet.user_properties
     }
 
     #[inline]
-    /// returns iterator over unsubscribe topics
+    /// Iterates over the requested topic filters without changing response statuses.
     pub fn iter(&self) -> impl Iterator<Item = &ByteString> {
         self.packet.topic_filters.iter()
     }
 
     #[inline]
-    /// returns iterator over topics to unsubscribe
+    /// Iterates over requested filters with mutable access to their `UNSUBACK` statuses.
     pub fn iter_mut(&mut self) -> UnsubscribeIter<'_> {
         UnsubscribeIter {
             subs: ptr::from_ref::<Unsubscribe>(self).cast_mut(),
@@ -467,7 +510,7 @@ impl Unsubscribe {
 
     #[inline]
     #[must_use]
-    /// Reason string for ack packet
+    /// Sets the diagnostic reason string for the acknowledgement packet.
     pub fn ack_reason(mut self, reason: ByteString) -> Self {
         self.result.reason_string = Some(reason);
         self
@@ -475,7 +518,7 @@ impl Unsubscribe {
 
     #[inline]
     #[must_use]
-    /// Properties for ack packet
+    /// Modifies user properties for the acknowledgement packet.
     pub fn ack_properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::UserProperties),
@@ -485,7 +528,7 @@ impl Unsubscribe {
     }
 
     #[inline]
-    /// convert packet to a result
+    /// Responds with the configured `UNSUBACK`, leaving unchanged statuses successful.
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             packet: Pkt::Packet(codec::Packet::UnsubscribeAck(self.result)),
@@ -500,7 +543,7 @@ impl Unsubscribe {
     }
 
     #[inline]
-    /// Returns size of the packet
+    /// Returns the packet's Remaining Length in bytes, excluding the fixed header.
     pub fn packet_size(&self) -> u32 {
         self.size
     }
@@ -515,10 +558,13 @@ impl<'a> IntoIterator for &'a mut Unsubscribe {
     }
 }
 
-/// Iterator over topics to unsubscribe
+/// Iterator over requested topic filters and mutable `UNSUBACK` statuses.
 pub struct UnsubscribeIter<'a> {
+    /// Exclusively borrowed request whose filter and status entries are yielded.
     subs: *mut Unsubscribe,
+    /// Index of the next filter/status pair; only advances during iteration.
     entry: usize,
+    /// Keeps the request exclusively borrowed for the lifetime of yielded entries.
     lt: PhantomData<&'a mut Unsubscribe>,
 }
 
@@ -529,6 +575,7 @@ impl fmt::Debug for UnsubscribeIter<'_> {
 }
 
 impl<'a> UnsubscribeIter<'a> {
+    /// Yields the next filter and mutable acknowledgement status using the stored pointer.
     fn next_unsafe(&mut self) -> Option<UnsubscribeItem<'a>> {
         let subs = unsafe { &mut *self.subs };
 
@@ -554,33 +601,36 @@ impl<'a> Iterator for UnsubscribeIter<'a> {
     }
 }
 
-/// Topic to unsubscribe from
+/// Borrowed unsubscribe filter and its mutable acknowledgement status.
 #[derive(Debug)]
 pub struct UnsubscribeItem<'a> {
+    /// Topic filter from the incoming unsubscribe request.
     topic: &'a ByteString,
+    /// This filter's response status, initially `Success`.
     status: &'a mut codec::UnsubscribeAckReason,
 }
 
 impl<'a> UnsubscribeItem<'a> {
     #[inline]
-    /// topic being unsubscribed
+    /// Returns the topic filter requested for removal.
     pub fn topic(&self) -> &'a ByteString {
         self.topic
     }
 
     #[inline]
-    /// fail to unsubscribe from the topic
+    /// Sets this filter's `UNSUBACK` status to the supplied reason code.
     pub fn fail(&mut self, status: codec::UnsubscribeAckReason) {
         *self.status = status;
     }
 
     #[inline]
-    /// unsubscribe from a topic
+    /// Marks this filter's `UNSUBACK` status as successful without removing application state.
     pub fn success(&mut self) {
         *self.status = codec::UnsubscribeAckReason::Success;
     }
 }
 
+/// Unit tests for protocol-message and iterator formatting.
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU16;
@@ -590,6 +640,11 @@ mod tests {
     use super::*;
     use crate::types::QoS;
 
+    /// STATEMENT: Subscription iterators and ping messages identify their types in debug output.
+    ///
+    /// HOW:
+    /// - Create single-filter subscribe and unsubscribe messages, then format their mutable iterators.
+    /// - Check the iterator type names and the `Ping` name in the formatted output.
     #[test]
     fn test_debug() {
         // SubscribeIter via Subscribe

@@ -13,7 +13,7 @@ use crate::{MqttServiceConfig, types::QoS, types::packet_type};
 
 use super::control::{ProtocolMessage, ProtocolMessageAck};
 
-/// mqtt5 protocol dispatcher
+/// Build a client dispatcher enforcing receive and topic-alias limits.
 pub(super) fn create_dispatcher<St, T, C, E>(
     sink: Rc<MqttShared>,
     publish: T,
@@ -46,26 +46,39 @@ where
     }
 }
 
-/// Mqtt protocol dispatcher
+/// Dispatch decoded client packets and maintain incoming publish exchange state.
 pub(crate) struct Dispatcher<St, T, C, E> {
+    /// Service invoked before falling back to the protocol-message service.
     publish: T,
+    /// State shared by publish and protocol-message processing.
     inner: Inner<C>,
+    /// Maximum tracked `QoS` 1 and `QoS` 2 publications; zero disables the check.
     max_receive: usize,
+    /// Largest accepted inbound topic-alias identifier.
     max_topic_alias: u16,
+    /// Dispatch configuration, including streamed payload buffer watermarks.
     cfg: Cfg<MqttServiceConfig>,
-    /// Payload chunks of an ignored PUBLISH are dropped
+    /// Set for an ignored streamed publication and cleared at its final chunk.
     discard_payload: Cell<bool>,
+    /// Session state and error types carried by the service implementation.
     t: PhantomData<(St, E)>,
 }
 
+/// Protocol service and connection state shared across concurrent publish calls.
 struct Inner<C> {
+    /// Service handling unrouted publications and other protocol messages.
     control: C,
+    /// Connection state used for acknowledgements, payloads, and shutdown.
     sink: Rc<MqttShared>,
+    /// Mutable identifier and topic-alias state for incoming publications.
     info: RefCell<PublishInfo>,
 }
 
+/// Per-connection incoming publication identifiers and topic-alias bindings.
 struct PublishInfo {
+    /// Incoming identifiers awaiting publish handling or the `QoS` 2 release step.
     inflight: HashMap<NonZeroU16, InFlight>,
+    /// Topic names learned from inbound publications, retained for this connection.
     aliases: HashMap<NonZeroU16, ByteString>,
 }
 
@@ -379,7 +392,7 @@ where
     }
 }
 
-/// Publish service response future
+/// Invoke the publish handler, acknowledging handled packets or forwarding unrouted ones.
 async fn publish_fn<'f, St, T, C, E: 'static>(
     svc: &'f T,
     pkt: Publish,
@@ -429,7 +442,7 @@ where
 }
 
 impl<C> Inner<C> {
-    /// Update state of the packet id after the response is sent
+    /// Update identifier ownership when an acknowledgement response is produced.
     ///
     /// `QoS 2` publish acknowledged by successful `PublishReceived` keeps the packet id in use
     /// until `PublishRelease` [MQTT-4.3.3-10], otherwise the packet id is released
@@ -448,6 +461,7 @@ impl<C> Inner<C> {
         }
     }
 
+    /// Apply a protocol-service response, closing the connection on service failure.
     async fn control<St, T, E>(
         &self,
         pkt: ProtocolMessage,
@@ -459,6 +473,7 @@ impl<C> Inner<C> {
         self.control_pkt(pkt, 0, ctx).await
     }
 
+    /// Apply a protocol response and update the optional nonzero publish identifier.
     async fn control_pkt<St, T, E>(
         &self,
         pkt: ProtocolMessage,
@@ -507,6 +522,7 @@ impl<C> Inner<C> {
     }
 }
 
+/// Unit tests for incoming publish validation, acknowledgements, and payload flow control.
 #[cfg(test)]
 mod tests {
     use std::{cell::Cell, future::Future, pin::Pin};
@@ -519,8 +535,10 @@ mod tests {
     use super::*;
     use crate::{error::ViolationInner, v5::MqttSink};
 
+    /// Type-erased test dispatcher using unit session state and service errors.
     type Disp = Pipeline<Decoded, Option<Packet>, DispatcherError<()>>;
 
+    /// Construct a dispatcher with a test transport and caller-supplied services.
     fn dispatcher<T, C>(
         cfg: MqttServiceConfig,
         publish: T,
@@ -545,6 +563,12 @@ mod tests {
         (io, shared, disp)
     }
 
+    /// STATEMENT: Incoming publish and response topics reject MQTT wildcard characters.
+    ///
+    /// HOW:
+    /// - Deliver wildcard-containing topic names and response topics.
+    /// - Assert the corresponding specification violation and protocol-error reason code.
+    /// - Verify plain publish and response topics are accepted.
     #[ntex::test]
     async fn test_publish_topic_wildcards() {
         let (_io, _, disp) = dispatcher(
@@ -586,8 +610,11 @@ mod tests {
         assert!(disp.call(publish("a/b", Some("resp/a"))).await.is_ok());
     }
 
-    /// Publish service handles topics "publish*", "publish/slow" waits 100ms,
-    /// other topics are passed to the control service, topics "*/err" are rejected
+    /// Build counted publish and release services, delaying `publish/slow` by 100 ms.
+    ///
+    /// Topics starting with `publish` are handled locally; other publications are
+    /// forwarded to the protocol-message service. A topic ending in `/err` receives
+    /// an unsuccessful acknowledgement on either path.
     fn qos2_dispatcher(
         pubrel: &Rc<Cell<usize>>,
         published: &Rc<Cell<usize>>,
@@ -633,10 +660,16 @@ mod tests {
         )
     }
 
+    /// Build a test packet identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is zero.
     fn pid(id: u16) -> NonZeroU16 {
         NonZeroU16::new(id).unwrap()
     }
 
+    /// Build a complete empty publication with the chosen `QoS` and optional identifier.
     fn qos_publish(id: u16, qos: QoS, topic: &'static str) -> Decoded {
         Decoded::Publish(
             codec::Publish {
@@ -650,6 +683,7 @@ mod tests {
         )
     }
 
+    /// Build the incoming release packet for a nonzero test identifier.
     fn pubrel(id: u16) -> Decoded {
         Decoded::Packet(
             Packet::PublishRelease(codec::PublishAck2 {
@@ -660,6 +694,7 @@ mod tests {
         )
     }
 
+    /// Build the expected `QoS` 2 receive acknowledgement and reason code.
     fn pubrec(id: u16, reason_code: codec::PublishAckReason) -> Packet {
         Packet::PublishReceived(codec::PublishAck {
             packet_id: pid(id),
@@ -668,6 +703,7 @@ mod tests {
         })
     }
 
+    /// Build the expected successful `QoS` 1 acknowledgement.
     fn puback(id: u16) -> Packet {
         Packet::PublishAck(codec::PublishAck {
             packet_id: pid(id),
@@ -675,6 +711,7 @@ mod tests {
         })
     }
 
+    /// Build the expected `QoS` 2 completion acknowledgement and reason code.
     fn pubcomp(id: u16, reason_code: codec::PublishAck2Reason) -> Packet {
         Packet::PublishComplete(codec::PublishAck2 {
             packet_id: pid(id),
@@ -683,6 +720,12 @@ mod tests {
         })
     }
 
+    /// STATEMENT: `QoS` 2 acknowledgement outcomes determine identifier ownership for routed and unrouted publications.
+    ///
+    /// HOW:
+    /// - For both service paths, assert successful `PUBREC`, identifier-in-use responses, and `PUBCOMP` release calls.
+    /// - Verify reuse after completion and identifier-not-found completion for repeated releases.
+    /// - Reject a publication with an error `PUBREC` and confirm its identifier is freed, as for `QoS` 1 `PUBACK`.
     #[ntex::test]
     async fn test_publish_qos2() {
         use codec::{PublishAck2Reason as Ack2, PublishAckReason as Ack};
@@ -732,6 +775,12 @@ mod tests {
         assert!(shared.is_active());
     }
 
+    /// STATEMENT: A `QoS` 2 publication consumes receive quota until its release exchange completes.
+    ///
+    /// HOW:
+    /// - Configure receive maximum one and accept a `QoS` 2 publication.
+    /// - Assert a second identifier exceeds receive maximum before `PUBREL`.
+    /// - Complete the first exchange and verify the second publication receives `PUBACK`.
     #[ntex::test]
     async fn test_publish_qos2_receive_max() {
         let pubrel_calls = Rc::new(Cell::new(0));
@@ -760,6 +809,11 @@ mod tests {
         assert_eq!(res.unwrap(), Some(puback(2)));
     }
 
+    /// STATEMENT: An incoming `QoS` 2 release is rejected until the original publish handler completes.
+    ///
+    /// HOW:
+    /// - Start a slow `QoS` 2 publication without waiting for its receive acknowledgement.
+    /// - Deliver `PUBREL` and assert an unexpected-packet violation with no protocol-service release call.
     #[ntex::test]
     async fn test_pubrel_before_pubrec() {
         let pubrel_calls = Rc::new(Cell::new(0));
@@ -778,6 +832,7 @@ mod tests {
         assert_eq!(pubrel_calls.get(), 0);
     }
 
+    /// Build a duplicate publication with either complete or partially buffered payload.
     fn redelivery(id: u16, qos: QoS, chunked: bool) -> Decoded {
         Decoded::Publish(
             codec::Publish {
@@ -793,7 +848,11 @@ mod tests {
         )
     }
 
-    /// Chunks of a failed publish are a protocol error, not a panic
+    /// STATEMENT: Payload chunks following a rejected publication return a decode error rather than panic.
+    ///
+    /// HOW:
+    /// - Reject a partially buffered publication whose topic contains a wildcard.
+    /// - Feed both final and non-final chunks and assert `DecodeError::UnexpectedPayload` for each.
     #[ntex::test]
     async fn test_unexpected_payload_chunk() {
         let unexpected = |res: Result<Option<Packet>, DispatcherError<()>>| {
@@ -819,6 +878,13 @@ mod tests {
         assert!(unexpected(disp.call(chunk(false)).await));
     }
 
+    /// STATEMENT: Retransmissions preserve `QoS` exchange state without consuming additional receive quota.
+    ///
+    /// HOW:
+    /// - Hold a `QoS` 1 handler pending, suppress its matching duplicate, and reject conflicting uses of its identifier.
+    /// - Repeat `QoS` 2 before release and verify `PUBREC`, discarded chunks, and unchanged handler counts.
+    /// - Release the identifier and verify a retransmission is handled anew.
+    /// - Repeat a `QoS` 2 publication at receive maximum one and confirm it is acknowledged without another handler call.
     #[ntex::test]
     async fn test_publish_redelivery() {
         use codec::{PublishAck2Reason as Ack2, PublishAckReason as Ack};
@@ -881,6 +947,7 @@ mod tests {
         assert_eq!(published.get(), 4);
     }
 
+    /// Assert that a protocol error identifies the expected unexpected packet type.
     fn assert_unexpected<E: std::fmt::Debug>(
         res: &Result<Option<Packet>, DispatcherError<E>>,
         expected: u8,
@@ -899,6 +966,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Ping responses clear pending state while client-only and repeated handshake packets are rejected.
+    ///
+    /// HOW:
+    /// - Deliver `PINGRESP` and assert no response and no pending ping.
+    /// - Deliver `CONNECT`, `CONNACK`, and `PINGREQ` and check each unexpected packet type.
     #[ntex::test]
     async fn test_unexpected_packets() {
         let (_io, shared, disp) = qos2_dispatcher(&Rc::default(), &Rc::default(), 16);
@@ -920,10 +992,18 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Payload buffering pauses reads without hiding service failures, and dropped payloads close I/O.
+    ///
+    /// HOW:
+    /// - Retain a streamed publication and fill its four-byte buffer until readiness becomes pending.
+    /// - Read the first chunk and verify readiness recovers with I/O still active.
+    /// - Refill the buffer and independently trigger protocol and publish readiness errors.
+    /// - Clear the errors, drop the unread payload receiver, and verify readiness completes with I/O closed.
     #[ntex::test]
     async fn test_payload_backpressure() {
         use std::{cell::RefCell, task::Poll};
 
+        /// Protocol service whose shared failure flag controls its readiness result.
         struct FailReady<E>(Rc<Cell<bool>>, fn() -> E, ntex_service::ReadyNotifier);
 
         impl<St, E> Service<St, ProtocolMessage> for FailReady<E> {
@@ -947,6 +1027,7 @@ mod tests {
             }
         }
 
+        /// Hold the publication for external payload reads and expose switchable readiness.
         struct Hold<R, E>(
             Rc<RefCell<Option<Publish>>>,
             Rc<Cell<bool>>,

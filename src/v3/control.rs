@@ -6,10 +6,10 @@ use ntex_bytes::ByteString;
 
 use crate::{types::QoS, v3::codec};
 
-/// MQTT protocol–related messages.
+/// Inbound protocol messages handled separately from publications.
 ///
-/// The control service is always called with these messages one at a time.
-/// Unhandled messages are stored in a buffer.
+/// The protocol service handles one message at a time, with up to 16 waiting
+/// messages buffered by the server dispatcher.
 #[derive(Debug)]
 pub enum ProtocolMessage {
     /// Publish release
@@ -27,44 +27,54 @@ pub enum ProtocolMessage {
 /// Result of a control message handling
 #[derive(Debug)]
 pub struct ProtocolMessageAck {
+    /// Dispatcher action produced by handling one protocol message.
     pub(crate) result: ProtocolMessageKind,
 }
 
+/// Internal acknowledgment actions interpreted by the protocol dispatcher.
 #[derive(Debug)]
 pub(crate) enum ProtocolMessageKind {
+    /// Produce no response packet.
     Nothing,
+    /// Reserved publish acknowledgment action; not produced by these message helpers.
     PublishAck(NonZeroU16),
+    /// Finish an incoming `QoS 2` exchange with PUBCOMP.
     PublishRelease(NonZeroU16),
+    /// Respond to PINGREQ with PINGRESP.
     Ping,
+    /// Drop the current payload and close the connection.
     Disconnect,
+    /// Release the subscription packet identifier and send SUBACK.
     Subscribe(SubscribeResult),
+    /// Release the unsubscription packet identifier and send UNSUBACK.
     Unsubscribe(UnsubscribeResult),
 }
 
 impl ProtocolMessage {
+    /// Create a release message for an incoming `QoS 2` publication awaiting completion.
     pub(crate) fn pubrel(packet_id: NonZeroU16) -> Self {
         ProtocolMessage::PublishRelease(PublishRelease { packet_id })
     }
 
-    /// Create a new PING `Control` message.
+    /// Create a PINGREQ protocol message.
     #[doc(hidden)]
     pub fn ping() -> Self {
         ProtocolMessage::Ping(Ping)
     }
 
-    /// Create a new `Control` message from SUBSCRIBE packet.
+    /// Wrap a SUBSCRIBE request as a protocol message.
     #[doc(hidden)]
     pub fn subscribe(pkt: Subscribe) -> Self {
         ProtocolMessage::Subscribe(pkt)
     }
 
-    /// Create a new `Control` message from UNSUBSCRIBE packet.
+    /// Wrap an UNSUBSCRIBE request as a protocol message.
     #[doc(hidden)]
     pub fn unsubscribe(pkt: Unsubscribe) -> Self {
         ProtocolMessage::Unsubscribe(pkt)
     }
 
-    /// Create a new `Control` message from DISCONNECT packet.
+    /// Create a protocol message for a peer’s DISCONNECT packet.
     #[doc(hidden)]
     pub fn remote_disconnect() -> Self {
         ProtocolMessage::Disconnect(Disconnect)
@@ -82,7 +92,7 @@ impl ProtocolMessage {
     }
 
     #[inline]
-    /// Ack control message
+    /// Acknowledge this protocol message with its default action.
     ///
     /// For `Subscribe` and `Unsubscribe` messages, this method closes the connection,
     /// use [`Subscribe::ack`] and [`Unsubscribe::ack`] instead.
@@ -122,7 +132,7 @@ impl PublishRelease {
     }
 
     #[inline]
-    /// convert packet to a result
+    /// Complete this release by requesting PUBCOMP for its packet identifier.
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             result: ProtocolMessageKind::PublishRelease(self.packet_id),
@@ -158,26 +168,33 @@ impl Disconnect {
     }
 }
 
-/// Subscribe message
+/// SUBSCRIBE request with one mutable acknowledgment result per filter.
 #[derive(Debug, Clone)]
 pub struct Subscribe {
+    /// Identifier echoed in SUBACK and reserved until handling completes.
     packet_id: NonZeroU16,
+    /// SUBSCRIBE remaining length in bytes, excluding its fixed header.
     packet_size: u32,
+    /// Requested topic filters and their maximum delivery qualities, in wire order.
     topics: Vec<(ByteString, QoS)>,
+    /// Per-filter results, initially failures and updated through `Subscription` entries.
     codes: Vec<codec::SubscribeReturnCode>,
 }
 
 /// Result of a subscribe message
 #[derive(Debug, Clone)]
 pub(crate) struct SubscribeResult {
+    /// Granted qualities or failures in the original topic-filter order.
     pub(crate) codes: Vec<codec::SubscribeReturnCode>,
+    /// Identifier of the SUBSCRIBE packet being acknowledged.
     pub(crate) packet_id: NonZeroU16,
 }
 
 impl Subscribe {
     #[inline]
-    /// Create a new `Subscribe` control message from packet id and
-    /// a list of topics.
+    /// Create a SUBSCRIBE request with all per-filter acknowledgment results set to failure.
+    ///
+    /// `packet_size` is the remaining length in bytes, excluding the fixed header.
     #[doc(hidden)]
     pub fn new(packet_id: NonZeroU16, packet_size: u32, topics: Vec<(ByteString, QoS)>) -> Self {
         let mut codes = Vec::with_capacity(topics.len());
@@ -192,13 +209,13 @@ impl Subscribe {
     }
 
     #[inline]
-    /// Returns size of the packet
+    /// Return the packet’s remaining length in bytes, excluding its fixed header.
     pub fn packet_size(&self) -> u32 {
         self.packet_size
     }
 
     #[inline]
-    /// returns iterator over subscription topics
+    /// Iterate over requested filters and mutable acknowledgment results.
     pub fn iter_mut(&mut self) -> SubscribeIter<'_> {
         SubscribeIter {
             subs: ptr::from_ref(self).cast_mut(),
@@ -208,9 +225,10 @@ impl Subscribe {
     }
 
     #[inline]
-    /// Convert subscription to a result
+    /// Request SUBACK with one result per topic filter, in request order.
     ///
-    /// Topics that are not confirmed are acked with `SubscribeReturnCode::Failure`.
+    /// Filters not explicitly confirmed retain `SubscribeReturnCode::Failure`.
+    /// This only constructs the acknowledgment; the application maintains subscriptions.
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             result: ProtocolMessageKind::Subscribe(SubscribeResult {
@@ -232,8 +250,11 @@ impl<'a> IntoIterator for &'a mut Subscribe {
 
 /// Iterator over subscription topics
 pub struct SubscribeIter<'a> {
+    /// Exclusively borrowed subscription storage; each result borrows a distinct entry.
     subs: *mut Subscribe,
+    /// Index of the next topic and acknowledgment code to yield.
     entry: usize,
+    /// Keeps the subscription exclusively borrowed for the iterator lifetime.
     lt: PhantomData<&'a mut Subscribe>,
 }
 
@@ -244,6 +265,7 @@ impl fmt::Debug for SubscribeIter<'_> {
 }
 
 impl<'a> SubscribeIter<'a> {
+    /// Yield the next topic with its distinct mutable result slot, advancing the cursor.
     fn next_unsafe(&mut self) -> Option<Subscription<'a>> {
         let subs = unsafe { &mut *self.subs };
 
@@ -273,62 +295,72 @@ impl<'a> Iterator for SubscribeIter<'a> {
 /// Subscription topic
 #[derive(Debug)]
 pub struct Subscription<'a> {
+    /// Borrowed topic filter requested by the client.
     topic: &'a ByteString,
+    /// Maximum delivery quality requested for this filter.
     qos: QoS,
+    /// Mutable SUBACK result slot, left as failure unless explicitly confirmed.
     code: &'a mut codec::SubscribeReturnCode,
 }
 
 impl<'a> Subscription<'a> {
     #[inline]
-    /// subscription topic
+    /// Return the topic filter requested by the client.
     pub fn topic(&self) -> &'a ByteString {
         self.topic
     }
 
     #[inline]
-    /// the level of assurance for delivery of an Application Message.
+    /// Return the maximum delivery quality requested by the client.
     pub fn qos(&self) -> QoS {
         self.qos
     }
 
     #[inline]
-    /// fail to subscribe to the topic
+    /// Mark this topic filter as rejected in SUBACK.
     pub fn fail(&mut self) {
         *self.code = codec::SubscribeReturnCode::Failure;
     }
 
     #[inline]
-    /// confirm subscription to a topic with specific qos
+    /// Grant this filter the supplied maximum delivery quality in SUBACK.
+    ///
+    /// The caller must not grant a quality higher than `qos` reports.
     pub fn confirm(&mut self, qos: QoS) {
         *self.code = codec::SubscribeReturnCode::Success(qos);
     }
 
     #[inline]
     #[doc(hidden)]
-    /// confirm subscription to a topic with specific qos
+    /// Alias for `confirm`, recording the granted delivery quality.
     pub fn subscribe(&mut self, qos: QoS) {
         self.confirm(qos);
     }
 }
 
-/// Unsubscribe message
+/// UNSUBSCRIBE request exposing the filters the application should remove.
 #[derive(Debug, Clone)]
 pub struct Unsubscribe {
+    /// Identifier echoed in UNSUBACK after handling completes.
     packet_id: NonZeroU16,
+    /// UNSUBSCRIBE remaining length in bytes, excluding its fixed header.
     packet_size: u32,
+    /// Topic filters to remove, in the order sent by the client.
     topics: Vec<ByteString>,
 }
 
 /// Result of a unsubscribe message
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct UnsubscribeResult {
+    /// Identifier of the UNSUBSCRIBE packet being acknowledged.
     pub(crate) packet_id: NonZeroU16,
 }
 
 impl Unsubscribe {
     #[inline]
-    /// Create a new `Unsubscribe` control message from packet id and
-    /// a list of topics.
+    /// Create an UNSUBSCRIBE request from its identifier and ordered topic filters.
+    ///
+    /// `packet_size` is the remaining length in bytes, excluding the fixed header.
     #[doc(hidden)]
     pub fn new(packet_id: NonZeroU16, packet_size: u32, topics: Vec<ByteString>) -> Self {
         Self {
@@ -339,19 +371,19 @@ impl Unsubscribe {
     }
 
     #[inline]
-    /// Returns size of the packet
+    /// Return the packet’s remaining length in bytes, excluding its fixed header.
     pub fn packet_size(&self) -> u32 {
         self.packet_size
     }
 
     #[inline]
-    /// returns iterator over unsubscribe topics
+    /// Iterate over the topic filters requested for removal.
     pub fn iter(&self) -> impl Iterator<Item = &ByteString> {
         self.topics.iter()
     }
 
     #[inline]
-    /// Ack unsubscribe message
+    /// Request UNSUBACK for this packet identifier.
     pub fn ack(self) -> ProtocolMessageAck {
         ProtocolMessageAck {
             result: ProtocolMessageKind::Unsubscribe(UnsubscribeResult {
@@ -361,6 +393,7 @@ impl Unsubscribe {
     }
 }
 
+/// Unit tests for protocol-message formatting.
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU16;
@@ -370,6 +403,11 @@ mod tests {
     use super::*;
     use crate::types::QoS;
 
+    /// STATEMENT: Protocol-message debug formatting identifies the subscription iterator and basic message types.
+    ///
+    /// HOW:
+    /// - Construct a subscription iterator and an unsubscription, then format them.
+    /// - Assert their type names and the names of `Ping` and `Disconnect` appear in debug output.
     #[test]
     fn test_debug() {
         // SubscribeIter via Subscribe

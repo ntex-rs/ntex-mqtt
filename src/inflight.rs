@@ -5,27 +5,28 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, future::poll_fn
 use ntex_service::{BindCtx, Ctx, ReadyBinding, ReadyNotifier, Service};
 use ntex_util::{future::OnDropFn, future::join, task::LocalWaker};
 
-/// Trait for types that could be sized
+/// Request metadata for byte accounting, slot limiting, and payload ordering.
 pub trait SizedRequest {
-    /// Encoded size of the request in bytes
+    /// Returns the request size in bytes for aggregate in-flight accounting.
     fn size(&self) -> u32;
 
-    /// Check if more payload chunks of a streaming publish follow this request
+    /// Returns whether more chunks of this streaming publish follow.
     ///
-    /// Until the last payload chunk of a limited request with pending chunks is
-    /// received, readiness ignores the limits so that the payload can reach
-    /// the publish handler.
+    /// For a limited request, aggregate byte readiness is temporarily bypassed
+    /// so remaining chunks can reach its handler. Request-slot acquisition and
+    /// the wrapped service's own readiness still apply.
     fn has_more_chunks(&self) -> bool;
 
-    /// Check if the request is the last payload chunk of a streaming publish
+    /// Returns whether this request ends the current streamed payload.
     ///
-    /// Readiness stops ignoring the limits once the last chunk is received.
-    /// By default, the limits are ignored until the publish call completes.
+    /// Receiving the last chunk ends the current streaming byte-limit exemption
+    /// before dispatching that chunk. The default `false` leaves the exemption
+    /// active until the streaming publish call completes or is cancelled.
     fn is_last_chunk(&self) -> bool {
         false
     }
 
-    /// Check if the request takes an in-flight slot
+    /// Returns whether this request must acquire an in-flight slot.
     ///
     /// A request without a free slot waits for one, requests that do not take
     /// a slot are not limited by the number of in-flight requests.
@@ -33,18 +34,29 @@ pub trait SizedRequest {
         true
     }
 
-    /// Check if the request is processed after the preceding requests
-    /// that wait for an in-flight slot
+    /// Returns whether this request waits behind earlier slot waiters.
+    ///
+    /// An ordered request takes its turn after earlier waiting requests have
+    /// been admitted, without waiting for their handlers to complete. It only
+    /// acquires a slot when [`is_limited`](Self::is_limited) also returns `true`.
     fn is_ordered(&self) -> bool {
         false
     }
 }
 
+/// Service wrapper enforcing request-slot and aggregate byte limits.
+///
+/// Limited requests acquire slots in arrival order. Unordered, unlimited requests
+/// can bypass slot waiters; streamed payload chunks can bypass byte readiness
+/// until the last chunk arrives.
 pub struct InFlightServiceImpl<S> {
+    /// Shared byte accounting, slot ownership, and arrival-ordered slot waiters.
     count: Counter,
+    /// Wrapped service with readiness cached until its own notifier invalidates it.
     service: ReadyBinding<S>,
-    /// Id of the publish whose payload is being received
+    /// Current streaming publish identifier, cleared on its final chunk or guard drop.
     streaming: Cell<Option<u64>>,
+    /// Wrapping identifier allocated to the next streaming publish guard.
     next_streaming: Cell<u64>,
 }
 
@@ -55,11 +67,13 @@ impl<S> fmt::Debug for InFlightServiceImpl<S> {
 }
 
 impl<S> InFlightServiceImpl<S> {
-    /// Limit the number of in-flight requests and their total size
+    /// Wraps a service with request-slot and aggregate byte limits.
     ///
     /// The number limit applies to limited requests only, they wait for a free slot
     /// in `call()` so that the other requests are still processed. The size limit
-    /// applies to all requests and pauses readiness. `0` disables a limit.
+    /// applies to all requests and pauses readiness only when the total exceeds
+    /// `max_size` bytes; a streaming publish temporarily bypasses this check.
+    /// `0` disables the corresponding limit.
     /// The wrapped service retains its own readiness until it notifies a change.
     pub fn new(max_cap: u16, max_size: usize, service: S) -> Self {
         InFlightServiceImpl {
@@ -142,6 +156,9 @@ where
     }
 }
 
+/// Clears a publish's streaming readiness exemption on completion or cancellation.
+///
+/// Only the guard whose identifier is still current may clear the exemption.
 struct StreamingGuard<'a>(u64, &'a Cell<Option<u64>>, &'a CounterInner);
 
 impl Drop for StreamingGuard<'_> {
@@ -154,14 +171,22 @@ impl Drop for StreamingGuard<'_> {
     }
 }
 
+/// Shared owner of request-slot and encoded-byte accounting.
 struct Counter(Rc<CounterInner>);
 
+/// Accounting and wakeup state retained by active requests and queued waiters.
 struct CounterInner {
+    /// Maximum concurrent limited requests; zero disables the slot limit.
     max_cap: u16,
+    /// Slots currently owned by active limited requests.
     cur_cap: Cell<u16>,
+    /// Aggregate request-byte threshold; zero disables byte limiting.
     max_size: usize,
+    /// Bytes held by active requests, including requests still waiting for a slot.
     cur_size: Cell<usize>,
+    /// Readiness task to wake when byte availability or the streaming exemption changes.
     task: LocalWaker,
+    /// Invalidates every subscribed readiness cache when availability changes.
     changed: ReadyNotifier,
     /// Requests that wait for their turn, in the order of arrival
     waiters: RefCell<VecDeque<Waiter>>,
@@ -169,14 +194,20 @@ struct CounterInner {
     next_ticket: Cell<u64>,
 }
 
+/// Queued request awaiting its arrival-order turn and, if limited, a free slot.
 struct Waiter {
+    /// Unique ascending identifier used to find this waiter during polling or cancellation.
     ticket: u64,
+    /// Whether taking the turn also requires acquiring a request slot.
     limited: bool,
+    /// Set when the head may proceed; retained until it is polled or cancelled.
     granted: bool,
+    /// Latest polling task, replaced by a no-op waker when its turn is granted.
     waker: Waker,
 }
 
 impl Counter {
+    /// Creates empty counters with optional slot and byte limits.
     fn new(max_cap: u16, max_size: usize) -> Self {
         Counter(Rc::new(CounterInner {
             max_cap,
@@ -190,10 +221,12 @@ impl Counter {
         }))
     }
 
+    /// Accounts for `size` bytes until the returned guard is dropped.
     fn get(&self, size: u32) -> SizeGuard {
         SizeGuard::new(size, self.0.clone())
     }
 
+    /// Returns whether aggregate bytes are at or below the threshold, or unlimited.
     fn is_available(&self) -> bool {
         self.0.max_size == 0 || self.0.cur_size.get() <= self.0.max_size
     }
@@ -248,7 +281,11 @@ impl Counter {
     }
 }
 
-/// Position of the queued waiter with the ticket
+/// Returns the position of the queued waiter with `ticket`.
+///
+/// # Panics
+///
+/// Panics if the ticket does not identify a currently queued waiter.
 fn find(waiters: &VecDeque<Waiter>, ticket: u64) -> usize {
     waiters
         .binary_search_by_key(&ticket, |w| w.ticket)
@@ -272,9 +309,11 @@ impl Drop for WaiterGuard {
     }
 }
 
+/// Accounts for request bytes for its lifetime, including time spent waiting for a slot.
 struct SizeGuard(u32, Rc<CounterInner>);
 
 impl SizeGuard {
+    /// Adds request bytes to the counter and returns their lifetime guard.
     fn new(size: u32, inner: Rc<CounterInner>) -> Self {
         let guard = SizeGuard(size, inner);
         guard.1.inc(size);
@@ -288,9 +327,11 @@ impl Drop for SizeGuard {
     }
 }
 
+/// Owns one limited-request slot and grants the next eligible waiter on drop.
 struct SlotGuard(Rc<CounterInner>);
 
 impl SlotGuard {
+    /// Acquires one request slot after availability and arrival order have been checked.
     fn new(inner: Rc<CounterInner>) -> Self {
         inner.cur_cap.set(inner.cur_cap.get() + 1);
         SlotGuard(inner)
@@ -305,6 +346,7 @@ impl Drop for SlotGuard {
 }
 
 impl CounterInner {
+    /// Adds request bytes and notifies readiness when the byte threshold is exceeded.
     fn inc(&self, size: u32) {
         let prev_size = self.cur_size.get();
         let cur_size = prev_size + size as usize;
@@ -315,6 +357,7 @@ impl CounterInner {
         }
     }
 
+    /// Releases request bytes and notifies readiness when the total returns to the threshold.
     fn dec(&self, size: u32) {
         let cur_size = self.cur_size.get();
         let new_size = cur_size - (size as usize);
@@ -325,16 +368,19 @@ impl CounterInner {
         }
     }
 
+    /// Invalidates readiness caches and wakes the waiting task even if a callback panics.
     fn notify(&self) {
         let _wake = OnDropFn::new(|| self.task.wake());
         self.changed.notify();
     }
 
+    /// Registers the readiness task and checks the aggregate byte threshold.
     fn available(&self, cx: &Context<'_>) -> bool {
         self.task.register(cx.waker());
         self.max_size == 0 || self.cur_size.get() <= self.max_size
     }
 
+    /// Returns whether another limited request can acquire a slot.
     fn has_slot(&self) -> bool {
         self.max_cap == 0 || self.cur_cap.get() < self.max_cap
     }
@@ -355,6 +401,7 @@ impl CounterInner {
     }
 }
 
+/// Unit tests for byte readiness, slot ordering, cancellation, and wrapped readiness.
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
@@ -426,6 +473,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: The request-count limit serializes calls without blocking pipeline readiness.
+    ///
+    /// HOW:
+    /// - Hold one slot with a gated call, spawn a second call, and verify readiness stays ready while only one handler has started.
+    /// - Release the gate and verify the second handler starts and shutdown completes.
     #[ntex::test]
     async fn test_inflight() {
         let gate = Condition::new();
@@ -456,6 +508,11 @@ mod tests {
         assert!(lazy(|cx| srv.poll_shutdown(cx)).await.is_ready());
     }
 
+    /// STATEMENT: Aggregate request bytes exceeding the threshold pause readiness until the call completes.
+    ///
+    /// HOW:
+    /// - Run a 12-byte gated request with a 10-byte limit and verify readiness is pending.
+    /// - Release and lock the gate, then verify both awaited and polled readiness succeed.
     #[ntex::test]
     async fn test_inflight2() {
         let gate = Condition::new();
@@ -510,15 +567,22 @@ mod tests {
         assert!(ready.get());
     }
 
+    /// STATEMENT: Releasing request bytes wakes a readiness waiter in a separate pipeline task.
+    ///
+    /// HOW:
+    /// - Use `check_ready_woken` with a 10-byte limit and a 12-byte gated call through another shared pipeline.
+    /// - Verify the isolated readiness task stays blocked before completion and is woken after the gate opens.
     #[ntex::test]
     async fn test_inflight_size_wakes_ready() {
         check_ready_woken(10).await;
     }
 
+    /// Waker recording how often a waiting task is notified.
     #[derive(Default)]
     struct CountWaker(AtomicUsize);
 
     impl CountWaker {
+        /// Returns the number of recorded wakeups.
         fn count(&self) -> usize {
             self.0.load(Ordering::Relaxed)
         }
@@ -542,6 +606,11 @@ mod tests {
         (w, available)
     }
 
+    /// STATEMENT: Byte-counter wakeups occur on threshold crossings, not on every size change.
+    ///
+    /// HOW:
+    /// - Acquire two 6-byte guards with a 10-byte limit and verify one wake when the limit is exceeded.
+    /// - Drop a guard and verify one wake as readiness returns; drop the remaining guard and verify no further wake.
     #[test]
     fn test_counter_size_waker() {
         let counter = Counter::new(0, 10);
@@ -566,10 +635,15 @@ mod tests {
         assert_eq!(w.count(), 0);
     }
 
+    /// Service invalidating readiness while a gated call is active.
     struct Srv2 {
+        /// Condition that releases blocked calls.
         gate: Condition,
+        /// Whether an active call currently makes the service not ready.
         cnt: Cell<bool>,
+        /// Task waiting for the service to become ready.
         waker: LocalWaker,
+        /// Notifier invalidating readiness when service availability changes.
         changed: ReadyNotifier,
     }
 
@@ -607,9 +681,11 @@ mod tests {
         }
     }
 
-    /// `InflightService::poll_ready()` must always register waker,
-    /// otherwise it can lose wake up if inner service's `poll_ready()`
-    /// does not wakes dispatcher.
+    /// STATEMENT: Counter and wrapped-service readiness changes wake all registered readiness waiters.
+    ///
+    /// HOW:
+    /// - Start a gated call that exceeds the byte limit and makes `Srv2` not ready.
+    /// - Register two readiness waiters before releasing the gate and verify both finish within their timeouts.
     #[ntex::test]
     async fn test_inflight3() {
         let gate = Condition::new();
@@ -655,7 +731,9 @@ mod tests {
     /// Publish or payload chunk, the flag indicates that payload chunks follow
     #[derive(Clone, Copy)]
     enum Req {
+        /// Limited 12-byte publish; its flag indicates whether payload chunks follow.
         Publish(bool),
+        /// Unlimited zero-byte payload chunk; `false` marks the final chunk.
         Chunk(bool),
     }
 
@@ -682,6 +760,7 @@ mod tests {
         }
     }
 
+    /// Request service keeping each call pending until its shared gate opens.
     struct GateReqService(Condition);
 
     impl Service<(), Req> for GateReqService {
@@ -694,6 +773,7 @@ mod tests {
         }
     }
 
+    /// Spawns a request and yields briefly so its accounting and readiness changes take effect.
     async fn spawn_call(srv: &Pipeline<Req, (), ()>, req: Req) {
         let srv = srv.bind();
         ntex_util::spawn(async move {
@@ -702,6 +782,7 @@ mod tests {
         sleep(Millis(25)).await;
     }
 
+    /// Checks that streaming bypass ends on the last chunk and completion restores byte readiness.
     async fn check_streaming(max_size: usize) {
         let gate = Condition::new();
         let srv = Pipeline::new(
@@ -726,6 +807,11 @@ mod tests {
         assert_eq!(res, Ok(Ok(())));
     }
 
+    /// STATEMENT: Streaming chunks bypass the byte limit only until the final chunk arrives.
+    ///
+    /// HOW:
+    /// - Use `check_streaming` with a 10-byte limit and a 12-byte streaming publish.
+    /// - Verify intermediate chunks preserve readiness, the final chunk blocks it, and completing the calls restores readiness.
     #[ntex::test]
     async fn test_inflight_streaming_size() {
         check_streaming(10).await;
@@ -745,6 +831,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Completing an older publish cannot clear a newer publish's streaming exemption.
+    ///
+    /// HOW:
+    /// - Start two streaming publishes with separate completion gates, then finish only the first and verify readiness still bypasses the byte limit.
+    /// - Deliver the second publish's final chunk and verify readiness blocks until the remaining calls complete.
     #[ntex::test]
     async fn test_inflight_streaming_overlap() {
         let (tx1, rx1) = oneshot::channel();
@@ -774,6 +865,11 @@ mod tests {
         assert_eq!(lazy(|cx| srv.poll_ready(cx)).await, Poll::Ready(Ok(())));
     }
 
+    /// STATEMENT: Cancelling a streaming publish invalidates the byte-limit exemption in every bound scope.
+    ///
+    /// HOW:
+    /// - Start a streaming and a complete publish through two shared pipelines, exceeding the byte limit while both remain ready.
+    /// - Drop the streaming call and verify both caches are invalidated and readiness becomes pending; drop the other call and verify both recover.
     #[ntex::test]
     async fn test_streaming_cancellation_invalidates_shared_readiness() {
         use std::future::Future;
@@ -801,6 +897,12 @@ mod tests {
         b.ready().await.unwrap();
     }
 
+    /// STATEMENT: A panicking readiness callback does not leak byte accounting, slots, or streaming state.
+    ///
+    /// HOW:
+    /// - For complete and streaming publishes, install a callback that panics during the first call poll and catch the unwind.
+    /// - Drop the call and verify byte count, slot count, and streaming state are cleared.
+    /// - Make another failing service call and verify pipeline readiness still succeeds.
     #[ntex::test]
     async fn test_notification_panic_releases_limits() {
         use std::future::Future;
@@ -831,6 +933,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: A publish with its entire payload does not bypass aggregate byte readiness.
+    ///
+    /// HOW:
+    /// - Start a complete 12-byte publish with a 10-byte limit and verify readiness is pending.
+    /// - Release its completion gate and verify readiness succeeds within the timeout.
     #[ntex::test]
     async fn test_inflight_complete_payload() {
         let gate = Condition::new();
@@ -893,8 +1000,10 @@ mod tests {
         }
     }
 
+    /// Shared in-flight wrapper whose started request sequence is recorded.
     type LogSrv = Rc<InFlightServiceImpl<LogService>>;
 
+    /// Creates a slot-limited logging pipeline, its service, completion gate, and request log.
     fn log_srv(
         max_cap: u16,
     ) -> (
@@ -913,6 +1022,7 @@ mod tests {
         (Pipeline::new((), svc.clone()), svc, gate, log)
     }
 
+    /// Spawns a logged request and gives it time to start or join the slot queue.
     async fn spawn_msg(srv: &Pipeline<Msg, (), ()>, msg: Msg) {
         let srv = srv.bind();
         ntex_util::spawn(async move {
@@ -921,6 +1031,11 @@ mod tests {
         sleep(Millis(10)).await;
     }
 
+    /// STATEMENT: Slot waiters preserve arrival order while unordered acknowledgements bypass them.
+    ///
+    /// HOW:
+    /// - Submit publishes, acknowledgements, and an ordered chunk with one available slot.
+    /// - Verify acknowledgements start immediately, then release successive publishes and verify the queued publish, chunk, and next publish start in order.
     #[ntex::test]
     async fn test_inflight_slots_order() {
         let (srv, _, gate, log) = log_srv(1);
@@ -950,6 +1065,11 @@ mod tests {
         gate.notify(());
     }
 
+    /// STATEMENT: The slot cap limits concurrent publishes and ordered chunks wait behind queued publishes.
+    ///
+    /// HOW:
+    /// - Queue five publishes and a chunk with two slots, then verify handler counts and the chunk's position as gates are released.
+    /// - Repeat with a zero slot limit and verify all five publishes and the chunk start immediately.
     #[ntex::test]
     async fn test_inflight_slots_limit() {
         let (srv, _, gate, log) = log_srv(2);
@@ -979,6 +1099,11 @@ mod tests {
         gate.notify(());
     }
 
+    /// STATEMENT: Cancelling a queued request removes its waiter without disturbing later requests.
+    ///
+    /// HOW:
+    /// - Fill one slot, queue a publish, time out an ordered chunk, and queue another publish.
+    /// - Verify the cancelled chunk is removed, surviving publishes start in order, and all waiters and slots are released.
     #[ntex::test]
     async fn test_inflight_slots_cancel() {
         let (srv, svc, gate, log) = log_srv(1);
@@ -1010,6 +1135,11 @@ mod tests {
         assert_eq!(svc.count.0.cur_cap.get(), 0);
     }
 
+    /// STATEMENT: Cancelling the first slot waiter lets the next unlimited ordered request proceed.
+    ///
+    /// HOW:
+    /// - Hold one slot, time out the first waiting publish, and queue an ordered chunk followed by another publish.
+    /// - Verify the chunk starts after cancellation without a free slot, and the surviving publish starts when the active call completes.
     #[ntex::test]
     async fn test_inflight_slots_cancel_first() {
         let (srv, _, gate, log) = log_srv(1);
@@ -1032,6 +1162,11 @@ mod tests {
         gate.notify(());
     }
 
+    /// STATEMENT: Cancelling a granted but unpolled waiter passes its turn without leaking a slot.
+    ///
+    /// HOW:
+    /// - Poll a waiting publish once, queue an ordered chunk, release the active publish, and verify the first waiter is granted.
+    /// - Drop the unpolled publish future and verify the chunk starts, the waiter queue empties, and the slot count is zero.
     #[ntex::test]
     async fn test_inflight_slots_cancel_granted() {
         let (srv, svc, gate, log) = log_srv(1);
@@ -1055,11 +1190,17 @@ mod tests {
         assert_eq!(svc.count.0.cur_cap.get(), 0);
     }
 
+    /// STATEMENT: A slot waiter wakes its most recently registered task.
+    ///
+    /// HOW:
+    /// - Poll a waiting publish with two distinct counting wakers while another publish holds the slot.
+    /// - Release the active publish and verify only the second waker is notified once.
     #[ntex::test]
     async fn test_inflight_slots_waker_update() {
         use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
         use std::task::Wake;
 
+        /// Waker counting notifications to distinguish successive polling tasks.
         struct Counter(AtomicUsize);
         impl Wake for Counter {
             fn wake(self: Arc<Self>) {
@@ -1089,9 +1230,16 @@ mod tests {
         assert_eq!(c2.0.load(Ordering::Relaxed), 1);
     }
 
+    /// STATEMENT: The wrapper's debug output identifies it without requiring debug support from the service.
+    ///
+    /// HOW:
+    /// - Wrap `NoopSvc`, which does not implement `Debug`, in `InFlightServiceImpl`.
+    /// - Format the wrapper and verify the output contains its type name.
     #[test]
     fn test_debug() {
+        /// Service completing every test request successfully without extra state.
         struct NoopSvc;
+        /// Zero-byte request used to verify the wrapper's debug representation.
         struct Req;
         impl Service<(), Req> for NoopSvc {
             type Res = ();
@@ -1112,17 +1260,25 @@ mod tests {
         assert!(format!("{svc:?}").contains("InFlightServiceImpl"));
     }
 
+    /// Shared observations and readiness controls for the concurrency probe.
     #[derive(Default)]
     struct ProbeState {
+        /// Number of probe calls currently running.
         active: Cell<usize>,
+        /// Highest observed number of concurrent probe calls.
         max: Cell<usize>,
+        /// Number of wrapped readiness checks performed.
         checks: Cell<usize>,
+        /// Explicit readiness gate independent of the concurrency limit.
         closed: Cell<bool>,
+        /// Task waiting for the service to become ready.
         waker: LocalWaker,
+        /// Notifier invalidating readiness when service availability changes.
         changed: ReadyNotifier,
     }
 
     impl ProbeState {
+        /// Sets the explicit readiness gate and wakes subscribed scopes and pending checks.
         fn set_closed(&self, closed: bool) {
             self.closed.set(closed);
             self.changed.notify();
@@ -1133,9 +1289,13 @@ mod tests {
     /// Inner service with its own concurrency limit, calls complete when
     /// the gate is opened if `blocking` is set
     struct Probe {
+        /// Shared concurrency observations and readiness invalidation state.
         st: Rc<ProbeState>,
+        /// Maximum active calls admitted by the probe's readiness check.
         cap: usize,
+        /// Condition that releases blocked calls.
         gate: Condition,
+        /// Whether calls wait on the gate instead of completing immediately.
         blocking: bool,
     }
 
@@ -1180,6 +1340,7 @@ mod tests {
         }
     }
 
+    /// Creates a concurrency probe with shared observations and a call-completion gate.
     fn probe(cap: usize, blocking: bool) -> (Probe, Rc<ProbeState>, Condition) {
         let st = Rc::new(ProbeState::default());
         let gate = Condition::new();
@@ -1192,6 +1353,11 @@ mod tests {
         (srv, st, gate)
     }
 
+    /// STATEMENT: Wrapped readiness is reused across calls until the wrapped service invalidates it.
+    ///
+    /// HOW:
+    /// - Make repeated immediate calls and readiness checks through a probe, verifying only the first call checks inner readiness.
+    /// - Close and reopen the probe's readiness gate and verify pending readiness and a fresh inner check.
     #[ntex::test]
     async fn test_inner_readiness_cached_until_notified() {
         let (inner, st, _) = probe(4, false);
@@ -1251,6 +1417,11 @@ mod tests {
         st.max.get()
     }
 
+    /// STATEMENT: Calls enforce both wrapper and wrapped-service limits even when an outer scope skips readiness.
+    ///
+    /// HOW:
+    /// - Use `run_concurrent` to start four gated calls through `NoWait` with several wrapper and probe limits.
+    /// - Verify observed concurrency is bounded by the stricter limit, including when wrapper limiting is disabled.
     #[ntex::test]
     async fn test_limits_without_readiness_check() {
         assert_eq!(run_concurrent(1, 4).await, 1, "inflight limit");
@@ -1263,6 +1434,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: A call rechecks wrapped readiness after acquiring a previously unavailable slot.
+    ///
+    /// HOW:
+    /// - Hold one slot and queue another call while wrapper readiness is ready.
+    /// - Close the probe before releasing the slot and verify no call starts until the probe is reopened.
     #[ntex::test]
     async fn test_inner_readiness_after_slot_wait() {
         let (inner, st, gate) = probe(4, true);
@@ -1309,6 +1485,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Two calls following one outer readiness check still respect the wrapped-service concurrency limit.
+    ///
+    /// HOW:
+    /// - Use `Twice` to issue two joined calls to a gated one-slot probe with wrapper limiting disabled.
+    /// - Release the calls successively and verify the observed maximum concurrency remains one.
     #[ntex::test]
     async fn test_readiness_used_once() {
         let (inner, st, gate) = probe(1, true);

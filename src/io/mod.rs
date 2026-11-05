@@ -1,4 +1,5 @@
-//! Framed transport dispatcher
+//! Concurrent framed transport dispatcher with ordered responses and staged shutdown.
+/// Timer selection and byte-rate accounting for incomplete frames.
 mod timer;
 
 use std::task::{Context, Poll, ready};
@@ -26,6 +27,7 @@ const STOP_TAG: usize = 0x6d71_7474;
 pub(crate) const STREAM_TAG: usize = 0x6d71_7475;
 
 bitflags::bitflags! {
+    /// Readiness-failure and last-delivered write-backpressure state.
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     struct Flags: u8 {
         /// Service readiness failed, it is not polled during stop
@@ -59,8 +61,10 @@ pub trait FrameState: Decoder + Encoder {
     /// the responses to earlier items, such as a ping or an at most once
     /// publish.
     ///
-    /// These calls do not keep a slot in the response queue, the response is
-    /// written once the call completes.
+    /// These calls do not keep an ordered response slot; their responses are
+    /// written as soon as they complete. Pending unordered calls still count
+    /// toward the dispatcher's queue limit. Ordering constrains responses, not
+    /// whether request handlers run concurrently.
     fn is_ordered(&self, _: &<Self as Decoder>::Item) -> bool {
         true
     }
@@ -81,25 +85,34 @@ impl<T: FrameState> FrameState for Rc<T> {
     }
 }
 
+/// Decoded item passed to the request service.
 type Request<U> = <U as Decoder>::Item;
+/// Request-service response before conversion to an encoder item.
 type Response<U> = <U as FrameState>::Response;
+/// Control-service response written directly through the codec.
 type ControlResponse<U> = <U as Encoder>::Item;
+/// Compact response retained until earlier ordered calls complete.
 type Queued<U> = <U as FrameState>::Queued;
-/// Slot of an ordered call in the response queue, `None` while the call is
-/// pending
+/// Slot for an ordered call: `None` while pending, `Some(None)` when completed
+/// without a response, or `Some(Some(response))` when ready to write.
 pub(crate) type QueueSlot<U> = Option<Option<Queued<U>>>;
+/// Request-call completion, optionally containing a response or stop-triggering error.
 type ServiceResult<Codec, E> = Result<Option<Response<Codec>>, DispatcherError<E>>;
 
+/// Owned request-call future that the dispatcher can poll or spawn.
 type ServiceCall<Codec, E> =
     PipelineCall<Request<Codec>, Option<Response<Codec>>, DispatcherError<E>>;
+/// Request pipeline sharing cached readiness across dispatched items.
 type ServicePipeline<Codec, E> =
     Pipeline<Request<Codec>, Option<Response<Codec>>, DispatcherError<E>>;
 
+/// Owned control-call future for backpressure changes or the stop message.
 type ControlCall<Codec, E, Err> = PipelineCall<Control<E>, Option<ControlResponse<Codec>>, Err>;
+/// Control pipeline handling connection state changes and optional protocol responses.
 type ControlPipeline<Codec, E, Err> = Pipeline<Control<E>, Option<ControlResponse<Codec>>, Err>;
 
 pin_project_lite::pin_project! {
-    /// Dispatcher for mqtt protocol
+    /// Drives MQTT request handling, ordered output, connection deadlines, and shutdown.
     pub(crate) struct Dispatcher<U, E, Err>
     where
         U: FrameState,
@@ -111,25 +124,36 @@ pin_project_lite::pin_project! {
     }
 }
 
+/// State owned by the dispatcher until transport shutdown finishes or it is dropped.
 struct DispatcherInner<Codec, E, Err>
 where
     Codec: FrameState + 'static,
     E: 'static,
     Err: 'static,
 {
+    /// Owned transport carrying input, encoded output, and the single dispatcher timer.
     io: IoBoxed,
+    /// Packet codec reporting streaming-frame state and response-order requirements.
     codec: Codec,
+    /// Request handler pipeline whose readiness gates further decoding.
     service: ServicePipeline<Codec, E>,
+    /// Connection-control pipeline for backpressure transitions and the first stop reason.
     control: ControlPipeline<Codec, E, Err>,
+    /// Current processing, flushing, or staged shutdown phase.
     st: IoDispatcherState<Codec, E, Err>,
+    /// Response accounting shared with independently spawned request calls.
     state: Rc<DispatcherState<Codec, E>>,
+    /// Armed timer purpose and incomplete-frame byte-rate progress.
     timers: Timers,
+    /// Idle or incomplete-packet deadline in seconds; zero disables keep-alive.
     keepalive_timeout: Seconds,
+    /// Readiness-failure latch and last backpressure state delivered to control.
     flags: Flags,
     /// Pending `Control::wr` call, messages are delivered one at a time
     wr_call: Option<ControlCall<Codec, E, Err>>,
 }
 
+/// Shared result queue and stop reason retained by pending request calls.
 struct DispatcherState<Codec, E>
 where
     Codec: FrameState + 'static,
@@ -147,21 +171,31 @@ where
     response_idx: Cell<Option<usize>>,
     /// Pending unordered calls, they count towards `max_queue`
     unordered: Cell<usize>,
+    /// Limit on queued ordered responses plus pending unordered calls; zero is unlimited.
     max_queue: usize,
 }
 
+/// Dispatcher phases from normal decoding through service and transport shutdown.
 #[derive(Debug)]
 enum IoDispatcherState<Codec: FrameState, E: 'static, Err: 'static> {
+    /// Check readiness, decode input, and dispatch requests.
     Processing,
+    /// Flush buffered output while monitoring write timeout and request failures.
     Backpressure,
+    /// Wait for pending backpressure handling, then deliver the stop control call.
     Stop(ControlCall<Codec, E, Err>),
+    /// Shut down the request service, retaining the eventual dispatcher result.
     Shutdown(Option<Result<(), Err>>),
+    /// Cancel pending calls and await transport shutdown before returning the result.
     ShutdownIo(Option<Result<(), Err>>),
 }
 
+/// Readiness outcome telling the dispatcher whether its current phase can decode input.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum PollService {
+    /// The phase changed; loop again without attempting to decode.
     Continue,
+    /// Both pipelines and response accounting permit another decode attempt.
     Ready,
 }
 
@@ -172,7 +206,7 @@ where
     <Codec as Encoder>::Item: 'static,
     E: 'static,
 {
-    /// Construct new `Dispatcher` instance.
+    /// Creates a dispatcher using transport-configured queue limits and keep-alive.
     pub(crate) fn new(
         io: IoBoxed,
         codec: Codec,
@@ -223,10 +257,12 @@ where
     Codec: Encoder<Error = EncodeError> + Decoder<Error = DecodeError> + FrameState,
     <Codec as Encoder>::Item: 'static,
 {
+    /// Checks the combined ordered-queue and pending-unordered count against the limit.
     fn is_full(&self, len: usize) -> bool {
         self.max_queue != 0 && len + self.unordered.get() >= self.max_queue
     }
 
+    /// Converts a request error to a control stop reason, preserving any earlier error.
     fn set_error(&self, err: DispatcherError<E>) {
         self.set_stop(match err {
             DispatcherError::Service(err) => Control::err(err),
@@ -493,6 +529,7 @@ where
         self.st = IoDispatcherState::Shutdown(Some(Err(err)));
     }
 
+    /// Enters output flushing, starts its deadline, and reports the backpressure transition.
     fn enter_backpressure(&mut self, cx: &mut Context<'_>) {
         if !matches!(self.st, IoDispatcherState::Backpressure) {
             self.start_write_timer();
@@ -545,6 +582,10 @@ where
         }
     }
 
+    /// Starts a request, queues ordered responses, and spawns calls beyond the one polled locally.
+    ///
+    /// Spawned calls register their stop waiter before spawning so shutdown cannot
+    /// miss cancelling a task that has not yet been polled.
     fn call_service(&mut self, cx: &mut Context<'_>, item: Request<Codec>) {
         let ordered = self.codec.is_ordered(&item);
         // Reuse cached readiness unless the service has notified a change.
@@ -602,6 +643,9 @@ where
         }
     }
 
+    /// Checks stop reasons and pipeline readiness, pausing reads when capacity is unavailable.
+    ///
+    /// A full response queue still permits decoding the remainder of a partial packet.
     fn poll_service(&mut self, cx: &mut Context<'_>) -> Poll<PollService> {
         // check for errors
         if let Some(msg) = self.state.error.take() {
@@ -698,6 +742,10 @@ where
         })
     }
 
+    /// Updates incomplete-frame accounting and selects a read deadline after decoding.
+    ///
+    /// Streaming chunks retain frame progress; filter pauses suspend read deadlines
+    /// and reset the rate budget so local delays are not charged to the peer.
     fn update_timer(&mut self, decoded: &Decoded<<Codec as Decoder>::Item>) {
         // parts of a streamed publish are read as one frame
         let item = decoded.item.is_some() && !self.codec.is_partial();
@@ -791,6 +839,11 @@ where
         };
     }
 
+    /// Handles an elapsed timer, extending a sufficient frame rate or returning a timeout error.
+    ///
+    /// Frame progress must exceed the configured byte rate to earn another period;
+    /// a nonzero cumulative budget bounds those extensions. Stale write expirations
+    /// after backpressure release or a filter pause do not fail the connection.
     fn handle_timeout(&mut self) -> Result<(), MqttProtocolError> {
         match self.timers.active {
             Timer::FrameRead => {
@@ -846,6 +899,7 @@ where
     }
 }
 
+/// Unit tests for response ordering, readiness, deadlines, backpressure, and shutdown.
 #[cfg(test)]
 #[allow(clippy::items_after_statements)]
 mod tests {
@@ -908,6 +962,7 @@ mod tests {
         buf
     }
 
+    /// Pass-through codec treating all currently buffered bytes as one complete frame.
     #[derive(Debug, Copy, Clone)]
     struct BytesCodec;
 
@@ -950,7 +1005,7 @@ mod tests {
         E: 'static,
         Err: 'static,
     {
-        /// Construct new `Dispatcher` instance
+        /// Creates test pipelines and returns the dispatcher with a shared transport handle.
         pub(crate) fn new_debug<P, C, F: IntoService<P, (), Request<U>>>(
             io: nio::Io,
             codec: U,
@@ -973,6 +1028,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Delayed echo responses preserve all bytes and peer closure tears down the dispatcher.
+    ///
+    /// HOW:
+    /// - Send two requests while their echo handlers are delayed and collect every response chunk.
+    /// - Verify the concatenated responses match both requests, then close the peer and verify the server is dropped.
     #[ntex::test]
     async fn test_basic() {
         let (client, server) = create();
@@ -1005,11 +1065,17 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
+    /// STATEMENT: Disconnect releases service-owned state even while response handlers are pending.
+    ///
+    /// HOW:
+    /// - Start a delayed echo request, send another frame, and close the peer before the first call completes.
+    /// - Verify the server is dropped and the shared lifetime probe records service-state release.
     #[ntex::test]
     async fn test_drop_connection() {
         let (client, server) = create();
         client.write("test");
 
+        /// Signals when the service-owned probe clones have been released.
         #[derive(Clone)]
         struct OnDrop(Rc<Cell<bool>>);
         impl Drop for OnDrop {
@@ -1043,6 +1109,11 @@ mod tests {
         assert!(ops.get());
     }
 
+    /// STATEMENT: Responses from concurrently pending ordered requests are emitted in request order.
+    ///
+    /// HOW:
+    /// - Send three echo requests whose handlers await a shared condition.
+    /// - Open the condition, verify `testtesttest` is received, then close the peer and verify server teardown.
     #[ntex::test]
     async fn test_ordering() {
         let (client, server) = create();
@@ -1076,17 +1147,25 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
-    /// On disconnect, call control service and after call completion
-    /// drop in-flight publish handlers
+    /// STATEMENT: Disconnect control handling completes before pending publish handlers are dropped.
+    ///
+    /// HOW:
+    /// - Record handler starts, delayed disconnect control completion, and handler-drop events for two pending publishes.
+    /// - Repeat with an earlier delayed response occupying the locally polled call, and verify both cases record disconnect before the two drops.
     #[ntex::test]
     async fn test_disconnect_ordering() {
+        /// Recorded handler, disconnect-control, and handler-drop events.
         #[derive(Debug, Copy, Clone, PartialEq, Eq)]
         enum Info {
+            /// A gated publish handler has started.
             Publish,
+            /// A publish handler's lifetime probe has been dropped.
             PublishDrop,
+            /// The delayed disconnect control handler has completed.
             Disconnect,
         }
 
+        /// Records a handler-drop event when a publish call is cancelled or completes.
         struct OnDrop(Rc<RefCell<Vec<Info>>>);
         impl Drop for OnDrop {
             fn drop(&mut self) {
@@ -1183,6 +1262,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: The shared transport handle can write independently and close the dispatcher connection.
+    ///
+    /// HOW:
+    /// - Echo one request, then encode `test` directly through the transport handle and verify both responses.
+    /// - Close the shared handle and verify the peer observes server teardown.
     #[ntex::test]
     async fn test_sink() {
         let (client, server) = create();
@@ -1208,6 +1292,11 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
+    /// STATEMENT: A request-service error flushes buffered output before closing the write side.
+    ///
+    /// HOW:
+    /// - Queue an output frame while the peer accepts no bytes and make the request handler fail.
+    /// - Allow writes, verify the queued frame is received and the write side closes, then close the peer and verify teardown.
     #[ntex::test]
     async fn test_err_in_service() {
         let (client, server) = Io::create();
@@ -1239,8 +1328,14 @@ mod tests {
         assert!(client.is_server_dropped());
     }
 
+    /// STATEMENT: A failing service readiness check is not retried during shutdown and buffered output is flushed.
+    ///
+    /// HOW:
+    /// - Use a counting service that fails readiness and prequeue output while peer writes are blocked.
+    /// - Allow writes, verify the output and write-side closure, close the peer, and verify readiness failed exactly once.
     #[ntex::test]
     async fn test_err_in_service_ready() {
+        /// Service whose failing readiness check increments a shared counter.
         struct Srv(Rc<Cell<usize>>);
 
         impl Service<(), Bytes> for Srv {
@@ -1294,8 +1389,14 @@ mod tests {
         assert_eq!(counter.get(), 1);
     }
 
+    /// STATEMENT: Request and control readiness are cached independently across decoded frames.
+    ///
+    /// HOW:
+    /// - Wrap both pipelines with readiness counters, echo three frames, and verify each readiness check ran once.
+    /// - Notify only the request pipeline, echo another frame, and verify only its readiness counter increments.
     #[ntex::test]
     async fn test_cached_readiness_across_frames() {
+        /// Counts wrapped readiness checks and exposes an explicit invalidation notifier.
         struct CountReady<S>(S, Rc<Cell<usize>>, ntex_service::ReadyNotifier);
 
         impl<S: Service<(), R>, R> Service<(), R> for CountReady<S> {
@@ -1351,9 +1452,13 @@ mod tests {
 
     /// Control service, `busy` makes it not ready until `gate` is opened
     struct Ctl {
+        /// Whether control readiness is blocked pending the test gate.
         busy: Rc<Cell<bool>>,
+        /// Shared switch releasing blocked control readiness checks.
         gate: Rc<Cell<bool>>,
+        /// Whether control readiness returns an error instead of waiting.
         fail: bool,
+        /// Notifier invalidating cached control readiness when the test makes it busy.
         changed: ntex_service::ReadyNotifier,
     }
 
@@ -1384,7 +1489,12 @@ mod tests {
         }
     }
 
-    /// Responses are written and reading is paused while control is not ready
+    /// STATEMENT: Control backpressure pauses new requests without blocking pending responses.
+    ///
+    /// HOW:
+    /// - Make control readiness busy during the first delayed echo and verify its response is still written.
+    /// - Send a second frame while control is busy and verify no handler starts or response arrives.
+    /// - Open the control gate, verify the second echo is dispatched, and close the peer with a successful dispatcher result.
     #[ntex::test]
     async fn control_not_ready() {
         let (client, server) = create();
@@ -1444,7 +1554,11 @@ mod tests {
         assert_eq!(rx.await.unwrap(), Ok(()));
     }
 
-    /// Control readiness error shuts down the dispatcher
+    /// STATEMENT: Control readiness failure shuts down the dispatcher without dispatching buffered input.
+    ///
+    /// HOW:
+    /// - Send one frame to a dispatcher whose control service immediately fails readiness.
+    /// - Verify the dispatcher returns `Err(())`, writes no response, and closes the connection.
     #[ntex::test]
     async fn control_ready_err() {
         let (client, server) = create();
@@ -1467,9 +1581,14 @@ mod tests {
         assert!(client.is_closed());
     }
 
-    /// Protocol error from service readiness stops the dispatcher
+    /// STATEMENT: A protocol error from request readiness is delivered to the control service as a stop reason.
+    ///
+    /// HOW:
+    /// - Use a request service whose readiness returns `MqttProtocolError::ReadTimeout` and record protocol control messages.
+    /// - Verify the dispatcher completes successfully, records exactly that timeout, and closes the peer.
     #[ntex::test]
     async fn test_protocol_err_in_service_ready() {
+        /// Request service reporting a protocol error from readiness.
         struct Srv;
 
         impl Service<(), Bytes> for Srv {
@@ -1509,9 +1628,14 @@ mod tests {
         assert!(client.is_closed());
     }
 
-    /// Service readiness error while the control service handles the stop message
+    /// STATEMENT: Readiness failure during stop handling is observed once without replacing the stop result.
+    ///
+    /// HOW:
+    /// - Trigger a decode failure, then have the delayed stop control handler invalidate request readiness and make it fail.
+    /// - Verify the dispatcher completes successfully, the stop handler ran, readiness failed once, and the peer is closed.
     #[ntex::test]
     async fn test_err_in_service_ready_during_stop() {
+        /// Counts readiness failures after the control handler signals that stopping has begun.
         struct Srv(Rc<Cell<bool>>, Rc<Cell<usize>>, ntex_service::ReadyNotifier);
 
         impl Service<(), Bytes> for Srv {
@@ -1563,6 +1687,12 @@ mod tests {
         assert!(client.is_closed());
     }
 
+    /// STATEMENT: Large responses enable write backpressure and flushing below the watermark disables it.
+    ///
+    /// HOW:
+    /// - Block peer writes, send requests, and produce a 65,536-byte response with a 32 KiB write watermark.
+    /// - Verify input consumption and output buffer lengths while progressively allowing peer writes.
+    /// - Verify the event log contains one request call followed by backpressure enable and disable notifications.
     #[ntex::test]
     async fn test_write_backpressure() {
         let (client, server) = Io::create();
@@ -1629,6 +1759,11 @@ mod tests {
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 1, 2]);
     }
 
+    /// STATEMENT: Peer closure wakes shutdown while a later response handler remains pending.
+    ///
+    /// HOW:
+    /// - Echo a first request immediately, delay the second handler, and verify only `msg1` is received.
+    /// - Close the peer and await the dispatcher completion notification.
     #[ntex::test]
     async fn test_shutdown_dispatcher_waker() {
         let (client, server) = Io::create();
@@ -1675,7 +1810,11 @@ mod tests {
         let _ = rx.recv().await;
     }
 
-    /// Update keep-alive timer after receiving frame
+    /// STATEMENT: Complete frames received before the keep-alive deadline keep the connection active.
+    ///
+    /// HOW:
+    /// - Configure a two-second keep-alive and send three echo frames 750 milliseconds apart.
+    /// - Verify every response, then verify the connection stays open and no timeout event follows the three handler events.
     #[ntex::test]
     async fn test_keepalive() {
         let (client, server) = create();
@@ -1723,6 +1862,7 @@ mod tests {
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 0, 0]);
     }
 
+    /// Pass-through encoder whose decoder waits for the specified frame length in bytes.
     #[derive(Debug, Copy, Clone)]
     struct BytesLenCodec(usize);
 
@@ -1755,6 +1895,7 @@ mod tests {
         }
     }
 
+    /// Spawns a 64-byte-frame echo dispatcher and returns its peer, transport, and timeout log.
     fn timeout_dispatcher(cfg: IoConfig) -> (Io, nio::IoRef, Rc<RefCell<Vec<MqttProtocolError>>>) {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -1814,6 +1955,7 @@ mod tests {
         }
     }
 
+    /// Spawns a chunk-aware dispatcher with no responses and records protocol stop reasons.
     fn chunk_dispatcher(cfg: IoConfig) -> (Io, nio::IoRef, Rc<RefCell<Vec<MqttProtocolError>>>) {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
@@ -1835,7 +1977,11 @@ mod tests {
         (client, state, errs)
     }
 
-    /// Keep-alive bounds the whole streamed packet, not each part
+    /// STATEMENT: Payload parts do not restart the keep-alive deadline for an incomplete packet.
+    ///
+    /// HOW:
+    /// - Send `p` chunks through `ChunkCodec` with a one-second keep-alive and verify the connection initially remains active.
+    /// - Keep sending partial chunks until the dispatcher stops and verify the sole protocol error is `MqttProtocolError::KeepAliveTimeout`.
     #[ntex::test]
     async fn test_keepalive_partial_items() {
         let (client, state, errs) =
@@ -1855,7 +2001,11 @@ mod tests {
         ));
     }
 
-    /// Keep-alive restarts after the last part of a streamed packet
+    /// STATEMENT: Finishing a streamed packet lets subsequent complete packets refresh keep-alive.
+    ///
+    /// HOW:
+    /// - Send two partial `p` chunks, finish with `e`, and then send complete `c` packets at 300-millisecond intervals.
+    /// - Verify the connection remains active beyond the original deadline with no protocol errors.
     #[ntex::test]
     async fn test_keepalive_after_partial_items() {
         let (client, state, errs) =
@@ -1874,7 +2024,11 @@ mod tests {
         assert!(errs.borrow().is_empty());
     }
 
-    /// Frame read rate max timeout bounds the whole streamed packet
+    /// STATEMENT: The cumulative frame-read deadline bounds a streamed packet even when its byte rate is sufficient.
+    ///
+    /// HOW:
+    /// - Configure one-second rate periods and a two-second budget, then send `ppp` chunks every 400 milliseconds.
+    /// - Verify the connection initially remains active but eventually stops with exactly `MqttProtocolError::ReadTimeout`.
     #[ntex::test]
     async fn test_read_rate_partial_items() {
         let (client, state, errs) = chunk_dispatcher(
@@ -1897,7 +2051,11 @@ mod tests {
         ));
     }
 
-    /// Streamed packet parts below the frame read rate time out
+    /// STATEMENT: A streamed packet below the required byte rate times out without a cumulative budget.
+    ///
+    /// HOW:
+    /// - Configure a rate of two bytes per one-second period and send only one partial `p` chunk.
+    /// - Wait for shutdown and verify the only protocol error is `MqttProtocolError::ReadTimeout`.
     #[ntex::test]
     async fn test_read_rate_slow_partial_items() {
         let (client, state, errs) = chunk_dispatcher(
@@ -1915,7 +2073,11 @@ mod tests {
         ));
     }
 
-    /// Frame read rate is satisfied, but the cumulative max timeout is reached
+    /// STATEMENT: An incomplete fixed-length frame cannot extend reading beyond its cumulative deadline.
+    ///
+    /// HOW:
+    /// - Use a 64-byte decoder with one-second rate periods and a two-second budget, sending three bytes every 400 milliseconds.
+    /// - Verify the connection initially remains active, then stops with `MqttProtocolError::ReadTimeout` despite sufficient byte progress.
     #[ntex::test]
     async fn test_read_rate_max_timeout() {
         let (client, state, errs) = timeout_dispatcher(
@@ -1938,12 +2100,17 @@ mod tests {
         ));
     }
 
-    /// Bytes the codec consumes without producing a frame count towards the read rate
+    /// STATEMENT: Bytes consumed without producing a decoded item still satisfy the frame-read rate.
+    ///
+    /// HOW:
+    /// - Use a codec that clears every input buffer and send three bytes every 400 milliseconds with no cumulative budget.
+    /// - Verify the connection stays active while bytes arrive, then stop sending and verify a single `MqttProtocolError::ReadTimeout`.
     #[ntex::test]
     async fn test_read_rate_codec_consumed() {
         let (client, server) = Io::create();
         client.remote_buffer_cap(1024);
 
+        /// Consumes every input byte without completing a frame, exercising rate accounting.
         #[derive(Clone)]
         struct ConsumingCodec;
 
@@ -2006,7 +2173,11 @@ mod tests {
         ));
     }
 
-    /// Without frame read rate, keep-alive bounds a slowly received frame
+    /// STATEMENT: Receiving bytes of an incomplete frame does not restart keep-alive.
+    ///
+    /// HOW:
+    /// - Use a 64-byte decoder with a one-second keep-alive and send one byte every 300 milliseconds.
+    /// - Verify the connection initially remains active, then stops with exactly `MqttProtocolError::KeepAliveTimeout`.
     #[ntex::test]
     async fn test_keepalive_partial_frame() {
         let (client, state, errs) =
@@ -2026,7 +2197,11 @@ mod tests {
         ));
     }
 
-    /// Do not use keep-alive timer if not configured
+    /// STATEMENT: Disabled keep-alive is not armed after a partially received frame completes.
+    ///
+    /// HOW:
+    /// - Disable keep-alive, enable frame-rate tracking, and complete a two-byte frame in two writes.
+    /// - Verify the echoed bytes and, after two idle seconds, verify the log contains only the successful handler event.
     #[ntex::test]
     async fn test_no_keepalive_err_after_frame_timeout() {
         let (client, server) = Io::create();
@@ -2070,9 +2245,15 @@ mod tests {
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0]);
     }
 
-    /// Frame read budget restarts after the service pauses reading
+    /// STATEMENT: A service-induced read pause restores the cumulative frame-read budget.
+    ///
+    /// HOW:
+    /// - Begin a 16-byte frame, consume one rate period, then invalidate service readiness and pause it with a condition.
+    /// - Resume readiness, send the remaining bytes across further periods, and verify the connection remains active without errors.
+    /// - Complete the frame and verify the full 16-byte echo.
     #[ntex::test]
     async fn test_read_rate_reset_on_pause() {
+        /// Echo service whose readiness can be paused through a shared flag and condition.
         struct Srv(Rc<Cell<bool>>, Condition<()>, ntex_service::ReadyNotifier);
 
         impl Service<(), Bytes> for Srv {
@@ -2154,6 +2335,11 @@ mod tests {
         assert_eq!(buf, Bytes::from_static(b"1234567abcdefghi"));
     }
 
+    /// STATEMENT: A complete frame succeeds before a later slow partial frame triggers read timeout.
+    ///
+    /// HOW:
+    /// - Echo one complete eight-byte frame, then send an incomplete frame in progressively delayed pieces under a frame-rate deadline.
+    /// - Verify the connection is active during initial progress, then closes with one handler event followed by one read-timeout event.
     #[ntex::test]
     async fn test_read_timeout() {
         let (client, server) = Io::create();
@@ -2206,9 +2392,14 @@ mod tests {
         assert_eq!(&data.lock().unwrap().borrow()[..], &[0, 1]);
     }
 
-    /// Do not use keep-alive timer if not configured
+    /// STATEMENT: Stopping during an incomplete frame releases dispatcher-owned service state.
+    ///
+    /// HOW:
+    /// - Disable keep-alive, use a two-byte decoder, send only one byte, and close the peer.
+    /// - Wait briefly and verify the service lifetime probe was dropped.
     #[ntex::test]
     async fn cancel_on_stop() {
+        /// Marks a shared flag when dispatcher-owned service state is released.
         #[derive(Clone)]
         struct OnDrop(Arc<AtomicBool>);
         impl Drop for OnDrop {
@@ -2249,6 +2440,7 @@ mod tests {
         assert!(&data.load(Ordering::Relaxed));
     }
 
+    /// One-byte decoder with decode failure on `E`, encode failure on `X`, and unordered `q`.
     #[derive(Clone)]
     struct ByteCodec;
 
@@ -2287,6 +2479,7 @@ mod tests {
         }
     }
 
+    /// Marks cancellation or completion of a monitored pending service call.
     struct OnDropFlag(Rc<Cell<bool>>);
     impl Drop for OnDropFlag {
         fn drop(&mut self) {
@@ -2312,8 +2505,11 @@ mod tests {
         })
     }
 
-    /// A spawned call that fails to encode its response stops the dispatcher
-    /// while later calls are still pending
+    /// STATEMENT: A spawned response encoding failure stops the dispatcher while later calls are still pending.
+    ///
+    /// HOW:
+    /// - Send `aXc` with delayed handlers and a codec that cannot encode `X`.
+    /// - Verify shutdown reports `EncodeError::MalformedPacket` and the earlier `a` response was still delivered.
     #[ntex::test]
     async fn encode_error_in_spawned_call() {
         let (client, server) = Io::create();
@@ -2352,7 +2548,11 @@ mod tests {
         assert_eq!(client.read().await.unwrap(), Bytes::from_static(b"a"));
     }
 
-    /// The first error is reported to the control service
+    /// STATEMENT: The first completed request error remains the sole reported stop reason.
+    ///
+    /// HOW:
+    /// - Keep the first request pending, then make a service error and a protocol error complete after equal delays.
+    /// - Verify the dispatcher stops and the control log records only the first service-error reason.
     #[ntex::test]
     async fn first_error_is_kept() {
         let (client, server) = Io::create();
@@ -2394,7 +2594,11 @@ mod tests {
         assert_eq!(&msgs.borrow()[..], &[true]);
     }
 
-    /// A call error during write backpressure stops the dispatcher
+    /// STATEMENT: A pending request error is reported without waiting for blocked output to flush.
+    ///
+    /// HOW:
+    /// - Keep an ordered request pending and let an unordered response fill the write buffer while the peer accepts no bytes.
+    /// - Verify backpressure is enabled, then release the failing call and verify the stop-error message follows immediately with no peer output.
     #[ntex::test]
     async fn error_during_write_backpressure() {
         let (client, server) = Io::create();
@@ -2454,7 +2658,11 @@ mod tests {
         assert!(client.read_any().is_empty());
     }
 
-    /// Calls spawned in the same poll as the stop are cancelled on service shutdown
+    /// STATEMENT: Shutdown cancels spawned calls even when stopping precedes their first task poll.
+    ///
+    /// HOW:
+    /// - Block peer writes and send `w12E` so decoding, spawning pending handlers, and the decode error occur in one dispatcher poll.
+    /// - Verify the monitored spawned handler is dropped while queued output still delays transport closure.
     #[ntex::test]
     async fn cancel_spawned_before_first_poll() {
         let (client, server) = Io::create();
@@ -2477,7 +2685,11 @@ mod tests {
         assert!(dropped.get());
     }
 
-    /// Spawned calls are cancelled when the dispatcher is dropped
+    /// STATEMENT: Dropping the dispatcher cancels its independently spawned request calls.
+    ///
+    /// HOW:
+    /// - Block peer writes, send `w12`, and manually poll the dispatcher once to spawn pending handlers.
+    /// - Verify the monitored handler is initially alive, then drop the dispatcher and verify its drop probe is set.
     #[ntex::test]
     async fn cancel_spawned_on_drop() {
         let (client, server) = Io::create();
@@ -2502,9 +2714,14 @@ mod tests {
         assert!(dropped.get());
     }
 
-    /// Handle peer gone while publish service is not ready
+    /// STATEMENT: Peer closure during a service read pause releases both active-call and service state.
+    ///
+    /// HOW:
+    /// - Start a pending handler that invalidates readiness and makes further readiness wait indefinitely.
+    /// - Close the peer, await dispatcher completion, and verify both lifetime probe clones were dropped.
     #[ntex::test]
     async fn peer_gone_while_service_is_not_ready() {
+        /// Counts drops of the service and its active-call probe clones.
         #[derive(Clone)]
         struct OnDrop(Arc<AtomicUsize>);
         impl Drop for OnDrop {
@@ -2517,6 +2734,7 @@ mod tests {
         let data = Arc::new(AtomicUsize::new(0));
         let data2 = OnDrop(data.clone());
 
+        /// Starts a pending call and invalidates readiness so disconnect occurs during a read pause.
         struct Srv(Cell<bool>, OnDrop, ntex_service::ReadyNotifier);
 
         impl Service<(), Bytes> for Srv {
@@ -2569,6 +2787,9 @@ mod tests {
         assert_eq!(cnt, 2);
     }
 
+    /// Creates a 65,536-byte response service and a log of backpressure and write-timeout events.
+    ///
+    /// If `ready` is false, the first request also makes service readiness pending.
     fn write_timeout_srv(
         ready: bool,
     ) -> (
@@ -2576,6 +2797,7 @@ mod tests {
         impl Service<(), Control<()>, Res = Option<Bytes>, Error = ()>,
         Rc<RefCell<Vec<u8>>>,
     ) {
+        /// Emits a large response and optionally blocks readiness after its first call.
         struct Srv(bool, Cell<bool>, ntex_service::ReadyNotifier);
 
         impl Service<(), Bytes> for Srv {
@@ -2623,6 +2845,7 @@ mod tests {
         )
     }
 
+    /// Configures 32 KiB write backpressure and a one-second write deadline with no keep-alive.
     fn write_timeout_cfg() -> SharedCfg {
         SharedCfg::new("DBG")
             .add(
@@ -2634,7 +2857,11 @@ mod tests {
             .into()
     }
 
-    /// Peer does not read, dispatcher stops with write timeout
+    /// STATEMENT: A peer that does not accept a backpressured response triggers write timeout.
+    ///
+    /// HOW:
+    /// - Block peer writes, configure a one-second write deadline, and emit a 65,536-byte response.
+    /// - Verify the connection starts active with backpressure enabled, then stops with a write-timeout event and no disable event.
     #[ntex::test]
     async fn test_write_timeout() {
         let (client, server) = Io::create();
@@ -2659,7 +2886,11 @@ mod tests {
         assert_eq!(&data.borrow()[..], &[1, 3]);
     }
 
-    /// Backpressure is released before write timeout
+    /// STATEMENT: Releasing write backpressure before its deadline cancels the write timer.
+    ///
+    /// HOW:
+    /// - Block a large response until backpressure is enabled, then allow the peer to accept the entire response.
+    /// - Wait beyond the original deadline and verify the connection remains active, all 65,536 bytes arrive, and only enable/disable events are recorded.
     #[ntex::test]
     async fn test_write_timeout_released() {
         let (client, server) = Io::create();
@@ -2685,7 +2916,11 @@ mod tests {
         assert_eq!(client.read_any().len(), 65_536);
     }
 
-    /// Write timeout keeps running while service is not ready
+    /// STATEMENT: Write timeout remains effective while request readiness is blocked.
+    ///
+    /// HOW:
+    /// - Use `write_timeout_srv(false)` to emit a large response and make request readiness pending while peer writes are blocked.
+    /// - Verify the connection initially remains active, then stops and records a write-timeout event.
     #[ntex::test]
     async fn test_write_timeout_service_not_ready() {
         let (client, server) = Io::create();
@@ -2709,7 +2944,11 @@ mod tests {
         assert!(data.borrow().contains(&3));
     }
 
-    /// Backpressure is released while service is not ready, write timer is stopped
+    /// STATEMENT: Backpressure release cancels write timeout even while request readiness remains pending.
+    ///
+    /// HOW:
+    /// - Produce a blocked large response with a service that becomes not ready and verify backpressure is enabled.
+    /// - Allow all bytes to flush, wait beyond the deadline, and verify the connection stays active with only enable/disable events.
     #[ntex::test]
     async fn test_write_timeout_released_service_not_ready() {
         let (client, server) = Io::create();
@@ -2738,7 +2977,11 @@ mod tests {
         assert_eq!(client.read_any().len(), 65_536);
     }
 
-    /// Reading pauses while the response queue is full
+    /// STATEMENT: A full ordered response queue pauses decoding until its head completes.
+    ///
+    /// HOW:
+    /// - Set a four-entry limit, block the first handler, and send ten one-byte requests.
+    /// - Verify exactly four handlers start and no response is written, then release the head and verify all ten ordered responses arrive.
     #[ntex::test]
     async fn test_max_queue() {
         let (client, server) = Io::create();
@@ -2779,7 +3022,12 @@ mod tests {
         assert_eq!(client.read_any(), Bytes::from_static(b"0123456789"));
     }
 
-    /// Unordered calls do not keep a slot in the response queue
+    /// STATEMENT: Completed unordered calls leave no response-queue slots behind.
+    ///
+    /// HOW:
+    /// - Use a two-entry limit, send `qaqqbc`, delay unordered calls briefly, and block the first ordered response.
+    /// - Verify unordered calls finish while `a` and `b` fill the queue, leaving `c` unread.
+    /// - Release the ordered head and verify `abc` arrives with all six requests dispatched.
     #[ntex::test]
     async fn unordered_calls_skip_queue() {
         let (client, server) = Io::create();
@@ -2827,8 +3075,11 @@ mod tests {
         assert_eq!(calls.borrow().len(), 6);
     }
 
-    /// Response of an unordered call that completes when it is called is
-    /// written before the pending ordered calls
+    /// STATEMENT: An immediately completed unordered response is written ahead of pending ordered responses.
+    ///
+    /// HOW:
+    /// - Dispatch `a` and gated `b`, read `a`, and verify one ordered response slot remains.
+    /// - Dispatch unordered `q` and verify its response arrives without changing queue length; release the gate and read `b`.
     #[ntex::test]
     async fn unordered_ready_response_skips_queue() {
         let (client, server) = Io::create();
@@ -2869,7 +3120,11 @@ mod tests {
         assert_eq!(read_exact(&client, 1).await, b"b"[..]);
     }
 
-    /// Pending unordered calls count towards the queue limit
+    /// STATEMENT: Pending unordered calls count toward the dispatcher's combined queue limit.
+    ///
+    /// HOW:
+    /// - Set a three-entry limit, keep ordered `a` pending, and send four gated unordered `q` requests.
+    /// - Verify only three calls initially start, then release the gate and verify the remaining two calls are dispatched.
     #[ntex::test]
     async fn unordered_calls_limit() {
         let (client, server) = Io::create();
@@ -2926,6 +3181,7 @@ mod tests {
         })
     }
 
+    /// Creates transport configuration with the requested pending-response limit.
     fn max_queue_cfg(max_queue: usize) -> SharedCfg {
         SharedCfg::new("DBG")
             .add(IoConfig::new())
@@ -2933,8 +3189,12 @@ mod tests {
             .into()
     }
 
-    /// The rest of a partially read frame is read while the queue is full,
-    /// reading pauses at the next frame
+    /// STATEMENT: A full queue permits the remainder of a streamed frame but not the next frame.
+    ///
+    /// HOW:
+    /// - With a two-entry limit and gated handlers, compare `apcd` with `abpc` using `ChunkCodec`.
+    /// - Verify decoding continues through the partial frame only when it has already started.
+    /// - Release the gate and verify all remaining requests and responses follow input order.
     #[ntex::test]
     async fn frame_rest_read_while_queue_is_full() {
         // data, dispatched items
@@ -2969,8 +3229,11 @@ mod tests {
         }
     }
 
-    /// The queue memory is released once a burst above `QUEUE_SHRINK_CAP`
-    /// responses is written, smaller queues keep their capacity
+    /// STATEMENT: An emptied response queue releases large burst capacity but preserves small allocations.
+    ///
+    /// HOW:
+    /// - Queue gated responses in bursts above `QUEUE_SHRINK_CAP` and below it, recording the allocated capacity.
+    /// - Release all handlers, verify every response and an empty queue, then verify capacity becomes zero only for the large burst.
     #[ntex::test]
     async fn queue_shrinks_after_burst() {
         for (count, shrinks) in [(QUEUE_SHRINK_CAP + 8, true), (8, false)] {
@@ -3003,8 +3266,12 @@ mod tests {
         }
     }
 
-    /// Items read before a clean read eof are dispatched once the queue has
-    /// room
+    /// STATEMENT: Buffered requests survive clean read EOF while a full queue waits for capacity.
+    ///
+    /// HOW:
+    /// - Send three or four one-byte requests with a two-entry limit and gated handlers, closing the peer immediately or after a delay.
+    /// - Verify only two handlers initially start and shutdown remains pending.
+    /// - Release the gate, await shutdown, and verify every buffered request was dispatched.
     #[ntex::test]
     async fn queue_full_after_read_eof() {
         // one or two items after the full queue, eof with the data or later
@@ -3053,6 +3320,7 @@ mod tests {
     }
 
     impl Disconnect {
+        /// Applies a peer half-close, read reset, or immediate transport termination.
         async fn apply(self, client: &Io, io: &nio::IoRef) {
             match self {
                 Disconnect::Close => client.close().await,
@@ -3064,6 +3332,7 @@ mod tests {
         }
     }
 
+    /// Spawns the dispatcher and returns a flag set after its future completes.
     fn spawn_disp<F: Future + 'static>(disp: F) -> Rc<Cell<bool>> {
         let done = Rc::new(Cell::new(false));
         let done2 = done.clone();
@@ -3074,10 +3343,12 @@ mod tests {
         done
     }
 
+    /// Control service accepting every message without emitting a response.
     fn ctl_srv() -> impl Service<(), Control<()>, Res = Option<Bytes>, Error = ()> {
         fn_service(async move |_: Control<()>| Ok::<_, ()>(None))
     }
 
+    /// Waits up to two seconds for dispatcher completion, panicking with the case on timeout.
     async fn assert_stops(case: &str, done: &Cell<bool>) {
         for _ in 0..40 {
             if done.get() {
@@ -3088,7 +3359,11 @@ mod tests {
         panic!("{case}: dispatcher did not stop after disconnect");
     }
 
-    /// Dispatcher stops on disconnect while idle or reading a frame
+    /// STATEMENT: Idle and partially reading dispatchers stop on clean closure, read reset, or transport termination.
+    ///
+    /// HOW:
+    /// - For each `Disconnect` mode, send zero, one, or two bytes to a four-byte decoder and verify the dispatcher is initially pending.
+    /// - Apply the disconnection and verify dispatcher completion within the helper's timeout.
     #[ntex::test]
     async fn disconnect_while_reading() {
         for d in [Disconnect::Close, Disconnect::Reset, Disconnect::Terminate] {
@@ -3112,7 +3387,11 @@ mod tests {
         }
     }
 
-    /// Dispatcher stops on disconnect while service calls are in flight
+    /// STATEMENT: Disconnect cancels pending request handlers before the dispatcher completes.
+    ///
+    /// HOW:
+    /// - Start three pending one-byte handlers with a monitored spawned call for each `Disconnect` mode.
+    /// - Apply disconnection, await completion, and verify the handler-drop probe is set.
     #[ntex::test]
     async fn disconnect_with_inflight_calls() {
         for d in [Disconnect::Close, Disconnect::Reset, Disconnect::Terminate] {
@@ -3135,7 +3414,11 @@ mod tests {
         }
     }
 
-    /// Dispatcher stops on disconnect while the response queue is full
+    /// STATEMENT: A backend-reported transport failure stops a dispatcher paused by a full response queue.
+    ///
+    /// HOW:
+    /// - Set a two-entry queue limit, send five bytes to pending handlers, and allow the queue to fill.
+    /// - Apply `Disconnect::Terminate` and verify dispatcher completion within the helper's timeout.
     #[ntex::test]
     async fn disconnect_with_full_queue() {
         for d in [Disconnect::Terminate] {
@@ -3160,7 +3443,11 @@ mod tests {
         }
     }
 
-    /// Dispatcher stops on disconnect while the service is not ready
+    /// STATEMENT: A backend-reported transport failure stops a dispatcher whose request service is not ready.
+    ///
+    /// HOW:
+    /// - Use a service that becomes not ready after its first response, testing one- and two-byte inputs.
+    /// - Verify the dispatcher is still pending, apply `Disconnect::Terminate`, and await completion.
     #[ntex::test]
     async fn disconnect_service_not_ready() {
         for d in [Disconnect::Terminate] {
@@ -3185,7 +3472,11 @@ mod tests {
         }
     }
 
-    /// Dispatcher stops on disconnect during write backpressure
+    /// STATEMENT: Backend-reported transport failure stops write-backpressured dispatchers regardless of request readiness.
+    ///
+    /// HOW:
+    /// - Block peer writes and emit a large response with services that either remain ready or become not ready.
+    /// - Verify backpressure is enabled, apply `Disconnect::Terminate`, and await dispatcher completion in both cases.
     #[ntex::test]
     async fn disconnect_write_backpressure() {
         for d in [Disconnect::Terminate] {
@@ -3214,11 +3505,17 @@ mod tests {
         }
     }
 
-    /// Service becomes not ready and write backpressure is enabled
+    /// STATEMENT: Output flush and shutdown can progress when a request simultaneously invalidates readiness and enables backpressure.
+    ///
+    /// HOW:
+    /// - Use a one-shot-gated readiness service, a two-byte write watermark, and a peer initially accepting no bytes.
+    /// - Send nine bytes, enable peer writes, and verify the entire echo arrives.
+    /// - Close the peer, release readiness, and await dispatcher completion.
     #[ntex::test]
     async fn service_is_not_ready_and_backpressure() {
         let (ctx, rx) = oneshot::channel();
 
+        /// Echo service whose first call blocks readiness until a one-shot gate is released.
         struct Srv(
             Cell<bool>,
             Cell<Option<oneshot::Receiver<()>>>,
@@ -3287,6 +3584,7 @@ mod tests {
     /// Control service that records `wr` and stop messages
     #[derive(Clone)]
     struct WrCtl {
+        /// Ordered record of started and completed backpressure calls and stop messages.
         log: Rc<RefCell<Vec<&'static str>>>,
         /// `wr(true)` handling waits for the gate
         gate: Option<Condition<()>>,
@@ -3297,6 +3595,7 @@ mod tests {
     }
 
     impl WrCtl {
+        /// Creates a logging control service with optional gating of enabled-backpressure handling.
         fn new(gate: Option<Condition<()>>) -> Self {
             WrCtl {
                 log: Rc::default(),
@@ -3333,6 +3632,7 @@ mod tests {
         }
     }
 
+    /// Starts a large-response dispatcher with a blocked peer and configurable write deadline.
     fn wr_dispatcher(
         ctl: WrCtl,
         write_timeout: Seconds,
@@ -3362,7 +3662,11 @@ mod tests {
         (client, io, rx)
     }
 
-    /// `wr(false)` is delivered after `wr(true)` is handled
+    /// STATEMENT: Disabled-backpressure control messages wait for enabled-backpressure handling to complete.
+    ///
+    /// HOW:
+    /// - Gate the `wr(true)` control call, then flush the response to release backpressure.
+    /// - Verify only the enabled message is logged while its handler waits, then open the gate and verify enable completion precedes `wr(false)`.
     #[ntex::test]
     async fn test_wr_in_order() {
         let gate = Condition::new();
@@ -3381,7 +3685,11 @@ mod tests {
         assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "wr0"]);
     }
 
-    /// Stop is delivered after the pending wr message
+    /// STATEMENT: Stop control handling waits for a pending write-backpressure control call.
+    ///
+    /// HOW:
+    /// - Gate `wr(true)` and let a one-second write timeout expire while peer writes remain blocked.
+    /// - Verify no stop message is logged until the gate opens, then verify enabled handling completes before the stop message.
     #[ntex::test]
     async fn test_wr_before_stop() {
         let gate = Condition::new();
@@ -3397,7 +3705,11 @@ mod tests {
         assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "stop"]);
     }
 
-    /// Response of the wr message is written
+    /// STATEMENT: Responses returned by write-backpressure control handlers are encoded onto the connection.
+    ///
+    /// HOW:
+    /// - Configure a `wr(false)` response containing `wr`, then unblock the peer after backpressure is enabled.
+    /// - Read 65,538 bytes, verify the output ends with `wr`, and verify enabled handling completed before the disabled message.
     #[ntex::test]
     async fn test_wr_response() {
         let mut ctl = WrCtl::new(None);
@@ -3412,7 +3724,11 @@ mod tests {
         assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "wr0"]);
     }
 
-    /// Error of the wr message shuts down the dispatcher without stop message
+    /// STATEMENT: A write-backpressure control error returns directly without sending a stop message.
+    ///
+    /// HOW:
+    /// - Make `wr(false)` fail after a large response enables backpressure, then allow the peer to drain output.
+    /// - Verify the dispatcher returns `Err(())` and the control log contains enable, enable completion, and disable but no stop.
     #[ntex::test]
     async fn test_wr_error() {
         let mut ctl = WrCtl::new(None);
@@ -3425,13 +3741,17 @@ mod tests {
         assert_eq!(&ctl.log.borrow()[..], &["wr1", "wr1-done", "wr0"]);
     }
 
+    /// Readiness gate for one filter direction, retaining the latest task to wake on changes.
     #[derive(Debug, Default)]
     struct GateDir {
+        /// Whether successful underlying readiness is converted to pending.
         blocked: Cell<bool>,
+        /// Latest task polling the gate, consumed when its state changes.
         waker: RefCell<Option<std::task::Waker>>,
     }
 
     impl GateDir {
+        /// Registers the task and delays successful readiness while blocked, preserving errors.
         fn poll(&self, res: Poll<io::Result<()>>, cx: &Context<'_>) -> Poll<io::Result<()>> {
             *self.waker.borrow_mut() = Some(cx.waker().clone());
             match res {
@@ -3440,6 +3760,7 @@ mod tests {
             }
         }
 
+        /// Changes the gate and wakes its most recently registered polling task.
         fn set(&self, blocked: bool) {
             self.blocked.set(blocked);
             if let Some(waker) = self.waker.borrow_mut().take() {
@@ -3453,17 +3774,21 @@ mod tests {
     struct GateCtl(Rc<(GateDir, GateDir)>);
 
     impl GateCtl {
+        /// Changes filter readiness, pausing or resuming inbound delivery.
         fn block_read(&self, blocked: bool) {
             self.0.0.set(blocked);
         }
 
+        /// Holds or releases outbound bytes in the filter layer and wakes its waiter.
         fn block_write(&self, blocked: bool) {
             self.0.1.set(blocked);
         }
     }
 
+    /// Filter wrapper applying the read gate to the underlying filter's readiness.
     struct GateFilter<F>(F, GateCtl);
 
+    /// Pass-through filter layer that retains outbound bytes while its write gate is blocked.
     #[derive(Debug)]
     struct GateLayer(GateCtl);
 
@@ -3567,7 +3892,12 @@ mod tests {
         (client, gate, io, errs)
     }
 
-    /// Frame read timer does not run while the filter chain pauses reads
+    /// STATEMENT: Filter-induced read pauses suspend the frame-read deadline without charging the peer.
+    ///
+    /// HOW:
+    /// - Begin an eight-byte frame under a frame-rate deadline, block filter readiness, and send its remaining bytes.
+    /// - Wait beyond the cumulative budget and verify the connection is active with no errors.
+    /// - Unblock the filter and verify the full echo arrives and the filter is no longer paused.
     #[ntex::test]
     async fn test_filter_pause_suspends_frame_read_timer() {
         let (client, gate, io, errs) = gated_dispatcher(
@@ -3596,7 +3926,12 @@ mod tests {
         assert!(errs.borrow().is_empty());
     }
 
-    /// Keep-alive does not run while the filter chain pauses reads
+    /// STATEMENT: Keep-alive is suspended during filter pauses and resumes after input delivery.
+    ///
+    /// HOW:
+    /// - Block filter readiness before sending a complete frame and wait beyond a one-second keep-alive.
+    /// - Verify the connection remains active without errors, then unblock and verify the echo.
+    /// - Leave the resumed connection idle and verify it stops with exactly `MqttProtocolError::KeepAliveTimeout`.
     #[ntex::test]
     async fn test_filter_pause_suspends_keepalive() {
         let (client, gate, io, errs) =
@@ -3636,7 +3971,12 @@ mod tests {
         (client, gate, io, data)
     }
 
-    /// Write timeout does not run while the filter chain pauses writes
+    /// STATEMENT: Filter-induced pauses suspend write timeout until retained output can be released.
+    ///
+    /// HOW:
+    /// - Hold a large response in the filter, then block filter readiness and verify backpressure is enabled.
+    /// - Wait beyond the write deadline and verify no timeout, then release both gates.
+    /// - Verify all 65,536 bytes flush, the filter resumes, and the log contains only enable/disable events.
     #[ntex::test]
     async fn test_filter_pause_suspends_write_timeout() {
         let (client, gate, io, data) = gated_write_dispatcher(1024 * 1024);
@@ -3662,7 +4002,12 @@ mod tests {
         assert_eq!(&data.borrow()[..], &[1, 2]);
     }
 
-    /// Write timeout starts over once the filter chain resumes writes
+    /// STATEMENT: Write timeout receives a fresh deadline after a filter pause ends.
+    ///
+    /// HOW:
+    /// - Block peer writes, retain a large response in the filter, and pause filter readiness longer than the write deadline.
+    /// - Verify the connection remains active while paused, then release both filter gates without unblocking the peer.
+    /// - Verify it initially remains active after resuming, then stops with backpressure enable followed by write timeout.
     #[ntex::test]
     async fn test_write_timeout_restarts_after_filter_pause() {
         let (client, gate, io, data) = gated_write_dispatcher(0);

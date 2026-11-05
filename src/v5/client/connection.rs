@@ -15,13 +15,22 @@ use crate::{MqttServiceConfig, control, error::MqttError, io::Dispatcher};
 
 use super::{control::ProtocolMessage, dispatcher::create_dispatcher};
 
-/// Mqtt client
+/// Established MQTT 5 connection awaiting a client dispatch loop.
+///
+/// Obtain a sink before starting the client; acknowledgements and inbound packets
+/// are processed only while a `start` method is being polled.
 pub struct Client {
+    /// Negotiated transport, moved into the dispatch loop when started.
     io: IoBoxed,
+    /// Connection state shared with sink handles and the packet dispatcher.
     shared: Rc<MqttShared>,
+    /// Ping interval in seconds; zero disables the keep-alive task.
     keepalive: Seconds,
+    /// Advertised limit on incoming `QoS` 1 and `QoS` 2 exchanges.
     max_receive: usize,
+    /// Configuration retained for dispatch and streamed payload buffering.
     cfg: Cfg<MqttServiceConfig>,
+    /// Broker acknowledgement retained for inspection after the handshake.
     pkt: Box<codec::ConnectAck>,
 }
 
@@ -37,7 +46,7 @@ impl fmt::Debug for Client {
 }
 
 impl Client {
-    /// Construct new `Dispatcher` instance with outgoing messages stream.
+    /// Retain the completed handshake, transport, and limits until the client is started.
     pub(super) fn new(
         io: IoBoxed,
         shared: Rc<MqttShared>,
@@ -59,30 +68,43 @@ impl Client {
 
 impl Client {
     #[inline]
-    /// Get client sink
+    /// Clone a sending handle sharing this connection and its flow-control state.
+    ///
+    /// The client dispatch loop must run to process acknowledgements and release
+    /// outbound `QoS` credit.
     pub fn sink(&self) -> MqttSink {
         MqttSink::new(self.shared.clone())
     }
 
     #[inline]
-    /// Indicates whether there is already stored Session state
+    /// Return whether the broker reported an existing session in `CONNACK`.
     pub fn session_present(&self) -> bool {
         self.pkt.session_present
     }
 
     #[inline]
-    /// Get reference to `ConnectAck` packet
+    /// Borrow the broker's `CONNACK` packet retained after the handshake.
     pub fn packet(&self) -> &codec::ConnectAck {
         &self.pkt
     }
 
     #[inline]
-    /// Get mutable reference to `ConnectAck` packet
+    /// Mutably borrow the retained `CONNACK` packet.
+    ///
+    /// Changes affect this stored packet only, not limits already applied to the
+    /// sink, codec, or keep-alive task.
     pub fn packet_mut(&mut self) -> &mut codec::ConnectAck {
         &mut self.pkt
     }
 
-    /// Configure mqtt resource for a specific topic
+    /// Register a publish handler for a topic path pattern.
+    ///
+    /// Patterns use `ntex_router` syntax, not MQTT subscription-filter syntax.
+    /// This does not send a subscription to the broker.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a supplied pattern is invalid for `ntex_router`.
     pub fn resource<T, F, U, E>(self, address: T, service: F) -> ClientRouter<E, U::Error>
     where
         T: IntoPattern,
@@ -107,10 +129,10 @@ impl Client {
         }
     }
 
-    /// Run client with default handlers.
+    /// Run the connection until it closes, rejecting incoming publications.
     ///
-    /// Default handlers close connection on any incoming publish or
-    /// protocol message.
+    /// Default handlers close the connection on any incoming publication or
+    /// protocol message delivered to them. Dispatcher errors are discarded.
     pub async fn start_default(self) {
         let sink = MqttSink::new(self.shared.clone());
 
@@ -142,9 +164,11 @@ impl Client {
         let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
 
-    /// Run client with provided protocol-message service.
+    /// Run the connection with a service for unrouted publications and protocol messages.
     ///
-    /// Default control service is used.
+    /// Returned acknowledgements are applied by the dispatcher. The default control
+    /// service handles connection events and errors; the future completes when
+    /// the connection closes.
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<()>>
     where
         F: IntoService<S, Session<()>, ProtocolMessage> + 'static,
@@ -178,7 +202,11 @@ impl Client {
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 
-    /// Run client with provided protocol-message and control services.
+    /// Run the connection with custom protocol-message and connection-control services.
+    ///
+    /// Publications are delivered to the protocol-message service. The control
+    /// service handles connection events and errors, and its error type determines
+    /// the returned connection error.
     pub async fn start_with_control<F, S, C, E>(
         self,
         service: F,
@@ -214,21 +242,31 @@ impl Client {
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 
-    /// Get negotiated io stream and codec
+    /// Consume the client and return its negotiated transport and a codec clone.
+    ///
+    /// No client dispatch loop or keep-alive task is started.
     pub fn into_inner(self) -> (IoBoxed, codec::Codec) {
         (self.io, self.shared.codec.clone())
     }
 }
 
-/// Mqtt client with routing capabilities
+/// Established client connection with topic-pattern handlers for incoming publications.
 pub struct ClientRouter<Err, PErr> {
+    /// Negotiated transport, moved into the dispatch loop when started.
     io: IoBoxed,
+    /// Topic patterns mapped to indices in `handlers`.
     builder: RouterBuilder<usize>,
+    /// Owned publish services returning acknowledgement metadata.
     handlers: Vec<PipelineState<Session<()>, Publish, PublishAck, PErr>>,
+    /// Connection state shared with sink handles and the packet dispatcher.
     shared: Rc<MqttShared>,
+    /// Ping interval in seconds; zero disables the keep-alive task.
     keepalive: Seconds,
+    /// Advertised limit on incoming `QoS` 1 and `QoS` 2 exchanges.
     max_receive: usize,
+    /// Configuration retained for dispatch and streamed payload buffering.
     cfg: Cfg<MqttServiceConfig>,
+    /// Error types used by the dispatcher and publish handlers.
     _t: marker::PhantomData<(Err, PErr)>,
 }
 
@@ -248,7 +286,14 @@ where
     PErr: fmt::Debug + 'static,
 {
     #[must_use]
-    /// Configure mqtt resource for a specific topic
+    /// Register a publish handler for a topic path pattern.
+    ///
+    /// Patterns use `ntex_router` syntax, not MQTT subscription-filter syntax.
+    /// This does not send a subscription to the broker.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a supplied pattern is invalid for `ntex_router`.
     pub fn resource<T, F, S>(mut self, address: T, service: F) -> Self
     where
         T: IntoPattern,
@@ -261,10 +306,11 @@ where
         self
     }
 
-    /// Run client with default handlers.
+    /// Run the routed connection until it closes, discarding dispatcher errors.
     ///
-    /// Default handlers acknowledge `PublishRelease` of routed `QoS 2` publishes and
-    /// close connection on any unrouted publish or other protocol message.
+    /// Default handlers acknowledge `PublishRelease` for routed `QoS` 2 publications
+    /// and close the connection on any unrouted publication or other protocol
+    /// message delivered to them.
     pub async fn start_default(self) {
         let sink = MqttSink::new(self.shared.clone());
         if self.keepalive.non_zero() {
@@ -298,9 +344,11 @@ where
         let _ = Dispatcher::new(self.io, self.shared, dispatcher, control).await;
     }
 
-    /// Run client with provided protocol-message service.
+    /// Run the connection with a service for unrouted publications and protocol messages.
     ///
-    /// Default control service is used.
+    /// Returned acknowledgements are applied by the dispatcher. The default control
+    /// service handles connection events and errors; the future completes when
+    /// the connection closes.
     pub async fn start<F, S>(self, service: F) -> Result<(), MqttError<Err>>
     where
         F: IntoService<S, Session<()>, ProtocolMessage>,
@@ -333,12 +381,15 @@ where
         Dispatcher::new(self.io, self.shared, dispatcher, control).await
     }
 
-    /// Get negotiated io stream and codec
+    /// Consume the client and return its negotiated transport and a codec clone.
+    ///
+    /// No client dispatch loop or keep-alive task is started.
     pub fn into_inner(self) -> (IoBoxed, codec::Codec) {
         (self.io, self.shared.codec.clone())
     }
 }
 
+/// Build a publish-routing service with the required error conversion.
 fn dispatch<PErr>(
     router: Router<usize>,
     handlers: Vec<PipelineState<Session<()>, Publish, PublishAck, PErr>>,
@@ -354,9 +405,13 @@ where
     }
 }
 
+/// Route incoming publications and propagate handler readiness and shutdown.
 struct RouteDispatch<E> {
+    /// Compiled topic patterns whose values index `handlers`.
     router: Router<usize>,
+    /// Publish services whose errors may be converted into acknowledgements.
     handlers: Vec<PipelineState<Session<()>, Publish, PublishAck, E>>,
+    /// Per-connection aliases retaining the matched handler and captured topic path.
     aliases: RefCell<HashMap<NonZeroU16, (usize, Path<ByteString>)>>,
 }
 
@@ -429,10 +484,12 @@ where
     }
 }
 
+/// Run periodic pings using the interval negotiated in seconds.
 async fn keepalive(sink: MqttSink, timeout: Seconds) {
     keepalive_interval(sink, Millis::from(timeout)).await;
 }
 
+/// Ping periodically and close on a missing response, timing only after writes unblock.
 async fn keepalive_interval(sink: MqttSink, interval: Millis) {
     log::debug!("start mqtt client keep-alive task");
 
@@ -473,6 +530,7 @@ async fn keepalive_interval(sink: MqttSink, interval: Millis) {
     }
 }
 
+/// Unit tests for routing lifecycle, keep-alive timing, and sink backpressure.
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -483,9 +541,12 @@ mod tests {
 
     use super::*;
 
+    /// Fixed-header byte identifying an MQTT ping request.
     const PINGREQ: u8 = 0b1100_0000;
+    /// Shortened keep-alive interval used by timing tests.
     const INTERVAL: Millis = Millis(200);
 
+    /// Create a paired test transport, shared client state, and a sending handle.
     fn setup() -> (IoTest, Io, Rc<MqttShared>, MqttSink) {
         let (client, server) = IoTest::create();
         client.remote_buffer_cap(1024);
@@ -500,6 +561,7 @@ mod tests {
         (client, io, shared, sink)
     }
 
+    /// Wait until a ping is encoded, failing if the bounded retry budget expires.
     async fn wait_ping_pending(sink: &MqttSink) {
         let mut n = 0;
         while !sink.is_ping_pending() {
@@ -509,6 +571,7 @@ mod tests {
         }
     }
 
+    /// Handler failure deliberately not convertible into a publish acknowledgement.
     #[derive(Debug)]
     struct TestError;
 
@@ -520,6 +583,7 @@ mod tests {
         }
     }
 
+    /// Reject readiness and count shutdown calls through shared state.
     struct Handler(Rc<std::cell::Cell<usize>>);
 
     impl Service<Session<()>, Publish> for Handler {
@@ -543,7 +607,11 @@ mod tests {
         }
     }
 
-    /// Publish routing reports handler readiness errors and shuts down handlers
+    /// STATEMENT: Topic routing propagates handler readiness failures and shuts handlers down.
+    ///
+    /// HOW:
+    /// - Build an empty router with a handler that rejects readiness and counts shutdowns.
+    /// - Assert readiness fails, then shut down the routing service and observe one shutdown call.
     #[ntex::test]
     async fn test_route_dispatch_ready_shutdown() {
         let (_client, io, _shared, sink) = setup();
@@ -561,6 +629,12 @@ mod tests {
         assert_eq!(count.get(), 1);
     }
 
+    /// STATEMENT: A ping response deadline starts only after the ping can follow a streamed payload.
+    ///
+    /// HOW:
+    /// - Observe an initial `PINGREQ` and clear its pending flag to simulate a response.
+    /// - Hold a streaming publication open across the next ping and verify the sink stays open.
+    /// - Finish the stream, withhold `PINGRESP`, and check the elapsed interval and disconnect packet.
     #[ntex::test]
     async fn test_pingresp_timeout() {
         let (client, _io, shared, sink) = setup();
@@ -596,6 +670,12 @@ mod tests {
         assert_eq!(res[2], 0x80);
     }
 
+    /// STATEMENT: Write backpressure postpones the ping response deadline until writes unblock.
+    ///
+    /// HOW:
+    /// - Fill a blocked test transport and wait for a pending ping.
+    /// - Wait two keep-alive intervals and verify the ping remains pending without closing the sink.
+    /// - Drain the transport, withhold `PINGRESP`, and check the interval before the disconnect.
     #[ntex::test]
     async fn test_pingresp_timeout_write_backpressure() {
         use ntex_util::future::lazy;
@@ -636,8 +716,12 @@ mod tests {
         assert_eq!(res[2], 0x80);
     }
 
-    /// Sink follows io write backpressure while the control service is busy,
-    /// `Control::wr` messages wait behind pending control calls
+    /// STATEMENT: Sink write readiness recovers even while a backpressure control call is blocked.
+    ///
+    /// HOW:
+    /// - Block transport writes and gate the control service after its enabled-backpressure event.
+    /// - Assert the sink is not ready, then drain the transport while keeping the control call blocked.
+    /// - Send another publication and observe its encoded bytes before releasing the control gate.
     #[ntex::test]
     async fn test_sink_wr_backpressure_slow_control() {
         use std::cell::Cell;

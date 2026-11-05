@@ -23,7 +23,7 @@ ntex-net = "4.7"
 ntex-service = "5.7"
 ntex-router = "2.1"
 ntex-rt = "4.5"
-ntex-util = "4.6"
+ntex-util = "4.7"
 
 bitflags = "2"
 log = "0.4"
@@ -32,9 +32,9 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
 [dev-dependencies]
-ntex = { version = "4.4.0", features = ["openssl"] }
-ntex-tls = "4.4"
-ntex-server = "4.3"
+ntex = { version = "4.6.0", features = ["openssl"] }
+ntex-tls = "4.7.2"
+ntex-server = "4.4"
 
 rand = "0.10"
 env_logger = "0.11"

@@ -1,11 +1,15 @@
-//! MQTT 3.1.1 client
+//! MQTT 3.1.1 client connections, routing, and protocol handling.
 use ntex_bytes::{ByteString, Bytes};
 use ntex_net::connect::Address;
 use ntex_util::time::Seconds;
 
+/// Established client connections and topic routing.
 mod connection;
+/// Transport connection and MQTT handshake service.
 mod connector;
+/// Client-side protocol messages and acknowledgement builders.
 pub mod control;
+/// Incoming packet dispatch and acknowledgement tracking.
 mod dispatcher;
 
 pub use self::connection::{Client, ClientRouter};
@@ -16,16 +20,18 @@ pub use crate::topic::{TopicFilter, TopicFilterError};
 pub use crate::types::QoS;
 pub use crate::v3::{codec, error, error::MqttClientError, sink::MqttSink};
 
-/// Client connect message
+/// Server address and MQTT `CONNECT` packet used by the connector.
 #[derive(Clone, Debug)]
 pub struct Connect<A: Address> {
+    /// Destination passed to the transport connector.
     addr: A,
+    /// Handshake packet populated by the builder methods.
     pkt: codec::Connect,
 }
 
 impl<A: Address> Connect<A> {
     #[inline]
-    /// Construct new connect message
+    /// Build a connection request with a default `CONNECT` packet.
     pub fn new(addr: A) -> Self {
         Self {
             addr,
@@ -34,14 +40,14 @@ impl<A: Address> Connect<A> {
     }
 
     #[inline]
-    /// Construct new connect message with connect packet
+    /// Build a connection request using the supplied address and `CONNECT` packet.
     pub fn with(addr: A, pkt: codec::Connect) -> Self {
         Self { addr, pkt }
     }
 
     #[inline]
     #[must_use]
-    /// Create new client and provide client id
+    /// Set the client identifier sent in the `CONNECT` packet.
     pub fn client_id<U>(mut self, client_id: U) -> Self
     where
         ByteString: From<U>,
@@ -52,7 +58,7 @@ impl<A: Address> Connect<A> {
 
     #[inline]
     #[must_use]
-    /// The handling of the Session state.
+    /// Request a fresh session and discard its state when the connection ends.
     pub fn clean_session(mut self) -> Self {
         self.pkt.clean_session = true;
         self
@@ -60,9 +66,10 @@ impl<A: Address> Connect<A> {
 
     #[inline]
     #[must_use]
-    /// A time interval measured in seconds.
+    /// Set the keep-alive interval in seconds.
     ///
-    /// keep-alive is disabled (set to 0) by default.
+    /// Zero disables keep-alive and is the default. Values above `u16::MAX`
+    /// are truncated to their low 16 bits.
     pub fn keep_alive(mut self, val: Seconds) -> Self {
         self.pkt.keep_alive = val.seconds() as u16;
         self
@@ -70,9 +77,9 @@ impl<A: Address> Connect<A> {
 
     #[inline]
     #[must_use]
-    /// Will Message be stored on the Server and associated with the Network Connection.
+    /// Set the will message the broker publishes after an ungraceful disconnect.
     ///
-    /// by default last will value is not set
+    /// No will message is configured by default.
     pub fn last_will(mut self, val: codec::LastWill) -> Self {
         self.pkt.last_will = Some(val);
         self
@@ -80,7 +87,7 @@ impl<A: Address> Connect<A> {
 
     #[inline]
     #[must_use]
-    /// Username can be used by the Server for authentication and authorization.
+    /// Set the username sent to the broker for authentication and authorization.
     pub fn username<U>(mut self, val: U) -> Self
     where
         ByteString: From<U>,
@@ -91,7 +98,7 @@ impl<A: Address> Connect<A> {
 
     #[inline]
     #[must_use]
-    /// Password can be used by the Server for authentication and authorization.
+    /// Set the password bytes sent to the broker.
     pub fn password(mut self, val: Bytes) -> Self {
         self.pkt.password = Some(val);
         self
@@ -99,7 +106,7 @@ impl<A: Address> Connect<A> {
 
     #[inline]
     #[must_use]
-    /// Update connect packet
+    /// Modify the `CONNECT` packet before the handshake.
     pub fn packet<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut codec::Connect),
@@ -108,6 +115,7 @@ impl<A: Address> Connect<A> {
         self
     }
 
+    /// Consume the request, transferring its address and handshake packet.
     fn into_parts(self) -> (A, codec::Connect) {
         (self.addr, self.pkt)
     }

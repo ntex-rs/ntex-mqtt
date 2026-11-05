@@ -9,6 +9,7 @@ use crate::utils::{
 
 use super::packet::{Connect, ConnectAckReason, LastWill, Packet, Publish, SubscribeReturnCode};
 
+/// Return the PUBLISH remaining length in bytes, including the declared payload.
 pub(crate) fn get_encoded_publish_size(p: &Publish) -> usize {
     // Topic + Packet Id + Payload
     if p.qos == QoS::AtLeastOnce || p.qos == QoS::ExactlyOnce {
@@ -18,18 +19,21 @@ pub(crate) fn get_encoded_publish_size(p: &Publish) -> usize {
     }
 }
 
+/// Return SUBSCRIBE body bytes for its packet identifier and filter/quality pairs.
 pub(crate) fn get_encoded_subscribe_size(topic_filters: &[(ByteString, QoS)]) -> usize {
     2 + topic_filters
         .iter()
         .fold(0, |acc, (filter, _)| acc + 2 + filter.len() + 1)
 }
 
+/// Return UNSUBSCRIBE body bytes for its packet identifier and filters.
 pub(crate) fn get_encoded_unsubscribe_size(topic_filters: &[ByteString]) -> usize {
     2 + topic_filters
         .iter()
         .fold(0, |acc, filter| acc + 2 + filter.len())
 }
 
+/// Return a control packet’s remaining length in bytes, excluding the fixed header.
 pub(crate) fn get_encoded_size(packet: &Packet) -> usize {
     match *packet {
         Packet::Connect ( ref connect ) => {
@@ -143,6 +147,7 @@ pub(super) fn validate_publish(publish: &Publish) -> Result<(), EncodeError> {
     Ok(())
 }
 
+/// Serialize a validated control packet using its precomputed remaining length.
 pub(crate) fn encode(
     packet: &Packet,
     dst: &mut BytePages,
@@ -234,6 +239,7 @@ pub(crate) fn encode(
     Ok(())
 }
 
+/// Write the PUBLISH fixed and variable headers, leaving payload bytes to the caller.
 pub(super) fn encode_publish(
     publish: &Publish,
     dst: &mut BytePages,
@@ -256,6 +262,7 @@ pub(super) fn encode_publish(
     Ok(())
 }
 
+/// Serialize CONNECT fields, deriving presence flags from optional credentials and will data.
 fn encode_connect(connect: &Connect, dst: &mut BytePages) -> Result<(), EncodeError> {
     let Connect {
         clean_session,
@@ -317,6 +324,7 @@ fn encode_connect(connect: &Connect, dst: &mut BytePages) -> Result<(), EncodeEr
     Ok(())
 }
 
+/// Unit tests for MQTT 3.1.1 packet serialization.
 #[cfg(test)]
 mod tests {
     use ntex_bytes::Bytes;
@@ -324,10 +332,20 @@ mod tests {
 
     use super::*;
 
+    /// Create a nonzero test packet identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `v` is zero.
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
     }
 
+    /// STATEMENT: Encoded fixed headers reflect packet type, publish flags, and variable remaining length.
+    ///
+    /// HOW:
+    /// - Encode PINGREQ and a retained duplicate `QoS 2` PUBLISH header.
+    /// - Compare body sizes and fixed-header bytes with the expected wire values.
     #[test]
     fn test_encode_fixed_header() {
         let mut v = BytePages::default();
@@ -353,6 +371,7 @@ mod tests {
         assert_eq!(&v.freeze()[0..3], b"\x3d\x88\x02".as_ref());
     }
 
+    /// Encode a control packet and compare its full wire representation with `expected`.
     fn assert_encode_packet(packet: &Packet, expected: &[u8]) {
         let mut v = BytePages::default();
         encode(packet, &mut v, get_encoded_size(packet) as u32).unwrap();
@@ -360,6 +379,7 @@ mod tests {
         assert_eq!(expected, &v.freeze()[..]);
     }
 
+    /// Encode PUBLISH headers, append payload bytes, and compare the complete wire representation.
     fn assert_encode_publish(packet: &Publish, pl: &[u8], expected: &[u8]) {
         let mut v = BytePages::default();
         encode_publish(packet, &mut v, get_encoded_publish_size(packet) as u32).unwrap();
@@ -368,6 +388,11 @@ mod tests {
         assert_eq!(expected, &v.freeze()[..]);
     }
 
+    /// STATEMENT: CONNECT serialization derives flags and payload fields from credentials and will data.
+    ///
+    /// HOW:
+    /// - Encode credential-bearing and will-bearing CONNECT packets with known field values.
+    /// - Compare complete wire bytes and verify DISCONNECT encodes as its empty frame.
     #[test]
     fn test_encode_connect_packets() {
         assert_encode_packet(
@@ -404,6 +429,11 @@ mod tests {
         assert_encode_packet(&Packet::Disconnect, b"\xe0\x00");
     }
 
+    /// STATEMENT: PUBLISH serialization includes the correct flags, topic, optional identifier, and payload.
+    ///
+    /// HOW:
+    /// - Encode retained duplicate `QoS 2` and ordinary `QoS 0` publications with identical data.
+    /// - Compare each complete wire frame with the expected bytes and length.
     #[test]
     fn test_encode_publish_packets() {
         assert_encode_publish(
@@ -433,6 +463,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Subscription packet serialization preserves identifiers, ordered filters, and result codes.
+    ///
+    /// HOW:
+    /// - Encode SUBSCRIBE, SUBACK, UNSUBSCRIBE, and UNSUBACK packets with known values.
+    /// - Compare each complete wire frame and byte count with the expected representation.
     #[test]
     fn test_encode_subscribe_packets() {
         assert_encode_packet(
@@ -477,12 +512,22 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Ping requests and responses encode as empty two-byte frames.
+    ///
+    /// HOW:
+    /// - Encode `Packet::PingRequest` and `Packet::PingResponse`.
+    /// - Compare the output lengths and complete bytes with PINGREQ and PINGRESP frames.
     #[test]
     fn test_encode_ping_packets() {
         assert_encode_packet(&Packet::PingRequest, b"\xc0\x00");
         assert_encode_packet(&Packet::PingResponse, b"\xd0\x00");
     }
 
+    /// STATEMENT: CONNACK only sets session-present for accepted connections.
+    ///
+    /// HOW:
+    /// - Encode accepted acknowledgments with both session flags and a refused acknowledgment requesting session-present.
+    /// - Compare bytes to verify accepted flags are preserved and the refused flag is cleared.
     #[test]
     fn test_encode_connack_session_present() {
         let ack = |session_present, return_code| {

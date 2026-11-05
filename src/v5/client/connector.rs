@@ -12,10 +12,13 @@ use super::{Connect, connection::Client, error::MqttClientError, error::MqttProt
 use crate::MqttServiceConfig;
 use crate::v5::shared::{MqttShared, MqttSinkPool};
 
-/// Mqtt client connector factory
+/// Service that opens a transport and performs an MQTT 5 client handshake.
 pub struct MqttConnector<A, T> {
+    /// Underlying transport connector, also used for readiness and shutdown.
     connector: T,
+    /// Reusable acknowledgement channels shared by connections from this service.
     pool: Rc<MqttSinkPool>,
+    /// Address type accepted by this connector.
     _t: PhantomData<A>,
 }
 
@@ -30,7 +33,7 @@ where
     A: Address,
 {
     #[allow(clippy::new_ret_no_self)]
-    /// Create new mqtt connector
+    /// Create a client connector using the default network transport connector.
     pub fn new() -> MqttConnector<A, Connector<A>> {
         MqttConnector {
             connector: Connector::default(),
@@ -44,7 +47,7 @@ impl<A, T> MqttConnector<A, T>
 where
     A: Address,
 {
-    /// Use custom connector
+    /// Replace the transport connector while retaining the shared sink pool.
     pub fn connector<U, F>(self, connector: F) -> MqttConnector<A, U>
     where
         F: IntoService<U, SharedCfg, connect::Connect<A>>,
@@ -80,7 +83,7 @@ where
         ctx.shutdown(&self.connector).await;
     }
 
-    /// Connect to mqtt server
+    /// Open the transport and await `CONNACK` within the configured handshake timeout.
     async fn call(
         &self,
         req: Connect<A>,
@@ -105,6 +108,7 @@ where
     S: Service<SharedCfg, connect::Connect<A>, Error = Error<connect::ConnectError>>,
     IoBoxed: From<S::Res>,
 {
+    /// Send `CONNECT`, validate `CONNACK`, and retain negotiated limits for the client.
     async fn connect_inner(
         &self,
         addr: A,
