@@ -1,14 +1,17 @@
 use super::*;
 
-/// Packet sent by the scripted server, raw bytes are used for packets
-/// the encoder refuses to produce
+/// Script step supporting encoded packets, deliberately invalid wire bytes, and inter-packet
+/// delays.
 enum Out {
+    /// Packet or payload chunk accepted by the peer-facing encoder.
     Pkt(Encoded),
+    /// Hand-built bytes bypassing encoder validation for invalid-packet cases.
     Raw(&'static [u8]),
-    /// delay, the peer must process the previous packets separately
+    /// Fifty-millisecond delay allowing the peer to process preceding packets separately.
     Gap,
 }
 
+/// Builds an empty scripted publish with the supplied topic, QoS, and optional identifier.
 fn srv_publish(topic: &str, qos: QoS, packet_id: Option<u16>) -> Out {
     Out::Pkt(Encoded::Publish(
         pkt_publish_to(topic, qos, packet_id),
@@ -16,6 +19,7 @@ fn srv_publish(topic: &str, qos: QoS, packet_id: Option<u16>) -> Out {
     ))
 }
 
+/// Builds a scripted successful publish-release packet for the supplied identifier.
 fn srv_pubrel(packet_id: u16) -> Out {
     Out::Pkt(Encoded::Packet(Packet::PublishRelease(
         codec::PublishAck2 {
@@ -25,6 +29,7 @@ fn srv_pubrel(packet_id: u16) -> Out {
     )))
 }
 
+/// Builds an expected successful QoS 1 acknowledgment for the supplied identifier.
 fn cl_ack(packet_id: u16) -> Packet {
     Packet::PublishAck(codec::PublishAck {
         packet_id: pid(packet_id),
@@ -32,6 +37,7 @@ fn cl_ack(packet_id: u16) -> Packet {
     })
 }
 
+/// Builds an expected QoS 2 receipt with the supplied identifier and reason.
 fn cl_rec(packet_id: u16, reason_code: codec::PublishAckReason) -> Packet {
     Packet::PublishReceived(codec::PublishAck {
         packet_id: pid(packet_id),
@@ -40,6 +46,7 @@ fn cl_rec(packet_id: u16, reason_code: codec::PublishAckReason) -> Packet {
     })
 }
 
+/// Builds an expected disconnect with the supplied protocol or capability failure reason.
 fn cl_disconnect(reason_code: codec::DisconnectReasonCode) -> Packet {
     Packet::Disconnect(Box::new(codec::Disconnect {
         reason_code,
@@ -47,10 +54,10 @@ fn cl_disconnect(reason_code: codec::DisconnectReasonCode) -> Packet {
     }))
 }
 
-/// Number of the client dispatcher cases
+/// Number of client-dispatcher scripts, including protocol failures and valid exchanges.
 const CASES: u8 = 28;
 
-/// Packets sent by the scripted server and the expected client responses
+/// Returns the server script and expected client responses for one client-dispatcher case.
 #[allow(clippy::too_many_lines)]
 fn client_case(case: u8) -> (Vec<Out>, Vec<Packet>) {
     use codec::{DisconnectReasonCode as D, PublishAckReason as R};
@@ -299,25 +306,24 @@ fn client_case(case: u8) -> (Vec<Out>, Vec<Packet>) {
     }
 }
 
-/// A case is terminal when the client closes the connection, either silently
-/// or with a `Disconnect` packet
+/// Identifies scripts expecting client closure, either silently or after a disconnect packet.
 fn is_terminal(expected: &[Packet]) -> bool {
     expected.is_empty() || matches!(expected.last(), Some(Packet::Disconnect(_)))
 }
 
-/// Sentinel packet id, the response to it ends a non terminal script
+/// Unused packet identifier whose completion response marks the end of a nonterminal script.
 const SENTINEL: u16 = 9;
 
 /// Packets received by `scripted_server`, tagged with the case they belong to
 type CaseLog = Arc<Mutex<Vec<(u8, Packet)>>>;
 
-/// Raw server that runs `client_case` scripts requested by the client,
-/// the log keeps the case a packet was received for
+/// Starts a raw server that runs requested `client_case` scripts and records responses tagged
+/// by case.
 fn scripted_server() -> (server::TestServer, CaseLog) {
     let log = Arc::new(Mutex::new(Vec::new()));
     let log2 = log.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let log = log2.clone();
         fn_service(async move |io: ntex::io::Io| {
             let codec = codec::Codec::default();
@@ -363,15 +369,21 @@ fn scripted_server() -> (server::TestServer, CaseLog) {
     (srv, log)
 }
 
-/// Every packet of a `client_case` script must be accepted by the encoder of
-/// a server codec, packets the encoder refuses must use `Out::Raw`
+/// STATEMENT: Scripted client-dispatcher inputs encode successfully unless deliberately
+/// represented as raw wire bytes.
+///
+/// HOW:
+/// - Complete a real client handshake so the raw server codec uses negotiated server-mode limits.
+/// - Encode every `client_case` script, finishing any incomplete payload before encoding the
+///   next case.
+/// - Wait for script encoding to finish and assert an empty error log.
 #[ntex::test]
 async fn test_client_case_scripts_encode() {
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
     let done = Arc::new(AtomicBool::new(false));
     let (errors2, done2) = (errors.clone(), done.clone());
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let (errors, done) = (errors2.clone(), done2.clone());
         fn_service(async move |io: ntex::io::Io| {
             // a decoded CONNECT switches the codec to the server mode and
@@ -424,6 +436,15 @@ async fn test_client_case_scripts_encode() {
     assert_eq!(*errors.lock().unwrap(), Vec::<String>::new());
 }
 
+/// STATEMENT: The client dispatcher applies protocol validation, duplicate handling, topic
+/// aliases, receive limits, and streaming rules.
+///
+/// HOW:
+/// - Run all 28 scripted server cases, holding slow publishes behind a gate until the script
+///   ends or the connection closes.
+/// - Compare each case's response multiset, including the completion sentinel for nonterminal
+///   cases, and assert the expected connection state.
+/// - Check that the received payloads include the reassembled `abcdefghi` stream.
 #[ntex::test]
 async fn test_client_dispatcher() {
     let (srv, log) = scripted_server();
@@ -518,6 +539,7 @@ async fn test_client_dispatcher() {
     );
 }
 
+/// Builds a scripted subscription for the supplied filters and optional subscription identifier.
 fn srv_subscribe(packet_id: u16, filters: &[&str], id: Option<u32>) -> Out {
     Out::Pkt(Encoded::Packet(Packet::Subscribe(codec::Subscribe {
         packet_id: pid(packet_id),
@@ -530,6 +552,7 @@ fn srv_subscribe(packet_id: u16, filters: &[&str], id: Option<u32>) -> Out {
     })))
 }
 
+/// Builds a scripted unsubscription for the supplied filters.
 fn srv_unsubscribe(packet_id: u16, filters: &[&str]) -> Out {
     Out::Pkt(Encoded::Packet(Packet::Unsubscribe(codec::Unsubscribe {
         packet_id: pid(packet_id),
@@ -538,8 +561,8 @@ fn srv_unsubscribe(packet_id: u16, filters: &[&str]) -> Out {
     })))
 }
 
-/// Packets sent by a client and the expected server responses, `true` selects
-/// the server with the restricted capabilities
+/// Returns the restricted-capability flag, client script, and expected responses for a server
+/// case.
 #[allow(clippy::too_many_lines)]
 fn server_case(case: u8) -> (bool, Vec<Out>, Vec<Packet>) {
     use codec::{DisconnectReasonCode as D, SubscribeAckReason as S, UnsubscribeAckReason as U};
@@ -811,10 +834,20 @@ fn server_case(case: u8) -> (bool, Vec<Out>, Vec<Packet>) {
     }
 }
 
+/// STATEMENT: The server dispatcher validates incoming publishes and subscriptions against
+/// protocol rules and advertised capabilities.
+///
+/// HOW:
+/// - Run 24 packet scripts against ordinary or capability-restricted servers with slow
+///   handlers for identifier-collision cases.
+/// - Compare each response multiset for validation errors, alias resolution, duplicate
+///   identifiers, streaming, and session-expiry checks.
+/// - Assert terminal cases close the connection and nonterminal cases remain open without
+///   extra packets.
 #[ntex::test]
 async fn test_server_dispatcher() {
     let build = |strict: bool| {
-        server::TestServerBuilder::new(async move || {
+        server::TestServerBuilder::new(async move |_| {
             MqttServer::new(async |p: Publish| {
                 if p.publish_topic() == "slow" {
                     sleep(Millis(100)).await;

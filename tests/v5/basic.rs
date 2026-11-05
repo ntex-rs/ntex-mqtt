@@ -1,8 +1,14 @@
 use super::*;
 
+/// STATEMENT: A connected client can publish to a valid topic but rejects a wildcard topic.
+///
+/// HOW:
+/// - Start an acknowledging server and the default client dispatcher.
+/// - Send QoS 1 messages to `test` and `#`; assert success for the former and an error for the
+///   latter.
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
     });
 
@@ -29,9 +35,15 @@ async fn test_simple() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A rejected connection exposes the server's refusal reason to the client.
+///
+/// HOW:
+/// - Reject the handshake with `NotAuthorized`.
+/// - Connect with `try_connect_client` and assert that the returned acknowledgment error
+///   carries that reason.
 #[ntex::test]
 async fn test_connect_failed() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
             async move |hnd: Connect| {
                 Ok::<_, ()>(hnd.failed::<St>(codec::ConnectAckReason::NotAuthorized))
@@ -53,9 +65,15 @@ async fn test_connect_failed() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A client publish fails with a server configured to close its sink before
+/// acknowledging.
+///
+/// HOW:
+/// - Use a publish handler that closes its sink before delaying its acknowledgment.
+/// - Publish to `#` and assert that the send returns an error.
 #[ntex::test]
 async fn test_disconnect() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |con: &Session<St>| {
             let sink = con.sink().clone();
             Ok::<_, Infallible>(fn_service(async move |p: Publish| {
@@ -82,9 +100,16 @@ async fn test_disconnect() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A client publish fails with a server configured to close its sink with
+/// `ServerMoved`.
+///
+/// HOW:
+/// - Configure a publish handler to call `close_with_reason` with `ServerMoved` before
+///   acknowledging.
+/// - Publish to `#` from a running client and assert that the send fails.
 #[ntex::test]
 async fn test_disconnect_with_reason() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |con: &Session<St>| {
             let sink = con.sink().clone();
             Ok::<_, Infallible>(fn_service(async move |p: Publish| {
@@ -115,9 +140,16 @@ async fn test_disconnect_with_reason() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Errors from both the disconnect protocol handler and the stop handler still
+/// close the connection.
+///
+/// HOW:
+/// - Make the protocol handler return `TestError` for a disconnect and the control handler
+///   return another error.
+/// - Send a disconnect after the handshake and assert end of stream.
 #[ntex::test]
 async fn test_nested_errors_handling() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async move |msg| {
                 if let ProtocolMessage::Disconnect(_) = msg {
@@ -145,9 +177,16 @@ async fn test_nested_errors_handling() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A protocol-handler error while processing a disconnect closes the connection
+/// without a reply.
+///
+/// HOW:
+/// - Fail the disconnect handler and let the control handler propose an
+///   `ImplementationSpecificError` disconnect.
+/// - Send a disconnect and assert that the peer closes without sending a packet.
 #[ntex::test]
 async fn test_disconnect_on_error() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async move |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async move |msg| {
                 if let ProtocolMessage::Disconnect(_) = msg {
@@ -183,9 +222,14 @@ async fn test_disconnect_on_error() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: The default control service disconnects a client when subscription handling fails.
+///
+/// HOW:
+/// - Return `TestError` from the subscribe protocol handler.
+/// - Send a subscription after the handshake and assert that the next packet is a disconnect.
 #[ntex::test]
 async fn test_disconnect_after_control_error() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async move |msg| match msg {
                 ProtocolMessage::Subscribe(_) => Err(TestError),
@@ -224,6 +268,12 @@ async fn test_disconnect_after_control_error() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A second connect or a client-sent ping response is reported as a protocol violation.
+///
+/// HOW:
+/// - For each unexpected packet, complete a handshake and send that packet.
+/// - Assert a `ProtocolError` disconnect, connection closure, and the corresponding violation
+///   message captured by the control service.
 #[ntex::test]
 async fn test_unexpected_packet() -> std::io::Result<()> {
     let connect_pkt = || Encoded::Packet(codec::Connect::default().client_id("user").into());
@@ -240,7 +290,7 @@ async fn test_unexpected_packet() -> std::io::Result<()> {
     ] {
         let error = Arc::new(Mutex::new(None));
         let error2 = error.clone();
-        let srv = server::test_server(async move || {
+        let srv = server::test_server(async move |_| {
             let error = error2.clone();
             MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
                 .control(async move |msg| {
@@ -279,9 +329,15 @@ async fn test_unexpected_packet() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: The advertised topic-alias maximum is inclusive and larger aliases are rejected.
+///
+/// HOW:
+/// - Advertise a maximum alias of `2` and verify it in the connection acknowledgment.
+/// - Publish with alias `2` and expect an acknowledgment; publish with alias `3` and expect
+///   `TopicAliasInvalid`.
 #[ntex::test]
 async fn test_topic_alias_max() -> std::io::Result<()> {
-    let srv = server::TestServerBuilder::new(async || {
+    let srv = server::TestServerBuilder::new(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_topic_alias(2)))
@@ -320,6 +376,14 @@ async fn test_topic_alias_max() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Acknowledging a QoS 1 publish with a QoS 2 acknowledgment terminates the
+/// connection without panicking.
+///
+/// HOW:
+/// - Trigger a server QoS 1 publish and answer it with either a publish-received or
+///   publish-complete packet.
+/// - Assert a `ProtocolError` disconnect, the expected-acknowledgment violation message, and a
+///   pending-send result of `Disconnected`.
 #[ntex::test]
 async fn test_unexpected_ack_type() -> std::io::Result<()> {
     // QoS 1 PUBLISH acknowledged with PUBREC or PUBCOMP (MQTT 5.0, 4.3.2, 4.3.3)
@@ -344,7 +408,7 @@ async fn test_unexpected_ack_type() -> std::io::Result<()> {
         let error = Arc::new(Mutex::new(None));
         let result = Arc::new(Mutex::new(None));
         let (error2, result2) = (error.clone(), result.clone());
-        let srv = server::test_server(async move || {
+        let srv = server::test_server(async move |_| {
             let error = error2.clone();
             let result = result2.clone();
             MqttServer::new(async move |ses: &Session<St>| {
@@ -420,12 +484,17 @@ async fn test_unexpected_ack_type() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A ping request reaches the protocol service and receives a ping response.
+///
+/// HOW:
+/// - Set a flag when the server handles `ProtocolMessage::Ping` and acknowledge it.
+/// - Send a ping request and assert both the ping response and the handler flag.
 #[ntex::test]
 async fn test_ping() -> std::io::Result<()> {
     let ping = Arc::new(AtomicBool::new(false));
     let ping2 = ping.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let ping = ping2.clone();
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async move |msg| match msg {
@@ -450,9 +519,15 @@ async fn test_ping() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Disabling problem information omits acknowledgment properties and reason strings.
+///
+/// HOW:
+/// - Connect with `request_problem_info` disabled and a 30-byte maximum packet size.
+/// - Have the server attach large user properties and a reason to a QoS 1 acknowledgment;
+///   assert both are absent in the received acknowledgment.
 #[ntex::test]
 async fn test_request_problem_info() {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async move |p: Publish| {
             Ok::<_, TestError>(
                 p.ack()
@@ -491,9 +566,17 @@ async fn test_request_problem_info() {
     assert!(res.reason_string.is_none());
 }
 
+/// STATEMENT: Subscription rejection acknowledgments preserve the configured status and reason
+/// string.
+///
+/// HOW:
+/// - Fail the requested filter with `ImplementationSpecificError` and set an acknowledgment
+///   reason.
+/// - Send a subscription and compare the complete acknowledgment, including its packet
+///   identifier and reason string.
 #[ntex::test]
 async fn test_suback_with_reason() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async move |msg| match msg {
                 ProtocolMessage::Subscribe(mut msg) => {
@@ -543,6 +626,13 @@ async fn test_suback_with_reason() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A buffered publish and following disconnect are both delivered to the configured
+/// handlers.
+///
+/// HOW:
+/// - Send a connect, then buffer a publish and disconnect before flushing and dropping the raw
+///   connection.
+/// - Assert that both the publish flag and disconnect flag were set.
 #[ntex::test]
 async fn test_handle_incoming() -> std::io::Result<()> {
     let publish = Arc::new(AtomicBool::new(false));
@@ -550,7 +640,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     let disconnect = Arc::new(AtomicBool::new(false));
     let disconnect2 = disconnect.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let publish = publish2.clone();
         let disconnect = disconnect2.clone();
         MqttServer::new(async move |p: Publish| {
@@ -593,6 +683,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Binds the server QoS limits into a closure that checks publish handling after disconnect.
 fn make_handle_or_drop_test(
     max_qos: QoS,
     handle_qos_after_disconnect: Option<QoS>,
@@ -606,6 +697,8 @@ fn make_handle_or_drop_test(
     }
 }
 
+/// Buffers a publish followed by a disconnect, verifies disconnect handling, and reports
+/// publish delivery.
 async fn handle_or_drop_publish_after_disconnect(
     publish_qos: QoS,
     max_qos: QoS,
@@ -616,7 +709,7 @@ async fn handle_or_drop_publish_after_disconnect(
     let disconnect = Arc::new(AtomicBool::new(false));
     let disconnect2 = disconnect.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let publish = publish2.clone();
         let disconnect = disconnect2.clone();
         MqttServer::new(async move |p: Publish| {
@@ -682,6 +775,12 @@ async fn handle_or_drop_publish_after_disconnect(
     publish.load(Relaxed)
 }
 
+/// STATEMENT: Buffered publishes within the configured post-disconnect QoS threshold are handled.
+///
+/// HOW:
+/// - Vary the server maximum QoS and `handle_qos_after_disconnect` across QoS 0, 1, and 2.
+/// - For each permitted QoS, buffer a publish before a disconnect and assert that both
+///   handlers run.
 #[ntex::test]
 async fn test_handle_incoming_after_disconnect() -> std::io::Result<()> {
     let handle_publish = make_handle_or_drop_test(QoS::AtMostOnce, Some(QoS::AtMostOnce));
@@ -702,12 +801,18 @@ async fn test_handle_incoming_after_disconnect() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Publishing above the server's maximum QoS produces a protocol violation and a
+/// specific disconnect reason.
+///
+/// HOW:
+/// - Limit the server to QoS 0 and capture protocol violations in its control service.
+/// - Send a QoS 1 publish and assert `QosNotSupported` together with the violation flag.
 #[ntex::test]
 async fn test_max_qos() -> std::io::Result<()> {
     let violated = Arc::new(AtomicBool::new(false));
     let violated2 = violated.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let violated = violated2.clone();
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .control(async move |msg| {
@@ -745,9 +850,15 @@ async fn test_max_qos() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A server that advertises no retained-message support rejects retained QoS 0 and
+/// QoS 1 publishes.
+///
+/// HOW:
+/// - Set `retain_available` to `false` and verify the advertised capability on each connection.
+/// - Send retained messages at both QoS levels and assert `RetainNotSupported` disconnects.
 #[ntex::test]
 async fn test_retain_not_available() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
             async |msg: Connect| {
                 Ok::<_, TestError>(msg.ack(St).with(|ack| ack.retain_available = false))
@@ -789,9 +900,17 @@ async fn test_retain_not_available() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Unavailable shared and wildcard subscription capabilities produce distinct
+/// disconnect reasons.
+///
+/// HOW:
+/// - Disable shared and wildcard subscriptions in the connection acknowledgment and verify
+///   both flags.
+/// - Subscribe to a shared filter and a wildcard filter on separate connections; assert the
+///   matching unsupported-capability reason.
 #[ntex::test]
 async fn test_subscription_not_available() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
             async |msg: Connect| {
                 Ok::<_, TestError>(msg.ack(St).with(|ack| {
@@ -846,9 +965,16 @@ async fn test_subscription_not_available() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Closing the sink from an error handler sends one disconnect before the
+/// connection ends.
+///
+/// HOW:
+/// - Fail a server publish handler and close its sink with `ServerMoved` from the control service.
+/// - Send a QoS 0 publish over a framed connection; assert one matching disconnect followed by
+///   end of stream.
 #[ntex::test]
 async fn test_disconnect_once() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async |_: Publish| Err(TestError))
             .control(async move |con: &Session<St>| {
                 let sink = con.sink().clone();
@@ -903,7 +1029,12 @@ async fn test_disconnect_once() -> std::io::Result<()> {
     Ok(())
 }
 
-/// MQTT 3.14.2-2 Non-Zero Session Expiry Interval is set on DISCONNECT
+/// STATEMENT: A disconnect cannot increase an initially zero session-expiry interval.
+///
+/// HOW:
+/// - Connect with zero session expiry, then send a disconnect requesting ten seconds.
+/// - Assert a `ProtocolError` disconnect, notification of the control service, and subsequent
+///   connection closure.
 #[ntex::test]
 async fn protocol_error_session_expiry() -> std::io::Result<()> {
     let val = Arc::new(AtomicBool::new(false));
@@ -911,7 +1042,7 @@ async fn protocol_error_session_expiry() -> std::io::Result<()> {
     let (tx, rx) = oneshot::channel();
     let tx = Arc::new(Mutex::new(Some(tx)));
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let tx = tx.clone();
         let val = val2.clone();
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
@@ -980,9 +1111,16 @@ async fn protocol_error_session_expiry() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Unsupported protocol levels receive a version-appropriate refusal before the
+/// connection closes.
+///
+/// HOW:
+/// - Send hand-built connect packets using protocol levels `3`, `4`, `0`, `6`, and `0xff`.
+/// - Assert v3 refusal packets for levels `3` and `4`, v5 `UnsupportedProtocolVersion` packets
+///   for the others, and end of stream in every case.
 #[ntex::test]
 async fn test_handshake_unsupported_protocol_level() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
     });
     let connect_pkt = |level| {
@@ -1035,11 +1173,20 @@ async fn test_handshake_unsupported_protocol_level() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Invalid will topics and will response topics are rejected before the handshake
+/// service is called.
+///
+/// HOW:
+/// - Send raw connect packets with empty or wildcard will topics and wildcard response topics.
+/// - Assert `ProtocolError` acknowledgments containing the violated requirement, connection
+///   closure, and an untouched handshake flag.
+/// - Send a valid will and response topic; assert a successful acknowledgment and a set
+///   handshake flag.
 #[ntex::test]
 async fn test_handshake_invalid_will_topic() -> std::io::Result<()> {
     let called = Arc::new(AtomicBool::new(false));
     let called2 = called.clone();
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let called = called2.clone();
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
             async move |msg: Connect| {
@@ -1110,11 +1257,18 @@ async fn test_handshake_invalid_will_topic() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Subscription and unsubscription sends are allowed on client sinks but not server
+/// sinks.
+///
+/// HOW:
+/// - Attempt both sends from the server session and record their results.
+/// - Perform both operations from the client and assert successful acknowledgment statuses and
+///   two server-side `NotAllowed` errors.
 #[ntex::test]
 async fn test_subscribe_client_only() {
     let server_res = Arc::new(Mutex::new(Vec::new()));
     let server_res2 = server_res.clone();
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let server_res = server_res2.clone();
         MqttServer::new(move |ses: &Session<St>| {
             let sink = ses.sink().clone();
@@ -1180,11 +1334,20 @@ async fn test_subscribe_client_only() {
     );
 }
 
+/// STATEMENT: Invalid handshake traffic is rejected without invoking the handshake service or
+/// preventing later connections.
+///
+/// HOW:
+/// - Send non-connect first packets, malformed connects, an unsupported level, invalid wills,
+///   and an early peer close.
+/// - Check silent closure where appropriate, version or protocol refusal acknowledgments
+///   otherwise, and no handshake-service calls.
+/// - Complete a valid handshake, exchange a ping, and assert exactly one handshake-service call.
 #[ntex::test]
 async fn test_handshake_rejected() {
     let called = Arc::new(AtomicUsize::new(0));
     let called2 = called.clone();
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let called = called2.clone();
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
             async move |msg: Connect| {
@@ -1275,7 +1438,13 @@ async fn test_handshake_rejected() {
     assert_eq!(called.load(Relaxed), 1);
 }
 
-/// Packets that follow a DISCONNECT in the same read are ignored
+/// STATEMENT: Packets following a disconnect in the same buffered write are ignored.
+///
+/// HOW:
+/// - Buffer a disconnect followed by authentication, subscription, unsubscription, and publish
+///   packets.
+/// - Assert closure without acknowledgments, no publish-handler calls, and only the disconnect
+///   in the protocol log.
 #[ntex::test]
 async fn test_packets_after_disconnect() {
     let published = Arc::new(AtomicUsize::new(0));
@@ -1283,7 +1452,7 @@ async fn test_packets_after_disconnect() {
     let proto = Arc::new(Mutex::new(Vec::<&'static str>::new()));
     let proto2 = proto.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let (published, proto) = (published2.clone(), proto2.clone());
         MqttServer::new(move |p: Publish| {
             let published = published.clone();
@@ -1348,10 +1517,15 @@ async fn test_packets_after_disconnect() {
     assert_eq!(*proto.lock().unwrap(), vec!["disconnect"]);
 }
 
-/// A protocol handler can close the connection with `disconnect`
+/// STATEMENT: Protocol handlers that request disconnection currently close the connection
+/// without a response packet.
+///
+/// HOW:
+/// - Return `disconnect` for a ping and `disconnect_with` for an incoming disconnect.
+/// - Send each packet on a separate connection and assert end of stream without a reply.
 #[ntex::test]
 async fn test_protocol_disconnect() {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async |msg: ProtocolMessage| {
                 Ok::<_, TestError>(match msg {

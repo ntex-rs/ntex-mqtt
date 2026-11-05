@@ -9,7 +9,9 @@ use ntex_util::time::Seconds;
 /// currently armed for.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(super) struct Timers {
+    /// Purpose of the transport timer; updated whenever the dispatcher arms or stops it.
     pub(super) active: Timer,
+    /// Partial-frame progress retained across decode attempts and streamed payload chunks.
     pub(super) read: ReadPhase,
 }
 
@@ -26,13 +28,17 @@ pub(super) enum ReadPhase {
 /// The purpose of the armed dispatcher timer.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(super) enum Timer {
+    /// No dispatcher deadline is armed.
     Stopped,
+    /// Deadline for receiving the next complete control packet while idle or partially reading.
     KeepAlive,
+    /// Rate-check period for an incomplete frame, subject to its cumulative time budget.
     FrameRead,
     /// Write timeout, from enabling write backpressure until it is disabled.
     Write,
 }
 
+/// Byte accounting and remaining timeout budget for the current incomplete frame.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(super) struct ReadProgress {
     /// Application read buffer length at the last decode attempt.
@@ -47,8 +53,8 @@ pub(super) struct ReadProgress {
 impl Timers {
     /// Creates idle timer state.
     ///
-    /// The dispatcher starts after the mqtt handshake, so the connection is
-    /// idle and keep-alive applies until the next frame starts. A timer left
+    /// The dispatcher starts after the MQTT handshake, so the connection is
+    /// idle; the dispatcher selects a timer after its first decode attempt. A timer left
     /// on the transport by the handshake does not apply to the dispatcher.
     pub(super) fn new(io: &IoBoxed) -> Self {
         io.stop_timer();
@@ -108,7 +114,7 @@ impl Timers {
     /// Selects the read-side timer.
     ///
     /// A frame being read is bounded by the frame read rate, when one is
-    /// configured. Otherwise keep-alive applies, mqtt keep-alive bounds the
+    /// configured. Otherwise keep-alive applies; MQTT keep-alive bounds the
     /// time between complete control packets.
     pub(super) fn select(&self, cfg: &IoConfig, keepalive: bool, handling: bool) -> Timer {
         match self.read {
@@ -120,6 +126,7 @@ impl Timers {
 }
 
 impl ReadPhase {
+    /// Returns mutable rate-tracking state only while a frame is incomplete.
     pub(super) fn progress(&mut self) -> Option<&mut ReadProgress> {
         match self {
             ReadPhase::Idle => None,
@@ -129,6 +136,7 @@ impl ReadPhase {
 }
 
 impl ReadProgress {
+    /// Initial byte counters with no cumulative read-time budget.
     pub(super) const EMPTY: ReadProgress = ReadProgress {
         remains: 0,
         consumed: 0,

@@ -4,6 +4,7 @@ use ntex_bytes::{Buf, BufMut, BytePages, ByteString, Bytes};
 
 use crate::error::{DecodeError, EncodeError};
 
+/// Return the supplied error when a codec validation condition fails.
 macro_rules! ensure {
     ($cond:expr, $e:expr) => {
         if !($cond) {
@@ -17,6 +18,7 @@ macro_rules! ensure {
     };
 }
 
+/// Define a byte-valued protocol enum with checked decoding and byte conversion.
 macro_rules! prim_enum {
     (
         $( #[$enum_attr:meta] )*
@@ -52,11 +54,15 @@ macro_rules! prim_enum {
     };
 }
 
+/// Decode a wire-format field while advancing the input buffer.
 pub(crate) trait Decode: Sized {
+    /// Consume one field, rejecting missing bytes or invalid values.
     fn decode(src: &mut Bytes) -> Result<Self, DecodeError>;
 }
 
+/// Decode a property value into its destination field.
 pub(super) trait Property {
+    /// Consume the property value, rejecting invalid or forbidden duplicate values.
     fn read_value(&mut self, src: &mut Bytes) -> Result<(), DecodeError>;
 }
 
@@ -124,6 +130,7 @@ impl Decode for ByteString {
     }
 }
 
+/// Consume a v5 property-length prefix and split off exactly that many property bytes.
 pub(crate) fn take_properties(src: &mut Bytes) -> Result<Bytes, DecodeError> {
     let prop_len = decode_variable_length_cursor_v5(src)?;
     ensure!(
@@ -158,6 +165,7 @@ pub(crate) fn decode_variable_length_cursor_v5<B: Buf>(src: &mut B) -> Result<u3
     decode_variable_length_cursor(src, true)
 }
 
+/// Return a variable integer and consumed byte count, or `None` for incomplete input.
 fn decode_variable_length_slice(
     src: &[u8],
     minimal: bool,
@@ -170,6 +178,7 @@ fn decode_variable_length_slice(
     }
 }
 
+/// Consume up to four variable-integer bytes, optionally enforcing minimal encoding.
 #[allow(clippy::cast_lossless)] // safe: allow cast through `as` because it is type-safe
 fn decode_variable_length_cursor<B: Buf>(src: &mut B, minimal: bool) -> Result<u32, DecodeError> {
     let mut shift: u32 = 0;
@@ -192,9 +201,12 @@ fn decode_variable_length_cursor<B: Buf>(src: &mut B, minimal: bool) -> Result<u
     }
 }
 
+/// Encode a wire-format field and calculate its encoded byte length.
 pub(crate) trait Encode {
+    /// Return the field length in bytes, including any length prefix.
     fn encoded_size(&self) -> usize;
 
+    /// Append the field to the output, rejecting lengths that cannot be represented.
     fn encode(&self, buf: &mut BytePages) -> Result<(), EncodeError>;
 }
 
@@ -312,19 +324,25 @@ impl Encode for &[u8] {
     }
 }
 
-/// Strings have a two byte length prefix, so they are limited to 65,535 bytes,
+/// Check the MQTT string byte limit and reject embedded null characters.
+///
+/// Strings have a two-byte length prefix, so they are limited to 65,535 bytes,
 /// (MQTT 3.1.1, 1.5.3), (MQTT 5.0, 1.5.4), and must not include the null character
 /// U+0000, [MQTT-1.5.3-2] (MQTT 3.1.1, 1.5.3), [MQTT-1.5.4-2] (MQTT 5.0, 1.5.4)
 pub(crate) fn is_valid_str(s: &str) -> bool {
     is_valid_bin(s.as_bytes()) && !s.as_bytes().contains(&0)
 }
 
-/// Binary data has a two byte length prefix, so it is limited to 65,535 bytes,
+/// Check whether binary data fits the two-byte length prefix.
+///
+/// Binary data is limited to 65,535 bytes,
 /// (MQTT 3.1.1, 3.1.3.3, 3.1.3.5), (MQTT 5.0, 1.5.6)
 pub(crate) fn is_valid_bin(b: &[u8]) -> bool {
     u16::try_from(b.len()).is_ok()
 }
 
+/// Validate the length and forbidden characters of an MQTT topic name.
+///
 /// Topic names must be at least one character long and must not contain
 /// wildcard characters, [MQTT-4.7.3-1], [MQTT-4.7.1-1] (MQTT 3.1.1, 4.7),
 /// [MQTT-4.7.3-1], [MQTT-4.7.0-1] (MQTT 5.0, 4.7), or the null character,
@@ -335,6 +353,8 @@ pub(crate) fn is_valid_topic_name(topic: &str) -> bool {
         && !topic.bytes().any(|b| matches!(b, b'+' | b'#' | 0))
 }
 
+/// Validate MQTT topic-filter wildcard syntax and string constraints.
+///
 /// Topic filters must be at least one character long, [MQTT-4.7.3-1], the multi-level
 /// wildcard must be the last character and the wildcards must occupy entire levels,
 /// [MQTT-4.7.1-2], [MQTT-4.7.1-3] (MQTT 3.1.1, 4.7.1), [MQTT-4.7.1-1], [MQTT-4.7.1-2]
@@ -343,6 +363,11 @@ pub(crate) fn is_valid_topic_filter(filter: &str) -> bool {
     crate::topic::is_valid(filter) && is_valid_str(filter)
 }
 
+/// Append a minimally encoded MQTT variable byte integer.
+///
+/// # Panics
+///
+/// Panics if `len` exceeds 268,435,455, the largest four-byte MQTT integer.
 pub(crate) fn write_variable_length(len: u32, dst: &mut BytePages) {
     match len {
         0..=127 => dst.put_u8(len as u8),
@@ -368,10 +393,16 @@ pub(crate) fn write_variable_length(len: u32, dst: &mut BytePages) {
     }
 }
 
+/// Unit tests for string validation and MQTT variable byte integer codecs.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// STATEMENT: MQTT string decoding accepts valid text but rejects embedded nulls and invalid UTF-8.
+    ///
+    /// HOW:
+    /// - Decode length-prefixed ordinary text, embedded or isolated null bytes, and an overlong null encoding.
+    /// - Check decoded text and the expected malformed-packet or UTF-8 errors.
     #[test]
     fn test_decode_string_null_char() {
         let decode = |b: &'static [u8]| ByteString::decode(&mut Bytes::from_static(b));
@@ -381,8 +412,14 @@ mod tests {
         assert_eq!(decode(b"\x00\x02\xc0\x80"), Err(DecodeError::Utf8Error));
     }
 
+    /// STATEMENT: Remaining Length decoding respects byte boundaries and rejects overlong encodings.
+    ///
+    /// HOW:
+    /// - Decode boundary values for one through four bytes and check consumed byte counts.
+    /// - Check incomplete input returns `None` and a continuation beyond four bytes returns `InvalidLength`.
     #[test]
     fn test_decode_variable_length() {
+        /// Assert the decoded integer and number of bytes consumed from the supplied input.
         fn assert_variable_length<B: AsRef<[u8]> + 'static>(bytes: B, res: (u32, usize)) {
             assert_eq!(decode_variable_length(bytes.as_ref()), Ok(Some(res)));
         }
@@ -406,8 +443,14 @@ mod tests {
         assert_variable_length(b"\xff\xff\xff\x7f", (268_435_455, 4));
     }
 
+    /// STATEMENT: MQTT v3 accepts non-minimal variable integers while v5 rejects them.
+    ///
+    /// HOW:
+    /// - Decode non-minimal encodings with v3 and both v5 decoders, checking values or length errors.
+    /// - Check v5 accepts minimal boundary encodings and returns `None` for incomplete input.
     #[test]
     fn test_decode_variable_length_non_minimal() {
+        /// Calculate the value of a test encoding without requiring minimal representation.
         fn decode(b: &[u8]) -> u32 {
             b.iter()
                 .enumerate()
@@ -444,6 +487,11 @@ mod tests {
         assert_eq!(decode_variable_length_v5(b"\x80\x80"), Ok(None));
     }
 
+    /// STATEMENT: Variable integer encoding emits minimal bytes across all four width ranges.
+    ///
+    /// HOW:
+    /// - Encode representative one-, two-, three-, and four-byte values.
+    /// - Compare each output with the expected MQTT variable integer bytes.
     #[test]
     fn test_encode_variable_length() {
         let mut v = BytePages::default();

@@ -8,12 +8,19 @@ use crate::error::{DecodeError, EncodeError};
 use crate::types::packet_type;
 use crate::utils::{Decode, Property, take_properties, write_variable_length};
 
+/// Enhanced authentication packets.
 mod auth;
+/// Connection acknowledgments and negotiated capabilities.
 mod connack;
+/// Connection requests and their optional Will messages.
 mod connect;
+/// Disconnect packets and protocol-error reason mapping.
 mod disconnect;
+/// Acknowledgments for the publish delivery handshakes.
 mod pubacks;
+/// Publish headers and properties, separate from streamed payloads.
 mod publish;
+/// Subscription requests, options, and acknowledgments.
 mod subscribe;
 
 pub use auth::*;
@@ -25,7 +32,7 @@ pub use publish::*;
 pub use subscribe::*;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-/// MQTT Control Packets
+/// Non-publish MQTT control packets; publish metadata uses `Publish` separately.
 pub enum Packet {
     /// Client request to connect to Server
     Connect(Box<Connect>),
@@ -58,7 +65,7 @@ pub enum Packet {
 }
 
 impl Packet {
-    /// Returns MQTT control packet type of this packet
+    /// Returns the first fixed-header byte, including required reserved flag bits.
     pub fn packet_type(&self) -> u8 {
         match self {
             Packet::Connect(_) => packet_type::CONNECT,
@@ -157,41 +164,71 @@ impl From<Box<Auth>> for Packet {
     }
 }
 
+/// MQTT v5 property identifier bytes used in packet property blocks.
 pub(super) mod property_type {
+    /// Identifier for the Payload Format Indicator property.
     pub(crate) const UTF8_PAYLOAD: u8 = 0x01;
+    /// Identifier for the Message Expiry Interval property.
     pub(crate) const MSG_EXPIRY_INT: u8 = 0x02;
+    /// Identifier for the Content Type property.
     pub(crate) const CONTENT_TYPE: u8 = 0x03;
+    /// Identifier for the Response Topic property.
     pub(crate) const RESP_TOPIC: u8 = 0x08;
+    /// Identifier for the Correlation Data property.
     pub(crate) const CORR_DATA: u8 = 0x09;
+    /// Identifier for the Subscription Identifier property.
     pub(crate) const SUB_ID: u8 = 0x0B;
+    /// Identifier for the Session Expiry Interval property.
     pub(crate) const SESS_EXPIRY_INT: u8 = 0x11;
+    /// Identifier for the Assigned Client Identifier property.
     pub(crate) const ASSND_CLIENT_ID: u8 = 0x12;
+    /// Identifier for the Server Keep Alive property.
     pub(crate) const SERVER_KA: u8 = 0x13;
+    /// Identifier for the Authentication Method property.
     pub(crate) const AUTH_METHOD: u8 = 0x15;
+    /// Identifier for the Authentication Data property.
     pub(crate) const AUTH_DATA: u8 = 0x16;
+    /// Identifier for the Request Problem Information property.
     pub(crate) const REQ_PROB_INFO: u8 = 0x17;
+    /// Identifier for the Will Delay Interval property.
     pub(crate) const WILL_DELAY_INT: u8 = 0x18;
+    /// Identifier for the Request Response Information property.
     pub(crate) const REQ_RESP_INFO: u8 = 0x19;
+    /// Identifier for the Response Information property.
     pub(crate) const RESP_INFO: u8 = 0x1A;
+    /// Identifier for the Server Reference property.
     pub(crate) const SERVER_REF: u8 = 0x1C;
+    /// Identifier for the Reason String property.
     pub(crate) const REASON_STRING: u8 = 0x1F;
+    /// Identifier for the Receive Maximum property.
     pub(crate) const RECEIVE_MAX: u8 = 0x21;
+    /// Identifier for the Topic Alias Maximum property.
     pub(crate) const TOPIC_ALIAS_MAX: u8 = 0x22;
+    /// Identifier for the Topic Alias property.
     pub(crate) const TOPIC_ALIAS: u8 = 0x23;
+    /// Identifier for the Maximum `QoS` property.
     pub(crate) const MAX_QOS: u8 = 0x24;
+    /// Identifier for the Retain Available property.
     pub(crate) const RETAIN_AVAIL: u8 = 0x25;
+    /// Identifier for the User Property property.
     pub(crate) const USER: u8 = 0x26;
+    /// Identifier for the Maximum Packet Size property.
     pub(crate) const MAX_PACKET_SIZE: u8 = 0x27;
+    /// Identifier for the Wildcard Subscription Available property.
     pub(crate) const WILDCARD_SUB_AVAIL: u8 = 0x28;
+    /// Identifier for the Subscription Identifiers Available property.
     pub(crate) const SUB_IDS_AVAIL: u8 = 0x29;
+    /// Identifier for the Shared Subscription Available property.
     pub(crate) const SHARED_SUB_AVAIL: u8 = 0x2A;
 }
 
+/// Shared diagnostic-property blocks for publish and subscription acknowledgments.
 #[allow(clippy::ref_option, clippy::wildcard_imports)]
 mod ack_props {
     use super::*;
     use crate::v5::codec::UserProperty;
 
+    /// Counts acknowledgment properties and their length prefix within the given byte budget.
     pub(crate) fn encoded_size(
         properties: &[UserProperty],
         reason_string: &Option<ByteString>,
@@ -206,6 +243,11 @@ mod ack_props {
         encode::var_int_len(len) as usize + len
     }
 
+    /// Writes a length-prefixed acknowledgment property block using its selected byte count.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `size` is zero; use the result of `encoded_size`.
     pub(crate) fn encode(
         properties: &[UserProperty],
         reason_string: &Option<ByteString>,
@@ -245,6 +287,7 @@ mod ack_props {
     }
 }
 
+/// Unit tests for packet conversion, properties, and reason mapping.
 #[cfg(test)]
 mod tests {
     use std::num::{NonZeroU16, NonZeroU32};
@@ -255,14 +298,17 @@ mod tests {
     use super::*;
     use crate::v5::codec::{Codec, Decoded, Encoded};
 
+    /// Builds a nonzero identifier for valid packet fixtures.
     fn pid(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
     }
 
+    /// Builds repeated user-property keys to check preservation of order and duplicate keys.
     fn props() -> UserProperties {
         vec![("k".into(), "v".into()), ("k".into(), "v2".into())]
     }
 
+    /// Encodes and decodes a packet, checking equality and complete input consumption.
     fn roundtrip(pkt: Packet) {
         let codec = Codec::new();
         let mut buf = BytePages::default();
@@ -277,6 +323,7 @@ mod tests {
         assert!(src.is_empty());
     }
 
+    /// Frames a small body with a one-byte remaining length and extracts its decoded packet.
     fn decode(first: u8, body: &[u8]) -> Result<Packet, DecodeError> {
         let mut src = BytesMut::new();
         src.extend_from_slice(&[first, u8::try_from(body.len()).unwrap()]);
@@ -287,6 +334,7 @@ mod tests {
         })
     }
 
+    /// Builds a connection fixture containing credentials and all supported Will properties.
     fn connect() -> Connect {
         Connect {
             clean_start: true,
@@ -319,6 +367,7 @@ mod tests {
         }
     }
 
+    /// Builds an acknowledgment fixture with negotiated limits, capabilities, and authentication properties.
     fn connack() -> ConnectAck {
         ConnectAck {
             session_present: true,
@@ -343,6 +392,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Packet conversions retain the expected wire type and round-trip packet contents.
+    ///
+    /// HOW:
+    /// - Build every non-publish variant through its constructors or available `From` implementations.
+    /// - Check `packet_type`, encode and decode each packet, and verify equality and complete input consumption.
     #[test]
     fn packet_type_and_from() {
         let ack = PublishAck {
@@ -409,6 +463,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Connection, authentication, disconnect, and publish-acknowledgment properties survive round trips.
+    ///
+    /// HOW:
+    /// - Construct packets with populated properties and selected optional fields omitted.
+    /// - Encode and decode them, comparing packet equality and checking no buffered bytes remain.
     #[test]
     fn roundtrip_all_properties() {
         roundtrip(connect().into());
@@ -475,6 +534,11 @@ mod tests {
         }));
     }
 
+    /// STATEMENT: Connection builders set the client identifier and interpret zero receive maximum as absence.
+    ///
+    /// HOW:
+    /// - Build a connection with an identifier and nonzero maximum and inspect both fields.
+    /// - Set the maximum to zero and check `receive_max` becomes `None`.
     #[test]
     fn connect_builders() {
         let c = Connect::default().client_id("id").receive_max(5);
@@ -483,6 +547,11 @@ mod tests {
         assert_eq!(c.receive_max(0).receive_max, None);
     }
 
+    /// STATEMENT: Connection reason descriptions use specific messages where provided and a refusal fallback otherwise.
+    ///
+    /// HOW:
+    /// - Compare `reason` results for success and the explicitly described failure reasons.
+    /// - Check `Banned` uses the generic refusal description.
     #[test]
     fn connack_reason() {
         use ConnectAckReason::*;
@@ -503,6 +572,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Disconnect builders retain diagnostic text, server reference, and user properties.
+    ///
+    /// HOW:
+    /// - Chain the reason-string, server-reference, and property-update builders.
+    /// - Inspect all three resulting fields for the supplied values.
     #[test]
     fn disconnect_builders() {
         let d = Disconnect::new(DisconnectReasonCode::AdministrativeAction)
@@ -514,6 +588,11 @@ mod tests {
         assert_eq!(d.user_properties, vec![("a".into(), "b".into())]);
     }
 
+    /// STATEMENT: Protocol errors map to disconnect reasons with an implementation-specific fallback.
+    ///
+    /// HOW:
+    /// - Convert length, size, keep-alive, specification-violation, and otherwise unmapped errors.
+    /// - Compare each resulting reason code with its expected mapping.
     #[test]
     fn disconnect_from_proto_error() {
         use crate::error::{MqttProtocolError as E, SpecViolation};
@@ -544,6 +623,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Packet decoding rejects invalid properties, trailing data, and invalid disconnect reasons.
+    ///
+    /// HOW:
+    /// - Try unknown properties in four packet types and malformed disconnect bodies, checking errors.
+    /// - Decode empty and reason-only disconnect bodies and compare their defaulted contents.
     #[test]
     fn decode_errors() {
         use crate::types::packet_type as t;
@@ -580,6 +664,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Re-authentication encoding requires an authentication method.
+    ///
+    /// HOW:
+    /// - Construct `Auth` with `ReAuth` but no method.
+    /// - Encode it through `Codec` and expect `MalformedPacket`.
     #[test]
     fn auth_without_method_rejected() {
         let mut buf = BytePages::default();
@@ -593,6 +682,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Connection acknowledgments reject duplicate, invalid, or truncated maximum-quality-of-service properties.
+    ///
+    /// HOW:
+    /// - Decode bodies repeating the property, specifying two, or omitting its value.
+    /// - Check every body produces an error.
     #[test]
     fn connack_decode_errors() {
         use crate::types::packet_type as t;

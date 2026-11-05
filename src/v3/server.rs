@@ -19,17 +19,18 @@ use super::default::{ControlFactory, DefaultProtoSrv, InFlightService};
 use super::shared::{MqttShared, MqttSinkPool};
 use super::{MqttSink, Publish, Session, codec as mqtt, dispatcher::factory};
 
+/// Type-erased per-session pipeline for connection-control notifications.
 type ControlPipeline<AppSt, E, Err> =
     PipelineFactory<Session<AppSt>, Control<E>, Option<mqtt::Encoded>, MqttError<Err>, Failure>;
 
-/// Mqtt v3.1.1 server
+/// Builder for an MQTT 3.1.1 server with per-session application services.
 ///
 /// * `St` - connection state, available before the handshake
 /// * `AppSt` - session state, returned by the connect (handshake) service
 /// * `Err` - application error type
 /// * `Pub` - service for handling mqtt publish messages
 /// * `P` - service for handling protocol messages
-/// * `M` - middleware applied to the publish service
+/// * `M` - middleware applied to the decoded-packet dispatcher
 ///
 /// Every mqtt connection is handled in several steps. First step is connect. Server calls
 /// connect service with `Connect` message, during this step service can authenticate connect
@@ -49,18 +50,26 @@ type ControlPipeline<AppSt, E, Err> =
 /// factories receive `Session<AppSt>` state object as an argument. Publish service
 /// handles `Publish` packet. On success, server sends `PublishAck` packet for `QoS 1`
 /// or `PublishReceived` packet for `QoS 2` to the client, nothing is sent for `QoS 0`.
-/// In case of error connection get closed. Protocol service receives all
-/// other packets, like `Subscribe`, `Unsubscribe` etc. Control service receives
-/// errors from publish service and connection disconnect.
+/// A publish error is reported to the connection control service. The protocol
+/// service receives `PublishRelease`, `Ping`, `Subscribe`, `Unsubscribe`, and
+/// `Disconnect` messages; other delivery acknowledgments are handled internally.
+/// The connection control service receives errors, disconnect notifications, and
+/// write-backpressure changes.
 pub struct MqttServer<St, AppSt, Err, Pub, P, M = Identity>
 where
     Pub: ServiceFactory<Session<AppSt>, Publish>,
 {
+    /// Factory for application publish handlers created after a successful handshake.
     publish: Pub,
+    /// Factory for sequential protocol-message handling.
     protocol: P,
+    /// Middleware applied to the decoded-packet dispatcher.
     middleware: M,
+    /// Pipeline constructing connection-control handlers for each session.
     control: ControlPipeline<AppSt, Pub::Error, Err>,
+    /// Shared pool for sink readiness waiters and acknowledgment channels.
     pub(super) pool: Rc<MqttSinkPool>,
+    /// Tracks the pre-handshake connection-state type.
     st: PhantomData<St>,
 }
 
@@ -80,7 +89,7 @@ where
     Pub: ServiceFactory<Session<AppSt>, Publish, Res = ()> + 'static,
     Pub::InitError: IntoFailure,
 {
-    /// Create server builder and provide publish service
+    /// Create a server builder with unit pre-handshake state and a publish-service factory.
     pub fn new<I>(publish: I) -> Self
     where
         I: IntoServiceFactory<Pub, Session<AppSt>, Publish>,
@@ -98,7 +107,10 @@ where
     Pub: ServiceFactory<Session<AppSt>, Publish, Res = ()> + 'static,
     Pub::InitError: IntoFailure,
 {
-    /// Create server builder with state
+    /// Create a server builder with pre-handshake state `St` and a publish-service factory.
+    ///
+    /// The default protocol service answers pings and publish releases, but closes the
+    /// connection on subscription requests. The default middleware limits incoming publications.
     pub fn with<I>(publish: I) -> Self
     where
         I: IntoServiceFactory<Pub, Session<AppSt>, Publish>,
@@ -129,13 +141,11 @@ where
     P::InitError: IntoFailure,
 {
     #[must_use]
-    /// Registers middleware, in the form of a middleware component (type),
-    /// that runs during inbound and/or outbound processing in the request
-    /// lifecycle (request -> response), modifying request/response as
-    /// necessary, across all requests managed by the *Server*.
+    /// Stack middleware around the decoded-packet dispatcher.
     ///
-    /// Use middleware when you need to read or modify *every* request or
-    /// response in some way.
+    /// Middleware sees control packets, publications, and payload chunks, rather than
+    /// only application publish messages. Existing middleware, including the default
+    /// in-flight limiter, is retained.
     pub fn middleware<U>(self, mw: U) -> MqttServer<St, AppSt, Err, Pub, P, Stack<M, U>> {
         MqttServer {
             middleware: Stack::new(self.middleware, mw),
@@ -148,7 +158,9 @@ where
     }
 
     #[must_use]
-    /// Replace middlewares
+    /// Replace the entire decoded-packet middleware stack.
+    ///
+    /// This removes the default in-flight limiter unless the replacement includes it.
     pub fn replace_middlewares<U>(self, mw: U) -> MqttServer<St, AppSt, Err, Pub, P, U> {
         MqttServer {
             middleware: mw,
@@ -183,7 +195,10 @@ where
     }
 
     #[must_use]
-    /// Service to handle connection control messages
+    /// Set the service factory for connection errors, stops, and write-backpressure changes.
+    ///
+    /// The adapter aborts active payloads on stop and discards any encoded response
+    /// returned by this service; it produces no MQTT response packet.
     pub fn control<Srv>(
         self,
         f: impl IntoServiceFactory<Srv, Session<AppSt>, Control<Pub::Error>>,
@@ -208,7 +223,10 @@ where
         }
     }
 
-    /// Set service to handle connect and create mqtt server
+    /// Finalize the server with a handshake service that authenticates CONNECT packets.
+    ///
+    /// The service returns `ConnectAck<AppSt>` to accept or reject each connection.
+    /// Accepted sessions initialize the publish, protocol, and connection-control services.
     pub fn build<H, Hst>(
         self,
         connect: impl IntoService<H, Hst, Connect<St>>,
@@ -248,9 +266,13 @@ where
     }
 }
 
+/// Handshake adapter that reads CONNECT, authenticates it, and writes CONNACK.
 struct ConnectService<St, AppSt, S> {
+    /// Application handshake service returning accepted or rejected connection state.
     svc: S,
+    /// Sink allocation pool shared across connections created by this server.
     pool: Rc<MqttSinkPool>,
+    /// Tracks pre-handshake and accepted-session state types.
     _t: PhantomData<(St, AppSt)>,
 }
 
@@ -382,7 +404,9 @@ where
     }
 }
 
-/// Send CONNACK for a CONNECT packet rejected by the decoder, and close the connection
+/// Send a refusal for unsupported protocol levels or invalid client identifiers.
+///
+/// Other decode errors are ignored here. If encoding succeeds, shut down the transport.
 pub(crate) async fn reject_connect(io: &IoBoxed, codec: &mqtt::Codec, err: &DecodeError) {
     let return_code = match err {
         // [MQTT-3.1.2-2] (MQTT 3.1.1, 3.1.2.2)
@@ -403,10 +427,16 @@ pub(crate) async fn reject_connect(io: &IoBoxed, codec: &mqtt::Codec, err: &Deco
     }
 }
 
+/// Unit tests for server-builder formatting.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// STATEMENT: The MQTT 3.1.1 server builder has an identifiable debug representation.
+    ///
+    /// HOW:
+    /// - Construct a server with a successful publish service.
+    /// - Format it and assert the output contains `v3::MqttServer`.
     #[test]
     fn test_debug() {
         let server = MqttServer::<(), (), (), _, _, _>::new(ntex_service::fn_service(async |_| {

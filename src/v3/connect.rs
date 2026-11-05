@@ -5,6 +5,7 @@ use ntex_util::time::Seconds;
 
 use super::{Session, codec as mqtt, shared::MqttShared, sink::MqttSink};
 
+/// Idle timeout used when the client disables keep-alive or the handshake is rejected.
 const DEFAULT_KEEPALIVE: Seconds = Seconds(30);
 
 /// Keep-alive timeout for a keep-alive interval, 1.5 times of it rounded up
@@ -15,16 +16,22 @@ fn keep_alive_timeout(keep_alive: u16) -> Seconds {
     Seconds(keep_alive.saturating_add(keep_alive.div_ceil(2)))
 }
 
-/// Connect message
+/// Incoming CONNECT handshake owning the transport and pre-handshake state.
 pub struct Connect<St = ()> {
+    /// Connection transport, transferred to the handshake acknowledgment.
     io: IoBoxed,
+    /// Pre-handshake state supplied by the enclosing service.
     st: St,
+    /// Owned client CONNECT packet used for authentication and timeout defaults.
     pkt: Box<mqtt::Connect>,
+    /// CONNECT remaining length in bytes, excluding its fixed header.
     pkt_size: u32,
+    /// Connection state shared with sink handles created during the handshake.
     shared: Rc<MqttShared>,
 }
 
 impl<St> Connect<St> {
+    /// Wrap a decoded CONNECT packet and take ownership of its transport and initial state.
     pub(crate) fn new(
         pkt: Box<mqtt::Connect>,
         pkt_size: u32,
@@ -54,13 +61,13 @@ impl<St> Connect<St> {
     }
 
     #[inline]
-    /// Returns size of the CONNECT packet
+    /// Return the CONNECT remaining length in bytes, excluding the fixed header.
     pub fn packet_size(&self) -> u32 {
         self.pkt_size
     }
 
     #[inline]
-    /// Returns reference to the io object of the connection
+    /// Return the transport owned by this handshake.
     pub fn io(&self) -> &IoBoxed {
         &self.io
     }
@@ -71,17 +78,27 @@ impl<St> Connect<St> {
         &self.st
     }
 
-    /// Returns mqtt server sink
+    /// Create a sink handle sharing this connection’s transport and acknowledgment state.
+    ///
+    /// Outgoing acknowledgment capacity is configured when the handshake is accepted.
     pub fn sink(&self) -> MqttSink {
         MqttSink::new(self.shared.clone())
     }
 
-    /// Ack handshake message and set state
+    /// Accept the handshake and create a session containing `st`.
+    ///
+    /// `session_present` reports whether an existing session is being resumed; the
+    /// application is responsible for maintaining that session state. The server sends
+    /// CONNACK after the handshake service returns the acknowledgment.
     pub fn ack<AppSt>(self, st: AppSt, session_present: bool) -> ConnectAck<AppSt> {
         self.ack_and_session(st, session_present).0
     }
 
-    /// Ack handshake message and set state
+    /// Accept the handshake and return both its acknowledgment and a handle to the new session.
+    ///
+    /// The returned session shares `st` and the connection sink with the acknowledgment.
+    /// As with `ack`, the application supplies the session-resumption flag; this does
+    /// not restore subscriptions or stored messages automatically.
     pub fn ack_and_session<AppSt>(
         self,
         st: AppSt,
@@ -134,7 +151,10 @@ impl<St> Connect<St> {
     }
 
     #[inline]
-    /// Create handshake ack object with error
+    /// Reject the handshake with the supplied CONNACK return code.
+    ///
+    /// No session is created; the server sends the return code and closes the transport.
+    /// Use a refusal code rather than `ConnectAckReason::ConnectionAccepted`.
     pub fn failed<AppSt>(self, return_code: mqtt::ConnectAckReason) -> ConnectAck<AppSt> {
         ConnectAck {
             return_code,
@@ -155,15 +175,23 @@ impl<St> fmt::Debug for Connect<St> {
     }
 }
 
-/// Ack connect message
+/// Handshake result carrying the transport, optional session, and per-connection limits.
 pub struct ConnectAck<St> {
+    /// Transport returned by the handshake service.
     pub(crate) io: IoBoxed,
+    /// Accepted session; `None` causes the server to send a refusal and close.
     pub(crate) session: Option<Session<St>>,
+    /// Whether the accepted connection resumes an existing session.
     pub(crate) session_present: bool,
+    /// CONNACK refusal code used when `session` is absent.
     pub(crate) return_code: mqtt::ConnectAckReason,
+    /// Shared codec and sink state retained across the handshake.
     pub(crate) shared: Rc<MqttShared>,
+    /// Idle timeout in seconds, passed to the connection dispatcher.
     pub(crate) keepalive: Seconds,
+    /// Optional per-connection limit for outgoing messages awaiting acknowledgment.
     pub(crate) max_send: Option<u16>,
+    /// Optional per-connection remaining-length limit in bytes for the codec.
     pub(crate) max_packet_size: Option<NonZeroU32>,
 }
 
@@ -183,8 +211,8 @@ impl<St> ConnectAck<St> {
     #[must_use]
     /// Set idle time-out for the connection in seconds.
     ///
-    /// By default idle time-out is set to 1.5 times of the client's keep-alive
-    /// value, or to 30 seconds if the client's keep-alive is 0.
+    /// By default the timeout is 1.5 times the client's keep-alive, rounded up and
+    /// saturated at `u16::MAX` seconds, or 30 seconds if the client's keep-alive is zero.
     ///
     /// See [`MqttServiceConfig`](crate::MqttServiceConfig#read-timeouts) for how
     /// keep-alive interacts with the frame read rate.
@@ -194,7 +222,7 @@ impl<St> ConnectAck<St> {
     }
 
     #[must_use]
-    /// Number of outgoing concurrent messages.
+    /// Set the limit on outgoing packets awaiting acknowledgment.
     ///
     /// If value is `None` or `Some(0)`, the `MqttServiceConfig` value is used
     /// (16 messages by default).
@@ -208,13 +236,17 @@ impl<St> ConnectAck<St> {
     }
 
     #[must_use]
-    /// Maximum supported size for incoming packets.
+    /// Override the codec’s remaining-length limit in bytes after CONNECT is accepted.
+    ///
+    /// The fixed header is excluded. The same limit also applies to outgoing PUBLISH
+    /// packets, but not other outgoing control packets.
     pub fn max_packet_size(mut self, val: NonZeroU32) -> Self {
         self.max_packet_size = Some(val);
         self
     }
 }
 
+/// Unit tests for handshake state and keep-alive timeouts.
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
@@ -225,6 +257,11 @@ mod tests {
     use super::*;
     use crate::v3::shared::MqttShared;
 
+    /// STATEMENT: Keep-alive grace periods round up and saturate at the supported seconds limit.
+    ///
+    /// HOW:
+    /// - Calculate timeouts for odd and even intervals and `u16::MAX`.
+    /// - Compare the results with rounded-up 1.5-times intervals and the saturated maximum.
     #[test]
     fn test_keep_alive_timeout() {
         assert_eq!(keep_alive_timeout(1), Seconds(2));
@@ -234,7 +271,11 @@ mod tests {
         assert_eq!(keep_alive_timeout(u16::MAX), Seconds(u16::MAX));
     }
 
-    /// Server enforces 1.5 times of the client keep-alive (MQTT 3.1.1, 3.1.2.10)
+    /// STATEMENT: Accepted handshakes derive idle timeouts from client keep-alive or the fallback.
+    ///
+    /// HOW:
+    /// - Create connections advertising zero and three seconds of keep-alive and acknowledge them.
+    /// - Assert the acknowledgments contain the default timeout and five seconds, respectively.
     #[ntex::test]
     async fn test_ack_keep_alive() {
         for (keep_alive, timeout) in [(0, DEFAULT_KEEPALIVE), (3, Seconds(5))] {
@@ -254,6 +295,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Handshake debug formatting exposes packet and acknowledgment metadata.
+    ///
+    /// HOW:
+    /// - Format a newly created `Connect` and verify the output is nonempty.
+    /// - Acknowledge it with application state and verify its debug output names `ConnectAck` and `session_present`.
     #[ntex::test]
     async fn test_debug() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("test"));

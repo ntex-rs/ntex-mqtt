@@ -9,7 +9,7 @@ use crate::{Control, MqttServiceConfig, Reason, inflight::InFlightServiceImpl};
 use super::control::{ProtocolMessage, ProtocolMessageAck};
 use super::{Session, codec, codec::Encoded, shared::MqttShared};
 
-/// Default protocol-message service
+/// Default protocol handler for pings, disconnects, and `QoS 2` release messages.
 ///
 /// Responds to `Ping`, `Disconnect` and `PublishRelease` messages, any other message
 /// closes the connection with `UnspecifiedError` disconnect reason.
@@ -59,9 +59,10 @@ impl<St, E> Service<St, ProtocolMessage> for DefaultProtoSrv<E> {
 }
 
 #[derive(Copy, Clone, Debug)]
-/// Service that can limit size of in-flight async requests.
+/// Middleware limiting the total size of in-flight inbound publishes.
 ///
-/// Default is 64kb size
+/// Uses `MqttServiceConfig::max_receive_size` (65,535 bytes by default), without
+/// a request-count limit. Payload chunks and disconnects retain ordered handling.
 pub struct InFlightService;
 
 impl<S, AppSt> Middleware<S, Session<AppSt>> for InFlightService {
@@ -74,20 +75,28 @@ impl<S, AppSt> Middleware<S, Session<AppSt>> for InFlightService {
     }
 }
 
+/// Connection-control adapter that fails payloads and supplies disconnect responses.
 #[derive(Clone, Debug)]
 pub struct ControlService<S, E> {
+    /// Application connection-control service.
     svc: S,
+    /// Connection payload and disconnect state used while handling stop events.
     shared: Rc<MqttShared>,
+    /// Carries the reported publish/protocol error type without storing a value.
     _t: PhantomData<E>,
 }
 
+/// Factory wrapping application connection-control services with MQTT error handling.
 #[derive(Clone, Debug)]
 pub struct ControlFactory<AppSt, Sf, E> {
+    /// Application factory instantiated once for each accepted session.
     svc: Sf,
+    /// Carries the connection error and application state types.
     _t: PhantomData<(E, AppSt)>,
 }
 
 impl<S, E> ControlService<S, E> {
+    /// Wraps an application control service with the connection's shared state.
     pub(super) fn new(svc: S, shared: Rc<MqttShared>) -> Self {
         Self {
             svc,
@@ -101,6 +110,7 @@ impl<AppSt, Sf, E> ControlFactory<AppSt, Sf, E>
 where
     Sf: ServiceFactory<Session<AppSt>, Control<E>>,
 {
+    /// Wraps a factory whose service returns optional encoded control responses.
     pub(super) fn new(svc: Sf) -> Self {
         Self {
             svc,
@@ -198,6 +208,7 @@ where
     }
 }
 
+/// Unit tests for connection-control integration with sink backpressure.
 #[cfg(test)]
 mod tests {
     use std::{pin::pin, task::Poll};
@@ -210,6 +221,7 @@ mod tests {
     use super::*;
     use crate::{control, v5::MqttSink, v5::codec::PublishAck};
 
+    /// Unconvertible publish error used by the test service types.
     #[derive(Debug)]
     struct TestError;
 
@@ -221,8 +233,13 @@ mod tests {
         }
     }
 
-    /// The sink follows the io write backpressure state, control messages do
-    /// not change it
+    /// STATEMENT: Sink readiness follows transport backpressure rather than control notifications.
+    ///
+    /// HOW:
+    /// - Grant a send credit, block the peer buffer, and send enough `QoS 0` data to cause backpressure.
+    /// - Poll two readiness waiters and send a false backpressure notification; check they remain blocked.
+    /// - Drain the buffer and check both waiters complete and credit returns, then clear the transport flag.
+    /// - Send a true backpressure notification and verify the drained sink stays ready.
     #[ntex::test]
     async fn test_wr_backpressure() {
         let (client, server) = IoTest::create();

@@ -4,16 +4,23 @@ use ntex_bytes::ByteString;
 
 use crate::error::SpecViolation;
 
+/// Check nonempty topic-filter syntax and wildcard placement without checking wire string limits.
 #[allow(clippy::match_same_arms)]
 pub(crate) fn is_valid(topic: &str) -> bool {
     if topic.is_empty() {
         false
     } else {
+        /// Previous-byte category used to enforce wildcard level boundaries.
         enum PrevState {
+            /// No byte has been examined yet.
             None,
+            /// The previous byte was a level separator.
             LevelSep,
+            /// A single-level wildcard must be followed by a separator or end of input.
             SingleWildcard,
+            /// A multi-level wildcard must be the final byte.
             MultiWildcard,
+            /// The previous byte belongs to a literal level.
             Other,
         }
 
@@ -71,12 +78,12 @@ pub enum TopicFilterError {
     InvalidLevel,
 }
 
-/// Single level of a topic filter
+/// One parsed topic-filter level, including wildcard and reserved-root distinctions.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TopicFilterLevel {
-    /// Ordinary level name
+    /// Nonempty literal level; a non-root level may start with `$`.
     Normal(ByteString),
-    /// Level name of a reserved topic, it starts with `$`
+    /// Reserved root level starting with `$`, also used after a shared-subscription prefix.
     System(ByteString),
     /// Empty level name
     Blank,
@@ -104,6 +111,7 @@ impl TopicFilterLevel {
     }
 }
 
+/// Match a sequence of subset levels against a covering filter, respecting reserved roots.
 fn match_topic<T: MatchLevel, L: Iterator<Item = T>>(
     superset: &[TopicFilterLevel],
     subset: L,
@@ -140,7 +148,7 @@ fn filter_start(levels: &[TopicFilterLevel]) -> usize {
     }
 }
 
-/// Parsed mqtt topic filter
+/// Parsed MQTT topic filter with validated wildcard and shared-subscription syntax.
 ///
 /// A Shared Subscription `$share/{ShareName}/{filter}` is parsed with the `$share`
 /// and `ShareName` levels, the levels of the filter follow them (MQTT 5.0, 4.8.2)
@@ -150,6 +158,7 @@ pub struct TopicFilter(Vec<TopicFilterLevel>);
 impl<'de> serde::Deserialize<'de> for TopicFilter {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // same format as the derived impl, the levels are validated
+        /// Deserialize the serialized level sequence before validating it as a filter.
         #[derive(serde::Deserialize)]
         #[serde(rename = "TopicFilter")]
         struct Levels(Vec<TopicFilterLevel>);
@@ -178,6 +187,7 @@ impl TopicFilter {
         &self.0[filter_start(&self.0)..]
     }
 
+    /// Validate shared-subscription names and ensure levels form a nonempty filter.
     fn is_valid(&self) -> bool {
         let start = filter_start(&self.0);
         // [MQTT-4.8.2-1] the ShareName must be at least one character long
@@ -199,14 +209,14 @@ impl TopicFilter {
                 .all(|(pos, level)| level.is_valid(pos, filter.len()))
     }
 
-    /// Check if the topic filter matches another topic filter
+    /// Check whether this filter covers the topics matched by another filter.
     ///
     /// Shared Subscriptions are matched by the filter after the `$share/{ShareName}/` prefix
     pub fn matches_filter(&self, topic: &TopicFilter) -> bool {
         match_topic(self.filter(), topic.filter().iter())
     }
 
-    /// Check if the topic filter matches the topic name
+    /// Check whether this filter matches the supplied topic name.
     ///
     /// Shared Subscriptions are matched by the filter after the `$share/{ShareName}/` prefix
     pub fn matches_topic<S: AsRef<str> + ?Sized>(&self, topic: &S) -> bool {
@@ -244,7 +254,9 @@ impl From<TopicFilter> for Vec<TopicFilterLevel> {
     }
 }
 
+/// Compare parsed or string levels against a covering filter level.
 trait MatchLevel {
+    /// Check coverage at a zero-based filter position, excluding reserved roots from wildcards.
     fn match_level(&self, level: &TopicFilterLevel, index: usize) -> bool;
 }
 
@@ -260,6 +272,7 @@ impl MatchLevel for &TopicFilterLevel {
     }
 }
 
+/// Compare parsed levels while honoring wildcard coverage and reserved-root exclusions.
 fn match_level_impl(
     subset_level: &TopicFilterLevel,
     superset_level: &TopicFilterLevel,
@@ -372,8 +385,10 @@ impl fmt::Display for TopicFilter {
     }
 }
 
+/// Write topic-filter components using an ordinary byte writer.
 #[allow(dead_code)]
 pub(crate) trait WriteTopicExt: io::Write {
+    /// Write one level and return the bytes accepted; an underlying write may be partial.
     fn write_level(&mut self, level: &TopicFilterLevel) -> io::Result<usize> {
         match *level {
             TopicFilterLevel::Normal(ref s) | TopicFilterLevel::System(ref s) => {
@@ -385,6 +400,9 @@ pub(crate) trait WriteTopicExt: io::Write {
         }
     }
 
+    /// Write filter levels and separators, returning the total bytes accepted.
+    ///
+    /// Each component uses `io::Write::write` and may be written only partially.
     fn write_topic(&mut self, topic: &TopicFilter) -> io::Result<usize> {
         let mut n = 0;
         let mut iter = topic.0.iter();
@@ -404,20 +422,28 @@ pub(crate) trait WriteTopicExt: io::Write {
 
 impl<W: io::Write + ?Sized> WriteTopicExt for W {}
 
+/// Check whether a level begins with the reserved-root marker `$`.
 fn is_system<T: AsRef<str>>(s: T) -> bool {
     s.as_ref().starts_with('$')
 }
 
+/// Recover a zero-copy UTF-8 slice known to lie within the original byte string.
 fn recover_bstr(superset: &ByteString, subset: &str) -> ByteString {
     unsafe { ByteString::from_bytes_unchecked(superset.as_bytes().slice_ref(subset.as_bytes())) }
 }
 
+/// Unit tests for topic-filter parsing, matching, serialization, and shared subscriptions.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::str::FromStr;
     use test_case::test_case;
 
+    /// STATEMENT: Topic-filter wildcards occupy complete levels and multi-level wildcards terminate the filter.
+    ///
+    /// HOW:
+    /// - Pass literal, empty-level, and wildcard combinations to `is_valid`.
+    /// - Compare the result with each case's expected syntax validity.
     #[test_case("abc" => true; "pass_norm1")]
     #[test_case("a/b" => true; "pass_norm2")]
     #[test_case("/" => true; "pass_norm3")]
@@ -442,6 +468,7 @@ mod tests {
         is_valid(topic_filter)
     }
 
+    /// Build a literal test level, rejecting wildcard characters.
     fn lvl_normal<T: AsRef<str>>(s: T) -> TopicFilterLevel {
         assert!(
             !s.as_ref().contains(['+', '#']),
@@ -451,6 +478,7 @@ mod tests {
         TopicFilterLevel::Normal(s.as_ref().into())
     }
 
+    /// Build a reserved-root test level, checking its prefix and absence of wildcards.
     fn lvl_sys<T: AsRef<str>>(s: T) -> TopicFilterLevel {
         assert!(
             !s.as_ref().contains(['+', '#']),
@@ -465,10 +493,16 @@ mod tests {
         TopicFilterLevel::System(s.as_ref().into())
     }
 
+    /// Parse a static test filter, panicking when its syntax is invalid.
     fn topic(topic: &'static str) -> TopicFilter {
         TopicFilter::try_from(ByteString::from_static(topic)).unwrap()
     }
 
+    /// STATEMENT: Parsing preserves level kinds and rejects malformed wildcard or shared-subscription syntax.
+    ///
+    /// HOW:
+    /// - Parse ordinary, reserved-root, empty-level, wildcard, and shared-subscription filters.
+    /// - Compare parsed level vectors or specific errors with each case's expectation.
     #[test_case("level" => Ok(vec![lvl_normal("level")]) ; "1")]
     #[test_case("level/+" => Ok(vec![lvl_normal("level"), TopicFilterLevel::SingleWildcard]) ; "2")]
     #[test_case("a//#" => Ok(vec![lvl_normal("a"), TopicFilterLevel::Blank, TopicFilterLevel::MultiWildcard]) ; "3")]
@@ -498,6 +532,11 @@ mod tests {
         TopicFilter::try_from(ByteString::from(input)).map(|t| t.levels().to_vec())
     }
 
+    /// STATEMENT: Constructing a filter from levels enforces root, wildcard, and shared-subscription invariants.
+    ///
+    /// HOW:
+    /// - Try level vectors including empty filters, misplaced reserved roots, malformed names, and shared prefixes.
+    /// - Compare construction success with each case's expected validity.
     #[test_case(vec![lvl_normal("sport"), lvl_normal("tennis"), lvl_normal("player1")] => true; "1")]
     #[test_case(vec![lvl_normal("sport"), lvl_normal("tennis"), TopicFilterLevel::MultiWildcard] => true; "2")]
     #[test_case(vec![lvl_sys("$SYS"), lvl_normal("tennis"), lvl_normal("player1")] => true; "3")]
@@ -530,6 +569,11 @@ mod tests {
         TopicFilter::try_from(levels).is_ok()
     }
 
+    /// STATEMENT: Shared-subscription parsing exposes its group and agrees with incoming-filter syntax checks.
+    ///
+    /// HOW:
+    /// - Check group extraction, nonshared lookalikes, and shared-filter display output.
+    /// - Compare parsing success against combined ordinary and shared syntax checks for valid and invalid filters.
     #[test]
     fn test_shared_subscription() {
         assert_eq!(topic("$share/g/a").share_name(), Some("g"));
@@ -566,6 +610,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: An empty level sequence cannot form a topic filter.
+    ///
+    /// HOW:
+    /// - Construct filters from an empty vector and an empty slice.
+    /// - Assert that both return `TopicFilterError::InvalidTopic`.
     #[test]
     fn test_empty_levels() {
         assert_eq!(
@@ -578,6 +627,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Topic-filter serialization round-trips valid levels and rejects invalid deserialized sequences.
+    ///
+    /// HOW:
+    /// - Round-trip reserved-root and shared filters through JSON and compare values and display output.
+    /// - Attempt JSON sequences with empty, malformed, or misplaced levels and assert rejection.
     #[test]
     fn test_serde() {
         for filter in ["$SYS/+/a//#", "$share/g/$SYS/+"] {
@@ -600,6 +654,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: A multi-level wildcard covers itself and a parent topic without additional levels.
+    ///
+    /// HOW:
+    /// - Compare `sport/tennis/#` with its equivalent parsed filter and the parent topic.
+    /// - Assert that the root `#` filter also covers itself.
     #[test]
     fn test_multi_wildcard_topic() {
         assert!(topic("sport/tennis/#").matches_filter(&TopicFilter(vec![
@@ -613,6 +672,11 @@ mod tests {
         assert!(topic("#").matches_filter(&TopicFilter(vec![TopicFilterLevel::MultiWildcard])));
     }
 
+    /// STATEMENT: Equivalent parsed single-wildcard filters match each other.
+    ///
+    /// HOW:
+    /// - Construct matching filters with root and interior single-level wildcards, including a trailing `#`.
+    /// - Assert each equivalent filter is covered.
     #[test]
     fn test_single_wildcard_topic() {
         assert!(topic("+").matches_filter(
@@ -632,6 +696,11 @@ mod tests {
         ])));
     }
 
+    /// STATEMENT: Writing and formatting a topic filter preserve wildcard text and level separators.
+    ///
+    /// HOW:
+    /// - Build `+/tennis/#` from levels and write it into a byte vector.
+    /// - Check the returned byte count, written bytes, display formatting, and string conversion.
     #[test]
     fn test_write_topic() {
         let mut v = vec![];
@@ -648,6 +717,11 @@ mod tests {
         assert_eq!(t.to_string(), "+/tennis/#");
     }
 
+    /// STATEMENT: Topic matching respects wildcard depth, reserved roots, and shared-subscription prefixes.
+    ///
+    /// HOW:
+    /// - Match each parsed filter against its supplied topic name.
+    /// - Compare the result with expectations for literal, wildcard, empty-level, reserved-root, and shared cases.
     #[test_case("test", "test" => true)]
     #[test_case("$SYS", "$SYS" => true)]
     #[test_case("sport/tennis/player1/#", "sport/tennis/player1" => true)]
@@ -680,6 +754,11 @@ mod tests {
         topic(filter).matches_topic(topic_str)
     }
 
+    /// STATEMENT: Filter coverage respects wildcard breadth and ignores shared group names without ignoring reserved roots.
+    ///
+    /// HOW:
+    /// - Parse each superset/subset pair and call `TopicFilter::matches_filter`.
+    /// - Compare coverage with expectations for literal levels, wildcard combinations, reserved roots, and shared prefixes.
     #[test_case("a/b", "a/b" => true; "1")]
     #[test_case("a/b", "a/+" => false; "2")]
     #[test_case("a/b", "a/#" => false; "3")]
@@ -714,6 +793,11 @@ mod tests {
         topic(superset_filter).matches_filter(&topic(subset_filter))
     }
 
+    /// STATEMENT: Shared syntax requires a nonempty wildcard-free group and a nonempty trailing filter.
+    ///
+    /// HOW:
+    /// - Check ordinary filters, valid shared prefixes, missing components, and wildcard-containing group names.
+    /// - Compare `is_valid_shared` with each case's expected validity.
     #[test_case("a/b" => true; "not_shared")]
     #[test_case("$share" => true; "not_shared_no_sep")]
     #[test_case("$share/g/a" => true; "pass1")]

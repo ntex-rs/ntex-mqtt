@@ -16,7 +16,7 @@ use super::control::{Pkt, ProtocolMessage, ProtocolMessageAck};
 use super::publish::{Publish, PublishAck};
 use super::{Session, ToPublishAck, shared::Ack, shared::MqttShared};
 
-/// MQTT 5 protocol dispatcher
+/// Creates per-session publish and serialized protocol services for the MQTT 5 dispatcher.
 pub(super) fn factory<AppSt, E, Pub, Ctl>(
     publish: Pub,
     control: Ctl,
@@ -95,26 +95,38 @@ impl crate::inflight::SizedRequest for Decoded {
     }
 }
 
-/// Mqtt protocol dispatcher
+/// Validates inbound MQTT 5 packets and coordinates application services with sink state.
 pub(crate) struct Dispatcher<St, T, C, E> {
+    /// Application service handling inbound publish messages.
     publish: T,
+    /// Protocol service, sink, and inbound packet-identifier tracking.
     inner: Inner<C>,
+    /// Session configuration controlling payload buffers and packet handling.
     cfg: Cfg<MqttServiceConfig>,
-    /// Payload chunks of an ignored PUBLISH are dropped
+    /// Drops chunks of an ignored streamed PUBLISH until its final chunk clears the flag.
     discard_payload: Cell<bool>,
+    /// Carries the service state and converted application error types.
     e: PhantomData<(St, E)>,
 }
 
+/// Per-connection protocol handling and incoming publish exchange state.
 struct Inner<C> {
+    /// Serialized application protocol-message service.
     control: C,
+    /// Connection sink state, negotiated limits, and active payload buffer.
     sink: Rc<MqttShared>,
+    /// Incoming identifier ownership and topic aliases shared across concurrent calls.
     info: RefCell<PublishInfo>,
 }
 
+/// Incoming packet identifiers and topic aliases retained for the lifetime of the connection.
 struct PublishInfo {
+    /// Client-owned identifiers reserved while publishes or subscription requests are pending.
     inflight: HashMap<num::NonZeroU16, InFlight>,
     // SUBSCRIBE and UNSUBSCRIBE packets in `inflight`
+    /// Number of reserved subscription identifiers, excluded from Receive Maximum accounting.
     subscribes: usize,
+    /// Validated topic alias mappings updated by publishes with nonempty topics.
     aliases: HashMap<num::NonZeroU16, ByteString>,
 }
 
@@ -164,6 +176,7 @@ where
     T::Error: ToPublishAck<Error = E>,
     C: Service<St, ProtocolMessage, Res = ProtocolMessageAck, Error = DispatcherError<E>>,
 {
+    /// Initializes a dispatcher with empty inbound exchanges, aliases, and payload-discard state.
     fn new(sink: Rc<MqttShared>, publish: T, control: C, cfg: Cfg<MqttServiceConfig>) -> Self {
         Self {
             cfg,
@@ -182,6 +195,7 @@ where
         }
     }
 
+    /// Returns the connection tag used for dispatcher diagnostics.
     fn tag(&self) -> &'static str {
         self.inner.sink.tag()
     }
@@ -632,6 +646,7 @@ where
 }
 
 impl<C> Inner<C> {
+    /// Dispatches a protocol message that does not reserve an incoming packet identifier.
     async fn control<St, T, E>(
         &self,
         pkt: ProtocolMessage,
@@ -643,6 +658,10 @@ impl<C> Inner<C> {
         self.control_pkt(pkt, 0, ctx).await
     }
 
+    /// Dispatches a protocol message and releases its nonzero identifier on success.
+    ///
+    /// Service errors disable the sink and fail its payload; disconnect results
+    /// close sink operations and suppress duplicate disconnect packets.
     async fn control_pkt<St, T, E>(
         &self,
         pkt: ProtocolMessage,
@@ -686,7 +705,11 @@ impl<C> Inner<C> {
     }
 }
 
-/// Publish service response future
+/// Converts a publish service result into `PUBACK`, `PUBREC`, or no response for `QoS 0`.
+///
+/// Successful `QoS 2` results retain the identifier until `PUBREL`; error `PUBREC`
+/// and `QoS 1` results release it. Convertible service errors become acknowledgements
+/// only when the publish carries a nonzero packet identifier.
 async fn publish_fn<'f, St, T, C, E>(
     publish: &T,
     pkt: Publish,
@@ -750,6 +773,7 @@ where
     }
 }
 
+/// Unit tests for MQTT 5 validation, `QoS` exchanges, and streamed payload flow control.
 #[cfg(test)]
 mod tests {
     use std::num::{NonZeroU16, NonZeroU32};
@@ -763,12 +787,17 @@ mod tests {
     use crate::{error, v5::MqttSink, v5::codec};
     use ntex_util::{future::lazy, time::Millis, time::sleep};
 
-    /// The response queue keeps packets, not the larger encoder items
+    /// STATEMENT: Ordered response slots remain smaller than full packets and large protocol payloads.
+    ///
+    /// HOW:
+    /// - Compare `QueueSlot<MqttShared>` against a publish acknowledgement and `Packet`.
+    /// - Check that `Packet` is smaller than `Disconnect` and `Auth`, confirming large variants are boxed.
     #[test]
     fn test_queue_slot_size() {
         use std::mem::size_of;
 
         // ordered calls respond with publish acks, other responses are boxed
+        /// Ordered response queue entry whose footprint is bounded by a publish acknowledgement.
         type Slot = crate::io::QueueSlot<MqttShared>;
         assert!(size_of::<Slot>() <= size_of::<codec::PublishAck>() + 8);
         assert!(size_of::<Slot>() < size_of::<Packet>());
@@ -777,6 +806,7 @@ mod tests {
         assert!(size_of::<Packet>() < size_of::<codec::Auth>());
     }
 
+    /// Service error that cannot be converted to a publish acknowledgement.
     #[derive(Debug)]
     struct TestError;
 
@@ -794,12 +824,19 @@ mod tests {
         }
     }
 
+    /// Type-erased test dispatcher pipeline with a fixed application error type.
     type Disp = Pipeline<Decoded, Option<Packet>, DispatcherError<TestError>>;
 
+    /// Builds a packet identifier for test requests.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is zero.
     fn pid(id: u16) -> NonZeroU16 {
         NonZeroU16::new(id).unwrap()
     }
 
+    /// Builds an in-memory connection and dispatcher with supplied configuration and services.
     fn dispatcher<T, C>(
         cfg: MqttServiceConfig,
         publish: T,
@@ -828,7 +865,7 @@ mod tests {
         (io, shared, disp)
     }
 
-    /// Dispatcher that acks all packets
+    /// Builds a test dispatcher whose services return each message's default acknowledgement.
     fn ack_dispatcher(cfg: MqttServiceConfig) -> (Io, Rc<MqttShared>, Disp) {
         dispatcher(
             cfg,
@@ -837,6 +874,11 @@ mod tests {
         )
     }
 
+    /// Extracts the protocol violation from a dispatcher result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the result is not a protocol-violation error.
     fn violation(
         res: &Result<Option<Packet>, DispatcherError<TestError>>,
     ) -> error::ProtocolViolationError {
@@ -846,6 +888,11 @@ mod tests {
         *err
     }
 
+    /// Builds a decoded subscription request with default options for each filter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is zero.
     fn subscribe(id: u16, filters: &[&'static str]) -> Decoded {
         Decoded::Packet(
             Packet::Subscribe(codec::Subscribe {
@@ -866,6 +913,11 @@ mod tests {
         )
     }
 
+    /// Builds a decoded unsubscribe request for the supplied filters.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is zero.
     fn unsubscribe(id: u16, filters: &[&'static str]) -> Decoded {
         Decoded::Packet(
             Packet::Unsubscribe(codec::Unsubscribe {
@@ -877,6 +929,12 @@ mod tests {
         )
     }
 
+    /// STATEMENT: The dispatcher rejects unsupported retain flags, invalid aliases, and invalid subscription requests.
+    ///
+    /// HOW:
+    /// - Disable retain and subscription identifiers, limit aliases to one, and submit violating packets.
+    /// - Assert specific violation codes for retained publishes, unknown or excessive aliases, and invalid filters.
+    /// - Check a valid alias registration succeeds and an unknown `PUBREL` yields `PacketIdNotFound`.
     #[ntex::test]
     async fn test_spec_violations() {
         let (_io, shared, disp) =
@@ -991,6 +1049,12 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Advertised shared and wildcard subscription availability restricts subscribes but not unsubscribes.
+    ///
+    /// HOW:
+    /// - Toggle shared and wildcard availability and submit shared, wildcard, and plain filters.
+    /// - Check allowed requests receive acknowledgements and prohibited subscribes return the matching reason and message.
+    /// - Verify unsubscribes and plain nonshared filters remain accepted.
     #[ntex::test]
     async fn test_subscription_availability() {
         for available in [true, false] {
@@ -1048,6 +1112,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Disabling subscription availability checks allows filters unsupported by advertised capabilities.
+    ///
+    /// HOW:
+    /// - Disable availability checks and advertise no shared or wildcard subscription support.
+    /// - Submit shared and wildcard filters and check each receives `SubscribeAck`.
     #[ntex::test]
     async fn test_subscription_availability_unchecked() {
         let (_io, shared, disp) =
@@ -1064,6 +1133,12 @@ mod tests {
         }
     }
 
+    /// STATEMENT: MQTT 5 response-topic, subscription-identifier, shared-filter, and No Local rules are enforced.
+    ///
+    /// HOW:
+    /// - Submit wildcard response topics, client subscription identifiers, malformed shared filters, and shared No Local requests.
+    /// - Assert `ProtocolError` and each expected specification violation.
+    /// - Check valid response topics, shared filters without No Local, and ordinary No Local subscriptions succeed.
     #[ntex::test]
     async fn test_spec_violations_v5() {
         let (_io, _, disp) = ack_dispatcher(MqttServiceConfig::new());
@@ -1141,6 +1216,11 @@ mod tests {
         assert!(matches!(res, Some(Packet::SubscribeAck(_))));
     }
 
+    /// STATEMENT: Decoded publish and chunk items report whether a payload continues or ends.
+    ///
+    /// HOW:
+    /// - Compare complete and partial publishes against nonfinal and final payload chunks.
+    /// - Assert `has_more_chunks` and `is_last_chunk` outcomes, including a ping packet.
     #[test]
     fn test_has_more_chunks() {
         use crate::inflight::SizedRequest;
@@ -1165,6 +1245,11 @@ mod tests {
         assert!(!Decoded::Packet(codec::Packet::PingRequest, 2).has_more_chunks());
     }
 
+    /// STATEMENT: Publish starts are size-limited while payload chunks and disconnects require ordering.
+    ///
+    /// HOW:
+    /// - Construct a publish, final payload chunk, disconnect, and ping.
+    /// - Assert `is_limited` and `is_ordered` flags for each decoded request kind.
     #[test]
     fn test_inflight_kind() {
         use crate::inflight::SizedRequest;
@@ -1179,6 +1264,9 @@ mod tests {
         assert!(!ping.is_limited() && !ping.is_ordered());
     }
 
+    /// Builds a `QoS 2`-capable dispatcher with counters, delayed handlers, and a receive limit.
+    ///
+    /// Topic `slow` delays publish completion; topic `err` returns a failed acknowledgement.
     fn qos2_dispatcher(
         pubrel_calls: Rc<Cell<usize>>,
         published: Rc<Cell<usize>>,
@@ -1217,6 +1305,7 @@ mod tests {
         (io, disp)
     }
 
+    /// Builds a decoded publish with a chosen topic, `QoS`, and optional nonzero identifier.
     fn qos_publish(id: u16, qos: QoS, topic: &'static str) -> Decoded {
         Decoded::Publish(
             codec::Publish {
@@ -1230,6 +1319,11 @@ mod tests {
         )
     }
 
+    /// Builds a decoded successful `PUBREL` for an incoming `QoS 2` exchange.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is zero.
     fn pubrel(id: u16) -> Decoded {
         Decoded::Packet(
             Packet::PublishRelease(codec::PublishAck2 {
@@ -1240,6 +1334,11 @@ mod tests {
         )
     }
 
+    /// Builds the expected `PUBACK` or `PUBREC` response for test assertions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is zero.
     fn ack(id: u16, qos2: bool, reason_code: codec::PublishAckReason) -> Packet {
         let ack = codec::PublishAck {
             packet_id: pid(id),
@@ -1253,6 +1352,11 @@ mod tests {
         }
     }
 
+    /// Builds the expected `PUBCOMP` response for test assertions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is zero.
     fn pubcomp(id: u16, reason_code: codec::PublishAck2Reason) -> Packet {
         Packet::PublishComplete(codec::PublishAck2 {
             packet_id: pid(id),
@@ -1261,6 +1365,12 @@ mod tests {
         })
     }
 
+    /// STATEMENT: `QoS 2` packet identifiers remain reserved through successful `PUBREC` but release on completion or rejection.
+    ///
+    /// HOW:
+    /// - Use Receive Maximum one and check a successful `QoS 2` publish blocks another identified publish.
+    /// - Send `PUBREL`, assert successful `PUBCOMP`, and verify capacity is released and duplicate release is unknown.
+    /// - Return an error `PUBREC` and check its identifier releases immediately without invoking the release handler.
     #[ntex::test]
     async fn test_publish_qos2() {
         use codec::{PublishAck2Reason as Ack2, PublishAckReason as Ack};
@@ -1302,7 +1412,12 @@ mod tests {
         assert_eq!(pubrel_calls.get(), 1);
     }
 
-    /// Receive Maximum counts `QoS 1` and `QoS 2` PUBLISH packets only [MQTT-4.9.0-2]
+    /// STATEMENT: Receive Maximum counts `QoS 1` and `QoS 2` publishes but not subscription requests.
+    ///
+    /// HOW:
+    /// - Keep subscribe and unsubscribe service calls pending with Receive Maximum one.
+    /// - Check a publish succeeds, then hold another publish and verify an extra one exceeds the limit.
+    /// - Complete all pending calls, check their acknowledgements, and verify the publish capacity is reusable.
     #[ntex::test]
     async fn test_receive_max_subscribe() {
         let (_io, disp) = qos2_dispatcher(Rc::default(), Rc::default(), 1);
@@ -1348,6 +1463,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: A client cannot release a `QoS 2` publish before the publish service produces `PUBREC`.
+    ///
+    /// HOW:
+    /// - Start a delayed `QoS 2` publish and submit `PUBREL` while its service call is pending.
+    /// - Assert an unexpected-packet violation and verify the release handler was never called.
     #[ntex::test]
     async fn test_pubrel_before_pubrec() {
         let pubrel_calls = Rc::new(Cell::new(0));
@@ -1366,6 +1486,7 @@ mod tests {
         assert_eq!(pubrel_calls.get(), 0);
     }
 
+    /// Builds a duplicate-marked publish with a complete or partially buffered payload.
     fn redelivery(id: u16, qos: QoS, chunked: bool) -> Decoded {
         Decoded::Publish(
             codec::Publish {
@@ -1381,6 +1502,13 @@ mod tests {
         )
     }
 
+    /// STATEMENT: Redelivered publishes avoid duplicate delivery while preserving `QoS` acknowledgements and identifier ownership.
+    ///
+    /// HOW:
+    /// - Redeliver an in-progress `QoS 1` publish and check it is ignored while conflicting identifiers are rejected.
+    /// - Redeliver an acknowledged `QoS 2` publish, including streamed chunks, and check repeated `PUBREC` without new delivery.
+    /// - Complete its exchange and verify redelivery becomes a new message and unexpected extra chunks fail.
+    /// - Repeat with Receive Maximum one and confirm redelivery does not consume another quota slot.
     #[ntex::test]
     async fn test_publish_redelivery() {
         use codec::{PublishAck2Reason as Ack2, PublishAckReason as Ack};
@@ -1444,6 +1572,12 @@ mod tests {
         assert_eq!(published.get(), 4);
     }
 
+    /// STATEMENT: Payload chunks for publishes ignored after disconnect are discarded until the final chunk.
+    ///
+    /// HOW:
+    /// - Close the in-memory transport and submit a partially buffered publish followed by its remaining chunks.
+    /// - Check no publish service call occurs and the chunks return no response.
+    /// - Submit an extra chunk after the end and assert `UnexpectedPayload`.
     #[ntex::test]
     async fn test_inactive_publish_payload() {
         let published = Rc::new(Cell::new(0));
@@ -1470,6 +1604,11 @@ mod tests {
         ));
     }
 
+    /// Checks that a dispatcher result rejects the specified unexpected packet type.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the result is an unexpected-packet violation for `expected`.
     fn assert_unexpected<E: std::fmt::Debug>(
         res: &Result<Option<Packet>, DispatcherError<E>>,
         expected: u8,
@@ -1488,6 +1627,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: The server dispatcher rejects a second connect and server-only packet types.
+    ///
+    /// HOW:
+    /// - Submit `CONNECT`, `CONNACK`, `SUBACK`, `UNSUBACK`, and `PINGRESP` to an established dispatcher.
+    /// - Assert each result is an unexpected-packet violation naming the submitted packet type.
     #[ntex::test]
     async fn test_unexpected_packets() {
         let pid = pid(1);
@@ -1522,10 +1666,18 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Payload buffer watermarks pause reads without hiding service readiness errors or abandoned receivers.
+    ///
+    /// HOW:
+    /// - Retain a streamed publish with a four-byte buffer limit and check readiness below and at its high watermark.
+    /// - Read a chunk to drain to the low watermark and verify readiness resumes while the connection remains active.
+    /// - Refill the buffer and independently fail protocol and publish readiness, checking each error is returned.
+    /// - Clear errors, drop the unfinished payload receiver, and check the dispatcher closes the connection.
     #[ntex::test]
     async fn test_payload_backpressure() {
         use std::{cell::RefCell, task::Poll};
 
+        /// Protocol service with a shared readiness-failure flag, error factory, and notifier.
         struct FailReady<E>(Rc<Cell<bool>>, fn() -> E, ntex_service::ReadyNotifier);
 
         impl<St, E> Service<St, ProtocolMessage> for FailReady<E> {
@@ -1549,6 +1701,7 @@ mod tests {
             }
         }
 
+        /// Publish service retaining its request with configurable readiness and response factories.
         struct Hold<R, E>(
             Rc<RefCell<Option<Publish>>>,
             Rc<Cell<bool>>,

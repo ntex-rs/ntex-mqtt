@@ -1,8 +1,16 @@
 use super::*;
 
+/// STATEMENT: The default 256 KiB packet limit accepts its exact boundary and rejects a packet
+/// one byte larger.
+///
+/// HOW:
+/// - Check the maximum packet size advertised by the server.
+/// - Send a publish whose payload plus header totals 256 KiB and assert an acknowledgment.
+/// - Send only the header declaring a one-byte-larger packet and assert a `PacketTooLarge`
+///   disconnect.
 #[ntex::test]
 async fn test_default_max_size() {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async move |p: Publish| {
             let _ = p.read_all().await;
             Ok::<_, TestError>(p.ack())
@@ -55,12 +63,20 @@ async fn test_default_max_size() {
     assert_eq!(pkt.reason_code, codec::DisconnectReasonCode::PacketTooLarge);
 }
 
+/// STATEMENT: A client uses the server's advertised keep-alive override to keep its connection
+/// open.
+///
+/// HOW:
+/// - Configure a one-second server keep-alive and connect a client that did not request
+///   periodic pings.
+/// - Assert the advertised value, run the client for 3.5 seconds, and check that its sink
+///   remains open without a server timeout.
 #[ntex::test]
 async fn test_keepalive() {
     let ka = Arc::new(AtomicBool::new(false));
     let ka2 = ka.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let ka = ka2.clone();
 
         MqttServer::new(async move |p: Publish| Ok::<_, TestError>(p.ack()))
@@ -94,12 +110,20 @@ async fn test_keepalive() {
     assert!(!ka.load(Relaxed));
 }
 
+/// STATEMENT: Server keep-alive timeout follows the advertised override and is postponed by
+/// incoming publishes.
+///
+/// HOW:
+/// - Request a ten-second client keep-alive and assert the server advertises its two-second
+///   override.
+/// - Send two publishes half a second apart without automatic client pings.
+/// - Check that the timeout flag is initially unset and becomes set after the longer idle wait.
 #[ntex::test]
 async fn test_keepalive2() {
     let ka = Arc::new(AtomicBool::new(false));
     let ka2 = ka.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let ka = ka2.clone();
 
         MqttServer::new(async move |p: Publish| Ok::<_, TestError>(p.ack()))
@@ -163,12 +187,19 @@ async fn test_keepalive2() {
     assert!(ka.load(Relaxed));
 }
 
+/// STATEMENT: An incomplete frame triggers the configured frame-read timeout.
+///
+/// HOW:
+/// - Configure frame-read timing and a one-second server keep-alive, then complete a handshake
+///   and send a publish.
+/// - Send only five bytes of the next encoded publish, wait two seconds, and assert that the
+///   control service observed `ReadTimeout`.
 #[ntex::test]
 async fn test_keepalive3() {
     let ka = Arc::new(AtomicBool::new(false));
     let ka2 = ka.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let ka = ka2.clone();
 
         MqttServer::new(async move |p: Publish| Ok::<_, TestError>(p.ack()))
@@ -217,13 +248,21 @@ async fn test_keepalive3() {
     assert!(ka.load(Relaxed));
 }
 
-// Slow frame rate
+/// STATEMENT: A frame exceeding the maximum read duration times out even when its byte rate is
+/// sufficient.
+///
+/// HOW:
+/// - Configure a ten-byte read rate, one-second intervals, and a two-second maximum while
+///   disabling the packet-size limit.
+/// - Send a large publish in small fragments; assert no early timeout after the initial fragments.
+/// - Send another fragment that satisfies the rate and assert `ReadTimeout` after the maximum
+///   duration.
 #[ntex::test]
 async fn test_frame_read_rate() -> std::io::Result<()> {
     let check = Arc::new(AtomicBool::new(false));
     let check2 = check.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let check = check2.clone();
 
         MqttServer::new(async move |p: Publish| {
@@ -283,11 +322,15 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A handshake-specific outbound limit overrides the configured server send limit.
+///
+/// HOW:
+/// - Set the configured maximum send count to `10`, the handshake override to `15`, and the
+///   client receive maximum to `100`.
+/// - Assert server sink credit of `15` and verify that a client QoS 1 publish succeeds.
 #[ntex::test]
-/// MqttServiceConfig::set_max_send() limits upper bound of outbound
-/// concurrent requests regardless client request
 async fn test_max_outbound() -> std::io::Result<()> {
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         MqttServer::new(async |con: &Session<St>| {
             assert_eq!(con.sink().credit(), 15);
             Ok::<_, Infallible>(fn_service(async |p: Publish| Ok::<_, TestError>(p.ack())))
@@ -320,9 +363,15 @@ async fn test_max_outbound() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Without a handshake override, configured send credit limits a larger client
+/// receive maximum.
+///
+/// HOW:
+/// - Set the server maximum send count to `10` and the client receive maximum to `100`.
+/// - Assert server sink credit of `10` and verify that a client QoS 1 publish succeeds.
 #[ntex::test]
 async fn test_max_outbound2() -> std::io::Result<()> {
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         MqttServer::new(async |con: &Session<St>| {
             assert_eq!(con.sink().credit(), 10);
             Ok::<_, Infallible>(fn_service(async |p: Publish| Ok::<_, TestError>(p.ack())))

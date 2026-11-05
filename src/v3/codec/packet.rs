@@ -44,32 +44,32 @@ impl ConnectAckReason {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-/// Connection Will
+/// Publication metadata and bytes supplied by CONNECT for an unexpected disconnect.
 pub struct LastWill {
-    /// the `QoS` level to be used when publishing the `Will Message`.
+    /// Delivery quality requested for publishing the will.
     pub qos: QoS,
-    /// the `Will Message` is to be Retained when it is published.
+    /// Whether the will publication requests retained-message storage.
     pub retain: bool,
-    /// the `Will Topic`
+    /// Topic name on which to publish the will; subscription wildcards are not allowed.
     pub topic: ByteString,
-    /// defines the Application Message that is to be published to the `Will Topic`
+    /// Will payload, limited to 65,535 bytes by the CONNECT binary-field format.
     pub message: Bytes,
 }
 
 #[derive(Default, Debug, PartialEq, Eq, Clone)]
-/// Connect packet content
+/// CONNECT fields used to establish and authenticate an MQTT 3.1.1 connection.
 pub struct Connect {
-    /// the handling of the Session state.
+    /// Whether to start a clean session rather than resume stored session state.
     pub clean_session: bool,
-    /// a time interval measured in seconds.
+    /// Client keep-alive interval in seconds; zero disables the protocol keep-alive request.
     pub keep_alive: u16,
-    /// Will Message be stored on the Server and associated with the Network Connection.
+    /// Optional will publication for the server to handle after an unexpected disconnect.
     pub last_will: Option<LastWill>,
-    /// identifies the Client to the Server.
+    /// Client identifier; an empty identifier requires `clean_session` to be `true`.
     pub client_id: ByteString,
-    /// username can be used by the Server for authentication and authorization.
+    /// Optional authentication username, encoded as an MQTT UTF-8 string.
     pub username: Option<ByteString>,
-    /// password can be used by the Server for authentication and authorization.
+    /// Optional authentication bytes; requires a username and at most 65,535 bytes.
     pub password: Option<Bytes>,
 }
 
@@ -86,35 +86,33 @@ impl Connect {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-/// `Publish` message
+/// PUBLISH header metadata, with payload bytes streamed separately by the codec.
 pub struct Publish {
-    /// this might be re-delivery of an earlier attempt to send the Packet.
+    /// Whether this may be a redelivery; must be `false` for `QoS 0`.
     pub dup: bool,
-    /// the Server must store the Application Message and its `QoS`, so it can be
-    /// delivered to future subscribers of the topic.
+    /// Whether the publication requests retained-message storage for future subscribers.
     pub retain: bool,
-    /// the level of assurance for delivery of an Application Message.
+    /// Delivery quality determining the acknowledgment exchange and identifier requirement.
     pub qos: QoS,
-    /// the information channel to which payload data is published.
+    /// Nonempty topic name without subscription wildcards.
     pub topic: ByteString,
-    /// only present in PUBLISH Packets where the `QoS` level is 1 or 2.
+    /// Required for `QoS 1` and `QoS 2`; absent for `QoS 0`.
     pub packet_id: Option<NonZeroU16>,
-    /// publish packet payload size
+    /// Declared payload length in bytes, excluding all fixed and variable headers.
     pub payload_size: u32,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-/// `ConnectAck` message
+/// CONNACK result sent in response to CONNECT.
 pub struct ConnectAck {
-    /// the Connect Return Code reported by the Server
+    /// Connection acceptance or refusal reason reported by the server.
     pub return_code: ConnectAckReason,
-    /// enables a Client to establish whether the Client and Server have a consistent view
-    /// about whether there is already stored Session state.
+    /// Whether an existing session was resumed; only valid for an accepted connection.
     pub session_present: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-/// Subscribe Return Code
+/// Result for one requested filter in a SUBACK packet.
 pub enum SubscribeReturnCode {
     /// Subscription accepted with the granted maximum `QoS`
     Success(QoS),
@@ -123,7 +121,7 @@ pub enum SubscribeReturnCode {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-/// MQTT Control Packets
+/// MQTT control packets other than PUBLISH, whose payload uses separate codec items.
 pub enum Packet {
     /// Client request to connect to Server
     Connect(Box<Connect>),
@@ -153,21 +151,21 @@ pub enum Packet {
     Subscribe {
         /// Packet Identifier
         packet_id: NonZeroU16,
-        /// the list of Topic Filters and `QoS` to which the Client wants to subscribe.
+        /// Nonempty ordered filters and requested maximum delivery qualities.
         topic_filters: Vec<(ByteString, QoS)>,
     },
     /// Subscribe acknowledgment
     SubscribeAck {
         /// Packet Identifier
         packet_id: NonZeroU16,
-        /// corresponds to a Topic Filter in the SUBSCRIBE Packet being acknowledged.
+        /// Per-filter results in the same order as the corresponding SUBSCRIBE request.
         status: Vec<SubscribeReturnCode>,
     },
     /// Unsubscribe request
     Unsubscribe {
         /// Packet Identifier
         packet_id: NonZeroU16,
-        /// the list of Topic Filters that the Client wishes to unsubscribe from.
+        /// Nonempty ordered list of subscription filters to remove.
         topic_filters: Vec<ByteString>,
     },
     /// Unsubscribe acknowledgment
@@ -210,10 +208,16 @@ impl Packet {
     }
 }
 
+/// Unit tests for packet type values and connection return descriptions.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// STATEMENT: Every connection acknowledgment reason has its expected human-readable description.
+    ///
+    /// HOW:
+    /// - Call `ConnectAckReason::reason` for each accepted, refused, and reserved variant.
+    /// - Compare every returned description with its expected string.
     #[test]
     fn test_ack_reason() {
         assert_eq!(
@@ -243,6 +247,11 @@ mod tests {
         assert_eq!(ConnectAckReason::Reserved.reason(), "Connection Refused");
     }
 
+    /// STATEMENT: Each control packet reports its MQTT fixed-header type byte.
+    ///
+    /// HOW:
+    /// - Construct every `Packet` variant with representative identifiers and empty topic/result lists.
+    /// - Compare `packet_type` with the corresponding protocol constant.
     #[test]
     fn test_packet_type() {
         let packet_id = NonZeroU16::new(1).unwrap();

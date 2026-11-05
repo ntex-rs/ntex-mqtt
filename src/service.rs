@@ -9,10 +9,14 @@ use ntex_service::{BindCtx, Ctx, Middleware, RequestState, Service, ServiceFacto
 use crate::error::{DecodeError, DispatcherError, EncodeError, MqttError};
 use crate::{ConnectPipeline, Session, control::Control, io::Dispatcher, io::FrameState};
 
+/// Decoded packet or payload chunk delivered to the protocol handler.
 type Request<U> = <U as Decoder>::Item;
+/// Optional dispatcher response associated with a decoded frame.
 type Response<U> = Option<<U as FrameState>::Response>;
+/// Optional wire packet returned by the connection-control service.
 type ControlResponse<U> = Option<<U as Encoder>::Item>;
 
+/// Factory for a per-session connection-control pipeline.
 type ControlPipeline<AppSt, Codec, Cfg, Err, E> = PipelineFactory<
     Session<Cfg, AppSt>,
     Control<E>,
@@ -21,11 +25,17 @@ type ControlPipeline<AppSt, Codec, Cfg, Err, E> = PipelineFactory<
     Failure,
 >;
 
+/// Protocol-specific service that handshakes a connection and runs its dispatcher.
 pub struct MqttServer<St, Im, AppSt, Codec: Encoder, Cfg, Err, E, T, M> {
+    /// Handshake pipeline producing the negotiated codec and session.
     connect: ConnectPipeline<St, Im, AppSt, Codec, Cfg, MqttError<Err>>,
+    /// Factory for the per-connection protocol packet handler.
     handler: T,
+    /// Middleware applied to each newly created packet handler.
     middleware: M,
+    /// Factory for lifecycle and transport-error handling after the handshake.
     control: ControlPipeline<AppSt, Codec, Cfg, Err, E>,
+    /// Retains the application error and configuration type parameters.
     _t: PhantomData<(E, Cfg)>,
 }
 
@@ -49,6 +59,7 @@ where
     E: 'static,
     Codec: Encoder,
 {
+    /// Combine the handshake, handler factory, middleware, and connection-control factory.
     pub(crate) fn new(
         connect: ConnectPipeline<St, Im, AppSt, Codec, Cfg, MqttError<Err>>,
         handler: T,

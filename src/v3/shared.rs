@@ -11,29 +11,46 @@ use crate::io::{FrameState, STREAM_TAG};
 use crate::v3::codec::{self, Encoded, Publish};
 use crate::{QoS, payload::PayloadSource, types::packet_type};
 
+/// Received acknowledgment routed to the corresponding outbound operation.
 #[derive(Debug)]
 pub(super) enum Ack {
+    /// PUBACK completing a `QoS 1` publish.
     Publish(num::NonZeroU16),
+    /// PUBREC acknowledging receipt of a `QoS 2` publish.
     Receive(num::NonZeroU16),
+    /// PUBCOMP completing the `QoS 2` release handshake.
     Complete(num::NonZeroU16),
+    /// SUBACK carrying subscription results.
     Subscribe {
+        /// Identifier of the SUBSCRIBE being acknowledged.
         packet_id: num::NonZeroU16,
+        /// One success quality of service or failure code per requested subscription.
         status: Vec<codec::SubscribeReturnCode>,
     },
+    /// UNSUBACK completing an unsubscribe operation.
     Unsubscribe(num::NonZeroU16),
 }
 
+/// Acknowledgment type expected for an outstanding packet identifier.
 #[derive(Copy, Clone, Debug)]
 pub(super) enum AckType {
+    /// PUBACK completing a `QoS 1` publish.
     Publish,
+    /// PUBREC acknowledging receipt of a `QoS 2` publish.
     Receive,
+    /// PUBCOMP completing the `QoS 2` release handshake.
     Complete,
+    /// SUBACK carrying subscription results.
     Subscribe,
+    /// UNSUBACK completing an unsubscribe operation.
     Unsubscribe,
 }
 
+/// Reusable channel storage for acknowledgment receivers and readiness notifications.
 pub(super) struct MqttSinkPool {
+    /// Channels carrying acknowledgments back to the sending operation.
     queue: pool::Pool<Ack>,
+    /// Channels for readiness or streaming-start notifications.
     pub(super) waiters: pool::Pool<()>,
 }
 
@@ -47,30 +64,50 @@ impl Default for MqttSinkPool {
 }
 
 bitflags::bitflags! {
+    /// Connection role and lifecycle markers, with negotiated options where applicable.
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct Flags: u8 {
+        /// Marks the client side of the connection.
         const CLIENT          = 0b0000_0001;
+        /// Marks that a callback for nonblocking publish acknowledgments was installed.
         const ON_PUBLISH_ACK  = 0b0000_0100; // on-publish-ack callback
+        /// Set after PINGREQ until the matching PINGRESP is received.
         const PING_PENDING    = 0b0000_1000; // PINGREQ is sent, PINGRESP is expected
 
+        /// Records that a DISCONNECT send has been claimed, even if encoding fails.
         const DISCONNECT      = 0b0010_0000; // Disconnect frame is sent
+        /// Marker for a dispatcher stop notification.
         const STOPPED         = 0b1000_0000; // DispatchItem::Stop() is sent
     }
 }
 
+/// Connection state shared by the MQTT 3.1.1 sink, codec, and dispatcher.
+///
+/// Tracks outgoing acknowledgments, streaming payloads, and send capacity for one connection.
 pub struct MqttShared {
+    /// Connection handle used to encode packets, wait for writes, and close transport.
     io: IoRef,
+    /// Maximum number of outstanding acknowledgment flows allowed for sends.
     cap: Cell<usize>,
+    /// Acknowledgment tracking and send-credit waiters for this connection.
     queues: RefCell<MqttSharedQueues>,
+    /// Last generated packet identifier; reset to zero after allocating `u16::MAX`.
     inflight_idx: Cell<u16>,
+    /// Connection role, keep-alive state, and shutdown/callback markers.
     flags: Cell<Flags>,
+    /// Encoding failure retained when an outgoing streaming payload is abandoned.
     encode_error: Cell<Option<EncodeError>>,
+    /// Outgoing payload bytes still required; `None` when no streaming publish is open.
     streaming_remaining: Cell<Option<num::NonZeroU32>>,
-    /// Packets encoded while a publish payload is incomplete
+    /// Encoded non-publish packets buffered until the outgoing payload completes.
     deferred: Cell<Option<BytePages>>,
+    /// Callback for nonblocking publishes; the boolean marks disconnection without an ack.
     on_publish_ack: Cell<Option<Box<dyn Fn(num::NonZeroU16, bool)>>>,
+    /// Source through which the dispatcher delivers an incoming streaming payload.
     pub(super) payload: PayloadSource,
+    /// Per-connection codec, including partial incoming and outgoing payload state.
     pub(super) codec: codec::Codec,
+    /// Reusable acknowledgment and notification channels shared with other connections.
     pub(super) pool: Rc<MqttSinkPool>,
 }
 
@@ -80,19 +117,28 @@ impl fmt::Debug for MqttShared {
     }
 }
 
+/// Outgoing acknowledgment flows and send-credit bookkeeping.
 #[derive(Debug)]
 struct MqttSharedQueues {
+    /// Packet identifiers awaiting an ack and their expected types.
+    ///
+    /// An absent sender routes `QoS 1` completion through the callback, or marks
+    /// a `QoS 2` flow whose caller has gone away.
     // packets awaiting ack, acks of different flows may arrive in any order
     // (MQTT 3.1.1 and 5.0, 4.6)
     inflight: HashMap<num::NonZeroU16, (Option<pool::Sender<Ack>>, AckType)>,
+    /// `QoS 1` packet identifiers in send order, used to reject reordered PUBACKs.
     // QoS 1 PUBLISH packet ids in send order
     pubacks: VecDeque<num::NonZeroU16>,
+    /// Readiness notifications queued until send capacity becomes available.
     waiters: VecDeque<pool::Sender<()>>,
+    /// PUBCOMP receivers retained after PUBREC until release or completion.
     // PUBCOMP receivers, one per QoS 2 PUBLISH awaiting release
     rx: HashMap<num::NonZeroU16, pool::Receiver<Ack>>,
 }
 
 impl MqttShared {
+    /// Creates shared state with no send capacity until the handshake sets its limit.
     pub(super) fn new(
         io: IoRef,
         codec: codec::Codec,
@@ -120,14 +166,19 @@ impl MqttShared {
         }
     }
 
+    /// Returns the transport tag used in connection diagnostics.
     pub(super) fn tag(&self) -> &'static str {
         self.io.tag()
     }
 
+    /// Returns whether this is the client side of the connection.
     pub(super) fn is_client(&self) -> bool {
         self.flags.get().contains(Flags::CLIENT)
     }
 
+    /// Requests graceful transport closure and fails pending sends.
+    ///
+    /// Attempts DISCONNECT first on clients, unless a previous send already claimed it.
     pub(super) fn close(&self) {
         if self.is_client() && !self.is_disconnect_sent() {
             let _ = self.encode_packet(codec::Packet::Disconnect);
@@ -136,16 +187,19 @@ impl MqttShared {
         self.clear_queues();
     }
 
+    /// Terminates the transport immediately and fails pending sends without DISCONNECT.
     pub(super) fn force_close(&self) {
         self.io.terminate();
         self.clear_queues();
     }
 
+    /// Terminates a connection whose outgoing streaming payload was abandoned incomplete.
     pub(super) fn streaming_dropped(&self) {
         self.force_close();
         self.encode_error.set(Some(EncodeError::PublishIncomplete));
     }
 
+    /// Fails the incoming payload source with a cloned, converted dispatcher error.
     pub(super) fn drop_payload<E>(&self, err: &E)
     where
         E: Clone,
@@ -154,12 +208,14 @@ impl MqttShared {
         self.payload.set_error(err.clone().into());
     }
 
+    /// Returns whether more bytes are required for an outgoing publish payload.
     pub(super) fn is_streaming(&self) -> bool {
         self.streaming_remaining.get().is_some()
     }
 
-    /// Wait until a `QoS 0` publish can be encoded, returns `false` if the
-    /// connection is closed
+    /// Waits until a `QoS 0` publish can be encoded.
+    ///
+    /// Returns `false` if the connection closes or the write-readiness wait fails.
     ///
     /// Waits for an outgoing streaming payload to complete, packets cannot
     /// interleave with it, and for the write buffer to drain to the release
@@ -183,19 +239,21 @@ impl MqttShared {
         }
     }
 
-    /// Marks whether PINGREQ is sent and PINGRESP is not received yet
+    /// Sets whether PINGREQ is awaiting PINGRESP.
     pub(super) fn set_ping_pending(&self, pending: bool) {
         let mut flags = self.flags.get();
         flags.set(Flags::PING_PENDING, pending);
         self.flags.set(flags);
     }
 
+    /// Returns whether PINGREQ is still awaiting PINGRESP.
     pub(super) fn is_ping_pending(&self) -> bool {
         self.flags.get().contains(Flags::PING_PENDING)
     }
 
-    /// Wait until already encoded packets can be written, returns `false` if the
-    /// connection is closed
+    /// Waits until previously encoded packets are no longer blocked by payload or buffer state.
+    ///
+    /// Returns `false` if the connection closes; does not wait for a full transport flush.
     ///
     /// Packets encoded during an outgoing streaming payload are written once the
     /// payload completes, then the write buffer has to drain to the release threshold
@@ -207,11 +265,12 @@ impl MqttShared {
         self.wait_write_ready().await
     }
 
-    /// Wait until the write buffer drains to the release threshold of write
-    /// backpressure, returns `false` if the connection is closed
+    /// Waits for the write buffer to drain to the backpressure release threshold.
     ///
-    /// The backpressure flag is not checked again once the buffer is drained,
-    /// it is cleared only when the io dispatcher runs.
+    /// Returns `false` if the connection closes, retrying write-readiness timeouts.
+    ///
+    /// The backpressure flag is not checked again once the buffer is drained;
+    /// it is cleared only when the I/O dispatcher runs.
     async fn wait_write_ready(&self) -> bool {
         loop {
             if !self.is_active() {
@@ -224,10 +283,9 @@ impl MqttShared {
         }
     }
 
-    /// Wait for write backpressure to be released, returns `false` if the
-    /// connection is closed
+    /// Waits for publish write capacity, returning `false` if the connection closes.
     ///
-    /// Write backpressure is the io level flag, it is set as soon as the write
+    /// Write backpressure is the I/O-level flag, set as soon as the write
     /// buffer reaches the high watermark. A streaming payload in progress goes
     /// first, publishes cannot interleave with it.
     async fn wait_writable(&self) -> bool {
@@ -248,14 +306,21 @@ impl MqttShared {
         }
     }
 
+    /// Returns whether the transport still accepts connection operations.
     pub(super) fn is_active(&self) -> bool {
         self.io.is_active()
     }
 
+    /// Returns whether send credit is available and write backpressure is off.
+    ///
+    /// Does not check connection activity, exclude an outgoing stream, or reserve credit.
     pub(super) fn is_ready(&self) -> bool {
         self.credit() > 0 && !self.io.is_wr_backpressure()
     }
 
+    /// Claims the DISCONNECT marker and returns whether it was already set.
+    ///
+    /// The first call returns `false`; later calls return `true`, regardless of encoding success.
     pub(super) fn is_disconnect_sent(&self) -> bool {
         let mut flags = self.flags.get();
         let sent = flags.contains(Flags::DISCONNECT);
@@ -266,12 +331,16 @@ impl MqttShared {
         sent
     }
 
+    /// Returns unused send capacity after counting all outstanding acknowledgment flows.
     pub(super) fn credit(&self) -> usize {
         self.cap
             .get()
             .saturating_sub(self.queues.borrow().inflight.len())
     }
 
+    /// Allocates the next nonzero packet identifier, wrapping after `u16::MAX`.
+    ///
+    /// Does not skip identifiers still in flight; registration rejects collisions.
     pub(super) fn next_id(&self) -> num::NonZeroU16 {
         let idx = self.inflight_idx.get() + 1;
         let idx = if idx == u16::MAX {
@@ -284,7 +353,7 @@ impl MqttShared {
         num::NonZeroU16::new(idx).unwrap()
     }
 
-    /// publish packet id
+    /// Preserves an explicit publish identifier or assigns the next generated one.
     pub(super) fn set_publish_id(&self, pkt: &mut Publish) -> num::NonZeroU16 {
         if let Some(idx) = pkt.packet_id {
             idx
@@ -295,12 +364,17 @@ impl MqttShared {
         }
     }
 
+    /// Updates send capacity and wakes queued operations that may now proceed.
     pub(super) fn set_cap(&self, cap: usize) {
         self.cap.set(cap);
         // wake up queued request (receive max limit)
         self.wake_waiters();
     }
 
+    /// Installs the callback for nonblocking publish acks and disconnect notifications.
+    ///
+    /// The callback must not reenter shared state: acknowledgment queues remain borrowed
+    /// while it runs, and the callback is temporarily removed from its cell.
     pub(super) fn set_publish_ack(&self, f: Box<dyn Fn(num::NonZeroU16, bool)>) {
         let mut flags = self.flags.get();
         flags.insert(Flags::ON_PUBLISH_ACK);
@@ -308,11 +382,19 @@ impl MqttShared {
         self.on_publish_ack.set(Some(f));
     }
 
-    /// Encodes a packet, it is written after the payload of a streaming publish
+    /// Encodes a packet, deferring its bytes until any outgoing publish payload completes.
     pub(super) fn encode_packet(&self, pkt: codec::Packet) -> Result<(), EncodeError> {
         self.io.encode(pkt.into(), self)
     }
 
+    /// Encodes an outgoing publish header and optional initial payload bytes.
+    ///
+    /// Rejects overlapping publish streams and records remaining bytes only after success.
+    /// The initial payload must not exceed `pkt.payload_size`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if the initial payload exceeds its declared size.
     pub(super) fn encode_publish(
         &self,
         pkt: Publish,
@@ -326,6 +408,10 @@ impl MqttShared {
         Ok(())
     }
 
+    /// Appends a payload chunk and returns whether more bytes are required.
+    ///
+    /// Rejects chunks without an open stream; an oversized chunk terminates the connection.
+    /// Completing the payload flushes deferred packets and wakes waiting publishers.
     pub(super) fn encode_publish_payload(&self, payload: Bytes) -> Result<bool, EncodeError> {
         if let Some(remaining) = self.streaming_remaining.get() {
             let len = payload.len() as u32;
@@ -347,6 +433,10 @@ impl MqttShared {
         }
     }
 
+    /// Fails pending ack receivers, notifies nonblocking sends, and wakes waiting publishers.
+    ///
+    /// Removes the publish callback and clears acknowledgment tracking; retained PUBCOMP
+    /// receivers are discarded on release, completion, or shared-state destruction.
     fn clear_queues(&self) {
         // publishes waiting for the streaming payload fail
         self.io.wake(STREAM_TAG);
@@ -366,11 +456,14 @@ impl MqttShared {
         }
     }
 
-    /// Wake waiters within the send credit
+    /// Wakes queued operations up to the available send capacity without reserving it.
     fn wake_waiters(&self) {
         self.wake_waiters_inner(&mut self.queues.borrow_mut());
     }
 
+    /// Notifies at most the available send capacity, skipping canceled waiters.
+    ///
+    /// Notifications do not reserve credit; woken operations must check readiness again.
     fn wake_waiters_inner(&self, queues: &mut MqttSharedQueues) {
         if queues.inflight.len() < self.cap.get() {
             let mut num = self.cap.get() - queues.inflight.len();
@@ -386,7 +479,9 @@ impl MqttShared {
         }
     }
 
-    /// Wait until a payload chunk can be encoded
+    /// Waits for transport write capacity before encoding an outgoing payload chunk.
+    ///
+    /// Returns `SendPacketError::Disconnected` when closed; does not check for an open stream.
     pub(super) async fn want_payload_stream(&self) -> Result<(), SendPacketError> {
         if self.is_active() && (!self.io.is_wr_backpressure() || self.wait_write_ready().await) {
             Ok(())
@@ -395,6 +490,7 @@ impl MqttShared {
         }
     }
 
+    /// Rejects starting a publish while another outgoing payload is incomplete.
     fn check_streaming(&self) -> Result<(), EncodeError> {
         if self.streaming_remaining.get().is_some() {
             Err(EncodeError::ExpectPayload)
@@ -403,19 +499,37 @@ impl MqttShared {
         }
     }
 
-    /// Remaining streaming payload size, it is applied only after the
-    /// publish packet is encoded successfully
+    /// Computes remaining outgoing payload bytes after an optional initial chunk.
+    ///
+    /// The caller applies this value only after encoding succeeds.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if the initial chunk exceeds `pkt.payload_size`.
     fn streaming_size(pkt: &Publish, payload: Option<&Bytes>) -> Option<num::NonZeroU32> {
         let len = payload.map_or(0, Bytes::len);
         num::NonZeroU32::new(pkt.payload_size - len as u32)
     }
 
+    /// Processes an acknowledgment and closes the connection on a protocol violation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a nonblocking PUBACK arrives without an installed publish callback.
     pub(super) fn pkt_ack(&self, ack: Ack) -> Result<(), MqttProtocolError> {
         self.pkt_ack_inner(ack).inspect_err(|_| {
             self.close();
         })
     }
 
+    /// Matches an ack to its flow, enforces PUBACK order, and advances or completes it.
+    ///
+    /// Successful PUBREC keeps the flow in flight until PUBCOMP and automatically sends
+    /// PUBREL if its caller has gone away; completion returns send credit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a nonblocking PUBACK arrives without an installed publish callback.
     fn pkt_ack_inner(&self, pkt: Ack) -> Result<(), MqttProtocolError> {
         let mut queues = self.queues.borrow_mut();
         let idx = pkt.packet_id();
@@ -490,7 +604,9 @@ impl MqttShared {
         }
     }
 
-    /// Register ack in response channel
+    /// Registers an expected acknowledgment and returns its response receiver.
+    ///
+    /// Rejects identifiers already in flight; the caller encodes the request separately.
     pub(super) fn wait_response(
         &self,
         id: num::NonZeroU16,
@@ -506,7 +622,14 @@ impl MqttShared {
         }
     }
 
-    /// Register ack in response channel
+    /// Encodes a publish and registers its expected acknowledgment after success.
+    ///
+    /// Rejects an in-use identifier or an overlapping stream; `QoS 1` publishes are
+    /// also queued for PUBACK ordering. The initial payload must fit `pkt.payload_size`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if the initial payload exceeds its declared size.
     pub(super) fn wait_publish_response(
         &self,
         id: num::NonZeroU16,
@@ -536,7 +659,16 @@ impl MqttShared {
         }
     }
 
-    /// Register ack in response channel
+    /// Encodes a publish and tracks its ack without allocating a response receiver.
+    ///
+    /// Rejects an in-use packet identifier or an overlapping stream. Completion is
+    /// reported through the installed publish callback for `QoS 1`.
+    /// The initial payload must not exceed `pkt.payload_size`.
+    ///
+    /// # Panics
+    ///
+    /// Panics after successful encoding if no publish callback was installed.
+    /// In debug builds, panics if the initial payload exceeds its declared size.
     pub(super) fn wait_publish_response_no_block(
         &self,
         id: num::NonZeroU16,
@@ -569,8 +701,9 @@ impl MqttShared {
         }
     }
 
-    /// Wait for write backpressure to be released and for send credit, returns
-    /// `false` if the connection is closed
+    /// Waits for write backpressure to clear and send credit to become available.
+    ///
+    /// Returns `false` if the connection closes; readiness does not reserve credit.
     ///
     /// A woken credit waiter checks again, a packet sent without waiting may take
     /// the credit first or write backpressure may be enabled again, the waiter is
@@ -601,7 +734,9 @@ impl MqttShared {
         }
     }
 
-    /// Register ack in response channel
+    /// Encodes PUBREL and takes the PUBCOMP receiver retained after a successful PUBREC.
+    ///
+    /// Fails with `SendPacketError::UnexpectedRelease` if this flow has no stored receiver.
     pub(super) fn release_publish(
         &self,
         id: num::NonZeroU16,
@@ -689,6 +824,7 @@ impl Decoder for MqttShared {
 }
 
 impl Ack {
+    /// Returns the MQTT control-packet type for protocol error reporting.
     pub(super) fn packet_type(&self) -> u8 {
         match self {
             Ack::Publish(_) => packet_type::PUBACK,
@@ -699,6 +835,7 @@ impl Ack {
         }
     }
 
+    /// Returns the identifier used to match this ack to an outbound operation.
     pub(super) fn packet_id(&self) -> num::NonZeroU16 {
         match self {
             Ack::Subscribe { packet_id, .. } => *packet_id,
@@ -706,6 +843,11 @@ impl Ack {
         }
     }
 
+    /// Consumes the acknowledgment and extracts its SUBACK data.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless this is `Ack::Subscribe`.
     pub(super) fn subscribe(self) -> Vec<codec::SubscribeReturnCode> {
         if let Ack::Subscribe { status, .. } = self {
             status
@@ -714,6 +856,7 @@ impl Ack {
         }
     }
 
+    /// Checks whether this acknowledgment has the type expected by its in-flight flow.
     pub(super) fn is_match(&self, tp: AckType) -> bool {
         match (self, tp) {
             (Ack::Publish(_), AckType::Publish)
@@ -727,6 +870,7 @@ impl Ack {
 }
 
 impl AckType {
+    /// Returns a diagnostic naming the acknowledgment packet expected by this flow.
     pub(super) fn expected_str(self) -> &'static str {
         match self {
             AckType::Publish => "Expected PUBACK packet",

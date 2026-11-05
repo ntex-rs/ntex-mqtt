@@ -11,7 +11,8 @@ pub struct Disconnect {
     pub reason_code: DisconnectReasonCode,
     /// Session Expiry Interval property, in seconds.
     ///
-    /// `None` means the interval from the CONNECT packet is used.
+    /// `None` leaves the negotiated session expiry unchanged.
+    /// The server-side codec omits this client-only property when encoding.
     pub session_expiry_interval_secs: Option<u32>,
     /// Server Reference property, identifies another Server the Client should use.
     pub server_reference: Option<ByteString>,
@@ -99,7 +100,11 @@ impl Disconnect {
         }
     }
 
-    /// Create new instance of `Disconnect`, set reason from protocol error
+    /// Creates a disconnect with a reason mapped from a protocol error.
+    ///
+    /// Invalid lengths, oversized packets, keep-alive timeouts, and specification
+    /// violations have dedicated mappings; other errors use
+    /// `DisconnectReasonCode::ImplementationSpecificError`.
     pub fn from_proto_error(err: &MqttProtocolError) -> Self {
         Self {
             reason_code: match err {
@@ -119,7 +124,7 @@ impl Disconnect {
 
     #[inline]
     #[must_use]
-    /// Set reason string for disconnect packet
+    /// Sets the diagnostic reason string, or clears it with `None`.
     pub fn reason_string(mut self, reason: Option<ByteString>) -> Self {
         self.reason_string = reason;
         self
@@ -127,7 +132,7 @@ impl Disconnect {
 
     #[inline]
     #[must_use]
-    /// Set server reference for disconnect packet
+    /// Sets the alternate server reference advertised to the client.
     pub fn server_reference(mut self, reference: ByteString) -> Self {
         self.server_reference = Some(reference);
         self
@@ -135,7 +140,7 @@ impl Disconnect {
 
     #[inline]
     #[must_use]
-    /// Update disconnect packet properties
+    /// Updates the user-property list in place, consuming and returning this packet.
     pub fn properties<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut UserProperties),
@@ -144,6 +149,7 @@ impl Disconnect {
         self
     }
 
+    /// Decodes a complete `DISCONNECT` body, rejecting invalid properties and trailing bytes.
     pub(crate) fn decode(src: &mut Bytes) -> Result<Self, DecodeError> {
         let disconnect = if src.has_remaining() {
             let reason_code = src.get_u8().try_into()?;

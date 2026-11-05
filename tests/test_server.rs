@@ -1,3 +1,5 @@
+//! MQTT v3 client and server integration tests.
+
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::num::{NonZeroU16, NonZeroU32};
@@ -15,8 +17,10 @@ use ntex_mqtt::v3::{
 };
 use ntex_mqtt::{Control, MqttServiceConfig, QoS, Reason, error::MqttProtocolError};
 
+/// Stateless session data attached to accepted test connections.
 struct St;
 
+/// Service error used to exercise test-handler failures and satisfy service error bounds.
 #[derive(Debug)]
 struct TestError;
 
@@ -42,6 +46,7 @@ impl From<v3::error::SendPacketError> for TestError {
     }
 }
 
+/// Accepts a test session without resuming state and sets a 16-second idle timeout.
 async fn connect(msg: Connect) -> Result<ConnectAck<St>, ()> {
     msg.packet();
     msg.io();
@@ -49,10 +54,12 @@ async fn connect(msg: Connect) -> Result<ConnectAck<St>, ()> {
     Ok(msg.ack(St, false).idle_timeout(Seconds(16)))
 }
 
+/// Creates a nonzero packet identifier, panicking if `id` is zero.
 fn pid(id: u16) -> NonZeroU16 {
     NonZeroU16::new(id).unwrap()
 }
 
+/// Builds an empty QoS 1 publish to `test` with packet identifier one.
 fn pkt_publish() -> codec::Publish {
     codec::Publish {
         dup: false,
@@ -64,6 +71,7 @@ fn pkt_publish() -> codec::Publish {
     }
 }
 
+/// Runs the v3 client handshake with default shared configuration and returns connection errors.
 async fn try_connect_client(
     connect: client::Connect<SocketAddr>,
 ) -> Result<client::Client, ntex::error::Error<client::MqttClientError<codec::ConnectAck>>> {
@@ -72,13 +80,14 @@ async fn try_connect_client(
         .await
 }
 
+/// Connects a client named `user` to `addr`, panicking if the handshake fails.
 async fn connect_client(addr: SocketAddr) -> client::Client {
     try_connect_client(client::Connect::new(addr).client_id("user"))
         .await
         .unwrap()
 }
 
-/// Opens a raw connection and sends CONNECT without waiting for CONNACK
+/// Opens a raw v3 connection and sends `CONNECT` without waiting for `CONNACK`.
 async fn connect_raw(srv: &server::TestServer) -> (ntex::io::Io, codec::Codec) {
     let io = srv.connect().await.unwrap();
     let codec = codec::Codec::default();
@@ -87,17 +96,22 @@ async fn connect_raw(srv: &server::TestServer) -> (ntex::io::Io, codec::Codec) {
     (io, codec)
 }
 
-/// Opens a raw connection and completes the handshake
+/// Sends a raw v3 `CONNECT` and consumes the first server response, expecting it to exist.
 async fn handshake(srv: &server::TestServer) -> (ntex::io::Io, codec::Codec) {
     let (io, codec) = connect_raw(srv).await;
     io.recv(&codec).await.unwrap().unwrap();
     (io, codec)
 }
 
+/// STATEMENT: QoS 1 publishing succeeds for a valid topic and rejects a wildcard topic.
+///
+/// HOW:
+/// - Start a v3 server and client, then publish to `test` and `#`.
+/// - Assert the valid publish succeeds and the wildcard publish fails.
 #[ntex::test]
 async fn test_simple() -> std::io::Result<()> {
     let srv =
-        server::test_server(async || MqttServer::new(async |_| Ok::<_, ()>(())).build(connect));
+        server::test_server(async |_| MqttServer::new(async |_| Ok::<_, ()>(())).build(connect));
 
     // connect to server
     let client = connect_client(srv.addr()).await;
@@ -122,12 +136,17 @@ async fn test_simple() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Streamed publishes preserve payload ordering and combine chunks below the configured minimum.
+///
+/// HOW:
+/// - Set the minimum chunk size to four bytes and send three streamed payloads plus one buffered payload.
+/// - Assert all valid sends succeed, a wildcard-topic stream fails, and the server receives the expected five chunks.
 #[ntex::test]
 async fn test_simple_streaming() -> std::io::Result<()> {
     let chunks = Arc::new(Mutex::new(Vec::new()));
     let chunks2 = chunks.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let chunks = chunks2.clone();
         MqttServer::new(async move |p: Publish| {
             let chunks = chunks.clone();
@@ -214,12 +233,17 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A detached streaming payload retains its publish metadata and can be collected in full.
+///
+/// HOW:
+/// - Take the payload from a QoS 1 `Publish` and verify its flags, topic, identifier, and sizes.
+/// - Send ten bytes in two chunks and assert `read_all` collects all ten bytes and the publish succeeds.
 #[ntex::test]
 async fn test_simple_streaming2() {
     let chunks = Arc::new(Mutex::new(Vec::new()));
     let chunks2 = chunks.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let chunks = chunks2.clone();
         MqttServer::new(async move |mut p: Publish| {
             let chunks = chunks.clone();
@@ -269,12 +293,17 @@ async fn test_simple_streaming2() {
     );
 }
 
+/// STATEMENT: Closing a connection during a streamed publish fails the send after its first chunk.
+///
+/// HOW:
+/// - Send four of ten declared bytes, then close the client sink.
+/// - Assert the publish fails and the server has recorded only the first four-byte chunk.
 #[ntex::test]
 async fn test_disconnect_while_streaming() -> std::io::Result<()> {
     let chunks = Arc::new(Mutex::new(Vec::new()));
     let chunks2 = chunks.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let chunks = chunks2.clone();
         MqttServer::new(async move |p: Publish| {
             let chunks = chunks.clone();
@@ -319,13 +348,17 @@ async fn test_disconnect_while_streaming() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Payload chunk waiting for write backpressure fails when the peer is gone
+/// STATEMENT: A payload sender blocked by write backpressure fails when the peer disconnects.
+///
+/// HOW:
+/// - Trigger a large server stream without reading it and wait until the sent-chunk count stops increasing.
+/// - Assert the sender is still pending, drop the peer connection, and verify `SendPacketError::Disconnected`.
 #[ntex::test]
 async fn test_streaming_waiter_peer_gone() -> std::io::Result<()> {
     let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let result = Arc::new(Mutex::new(None));
     let (sent2, result2) = (sent.clone(), result.clone());
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let sent = sent2.clone();
         let result = result2.clone();
         MqttServer::new(async move |ses: &Session<St>| {
@@ -404,10 +437,15 @@ async fn test_streaming_waiter_peer_gone() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Server handshake rejection helpers cause client connection attempts to fail.
+///
+/// HOW:
+/// - Reject separate connections for bad credentials, an invalid identifier, missing authorization, and service unavailability.
+/// - Require each connection to fail; for acknowledgement errors, check the reason code and absent session flag.
 #[ntex::test]
 async fn test_connect_fail() -> std::io::Result<()> {
     // bad user name or password
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |_| Ok::<_, ()>(()))
             .build(async |conn: Connect| Ok::<_, ()>(conn.bad_username_or_pwd::<St>()))
     });
@@ -425,7 +463,7 @@ async fn test_connect_fail() -> std::io::Result<()> {
     }
 
     // identifier rejected
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |_| Ok::<_, TestError>(()))
             .build(async |conn: Connect| Ok::<_, ()>(conn.identifier_rejected::<St>()))
     });
@@ -443,7 +481,7 @@ async fn test_connect_fail() -> std::io::Result<()> {
     }
 
     // not authorized
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |_| Ok::<_, ()>(()))
             .build(async |conn: Connect| Ok::<_, ()>(conn.not_authorized::<St>()))
     });
@@ -461,7 +499,7 @@ async fn test_connect_fail() -> std::io::Result<()> {
     }
 
     // service unavailable
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |_| Ok::<_, ()>(()))
             .build(async |conn: Connect| Ok::<_, ()>(conn.service_unavailable::<St>()))
     });
@@ -481,12 +519,17 @@ async fn test_connect_fail() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: The server completes the incoming QoS 2 acknowledgement exchange through its protocol service.
+///
+/// HOW:
+/// - Enable QoS 2, send a raw `PUBLISH`, and assert the matching `PUBREC`.
+/// - Send `PUBREL`, assert the matching `PUBCOMP`, and verify the protocol service observed the release.
 #[ntex::test]
 async fn test_qos2() -> std::io::Result<()> {
     let release = Arc::new(AtomicBool::new(false));
     let release2 = release.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let release = release2.clone();
         MqttServer::new(async |_| Ok::<_, ()>(()))
             .protocol(async move |msg| {
@@ -541,12 +584,17 @@ async fn test_qos2() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A client QoS 2 publish can be explicitly released through the server protocol service.
+///
+/// HOW:
+/// - Enable QoS 2 and start the client dispatcher.
+/// - Send with `send_exactly_once`, await `release`, and assert the server handled `PublishRelease`.
 #[ntex::test]
 async fn test_qos2_client() -> std::io::Result<()> {
     let release = Arc::new(AtomicBool::new(false));
     let release2 = release.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let release = release2.clone();
         MqttServer::new(async |_| Ok::<_, ()>(()))
             .protocol(async move |msg| match msg {
@@ -577,9 +625,14 @@ async fn test_qos2_client() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: The default server protocol service acknowledges repeated QoS 2 releases without closing the connection.
+///
+/// HOW:
+/// - Enable QoS 2 and publish and release three messages through the client sink.
+/// - Require every operation to succeed and assert the sink remains open.
 #[ntex::test]
 async fn test_qos2_default_protocol() -> std::io::Result<()> {
-    let srv = server::TestServerBuilder::new(async || {
+    let srv = server::TestServerBuilder::new(async |_| {
         MqttServer::new(async |_| Ok::<_, ()>(())).build(connect)
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_qos(QoS::ExactlyOnce)))
@@ -602,6 +655,7 @@ async fn test_qos2_default_protocol() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Extracts a control packet from decoded input, returning `None` for publish data.
 fn decoded_packet(res: Decoded) -> Option<Packet> {
     if let Decoded::Packet(pkt, _) = res {
         Some(pkt)
@@ -610,6 +664,11 @@ fn decoded_packet(res: Decoded) -> Option<Packet> {
     }
 }
 
+/// STATEMENT: Acknowledging a QoS 1 publish with a QoS 2 acknowledgement is a protocol violation.
+///
+/// HOW:
+/// - Trigger a server QoS 1 publish and reply separately with `PUBREC` and `PUBCOMP`.
+/// - Assert the connection closes, the reported violation expects `PUBACK`, and the pending publish fails as disconnected.
 #[ntex::test]
 async fn test_unexpected_ack_type() -> std::io::Result<()> {
     // QoS 1 PUBLISH acknowledged with PUBREC or PUBCOMP (MQTT 3.1.1, 4.3.2, 4.3.3)
@@ -621,7 +680,7 @@ async fn test_unexpected_ack_type() -> std::io::Result<()> {
         let error = Arc::new(Mutex::new(None));
         let result = Arc::new(Mutex::new(None));
         let (error2, result2) = (error.clone(), result.clone());
-        let srv = server::test_server(async move || {
+        let srv = server::test_server(async move |_| {
             let error = error2.clone();
             let result = result2.clone();
             MqttServer::new(async move |ses: &Session<St>| {
@@ -691,11 +750,16 @@ async fn test_unexpected_ack_type() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Concurrent QoS 2 publishes can both be released after both receipts arrive.
+///
+/// HOW:
+/// - Trigger two server publishes and send both `PUBREC` packets before either release completes.
+/// - Assert both matching `PUBREL` packets arrive, send their `PUBCOMP` packets, and verify both releases succeed.
 #[ntex::test]
 async fn test_qos2_release_multiple() -> std::io::Result<()> {
     let result = Arc::new(Mutex::new(None));
     let result2 = result.clone();
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let result = result2.clone();
         MqttServer::new(async move |ses: &Session<St>| {
             let sink = ses.sink().clone();
@@ -783,12 +847,12 @@ async fn test_qos2_release_multiple() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Server publishes QoS 2 message to the client on any client publish
+/// Starts a server that publishes QoS 2 data for each incoming publish and shares its eventual release success.
 fn qos2_publisher() -> (server::TestServer, Arc<Mutex<Option<bool>>>) {
     let released = Arc::new(Mutex::new(None));
     let released2 = released.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let released = released2.clone();
         MqttServer::new(async move |con: &Session<St>| {
             let sink = con.sink().clone();
@@ -815,6 +879,7 @@ fn qos2_publisher() -> (server::TestServer, Arc<Mutex<Option<bool>>>) {
     (srv, released)
 }
 
+/// Polls a shared release result up to 200 times at ten-millisecond intervals, returning `None` on timeout.
 async fn wait_released(released: &Mutex<Option<bool>>) -> Option<bool> {
     for _ in 0..200 {
         if let Some(res) = *released.lock().unwrap() {
@@ -825,6 +890,11 @@ async fn wait_released(released: &Mutex<Option<bool>>) -> Option<bool> {
     None
 }
 
+/// STATEMENT: Both client routing and protocol-message handlers can complete incoming QoS 2 publishes.
+///
+/// HOW:
+/// - Trigger a server QoS 2 publish with a routed client handler, then repeat with a protocol-message handler.
+/// - In both cases assert the payload and QoS, successful server release, and an open client sink.
 #[ntex::test]
 async fn test_qos2_server_to_client() -> std::io::Result<()> {
     // publish is handled by client router
@@ -897,12 +967,17 @@ async fn test_qos2_server_to_client() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: QoS 2 redelivery is acknowledged repeatedly but delivered to the client resource only once.
+///
+/// HOW:
+/// - Have a raw server send one publish followed by two duplicates with the same identifier, then `PUBREL`.
+/// - Assert three `PUBREC` replies and one `PUBCOMP`, a single resource invocation, and an open sink.
 #[ntex::test]
 async fn test_qos2_redelivery_to_client() -> std::io::Result<()> {
     // raw server re-sends QoS 2 PUBLISH with DUP flag before PUBREL
     let completed = Arc::new(Mutex::new(None));
     let completed2 = completed.clone();
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let completed = completed2.clone();
         fn_service(async move |io: ntex::io::Io| {
             let codec = codec::Codec::default();
@@ -999,12 +1074,17 @@ async fn test_qos2_redelivery_to_client() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: The server protocol service acknowledges a ping request with a ping response.
+///
+/// HOW:
+/// - Complete a raw handshake and send `PINGREQ`.
+/// - Assert `PINGRESP` is received and the custom ping handler ran.
 #[ntex::test]
 async fn test_ping() -> std::io::Result<()> {
     let ping = Arc::new(AtomicBool::new(false));
     let ping2 = ping.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let ping = ping2.clone();
         MqttServer::new(async |_| Ok::<_, TestError>(()))
             .protocol(async move |msg| {
@@ -1030,12 +1110,17 @@ async fn test_ping() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A client keeps sending keep-alive pings while the server acknowledges them.
+///
+/// HOW:
+/// - Connect with a one-second keep-alive interval and count server ping-handler calls.
+/// - After 3.5 seconds, assert at least three pings and an open client sink.
 #[ntex::test]
 async fn test_client_keepalive() -> std::io::Result<()> {
     let pings = Arc::new(Mutex::new(0));
     let pings2 = pings.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let pings = pings2.clone();
         MqttServer::new(async |_| Ok::<_, TestError>(()))
             .protocol(async move |msg| {
@@ -1067,6 +1152,7 @@ async fn test_client_keepalive() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Builds an empty QoS 1 publish for `topic` with the supplied packet identifier.
 fn qos1_publish(topic: &'static str, id: u16) -> Encoded {
     Encoded::Publish(
         codec::Publish {
@@ -1078,6 +1164,7 @@ fn qos1_publish(topic: &'static str, id: u16) -> Encoded {
     )
 }
 
+/// Receives one decoded item within two seconds, panicking on timeout, closure, or a receive error.
 async fn recv_pkt(io: &ntex::io::Io, codec: &codec::Codec) -> Decoded {
     ntex::time::timeout(Millis(2000), io.recv(codec))
         .await
@@ -1086,11 +1173,16 @@ async fn recv_pkt(io: &ntex::io::Io, codec: &codec::Codec) -> Decoded {
         .unwrap()
 }
 
+/// STATEMENT: The server receive limit delays publishes without blocking acknowledgements or pings.
+///
+/// HOW:
+/// - Set `max_receive` to one and send two publishes whose handlers await acknowledgement of server echo publishes.
+/// - Assert a ping is answered while the first handler waits, then acknowledge each echo and verify both original publish acknowledgements.
 #[ntex::test]
 async fn test_max_receive_publish_only() -> std::io::Result<()> {
     // publish handler waits for the ack of its own publish, the limit
     // of in-flight publishes must not block acks and pings
-    let srv = server::TestServerBuilder::new(async || {
+    let srv = server::TestServerBuilder::new(async |_| {
         MqttServer::new(async |ses: &Session<St>| {
             let sink = ses.sink().clone();
             Ok::<_, Infallible>(fn_service(async move |_: Publish| {
@@ -1156,13 +1248,18 @@ async fn test_max_receive_publish_only() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Publishes queued by the receive limit reach the handler before a following disconnect.
+///
+/// HOW:
+/// - Set `max_receive` to one, delay each publish handler, and send two publishes followed by `DISCONNECT`.
+/// - Wait for handling and assert both publish identifiers were recorded in arrival order.
 #[ntex::test]
 async fn test_max_receive_disconnect_order() -> std::io::Result<()> {
     // publishes that wait for a slot are passed to the handler before
     // DISCONNECT is processed, as without the limit
     let handled = Arc::new(Mutex::new(Vec::new()));
     let handled2 = handled.clone();
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let handled = handled2.clone();
         MqttServer::new(async move |_: &Session<St>| {
             let handled = handled.clone();
@@ -1196,6 +1293,12 @@ async fn test_max_receive_disconnect_order() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Client receive limiting does not deadlock a streamed publish handler awaiting an outgoing acknowledgement.
+///
+/// HOW:
+/// - Test `max_receive` values one and zero with a four-byte minimum chunk size.
+/// - Trigger a server publish, verify its full payload in the client handler, and publish an echo from that handler.
+/// - Assert the server publish completes successfully in both configurations.
 #[ntex::test]
 async fn test_client_max_receive_publish_only() -> std::io::Result<()> {
     // client publish handler reads the streamed payload and waits
@@ -1203,7 +1306,7 @@ async fn test_client_max_receive_publish_only() -> std::io::Result<()> {
     for max_receive in [1, 0] {
         let result = Arc::new(Mutex::new(None));
         let result2 = result.clone();
-        let srv = server::test_server(async move || {
+        let srv = server::test_server(async move |_| {
             let result = result2.clone();
             MqttServer::new(async move |ses: &Session<St>| {
                 let sink = ses.sink().clone();
@@ -1282,6 +1385,11 @@ async fn test_client_max_receive_publish_only() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A second connect packet or a client ping response closes the server connection with a protocol violation.
+///
+/// HOW:
+/// - After a valid raw handshake, send either another `CONNECT` or `PINGRESP`.
+/// - Assert the connection closes and the control service records the expected violation message for each packet.
 #[ntex::test]
 async fn test_unexpected_packet() -> std::io::Result<()> {
     let connect_pkt = || {
@@ -1302,7 +1410,7 @@ async fn test_unexpected_packet() -> std::io::Result<()> {
     ] {
         let error = Arc::new(Mutex::new(None));
         let error2 = error.clone();
-        let srv = server::test_server(async move || {
+        let srv = server::test_server(async move |_| {
             let error = error2.clone();
             MqttServer::new(async |_| Ok::<_, TestError>(()))
                 .control(async move |msg| {
@@ -1333,9 +1441,14 @@ async fn test_unexpected_packet() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Publish acknowledgements preserve arrival order without delaying subscription and ping responses.
+///
+/// HOW:
+/// - Send two publishes around a subscription and ping, with the first publish handler completing last.
+/// - Assert `SUBACK` and `PINGRESP` arrive first, followed by the two `PUBACK` packets in publish order.
 #[ntex::test]
 async fn test_ack_order() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async |p: Publish| {
             // the first publish completes last
             let delay = if p.id() == NonZeroU16::new(1) { 200 } else { 50 };
@@ -1421,9 +1534,14 @@ async fn test_ack_order() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Concurrent client QoS 1 sends all complete through the acknowledgement queue.
+///
+/// HOW:
+/// - Start a server whose publish handler waits briefly and submit three client sends together with `join_all`.
+/// - Assert all three send results are successful.
 #[ntex::test]
 async fn test_ack_order_sink() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async |_| {
             sleep(Duration::from_millis(100)).await;
             Ok::<_, ()>(())
@@ -1456,9 +1574,14 @@ async fn test_ack_order_sink() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A client QoS 1 send to a wildcard topic returns an error.
+///
+/// HOW:
+/// - Connect to a server configured to force-close its sink when handling a publish.
+/// - Attempt to publish to `#` and assert the send fails.
 #[ntex::test]
 async fn test_disconnect() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |con: &Session<St>| {
             let sink = con.sink().clone();
             Ok::<_, Infallible>(fn_service(async move |_: Publish| {
@@ -1486,12 +1609,17 @@ async fn test_disconnect() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Closing the client sink delivers a disconnect message to the server protocol service.
+///
+/// HOW:
+/// - Complete a client QoS 1 publish, then call `close` on its sink.
+/// - Wait briefly and assert the server disconnect handler was invoked.
 #[ntex::test]
 async fn test_client_disconnect() -> std::io::Result<()> {
     let disconnect = Arc::new(AtomicBool::new(false));
     let disconnect2 = disconnect.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let disconnect = disconnect2.clone();
 
         MqttServer::new(async |_: &Session<St>| {
@@ -1527,6 +1655,11 @@ async fn test_client_disconnect() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Buffered publish and disconnect packets both reach their server handlers.
+///
+/// HOW:
+/// - Send a publish and `DISCONNECT` in one flush while the publish handler remains pending.
+/// - Drop the connection after a short delay and assert both handlers were invoked.
 #[ntex::test]
 async fn test_handle_incoming() -> std::io::Result<()> {
     let publish = Arc::new(AtomicBool::new(false));
@@ -1534,7 +1667,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     let disconnect = Arc::new(AtomicBool::new(false));
     let disconnect2 = disconnect.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let publish = publish2.clone();
         let disconnect = disconnect2.clone();
         MqttServer::new(async move |_| {
@@ -1578,6 +1711,7 @@ async fn test_handle_incoming() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Binds server QoS settings into a runner that reports whether a buffered publish was handled.
 fn make_handle_or_drop_test(
     max_qos: QoS,
     handle_qos_after_disconnect: Option<QoS>,
@@ -1591,6 +1725,7 @@ fn make_handle_or_drop_test(
     }
 }
 
+/// Sends a publish followed by disconnect, verifies disconnect handling, and reports publish-handler invocation.
 async fn handle_or_drop_publish_after_disconnect(
     publish_qos: QoS,
     max_qos: QoS,
@@ -1601,7 +1736,7 @@ async fn handle_or_drop_publish_after_disconnect(
     let disconnect = Arc::new(AtomicBool::new(false));
     let disconnect2 = disconnect.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let publish = publish2.clone();
         let disconnect = disconnect2.clone();
         MqttServer::new(async move |_| {
@@ -1658,6 +1793,11 @@ async fn handle_or_drop_publish_after_disconnect(
     publish.load(Relaxed)
 }
 
+/// STATEMENT: Configured QoS thresholds allow buffered publishes to be handled around disconnect.
+///
+/// HOW:
+/// - Use the shared disconnect scenario with supported maximum QoS and post-disconnect handling thresholds.
+/// - Assert every listed QoS combination invokes the publish handler; the helper also verifies disconnect handling.
 #[ntex::test]
 async fn test_handle_incoming_after_disconnect() -> std::io::Result<()> {
     let handle_publish = make_handle_or_drop_test(QoS::AtMostOnce, Some(QoS::AtMostOnce));
@@ -1678,9 +1818,14 @@ async fn test_handle_incoming_after_disconnect() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: An error from the control service while reporting a protocol-service error closes the connection.
+///
+/// HOW:
+/// - Make the protocol service fail on `DISCONNECT` and the control service fail on the resulting error notification.
+/// - Send `DISCONNECT` after a raw handshake and assert the connection reaches end of stream.
 #[ntex::test]
 async fn test_nested_errors() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async |_| Ok::<_, TestError>(()))
             .control(async move |msg| {
                 if let Control::Stop(Reason::Error(_)) = msg {
@@ -1710,9 +1855,14 @@ async fn test_nested_errors() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A raised packet-size limit permits a large streamed payload to be consumed and acknowledged.
+///
+/// HOW:
+/// - Configure a 512 KiB limit and make the publish handler accept only a fully read 270 KiB payload.
+/// - Send that payload and assert the send succeeds and a publish acknowledgement arrives.
 #[ntex::test]
 async fn test_large_publish() -> std::io::Result<()> {
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         MqttServer::new(async |p: Publish| match p.read_all().await {
             Ok(pl) if pl.len() == 270 * 1024 => Ok(()),
             _ => Err(TestError),
@@ -1746,9 +1896,14 @@ async fn test_large_publish() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: The default packet-size limit rejects a packet whose payload alone reaches 256 KiB.
+///
+/// HOW:
+/// - Complete a raw handshake against an otherwise default server.
+/// - Send a publish with a 256 KiB payload and assert the connection closes or reports an I/O error.
 #[ntex::test]
 async fn test_default_max_size() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async |_| Ok::<_, TestError>(())).build(connect)
     });
 
@@ -1772,6 +1927,7 @@ async fn test_default_max_size() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Builds a TLS acceptor from the test key and certificate, panicking if either cannot be loaded.
 fn ssl_acceptor() -> openssl::ssl::SslAcceptor {
     use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 
@@ -1786,9 +1942,14 @@ fn ssl_acceptor() -> openssl::ssl::SslAcceptor {
     builder.build()
 }
 
+/// STATEMENT: Dropping an incomplete large streaming payload closes the connection.
+///
+/// HOW:
+/// - Configure a 512 KiB limit but use a publish handler that does not read its payload.
+/// - Send a 270 KiB payload and assert the next receive observes closure or an I/O error.
 #[ntex::test]
 async fn test_large_publish_payload_dropped() -> std::io::Result<()> {
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         MqttServer::new(async |_| Ok::<_, TestError>(())).build(connect)
     })
     .config(SharedCfg::new("MQTT").add(MqttServiceConfig::new().set_max_size(512 * 1024)))
@@ -1813,11 +1974,17 @@ async fn test_large_publish_payload_dropped() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A large payload can be streamed and acknowledged over an OpenSSL TLS connection.
+///
+/// HOW:
+/// - Start a TLS server with a 512 KiB packet limit and a handler that requires a fully read 270 KiB payload.
+/// - Connect with certificate verification disabled, perform the MQTT handshake, and send the payload.
+/// - Assert the send succeeds and a publish acknowledgement is received.
 #[ntex::test]
 async fn test_large_publish_openssl() -> std::io::Result<()> {
     use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         server::openssl::SslAcceptor::new(ssl_acceptor())
             .map_err(|_| ())
             .and_then(
@@ -1871,12 +2038,17 @@ async fn test_large_publish_openssl() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A publish above the configured maximum QoS closes the connection with a protocol violation.
+///
+/// HOW:
+/// - Configure the server for QoS 0 and send a raw QoS 1 publish after handshake.
+/// - Assert end of stream and a protocol-violation notification in the control service.
 #[ntex::test]
 async fn test_max_qos() -> std::io::Result<()> {
     let violated = Arc::new(AtomicBool::new(false));
     let violated2 = violated.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let violated = violated2.clone();
         MqttServer::new(async |_| Ok::<_, TestError>(()))
             .control(async move |msg| {
@@ -1909,9 +2081,14 @@ async fn test_max_qos() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A server sink becomes ready only after the handshake acknowledgement is applied.
+///
+/// HOW:
+/// - Poll `ready` during the connect handler and assert it is pending and `is_ready` is false.
+/// - Spawn a waiter that asserts readiness and publishes after the handshake, then check the peer receive succeeds.
 #[ntex::test]
 async fn test_sink_ready() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |_| Ok::<_, TestError>(())).build(async move |packet: Connect| {
             let sink = packet.sink();
             let mut ready = Box::pin(sink.ready());
@@ -1942,9 +2119,14 @@ async fn test_sink_ready() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Nonblocking QoS 1 sends report acknowledgements through the registered callback.
+///
+/// HOW:
+/// - Register `publish_ack_cb`, enqueue two nonblocking sends, and await a third ordinary send.
+/// - Assert all sends succeed and the callback records the first two packet identifiers without disconnection.
 #[ntex::test]
 async fn test_sink_publish_noblock() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async |_| Ok::<_, TestError>(())).build(connect)
     });
 
@@ -1985,13 +2167,18 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
     Ok(())
 }
 
-// Slow frame rate
+/// STATEMENT: The maximum frame-read duration still expires when incremental payload reads satisfy the minimum rate.
+///
+/// HOW:
+/// - Configure a one-second rate interval, a two-second maximum duration, and a ten-byte rate requirement.
+/// - Send a large publish header and payload fragments, asserting no timeout after the first interval.
+/// - Send another sufficient fragment and assert the control service reports `ReadTimeout` after the maximum duration.
 #[ntex::test]
 async fn test_frame_read_rate() -> std::io::Result<()> {
     let check = Arc::new(AtomicBool::new(false));
     let check2 = check.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let check = check2.clone();
 
         MqttServer::new(async move |p: v3::Publish| {
@@ -2052,9 +2239,14 @@ async fn test_frame_read_rate() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Decoder-level connect rejections send a negative acknowledgement before closing the connection.
+///
+/// HOW:
+/// - Send raw connects with an unsupported protocol level and an empty identifier without a clean session.
+/// - Assert the corresponding `CONNACK` reason with no session present, then end of stream for each case.
 #[ntex::test]
 async fn test_handshake_rejected_by_decoder() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(fn_service(async |_| Ok::<_, TestError>(()))).build(connect)
     });
 
@@ -2092,9 +2284,14 @@ async fn test_handshake_rejected_by_decoder() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A failed handshake acknowledgement carries the application-selected reason.
+///
+/// HOW:
+/// - Make the connect handler return `Connect::failed` with `UnacceptableProtocolVersion`.
+/// - Send a raw connect and assert the received `CONNACK` has that reason and no session present.
 #[ntex::test]
 async fn test_handshake_fail() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(fn_service(async |_| Ok::<_, TestError>(()))).build(
             async move |packet: Connect| {
                 Ok::<_, ()>(
@@ -2122,11 +2319,16 @@ async fn test_handshake_fail() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Invalid last-will topics are rejected before the connect handler runs.
+///
+/// HOW:
+/// - Send connects with an empty will topic or wildcard-containing topics and assert closure without an acknowledgement.
+/// - Assert the connect handler was not called, then send a valid will topic and verify an accepted `CONNACK` and handler invocation.
 #[ntex::test]
 async fn test_handshake_invalid_will_topic() -> std::io::Result<()> {
     let called = Arc::new(AtomicBool::new(false));
     let called2 = called.clone();
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let called = called2.clone();
         MqttServer::new(async |_: Publish| Ok::<_, ()>(())).build(async move |msg: Connect| {
             called.store(true, Relaxed);
@@ -2172,13 +2374,17 @@ async fn test_handshake_invalid_will_topic() -> std::io::Result<()> {
     Ok(())
 }
 
-/// The payload of a streaming publish is read while the publish fills the
-/// response queue
+/// STATEMENT: A streamed payload continues to be read when its publish fills the response queue.
+///
+/// HOW:
+/// - Set `max_queue` to one and send a 64 KiB publish in parts, followed by a small publish.
+/// - Have the handler consume the full large payload and assert both publish acknowledgements arrive in order within the timeout.
 #[ntex::test]
 async fn test_streaming_publish_full_queue() {
+    /// Payload size in bytes used to fill the single-slot response queue.
     const SIZE: usize = 64 * 1024;
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         MqttServer::new(async |p: Publish| {
             if p.packet().payload_size == 1 {
                 return Ok(());
@@ -2237,17 +2443,22 @@ async fn test_streaming_publish_full_queue() {
     }
 }
 
-/// Payload chunks do not keep queue slots while the publish handler is
-/// pending, packets after the publish are dispatched
+/// STATEMENT: Payload chunks do not retain queue slots while their publish handler remains pending.
+///
+/// HOW:
+/// - Set `max_queue` to two, stream a 16 KiB publish, and block its handler after reading the payload.
+/// - Send a small QoS 0 publish and assert its handler runs before the first handler is released.
+/// - Release the first handler and assert its publish acknowledgement arrives.
 #[ntex::test]
 async fn test_streaming_publish_chunk_slots() {
     // below the receive size limit, reading continues after the payload
+    /// Payload size in bytes, kept below the receive-size limit to allow reading subsequent packets.
     const SIZE: usize = 16 * 1024;
 
     let gate = Arc::new(AtomicBool::new(false));
     let received = Arc::new(AtomicBool::new(false));
     let (gate2, received2) = (gate.clone(), received.clone());
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let (gate, received) = (gate2.clone(), received2.clone());
         MqttServer::new(async move |p: Publish| {
             if p.packet().payload_size == 1 {
@@ -2325,35 +2536,37 @@ async fn test_streaming_publish_chunk_slots() {
     );
 }
 
-/// Raw mqtt server: reads the CONNECT packet and hands the connection to `f`
+/// Starts a raw MQTT server that consumes the first packet before handing the connection and codec to `f`.
 fn raw_server<F, Fut>(f: F) -> server::TestServer
 where
     F: Fn(ntex::io::Io, codec::Codec) -> Fut + Send + Clone + 'static,
     Fut: Future<Output = ()> + 'static,
 {
-    server::test_server(move || {
+    server::test_server(async move |_| {
         let f = f.clone();
-        async move {
-            fn_service(move |io: ntex::io::Io| {
-                let f = f.clone();
-                async move {
-                    let codec = codec::Codec::default();
-                    let _ = io.recv(&codec).await;
-                    f(io, codec).await;
-                    Ok::<_, ()>(())
-                }
-            })
-        }
+        fn_service(move |io: ntex::io::Io| {
+            let f = f.clone();
+            async move {
+                let codec = codec::Codec::default();
+                let _ = io.recv(&codec).await;
+                f(io, codec).await;
+                Ok::<_, ()>(())
+            }
+        })
     })
 }
 
-/// Server side `v3::Router` dispatches publishes to resources and to the default service
+/// STATEMENT: The server router uses matching resources or its default service and closes on resource failure.
+///
+/// HOW:
+/// - Publish to a matching parameterized route and two unmatched topics, checking each acknowledgement and the routing log.
+/// - Publish to a failing resource and assert the connection closes or reports an I/O error.
 #[ntex::test]
 async fn test_server_router() -> std::io::Result<()> {
     let log = Arc::new(Mutex::new(Vec::new()));
     let log2 = log.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let (def, res) = (log2.clone(), log2.clone());
         let router = v3::Router::new(fn_service(move |p: Publish| {
             let log = def.clone();
@@ -2407,14 +2620,18 @@ async fn test_server_router() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Client `Connect` builder options are delivered to the server, the server
-/// applies `ConnectAck` options
+/// STATEMENT: Connect builder values reach the server and acknowledgement options configure the connection.
+///
+/// HOW:
+/// - Set client credentials, keep-alive, clean session, will, and packet overrides; mutate the username in the server connect handler.
+/// - Assert the received packet fields, debug metadata, and the client session-present flag.
+/// - Apply a 64-byte packet limit and verify a small publish succeeds while a larger one fails as disconnected.
 #[ntex::test]
 async fn test_connect_builder_and_ack() -> std::io::Result<()> {
     let received = Arc::new(Mutex::new(None));
     let received2 = received.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let received = received2.clone();
         MqttServer::new(async |_: Publish| Ok::<_, TestError>(())).build(
             async move |mut msg: Connect| {
@@ -2487,10 +2704,15 @@ async fn test_connect_builder_and_ack() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Client protocol-message service receives unrouted publishes and `PublishRelease`
+/// STATEMENT: The client protocol service receives unrouted publishes at each QoS and their QoS 2 release.
+///
+/// HOW:
+/// - Trigger four server publishes and read their payloads through chunked, collected, and `into_inner` acknowledgement paths.
+/// - Check mutable packet metadata, then assert the ordered topics, QoS values, payloads, and release notification.
+/// - Assert the client sink remains open after acknowledging the messages.
 #[ntex::test]
 async fn test_client_publish_message() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |ses: &Session<St>| {
             let sink = ses.sink().clone();
             Ok::<_, Infallible>(fn_service(async move |_: Publish| {
@@ -2618,14 +2840,18 @@ async fn test_client_publish_message() -> std::io::Result<()> {
     Ok(())
 }
 
-/// `middleware()` and `replace_middlewares()` change in-flight handling
+/// STATEMENT: Replacing default middleware removes the configured in-flight publish limit.
+///
+/// HOW:
+/// - Replace middleware with `Identity`, append another `Identity`, and configure `max_receive` to one.
+/// - Send two publishes whose handlers overlap and assert both acknowledgements and a peak concurrency of two.
 #[ntex::test]
 async fn test_server_middleware() -> std::io::Result<()> {
     // in-flight limiting is removed, both publishes are handled concurrently
     let max = Arc::new(Mutex::new((0usize, 0usize)));
     let max2 = max.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let max = max2.clone();
         let srv = MqttServer::new(fn_service(move |_: Publish| {
             let max = max.clone();
@@ -2661,10 +2887,14 @@ async fn test_server_middleware() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Server closes the connection if the first packet is not CONNECT
+/// STATEMENT: Non-connect first packets and malformed handshakes close only the offending server connection.
+///
+/// HOW:
+/// - Send a ping, disconnect, publish, and invalid bytes as the first packet on separate connections and assert end of stream.
+/// - Drop a connection during handshake, then complete a fresh handshake and verify a ping response.
 #[ntex::test]
 async fn test_first_packet_is_not_connect() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |_: Publish| Ok::<_, TestError>(())).build(connect)
     });
 
@@ -2704,7 +2934,11 @@ async fn test_first_packet_is_not_connect() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Client connector failure paths
+/// STATEMENT: The client connector distinguishes handshake closure and unexpected packets and supports a custom transport connector.
+///
+/// HOW:
+/// - Use raw servers that close before `CONNACK` or send a ping response or publish instead, checking disconnection and protocol errors.
+/// - Connect through a custom connector, check debug output and the absent session flag, then use `into_inner` to exchange a raw ping.
 #[ntex::test]
 async fn test_connector_errors() -> std::io::Result<()> {
     // peer closes the connection without CONNACK
@@ -2749,7 +2983,7 @@ async fn test_connector_errors() -> std::io::Result<()> {
     }
 
     // custom connector
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |_: Publish| Ok::<_, TestError>(())).build(connect)
     });
     let connector = client::MqttConnector::new().connector(ntex::connect::Connector::default());
@@ -2772,9 +3006,9 @@ async fn test_connector_errors() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Server that publishes `topics` to the client as soon as it receives a publish
+/// Starts a server that sends each configured topic and QoS sequentially for every incoming publish.
 fn publisher_server(topics: &'static [(&'static str, QoS)]) -> server::TestServer {
-    server::test_server(async move || {
+    server::test_server(async move |_| {
         MqttServer::new(async move |ses: &Session<St>| {
             let sink = ses.sink().clone();
             Ok::<_, Infallible>(fn_service(async move |_: Publish| {
@@ -2796,8 +3030,11 @@ fn publisher_server(topics: &'static [(&'static str, QoS)]) -> server::TestServe
     })
 }
 
-/// `ClientRouter` dispatches publishes to resources, the rest goes to the
-/// protocol-message service
+/// STATEMENT: The client router dispatches matching resources, falls back to the protocol service, and closes on resource failure.
+///
+/// HOW:
+/// - Trigger publishes for two resources, an unmatched topic, and a failing resource.
+/// - Assert the first three topics produce the expected ordered routing log and the final failure closes the sink.
 #[ntex::test]
 async fn test_client_router() -> std::io::Result<()> {
     let srv = publisher_server(&[
@@ -2877,8 +3114,11 @@ async fn test_client_router() -> std::io::Result<()> {
     Ok(())
 }
 
-/// `ClientRouter::start_default` acks routed `QoS 2` publishes and closes the
-/// connection on unrouted ones
+/// STATEMENT: The default client router handles a routed QoS 2 publish but closes on an unrouted publish.
+///
+/// HOW:
+/// - Trigger a QoS 2 publish to a parameterized resource followed by an unmatched QoS 0 publish.
+/// - Assert only the matched topic is recorded and the client sink closes.
 #[ntex::test]
 async fn test_client_router_default() -> std::io::Result<()> {
     let srv = publisher_server(&[("topic/x", QoS::ExactlyOnce), ("unrouted", QoS::AtMostOnce)]);
@@ -2919,10 +3159,14 @@ async fn test_client_router_default() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Client control service receives `Stop` when the peer is gone
+/// STATEMENT: The client control service receives a peer-gone stop notification when the server closes.
+///
+/// HOW:
+/// - Have the server force-close its sink shortly after accepting the connection.
+/// - Run `start_with_control` and assert it returns successfully while recording a `PeerGone` stop reason.
 #[ntex::test]
 async fn test_client_start_with_control() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |_: Publish| Ok::<_, TestError>(())).build(async |msg: Connect| {
             let sink = msg.sink();
             ntex::rt::spawn(async move {
@@ -2960,13 +3204,18 @@ async fn test_client_start_with_control() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Server protocol-message service handles SUBSCRIBE/UNSUBSCRIBE/PUBREL/PINGREQ
+/// STATEMENT: The server protocol service can explicitly acknowledge subscriptions, unsubscriptions, and QoS 2 releases.
+///
+/// HOW:
+/// - Reject one subscription filter and confirm another at QoS 2, then assert the returned status codes.
+/// - Unsubscribe both filters and complete a QoS 2 publish and release.
+/// - Assert the logged subscription and unsubscription sizes, filter count, and release identifier.
 #[ntex::test]
 async fn test_proto_subscribe_unsubscribe() -> std::io::Result<()> {
     let log = Arc::new(Mutex::new(Vec::new()));
     let log2 = log.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let log = log2.clone();
         MqttServer::new(async |_: Publish| Ok::<_, TestError>(()))
             .protocol(fn_service(move |msg: ProtocolMessage| {
@@ -3051,11 +3300,14 @@ async fn test_proto_subscribe_unsubscribe() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Generic `ProtocolMessage::ack()` closes the connection for
-/// SUBSCRIBE/UNSUBSCRIBE, those must be acked explicitly
+/// STATEMENT: Generic protocol acknowledgement does not support subscribe or unsubscribe messages.
+///
+/// HOW:
+/// - Use a server protocol service that always calls `ProtocolMessage::ack`.
+/// - Send subscribe and unsubscribe requests on separate client connections and assert each fails as disconnected with a closed sink.
 #[ntex::test]
 async fn test_proto_ack_not_supported() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |_: Publish| Ok::<_, TestError>(()))
             .protocol(async |msg: ProtocolMessage| Ok::<_, TestError>(msg.ack()))
             .build(connect)
@@ -3084,13 +3336,18 @@ async fn test_proto_ack_not_supported() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Keep-alive task is started by every client run method
+/// STATEMENT: Client and router run variants support keep-alive pings and sink closure.
+///
+/// HOW:
+/// - Start four clients with one-second keep-alive intervals using direct and routed run methods, including custom control.
+/// - Wait for at least four aggregate pings and assert all sinks remain open.
+/// - Close all sinks and assert they are closed after a further keep-alive interval.
 #[ntex::test]
 async fn test_client_keepalive_variants() -> std::io::Result<()> {
     let pings = Arc::new(Mutex::new(0));
     let pings2 = pings.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let pings = pings2.clone();
         MqttServer::new(async |_: Publish| Ok::<_, TestError>(()))
             .protocol(move |msg: ProtocolMessage| {
@@ -3152,7 +3409,11 @@ async fn test_client_keepalive_variants() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Client closes the connection if PINGRESP is not received in time
+/// STATEMENT: A client closes when its keep-alive ping is not acknowledged in time.
+///
+/// HOW:
+/// - Use a raw server that accepts the handshake but sends no further packets.
+/// - Start a client with a one-second keep-alive interval and assert its sink closes within the polling window.
 #[ntex::test]
 async fn test_client_keepalive_no_pingresp() -> std::io::Result<()> {
     let srv = raw_server(async |io: ntex::io::Io, codec: codec::Codec| {
@@ -3180,6 +3441,7 @@ async fn test_client_keepalive_no_pingresp() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Builds an accepted `CONNACK` with no existing session.
 fn connect_ack() -> Encoded {
     Encoded::Packet(Packet::ConnectAck(codec::ConnectAck {
         session_present: false,
@@ -3187,6 +3449,7 @@ fn connect_ack() -> Encoded {
     }))
 }
 
+/// Encodes packets into one byte buffer, panicking if any packet cannot be encoded.
 fn encode_pkts(pkts: Vec<Encoded>) -> Bytes {
     let codec = codec::Codec::default();
     let mut buf = BytePages::default();
@@ -3196,9 +3459,8 @@ fn encode_pkts(pkts: Vec<Encoded>) -> Bytes {
     buf.freeze()
 }
 
-/// Connects a client to a raw server that sends `data` right after CONNACK and
-/// returns the reason the client dispatcher stopped. `delay` keeps the protocol
-/// service busy so that the next packet is dispatched concurrently.
+/// Runs a client against a raw server sending `data` after `CONNACK` and returns the formatted stop reason.
+/// The protocol service waits for `delay` on each message so later packets may be dispatched concurrently.
 async fn client_stop_reason(data: Bytes, delay: Millis) -> String {
     let srv = raw_server(move |io: ntex::io::Io, codec: codec::Codec| {
         let data = data.clone();
@@ -3232,7 +3494,12 @@ async fn client_stop_reason(data: Bytes, delay: Millis) -> String {
     reason.take()
 }
 
-/// Client rejects packets a server must not send
+/// STATEMENT: The client reports invalid incoming packets while accepting permitted redelivery and unknown releases.
+///
+/// HOW:
+/// - Send invalid publish topics, server-forbidden packets, unmatched acknowledgements, an early release, and a reused packet identifier.
+/// - Assert each dispatcher stop reason contains the expected protocol error.
+/// - Send a duplicate QoS 1 publish and an unknown `PUBREL`, then assert the client stops only when the peer is gone.
 #[ntex::test]
 async fn test_client_protocol_errors() -> std::io::Result<()> {
     let publish = |topic, id, dup, qos| {
@@ -3349,11 +3616,15 @@ async fn test_client_protocol_errors() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Generic `ProtocolMessage::ack()`/`disconnect()` for PINGREQ, PUBREL and DISCONNECT
+/// STATEMENT: Generic server protocol acknowledgements answer pings and releases, while disconnect responses close the connection.
+///
+/// HOW:
+/// - Use `ProtocolMessage::ack` to verify `PINGRESP`, the QoS 2 acknowledgement exchange, and closure on `DISCONNECT`.
+/// - Use `ProtocolMessage::disconnect` on a second connection and assert a ping closes it without a response.
 #[ntex::test]
 async fn test_proto_generic_ack_disconnect() -> std::io::Result<()> {
     let proto_server = |ack: bool| {
-        server::TestServerBuilder::new(move || async move {
+        server::TestServerBuilder::new(async move |_| {
             MqttServer::new(async |_: Publish| Ok::<_, TestError>(()))
                 .protocol(move |msg: ProtocolMessage| async move {
                     Ok::<_, TestError>(if ack { msg.ack() } else { msg.disconnect() })
@@ -3430,7 +3701,7 @@ async fn test_proto_generic_ack_disconnect() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Raw bytes of a PUBLISH packet
+/// Builds raw `PUBLISH` bytes for test topics and remaining lengths below 128 bytes.
 fn publish_bytes(topic: &str, id: u16, dup: bool, qos: QoS, payload: &[u8]) -> Bytes {
     let mut pkt = vec![0x30 | ((qos as u8) << 1) | ((dup as u8) << 3)];
     let mut rest = vec![0u8, topic.len() as u8];
@@ -3444,7 +3715,12 @@ fn publish_bytes(topic: &str, id: u16, dup: bool, qos: QoS, payload: &[u8]) -> B
     Bytes::from(pkt)
 }
 
-/// Client receives a publish with a payload delivered in several chunks
+/// STATEMENT: Client payload handling determines whether a streamed publish is acknowledged, closed, or disconnected.
+///
+/// HOW:
+/// - Send a ten-byte QoS 1 payload from a raw server in three parts.
+/// - Run client handlers that read the payload, skip it, or fail before consuming it.
+/// - Assert the respective `PUBACK`, connection closure, or `DISCONNECT`, successful dispatcher completion, and the collected bytes in the read case.
 #[ntex::test]
 async fn test_client_payload_stream() -> std::io::Result<()> {
     // "read": payload is consumed and acked, "skip": payload is dropped,
@@ -3515,26 +3791,27 @@ async fn test_client_payload_stream() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Default protocol-message service acks PINGREQ and closes on SUBSCRIBE
+/// STATEMENT: The default server protocol service answers pings but closes on unsupported subscriptions.
+///
+/// HOW:
+/// - Send a ping and assert its response, then publish and verify its acknowledgement and mutable retain flag.
+/// - Send a subscription and assert the connection closes within the timeout.
 #[ntex::test]
 async fn test_default_proto_service() -> std::io::Result<()> {
     let retained = Arc::new(Mutex::new(false));
     let retained2 = retained.clone();
-    let srv = server::test_server(move || {
+    let srv = server::test_server(async move |_| {
         let retained = retained2.clone();
-        async move {
+        MqttServer::new(move |mut p: Publish| {
             let retained = retained.clone();
-            MqttServer::new(move |mut p: Publish| {
-                let retained = retained.clone();
-                async move {
-                    // the packet can be modified in place
-                    p.packet_mut().retain = true;
-                    *retained.lock().unwrap() = p.packet().retain;
-                    Ok::<_, TestError>(())
-                }
-            })
-            .build(connect)
-        }
+            async move {
+                // the packet can be modified in place
+                p.packet_mut().retain = true;
+                *retained.lock().unwrap() = p.packet().retain;
+                Ok::<_, TestError>(())
+            }
+        })
+        .build(connect)
     });
 
     let (io, codec) = handshake(&srv).await;
@@ -3573,7 +3850,12 @@ async fn test_default_proto_service() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Re-delivered publish with an incomplete payload is discarded
+/// STATEMENT: The client discards duplicate streamed payloads while preserving QoS-specific acknowledgement behavior.
+///
+/// HOW:
+/// - Send a publish and then a duplicate with a payload split across writes.
+/// - Delay QoS 1 handling to overlap the duplicate, and test QoS 2 after its first receipt.
+/// - Assert successful dispatcher completion, one `PUBACK` for QoS 1, and two `PUBREC` replies for QoS 2.
 #[ntex::test]
 async fn test_client_redelivered_payload() -> std::io::Result<()> {
     // `QoS 1` is re-delivered while the first delivery is still handled,

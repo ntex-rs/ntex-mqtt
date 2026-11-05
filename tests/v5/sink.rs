@@ -1,8 +1,16 @@
 use super::*;
 
+/// STATEMENT: An oversized server QoS 1 publish reports a local encoding error without
+/// breaking client-to-server publishing.
+///
+/// HOW:
+/// - Connect with a 30-byte packet maximum and attempt a server publish containing oversized
+///   user properties.
+/// - Assert `EncodeError::OverMaxPacketSize` in the spawned server send and a successful
+///   client QoS 1 publish.
 #[ntex::test]
 async fn test_sink_encoder_error_pub_qos1() {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async move |p: Publish| {
             sleep(Duration::from_millis(50)).await;
             Ok::<_, TestError>(p.ack())
@@ -56,9 +64,17 @@ async fn test_sink_encoder_error_pub_qos1() {
     assert!(res.is_ok());
 }
 
+/// STATEMENT: An oversized server QoS 0 publish reports a local encoding error without
+/// preventing a later client publish.
+///
+/// HOW:
+/// - During the handshake, attempt a server publish with properties exceeding the client's
+///   30-byte packet maximum.
+/// - Assert `EncodeError::OverMaxPacketSize`, finish connecting, and assert a successful
+///   client QoS 1 publish.
 #[ntex::test]
 async fn test_sink_encoder_error_pub_qos0() {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async move |p: Publish| {
             sleep(Duration::from_millis(50)).await;
             Ok::<_, TestError>(p.ack())
@@ -110,13 +126,20 @@ async fn test_sink_encoder_error_pub_qos0() {
     assert!(res.is_ok());
 }
 
-/// Make sure we can publish message to client after local codec error
+/// STATEMENT: A server sink can publish successfully after a local QoS 1 encoding failure.
+///
+/// HOW:
+/// - Connect with a 30-byte packet maximum and install a client route that acknowledges server
+///   publishes.
+/// - Have the server send an oversized publish followed by a valid one; assert the encoding
+///   error and subsequent success.
+/// - Send a client QoS 1 message and assert both its success and the server recovery flag.
 #[ntex::test]
 async fn test_sink_success_after_encoder_error_qos1() {
     let success = Arc::new(AtomicBool::new(false));
     let success2 = success.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let success = success2.clone();
         MqttServer::new(async move |p: Publish| {
             sleep(Duration::from_millis(50)).await;
@@ -169,6 +192,7 @@ async fn test_sink_success_after_encoder_error_qos1() {
 
     let sink = client.sink();
 
+    /// Acknowledges server publishes routed to the recovery test client.
     async fn publish(pkt: Publish) -> Result<PublishAck, TestError> {
         Ok(pkt.ack())
     }
@@ -184,9 +208,17 @@ async fn test_sink_success_after_encoder_error_qos1() {
     assert!(success.load(Relaxed));
 }
 
+/// STATEMENT: A server sink remains unready during the handshake and becomes ready after
+/// connection acknowledgment.
+///
+/// HOW:
+/// - Poll `ready` during the handshake and assert a pending result and `is_ready` equal to
+///   `false`.
+/// - Spawn a waiter that checks readiness and sends a publish after acknowledgment.
+/// - Compare the connection acknowledgment and assert that the following receive succeeds.
 #[ntex::test]
 async fn test_sink_ready() -> std::io::Result<()> {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(
             async move |packet: Connect| {
                 let sink = packet.sink();
@@ -231,9 +263,16 @@ async fn test_sink_ready() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Nonblocking QoS 1 publishes report their acknowledgments through the registered
+/// callback.
+///
+/// HOW:
+/// - Register `publish_ack_cb` and queue two publishes with `send_at_least_once_no_block`.
+/// - Await a third ordinary publish and assert success for every send.
+/// - Check that the callback received identifiers `1` and `2` without a disconnected indication.
 #[ntex::test]
 async fn test_sink_publish_noblock() -> std::io::Result<()> {
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
     });
 
@@ -274,6 +313,7 @@ async fn test_sink_publish_noblock() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Marks cancellation and consumes its one-shot notification sender when the handler is dropped.
 struct SetOnDrop(Arc<AtomicBool>, Option<::oneshot::Sender<()>>);
 
 impl Drop for SetOnDrop {
@@ -283,6 +323,12 @@ impl Drop for SetOnDrop {
     }
 }
 
+/// STATEMENT: Closing the server sink drops an in-flight publish handler rather than waiting
+/// for its long sleep.
+///
+/// HOW:
+/// - Hold a `SetOnDrop` guard in a publish handler, close its sink, and sleep for 999 seconds.
+/// - Trigger a client publish, wait for the guard's notification, and assert its drop flag.
 #[ntex::test]
 async fn test_publish_sink_disconnect() -> std::io::Result<()> {
     let val = Arc::new(AtomicBool::new(false));
@@ -290,7 +336,7 @@ async fn test_publish_sink_disconnect() -> std::io::Result<()> {
     let (tx, rx) = ::oneshot::channel();
     let tx = Arc::new(Mutex::new(Some(tx)));
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let tx = tx.clone();
         let val = val2.clone();
         MqttServer::new(async move |con: &Session<St>| {
@@ -325,6 +371,11 @@ async fn test_publish_sink_disconnect() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Closing the server sink eventually reports peer loss to the control service.
+///
+/// HOW:
+/// - Schedule server sink closure one second after session creation and perform a client publish.
+/// - Wait for the control service to receive `Reason::PeerGone` and assert its notification flag.
 #[ntex::test]
 async fn test_peergone_after_sink_disconnect() -> std::io::Result<()> {
     let val = Arc::new(AtomicBool::new(false));
@@ -332,7 +383,7 @@ async fn test_peergone_after_sink_disconnect() -> std::io::Result<()> {
     let (tx, rx) = oneshot::channel();
     let tx = Arc::new(Mutex::new(Some(tx)));
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let tx = tx.clone();
         let val = val2.clone();
         MqttServer::new(async move |con: &Session<St>| {
@@ -372,6 +423,13 @@ async fn test_peergone_after_sink_disconnect() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: Closing a server sink without a reason still drops its pending publish handler.
+///
+/// HOW:
+/// - Hold a notifying drop guard in a publish handler that calls `close_with_no_reason` before
+///   a long sleep.
+/// - Trigger the handler with a client publish, wait for the drop notification, and assert its
+///   flag.
 #[ntex::test]
 async fn test_sink_close_with_no_reason() -> std::io::Result<()> {
     let val = Arc::new(AtomicBool::new(false));
@@ -379,7 +437,7 @@ async fn test_sink_close_with_no_reason() -> std::io::Result<()> {
     let (tx, rx) = ::oneshot::channel();
     let tx = Arc::new(Mutex::new(Some(tx)));
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let tx = tx.clone();
         let val = val2.clone();
         MqttServer::new(async move |con: &Session<St>| {
@@ -420,13 +478,22 @@ async fn test_sink_close_with_no_reason() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Client side of the sink api: subscribe, unsubscribe and publish builders
+/// STATEMENT: Client sink builders preserve packet options and streamed payloads, and
+/// readiness ends after forced closure.
+///
+/// HOW:
+/// - Check initial readiness and credit, then send subscriptions and unsubscriptions with
+///   explicit identifiers and properties.
+/// - Assert acknowledgment identifiers and statuses, then send retained and streamed QoS 1 and
+///   QoS 0 publishes.
+/// - Compare the server log for all options and complete payloads; force closure and assert
+///   both readiness checks fail.
 #[ntex::test]
 async fn test_client_sink_api() {
     let log = Arc::new(Mutex::new(Vec::<String>::new()));
     let log2 = log.clone();
 
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let (log, log3) = (log2.clone(), log2.clone());
         MqttServer::new(move |p: Publish| {
             let log = log.clone();

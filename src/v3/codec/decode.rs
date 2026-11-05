@@ -11,6 +11,7 @@ use super::packet::{
 };
 use super::{ConnectAckFlags, ConnectFlags};
 
+/// Decode a non-PUBLISH packet body using its complete first fixed-header byte.
 pub(crate) fn decode_packet(mut src: Bytes, first_byte: u8) -> Result<Packet, DecodeError> {
     match first_byte {
         packet_type::CONNECT => decode_connect_packet(&mut src),
@@ -37,6 +38,7 @@ fn decode_empty(src: &Bytes, pkt: Packet) -> Result<Packet, DecodeError> {
     Ok(pkt)
 }
 
+/// Decode an acknowledgment containing exactly one nonzero packet identifier.
 #[inline]
 fn decode_ack(mut src: Bytes, f: impl Fn(NonZeroU16) -> Packet) -> Result<Packet, DecodeError> {
     let packet_id = NonZeroU16::decode(&mut src)?;
@@ -44,6 +46,7 @@ fn decode_ack(mut src: Bytes, f: impl Fn(NonZeroU16) -> Packet) -> Result<Packet
     Ok(f(packet_id))
 }
 
+/// Decode CONNECT fields and validate protocol level, flag combinations, and body length.
 fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     ensure!(src.remaining() >= 10, DecodeError::InvalidLength);
     let len = src.get_u16();
@@ -117,6 +120,7 @@ fn decode_connect_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     .into())
 }
 
+/// Decode CONNACK and reject reserved flags or inconsistent session-present status.
 fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     ensure!(src.remaining() >= 2, DecodeError::InvalidLength);
     let flags =
@@ -139,6 +143,7 @@ fn decode_connect_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     }))
 }
 
+/// Decode a PUBLISH variable header, leaving payload bytes unread in `src`.
 pub(super) fn decode_publish_packet(
     src: &mut Bytes,
     packet_flags: u8,
@@ -167,6 +172,7 @@ pub(super) fn decode_publish_packet(
     })
 }
 
+/// Determine the PUBLISH variable-header length in bytes once the topic length is buffered.
 pub(super) fn publish_size(src: &BytesMut, flags: u8) -> Result<Option<u32>, DecodeError> {
     // topic len
     if src.remaining() < 2 {
@@ -182,6 +188,7 @@ pub(super) fn publish_size(src: &BytesMut, flags: u8) -> Result<Option<u32>, Dec
     Ok(Some(len))
 }
 
+/// Decode a nonempty list of subscription filters and requested delivery qualities.
 fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let packet_id = NonZeroU16::decode(src)?;
     let mut topic_filters = Vec::new();
@@ -202,6 +209,7 @@ fn decode_subscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     })
 }
 
+/// Decode SUBACK results in wire order after the nonzero packet identifier.
 fn decode_subscribe_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let packet_id = NonZeroU16::decode(src)?;
     let mut status = Vec::with_capacity(src.len());
@@ -215,6 +223,7 @@ fn decode_subscribe_ack_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     Ok(Packet::SubscribeAck { packet_id, status })
 }
 
+/// Decode an UNSUBSCRIBE identifier and nonempty list of topic filters.
 fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     let packet_id = NonZeroU16::decode(src)?;
     let mut topic_filters = Vec::new();
@@ -230,6 +239,7 @@ fn decode_unsubscribe_packet(src: &mut Bytes) -> Result<Packet, DecodeError> {
     })
 }
 
+/// Unit tests for MQTT 3.1.1 packet decoding.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,10 +264,20 @@ mod tests {
         }};
     );
 
+    /// Create a nonzero test packet identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `v` is zero.
     fn packet_id(v: u16) -> NonZeroU16 {
         NonZeroU16::new(v).unwrap()
     }
 
+    /// STATEMENT: CONNECT rejects inconsistent credential/will flags and reserved will quality values.
+    ///
+    /// HOW:
+    /// - Decode packets with will quality/retain bits but no will, or a password but no username.
+    /// - Decode a will with quality three and assert all cases are malformed.
     #[test]
     fn test_decode_connect_flags() {
         // will qos/retain without will flag, password without user name
@@ -279,6 +299,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: CONNECT and CONNACK decoding validates protocol identifiers, versions, flags, and session status.
+    ///
+    /// HOW:
+    /// - Decode valid credential and will packets and compare every decoded field.
+    /// - Reject invalid protocol names, levels, reserved flags, and session-present refusal codes; decode ordinary CONNACK and DISCONNECT frames.
     #[test]
     fn test_decode_connect_packets() {
         assert_eq!(
@@ -377,6 +402,11 @@ mod tests {
         assert_decode_packet!(b"\xe0\x00", Packet::Disconnect);
     }
 
+    /// STATEMENT: PUBLISH decoding rejects empty topic names at both quality levels tested.
+    ///
+    /// HOW:
+    /// - Decode `QoS 0` and `QoS 1` variable headers containing a zero-length topic.
+    /// - Assert both return `DecodeError::MalformedPacket`.
     #[test]
     fn test_decode_publish_empty_topic() {
         assert_eq!(
@@ -389,6 +419,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: The duplicate flag is invalid for `QoS 0` but accepted for `QoS 1`.
+    ///
+    /// HOW:
+    /// - Decode a duplicate `QoS 0` publication through both the header parser and full codec.
+    /// - Assert malformed errors, then check a duplicate `QoS 1` header retains its duplicate flag.
     #[test]
     fn test_decode_publish_dup_qos0() {
         // DUP flag must be 0 for QoS 0 messages, [MQTT-3.3.1-2]
@@ -408,6 +443,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Incoming publish and subscription strings cannot contain a null character.
+    ///
+    /// HOW:
+    /// - Decode a PUBLISH topic and a SUBSCRIBE filter containing an embedded null byte.
+    /// - Assert both decoders return `DecodeError::MalformedPacket`.
     #[test]
     fn test_decode_null_char() {
         assert_eq!(
@@ -420,6 +460,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Publish metadata and delivery acknowledgment identifiers decode from their wire forms.
+    ///
+    /// HOW:
+    /// - Decode retained duplicate `QoS 2` and ordinary `QoS 0` publications and compare metadata and unread payloads.
+    /// - Decode PUBACK, PUBREC, PUBREL, and PUBCOMP frames and compare their identifiers.
     #[test]
     fn test_decode_publish_packets() {
         //assert_eq!(
@@ -478,6 +523,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: SUBSCRIBE and UNSUBSCRIBE require at least one topic filter.
+    ///
+    /// HOW:
+    /// - Decode each packet body containing only its packet identifier.
+    /// - Assert both fail with `DecodeError::MalformedPacket`.
     #[test]
     fn test_decode_empty_subscribe_packets() {
         assert_eq!(
@@ -490,6 +540,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Subscription packets preserve filter order, delivery qualities, result codes, and identifiers.
+    ///
+    /// HOW:
+    /// - Decode SUBSCRIBE, SUBACK, UNSUBSCRIBE, and UNSUBACK bodies and full frames into expected packets.
+    /// - Reject subscription options with reserved bits set or quality three.
     #[test]
     fn test_decode_subscribe_packets() {
         let p = Packet::Subscribe {
@@ -563,6 +618,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Packets with fixed or flag-selected bodies reject trailing bytes.
+    ///
+    /// HOW:
+    /// - Append an extra byte to CONNECT, CONNACK, PINGREQ, PINGRESP, and DISCONNECT bodies.
+    /// - Assert every packet decoder returns `DecodeError::InvalidLength`.
     #[test]
     fn test_decode_trailing_bytes() {
         let cases: [(u8, &[u8]); 5] = [
@@ -584,12 +644,22 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Empty ping request and response frames decode to their corresponding variants.
+    ///
+    /// HOW:
+    /// - Decode the two-byte PINGREQ and PINGRESP wire representations.
+    /// - Compare the resulting packets with `Packet::PingRequest` and `Packet::PingResponse`.
     #[test]
     fn test_decode_ping_packets() {
         assert_decode_packet!(b"\xc0\x00", Packet::PingRequest);
         assert_decode_packet!(b"\xd0\x00", Packet::PingResponse);
     }
 
+    /// STATEMENT: MQTT 3.1.1 accepts a nonminimal remaining-length representation.
+    ///
+    /// HOW:
+    /// - Decode PINGREQ with a two-byte encoding of zero remaining length.
+    /// - Assert a ping request is produced and all input bytes are consumed.
     #[test]
     fn test_decode_non_minimal_remaining_length() {
         // MQTT 3.1.1 does not require the minimal encoding (2.2.3)

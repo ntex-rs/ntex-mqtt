@@ -2,10 +2,14 @@
 
 use ntex_bytes::{ByteString, Bytes};
 
+/// Stateful packet framing and streamed publish payloads.
 #[allow(clippy::module_inception)]
 mod codec;
+/// Dispatch of complete non-publish packet bodies.
 mod decode;
+/// Packet validation, sizing, and wire encoding helpers.
 mod encode;
+/// MQTT v5 control packets and their wire representations.
 mod packet;
 
 pub use self::codec::Codec;
@@ -20,11 +24,14 @@ pub type UserProperties = Vec<UserProperty>;
 /// Decoded MQTT v5 protocol item
 #[derive(Clone, PartialEq, Eq)]
 pub enum Decoded {
-    /// Decoded packet and its size
+    /// A non-publish packet and its remaining length in bytes, excluding the fixed header.
     Packet(Packet, u32),
-    /// Decoded `Publish` packet, the first payload chunk and the packet size
+    /// A `Publish` header, initial payload bytes, and remaining length excluding the fixed header.
+    ///
+    /// The initial chunk may be empty; compare its length with `Publish::payload_size`
+    /// to determine whether further payload chunks are expected.
     Publish(Publish, Bytes, u32),
-    /// Next chunk of the publish payload, the flag indicates the last chunk
+    /// Subsequent publish payload bytes; `true` marks the final chunk.
     PayloadChunk(Bytes, bool),
 }
 
@@ -33,9 +40,12 @@ pub enum Decoded {
 pub enum Encoded {
     /// Packet to encode
     Packet(Packet),
-    /// `Publish` packet with an optional first payload chunk
+    /// A `Publish` header and optional initial payload bytes.
+    ///
+    /// Supply exactly `Publish::payload_size` bytes across this item and later chunks
+    /// before encoding another packet.
     Publish(Publish, Option<Bytes>),
-    /// Next chunk of the publish payload
+    /// Bytes continuing the current publish; rejected if no payload is pending.
     PayloadChunk(Bytes),
 }
 

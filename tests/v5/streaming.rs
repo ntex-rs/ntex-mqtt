@@ -1,11 +1,20 @@
 use super::*;
 
+/// STATEMENT: Streaming respects the minimum receive chunk size while completing valid
+/// publishes and rejecting a wildcard topic.
+///
+/// HOW:
+/// - Set a four-byte minimum chunk size and send split payloads of ten, five, and two bytes
+///   plus a normal three-byte publish.
+/// - Assert successful sends and compare the exact received chunks, including the coalesced
+///   five-byte payload.
+/// - Attempt a streamed publish to `#` and assert an error.
 #[ntex::test]
 async fn test_simple_streaming() -> std::io::Result<()> {
     let chunks = Arc::new(Mutex::new(Vec::new()));
     let chunks2 = chunks.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let chunks = chunks2.clone();
         MqttServer::new(async move |p: Publish| {
             let chunks = chunks.clone();
@@ -92,12 +101,21 @@ async fn test_simple_streaming() -> std::io::Result<()> {
     Ok(())
 }
 
+/// STATEMENT: A streamed publish exposes its metadata and can be reassembled into one payload.
+///
+/// HOW:
+/// - Send a retained ten-byte QoS 1 publish in two chunks with a four-byte minimum receive
+///   chunk size.
+/// - Check topic accessors, flags, identifier, QoS, packet size, and payload size in the
+///   server handler.
+/// - Read the entire payload and assert a successful acknowledgment and the reassembled
+///   ten-byte content.
 #[ntex::test]
 async fn test_simple_streaming2() {
     let chunks = Arc::new(Mutex::new(Vec::new()));
     let chunks2 = chunks.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let chunks = chunks2.clone();
         MqttServer::new(async move |mut p: Publish| {
             let chunks = chunks.clone();
@@ -146,13 +164,20 @@ async fn test_simple_streaming2() {
     );
 }
 
-/// Payload chunk waiting for write backpressure fails when the peer is gone
+/// STATEMENT: A streamed payload send blocked by write backpressure fails when the peer
+/// disappears.
+///
+/// HOW:
+/// - Trigger a large server stream without reading it and wait until the sent-chunk count
+///   stops increasing.
+/// - Assert no send error has occurred, drop the peer connection, and wait for
+///   `SendPacketError::Disconnected`.
 #[ntex::test]
 async fn test_streaming_waiter_peer_gone() {
     let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let result = Arc::new(Mutex::new(None));
     let (sent2, result2) = (sent.clone(), result.clone());
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let sent = sent2.clone();
         let result = result2.clone();
         MqttServer::new(async move |ses: &Session<St>| {
@@ -223,15 +248,22 @@ async fn test_streaming_waiter_peer_gone() {
     assert_eq!(res, Some(error::SendPacketError::Disconnected));
 }
 
-/// The payload of a streaming publish is read while the publish fills the
-/// response queue
+/// STATEMENT: A streamed publish continues receiving its payload even while it occupies the
+/// only response-queue slot.
+///
+/// HOW:
+/// - Configure a one-slot queue and send a 64 KiB QoS 0 payload in an initial fragment
+///   followed by its remainder.
+/// - Append a QoS 1 publish and assert its acknowledgment arrives within five seconds.
+/// - Assert the server read the entire large payload.
 #[ntex::test]
 async fn test_streaming_publish_full_queue() {
+    /// Payload size in bytes used to fill the single-slot response queue.
     const SIZE: usize = 64 * 1024;
 
     let received = Arc::new(AtomicBool::new(false));
     let received2 = received.clone();
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let received = received2.clone();
         MqttServer::new(async move |p: Publish| {
             if p.payload_size() != 1 && p.read_all().await.map_err(|_| TestError)?.len() == SIZE {
@@ -297,17 +329,24 @@ async fn test_streaming_publish_full_queue() {
     assert!(received.load(Relaxed));
 }
 
-/// Payload chunks do not keep queue slots while the publish handler is
-/// pending, packets after the publish are dispatched
+/// STATEMENT: Payload chunks do not block later messages by retaining queue slots while a
+/// publish handler remains pending.
+///
+/// HOW:
+/// - Configure two queue slots, send a fragmented 16 KiB QoS 1 publish, and gate its handler
+///   after reading the payload.
+/// - Send a following one-byte QoS 0 publish and assert its handler runs before opening the gate.
+/// - Open the gate and assert the pending QoS 1 acknowledgment arrives.
 #[ntex::test]
 async fn test_streaming_publish_chunk_slots() {
     // below the receive size limit, reading continues after the payload
+    /// Payload size in bytes kept below the receive-size limit to allow following packets.
     const SIZE: usize = 16 * 1024;
 
     let gate = Arc::new(AtomicBool::new(false));
     let received = Arc::new(AtomicBool::new(false));
     let (gate2, received2) = (gate.clone(), received.clone());
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let (gate, received) = (gate2.clone(), received2.clone());
         MqttServer::new(async move |p: Publish| {
             if p.payload_size() == 1 {
@@ -383,11 +422,16 @@ async fn test_streaming_publish_chunk_slots() {
     );
 }
 
-/// The connection is closed if the publish handler does not read a streamed
-/// payload and the buffered part exceeds the configured limit
+/// STATEMENT: Dropping an unread partial streamed payload closes the connection instead of
+/// stalling.
+///
+/// HOW:
+/// - Configure a four-byte payload buffer and a handler that acknowledges without reading.
+/// - Declare an eight-byte QoS 0 payload but send only its first four bytes.
+/// - Assert the next receive yields an error or end of stream within 500 milliseconds.
 #[ntex::test]
 async fn test_payload_not_read() {
-    let srv = server::TestServerBuilder::new(async || {
+    let srv = server::TestServerBuilder::new(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .build(async |msg: Connect| Ok::<_, TestError>(msg.ack(St)))
     })

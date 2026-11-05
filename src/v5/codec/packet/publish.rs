@@ -7,21 +7,23 @@ use crate::types::{QoS, packet_type};
 use crate::utils::{self, Decode, Encode, Property, write_variable_length};
 use crate::v5::codec::{UserProperties, encode, property_type as pt};
 
-/// PUBLISH message
+/// Publish metadata whose payload is transferred separately through the codec.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Publish {
-    /// this might be re-delivery of an earlier attempt to send the Packet.
+    /// Whether this may be a redelivery; must be `false` at `QoS::AtMostOnce`.
     pub dup: bool,
-    /// the Server must store the Application Message and deliver it to future
-    /// matching subscribers.
+    /// RETAIN flag, requesting storage when sent to the server.
+    ///
+    /// For server-to-client delivery, its meaning also depends on the subscription's
+    /// retain options and whether the message is a stored retained message.
     pub retain: bool,
-    /// the level of assurance for delivery of an Application Message.
+    /// Delivery assurance level for the application message.
     pub qos: QoS,
-    /// only present in PUBLISH Packets where the `QoS` level is 1 or 2.
+    /// Required at `QoS::AtLeastOnce` or `QoS::ExactlyOnce`; absent at `QoS::AtMostOnce`.
     pub packet_id: Option<NonZeroU16>,
-    /// the Topic Name the Application Message is published to.
+    /// Destination topic name, which may be empty only when a topic alias is present.
     pub topic: ByteString,
-    /// size of the Application Message payload, in bytes.
+    /// Total payload byte count, including all chunks sent or received separately from this header.
     pub payload_size: u32,
     /// PUBLISH properties.
     pub properties: PublishProperties,
@@ -30,7 +32,10 @@ pub struct Publish {
 /// PUBLISH message properties
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct PublishProperties {
-    /// Topic Alias property, an integer value used in place of the Topic Name.
+    /// Topic alias identifying a connection-local topic mapping.
+    ///
+    /// A nonempty topic establishes the mapping; an empty topic uses an existing one.
+    /// The codec carries the alias but does not resolve or validate its connection state.
     pub topic_alias: Option<NonZeroU16>,
     /// Correlation Data property, used by the sender of the request to identify the response.
     pub correlation_data: Option<Bytes>,
@@ -64,6 +69,7 @@ impl Default for Publish {
 }
 
 impl Publish {
+    /// Decodes publish metadata from the header and properties, with a known payload byte count.
     pub(crate) fn decode(
         src: &mut Bytes,
         packet_flags: u8,
@@ -98,6 +104,7 @@ impl Publish {
         })
     }
 
+    /// Determines the header-plus-properties byte count, or waits for enough bytes to determine it.
     pub(crate) fn packet_header_size(
         src: &BytesMut,
         packet_flags: u8,
@@ -127,6 +134,7 @@ impl Publish {
     }
 }
 
+/// Consumes the publish property block, rejecting unknown or duplicate single-use properties.
 fn parse_publish_properties(src: &mut Bytes) -> Result<PublishProperties, DecodeError> {
     let prop_src = &mut utils::take_properties(src)?;
 

@@ -11,41 +11,62 @@ use crate::utils::decode_variable_length_v5;
 use super::{Decoded, Encoded};
 use super::{Packet, decode::decode_packet, encode, encode::EncodeLtd, packet::Publish};
 
-/// MQTT v5 protocol codec
+/// Stateful MQTT v5 packet codec with streamed publish payloads.
+///
+/// Cloning copies limits and in-progress framing state into an independent codec.
+/// Complete an outgoing publish payload before encoding another packet.
 #[derive(Clone)]
 pub struct Codec {
+    /// Current inbound framing stage, retained between decode calls.
     state: Cell<DecodeState>,
+    /// Inbound total packet byte limit; zero means the protocol limit only.
     max_in_size: Cell<u32>,
+    /// Outbound total packet byte limit; zero means the protocol limit only.
     max_out_size: Cell<u32>,
+    /// Byte threshold for partial payload chunks; zero has special buffering behavior.
     min_chunk_size: Cell<u32>,
+    /// Connection role, diagnostic preference, and negotiated server capabilities.
     flags: Cell<CodecFlags>,
+    /// Unwritten outbound publish payload bytes; cleared when all bytes are encoded.
     encoding_payload: Cell<Option<NonZeroU32>>,
 }
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    /// Connection role and preferences retained alongside the framing state.
     pub struct CodecFlags: u8 {
+        /// The decoded `CONNECT` disabled optional diagnostic properties.
         const NO_PROBLEM_INFO = 0b0000_0001;
+        /// The server does not support retained publications.
         const NO_RETAIN       = 0b0000_0010;
-        /// codec decoded a CONNECT packet, it is used by a server
+        /// A decoded `CONNECT` identified this codec as the server side.
         const SERVER          = 0b0000_0100;
+        /// The server does not support subscription identifiers.
         const NO_SUB_IDS      = 0b0000_1000;
+        /// The server does not support shared subscriptions.
         const NO_SHARED_SUBS  = 0b0001_0000;
+        /// The server does not support wildcard subscriptions.
         const NO_WILDCARD_SUBS = 0b0010_0000;
     }
 }
 
+/// Inbound packet framing progress, including the remaining publish payload byte count.
 #[derive(Debug, Clone, Copy)]
 enum DecodeState {
+    /// Waiting for the first byte and variable-length remaining length.
     FrameHeader,
+    /// Waiting for the complete body of a non-publish packet.
     Frame(FixedHeader),
+    /// Waiting to determine the publish header and properties byte length.
     PublishHeader(FixedHeader),
+    /// Waiting for the given header-plus-properties byte count before decoding it.
     PublishProperties(u32, FixedHeader),
+    /// Streaming the given number of remaining payload bytes before the next packet.
     PublishPayload(u32),
 }
 
 impl Codec {
-    /// Create `Codec` instance
+    /// Creates an idle codec with no configured packet limits or chunk threshold.
     pub fn new() -> Self {
         Codec {
             state: Cell::new(DecodeState::FrameHeader),
@@ -65,80 +86,91 @@ impl Codec {
         codec
     }
 
-    /// Set min payload chunk size.
+    /// Sets the byte threshold for partial inbound publish payload chunks.
     ///
-    /// If the minimum size is set to `0`, incoming payload chunks
-    /// will be processed immediately. Otherwise, the codec will
-    /// accumulate chunks until the total size reaches the specified minimum.
-    /// By default min size is set to `0`
+    /// The publish header is emitted as soon as it is complete. Its initial payload
+    /// chunk contains buffered bytes if they reach this threshold or finish the payload.
+    /// Later chunks wait for the threshold or the end of the payload; the final chunk
+    /// may be smaller than the threshold.
+    ///
+    /// With the default of `0`, the initial chunk is emitted immediately, while later
+    /// chunks wait for all remaining payload bytes.
     pub fn set_min_chunk_size(&self, size: u32) {
         self.min_chunk_size.set(size);
     }
 
-    /// Get max inbound packet size.
+    /// Returns the total inbound packet byte limit, or `0` for no configured limit.
     pub fn max_inbound_size(&self) -> u32 {
         self.max_in_size.get()
     }
 
-    /// Get max outbound packet size.
+    /// Returns the total outbound packet byte limit, or `0` for no configured limit.
     pub fn max_outbound_size(&self) -> u32 {
         self.max_out_size.get()
     }
 
-    /// Set max inbound packet size.
+    /// Sets the total inbound packet byte limit.
     ///
     /// The size is the total packet size, including the fixed header
     /// (MQTT 5.0, 3.1.2.11.4, 3.2.2.3.6).
-    /// If max size is set to `0`, size is unlimited.
+    /// A size of `0` leaves only the MQTT protocol size limit in effect.
     /// By default max size is set to `0`
     pub fn set_max_inbound_size(&self, size: u32) {
         self.max_in_size.set(size);
     }
 
-    /// Set max outbound packet size.
+    /// Sets the total outbound packet byte limit.
     ///
     /// The size is the total packet size, including the fixed header
     /// (MQTT 5.0, 3.1.2.11.4, 3.2.2.3.6).
-    /// If max size is set to `0`, size is unlimited.
+    /// A size of `0` leaves only the MQTT protocol size limit in effect.
     /// By default max size is set to `0`.
     pub fn set_max_outbound_size(&self, size: u32) {
         self.max_out_size.set(size);
     }
 
+    /// Returns whether retained publications are supported by the server.
     pub(crate) fn retain_available(&self) -> bool {
         !self.flags.get().contains(CodecFlags::NO_RETAIN)
     }
 
+    /// Returns whether subscription identifiers are supported by the server.
     pub(crate) fn sub_ids_available(&self) -> bool {
         !self.flags.get().contains(CodecFlags::NO_SUB_IDS)
     }
 
+    /// Records whether the server supports retained publications.
     pub(crate) fn set_retain_available(&self, val: bool) {
         let mut flags = self.flags.get();
         flags.set(CodecFlags::NO_RETAIN, !val);
         self.flags.set(flags);
     }
 
+    /// Records whether the server supports subscription identifiers.
     pub(crate) fn set_sub_ids_available(&self, val: bool) {
         let mut flags = self.flags.get();
         flags.set(CodecFlags::NO_SUB_IDS, !val);
         self.flags.set(flags);
     }
 
+    /// Returns whether shared subscriptions are supported by the server.
     pub(crate) fn shared_subs_available(&self) -> bool {
         !self.flags.get().contains(CodecFlags::NO_SHARED_SUBS)
     }
 
+    /// Records whether the server supports shared subscriptions.
     pub(crate) fn set_shared_subs_available(&self, val: bool) {
         let mut flags = self.flags.get();
         flags.set(CodecFlags::NO_SHARED_SUBS, !val);
         self.flags.set(flags);
     }
 
+    /// Returns whether wildcard subscriptions are supported by the server.
     pub(crate) fn wildcard_subs_available(&self) -> bool {
         !self.flags.get().contains(CodecFlags::NO_WILDCARD_SUBS)
     }
 
+    /// Records whether the server supports wildcard subscriptions.
     pub(crate) fn set_wildcard_subs_available(&self, val: bool) {
         let mut flags = self.flags.get();
         flags.set(CodecFlags::NO_WILDCARD_SUBS, !val);
@@ -459,6 +491,7 @@ impl fmt::Debug for Codec {
     }
 }
 
+/// Unit tests for packet framing, streaming, and sender validation.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,6 +504,7 @@ mod tests {
         SubscriptionOptions, Unsubscribe, UnsubscribeAck, UnsubscribeAckReason,
     };
 
+    /// Checks malformed-packet rejection without appending any output bytes.
     fn assert_rejected(codec: &Codec, item: Encoded) {
         let mut buf = BytePages::default();
         assert_eq!(
@@ -480,12 +514,18 @@ mod tests {
         assert!(buf.freeze().is_empty(), "nothing is written");
     }
 
+    /// Checks successful encoding produces a nonempty output buffer.
     fn assert_encoded(codec: &Codec, item: Encoded) {
         let mut buf = BytePages::default();
         codec.encode(item, &mut buf).unwrap();
         assert!(!buf.freeze().is_empty());
     }
 
+    /// STATEMENT: Inbound size limits count the entire packet, including the fixed header.
+    ///
+    /// HOW:
+    /// - Decode oversized and boundary-length headers under small configured byte limits.
+    /// - Check the reported total and maximum sizes, or `None` when only the body is missing.
     #[test]
     fn test_max_size() {
         let codec = Codec::new();
@@ -521,6 +561,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: The outbound remaining-length budget accounts for variable-length header boundaries.
+    ///
+    /// HOW:
+    /// - Compare `max_remaining_length` with expected budgets around each prefix-width transition.
+    /// - Include a total size too small for a packet and a limit above the protocol maximum.
     #[test]
     fn test_max_remaining_length() {
         for (size, remaining) in [
@@ -542,6 +587,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Inbound payload state clears only after the final publish chunk.
+    ///
+    /// HOW:
+    /// - Decode 80 of 100 payload bytes with a ten-byte threshold, then append two ten-byte chunks.
+    /// - Check chunk bytes, final-chunk flags, and `is_payload_pending` before and after completion.
     #[test]
     fn test_payload_pending() {
         use ntex_bytes::ByteString;
@@ -585,6 +635,11 @@ mod tests {
         assert!(!codec.is_payload_pending());
     }
 
+    /// STATEMENT: A publish header must fit within its declared remaining length.
+    ///
+    /// HOW:
+    /// - Decode a header needing six bytes with remaining lengths of five and six.
+    /// - Expect `InvalidLength` for the first and an empty, completed payload for the second.
     #[test]
     fn test_publish_header_over_remaining_length() {
         // topic "abc" and properties length need 6 bytes, packet declares 5
@@ -607,6 +662,11 @@ mod tests {
         assert!(!codec.is_payload_pending());
     }
 
+    /// STATEMENT: An oversized initial payload is rejected without changing outbound payload state.
+    ///
+    /// HOW:
+    /// - Supply three bytes for a two-byte publish and check the error and empty output.
+    /// - Verify a following chunk is unexpected, then encode a correctly sized publish successfully.
     #[test]
     fn test_encode_payload_over_publish_size() {
         use ntex_bytes::ByteString;
@@ -642,6 +702,12 @@ mod tests {
         assert!(buf.freeze().ends_with(b"ab"));
     }
 
+    /// STATEMENT: Outbound bodies cannot exceed the MQTT remaining-length maximum.
+    ///
+    /// HOW:
+    /// - Try oversized declared publish payloads with unset and very large configured limits.
+    /// - Check empty output and no pending payload after rejection, and the exact boundary header on success.
+    /// - Reject a subscription whose repeated filters exceed the protocol maximum.
     #[test]
     fn test_encode_over_protocol_max_size() {
         use ntex_bytes::ByteString;
@@ -697,6 +763,11 @@ mod tests {
         assert!(buf.freeze().is_empty());
     }
 
+    /// STATEMENT: An unfinished outbound publish prevents another packet from being encoded.
+    ///
+    /// HOW:
+    /// - Encode half a four-byte payload and attempt a ping and another publish.
+    /// - Check `ExpectPayload` without output, then finish the payload and verify the ping bytes follow.
     #[test]
     fn test_encode_expect_payload() {
         use ntex_bytes::ByteString;
@@ -736,6 +807,11 @@ mod tests {
         assert_eq!(&buf.freeze()[..], b"cd\xc0\x00");
     }
 
+    /// STATEMENT: Subscription identifiers must fit in an MQTT variable-byte integer.
+    ///
+    /// HOW:
+    /// - Encode subscriptions and publishes using identifiers at and above 268,435,455.
+    /// - Check oversized identifiers leave no output and boundary identifiers produce the expected bytes.
     #[test]
     fn test_encode_sub_id_range() {
         use std::num::NonZeroU32;
@@ -781,6 +857,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: A decoded diagnostic opt-out suppresses properties on outgoing publish acknowledgments.
+    ///
+    /// HOW:
+    /// - Decode a `CONNECT` with `request_problem_info` disabled.
+    /// - Encode an acknowledgment with diagnostics and compare its stripped bytes with a fresh codec output.
     #[test]
     fn test_no_problem_info() {
         let ack = || {
@@ -812,6 +893,11 @@ mod tests {
         assert!(encode(&Codec::new(), ack()).len() > 6);
     }
 
+    /// STATEMENT: Incomplete non-publish frames reserve bounded receive-buffer capacity.
+    ///
+    /// HOW:
+    /// - Decode a maximum-size subscription header and a short partially received frame.
+    /// - Check consumed bytes and capacity ranges against `MAX_FRAME_RESERVE` and the smaller frame length.
     #[test]
     fn test_frame_reserve() {
         let codec = Codec::new();
@@ -832,6 +918,11 @@ mod tests {
         assert!(src.capacity() < MAX_FRAME_RESERVE);
     }
 
+    /// STATEMENT: Publish encoding validates topic names and the relationship between flags and quality of service.
+    ///
+    /// HOW:
+    /// - Reject empty or wildcard topics, duplicate delivery at quality-of-service zero, and an unexpected identifier.
+    /// - Accept valid normal and aliased topics and an identified redelivery, checking invalid packets write nothing.
     #[test]
     fn test_encode_publish_sender_rules() {
         let codec = Codec::new();
@@ -886,6 +977,11 @@ mod tests {
         assert_rejected(&codec, Encoded::Publish(pkt, None));
     }
 
+    /// STATEMENT: Connection and subscription encoding rejects invalid Will topics and empty filter lists.
+    ///
+    /// HOW:
+    /// - Try missing or wildcard Will topics and subscription requests with absent or empty filters.
+    /// - Check rejection without output and successful encoding of valid Wills, wildcard filters, and password-only credentials.
     #[test]
     fn test_encode_packet_sender_rules() {
         let codec = Codec::new();
@@ -971,6 +1067,7 @@ mod tests {
         ]
     }
 
+    /// Builds one user property with the supplied key and a fixed valid value.
     fn props(key: ByteString) -> Vec<(ByteString, ByteString)> {
         vec![(key, ByteString::from_static("v"))]
     }
@@ -995,6 +1092,7 @@ mod tests {
         }
     }
 
+    /// Builds a successful authentication packet with a valid method.
     fn auth_with_method() -> Auth {
         Auth {
             auth_method: Some(ByteString::from_static("m")),
@@ -1002,6 +1100,7 @@ mod tests {
         }
     }
 
+    /// Builds a valid connection request with a mutable Will for validation tests.
     fn will_connect() -> Connect {
         Connect {
             client_id: ByteString::from_static("id"),
@@ -1022,6 +1121,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Subscription requests enforce wildcard placement and shared-filter syntax.
+    ///
+    /// HOW:
+    /// - Encode each valid and invalid filter in both subscribe and unsubscribe requests.
+    /// - Check malformed filters leave no output and valid wildcard and shared filters encode successfully.
     #[test]
     fn test_encode_topic_filter_syntax() {
         let codec = Codec::new();
@@ -1092,6 +1196,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Connection and publish string fields reject null characters and excessive encoded lengths.
+    ///
+    /// HOW:
+    /// - Replace each tested connection, acknowledgment, Will, and publish string field with invalid strings.
+    /// - Check rejection without output and successful encoding at the 65,535-byte boundary.
     #[test]
     fn test_encode_invalid_str_connect() {
         let connect = will_connect();
@@ -1137,6 +1246,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Other control-packet string fields enforce MQTT string validity before encoding.
+    ///
+    /// HOW:
+    /// - Inject null-containing and oversized strings into tested acknowledgment, subscription, disconnect, and authentication fields.
+    /// - Check invalid strings leave no output and strings of 65,535 bytes remain encodable.
     #[test]
     fn test_encode_invalid_str_packets() {
         let packet_id = NonZeroU16::new(1).unwrap();
@@ -1244,6 +1358,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Length-prefixed binary fields accept 65,535 bytes but reject 65,536 bytes.
+    ///
+    /// HOW:
+    /// - Set each tested credential, Will, authentication, and correlation-data field to both lengths.
+    /// - Check successful boundary encoding and rejection without output for oversized data.
     #[test]
     fn test_encode_bin_too_long() {
         assert_bin_rejected(
@@ -1279,6 +1398,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Response topics in publishes and Wills must be nonempty topic names without wildcards.
+    ///
+    /// HOW:
+    /// - Encode both packet forms with `a/b`, then with empty and wildcard response topics.
+    /// - Check valid encoding and rejection without output for each invalid topic.
     #[test]
     fn test_encode_response_topic_wildcards() {
         let codec = Codec::new();
@@ -1303,6 +1427,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Shared subscriptions cannot request the no-local option.
+    ///
+    /// HOW:
+    /// - Encode shared filters with `no_local` disabled and enabled, checking success and rejection without output.
+    /// - Confirm ordinary filters and names merely resembling shared subscriptions permit `no_local`.
     #[test]
     fn test_encode_shared_subscription_no_local() {
         let codec = Codec::new();
@@ -1332,6 +1461,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: A connection acknowledgment cannot advertise a zero maximum packet size.
+    ///
+    /// HOW:
+    /// - Encode absent, one-byte, and zero limits, checking acceptance or rejection without output.
+    /// - Decode wire limits of one and zero and compare the property or malformed-packet error.
     #[test]
     fn test_connack_max_packet_size_zero() {
         let codec = Codec::new();
@@ -1359,6 +1493,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: The maximum-quality-of-service property permits only zero or one, with absence implying two.
+    ///
+    /// HOW:
+    /// - Decode and re-encode both permitted values and compare their exact wire bytes.
+    /// - Check the absent default and reject explicitly encoded values of two and three.
     #[test]
     fn test_connack_max_qos() {
         let codec = Codec::new();
@@ -1398,6 +1537,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Connection authentication data requires an authentication method.
+    ///
+    /// HOW:
+    /// - Encode otherwise identical connections with and without a method, checking rejection without output.
+    /// - Decode matching wire examples and compare the recovered credentials or malformed-packet error.
     #[test]
     fn test_connect_auth_data_requires_method() {
         let codec = Codec::new();
@@ -1426,6 +1570,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: Authentication packets require a method except for property-free success in short form.
+    ///
+    /// HOW:
+    /// - Round-trip short success and method-bearing packets, checking their exact wire bytes.
+    /// - Reject non-short packets lacking a method during both encoding and decoding.
     #[test]
     fn test_auth_method_required() {
         let encode = |pkt: Auth| {
@@ -1492,6 +1641,11 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Only the client-side codec emits a disconnect session-expiry property.
+    ///
+    /// HOW:
+    /// - Encode a disconnect with an expiry interval using a fresh codec.
+    /// - Decode a `CONNECT` to mark the codec as server-side and verify the next encoded disconnect omits expiry.
     #[test]
     fn test_server_disconnect_session_expiry() {
         let disconnect = || {
@@ -1518,6 +1672,11 @@ mod tests {
         assert_eq!(&encode(&codec)[..], b"\xE0\x02\x00\x00");
     }
 
+    /// STATEMENT: An unsuccessful connection acknowledgment never encodes the session-present flag.
+    ///
+    /// HOW:
+    /// - Encode successful acknowledgments with both flag values and an unsuccessful one requesting the flag.
+    /// - Compare exact bytes to confirm success preserves the flag and failure clears it.
     #[test]
     fn test_connack_session_present_with_error() {
         let encode = |session_present, reason_code| {
@@ -1548,6 +1707,11 @@ mod tests {
         );
     }
 
+    /// STATEMENT: A zero message-expiry interval survives publish and Will round trips.
+    ///
+    /// HOW:
+    /// - Decode wire packets containing zero expiry intervals and inspect the recovered properties.
+    /// - Re-encode both packets and compare the complete output bytes with the original input.
     #[test]
     fn test_message_expiry_interval_zero() {
         // a Message Expiry Interval of 0 is valid (MQTT 5.0, 3.3.2.3.3, 3.1.3.2.4)
@@ -1585,6 +1749,11 @@ mod tests {
         assert_eq!(&buf.freeze()[..], &connect[..]);
     }
 
+    /// STATEMENT: Cloning preserves codec limits, capabilities, and in-progress framing.
+    ///
+    /// HOW:
+    /// - Clone after configuring limits and capabilities and reading a partial acknowledgment.
+    /// - Check copied settings and finish decoding through the clone; also clone an unfinished outgoing publish and check its pending state.
     #[test]
     fn test_clone() {
         let codec = Codec::new();
@@ -1639,6 +1808,11 @@ mod tests {
         assert!(codec.clone().is_encoding_payload());
     }
 
+    /// STATEMENT: Small outbound limits reject required bytes while allowing diagnostic properties to be omitted.
+    ///
+    /// HOW:
+    /// - Encode pings, publish acknowledgments, and subscription acknowledgments under several small total-size limits.
+    /// - Compare errors and exact bytes with or without a reason string, then check publish payload-size boundaries.
     #[test]
     fn test_small_max_outbound_size() {
         let encode = |max_size, pkt: Packet| {
@@ -1745,6 +1919,11 @@ mod tests {
         assert_eq!(&buf.freeze()[..], b"\x30\x07\x00\x01t\x00abc");
     }
 
+    /// STATEMENT: Service configuration initializes inbound codec limits without setting an outbound limit.
+    ///
+    /// HOW:
+    /// - Create a codec from configured maximum packet and minimum chunk sizes.
+    /// - Check both copied values and the unchanged zero outbound limit.
     #[test]
     fn test_from_config() {
         let cfg = MqttServiceConfig::new()

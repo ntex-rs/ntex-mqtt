@@ -1,12 +1,20 @@
 use super::*;
 
+/// STATEMENT: Server routing resolves parameters and topic aliases before selecting resources
+/// or the fallback handler.
+///
+/// HOW:
+/// - Publish to parameterized, fixed, incomplete, and unmatched topics and compare
+///   acknowledgment identifiers, reasons, and reason strings.
+/// - Register topic alias `1` for the fixed route, then reuse it with an empty topic and
+///   verify the same handler responds.
 #[ntex::test]
 async fn test_server_router() {
     let factory =
         Router::<St, TestError>::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build();
     assert!(format!("{factory:?}").contains("v5::RouterFactory"));
 
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         let router = Router::new(async |p: Publish| {
             // default resource
             Ok::<_, TestError>(
@@ -99,6 +107,7 @@ async fn test_server_router() {
     }
 }
 
+/// Copies string pairs into owned MQTT user properties for packet comparisons.
 fn user_props(props: &[(&str, &str)]) -> codec::UserProperties {
     props
         .iter()
@@ -106,12 +115,22 @@ fn user_props(props: &[(&str, &str)]) -> codec::UserProperties {
         .collect()
 }
 
+/// STATEMENT: Server protocol handlers can inspect requests and customize authentication,
+/// release, subscription, and unsubscription replies.
+///
+/// HOW:
+/// - Enable QoS 2 and exchange authentication, publish-release, subscription, unsubscription,
+///   and ping packets.
+/// - Compare reply packets, per-filter statuses, reason strings, and user properties; verify
+///   request accessors inside handlers.
+/// - Send a disconnect, assert closure without a reply, and check the recorded
+///   protocol-message order and positive packet sizes.
 #[ntex::test]
 async fn test_server_protocol_message() {
     let sizes = Arc::new(Mutex::new(Vec::<(&'static str, u32)>::new()));
     let sizes2 = sizes.clone();
 
-    let srv = server::TestServerBuilder::new(async move || {
+    let srv = server::TestServerBuilder::new(async move |_| {
         let sizes = sizes2.clone();
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async move |msg| {
@@ -311,9 +330,18 @@ async fn test_server_protocol_message() {
     assert!(sizes.iter().all(|s| s.1 > 0), "{sizes:?}");
 }
 
+/// STATEMENT: Generic server acknowledgment rejects subscriptions, accepts unsubscriptions and
+/// releases, and closes unsupported authentication.
+///
+/// HOW:
+/// - Install a protocol service that always calls `ProtocolMessage::ack`.
+/// - Assert the default subscription rejection, successful unsubscription, ping response, and
+///   QoS 2 release completion.
+/// - Send authentication and a separate disconnect; assert both connections close without
+///   response packets.
 #[ntex::test]
 async fn test_server_protocol_generic_ack() {
-    let srv = server::TestServerBuilder::new(async || {
+    let srv = server::TestServerBuilder::new(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .protocol(async |msg: ProtocolMessage| Ok::<_, TestError>(msg.ack()))
             .build(connect)
@@ -399,9 +427,16 @@ async fn test_server_protocol_generic_ack() {
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
 
+/// STATEMENT: The default server protocol service answers pings and closes on subscriptions or
+/// disconnects.
+///
+/// HOW:
+/// - Start a server without a custom protocol service and assert a ping response.
+/// - Send a subscription and assert closure without a reply, then repeat the closure check for
+///   a disconnect on a fresh connection.
 #[ntex::test]
 async fn test_server_default_protocol_service() {
-    let srv = server::test_server(async || {
+    let srv = server::test_server(async |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack())).build(connect)
     });
 
@@ -435,12 +470,15 @@ async fn test_server_default_protocol_service() {
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
 
-/// Middleware that counts the number of dispatched packets
+/// Middleware factory sharing a call counter across wrapped services.
 #[derive(Clone)]
 struct CountMw(Arc<AtomicUsize>);
 
+/// Delegating service that increments a shared counter before forwarding each request.
 struct CountSvc<S> {
+    /// Wrapped service receiving requests and lifecycle callbacks.
     svc: S,
+    /// Shared request count incremented before the wrapped service is called.
     count: Arc<AtomicUsize>,
 }
 
@@ -484,7 +522,8 @@ where
     }
 }
 
-/// Checks that every dispatched packet is seen by the `CountMw` middleware
+/// Checks that the handshake is not counted and each of two successful publishes increments
+/// the counter.
 async fn assert_counted(srv: &server::TestServer, count: &AtomicUsize) {
     let (io, codec) = handshake(srv).await;
     assert_eq!(count.load(Relaxed), 0);
@@ -503,12 +542,19 @@ async fn assert_counted(srv: &server::TestServer, count: &AtomicUsize) {
     }
 }
 
+/// STATEMENT: Both stacked and replacement server middleware observe each dispatched publish
+/// exactly once.
+///
+/// HOW:
+/// - Wrap the server with `CountMw` using `middleware`, then repeat with `replace_middlewares`.
+/// - For each configuration, assert no calls during the handshake and exactly one counter
+///   increment per acknowledged publish.
 #[ntex::test]
 async fn test_server_middleware() {
     // `middleware()` stacks on top of the default one
     let count = Arc::new(AtomicUsize::new(0));
     let count2 = count.clone();
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         let srv = MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()));
         assert_eq!(format!("{srv:?}"), "v5::MqttServer");
         srv.middleware(CountMw(count2.clone())).build(connect)
@@ -518,7 +564,7 @@ async fn test_server_middleware() {
     // `replace_middlewares()` drops the default one
     let count = Arc::new(AtomicUsize::new(0));
     let count2 = count.clone();
-    let srv = server::test_server(async move || {
+    let srv = server::test_server(async move |_| {
         MqttServer::new(async |p: Publish| Ok::<_, TestError>(p.ack()))
             .replace_middlewares(CountMw(count2.clone()))
             .build(connect)
