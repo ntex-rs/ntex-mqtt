@@ -5,6 +5,7 @@ use ntex_codec::{Decoder, Encoder};
 
 use crate::MqttServiceConfig;
 use crate::error::{DecodeError, EncodeError};
+use crate::ticket::Tickets;
 use crate::types::{FixedHeader, MAX_FRAME_RESERVE, MAX_PACKET_SIZE, packet_type};
 use crate::utils::decode_variable_length;
 
@@ -21,6 +22,8 @@ pub struct Codec {
     min_chunk_size: Cell<u32>,
     /// Outstanding outgoing payload bytes; cleared when the announced payload is complete.
     encoding_payload: Cell<Option<NonZeroU32>>,
+    /// Arrival tickets of incoming `QoS 1` and `QoS 2` publishes; a clone starts a new sequence.
+    tickets: Tickets,
 }
 
 /// Inbound framing phases for control packets and streamed PUBLISH payloads.
@@ -44,6 +47,7 @@ impl Codec {
             max_size: Cell::new(0),
             min_chunk_size: Cell::new(0),
             encoding_payload: Cell::new(None),
+            tickets: Tickets::default(),
         }
     }
 
@@ -169,6 +173,7 @@ impl Decoder for Codec {
                         let mut buf = src.split_to(hdr_len as usize);
                         let publish =
                             decode::decode_publish_packet(&mut buf, fixed.first_byte, payload_len)?;
+                        let ticket = self.tickets.issue(publish.qos);
 
                         let len = src.len() as u32;
                         let min_chunk_size = self.min_chunk_size.get();
@@ -187,6 +192,7 @@ impl Decoder for Codec {
                                 publish,
                                 payload,
                                 fixed.remaining_length,
+                                ticket,
                             )));
                         }
                         self.state.set(DecodeState::PublishPayload(payload_len));
@@ -194,6 +200,7 @@ impl Decoder for Codec {
                             publish,
                             Bytes::new(),
                             fixed.remaining_length,
+                            ticket,
                         )));
                     }
                     return Ok(None);
@@ -363,7 +370,7 @@ mod tests {
             .encode(Encoded::Publish(pkt.clone(), Some(payload)), &mut buf)
             .unwrap();
 
-        let Decoded::Publish(pkt2, _, _) = codec
+        let Decoded::Publish(pkt2, _, _, _) = codec
             .decode(&mut BytesMut::from(buf.freeze()))
             .unwrap()
             .unwrap()
@@ -401,7 +408,7 @@ mod tests {
         assert!(!codec.is_payload_pending());
 
         let mut src = BytesMut::from(&data[..data.len() - 20]);
-        let Some(Decoded::Publish(_, payload, _)) = codec.decode(&mut src).unwrap() else {
+        let Some(Decoded::Publish(_, payload, _, _)) = codec.decode(&mut src).unwrap() else {
             panic!()
         };
         assert_eq!(payload.len(), 80);
@@ -442,13 +449,49 @@ mod tests {
         // header without payload
         let codec = Codec::new();
         let mut src = BytesMut::from(&b"\x30\x05\x00\x03abc"[..]);
-        let Some(Decoded::Publish(pkt, payload, 5)) = codec.decode(&mut src).unwrap() else {
+        let Some(Decoded::Publish(pkt, payload, 5, _)) = codec.decode(&mut src).unwrap() else {
             panic!()
         };
         assert_eq!(pkt.topic, "abc");
         assert_eq!(pkt.payload_size, 0);
         assert!(payload.is_empty());
         assert!(!codec.is_payload_pending());
+    }
+
+    /// STATEMENT: Decoding issues arrival tickets to `QoS 1` and `QoS 2` publishes only.
+    ///
+    /// HOW:
+    /// - Decode `QoS 1`, `QoS 0`, `QoS 2`, and a streamed `QoS 1` publish; check ticket sequence
+    ///   numbers 0, none, 1, and 2, with the streamed ticket issued on its header.
+    /// - Decode with a clone and check it starts an independent sequence that does not advance
+    ///   the original.
+    #[test]
+    fn test_publish_ticket() {
+        let seq = |codec: &Codec, data: &[u8]| {
+            let Some(Decoded::Publish(.., ticket)) =
+                codec.decode(&mut BytesMut::from(data)).unwrap()
+            else {
+                panic!()
+            };
+            ticket.map(|t| t.seq())
+        };
+        let codec = Codec::new();
+        assert_eq!(seq(&codec, b"\x32\x07\x00\x03abc\x00\x01"), Some(0));
+        assert_eq!(seq(&codec, b"\x30\x05\x00\x03abc"), None);
+        assert_eq!(seq(&codec, b"\x34\x07\x00\x03abc\x00\x02"), Some(1));
+
+        // a clone starts its own sequence
+        let clone = codec.clone();
+        assert_eq!(seq(&clone, b"\x32\x07\x00\x03abc\x00\x01"), Some(0));
+        assert_eq!(seq(&clone, b"\x32\x07\x00\x03abc\x00\x01"), Some(1));
+
+        let mut src = BytesMut::from(&b"\x32\x6b\x00\x03abc\x00\x03"[..]);
+        src.extend_from_slice(&[b'a'; 50]);
+        let Some(Decoded::Publish(.., Some(ticket))) = codec.decode(&mut src).unwrap() else {
+            panic!()
+        };
+        assert_eq!(ticket.seq(), 2);
+        assert!(codec.is_payload_pending());
     }
 
     /// STATEMENT: Oversized initial payloads are rejected without starting an outgoing stream.

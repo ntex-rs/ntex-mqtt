@@ -49,6 +49,8 @@ mod server;
 mod service;
 /// Reference-counted connection state shared with application services.
 mod session;
+/// Arrival order of incoming publishes.
+mod ticket;
 /// Protocol constants, flags, and quality-of-service levels.
 mod types;
 /// Non-consuming detection of the initial CONNECT protocol level.
@@ -61,6 +63,7 @@ pub use self::inflight::SizedRequest;
 pub use self::payload::Payload;
 pub use self::server::MqttServer;
 pub use self::session::Session;
+pub use self::ticket::Ticket;
 pub use self::topic::{TopicFilter, TopicFilterError, TopicFilterLevel};
 pub use self::types::QoS;
 

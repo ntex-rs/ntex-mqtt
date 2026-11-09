@@ -62,7 +62,7 @@ where
 
 impl crate::inflight::SizedRequest for Decoded {
     fn size(&self) -> u32 {
-        if let Decoded::Packet(_, size) | Decoded::Publish(_, _, size) = self {
+        if let Decoded::Packet(_, size) | Decoded::Publish(_, _, size, _) = self {
             *size
         } else {
             0
@@ -71,7 +71,7 @@ impl crate::inflight::SizedRequest for Decoded {
 
     fn has_more_chunks(&self) -> bool {
         match self {
-            Decoded::Publish(publish, payload, _) => publish.payload_size != payload.len() as u32,
+            Decoded::Publish(publish, payload, ..) => publish.payload_size != payload.len() as u32,
             Decoded::PayloadChunk(_, eof) => !eof,
             Decoded::Packet(..) => false,
         }
@@ -209,7 +209,7 @@ where
         log::trace!("{}; Dispatch v3 packet: {:#?}", self.tag(), req);
 
         match req {
-            Decoded::Publish(publish, payload, size) => {
+            Decoded::Publish(publish, payload, size, ticket) => {
                 if publish.topic.contains(['#', '+']) {
                     return Err(SpecViolation::Pub_3_3_2_2.into());
                 }
@@ -300,7 +300,7 @@ where
 
                 publish_fn(
                     &self.publish,
-                    Publish::new(publish, payload, size),
+                    Publish::new(publish, payload, size).with_ticket(ticket),
                     packet_id,
                     inner,
                     ctx,
@@ -803,6 +803,7 @@ mod tests {
             },
             Bytes::from_static(payload),
             999,
+            None,
         )
     }
 
@@ -851,6 +852,63 @@ mod tests {
         assert_eq!(res.unwrap(), Some(Packet::PublishAck { packet_id: pid(1) }));
         assert_eq!(counter.get(), 2);
         assert!(shared.is_active());
+    }
+
+    /// STATEMENT: Publications carry arrival tickets, and an ignored duplicate does not stall later turns.
+    ///
+    /// HOW:
+    /// - Issue tickets for a slow `QoS 1` publication, its duplicate, and a second publication.
+    /// - The handler waits for its ticket turn; check the duplicate is ignored and the second
+    ///   publication runs after the first completes, skipping the dropped duplicate ticket.
+    #[ntex::test]
+    async fn test_publish_ticket() {
+        let tickets = crate::ticket::Tickets::default();
+        let ticketed = |d: Decoded| {
+            let Decoded::Publish(pkt, payload, size, _) = d else {
+                unreachable!()
+            };
+            let ticket = tickets.issue(pkt.qos);
+            Decoded::Publish(pkt, payload, size, ticket)
+        };
+        let seqs = Rc::new(RefCell::new(Vec::new()));
+        let seqs2 = seqs.clone();
+        let (_io, _, disp) = dispatcher(
+            MqttServiceConfig::new(),
+            fn_service(move |pkt: Publish| {
+                let seqs = seqs2.clone();
+                async move {
+                    let ticket = pkt.ticket().unwrap();
+                    ticket.turn().await;
+                    seqs.borrow_mut().push(ticket.seq());
+                    if pkt.topic().path() == "publish/slow" {
+                        sleep(Millis(50)).await;
+                    }
+                    Ok::<_, ()>(())
+                }
+            }),
+            fn_service(ack),
+        );
+
+        let pkt = ticketed(publish(1, QoS::AtLeastOnce, false, "publish/slow"));
+        let mut f1 = Box::pin(disp.call(pkt));
+        let _ = lazy(|cx| Pin::new(&mut f1).poll(cx)).await;
+
+        let pkt = ticketed(publish(1, QoS::AtLeastOnce, true, "publish/slow"));
+        assert_eq!(disp.call(pkt).await.unwrap(), None);
+
+        let mut f2 = Box::pin(disp.call(ticketed(publish(2, QoS::AtLeastOnce, false, "publish"))));
+        assert!(lazy(|cx| Pin::new(&mut f2).poll(cx)).await.is_pending());
+        assert_eq!(*seqs.borrow(), [0]);
+
+        assert_eq!(
+            f1.await.unwrap(),
+            Some(Packet::PublishAck { packet_id: pid(1) })
+        );
+        assert_eq!(
+            f2.await.unwrap(),
+            Some(Packet::PublishAck { packet_id: pid(2) })
+        );
+        assert_eq!(*seqs.borrow(), [0, 2]);
     }
 
     /// STATEMENT: A `QoS 2` publication is delivered once until PUBREL completes its exchange.

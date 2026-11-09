@@ -137,7 +137,7 @@ where
         log::trace!("Dispatch packet: {req:#?}");
 
         match req {
-            Decoded::Publish(mut publish, payload, size) => {
+            Decoded::Publish(mut publish, payload, size, ticket) => {
                 // the Topic Name and the Response Topic must not contain wildcards,
                 // [MQTT-3.3.2-2], [MQTT-3.3.2-14] (MQTT 5.0, 3.3.2.1, 3.3.2.3.5)
                 if publish.topic.contains(['#', '+']) {
@@ -274,7 +274,7 @@ where
 
                 publish_fn(
                     &self.publish,
-                    Publish::new(publish, payload, size),
+                    Publish::new(publish, payload, size).with_ticket(ticket),
                     packet_id.map_or(0, NonZero::get),
                     size,
                     info,
@@ -583,7 +583,7 @@ mod tests {
                 ..Default::default()
             };
             pkt.properties.response_topic = response_topic.map(ByteString::from_static);
-            Decoded::Publish(pkt, Bytes::new(), 999)
+            Decoded::Publish(pkt, Bytes::new(), 999, None)
         };
         let violation = |res: Result<Option<Packet>, DispatcherError<()>>| {
             let Err(DispatcherError::Protocol(MqttProtocolError::ProtocolViolation(err))) = res
@@ -680,6 +680,7 @@ mod tests {
             },
             Bytes::new(),
             999,
+            None,
         )
     }
 
@@ -845,6 +846,7 @@ mod tests {
             },
             Bytes::from_static(b"abc"),
             999,
+            None,
         )
     }
 
@@ -867,12 +869,16 @@ mod tests {
         let (_io, _, disp) = qos2_dispatcher(&Rc::default(), &Rc::default(), 16);
 
         // the streaming publish is rejected before its payload is set up
-        let Decoded::Publish(mut pkt, payload, size) = redelivery(1, QoS::AtLeastOnce, true) else {
+        let Decoded::Publish(mut pkt, payload, size, ticket) =
+            redelivery(1, QoS::AtLeastOnce, true)
+        else {
             unreachable!()
         };
         pkt.dup = false;
         pkt.topic = ByteString::from_static("a/+");
-        let res = disp.call(Decoded::Publish(pkt, payload, size)).await;
+        let res = disp
+            .call(Decoded::Publish(pkt, payload, size, ticket))
+            .await;
         assert!(matches!(res, Err(DispatcherError::Protocol(_))), "{res:?}");
         assert!(unexpected(disp.call(chunk(true)).await));
         assert!(unexpected(disp.call(chunk(false)).await));
@@ -1084,6 +1090,7 @@ mod tests {
                 },
                 Bytes::from_static(b"ab"),
                 999,
+                None,
             ))
             .await;
         assert_eq!(res.unwrap(), None);
