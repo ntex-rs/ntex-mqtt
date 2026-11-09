@@ -104,7 +104,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let (pkt, _) = match decoded {
-            Decoded::Publish(ref pkt, ref body, _) => (pkt.clone(), body.clone()),
+            Decoded::Publish(ref pkt, ref body, _, _) => (pkt.clone(), body.clone()),
             _ => panic!(),
         };
 

@@ -1,5 +1,16 @@
 # Changes
 
+## [10.0.0] - unreleased
+
+* Add `Ticket`, a per-connection arrival ticket. The v3/v5 codecs issue one to each
+  incoming `QoS 1` and `QoS 2` publish in decode order. `Publish::ticket()` and
+  `Publish::take_ticket()` expose it; dropping a ticket passes or skips its turn
+
+* `Decoded::Publish` gets a fourth field `Option<Ticket>`. `Decoded` no
+  longer implements `Clone`. A cloned `Codec` starts its own ticket sequence
+
+* `Ticket` is re-exported from `ntex_util::services::ordered`
+
 ## [9.5.0] - 2026-11-04
 
 * Use `ReadyBinding` instead of the removed `ServiceBinding` alias, require ntex-service 5.5

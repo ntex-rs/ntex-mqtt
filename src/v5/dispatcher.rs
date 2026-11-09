@@ -64,7 +64,7 @@ where
 
 impl crate::inflight::SizedRequest for Decoded {
     fn size(&self) -> u32 {
-        if let Decoded::Packet(_, size) | Decoded::Publish(_, _, size) = self {
+        if let Decoded::Packet(_, size) | Decoded::Publish(_, _, size, _) = self {
             *size
         } else {
             0
@@ -73,7 +73,7 @@ impl crate::inflight::SizedRequest for Decoded {
 
     fn has_more_chunks(&self) -> bool {
         match self {
-            Decoded::Publish(publish, payload, _) => publish.payload_size != payload.len() as u32,
+            Decoded::Publish(publish, payload, ..) => publish.payload_size != payload.len() as u32,
             Decoded::PayloadChunk(_, eof) => !eof,
             Decoded::Packet(..) => false,
         }
@@ -248,7 +248,7 @@ where
         log::trace!("{}: Dispatch v5 packet: {:#?}", self.tag(), req);
 
         match req {
-            Decoded::Publish(mut publish, payload, size) => {
+            Decoded::Publish(mut publish, payload, size, ticket) => {
                 let info = &self.inner;
                 let packet_id = publish.packet_id;
 
@@ -423,7 +423,7 @@ where
 
                 publish_fn(
                     &self.publish,
-                    Publish::new(publish, payload, size),
+                    Publish::new(publish, payload, size).with_ticket(ticket),
                     packet_id.map_or(0, num::NonZero::get),
                     info,
                     ctx,
@@ -958,6 +958,7 @@ mod tests {
                     },
                     Bytes::new(),
                     999,
+                    None,
                 ))
                 .await;
             assert_eq!(
@@ -970,7 +971,11 @@ mod tests {
         let mut pkt = codec::Publish::default();
         pkt.properties.topic_alias = NonZeroU16::new(1);
 
-        let err = violation(&disp.call(Decoded::Publish(pkt, Bytes::new(), 999)).await);
+        let err = violation(
+            &disp
+                .call(Decoded::Publish(pkt, Bytes::new(), 999, None))
+                .await,
+        );
         assert_eq!(
             err.inner,
             error::ViolationInner::Common {
@@ -986,7 +991,9 @@ mod tests {
             ..Default::default()
         };
         pkt.properties.topic_alias = NonZeroU16::new(1);
-        let res = disp.call(Decoded::Publish(pkt, Bytes::new(), 999)).await;
+        let res = disp
+            .call(Decoded::Publish(pkt, Bytes::new(), 999, None))
+            .await;
         assert!(res.is_ok());
 
         // new topic alias
@@ -997,7 +1004,11 @@ mod tests {
         };
         pkt.properties.topic_alias = NonZeroU16::new(2);
 
-        let err = violation(&disp.call(Decoded::Publish(pkt, Bytes::new(), 999)).await);
+        let err = violation(
+            &disp
+                .call(Decoded::Publish(pkt, Bytes::new(), 999, None))
+                .await,
+        );
         assert_eq!(
             err.inner,
             error::ViolationInner::Spec(error::SpecViolation::Connack_3_2_2_17)
@@ -1161,7 +1172,7 @@ mod tests {
                     .subscription_ids
                     .push(NonZeroU32::new(1).unwrap());
             }
-            Decoded::Publish(pkt, Bytes::new(), 999)
+            Decoded::Publish(pkt, Bytes::new(), 999, None)
         };
         let subscribe = |filter: &'static str, no_local: bool| {
             Decoded::Packet(
@@ -1233,6 +1244,7 @@ mod tests {
                 },
                 Bytes::from_static(b"ab"),
                 10,
+                None,
             )
         };
         assert!(!publish(2).has_more_chunks());
@@ -1254,7 +1266,7 @@ mod tests {
     fn test_inflight_kind() {
         use crate::inflight::SizedRequest;
 
-        let publish = Decoded::Publish(codec::Publish::default(), Bytes::new(), 10);
+        let publish = Decoded::Publish(codec::Publish::default(), Bytes::new(), 10, None);
         assert!(publish.is_limited() && !publish.is_ordered());
         let chunk = Decoded::PayloadChunk(Bytes::from_static(b"c"), true);
         assert!(!chunk.is_limited() && chunk.is_ordered());
@@ -1316,6 +1328,7 @@ mod tests {
             },
             Bytes::new(),
             999,
+            None,
         )
     }
 
@@ -1499,6 +1512,7 @@ mod tests {
             },
             Bytes::from_static(b"abc"),
             999,
+            None,
         )
     }
 
@@ -1570,6 +1584,60 @@ mod tests {
         let res = disp.call(redelivery(1, QoS::ExactlyOnce, false)).await;
         assert_eq!(res.unwrap(), Some(ack(1, true, Ack::Success)));
         assert_eq!(published.get(), 4);
+    }
+
+    /// STATEMENT: Publishes carry arrival tickets, and an ignored redelivery does not stall later turns.
+    ///
+    /// HOW:
+    /// - Issue tickets for a slow `QoS 1` publish, its redelivery, and a second publish.
+    /// - The handler waits for its ticket turn; check the redelivery is ignored and the second
+    ///   publish runs after the first completes, skipping the dropped redelivery ticket.
+    #[ntex::test]
+    async fn test_publish_ticket() {
+        use codec::PublishAckReason as Ack;
+
+        let tickets = crate::ticket::Tickets::default();
+        let ticketed = |d: Decoded| {
+            let Decoded::Publish(pkt, payload, size, _) = d else {
+                unreachable!()
+            };
+            let ticket = tickets.issue(pkt.qos);
+            Decoded::Publish(pkt, payload, size, ticket)
+        };
+        let seqs = Rc::new(RefCell::new(Vec::new()));
+        let seqs2 = seqs.clone();
+        let (_io, _, disp) = dispatcher(
+            MqttServiceConfig::new(),
+            fn_service(move |msg: Publish| {
+                let seqs = seqs2.clone();
+                async move {
+                    let ticket = msg.ticket().unwrap();
+                    ticket.turn().await;
+                    seqs.borrow_mut().push(ticket.seq());
+                    if msg.topic().path() == "slow" {
+                        sleep(Millis(50)).await;
+                    }
+                    Ok::<_, TestError>(msg.ack())
+                }
+            }),
+            fn_service(async |msg: ProtocolMessage| Ok::<_, DispatcherError<TestError>>(msg.ack())),
+        );
+
+        let mut f1 = Box::pin(disp.call(ticketed(qos_publish(1, QoS::AtLeastOnce, "slow"))));
+        let _ = lazy(|cx| Pin::new(&mut f1).poll(cx)).await;
+
+        let res = disp
+            .call(ticketed(redelivery(1, QoS::AtLeastOnce, false)))
+            .await;
+        assert_eq!(res.unwrap(), None);
+
+        let mut f2 = Box::pin(disp.call(ticketed(qos_publish(2, QoS::AtLeastOnce, "test"))));
+        assert!(lazy(|cx| Pin::new(&mut f2).poll(cx)).await.is_pending());
+        assert_eq!(*seqs.borrow(), [0]);
+
+        assert_eq!(f1.await.unwrap(), Some(ack(1, false, Ack::Success)));
+        assert_eq!(f2.await.unwrap(), Some(ack(2, false, Ack::Success)));
+        assert_eq!(*seqs.borrow(), [0, 2]);
     }
 
     /// STATEMENT: Payload chunks for publishes ignored after disconnect are discarded until the final chunk.
@@ -1761,6 +1829,7 @@ mod tests {
                 },
                 Bytes::from_static(b"ab"),
                 999,
+                None,
             ))
             .await;
         assert_eq!(res.unwrap(), None);

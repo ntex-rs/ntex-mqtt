@@ -3,7 +3,7 @@ use std::{mem, num::NonZeroU16};
 use ntex_bytes::{ByteString, Bytes};
 use ntex_router::Path;
 
-use crate::{error::PayloadError, payload::Payload, v5::codec};
+use crate::{Ticket, error::PayloadError, payload::Payload, v5::codec};
 
 #[derive(Debug)]
 /// Incoming publish metadata, routing path, and payload receiver.
@@ -16,6 +16,8 @@ pub struct Publish {
     topic: Path<ByteString>,
     /// Buffered or streamed payload receiver owned by this message.
     payload: Payload,
+    /// Arrival ticket of a `QoS 1` or `QoS 2` publish.
+    ticket: Option<Ticket>,
 }
 
 impl Publish {
@@ -27,6 +29,7 @@ impl Publish {
             pkt,
             pkt_size,
             payload,
+            ticket: None,
         }
     }
 
@@ -120,6 +123,25 @@ impl Publish {
     /// Take the payload out of the message, leaving an empty `Payload` behind.
     pub fn take_payload(&mut self) -> Payload {
         mem::take(&mut self.payload)
+    }
+
+    #[inline]
+    /// Arrival ticket of a `QoS 1` or `QoS 2` publish, `None` for `QoS 0` or once taken.
+    ///
+    /// Dropping the publish drops its ticket, which passes or skips its turn.
+    pub fn ticket(&self) -> Option<&Ticket> {
+        self.ticket.as_ref()
+    }
+
+    /// Take the arrival ticket out of the message.
+    pub fn take_ticket(&mut self) -> Option<Ticket> {
+        self.ticket.take()
+    }
+
+    /// Attaches the arrival ticket issued by the codec.
+    pub(crate) fn with_ticket(mut self, ticket: Option<Ticket>) -> Self {
+        self.ticket = ticket;
+        self
     }
 
     /// Consumes this message and creates a successful publish acknowledgement.

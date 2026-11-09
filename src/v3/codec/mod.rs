@@ -2,6 +2,8 @@
 
 use ntex_bytes::Bytes;
 
+use crate::Ticket;
+
 /// Stateful framing and streamed publish encoding.
 #[allow(clippy::module_inception)]
 mod codec;
@@ -19,12 +21,15 @@ pub use self::packet::{
 pub use crate::types::{ConnectAckFlags, ConnectFlags, QoS};
 
 /// Result of a decode operation
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum Decoded {
     /// Decoded control packet and its remaining length in bytes, excluding the fixed header.
     Packet(Packet, u32),
     /// Decoded PUBLISH header, optional initial payload bytes, and remaining length in bytes.
-    Publish(Publish, Bytes, u32),
+    ///
+    /// The arrival [`Ticket`] is issued for `QoS 1` and `QoS 2` publishes in decode order,
+    /// dropping it skips the publish in the arrival order.
+    Publish(Publish, Bytes, u32, Option<Ticket>),
     /// Next payload chunk; the flag is `true` when the declared payload is complete.
     PayloadChunk(Bytes, bool),
 }
@@ -54,11 +59,12 @@ impl std::fmt::Debug for Decoded {
                 .field(pkt)
                 .field(size)
                 .finish(),
-            Decoded::Publish(pkt, _, size) => f
+            Decoded::Publish(pkt, _, size, ticket) => f
                 .debug_tuple("Decoded::Publish")
                 .field(pkt)
                 .field(&"<REDACTED>")
                 .field(size)
+                .field(ticket)
                 .finish(),
             Decoded::PayloadChunk(_, eof) => f
                 .debug_tuple("Decoded::Publish")

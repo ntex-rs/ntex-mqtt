@@ -337,7 +337,7 @@ fn scripted_server() -> (server::TestServer, CaseLog) {
             let mut current = u8::MAX;
             while let Ok(Some(res)) = io.recv(&codec).await {
                 match res {
-                    Decoded::Publish(pkt, payload, _) if pkt.topic == "case" => {
+                    Decoded::Publish(pkt, payload, _, _) if pkt.topic == "case" => {
                         current = payload[0];
                         let (script, expected) = client_case(current);
                         for (idx, out) in script.into_iter().enumerate() {

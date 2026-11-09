@@ -3,7 +3,7 @@ use std::{mem, num::NonZeroU16};
 use ntex_bytes::{ByteString, Bytes};
 use ntex_router::Path;
 
-use crate::{error::PayloadError, payload::Payload, v3::codec};
+use crate::{Ticket, error::PayloadError, payload::Payload, v3::codec};
 
 #[derive(Debug)]
 /// Incoming publish metadata, routable topic path, and consumable payload receiver.
@@ -16,6 +16,8 @@ pub struct Publish {
     topic: Path<ByteString>,
     /// Payload receiver consumed through reads or transferred with `take_payload`.
     payload: Payload,
+    /// Arrival ticket of a `QoS 1` or `QoS 2` publish.
+    ticket: Option<Ticket>,
 }
 
 impl Publish {
@@ -29,6 +31,7 @@ impl Publish {
             pkt,
             pkt_size,
             payload,
+            ticket: None,
         }
     }
 
@@ -123,6 +126,25 @@ impl Publish {
     /// Take the payload out of the message, leaving an empty `Payload` behind.
     pub fn take_payload(&mut self) -> Payload {
         mem::take(&mut self.payload)
+    }
+
+    #[inline]
+    /// Arrival ticket of a `QoS 1` or `QoS 2` publish, `None` for `QoS 0` or once taken.
+    ///
+    /// Dropping the publish drops its ticket, which passes or skips its turn.
+    pub fn ticket(&self) -> Option<&Ticket> {
+        self.ticket.as_ref()
+    }
+
+    /// Take the arrival ticket out of the message.
+    pub fn take_ticket(&mut self) -> Option<Ticket> {
+        self.ticket.take()
+    }
+
+    /// Attaches the arrival ticket issued by the codec.
+    pub(crate) fn with_ticket(mut self, ticket: Option<Ticket>) -> Self {
+        self.ticket = ticket;
+        self
     }
 
     /// Consume the message, returning its metadata, payload receiver, and remaining length.
