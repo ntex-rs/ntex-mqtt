@@ -11,6 +11,9 @@
 
 * `Ticket` is re-exported from `ntex_util::services::ordered`
 
+* v3, v5: A SUBSCRIBE or UNSUBSCRIBE that fails to encode no longer keeps its packet id
+  in flight, so it no longer leaks send credit or causes `PacketIdInUse` on reuse
+
 ## [9.5.0] - 2026-11-04
 
 * Use `ReadyBinding` instead of the removed `ServiceBinding` alias, require ntex-service 5.5

@@ -557,4 +557,79 @@ mod tests {
             UnsubscribeAck::decode(&mut buf.take().unwrap().freeze()).unwrap()
         );
     }
+
+    /// STATEMENT: Subscription requests reject properties forbidden for their packet type.
+    ///
+    /// HOW:
+    /// - Decode requests containing an unknown property and an unsubscribe carrying a subscription identifier.
+    /// - Require `MalformedPacket` before interpreting the valid filter payload.
+    #[test]
+    fn test_disallowed_request_properties() {
+        let unknown = Bytes::from_static(b"\x00\x01\x01\x7f\x00\x01a\x00");
+        assert_eq!(
+            Subscribe::decode(&mut unknown.clone()),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            Unsubscribe::decode(&mut unknown.clone()),
+            Err(DecodeError::MalformedPacket)
+        );
+        assert_eq!(
+            Unsubscribe::decode(&mut Bytes::from_static(b"\x00\x01\x02\x0b\x01\x00\x01a")),
+            Err(DecodeError::MalformedPacket)
+        );
+    }
+
+    /// STATEMENT: A subscription identifier is nonzero and occurs at most once in a request.
+    ///
+    /// HOW:
+    /// - Decode property blocks with a zero or repeated subscription identifier followed by a valid filter.
+    /// - Require `MalformedPacket` for both blocks.
+    #[test]
+    fn test_invalid_subscription_identifiers() {
+        for input in [
+            &b"\x00\x01\x02\x0b\x00\x00\x01a\x00"[..],
+            &b"\x00\x01\x04\x0b\x01\x0b\x02\x00\x01a\x00"[..],
+        ] {
+            assert_eq!(
+                Subscribe::decode(&mut Bytes::from_static(input)),
+                Err(DecodeError::MalformedPacket)
+            );
+        }
+    }
+
+    /// STATEMENT: Legal subscription option combinations round-trip within one byte and leave following data intact.
+    ///
+    /// HOW:
+    /// - Encode every combination of supported quality of service, retain handling, and boolean options.
+    /// - Compare the encoded size and decoded options and verify a trailing sentinel remains untouched.
+    #[test]
+    fn test_subscription_option_combinations() {
+        for qos in [QoS::AtMostOnce, QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            for retain_handling in [
+                RetainHandling::AtSubscribe,
+                RetainHandling::AtSubscribeNew,
+                RetainHandling::NoAtSubscribe,
+            ] {
+                for no_local in [false, true] {
+                    for retain_as_published in [false, true] {
+                        let opts = SubscriptionOptions {
+                            qos,
+                            no_local,
+                            retain_as_published,
+                            retain_handling,
+                        };
+                        let mut output = BytePages::default();
+                        opts.encode(&mut output).unwrap();
+                        assert_eq!(output.len(), opts.encoded_size());
+                        assert_eq!(output.len(), 1);
+                        output.put_u8(0xff);
+                        let mut input = output.freeze();
+                        assert_eq!(SubscriptionOptions::decode(&mut input), Ok(opts));
+                        assert_eq!(input.as_ref(), b"\xff");
+                    }
+                }
+            }
+        }
+    }
 }

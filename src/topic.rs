@@ -813,4 +813,48 @@ mod tests {
     fn is_valid_shared(filter: &str) -> bool {
         super::is_valid_shared(filter)
     }
+
+    /// STATEMENT: Owned filter levels retain empty-level and reserved-root subset semantics.
+    ///
+    /// HOW:
+    /// - Convert parsed filters into owned levels and match them against covering filters.
+    /// - Compare with borrowed matching for blanks, wildcards, and reserved roots, including mismatches.
+    #[test]
+    fn test_owned_levels_preserve_subset_matching() {
+        for (cover, subset, expected) in [
+            ("a//+", "a//b", true),
+            ("a//+", "a/b/c", false),
+            ("a//+", "a/+/c", false),
+            ("a/+/+", "a//b", true),
+            ("#", "$SYS/a", false),
+            ("+/a", "$SYS/a", false),
+            ("$SYS/#", "$SYS/a", true),
+            ("a/+", "a/#", false),
+            ("a/#", "a", true),
+        ] {
+            let covering = topic(cover);
+            let parsed = topic(subset);
+            let levels: Vec<TopicFilterLevel> = parsed.clone().into();
+            assert_eq!(
+                match_topic(covering.filter(), levels.into_iter()),
+                expected,
+                "{cover} covers {subset}"
+            );
+            assert_eq!(covering.matches_filter(&parsed), expected);
+        }
+    }
+
+    /// STATEMENT: Writing blank topic levels preserves leading, interior, and trailing separators.
+    ///
+    /// HOW:
+    /// - Write parsed filters containing blank levels to a byte vector.
+    /// - Check the returned byte count and bytes against the original filter text.
+    #[test]
+    fn test_write_blank_topic_levels() {
+        for filter in ["/", "//", "/a//+/#", "$SYS//", "a/"] {
+            let mut bytes = Vec::new();
+            assert_eq!(bytes.write_topic(&topic(filter)).unwrap(), filter.len());
+            assert_eq!(bytes, filter.as_bytes());
+        }
+    }
 }

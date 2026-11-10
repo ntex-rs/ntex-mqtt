@@ -211,3 +211,29 @@ impl PublishAck {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// STATEMENT: Taking a publish's arrival ticket transfers ownership of its ordering turn independently of the publish.
+    ///
+    /// HOW:
+    /// - Attach the first issued ticket to a publish and issue the next ticket.
+    /// - Take the first ticket, then drop the publish and verify the next ticket still cannot run.
+    /// - Drop the detached ticket and verify the next ticket acquires its turn.
+    #[ntex::test]
+    async fn test_taken_ticket_holds_turn() {
+        let tickets = crate::ticket::Tickets::default();
+        let mut publish = Publish::new(codec::Publish::default(), Payload::default(), 0)
+            .with_ticket(tickets.issue(codec::QoS::AtLeastOnce));
+        let next = tickets.issue(codec::QoS::AtLeastOnce).unwrap();
+        let ticket = publish.take_ticket().unwrap();
+        assert!(ticket.is_turn());
+        assert!(publish.take_ticket().is_none());
+        drop(publish);
+        assert!(!next.is_turn());
+        drop(ticket);
+        assert!(next.is_turn());
+    }
+}

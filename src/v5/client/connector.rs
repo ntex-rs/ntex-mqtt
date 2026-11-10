@@ -187,3 +187,60 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::Cell, pin::pin};
+
+    use ntex_io::{Io, testing::IoTest};
+    use ntex_service::Pipeline;
+    use ntex_util::{channel::condition::Condition, future::lazy};
+
+    use super::*;
+
+    /// STATEMENT: MQTT connector shutdown awaits completion of the underlying transport connector's shutdown.
+    ///
+    /// HOW:
+    /// - Wrap a transport connector whose shutdown waits for a notification before setting a completion flag.
+    /// - Poll MQTT connector shutdown and assert it is pending with the flag unset.
+    /// - Notify the transport connector, await completion, and verify the flag is set.
+    #[ntex::test]
+    async fn test_shutdown_waits_for_connector() {
+        struct Transport {
+            gate: Condition,
+            stopped: Rc<Cell<bool>>,
+        }
+
+        impl Service<SharedCfg, connect::Connect<&'static str>> for Transport {
+            type Res = Io;
+            type Error = Error<connect::ConnectError>;
+
+            async fn call(
+                &self,
+                _: connect::Connect<&'static str>,
+                ctx: Ctx<'_, Self, SharedCfg>,
+            ) -> Result<Io, Self::Error> {
+                Ok(Io::new(IoTest::create().0, ctx.st().clone()))
+            }
+
+            async fn shutdown(&self, _: Ctx<'_, Self, SharedCfg>) {
+                self.gate.wait().await;
+                self.stopped.set(true);
+            }
+        }
+
+        let gate = Condition::new();
+        let stopped = Rc::new(Cell::new(false));
+        let connector = MqttConnector::new().connector(Transport {
+            gate: gate.clone(),
+            stopped: stopped.clone(),
+        });
+        let svc = Pipeline::new(SharedCfg::default(), connector);
+        let mut shutdown = pin!(svc.shutdown());
+        assert!(lazy(|cx| shutdown.as_mut().poll(cx).is_pending()).await);
+        assert!(!stopped.get());
+        gate.notify(());
+        shutdown.await;
+        assert!(stopped.get());
+    }
+}

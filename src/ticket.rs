@@ -47,6 +47,11 @@ impl fmt::Debug for Tickets {
 mod tests {
     use super::*;
 
+    /// STATEMENT: Only acknowledged publications consume arrival tickets, and cloned issuers are independent.
+    ///
+    /// HOW:
+    /// - Issue tickets for each `QoS` and verify consecutive sequences and the oldest ticket's turn.
+    /// - Clone the issuer and assert its first ticket starts at zero and differs from the original.
     #[test]
     fn issue_by_qos() {
         let tickets = Tickets::default();
@@ -63,5 +68,37 @@ mod tests {
         assert_eq!(c0.seq(), 0);
         assert!(c0.is_turn());
         assert_ne!(c0, t0);
+    }
+
+    /// STATEMENT: Dropping an out-of-turn ticket skips its position without releasing later tickets early.
+    ///
+    /// HOW:
+    /// - Issue three mixed-QoS tickets around a `QoS 0` request and poll the last ticket's turn.
+    /// - Drop the middle ticket and verify the last still waits; drop the first and verify it becomes ready.
+    /// - Verify diagnostics identify the ticket issuer and the next issued ticket owns the next sequence.
+    #[ntex::test]
+    async fn dropped_ticket_preserves_order() {
+        use ntex_util::future::lazy;
+        use std::future::Future;
+
+        let tickets = Tickets::default();
+        let first = tickets.issue(QoS::AtLeastOnce).unwrap();
+        let skipped = tickets.issue(QoS::ExactlyOnce).unwrap();
+        assert!(tickets.issue(QoS::AtMostOnce).is_none());
+        let last = tickets.issue(QoS::AtLeastOnce).unwrap();
+        assert_eq!(last.seq(), 2);
+        assert!(format!("{tickets:?}").contains("Tickets"));
+        let mut turn = Box::pin(last.turn());
+        assert!(lazy(|cx| turn.as_mut().poll(cx)).await.is_pending());
+        drop(skipped);
+        assert!(lazy(|cx| turn.as_mut().poll(cx)).await.is_pending());
+        drop(first);
+        assert!(lazy(|cx| turn.as_mut().poll(cx)).await.is_ready());
+        assert!(last.is_turn());
+        drop(turn);
+        drop(last);
+        let next = tickets.issue(QoS::ExactlyOnce).unwrap();
+        assert_eq!(next.seq(), 3);
+        assert!(next.is_turn());
     }
 }

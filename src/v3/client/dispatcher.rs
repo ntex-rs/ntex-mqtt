@@ -1022,4 +1022,53 @@ mod tests {
         assert!(disp.ready().await.is_ok());
         assert!(!io.is_active());
     }
+
+    /// STATEMENT: A custom client protocol handler's ping acknowledgement is encoded as `PINGRESP`.
+    ///
+    /// HOW:
+    /// - Forward an unrouted publication to a protocol handler that returns `ProtocolMessage::Ping(...).ack()`.
+    /// - Assert the dispatcher returns `PingResponse` and leaves the connection active.
+    #[ntex::test]
+    async fn test_control_ping_response() {
+        let (_io, shared, disp) = dispatcher(
+            fn_service(async |pkt| Ok(Either::Right(pkt))),
+            fn_service(async |_: ProtocolMessage| {
+                Ok(ProtocolMessage::Ping(crate::v3::control::Ping).ack())
+            }),
+            32 * 1024,
+        );
+        assert_eq!(
+            disp.call(publish(0, QoS::AtMostOnce, "a")).await.unwrap(),
+            Some(Packet::PingResponse)
+        );
+        assert!(shared.is_active());
+    }
+
+    /// STATEMENT: A failed protocol handler closes the client and aborts its retained streaming payload.
+    ///
+    /// HOW:
+    /// - Forward a partial publication to a protocol handler that retains it and returns a service error.
+    /// - Assert dispatch returns that error, the connection closes, and reading the retained payload returns `PayloadError::Service`.
+    #[ntex::test]
+    async fn test_protocol_failure_aborts_payload() {
+        let held = Rc::new(std::cell::RefCell::new(None));
+        let held2 = held.clone();
+        let (_io, shared, disp) = dispatcher(
+            fn_service(async |pkt| Ok(Either::Right(pkt))),
+            fn_service(move |msg: ProtocolMessage| {
+                *held2.borrow_mut() = Some(msg);
+                std::future::ready(Err::<ProtocolMessageAck, _>(DispatcherError::Service(())))
+            }),
+            4,
+        );
+        assert!(matches!(
+            disp.call(redelivery(1, QoS::AtLeastOnce, true)).await,
+            Err(DispatcherError::Service(()))
+        ));
+        assert!(!shared.is_active());
+        let Some(ProtocolMessage::Publish(msg)) = held.borrow_mut().take() else {
+            panic!("expected retained publication")
+        };
+        assert_eq!(msg.read_all().await, Err(PayloadError::Service));
+    }
 }

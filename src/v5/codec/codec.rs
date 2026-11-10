@@ -1979,4 +1979,281 @@ mod tests {
         assert_eq!(codec.min_chunk_size.get(), 2);
         assert_eq!(codec.max_outbound_size(), 0);
     }
+
+    /// STATEMENT: Disabling problem information strips diagnostics without losing required packet fields.
+    ///
+    /// HOW:
+    /// - Negotiate `request_problem_info = false` through a decoded `CONNECT`.
+    /// - Round-trip each affected packet with diagnostics enabled and compare all fields.
+    /// - Limit output to the diagnostic-free size and compare with encoding the stripped packet.
+    #[test]
+    fn test_no_problem_info_all_packet_types() {
+        let encode = |codec: &Codec, packet: Packet| {
+            let mut bytes = BytePages::default();
+            codec.encode(packet.into(), &mut bytes).unwrap();
+            bytes.freeze()
+        };
+        let decode = |bytes: &Bytes| {
+            let mut bytes = BytesMut::from(bytes.as_ref());
+            let Some(Decoded::Packet(packet, _)) = Codec::new().decode(&mut bytes).unwrap() else {
+                panic!("expected a complete control packet")
+            };
+            assert!(bytes.is_empty());
+            packet
+        };
+        let codec = Codec::new();
+        let connect = Connect {
+            request_problem_info: false,
+            ..Default::default()
+        };
+        let mut connect =
+            BytesMut::from(encode(&Codec::new(), Packet::Connect(Box::new(connect))).as_ref());
+        assert!(codec.decode(&mut connect).unwrap().is_some());
+
+        let ack = PublishAck2 {
+            packet_id: NonZeroU16::new(7).unwrap(),
+            reason_code: crate::v5::codec::PublishAck2Reason::PacketIdNotFound,
+            ..Default::default()
+        };
+        for expected in [
+            Packet::PublishReceived(PublishAck {
+                packet_id: NonZeroU16::new(7).unwrap(),
+                reason_code: crate::v5::codec::PublishAckReason::NoMatchingSubscribers,
+                ..Default::default()
+            }),
+            Packet::PublishRelease(ack.clone()),
+            Packet::PublishComplete(ack),
+            Packet::Subscribe(Subscribe {
+                packet_id: NonZeroU16::new(7).unwrap(),
+                id: std::num::NonZeroU32::new(3),
+                user_properties: vec![],
+                topic_filters: vec![("a/+".into(), SubscriptionOptions::default())],
+            }),
+            Packet::SubscribeAck(SubscribeAck {
+                packet_id: NonZeroU16::new(7).unwrap(),
+                properties: vec![],
+                reason_string: None,
+                status: vec![SubscribeAckReason::GrantedQos1],
+            }),
+            Packet::Unsubscribe(Unsubscribe {
+                packet_id: NonZeroU16::new(7).unwrap(),
+                user_properties: vec![],
+                topic_filters: vec!["a/+".into()],
+            }),
+            Packet::UnsubscribeAck(UnsubscribeAck {
+                packet_id: NonZeroU16::new(7).unwrap(),
+                properties: vec![],
+                reason_string: None,
+                status: vec![UnsubscribeAckReason::NoSubscriptionExisted],
+            }),
+            Packet::Auth(Box::new(Auth {
+                reason_code: AuthReasonCode::ContinueAuth,
+                auth_method: Some("method".into()),
+                auth_data: Some(Bytes::from_static(b"challenge")),
+                ..Default::default()
+            })),
+        ] {
+            let mut original = expected.clone();
+            let properties = vec![("diagnostic".into(), "details".into())];
+            let reason = Some("explanation".into());
+            match &mut original {
+                Packet::PublishReceived(ack) => {
+                    ack.properties = properties;
+                    ack.reason_string = reason;
+                }
+                Packet::PublishRelease(ack) | Packet::PublishComplete(ack) => {
+                    ack.properties = properties;
+                    ack.reason_string = reason;
+                }
+                Packet::Subscribe(sub) => sub.user_properties = properties,
+                Packet::SubscribeAck(ack) => {
+                    ack.properties = properties;
+                    ack.reason_string = reason;
+                }
+                Packet::Unsubscribe(unsub) => unsub.user_properties = properties,
+                Packet::UnsubscribeAck(ack) => {
+                    ack.properties = properties;
+                    ack.reason_string = reason;
+                }
+                Packet::Auth(auth) => {
+                    auth.user_properties = properties;
+                    auth.reason_string = reason;
+                }
+                _ => unreachable!(),
+            }
+            let normal = encode(&Codec::new(), original.clone());
+            assert_eq!(decode(&normal), original);
+            let stripped = encode(&Codec::new(), expected.clone());
+            assert!(normal.len() > stripped.len());
+            codec.set_max_outbound_size(stripped.len() as u32);
+            let encoded = encode(&codec, original);
+            assert_eq!(encoded, stripped);
+        }
+    }
+
+    /// STATEMENT: Fragmented headers, properties, and payloads wait for sufficient input and resume losslessly.
+    ///
+    /// HOW:
+    /// - Split a multibyte `CONNECT` length and a `PUBLISH` topic, property length, and property value.
+    /// - Check incomplete bytes remain buffered until a complete header is available.
+    /// - Hold a sub-threshold payload, then finish it and decode the following ping separately.
+    #[test]
+    fn test_decode_fragmented_headers_and_payload() {
+        let codec = Codec::new();
+        let connect = Connect {
+            client_id: "a".repeat(128).into(),
+            ..Default::default()
+        };
+        let mut encoded = BytePages::default();
+        codec
+            .encode(
+                Packet::Connect(Box::new(connect.clone())).into(),
+                &mut encoded,
+            )
+            .unwrap();
+        let encoded = encoded.freeze();
+        let mut input = BytesMut::from(&encoded[..2]);
+        assert_eq!(codec.decode(&mut input), Ok(None));
+        assert_eq!(input.as_ref(), &encoded[..2]);
+        input.extend_from_slice(&encoded[2..]);
+        assert!(
+            matches!(codec.decode(&mut input).unwrap(), Some(Decoded::Packet(Packet::Connect(pkt), _)) if *pkt == connect)
+        );
+        assert!(input.is_empty());
+
+        let codec = Codec::new();
+        codec.set_min_chunk_size(3);
+        let mut input = BytesMut::from(&b"\x30\x0d\x00"[..]);
+        assert_eq!(codec.decode(&mut input), Ok(None));
+        assert_eq!(input.as_ref(), b"\x00");
+        input.extend_from_slice(b"\x01a");
+        assert_eq!(codec.decode(&mut input), Ok(None));
+        assert_eq!(input.as_ref(), b"\x00\x01a");
+        input.extend_from_slice(b"\x05\x03\x00");
+        assert_eq!(codec.decode(&mut input), Ok(None));
+        input.extend_from_slice(b"\x02ct");
+        let Some(Decoded::Publish(publish, payload, _, _)) = codec.decode(&mut input).unwrap()
+        else {
+            panic!("expected the completed publish header")
+        };
+        assert_eq!(publish.topic, "a");
+        assert_eq!(publish.properties.content_type.as_deref(), Some("ct"));
+        assert_eq!(publish.payload_size, 4);
+        assert!(payload.is_empty());
+        input.extend_from_slice(b"ab");
+        assert_eq!(codec.decode(&mut input), Ok(None));
+        assert_eq!(input.as_ref(), b"ab");
+        input.extend_from_slice(b"cd\xc0\x00");
+        assert_eq!(
+            codec.decode(&mut input),
+            Ok(Some(Decoded::PayloadChunk(
+                Bytes::from_static(b"abcd"),
+                true
+            )))
+        );
+        assert_eq!(
+            codec.decode(&mut input),
+            Ok(Some(Decoded::Packet(Packet::PingRequest, 0)))
+        );
+        assert!(input.is_empty());
+    }
+
+    /// STATEMENT: An oversized continuation chunk leaves the pending publish and output intact.
+    ///
+    /// HOW:
+    /// - Begin a four-byte publish with one byte, then reject a four-byte continuation.
+    /// - Check output is unchanged and finish with three bytes before encoding a ping.
+    /// - Decode the result to verify exactly the declared payload and following ping were written.
+    #[test]
+    fn test_oversized_continuation_can_be_retried() {
+        let codec = Codec::new();
+        let mut output = BytePages::default();
+        codec
+            .encode(
+                Encoded::Publish(
+                    Publish {
+                        topic: "a".into(),
+                        payload_size: 4,
+                        ..Default::default()
+                    },
+                    Some(Bytes::from_static(b"a")),
+                ),
+                &mut output,
+            )
+            .unwrap();
+        let before = output.len();
+        assert_eq!(
+            codec.encode(
+                Encoded::PayloadChunk(Bytes::from_static(b"bcde")),
+                &mut output
+            ),
+            Err(EncodeError::OverPublishSize)
+        );
+        assert_eq!(output.len(), before);
+        codec
+            .encode(
+                Encoded::PayloadChunk(Bytes::from_static(b"bcd")),
+                &mut output,
+            )
+            .unwrap();
+        codec
+            .encode(Packet::PingRequest.into(), &mut output)
+            .unwrap();
+        let mut input = BytesMut::from(output.freeze().as_ref());
+        let decoder = Codec::new();
+        assert!(
+            matches!(decoder.decode(&mut input).unwrap(), Some(Decoded::Publish(publish, payload, _, _)) if publish.payload_size == 4 && payload == b"abcd"[..])
+        );
+        assert_eq!(
+            decoder.decode(&mut input),
+            Ok(Some(Decoded::Packet(Packet::PingRequest, 0)))
+        );
+        assert!(input.is_empty());
+    }
+
+    /// STATEMENT: Incomplete control bodies remain buffered across repeated decode calls.
+    ///
+    /// HOW:
+    /// - Feed a `CONNECT` with a multibyte remaining length but omit its last two bytes.
+    /// - Decode repeatedly and after one more byte, checking `None` and unchanged body bytes.
+    /// - Supply the final byte followed by a ping and verify both packets decode separately.
+    #[test]
+    fn test_repeated_decode_of_partial_control_body() {
+        let connect = Connect {
+            client_id: "a".repeat(128).into(),
+            ..Default::default()
+        };
+        let mut output = BytePages::default();
+        Codec::new()
+            .encode(
+                Packet::Connect(Box::new(connect.clone())).into(),
+                &mut output,
+            )
+            .unwrap();
+        let output = output.freeze();
+        let split = output.len() - 2;
+        let mut input = BytesMut::from(&output[..split]);
+        let codec = Codec::new();
+        for _ in 0..2 {
+            assert_eq!(codec.decode(&mut input), Ok(None));
+            assert_eq!(input.as_ref(), &output[3..split]);
+        }
+        input.extend_from_slice(&output[split..=split]);
+        assert_eq!(codec.decode(&mut input), Ok(None));
+        assert_eq!(input.as_ref(), &output[3..=split]);
+        input.extend_from_slice(&output[split + 1..]);
+        input.extend_from_slice(b"\xc0\x00");
+        assert_eq!(
+            codec.decode(&mut input),
+            Ok(Some(Decoded::Packet(
+                Packet::Connect(Box::new(connect)),
+                (output.len() - 3) as u32
+            )))
+        );
+        assert_eq!(
+            codec.decode(&mut input),
+            Ok(Some(Decoded::Packet(Packet::PingRequest, 0)))
+        );
+        assert!(input.is_empty());
+    }
 }

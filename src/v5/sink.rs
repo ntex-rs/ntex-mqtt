@@ -803,16 +803,15 @@ impl SubscribeBuilder {
             // send subscribe to client
             log::trace!("Sending subscribe packet {packet:#?}");
 
-            let rx = shared.wait_response(packet.packet_id, AckType::Subscribe)?;
-            match shared.encode_packet(codec::Packet::Subscribe(packet)) {
-                Ok(()) => {
-                    // wait ack from peer
-                    rx.await
-                        .map_err(|_| SendPacketError::Disconnected)
-                        .map(Ack::subscribe)
-                }
-                Err(err) => Err(SendPacketError::Encode(err)),
-            }
+            let rx = shared.send_with_response(
+                packet.packet_id,
+                AckType::Subscribe,
+                codec::Packet::Subscribe(packet),
+            )?;
+            // wait ack from peer
+            rx.await
+                .map_err(|_| SendPacketError::Disconnected)
+                .map(Ack::subscribe)
         } else {
             Err(SendPacketError::Disconnected)
         }
@@ -903,16 +902,15 @@ impl UnsubscribeBuilder {
             // send unsubscribe to client
             log::trace!("Sending unsubscribe packet {packet:#?}");
 
-            let rx = shared.wait_response(packet.packet_id, AckType::Unsubscribe)?;
-            match shared.encode_packet(codec::Packet::Unsubscribe(packet)) {
-                Ok(()) => {
-                    // wait ack from peer
-                    rx.await
-                        .map_err(|_| SendPacketError::Disconnected)
-                        .map(Ack::unsubscribe)
-                }
-                Err(err) => Err(SendPacketError::Encode(err)),
-            }
+            let rx = shared.send_with_response(
+                packet.packet_id,
+                AckType::Unsubscribe,
+                codec::Packet::Unsubscribe(packet),
+            )?;
+            // wait ack from peer
+            rx.await
+                .map_err(|_| SendPacketError::Disconnected)
+                .map(Ack::unsubscribe)
         } else {
             Err(SendPacketError::Disconnected)
         }
@@ -1059,16 +1057,416 @@ mod tests {
         (client, io, shared.clone(), MqttSink::new(shared))
     }
 
+    /// STATEMENT: All sending builders reject a closed client connection without reserving credit.
+    ///
+    /// HOW:
+    /// - Close a client sink, then attempt complete and streamed publishes at each supported `QoS`.
+    /// - Attempt subscription and unsubscription sends and verify `Disconnected` for every operation.
+    /// - Verify the streamed payload reports cancellation and no send credit is leaked.
+    #[ntex::test]
+    async fn test_sends_after_disconnect() {
+        let (_client, _io, shared, sink) = setup(4);
+        shared.set_client();
+        sink.force_close();
+        assert!(!sink.is_ready());
+        assert!(!sink.ready().await);
+        let disconnected = Err(SendPacketError::Disconnected);
+        assert_eq!(
+            sink.publish("a").send_at_most_once(Bytes::new()).await,
+            disconnected
+        );
+        assert_eq!(
+            sink.publish("a")
+                .send_at_least_once(Bytes::new())
+                .await
+                .map(|_| ()),
+            disconnected
+        );
+        assert_eq!(
+            sink.publish("a").send_at_least_once_no_block(Bytes::new()),
+            disconnected
+        );
+        assert_eq!(
+            sink.publish("a")
+                .send_exactly_once(Bytes::new())
+                .await
+                .map(|_| ()),
+            disconnected
+        );
+        assert_eq!(
+            sink.publish("a").stream_at_most_once(1).await.map(|_| ()),
+            disconnected
+        );
+        let (send, payload) = sink.publish("a").stream_at_least_once(1);
+        assert_eq!(send.await.map(|_| ()), disconnected);
+        assert_eq!(
+            payload.send(Bytes::from_static(b"x")).await,
+            Err(SendPacketError::StreamingCancelled)
+        );
+        assert_eq!(
+            sink.subscribe(None)
+                .topic_filter("a".into(), codec::SubscriptionOptions::default())
+                .send()
+                .await
+                .map(|_| ()),
+            disconnected
+        );
+        assert_eq!(
+            sink.unsubscribe()
+                .topic_filter("a".into())
+                .send()
+                .await
+                .map(|_| ()),
+            disconnected
+        );
+        assert_eq!(sink.credit(), 4);
+    }
+
+    /// STATEMENT: A stream created before disconnection but first polled afterward fails and releases its reserved credit.
+    ///
+    /// HOW:
+    /// - Create an unpolled streaming send while the connection is open and verify it reserves one send slot.
+    /// - Close the connection, then assert the send disconnects and its payload sender is cancelled.
+    /// - Verify all send credit returns and no header was written.
+    #[ntex::test]
+    async fn test_stream_closed_before_first_poll() {
+        let (client, _io, _shared, sink) = setup(2);
+        let (send, payload) = sink.publish("a").stream_at_least_once(1);
+        assert_eq!(sink.credit(), 1);
+        sink.force_close();
+        assert_eq!(send.await, Err(SendPacketError::Disconnected));
+        assert_eq!(
+            payload.send(Bytes::from_static(b"a")).await,
+            Err(SendPacketError::StreamingCancelled)
+        );
+        assert_eq!(sink.credit(), 2);
+        assert!(client.read_any().is_empty());
+    }
+
+    /// STATEMENT: A packet identifier cannot be reused by an overlapping publish or subscription exchange.
+    ///
+    /// HOW:
+    /// - Keep a `QoS 1` publish with explicit identifier `17` awaiting acknowledgement.
+    /// - Try blocking and nonblocking publishes, a subscription, and an unsubscription using `17`.
+    /// - Check `PacketIdInUse`, then acknowledge the original publish and verify restored credit.
+    #[ntex::test]
+    async fn test_packet_id_collision() {
+        let (_client, _io, shared, sink) = setup(4);
+        shared.set_client();
+        let mut original = pin!(
+            sink.publish("a")
+                .packet_id(17)
+                .send_at_least_once(Bytes::new())
+        );
+        assert!(is_pending(&mut original).await);
+        let collision = Err(SendPacketError::PacketIdInUse(id(17)));
+        assert_eq!(
+            sink.publish("b")
+                .packet_id(17)
+                .send_at_least_once(Bytes::new())
+                .await
+                .map(|_| ()),
+            collision
+        );
+        assert_eq!(
+            sink.publish("b")
+                .packet_id(17)
+                .send_at_least_once_no_block(Bytes::new()),
+            collision
+        );
+        assert_eq!(
+            sink.subscribe(None)
+                .packet_id(17)
+                .topic_filter("a".into(), codec::SubscriptionOptions::default())
+                .send()
+                .await
+                .map(|_| ()),
+            collision
+        );
+        assert_eq!(
+            sink.unsubscribe()
+                .packet_id(17)
+                .topic_filter("a".into())
+                .send()
+                .await
+                .map(|_| ()),
+            collision
+        );
+        assert_eq!(sink.credit(), 3);
+        shared
+            .pkt_ack(Ack::Publish(codec::PublishAck {
+                packet_id: id(17),
+                ..Default::default()
+            }))
+            .unwrap();
+        assert!(original.await.is_ok());
+        assert_eq!(sink.credit(), 4);
+    }
+
+    /// STATEMENT: Encoding a malformed request reports an encode error without writing a packet.
+    ///
+    /// HOW:
+    /// - Send malformed nonblocking publishes and empty subscription/unsubscription requests.
+    /// - Assert `MalformedPacket`, no peer bytes, and that the connection remains open.
+    #[ntex::test]
+    async fn test_builder_encode_errors() {
+        let (client, _io, shared, sink) = setup(4);
+        shared.set_client();
+        let malformed = Err(SendPacketError::Encode(EncodeError::MalformedPacket));
+        assert_eq!(
+            sink.publish("a/+")
+                .send_at_least_once_no_block(Bytes::new()),
+            malformed
+        );
+        assert_eq!(sink.subscribe(None).send().await.map(|_| ()), malformed);
+        assert_eq!(sink.unsubscribe().send().await.map(|_| ()), malformed);
+        assert!(client.read_any().is_empty());
+        assert!(sink.is_open());
+    }
+
+    /// STATEMENT: A subscription request rejected by the encoder does not keep its packet identifier in flight.
+    ///
+    /// HOW:
+    /// - Send empty subscription and unsubscription requests with explicit identifiers and assert `MalformedPacket`.
+    /// - Resend valid requests with the same identifiers and assert they wait for acknowledgement instead of failing with `PacketIdInUse`.
+    /// - Acknowledge both requests and assert the sends complete.
+    #[ntex::test]
+    async fn test_encode_error_releases_packet_id() {
+        let (_client, _io, shared, sink) = setup(4);
+        shared.set_client();
+        let malformed = Err(SendPacketError::Encode(EncodeError::MalformedPacket));
+        assert_eq!(
+            sink.subscribe(None).packet_id(17).send().await.map(|_| ()),
+            malformed
+        );
+        assert_eq!(
+            sink.unsubscribe().packet_id(18).send().await.map(|_| ()),
+            malformed
+        );
+
+        let mut sub = pin!(
+            sink.subscribe(None)
+                .packet_id(17)
+                .topic_filter("a".into(), codec::SubscriptionOptions::default())
+                .send()
+        );
+        assert!(lazy(|cx| sub.as_mut().poll(cx)).await.is_pending());
+        let mut unsub = pin!(
+            sink.unsubscribe()
+                .packet_id(18)
+                .topic_filter("a".into())
+                .send()
+        );
+        assert!(lazy(|cx| unsub.as_mut().poll(cx)).await.is_pending());
+
+        shared
+            .pkt_ack(Ack::Subscribe(codec::SubscribeAck {
+                packet_id: id(17),
+                properties: codec::UserProperties::default(),
+                reason_string: None,
+                status: vec![codec::SubscribeAckReason::GrantedQos0],
+            }))
+            .unwrap();
+        shared
+            .pkt_ack(Ack::Unsubscribe(codec::UnsubscribeAck {
+                packet_id: id(18),
+                properties: codec::UserProperties::default(),
+                reason_string: None,
+                status: vec![codec::UnsubscribeAckReason::Success],
+            }))
+            .unwrap();
+        assert!(sub.await.is_ok());
+        assert!(unsub.await.is_ok());
+        assert!(sink.is_open());
+    }
+
+    /// STATEMENT: An active streamed publish rejects overlapping publishes, accepts exactly its size, and rejects later chunks.
+    ///
+    /// HOW:
+    /// - Open a two-byte stream and attempt overlapping blocking and nonblocking `QoS 1` publishes.
+    /// - Assert `ExpectPayload` and unchanged credit, then complete the stream.
+    /// - Assert another chunk and a chunk for a zero-length stream return `UnexpectedPayload` while the connection stays open.
+    #[ntex::test]
+    async fn test_stream_payload_boundaries() {
+        let (_client, _io, _shared, sink) = setup(4);
+        let stream = sink.publish("a").stream_at_most_once(2).await.unwrap();
+        let expected = Err(SendPacketError::Encode(EncodeError::ExpectPayload));
+        assert_eq!(
+            sink.publish("b")
+                .send_at_least_once(Bytes::new())
+                .await
+                .map(|_| ()),
+            expected
+        );
+        assert_eq!(
+            sink.publish("b").send_at_least_once_no_block(Bytes::new()),
+            expected
+        );
+        assert_eq!(sink.credit(), 4);
+        stream.send(Bytes::from_static(b"ab")).await.unwrap();
+        assert_eq!(
+            stream.send(Bytes::from_static(b"c")).await,
+            Err(SendPacketError::Encode(EncodeError::UnexpectedPayload))
+        );
+        assert!(sink.is_open());
+
+        let stream = sink.publish("empty").stream_at_most_once(0).await.unwrap();
+        assert_eq!(
+            stream.send(Bytes::new()).await,
+            Err(SendPacketError::Encode(EncodeError::UnexpectedPayload))
+        );
+        assert!(sink.is_open());
+    }
+
+    /// STATEMENT: Oversized streamed payloads terminate the connection and cancel pending acknowledgements.
+    ///
+    /// HOW:
+    /// - Leave a `QoS 1` publish awaiting acknowledgement, then open a two-byte stream.
+    /// - Send a three-byte chunk, check `OverPublishSize`, and verify the sink closes and the pending send disconnects.
+    #[ntex::test]
+    async fn test_oversized_stream_closes_connection() {
+        let (_client, _io, _shared, sink) = setup(4);
+        let mut pending = pin!(sink.publish("pending").send_at_least_once(Bytes::new()));
+        assert!(is_pending(&mut pending).await);
+        let stream = sink.publish("a").stream_at_most_once(2).await.unwrap();
+        assert_eq!(
+            stream.send(Bytes::from_static(b"abc")).await,
+            Err(SendPacketError::Encode(EncodeError::OverPublishSize))
+        );
+        assert!(!sink.is_open());
+        assert_eq!(pending.await, Err(SendPacketError::Disconnected));
+    }
+
+    /// STATEMENT: Dropping an unstarted streaming send cancels its payload sender without closing the connection.
+    ///
+    /// HOW:
+    /// - Create a streaming send and drop its companion future before it is polled.
+    /// - Assert the first chunk reports `StreamingCancelled`, no credit is retained, and a normal publish still succeeds.
+    #[ntex::test]
+    async fn test_cancelled_stream_payload() {
+        let (_client, _io, _shared, sink) = setup(4);
+        let (send, stream) = sink.publish("a").stream_at_least_once(1);
+        drop(send);
+        assert_eq!(
+            stream.send(Bytes::from_static(b"a")).await,
+            Err(SendPacketError::StreamingCancelled)
+        );
+        assert_eq!(sink.credit(), 4);
+        sink.publish("b")
+            .send_at_most_once(Bytes::new())
+            .await
+            .unwrap();
+        assert!(sink.is_open());
+    }
+
+    /// STATEMENT: A customized release reason is encoded on `PUBREL` and completion restores send credit.
+    ///
+    /// HOW:
+    /// - Complete the receive phase of a `QoS 2` publish and set a reason on its release handle.
+    /// - Decode the emitted `PUBREL` and compare the reason and packet identifier.
+    /// - Deliver `PUBCOMP` and verify successful completion and restored credit.
+    #[ntex::test]
+    async fn test_publish_release_reason() {
+        use ntex_codec::Decoder;
+
+        let (client, _io, shared, sink) = setup(1);
+        let mut send = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
+        assert!(is_pending(&mut send).await);
+        let _ = client.read().await.unwrap();
+        shared.pkt_ack(rec(1)).unwrap();
+        let received = send.await.unwrap().reason("released".into());
+        let mut release = pin!(received.release());
+        assert!(is_pending(&mut release).await);
+        let mut bytes = ntex_bytes::BytesMut::from(client.read().await.unwrap().as_ref());
+        let decoded = codec::Codec::new().decode(&mut bytes).unwrap().unwrap();
+        match decoded {
+            codec::Decoded::Packet(codec::Packet::PublishRelease(pkt), _) => {
+                assert_eq!(pkt.packet_id, id(1));
+                assert_eq!(pkt.reason_string.as_deref(), Some("released"));
+            }
+            pkt => panic!("expected PUBREL, got {pkt:?}"),
+        }
+        shared.pkt_ack(comp(1)).unwrap();
+        assert_eq!(release.await, Ok(()));
+        assert_eq!(sink.credit(), 1);
+    }
+
+    /// STATEMENT: Closing a write-backpressured connection cancels readiness and acknowledged publishes without leaking reserved credit.
+    ///
+    /// HOW:
+    /// - Block writes and poll sink readiness plus an acknowledged publish while each holds send credit.
+    /// - Close the connection and assert both waits report disconnection and all credits are restored.
+    #[ntex::test]
+    async fn test_backpressured_readiness_closes() {
+        let (client, io, _shared, sink) = setup(2);
+        block_writes(&client, &io);
+        let mut ready = pin!(sink.ready());
+        let mut send = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
+        assert!(is_pending(&mut ready).await);
+        assert!(is_pending(&mut send).await);
+        assert_eq!(sink.credit(), 0);
+        sink.force_close();
+        assert!(!ready.await);
+        assert_eq!(send.await, Err(SendPacketError::Disconnected));
+        assert_eq!(sink.credit(), 2);
+    }
+
+    /// STATEMENT: A buffered `QoS 0` send waits for a stream that starts while its write-readiness wait is pending.
+    ///
+    /// HOW:
+    /// - Block writes and poll a buffered publish and a streaming publish until both are pending.
+    /// - Drain the write buffer, let the stream start first, and verify the buffered send still waits.
+    /// - Complete the streamed payload and assert the buffered send succeeds without closing the connection.
+    #[ntex::test]
+    async fn test_stream_starts_during_write_wait() {
+        let (client, io, shared, sink) = setup(2);
+        block_writes(&client, &io);
+        let mut send = pin!(sink.publish("buffered").send_at_most_once(Bytes::new()));
+        let mut streaming = pin!(sink.publish("streamed").stream_at_most_once(1));
+        assert!(is_pending(&mut send).await);
+        assert!(is_pending(&mut streaming).await);
+        unblock_writes(&client, &io).await;
+        let payload = streaming.await.unwrap();
+        assert!(shared.is_streaming());
+        assert!(is_pending(&mut send).await);
+        payload.send(Bytes::from_static(b"a")).await.unwrap();
+        send.await.unwrap();
+        assert!(!shared.is_streaming());
+        assert!(sink.is_open());
+    }
+
+    /// STATEMENT: A `PUBREL` encoding failure is returned to the caller without writing a partial release packet.
+    ///
+    /// HOW:
+    /// - Receive a successful `PUBREC`, then set a release reason containing an invalid null character.
+    /// - Check the receive handle debug type, release the publish, and verify `MalformedPacket` and an empty peer buffer.
+    #[ntex::test]
+    async fn test_publish_release_encode_error() {
+        let (client, _io, shared, sink) = setup(1);
+        let mut send = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
+        assert!(is_pending(&mut send).await);
+        let _ = client.read().await.unwrap();
+        shared.pkt_ack(rec(1)).unwrap();
+        let received = send.await.unwrap();
+        assert!(format!("{received:?}").contains("PublishReceived"));
+        assert_eq!(
+            received.reason("\0".into()).release().await,
+            Err(SendPacketError::Encode(EncodeError::MalformedPacket))
+        );
+        assert!(client.read_any().is_empty());
+    }
+
     /// STATEMENT: Sink handles and packet builders identify their types in debug output.
     ///
     /// HOW:
-    /// - Create a sink and publish, subscribe, and unsubscribe builders.
+    /// - Create shared connection state, a sink, and publish, subscribe, and unsubscribe builders.
     /// - Format each with `Debug` and assert that its type name appears.
     #[ntex::test]
     async fn test_debug() {
         let io = Io::new(IoTest::create().0, SharedCfg::new("test"));
         let codec_v5 = codec::Codec::new();
         let shared = Rc::new(MqttShared::new(io.get_ref(), codec_v5, Rc::default()));
+        assert!(format!("{shared:?}").contains("MqttShared"));
         let sink = MqttSink::new(shared);
 
         // MqttSink
@@ -1132,10 +1530,28 @@ mod tests {
             Err(MqttProtocolError::unexpected_packet(pkt, expected))
         }
 
-        // QoS 1 PUBLISH acknowledged with PUBREC or PUBCOMP
+        // QoS 1 PUBLISH acknowledged with an unrelated response
         for (ack, expected) in [
             (rec(1), err(packet_type::PUBREC, "Expected PUBACK packet")),
             (comp(1), err(packet_type::PUBCOMP, "Expected PUBACK packet")),
+            (
+                Ack::Subscribe(codec::SubscribeAck {
+                    packet_id: id(1),
+                    properties: codec::UserProperties::default(),
+                    reason_string: None,
+                    status: vec![codec::SubscribeAckReason::GrantedQos0],
+                }),
+                err(packet_type::SUBACK, "Expected PUBACK packet"),
+            ),
+            (
+                Ack::Unsubscribe(codec::UnsubscribeAck {
+                    packet_id: id(1),
+                    properties: codec::UserProperties::default(),
+                    reason_string: None,
+                    status: vec![codec::UnsubscribeAckReason::Success],
+                }),
+                err(packet_type::UNSUBACK, "Expected PUBACK packet"),
+            ),
         ] {
             let (_client, _io, shared, sink) = setup(16);
             shared.set_client();
@@ -1171,6 +1587,19 @@ mod tests {
             err(packet_type::PUBCOMP, "Expected UNSUBACK packet")
         );
         assert_eq!(f.await, Err(SendPacketError::Disconnected));
+
+        // QoS 2 PUBLISH acknowledged with PUBACK instead of PUBREC
+        let (_client, _io, shared, sink) = setup(16);
+        let mut f = pin!(sink.publish("a").send_exactly_once(Bytes::new()));
+        assert!(is_pending(&mut f).await);
+        assert_eq!(
+            shared.pkt_ack(Ack::Publish(codec::PublishAck {
+                packet_id: id(1),
+                ..Default::default()
+            })),
+            err(packet_type::PUBACK, "Expected PUBREC packet")
+        );
+        assert_eq!(f.await.map(|_| ()), Err(SendPacketError::Disconnected));
 
         // QoS 2 PUBLISH acknowledged with PUBCOMP before PUBREC
         let (_client, _io, shared, sink) = setup(16);

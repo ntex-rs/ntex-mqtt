@@ -289,4 +289,48 @@ mod tests {
         svc.call(Control::<bool>::wr(true)).await.unwrap();
         assert!(sink.is_ready());
     }
+
+    /// STATEMENT: Shutting down the MQTT control adapter awaits shutdown of its wrapped service.
+    ///
+    /// HOW:
+    /// - Wrap a service whose shutdown is held by a notification gate and poll adapter shutdown.
+    /// - Assert shutdown remains pending, open the gate, and verify the wrapped shutdown completed before return.
+    #[ntex::test]
+    async fn test_control_shutdown_delegates() {
+        use ntex_util::channel::condition::Condition;
+
+        struct Tracked(Rc<std::cell::Cell<bool>>, Condition);
+        impl Service<(), Control<()>> for Tracked {
+            type Res = Option<Encoded>;
+            type Error = ();
+
+            async fn call(&self, _: Control<()>, _: Ctx<'_, Self>) -> Result<Self::Res, ()> {
+                Ok(None)
+            }
+
+            async fn shutdown(&self, _: Ctx<'_, Self>) {
+                self.1.wait().await;
+                self.0.set(true);
+            }
+        }
+        let (_client, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::new("shutdown"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::new(),
+            Rc::default(),
+        ));
+        let stopped = Rc::new(std::cell::Cell::new(false));
+        let gate = Condition::new();
+        let svc = Pipeline::new(
+            (),
+            ControlService::<_, ()>::new(Tracked(stopped.clone(), gate.clone()), shared),
+        );
+        let mut shutdown = pin!(svc.shutdown());
+        assert!(lazy(|cx| shutdown.as_mut().poll(cx).is_pending()).await);
+        assert!(!stopped.get());
+        gate.notify(());
+        shutdown.await;
+        assert!(stopped.get());
+    }
 }

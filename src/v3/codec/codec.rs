@@ -971,4 +971,113 @@ mod tests {
         assert_eq!(codec.max_size.get(), 1);
         assert_eq!(codec.min_chunk_size.get(), 3);
     }
+
+    /// STATEMENT: Fragmented control frames wait for complete variable-length headers and bodies.
+    ///
+    /// HOW:
+    /// - Encode a subscription whose remaining length uses two bytes and feed it to a fresh decoder one byte at a time.
+    /// - Assert every incomplete prefix returns `None`, then compare the final decoded packet and length.
+    #[test]
+    fn test_fragmented_control_frame() {
+        let packet = Packet::Subscribe {
+            packet_id: NonZeroU16::new(1).unwrap(),
+            topic_filters: vec![(ByteString::from("a".repeat(130)), QoS::AtLeastOnce)],
+        };
+        let mut encoded = BytePages::default();
+        Codec::new()
+            .encode(Encoded::Packet(packet.clone()), &mut encoded)
+            .unwrap();
+        let wire = encoded.freeze();
+        let codec = Codec::new();
+        let mut buf = BytesMut::new();
+        for byte in &wire[..wire.len() - 1] {
+            buf.extend_from_slice(&[*byte]);
+            assert_eq!(codec.decode(&mut buf), Ok(None));
+        }
+        buf.extend_from_slice(&wire[wire.len() - 1..]);
+        assert_eq!(
+            codec.decode(&mut buf),
+            Ok(Some(Decoded::Packet(packet, 135)))
+        );
+        assert!(buf.is_empty());
+    }
+
+    /// STATEMENT: A fragmented publish variable header is retained until its topic and packet identifier are complete.
+    ///
+    /// HOW:
+    /// - Feed a `QoS 1` header with only its topic length, then add the topic and identifier bytes separately.
+    /// - Assert incomplete headers return `None`, followed by the expected publication and final payload chunk.
+    #[test]
+    fn test_fragmented_publish_header() {
+        let codec = Codec::new();
+        let mut buf = BytesMut::from(&b"\x32\x06\x00\x01"[..]);
+        assert_eq!(codec.decode(&mut buf), Ok(None));
+        buf.extend_from_slice(b"a");
+        assert_eq!(codec.decode(&mut buf), Ok(None));
+        buf.extend_from_slice(b"\x00");
+        assert_eq!(codec.decode(&mut buf), Ok(None));
+        buf.extend_from_slice(b"\x01");
+        let Some(Decoded::Publish(packet, payload, size, ticket)) = codec.decode(&mut buf).unwrap()
+        else {
+            panic!("expected publication")
+        };
+        assert_eq!(packet.topic, "a");
+        assert_eq!(packet.packet_id, NonZeroU16::new(1));
+        assert_eq!(packet.payload_size, 1);
+        assert_eq!(size, 6);
+        assert!(payload.is_empty());
+        assert!(ticket.is_some());
+        buf.extend_from_slice(b"z");
+        assert_eq!(
+            codec.decode(&mut buf),
+            Ok(Some(Decoded::PayloadChunk(Bytes::from_static(b"z"), true)))
+        );
+    }
+
+    /// STATEMENT: An oversized payload chunk writes no bytes and preserves the outstanding payload allowance.
+    ///
+    /// HOW:
+    /// - Encode a two-byte streaming publication and reject a three-byte chunk with `OverPublishSize`.
+    /// - Send the correct two bytes and a ping, then decode both complete packets from the result.
+    #[test]
+    fn test_streaming_encode_overflow_recovery() {
+        let codec = Codec::new();
+        let mut buf = BytePages::default();
+        let packet = Publish {
+            dup: false,
+            retain: false,
+            qos: QoS::AtMostOnce,
+            topic: "a".into(),
+            packet_id: None,
+            payload_size: 2,
+        };
+        codec
+            .encode(Encoded::Publish(packet.clone(), None), &mut buf)
+            .unwrap();
+        assert_eq!(
+            codec.encode(Encoded::PayloadChunk(Bytes::from_static(b"bad")), &mut buf),
+            Err(EncodeError::OverPublishSize)
+        );
+        codec
+            .encode(Encoded::PayloadChunk(Bytes::from_static(b"ok")), &mut buf)
+            .unwrap();
+        codec
+            .encode(Encoded::Packet(Packet::PingRequest), &mut buf)
+            .unwrap();
+        let mut buf = BytesMut::from(buf.freeze());
+        assert_eq!(
+            codec.decode(&mut buf),
+            Ok(Some(Decoded::Publish(
+                packet,
+                Bytes::from_static(b"ok"),
+                5,
+                None
+            )))
+        );
+        assert_eq!(
+            codec.decode(&mut buf),
+            Ok(Some(Decoded::Packet(Packet::PingRequest, 0)))
+        );
+        assert!(buf.is_empty());
+    }
 }

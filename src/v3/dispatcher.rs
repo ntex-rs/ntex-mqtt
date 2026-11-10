@@ -1397,4 +1397,97 @@ mod tests {
         assert!(disp.ready().await.is_ok());
         assert!(!io.is_active());
     }
+
+    /// STATEMENT: Publish topic wildcards are rejected before reaching the application handler.
+    ///
+    /// HOW:
+    /// - Dispatch topic names containing `+` and `#` in several positions and compare `Pub_3_3_2_2` violations.
+    /// - Verify the handler remains uncalled for invalid topics and receives a subsequent valid publication.
+    #[ntex::test]
+    async fn test_publish_topic_wildcards() {
+        let calls = Rc::new(Cell::new(0));
+        let calls2 = calls.clone();
+        let (_io, _shared, disp) = dispatcher(
+            MqttServiceConfig::new(),
+            fn_service(move |_: Publish| {
+                calls2.set(calls2.get() + 1);
+                std::future::ready(Ok::<_, ()>(()))
+            }),
+            fn_service(ack),
+        );
+        for topic in ["a/+", "a/#", "+", "a+b"] {
+            let result = disp.call(publish(0, QoS::AtMostOnce, false, topic)).await;
+            assert_violation(
+                &result,
+                &error::ViolationInner::Spec(SpecViolation::Pub_3_3_2_2),
+            );
+        }
+        assert_eq!(calls.get(), 0);
+        assert_eq!(
+            disp.call(publish(0, QoS::AtMostOnce, false, "a/b"))
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(calls.get(), 1);
+    }
+
+    /// STATEMENT: Subscriptions received after closure do not reach the protocol handler.
+    ///
+    /// HOW:
+    /// - Close a dispatcher connection and deliver valid `SUBSCRIBE` and `UNSUBSCRIBE` packets.
+    /// - Assert both produce no response and the protocol-handler counter remains zero.
+    #[ntex::test]
+    async fn test_closed_connection_ignores_subscriptions() {
+        let calls = Rc::new(Cell::new(0));
+        let calls2 = calls.clone();
+        let (_io, shared, disp) = dispatcher(
+            MqttServiceConfig::new(),
+            fn_service(async |_: Publish| Ok::<_, ()>(())),
+            fn_service(move |msg: ProtocolMessage| {
+                calls2.set(calls2.get() + 1);
+                std::future::ready(Ok::<_, DispatcherError<()>>(msg.ack()))
+            }),
+        );
+        shared.close();
+        for packet in [
+            Packet::Subscribe {
+                packet_id: pid(1),
+                topic_filters: vec![("a".into(), QoS::AtMostOnce)],
+            },
+            Packet::Unsubscribe {
+                packet_id: pid(2),
+                topic_filters: vec!["a".into()],
+            },
+        ] {
+            assert_eq!(disp.call(Decoded::Packet(packet, 6)).await.unwrap(), None);
+        }
+        assert_eq!(calls.get(), 0);
+    }
+
+    /// STATEMENT: A protocol handler can deliberately suppress a ping response without closing the connection.
+    ///
+    /// HOW:
+    /// - Return `ProtocolMessageKind::Nothing` when the dispatcher forwards a ping request.
+    /// - Assert no response is produced and shared connection state stays active.
+    #[ntex::test]
+    async fn test_protocol_handler_suppresses_response() {
+        let (_io, shared, disp) = dispatcher(
+            MqttServiceConfig::new(),
+            fn_service(async |_: Publish| Ok::<_, ()>(())),
+            fn_service(async |msg: ProtocolMessage| {
+                assert!(matches!(msg, ProtocolMessage::Ping(_)));
+                Ok::<_, DispatcherError<()>>(ProtocolMessageAck {
+                    result: ProtocolMessageKind::Nothing,
+                })
+            }),
+        );
+        assert_eq!(
+            disp.call(Decoded::Packet(Packet::PingRequest, 0))
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(shared.is_active());
+    }
 }

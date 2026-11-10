@@ -244,3 +244,108 @@ impl encode::EncodeLtd for PublishProperties {
         self.user_properties.encode(buf)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ntex_codec::{Decoder, Encoder};
+    use test_case::test_case;
+
+    use super::*;
+    use crate::v5::codec::{Codec, Decoded, Encoded};
+
+    /// STATEMENT: Publish properties preserve binary data, repeated identifiers, and duplicate user-property keys.
+    ///
+    /// HOW:
+    /// - Round-trip a retained, duplicate QoS-one publish containing every property and binary payload.
+    /// - Reject a one-byte-too-small inbound limit without consuming input, then accept the exact frame size.
+    /// - Compare the complete metadata and payload.
+    /// - Check repeated properties retain their order and the frame leaves no buffered bytes.
+    #[test]
+    fn test_publish_properties_roundtrip() {
+        let payload = Bytes::from_static(b"\x00data\xff");
+        let publish = Publish {
+            dup: true,
+            retain: true,
+            qos: QoS::AtLeastOnce,
+            packet_id: NonZeroU16::new(7),
+            topic: "events/status".into(),
+            payload_size: payload.len() as u32,
+            properties: PublishProperties {
+                topic_alias: NonZeroU16::new(3),
+                correlation_data: Some(Bytes::from_static(b"\x00\xff")),
+                message_expiry_interval: Some(0),
+                content_type: Some("application/octet-stream".into()),
+                user_properties: vec![("key".into(), "one".into()), ("key".into(), "two".into())],
+                is_utf8_payload: false,
+                response_topic: Some("response/topic".into()),
+                subscription_ids: vec![
+                    NonZeroU32::MIN,
+                    NonZeroU32::new(268_435_455).unwrap(),
+                    NonZeroU32::MIN,
+                ],
+            },
+        };
+        for is_utf8_payload in [false, true] {
+            let mut publish = publish.clone();
+            publish.properties.is_utf8_payload = is_utf8_payload;
+            let payload = if is_utf8_payload {
+                Bytes::from_static(b"data")
+            } else {
+                payload.clone()
+            };
+            publish.payload_size = payload.len() as u32;
+            let mut output = BytePages::default();
+            Codec::new()
+                .encode(
+                    Encoded::Publish(publish.clone(), Some(payload.clone())),
+                    &mut output,
+                )
+                .unwrap();
+            let output = output.freeze();
+            let mut input = BytesMut::from(output.as_ref());
+            let codec = Codec::new();
+            codec.set_max_inbound_size(output.len() as u32 - 1);
+            assert_eq!(
+                codec.decode(&mut input),
+                Err(DecodeError::MaxSizeExceeded {
+                    size: output.len() as u32,
+                    max_size: output.len() as u32 - 1,
+                })
+            );
+            assert_eq!(input.as_ref(), output.as_ref());
+            codec.set_max_inbound_size(output.len() as u32);
+            let Some(Decoded::Publish(decoded, decoded_payload, _, _)) =
+                codec.decode(&mut input).unwrap()
+            else {
+                panic!("expected a complete publish");
+            };
+            assert_eq!(decoded, publish);
+            assert_eq!(decoded_payload, payload);
+            assert!(input.is_empty());
+        }
+    }
+
+    /// STATEMENT: Publish properties reject unknown identifiers, repeated singleton values, and malformed values.
+    ///
+    /// HOW:
+    /// - Place each malformed property block after a valid topic in a publish header.
+    /// - Decode it and compare with the expected malformed-packet or truncated-field error.
+    #[test_case(b"\x7f", DecodeError::MalformedPacket; "unknown")]
+    #[test_case(b"\x01\x01\x01\x00", DecodeError::MalformedPacket; "duplicate_format")]
+    #[test_case(b"\x01\x02", DecodeError::MalformedPacket; "invalid_format")]
+    #[test_case(b"\x02\x00\x00\x00\x01\x02\x00\x00\x00\x02", DecodeError::MalformedPacket; "duplicate_expiry")]
+    #[test_case(b"\x03\x00\x00\x03\x00\x00", DecodeError::MalformedPacket; "duplicate_content_type")]
+    #[test_case(b"\x08\x00\x01a\x08\x00\x01b", DecodeError::MalformedPacket; "duplicate_response_topic")]
+    #[test_case(b"\x09\x00\x00\x09\x00\x00", DecodeError::MalformedPacket; "duplicate_correlation_data")]
+    #[test_case(b"\x23\x00\x01\x23\x00\x02", DecodeError::MalformedPacket; "duplicate_alias")]
+    #[test_case(b"\x23\x00\x00", DecodeError::MalformedPacket; "zero_alias")]
+    #[test_case(b"\x0b\x00", DecodeError::MalformedPacket; "zero_subscription_id")]
+    #[test_case(b"\x03\x00\x02a", DecodeError::InvalidLength; "truncated_content_type")]
+    #[test_case(b"\x09\x00\x02a", DecodeError::InvalidLength; "truncated_correlation_data")]
+    fn test_malformed_publish_properties(properties: &'static [u8], error: DecodeError) {
+        let mut input = BytesMut::from(&b"\x00\x01a"[..]);
+        input.extend_from_slice(&[properties.len() as u8]);
+        input.extend_from_slice(properties);
+        assert_eq!(Publish::decode(&mut input.freeze(), 0x30, 0), Err(error));
+    }
+}

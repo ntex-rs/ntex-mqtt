@@ -283,4 +283,49 @@ mod tests {
         assert_eq!(taken.read().await.unwrap(), None);
         assert!(Payload::default().is_fixed());
     }
+
+    /// STATEMENT: A streaming error discards bytes already collected and releases producer readiness.
+    ///
+    /// HOW:
+    /// - Poll `read_all` after an initial chunk and again after a second chunk, leaving it pending.
+    /// - Terminate the stream with a protocol error and assert that exact error, then exhaustion.
+    /// - Verify the cleared source is ready and rejects further chunks.
+    #[ntex::test]
+    async fn test_stream_error_discards_collected_chunks() {
+        use std::future::Future;
+
+        let source = PayloadSource::default();
+        let payload = source.start(Bytes::from_static(b"first"), 4);
+        let mut all = Box::pin(payload.read_all());
+        assert!(lazy(|cx| all.as_mut().poll(cx)).await.is_pending());
+        assert!(source.feed(Bytes::from_static(b"second"), false));
+        assert!(lazy(|cx| all.as_mut().poll(cx)).await.is_pending());
+
+        let error = PayloadError::Protocol(crate::error::MqttProtocolError::ReadTimeout);
+        source.set_error(error);
+        assert_eq!(all.await, Err(error));
+        assert_eq!(payload.read().await, Ok(None));
+        assert_eq!(payload.read_all().await, Err(PayloadError::Consumed));
+        assert_eq!(source.ready().await, PayloadStatus::Ready);
+        assert!(!source.feed(Bytes::from_static(b"late"), true));
+    }
+
+    /// STATEMENT: A stream failing before its first chunk reports its terminal error to either reading API.
+    ///
+    /// HOW:
+    /// - Start an empty stream for each reading API and fail it with `PayloadError::Disconnected`.
+    /// - Verify `read` and `read_all` each return the disconnection rather than successful empty bytes.
+    #[ntex::test]
+    async fn test_stream_error_before_first_chunk() {
+        for collect in [false, true] {
+            let source = PayloadSource::default();
+            let payload = source.start(Bytes::new(), 4);
+            source.set_error(PayloadError::Disconnected);
+            if collect {
+                assert_eq!(payload.read_all().await, Err(PayloadError::Disconnected));
+            } else {
+                assert_eq!(payload.read().await, Err(PayloadError::Disconnected));
+            }
+        }
+    }
 }

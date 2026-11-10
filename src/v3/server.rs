@@ -444,4 +444,43 @@ mod tests {
         }));
         assert!(format!("{server:?}").contains("v3::MqttServer"));
     }
+
+    /// STATEMENT: A transport reset during `CONNECT` reading bypasses authentication and preserves the I/O error.
+    ///
+    /// HOW:
+    /// - Inject `ConnectionReset` into a paired test transport before running the handshake adapter.
+    /// - Assert the disconnected handshake error retains that kind, authentication is uncalled, and no response bytes are sent.
+    #[ntex::test]
+    async fn test_connect_read_error() {
+        use ntex_io::{Io, testing::IoTest};
+        use ntex_service::{Pipeline, cfg::SharedCfg, fn_service};
+        use ntex_util::time::{Millis, timeout};
+        use std::{cell::Cell, io::ErrorKind};
+
+        let (peer, transport) = IoTest::create();
+        peer.remote_buffer_cap(1024);
+        peer.read_error(std::io::Error::from(ErrorKind::ConnectionReset));
+        let io = Io::new(transport, SharedCfg::new("test"));
+        let called = Rc::new(Cell::new(false));
+        let called2 = called.clone();
+        let service = Pipeline::new(
+            (),
+            ConnectService {
+                svc: fn_service(async move |connect: Connect<()>| {
+                    called2.set(true);
+                    Ok::<_, ()>(connect.ack((), false))
+                }),
+                pool: Rc::default(),
+                _t: PhantomData,
+            },
+        );
+        let result = timeout(Millis(2000), service.call((io.into(), ())))
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, Err(MqttError::Connect(MqttConnectError::Disconnected(Some(ref err)))) if err.kind() == ErrorKind::ConnectionReset)
+        );
+        assert!(!called.get());
+        assert!(peer.read_any().is_empty());
+    }
 }

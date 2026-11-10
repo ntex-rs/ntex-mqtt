@@ -22,7 +22,7 @@ ntex-io = "4.7.1"
 ntex-net = "4.9"
 ntex-service = "5.7.2"
 ntex-router = "2.3"
-ntex-rt = "4.6"
+ntex-rt = "4.7"
 ntex-util = "4.9"
 
 bitflags = "2"

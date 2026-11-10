@@ -782,4 +782,38 @@ mod tests {
             MqttClientError::Disconnected(None)
         ));
     }
+
+    /// STATEMENT: Both transport-error branches preserve their underlying diagnostics through handshake conversion.
+    ///
+    /// HOW:
+    /// - Convert left and right `Either` branches with distinct I/O kinds and messages.
+    /// - Check the outer error source, nested disconnection kind, and original diagnostic text.
+    #[test]
+    fn test_transport_error_branches_preserve_context() {
+        use std::error::Error;
+
+        for (left, kind, message) in [
+            (
+                true,
+                io::ErrorKind::ConnectionReset,
+                "reset during handshake",
+            ),
+            (false, io::ErrorKind::BrokenPipe, "write during handshake"),
+        ] {
+            let io_error = io::Error::new(kind, message);
+            let either = if left {
+                Either::Left(io_error)
+            } else {
+                Either::Right(io_error)
+            };
+            let error: MqttError<()> = either.into();
+            assert!(error.to_string().contains(message));
+            assert!(error.source().unwrap().to_string().contains(message));
+            let MqttError::Connect(MqttConnectError::Disconnected(Some(inner))) = error else {
+                panic!("expected a transport handshake error");
+            };
+            assert_eq!(inner.kind(), kind);
+            assert_eq!(inner.to_string(), message);
+        }
+    }
 }
