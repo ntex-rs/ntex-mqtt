@@ -152,3 +152,36 @@ impl Publish {
         (self.pkt, self.payload, self.pkt_size)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// STATEMENT: Taking a publication's arrival ticket transfers ownership and preserves its turn after the publication is dropped.
+    ///
+    /// HOW:
+    /// - Attach the first of two issued tickets to a publication and take it out exactly once.
+    /// - Drop the publication and verify the second ticket is still blocked until the extracted ticket is dropped.
+    #[test]
+    fn test_take_ticket_preserves_order() {
+        let tickets = crate::ticket::Tickets::default();
+        let first = tickets.issue(codec::QoS::AtLeastOnce).unwrap();
+        let next = tickets.issue(codec::QoS::AtLeastOnce).unwrap();
+        let packet = codec::Publish {
+            dup: false,
+            retain: false,
+            qos: codec::QoS::AtLeastOnce,
+            topic: "a".into(),
+            packet_id: NonZeroU16::new(1),
+            payload_size: 0,
+        };
+        let mut publish = Publish::new(packet, Payload::default(), 5).with_ticket(Some(first));
+        let ticket = publish.take_ticket().unwrap();
+        assert!(publish.take_ticket().is_none());
+        drop(publish);
+        assert!(ticket.is_turn());
+        assert!(!next.is_turn());
+        drop(ticket);
+        assert!(next.is_turn());
+    }
+}

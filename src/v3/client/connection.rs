@@ -695,4 +695,33 @@ mod tests {
         assert_eq!(wr.get(), Some(true));
         gate.notify(());
     }
+
+    /// STATEMENT: The keep-alive task terminates on an already closed connection or closure behind a streaming payload.
+    ///
+    /// HOW:
+    /// - Close a sink before starting keep-alive and require task completion within a generous timeout.
+    /// - Start keep-alive behind an unfinished stream, wait until its ping is pending, then force-close and await completion.
+    #[ntex::test]
+    async fn test_keepalive_stops_on_close() {
+        use ntex_util::{future::join, time::timeout};
+
+        let (_client, _io, _shared, sink) = setup();
+        sink.force_close();
+        timeout(Millis(2000), keepalive_interval(sink, Millis::ZERO))
+            .await
+            .unwrap();
+
+        let (_client, _io, _shared, sink) = setup();
+        let _stream = sink.publish("a").stream_at_most_once(1).await.unwrap();
+        timeout(
+            Millis(5000),
+            join(keepalive_interval(sink.clone(), Millis::ZERO), async {
+                wait_ping_pending(&sink).await;
+                sink.force_close();
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(!sink.is_open());
+    }
 }

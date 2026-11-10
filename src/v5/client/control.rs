@@ -176,3 +176,22 @@ fn ack_packet(
         })
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// STATEMENT: A client protocol ping acknowledges with `PINGRESP` without closing the connection.
+    ///
+    /// HOW:
+    /// - Wrap a `Ping` in `ProtocolMessage`, request its default acknowledgement, and inspect its wire response.
+    #[ntex::test]
+    async fn test_ping_ack_keeps_connection_open() {
+        let ack = ProtocolMessage::Ping(Ping).ack();
+        assert!(matches!(
+            ack.packet,
+            Pkt::Packet(codec::Packet::PingResponse)
+        ));
+        assert!(!ack.disconnect);
+    }
+}

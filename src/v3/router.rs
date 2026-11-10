@@ -261,4 +261,70 @@ mod tests {
         svc.shutdown().await;
         assert_eq!(count.get(), 2);
     }
+
+    /// STATEMENT: Topic routing populates path captures and propagates fallback errors on misses.
+    ///
+    /// HOW:
+    /// - Build a `sensors/{id}` route and a fallback handler with separate call counters.
+    /// - Dispatch a matching publication and verify its capture and payload in the route handler.
+    /// - Dispatch a missing topic and assert the fallback error and exactly one call to each handler.
+    #[ntex::test]
+    async fn test_route_capture_and_fallback() {
+        use crate::{
+            payload::Payload,
+            v3::{MqttSink, codec, shared::MqttShared},
+        };
+        use ntex_bytes::{ByteString, Bytes};
+        use ntex_io::{Io, testing::IoTest};
+        use ntex_service::{Pipeline, cfg::SharedCfg};
+        use std::cell::Cell;
+
+        let (_peer, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            false,
+            Rc::default(),
+        ));
+        let session = Session::new((), MqttSink::new(shared), io.shared());
+        let routed = Rc::new(Cell::new(0));
+        let missed = Rc::new(Cell::new(0));
+        let (routed2, missed2) = (routed.clone(), missed.clone());
+        let factory = Router::new(fn_service(move |pkt: Publish| {
+            missed2.set(missed2.get() + 1);
+            assert_eq!(pkt.publish_topic(), "other");
+            std::future::ready(Err::<(), _>("unmatched topic"))
+        }))
+        .resource(
+            "sensors/{id}",
+            fn_service(async move |pkt: Publish| {
+                routed2.set(routed2.get() + 1);
+                assert_eq!(pkt.topic().get("id"), Some("42"));
+                assert_eq!(pkt.publish_topic(), "sensors/42");
+                assert_eq!(pkt.read_all().await.unwrap(), Bytes::from_static(b"warm"));
+                Ok::<_, &'static str>(())
+            }),
+        )
+        .into_factory();
+        let svc = Pipeline::new(session.clone(), factory.create(&session).await.unwrap());
+        assert!(svc.ready().await.is_ok());
+        let publish = |topic| {
+            Publish::new(
+                codec::Publish {
+                    dup: false,
+                    retain: false,
+                    qos: codec::QoS::AtMostOnce,
+                    topic: ByteString::from_static(topic),
+                    packet_id: None,
+                    payload_size: 4,
+                },
+                Payload::from_bytes(Bytes::from_static(b"warm")),
+                16,
+            )
+        };
+        assert_eq!(svc.call(publish("sensors/42")).await, Ok(()));
+        assert_eq!(svc.call(publish("other")).await, Err("unmatched topic"));
+        assert_eq!((routed.get(), missed.get()), (1, 1));
+    }
 }

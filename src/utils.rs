@@ -513,4 +513,70 @@ mod tests {
 
         // assert!(v.write_variable_length(MAX_VARIABLE_LENGTH + 1).is_err())
     }
+
+    /// STATEMENT: Optional binary fields preserve field boundaries and propagate length errors.
+    ///
+    /// HOW:
+    /// - Encode absent, empty, and populated `Option<&[u8]>` fields before a sentinel.
+    /// - Compare reported sizes with written bytes and decode present fields and the sentinel.
+    /// - Reject an oversized present field without appending any bytes.
+    #[test]
+    fn test_optional_fields_preserve_wire_boundaries() {
+        for field in [None, Some(&b""[..]), Some(&b"a\x00\xff"[..])] {
+            let mut buf = BytePages::default();
+            field.encode(&mut buf).unwrap();
+            assert_eq!(buf.len(), field.encoded_size());
+            0x1234_u16.encode(&mut buf).unwrap();
+            let mut bytes = buf.freeze();
+            if let Some(value) = field {
+                assert_eq!(Bytes::decode(&mut bytes).unwrap().as_ref(), value);
+            }
+            assert_eq!(u16::decode(&mut bytes), Ok(0x1234));
+            assert!(bytes.is_empty());
+        }
+
+        let oversized = vec![0; usize::from(u16::MAX) + 1];
+        let mut buf = BytePages::default();
+        assert_eq!(
+            Some(oversized.as_slice()).encode(&mut buf),
+            Err(EncodeError::InvalidLength)
+        );
+        assert!(buf.is_empty());
+    }
+
+    /// STATEMENT: Variable-integer cursors consume exactly one complete value and reject incomplete encodings.
+    ///
+    /// HOW:
+    /// - Encode both ends of each supported width range and decode before a sentinel byte.
+    /// - Check the value and untouched sentinel, then try every incomplete prefix.
+    /// - Require slice decoding to wait and cursor decoding to return `MalformedPacket` for each prefix.
+    #[test]
+    fn test_variable_integer_cursor_boundaries() {
+        for value in [
+            0,
+            127,
+            128,
+            16_383,
+            16_384,
+            2_097_151,
+            2_097_152,
+            268_435_455,
+        ] {
+            let mut output = BytePages::default();
+            write_variable_length(value, &mut output);
+            let encoded = output.freeze();
+            for end in 0..encoded.len() {
+                assert_eq!(decode_variable_length_v5(&encoded[..end]), Ok(None));
+                assert_eq!(
+                    decode_variable_length_cursor_v5(&mut encoded.slice(..end)),
+                    Err(DecodeError::MalformedPacket)
+                );
+            }
+            let mut input = ntex_bytes::BytesMut::from(encoded.as_ref());
+            input.extend_from_slice(b"\x42");
+            let mut input = input.freeze();
+            assert_eq!(decode_variable_length_cursor_v5(&mut input), Ok(value));
+            assert_eq!(input.as_ref(), b"\x42");
+        }
+    }
 }

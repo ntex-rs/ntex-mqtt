@@ -833,24 +833,31 @@ impl MqttShared {
         Ok(())
     }
 
-    /// Registers an expected acknowledgment and returns its response receiver.
+    /// Encodes a request and registers its expected acknowledgment after success.
     ///
-    /// Rejects identifiers already in flight; the caller encodes the request separately.
-    pub(super) fn wait_response(
+    /// Rejects identifiers already in flight. Encoding errors leave no in-flight
+    /// entry behind, so the identifier and send credit remain available.
+    pub(super) fn send_with_response(
         &self,
         id: num::NonZeroU16,
         ack: AckType,
+        pkt: codec::Packet,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
         let mut queues = self.queues.borrow_mut();
         if queues.inflight.contains_key(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
-            let (tx, rx) = self.pool.queue.channel();
-            queues.inflight.insert(id, (Some(tx), ack));
-            if matches!(ack, AckType::Subscribe | AckType::Unsubscribe) {
-                queues.subscribes += 1;
+            match self.io.encode(Encoded::Packet(pkt), self) {
+                Ok(()) => {
+                    let (tx, rx) = self.pool.queue.channel();
+                    queues.inflight.insert(id, (Some(tx), ack));
+                    if matches!(ack, AckType::Subscribe | AckType::Unsubscribe) {
+                        queues.subscribes += 1;
+                    }
+                    Ok(rx)
+                }
+                Err(e) => Err(SendPacketError::Encode(e)),
             }
-            Ok(rx)
         }
     }
 
@@ -1282,6 +1289,49 @@ impl AckType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// STATEMENT: Generated packet identifiers wrap without issuing zero or losing outstanding acknowledgements.
+    ///
+    /// HOW:
+    /// - Position the generator immediately before `u16::MAX` and start two acknowledged publishes.
+    /// - Acknowledge identifiers `u16::MAX` and `1`, and verify each send receives its own acknowledgement.
+    /// - Check both send credits are restored and the connection remains active.
+    #[ntex::test]
+    async fn test_packet_identifiers_wrap() {
+        use std::pin::pin;
+
+        use ntex_io::{Io, testing::IoTest};
+        use ntex_service::cfg::SharedCfg;
+        use ntex_util::future::lazy;
+
+        let (_client, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::default());
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::new(),
+            Rc::default(),
+        ));
+        shared.set_cap(2);
+        shared.inflight_idx.set(u16::MAX - 1);
+        let sink = crate::v5::MqttSink::new(shared.clone());
+        let mut first = pin!(sink.publish("before").send_at_least_once(Bytes::new()));
+        let mut second = pin!(sink.publish("after").send_at_least_once(Bytes::new()));
+        assert!(lazy(|cx| first.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| second.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 0);
+        for id in [u16::MAX, 1] {
+            shared
+                .pkt_ack(Ack::Publish(codec::PublishAck {
+                    packet_id: num::NonZeroU16::new(id).unwrap(),
+                    ..Default::default()
+                }))
+                .unwrap();
+        }
+        assert_eq!(first.await.unwrap().packet_id.get(), u16::MAX);
+        assert_eq!(second.await.unwrap().packet_id.get(), 1);
+        assert_eq!(shared.credit(), 2);
+        assert!(shared.is_active());
+    }
 
     /// STATEMENT: Ordered responses preserve their packet values and specialized queue variants.
     ///

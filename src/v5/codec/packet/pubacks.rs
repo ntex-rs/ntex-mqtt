@@ -255,4 +255,44 @@ mod tests {
         let result = PublishAck::decode(&mut input);
         assert_eq!(result, Err(error));
     }
+
+    /// STATEMENT: Reason-only `PUBREL` and `PUBCOMP` bodies default omitted diagnostic properties.
+    ///
+    /// HOW:
+    /// - Decode success and packet-not-found reasons without a property-length byte.
+    /// - Compare the identifier, reason, and empty diagnostics and require complete consumption.
+    #[test_case(b"\x00\x07\x00", PublishAck2Reason::Success; "success")]
+    #[test_case(b"\x00\x07\x92", PublishAck2Reason::PacketIdNotFound; "not_found")]
+    fn puback2_decode_reason_only(input: &'static [u8], reason_code: PublishAck2Reason) {
+        let mut input = Bytes::from_static(input);
+        assert_eq!(
+            PublishAck2::decode(&mut input),
+            Ok(PublishAck2 {
+                packet_id: NonZeroU16::new(7).unwrap(),
+                reason_code,
+                ..Default::default()
+            })
+        );
+        assert!(input.is_empty());
+    }
+
+    /// STATEMENT: Both publish acknowledgment formats reject invalid or duplicate diagnostics and trailing data.
+    ///
+    /// HOW:
+    /// - Decode zero identifiers, duplicate reason strings, disallowed properties, and extra bytes.
+    /// - Compare both decoders' errors with the expected malformed-packet or length error.
+    #[test_case(b"\x00\x00", DecodeError::MalformedPacket; "zero_id")]
+    #[test_case(b"\x00\x01\x00\x01\x7f", DecodeError::MalformedPacket; "unknown_property")]
+    #[test_case(b"\x00\x01\x00\x06\x1f\x00\x00\x1f\x00\x00", DecodeError::MalformedPacket; "duplicate_reason")]
+    #[test_case(b"\x00\x01\x00\x00\x01", DecodeError::InvalidLength; "trailing_data")]
+    fn publish_ack_diagnostics_rejected(input: &'static [u8], error: DecodeError) {
+        assert_eq!(
+            PublishAck::decode(&mut Bytes::from_static(input)),
+            Err(error)
+        );
+        assert_eq!(
+            PublishAck2::decode(&mut Bytes::from_static(input)),
+            Err(error)
+        );
+    }
 }

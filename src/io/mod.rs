@@ -3748,6 +3748,8 @@ mod tests {
         blocked: Cell<bool>,
         /// Latest task polling the gate, consumed when its state changes.
         waker: RefCell<Option<std::task::Waker>>,
+        /// One-shot observation used to synchronize tests with a filter-induced pause.
+        on_pause: RefCell<Option<oneshot::Sender<()>>>,
     }
 
     impl GateDir {
@@ -3755,7 +3757,12 @@ mod tests {
         fn poll(&self, res: Poll<io::Result<()>>, cx: &Context<'_>) -> Poll<io::Result<()>> {
             *self.waker.borrow_mut() = Some(cx.waker().clone());
             match res {
-                Poll::Ready(Ok(())) if self.blocked.get() => Poll::Pending,
+                Poll::Ready(Ok(())) if self.blocked.get() => {
+                    if let Some(notify) = self.on_pause.borrow_mut().take() {
+                        let _ = notify.send(());
+                    }
+                    Poll::Pending
+                }
                 res => res,
             }
         }
@@ -4028,5 +4035,223 @@ mod tests {
         assert!(io.is_active());
         assert!(wait_until(|| !io.is_active()).await);
         assert_eq!(&data.borrow()[..], &[1, 3]);
+    }
+
+    /// Constructs an unspawned dispatcher for direct state-transition checks.
+    fn idle_dispatcher(cfg: IoConfig) -> (Io, Dispatcher<ByteCodec, (), ()>) {
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024 * 1024);
+        let (dispatcher, _) = Dispatcher::new_debug(
+            nio::Io::new(server, SharedCfg::new("DBG").add(cfg)),
+            ByteCodec,
+            fn_service(async |_: Bytes| Ok::<_, DispatcherError<()>>(None)),
+            fn_service(async |_: Control<()>| Ok::<_, ()>(None)),
+        );
+        (client, dispatcher)
+    }
+
+    /// STATEMENT: A backpressure-control response encoding error is delivered as the protocol stop reason.
+    ///
+    /// HOW:
+    /// - Queue enough output to enable backpressure and return an unencodable `X` from its control handler.
+    /// - Drive the dispatcher to completion and verify exactly one enable and one malformed-encoding stop message.
+    #[ntex::test]
+    async fn test_wr_response_encode_error() {
+        let (client, server) = create();
+        client.remote_buffer_cap(1024 * 1024);
+        let messages = Rc::new(RefCell::new(Vec::new()));
+        let seen = messages.clone();
+        let (mut dispatcher, io) = Dispatcher::new_debug(
+            server,
+            ByteCodec,
+            fn_service(async |_: Bytes| Ok::<_, DispatcherError<()>>(None)),
+            fn_service(async move |message: Control<()>| match message {
+                Control::WrBackpressure(state) => {
+                    assert!(state.enabled());
+                    seen.borrow_mut().push("enabled");
+                    Ok::<_, ()>(Some(Bytes::from_static(b"X")))
+                }
+                Control::Stop(Reason::Protocol(error)) => {
+                    assert_eq!(
+                        *error.get_ref(),
+                        MqttProtocolError::Encode(EncodeError::MalformedPacket)
+                    );
+                    seen.borrow_mut().push("encode error");
+                    Ok(None)
+                }
+                message @ Control::Stop(_) => panic!("unexpected control message: {message:?}"),
+            }),
+        );
+        io.encode(Bytes::from(vec![b'a'; 128 * 1024]), &ByteCodec)
+            .unwrap();
+        assert!(io.is_wr_backpressure());
+        ntex_util::future::lazy(|cx| dispatcher.inner.enter_backpressure(cx)).await;
+        assert_eq!(timeout(Millis(5_000), dispatcher).await, Ok(Ok(())));
+        assert_eq!(&*messages.borrow(), &["enabled", "encode error"]);
+    }
+
+    /// STATEMENT: Read-side timer purposes follow incomplete-frame progress and ignore stopped expirations.
+    ///
+    /// HOW:
+    /// - Update an idle dispatcher, an incomplete frame, and a completed frame in sequence.
+    /// - Assert keep-alive and frame-read purposes, the keep-alive error, and a frame-rate extension.
+    /// - Assert completion stops the timer and repeated stopped expirations succeed.
+    #[ntex::test]
+    async fn test_timer_purposes_follow_frame_progress() {
+        let (_client, mut dispatcher) = idle_dispatcher(
+            IoConfig::new()
+                .set_keepalive_timeout(Seconds(30))
+                .set_frame_read_rate(Seconds(1), Seconds(3), 2),
+        );
+        let inner = &mut dispatcher.inner;
+        assert_eq!(inner.timers.active, Timer::Stopped);
+        assert_eq!(inner.handle_timeout(), Ok(()));
+        inner.update_timer(&Decoded {
+            item: None,
+            remains: 0,
+            consumed: 0,
+        });
+        assert_eq!(inner.timers.active, Timer::KeepAlive);
+        assert_eq!(
+            inner.handle_timeout(),
+            Err(MqttProtocolError::KeepAliveTimeout)
+        );
+
+        inner.update_timer(&Decoded {
+            item: None,
+            remains: 3,
+            consumed: 0,
+        });
+        assert_eq!(inner.timers.active, Timer::FrameRead);
+        assert_eq!(inner.handle_timeout(), Ok(()));
+        let progress = inner.timers.read.progress().unwrap();
+        assert_eq!(progress.consumed, 0);
+        assert_eq!(progress.max_timeout, Seconds(2));
+
+        inner.update_timer(&Decoded {
+            item: Some(Bytes::from_static(b"abc")),
+            remains: 0,
+            consumed: 3,
+        });
+        assert_eq!(inner.timers.active, Timer::Stopped);
+        assert_eq!(inner.handle_timeout(), Ok(()));
+        assert_eq!(inner.handle_timeout(), Ok(()));
+    }
+
+    /// STATEMENT: An elapsed write timer is harmless after output backpressure has already cleared.
+    ///
+    /// HOW:
+    /// - Arm a write timer while encoded output exceeds the high watermark.
+    /// - Flush all output, then handle the stale expiration and verify the timer stops without a protocol error.
+    #[ntex::test]
+    async fn test_stale_write_timeout_after_flush() {
+        let (_client, mut dispatcher) = idle_dispatcher(
+            IoConfig::new()
+                .set_write_backpressure(32 * 1024)
+                .set_write_timeout(Seconds(30)),
+        );
+        let inner = &mut dispatcher.inner;
+        inner
+            .io
+            .encode(Bytes::from(vec![b'a'; 65_536]), &ByteCodec)
+            .unwrap();
+        assert!(inner.io.is_wr_backpressure());
+        inner.start_write_timer();
+        assert_eq!(inner.timers.active, Timer::Write);
+        inner.io.flush(true).await.unwrap();
+        assert!(!inner.io.is_wr_backpressure());
+        assert_eq!(inner.handle_timeout(), Ok(()));
+        assert_eq!(inner.timers.active, Timer::Stopped);
+    }
+
+    /// STATEMENT: A paused request reader still receives write-timeout status updates.
+    ///
+    /// HOW:
+    /// - Block peer writes, queue output, and enter backpressure with a one-second write deadline.
+    /// - Await read-pause status updates and verify expiration becomes a `WriteTimeout` control message.
+    #[ntex::test]
+    async fn test_write_timeout_status_while_read_paused() {
+        let (client, mut dispatcher) = idle_dispatcher(
+            IoConfig::new()
+                .set_write_backpressure(32 * 1024)
+                .set_write_timeout(Seconds(1)),
+        );
+        client.remote_buffer_cap(0);
+        let inner = &mut dispatcher.inner;
+        inner
+            .io
+            .encode(Bytes::from(vec![b'a'; 65_536]), &ByteCodec)
+            .unwrap();
+        ntex_util::future::lazy(|cx| inner.enter_backpressure(cx)).await;
+        assert_eq!(inner.timers.active, Timer::Write);
+        let message = timeout(
+            Millis(5_000),
+            std::future::poll_fn(|cx| match inner.poll_read_pause(cx) {
+                Poll::Ready(None) => {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                result => result,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            message,
+            Some(Control::Stop(Reason::Protocol(error)))
+                if *error.get_ref() == MqttProtocolError::WriteTimeout
+        ));
+    }
+
+    /// STATEMENT: A write timer expiring during a newly observed filter pause stops without blaming the peer.
+    ///
+    /// HOW:
+    /// - Retain output behind a write filter, arm its write deadline, and synchronize with a read-filter pause.
+    /// - Verify backpressure remains active but expiration succeeds and stops the timer.
+    /// - Release both filter gates and verify the retained bytes flush successfully.
+    #[ntex::test]
+    async fn test_stale_write_timeout_during_filter_pause() {
+        let gate = GateCtl::default();
+        gate.block_write(true);
+        gate.block_read(true);
+        let (notify, paused) = oneshot::channel();
+        *gate.0.0.on_pause.borrow_mut() = Some(notify);
+        let (client, server) = Io::create();
+        client.remote_buffer_cap(1024 * 1024);
+        let cfg = SharedCfg::new("DBG").add(
+            IoConfig::new()
+                .set_write_backpressure(32 * 1024)
+                .set_write_timeout(Seconds(30)),
+        );
+        let filter_gate = gate.clone();
+        let io = nio::Io::new(server, cfg)
+            .add_filter(GateLayer(gate.clone()))
+            .map_filter(move |filter| GateFilter(filter, filter_gate));
+        let mut dispatcher = Dispatcher::new(
+            IoBoxed::from(io),
+            ByteCodec,
+            Pipeline::new(
+                (),
+                fn_service(async |_: Bytes| Ok::<_, DispatcherError<()>>(None)),
+            ),
+            Pipeline::new((), fn_service(async |_: Control<()>| Ok::<_, ()>(None))),
+        );
+        let inner = &mut dispatcher.inner;
+        inner
+            .io
+            .encode(Bytes::from(vec![b'a'; 65_536]), &ByteCodec)
+            .unwrap();
+        inner.start_write_timer();
+        assert_eq!(inner.timers.active, Timer::Write);
+        client.write(b"1");
+        timeout(Millis(5_000), paused).await.unwrap().unwrap();
+        assert!(inner.io.is_filter_paused());
+        assert!(inner.io.is_wr_backpressure());
+        assert_eq!(inner.handle_timeout(), Ok(()));
+        assert_eq!(inner.timers.active, Timer::Stopped);
+        gate.block_write(false);
+        gate.block_read(false);
+        inner.io.flush(true).await.unwrap();
+        assert_eq!(client.read_any().len(), 65_536);
     }
 }

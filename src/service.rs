@@ -143,3 +143,108 @@ where
         self.connect.shutdown(ctx.st()).await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::Cell, rc::Rc};
+
+    use ntex_io::{Io, testing::IoTest};
+    use ntex_service::{Pipeline, cfg::SharedCfg, fn_factory, fn_service};
+
+    use super::*;
+
+    /// STATEMENT: A handshake-service failure is returned without constructing per-session handlers.
+    ///
+    /// HOW:
+    /// - Build a server with a counted publish factory and a handshake handler that rejects CONNECT.
+    /// - Verify debug formatting works with closure services, send CONNECT, and assert the original service error.
+    /// - Assert the publish factory was never initialized.
+    #[ntex::test]
+    async fn handshake_failure_skips_handler_initialization() {
+        let initialized = Rc::new(Cell::new(0));
+        let count = initialized.clone();
+        let publish = fn_factory(async move |_: &crate::v3::Session<()>| {
+            count.set(count.get() + 1);
+            Ok::<_, std::io::Error>(fn_service(async |_: crate::v3::Publish| Ok::<_, ()>(())))
+        });
+        let server = crate::v3::MqttServer::new(publish).build(async |_: crate::v3::Connect| {
+            Err::<crate::v3::ConnectAck<()>, _>("handshake rejected")
+        });
+        assert_eq!(format!("{server:?}"), "MqttServer");
+        let pipeline = Pipeline::new((), server);
+        let (client, peer) = IoTest::create();
+        let io = IoBoxed::from(Io::new(peer, SharedCfg::new("test")));
+        client.write(b"\x10\x0c\x00\x04MQTT\x04\x02\x00\x3c\x00\x00");
+        assert!(matches!(
+            pipeline.call(((), io)).await,
+            Err(MqttError::Service("handshake rejected"))
+        ));
+        assert_eq!(initialized.get(), 0);
+    }
+
+    /// STATEMENT: Session factories initialize in order, and failures retain their handler-initialization context.
+    ///
+    /// HOW:
+    /// - Accept a CONNECT with session state `42` and exercise successful, control-failing, and publish-failing factories.
+    /// - Verify a control failure skips the publish factory and each initialization error retains its diagnostic.
+    /// - On success, verify the wire CONNACK, close the peer, and assert clean dispatcher completion and one initialization each.
+    #[ntex::test]
+    async fn session_factory_initialization_and_failures() {
+        use ntex_util::future::join;
+
+        for failure in [None, Some("control"), Some("publish")] {
+            let publish_count = Rc::new(Cell::new(0));
+            let control_count = Rc::new(Cell::new(0));
+            let count = publish_count.clone();
+            let publish = fn_factory(async move |session: &crate::v3::Session<u8>| {
+                assert_eq!(**session, 42);
+                count.set(count.get() + 1);
+                if failure == Some("publish") {
+                    Err(std::io::Error::other("publish initialization failed"))
+                } else {
+                    Ok(fn_service(async |_: crate::v3::Publish| Ok::<_, ()>(())))
+                }
+            });
+            let count = control_count.clone();
+            let control = fn_factory(async move |session: &crate::v3::Session<u8>| {
+                assert_eq!(**session, 42);
+                count.set(count.get() + 1);
+                if failure == Some("control") {
+                    Err(std::io::Error::other("control initialization failed"))
+                } else {
+                    Ok(fn_service(async |_: Control<()>| {
+                        Ok::<_, ()>(None::<crate::v3::codec::Encoded>)
+                    }))
+                }
+            });
+            let server = crate::v3::MqttServer::new(publish)
+                .control(control)
+                .build(async |connect: crate::v3::Connect| Ok::<_, ()>(connect.ack(42, false)));
+            let pipeline = Pipeline::new((), server);
+            let (client, peer) = IoTest::create();
+            client.remote_buffer_cap(1024);
+            let io = IoBoxed::from(Io::new(peer, SharedCfg::new("test")));
+            client.write(b"\x10\x0c\x00\x04MQTT\x04\x02\x00\x3c\x00\x00");
+            let call = pipeline.call(((), io));
+            if let Some(stage) = failure {
+                let Err(MqttError::HandlerInit(error)) = call.await else {
+                    panic!("expected a handler initialization error");
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("{stage} initialization failed"))
+                );
+            } else {
+                let (result, ()) = join(call, async {
+                    assert_eq!(client.read().await.unwrap(), b"\x20\x02\x00\x00".as_slice());
+                    client.close().await;
+                })
+                .await;
+                assert!(result.is_ok());
+            }
+            assert_eq!(control_count.get(), 1);
+            assert_eq!(publish_count.get(), usize::from(failure != Some("control")));
+        }
+    }
+}

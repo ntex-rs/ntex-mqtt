@@ -563,6 +563,42 @@ mod tests {
         (io, shared, disp)
     }
 
+    /// STATEMENT: A disconnect requested by the client protocol handler is suppressed after a peer disconnect.
+    ///
+    /// HOW:
+    /// - Deliver a broker `DISCONNECT` and let its protocol handler request another disconnect.
+    /// - Verify the handler observes the broker reason, the dispatcher returns no response, and the sink is closed.
+    #[ntex::test]
+    async fn test_peer_disconnect_suppresses_reply() {
+        let called = Rc::new(Cell::new(false));
+        let observed = called.clone();
+        let (_io, shared, disp) = dispatcher(
+            MqttServiceConfig::new(),
+            fn_service(async |p: Publish| Ok(Either::Right(p.ack()))),
+            fn_service(move |msg: ProtocolMessage| {
+                let ProtocolMessage::Disconnect(msg) = msg else {
+                    panic!("expected broker disconnect");
+                };
+                assert_eq!(
+                    msg.packet().reason_code,
+                    DisconnectReasonCode::ServerShuttingDown
+                );
+                observed.set(true);
+                async { Ok(crate::v5::disconnect("already disconnected")) }
+            }),
+            16,
+        );
+        let pkt = codec::Disconnect::new(DisconnectReasonCode::ServerShuttingDown);
+        assert_eq!(
+            disp.call(Decoded::Packet(Packet::from(pkt), 2))
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(called.get());
+        assert!(!shared.is_active());
+    }
+
     /// STATEMENT: Incoming publish and response topics reject MQTT wildcard characters.
     ///
     /// HOW:

@@ -245,4 +245,38 @@ mod tests {
         svc.call(Control::<bool>::wr(true)).await.unwrap();
         assert!(sink.is_ready());
     }
+
+    /// STATEMENT: The connection-control wrapper delegates shutdown to its application service exactly once.
+    ///
+    /// HOW:
+    /// - Wrap a control service with a shared shutdown counter and execute a backpressure notification.
+    /// - Shut down the pipeline and assert one application shutdown call.
+    #[ntex::test]
+    async fn test_control_shutdown_delegates() {
+        struct Tracked(Rc<std::cell::Cell<usize>>);
+        impl Service<Session<()>, Control<()>> for Tracked {
+            type Res = ();
+            type Error = ();
+            async fn call(&self, _: Control<()>, _: Ctx<'_, Self, Session<()>>) -> Result<(), ()> {
+                Ok(())
+            }
+            async fn shutdown(&self, _: Ctx<'_, Self, Session<()>>) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let (_peer, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            false,
+            Rc::default(),
+        ));
+        let session = Session::new((), MqttSink::new(shared.clone()), io.shared());
+        let count = Rc::new(std::cell::Cell::new(0));
+        let svc = Pipeline::new(session, ControlService::new(Tracked(count.clone()), shared));
+        assert!(svc.call(Control::<()>::wr(false)).await.unwrap().is_none());
+        svc.shutdown().await;
+        assert_eq!(count.get(), 1);
+    }
 }

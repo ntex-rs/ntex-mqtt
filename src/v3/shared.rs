@@ -604,21 +604,28 @@ impl MqttShared {
         }
     }
 
-    /// Registers an expected acknowledgment and returns its response receiver.
+    /// Encodes a request and registers its expected acknowledgment after success.
     ///
-    /// Rejects identifiers already in flight; the caller encodes the request separately.
-    pub(super) fn wait_response(
+    /// Rejects identifiers already in flight. Encoding errors leave no in-flight
+    /// entry behind, so the identifier and send credit remain available.
+    pub(super) fn send_with_response(
         &self,
         id: num::NonZeroU16,
         ack: AckType,
+        pkt: codec::Packet,
     ) -> Result<pool::Receiver<Ack>, SendPacketError> {
         let mut queues = self.queues.borrow_mut();
         if queues.inflight.contains_key(&id) {
             Err(SendPacketError::PacketIdInUse(id))
         } else {
-            let (tx, rx) = self.pool.queue.channel();
-            queues.inflight.insert(id, (Some(tx), ack));
-            Ok(rx)
+            match self.io.encode(pkt.into(), self) {
+                Ok(()) => {
+                    let (tx, rx) = self.pool.queue.channel();
+                    queues.inflight.insert(id, (Some(tx), ack));
+                    Ok(rx)
+                }
+                Err(e) => Err(SendPacketError::Encode(e)),
+            }
         }
     }
 
@@ -879,5 +886,123 @@ impl AckType {
             AckType::Subscribe => "Expected SUBACK packet",
             AckType::Unsubscribe => "Expected UNSUBACK packet",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ntex_io::{Io, testing::IoTest};
+    use ntex_service::cfg::SharedCfg;
+    use ntex_util::time::{Millis, timeout};
+
+    /// STATEMENT: Automatic packet identifiers wrap from `u16::MAX` to one without encoding zero.
+    ///
+    /// HOW:
+    /// - Set the identifier cursor just before wraparound and send two nonblocking publications.
+    /// - Decode their identifiers at the peer, acknowledge them in order, and verify all send credit returns.
+    #[ntex::test]
+    async fn test_packet_id_wraps_on_wire() {
+        let (client, server) = IoTest::create();
+        client.remote_buffer_cap(1024);
+        let io = Io::new(server, SharedCfg::new("test"));
+        let peer = Io::new(client, SharedCfg::new("peer"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            true,
+            Rc::default(),
+        ));
+        shared.set_cap(2);
+        shared.inflight_idx.set(u16::MAX - 1);
+        let sink = crate::v3::MqttSink::new(shared.clone());
+        sink.publish_ack_cb(|_, _| {});
+        for _ in 0..2 {
+            sink.publish("a")
+                .send_at_least_once_no_block(Bytes::new())
+                .unwrap();
+        }
+        let codec = codec::Codec::default();
+        for id in [u16::MAX, 1] {
+            let received = timeout(Millis(2000), peer.recv(&codec))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let codec::Decoded::Publish(packet, _, _, _) = received else {
+                panic!("expected publication")
+            };
+            assert_eq!(packet.packet_id, num::NonZeroU16::new(id));
+            shared
+                .pkt_ack(Ack::Publish(num::NonZeroU16::new(id).unwrap()))
+                .unwrap();
+        }
+        assert_eq!(sink.credit(), 2);
+    }
+
+    /// STATEMENT: Internal write and credit readiness waits reject an already closed transport.
+    ///
+    /// HOW:
+    /// - Create shared connection state with available credit and force-close its transport.
+    /// - Assert write and credit waits return false and payload writes return `Disconnected`.
+    #[ntex::test]
+    async fn test_closed_transport_readiness() {
+        let (_peer, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::new("test"));
+        let shared = MqttShared::new(io.get_ref(), codec::Codec::default(), true, Rc::default());
+        shared.set_cap(4);
+        shared.force_close();
+        assert!(!shared.wait_write_unblocked().await);
+        assert!(!shared.wait_readiness().await);
+        assert_eq!(
+            shared.want_payload_stream().await,
+            Err(SendPacketError::Disconnected)
+        );
+    }
+
+    /// STATEMENT: A publish waiting for write capacity rechecks whether another streaming payload has started.
+    ///
+    /// HOW:
+    /// - Block writes, poll publish readiness until pending, and encode a streaming header while it waits.
+    /// - Drain writes and assert readiness stays pending until the stream's final byte is encoded.
+    /// - Complete the payload and assert the readiness waiter succeeds.
+    #[ntex::test]
+    async fn test_stream_started_during_write_wait() {
+        use ntex_util::future::lazy;
+        use std::{future::Future, pin::pin};
+
+        let (peer, transport) = IoTest::create();
+        peer.remote_buffer_cap(0);
+        let io = Io::new(transport, SharedCfg::new("test"));
+        let shared = MqttShared::new(io.get_ref(), codec::Codec::default(), true, Rc::default());
+        io.encode_slice(&vec![0; 128 * 1024]).unwrap();
+        assert!(io.is_wr_backpressure());
+        let mut readiness = pin!(shared.wait_publish_ready());
+        assert!(lazy(|cx| readiness.as_mut().poll(cx).is_pending()).await);
+        shared
+            .encode_publish(
+                codec::Publish {
+                    dup: false,
+                    retain: false,
+                    qos: QoS::AtMostOnce,
+                    topic: "a".into(),
+                    packet_id: None,
+                    payload_size: 1,
+                },
+                None,
+            )
+            .unwrap();
+        peer.remote_buffer_cap(1024 * 1024);
+        timeout(Millis(2000), io.write_ready())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(lazy(|cx| readiness.as_mut().poll(cx).is_pending()).await);
+        assert!(shared.is_streaming());
+        assert_eq!(
+            shared.encode_publish_payload(Bytes::from_static(b"x")),
+            Ok(false)
+        );
+        assert!(timeout(Millis(2000), readiness).await.unwrap());
     }
 }

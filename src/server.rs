@@ -381,4 +381,71 @@ mod tests {
         ));
         assert_eq!(client.read_any(), b"\x20\x02\x00\x01".as_ref());
     }
+
+    /// STATEMENT: Malformed protocol prefixes fail identically before and after asynchronous detection starts.
+    ///
+    /// HOW:
+    /// - Supply a PINGREQ, invalid protocol name, and malformed remaining length through buffered and delayed input.
+    /// - Assert the exact decoder error in each handshake result and that no CONNACK was written.
+    #[ntex::test]
+    async fn test_malformed_protocol_prefixes() {
+        use ntex_util::future::lazy;
+        use std::future::Future;
+
+        for (prefix, expected) in [
+            (b"\xc0\x00".as_slice(), DecodeError::UnsupportedPacketType),
+            (
+                b"\x10\x0c\x00\x04NOPE\x04".as_slice(),
+                DecodeError::InvalidProtocol,
+            ),
+            (
+                b"\x10\xff\xff\xff\xff".as_slice(),
+                DecodeError::InvalidLength,
+            ),
+        ] {
+            for buffered in [false, true] {
+                let (client, io, srv) = setup(Millis(5_000));
+                if buffered {
+                    io.with_read_dst(|buf| buf.extend_from_slice(prefix));
+                }
+                let mut call = Box::pin(srv.call(((), io)));
+                if !buffered {
+                    assert!(lazy(|cx| call.as_mut().poll(cx)).await.is_pending());
+                    client.write(prefix);
+                }
+                assert!(matches!(
+                    call.await,
+                    Err(MqttError::Connect(MqttConnectError::Protocol(
+                        crate::error::MqttProtocolError::Decode(error)
+                    ))) if error == expected
+                ));
+                assert!(client.read_any().is_empty());
+            }
+        }
+    }
+
+    /// STATEMENT: A transport failure during protocol detection retains its original I/O error.
+    ///
+    /// HOW:
+    /// - Poll detection with no input, then inject a peer-side connection reset.
+    /// - Assert the disconnected handshake variant preserves the reset kind and diagnostic.
+    #[ntex::test]
+    async fn test_version_transport_error() {
+        use ntex_util::future::lazy;
+        use std::future::Future;
+
+        let (client, io, srv) = setup(Millis(5_000));
+        let mut call = Box::pin(srv.call(((), io)));
+        assert!(lazy(|cx| call.as_mut().poll(cx)).await.is_pending());
+        client.read_error(io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "protocol reset",
+        ));
+        let Err(MqttError::Connect(MqttConnectError::Disconnected(Some(error)))) = call.await
+        else {
+            panic!("expected a transport handshake error");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+        assert_eq!(error.to_string(), "protocol reset");
+    }
 }

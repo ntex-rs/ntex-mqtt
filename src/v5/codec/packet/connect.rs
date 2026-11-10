@@ -394,3 +394,42 @@ impl encode::EncodeLtd for Connect {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_case::test_case;
+
+    /// STATEMENT: Connection and Will properties reject identifiers belonging to other packet types and duplicate singleton fields.
+    ///
+    /// HOW:
+    /// - Insert each disallowed, duplicate, or invalid-valued property block into a `CONNECT` or its Will.
+    /// - Append otherwise valid client and Will fields and expect `MalformedPacket`.
+    #[test_case(false, b"\x03\x00\x00"; "connect_content_type")]
+    #[test_case(false, b"\x11\x00\x00\x00\x01\x11\x00\x00\x00\x02"; "duplicate_expiry")]
+    #[test_case(false, b"\x17\x01\x17\x00"; "duplicate_problem_info")]
+    #[test_case(false, b"\x17\x02"; "invalid_problem_info")]
+    #[test_case(false, b"\x19\x02"; "invalid_response_info")]
+    #[test_case(false, b"\x21\x00\x00"; "zero_receive_max")]
+    #[test_case(true, b"\x21\x00\x01"; "will_receive_max")]
+    #[test_case(true, b"\x18\x00\x00\x00\x01\x18\x00\x00\x00\x02"; "duplicate_will_delay")]
+    #[test_case(true, b"\x01\x02"; "invalid_will_format")]
+    fn test_malformed_connection_properties(will: bool, properties: &'static [u8]) {
+        let mut input = Vec::from(&b"\x00\x04MQTT\x05"[..]);
+        input.extend_from_slice(&[if will { 0x04 } else { 0x00 }, 0, 0]);
+        if will {
+            input.extend_from_slice(b"\x00\x00\x01c");
+        }
+        input.push(properties.len() as u8);
+        input.extend_from_slice(properties);
+        if will {
+            input.extend_from_slice(b"\x00\x01t\x00\x01p");
+        } else {
+            input.extend_from_slice(b"\x00\x01c");
+        }
+        assert_eq!(
+            Connect::decode(&mut Bytes::from(input)),
+            Err(DecodeError::MalformedPacket)
+        );
+    }
+}

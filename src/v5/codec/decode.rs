@@ -727,4 +727,49 @@ mod tests {
             Err(DecodeError::InvalidLength)
         );
     }
+
+    /// STATEMENT: Control-packet dispatch propagates invalid acknowledgment reason codes.
+    ///
+    /// HOW:
+    /// - Decode each publish and subscription acknowledgment with an undefined reason byte.
+    /// - Check every dispatch path returns `MalformedPacket` rather than a packet.
+    #[test]
+    fn test_invalid_ack_reason_codes() {
+        for (first, body) in [
+            (packet_type::PUBACK, &b"\x00\x01\xff"[..]),
+            (packet_type::PUBREC, &b"\x00\x01\xff"[..]),
+            (packet_type::PUBREL, &b"\x00\x01\xff"[..]),
+            (packet_type::PUBCOMP, &b"\x00\x01\xff"[..]),
+            (packet_type::SUBACK, &b"\x00\x01\x00\xff"[..]),
+            (packet_type::UNSUBACK, &b"\x00\x01\x00\xff"[..]),
+        ] {
+            assert_eq!(
+                decode_packet(Bytes::from_static(body), first),
+                Err(DecodeError::MalformedPacket),
+                "header: {first:#x}"
+            );
+        }
+    }
+
+    /// STATEMENT: Unsupported control types and incorrect reserved header flags are rejected.
+    ///
+    /// HOW:
+    /// - Decode the reserved packet type and headers with invalid low bits for each control type.
+    /// - Require `UnsupportedPacketType` even when the remaining length is zero.
+    #[test]
+    fn test_invalid_control_headers() {
+        use ntex_codec::Decoder;
+
+        for first in [
+            0x00, 0x11, 0x21, 0x41, 0x51, 0x60, 0x71, 0x80, 0x91, 0xa0, 0xb1, 0xc1, 0xd1, 0xe1,
+            0xf1,
+        ] {
+            let mut input = BytesMut::from(&[first, 0][..]);
+            assert_eq!(
+                Codec::new().decode(&mut input),
+                Err(DecodeError::UnsupportedPacketType),
+                "header: {first:#x}"
+            );
+        }
+    }
 }

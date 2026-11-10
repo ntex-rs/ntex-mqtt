@@ -286,4 +286,68 @@ mod tests {
         svc.shutdown().await;
         assert_eq!(count.get(), 2);
     }
+
+    /// STATEMENT: Topic aliases preserve captured routing parameters, can be rebound, and unknown aliases use the fallback.
+    ///
+    /// HOW:
+    /// - Register an alias on a parameterized route and send an empty-topic publish using it.
+    /// - Rebind the alias to another topic and verify both handler selection and captured values.
+    /// - Send an unknown alias, an unmatched topic, and an empty topic without an alias; check fallback responses.
+    /// - Check the instantiated service identifies its type in debug output.
+    #[ntex::test]
+    async fn test_topic_alias_routing() {
+        use crate::v5::{MqttSink, codec, shared::MqttShared};
+        use ntex_io::{Io, testing::IoTest};
+        use ntex_service::{Pipeline, cfg::SharedCfg};
+
+        let (_client, server) = IoTest::create();
+        let io = Io::new(server, SharedCfg::new("alias"));
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::new(),
+            Rc::default(),
+        ));
+        let ses = Session::new((), MqttSink::new(shared), io.shared());
+        let factory = Router::new(async |p: Publish| {
+            Ok::<_, ()>(p.ack().reason(ByteString::from_static("fallback")))
+        })
+        .resource("sensor/{id}", async |p: Publish| {
+            let id = ByteString::from(p.topic().get("id").unwrap());
+            Ok::<_, ()>(p.ack().reason(id))
+        })
+        .resource("status", async |p: Publish| {
+            Ok::<_, ()>(p.ack().reason(ByteString::from_static("status")))
+        })
+        .build();
+        let service = factory.create(&ses).await.unwrap();
+        assert!(format!("{service:?}").contains("v5::RouterService"));
+        let svc = Pipeline::new(ses.clone(), service);
+        for (topic, alias, expected) in [
+            ("sensor/42", 1, "42"),
+            ("", 1, "42"),
+            ("status", 1, "status"),
+            ("", 1, "status"),
+            ("", 2, "fallback"),
+            ("unmatched", 0, "fallback"),
+            ("", 0, "fallback"),
+        ] {
+            let pkt = codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtMostOnce,
+                topic: topic.into(),
+                packet_id: None,
+                payload_size: 0,
+                properties: codec::PublishProperties {
+                    topic_alias: NonZeroU16::new(alias),
+                    ..Default::default()
+                },
+            };
+            let ack = svc
+                .call(Publish::new(pkt, crate::payload::Payload::default(), 0))
+                .await
+                .unwrap();
+            assert_eq!(ack.reason_string.as_deref(), Some(expected));
+        }
+    }
 }

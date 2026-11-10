@@ -784,4 +784,115 @@ mod tests {
         assert_eq!(wr.get(), Some(true));
         gate.notify(());
     }
+
+    /// STATEMENT: Client routing resolves cached aliases and leaves unknown or absent aliases for control handling.
+    ///
+    /// HOW:
+    /// - Route a topic with a captured identifier, then resolve an empty-topic alias to the same handler.
+    /// - Rebind that alias and check that the replacement capture is used.
+    /// - Verify an unknown alias and an empty topic without an alias are returned unhandled.
+    #[ntex::test]
+    async fn test_topic_alias_routing() {
+        let (_client, io, _shared, sink) = setup();
+        let mut router = Router::builder();
+        router.path("sensor/{id}", 0);
+        let handler = fn_service(async |p: Publish| {
+            let id = ByteString::from(p.topic().get("id").unwrap());
+            Ok::<_, TestError>(p.ack().reason(id))
+        });
+        let svc = Pipeline::new(
+            Session::new((), sink, io.shared()),
+            dispatch(router.build(), vec![PipelineState::new(handler)]),
+        );
+        for (topic, alias, expected) in [
+            ("sensor/42", Some(1), Some("42")),
+            ("", Some(1), Some("42")),
+            ("sensor/99", Some(1), Some("99")),
+            ("", Some(1), Some("99")),
+            ("", Some(2), None),
+            ("", None, None),
+        ] {
+            let pkt = codec::Publish {
+                dup: false,
+                retain: false,
+                qos: codec::QoS::AtMostOnce,
+                topic: topic.into(),
+                packet_id: None,
+                payload_size: 0,
+                properties: codec::PublishProperties {
+                    topic_alias: alias.and_then(NonZeroU16::new),
+                    ..Default::default()
+                },
+            };
+            let result = svc
+                .call(Publish::new(pkt, crate::payload::Payload::default(), 0))
+                .await
+                .unwrap();
+            match (result, expected) {
+                (Either::Right(ack), Some(expected)) => {
+                    assert_eq!(ack.reason_string.as_deref(), Some(expected));
+                }
+                (Either::Left(p), None) => assert_eq!(p.publish_topic(), ""),
+                (result, expected) => panic!("unexpected route {result:?}, expected {expected:?}"),
+            }
+        }
+    }
+
+    /// STATEMENT: The keep-alive task terminates on an already closed connection and when closure interrupts blocked writes.
+    ///
+    /// HOW:
+    /// - Close a sink before starting its keep-alive future and await completion within a generous deadline.
+    /// - Start a streamed payload, poll keep-alive until its ping is waiting behind that payload, then close.
+    /// - Check the first sink has no pending ping and the second task exits with its sink closed.
+    #[ntex::test]
+    async fn test_keepalive_stops_on_close() {
+        use ntex_util::time::timeout;
+        use std::future::poll_fn;
+        use std::pin::pin;
+
+        let (_client, _io, _shared, sink) = setup();
+        sink.force_close();
+        timeout(Millis(2000), keepalive_interval(sink.clone(), Millis(1)))
+            .await
+            .unwrap();
+        assert!(!sink.is_ping_pending());
+
+        let (_client, _io, _shared, sink) = setup();
+        let stream = sink.publish("a").stream_at_most_once(1).await.unwrap();
+        let mut task = pin!(keepalive_interval(sink.clone(), Millis(1)));
+        timeout(
+            Millis(2000),
+            poll_fn(|cx| {
+                assert!(task.as_mut().poll(cx).is_pending());
+                if sink.is_ping_pending() {
+                    std::task::Poll::Ready(())
+                } else {
+                    std::task::Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        sink.force_close();
+        timeout(Millis(2000), task).await.unwrap();
+        assert!(!sink.is_open());
+        drop(stream);
+    }
+
+    /// STATEMENT: A keep-alive ping encoding failure stops the task without recording an outstanding ping.
+    ///
+    /// HOW:
+    /// - Limit the connection's outbound packet size below the size of `PINGREQ`.
+    /// - Await the keep-alive task and assert no ping is pending, no bytes were written, and the sink remains open.
+    #[ntex::test]
+    async fn test_keepalive_ping_encode_failure() {
+        let (client, _io, shared, sink) = setup();
+        shared.codec.set_max_outbound_size(1);
+        ntex_util::time::timeout(Millis(2000), keepalive_interval(sink.clone(), Millis::ZERO))
+            .await
+            .unwrap();
+        assert!(!sink.is_ping_pending());
+        assert!(client.read_any().is_empty());
+        assert!(sink.is_open());
+    }
 }

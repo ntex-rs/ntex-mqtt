@@ -802,4 +802,50 @@ mod tests {
         assert_encode_packet(&Packet::PingRequest, b"\xc0\x00");
         assert_encode_packet(&Packet::PingResponse, b"\xd0\x00");
     }
+
+    /// STATEMENT: Acknowledgment diagnostics are a fitting property prefix, not later smaller properties.
+    ///
+    /// HOW:
+    /// - Encode an acknowledgment under budgets allowing none or only the first user property.
+    /// - Place an oversized property before a small property and reason string that must also be omitted.
+    /// - Decode the output and compare the retained identifier, reason code, and property prefix.
+    #[test]
+    fn test_diagnostic_properties_stop_at_first_over_budget() {
+        use ntex_bytes::BytesMut;
+        use ntex_codec::{Decoder, Encoder};
+
+        let packet = PublishAck {
+            packet_id: packet_id(7),
+            reason_code: PublishAckReason::NotAuthorized,
+            properties: vec![
+                ("k".into(), "v".into()),
+                ("large".into(), "x".repeat(40).into()),
+                ("a".into(), "b".into()),
+            ],
+            reason_string: Some("r".into()),
+        };
+        for limit in [10, 16, 25] {
+            let codec = Codec::new();
+            codec.set_max_outbound_size(limit);
+            let mut output = BytePages::default();
+            codec
+                .encode(Packet::PublishAck(packet.clone()).into(), &mut output)
+                .unwrap();
+            assert!(output.len() <= limit as usize);
+            let mut input = BytesMut::from(output.freeze().as_ref());
+            let expected = PublishAck {
+                properties: if limit == 10 {
+                    vec![]
+                } else {
+                    vec![("k".into(), "v".into())]
+                },
+                reason_string: None,
+                ..packet.clone()
+            };
+            assert!(
+                matches!(Codec::new().decode(&mut input).unwrap(), Some(Decoded::Packet(Packet::PublishAck(decoded), _)) if decoded == expected)
+            );
+            assert!(input.is_empty());
+        }
+    }
 }

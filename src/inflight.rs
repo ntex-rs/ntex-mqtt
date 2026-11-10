@@ -1504,4 +1504,39 @@ mod tests {
         let _ = fut.await;
         assert_eq!(st.max.get(), 1);
     }
+
+    /// STATEMENT: A byte-limited call resumes after release and cancellation returns its bytes and slot.
+    ///
+    /// HOW:
+    /// - Manually poll two gated 12-byte calls against a one-slot, 10-byte service.
+    /// - Complete the first call and verify the second acquires the released slot and bytes.
+    /// - Cancel the second call and assert zero accounting, no slot waiters, and restored readiness.
+    #[ntex::test]
+    async fn test_waiting_call_resumes_after_byte_release() {
+        use std::future::Future;
+
+        let gate = Condition::new();
+        let service = Rc::new(InFlightServiceImpl::new(1, 10, GateService(gate.clone())));
+        let pipeline = Pipeline::new((), service.clone());
+        let mut first = Box::pin(pipeline.call(()));
+        let mut second = Box::pin(pipeline.call(()));
+        assert!(lazy(|cx| first.as_mut().poll(cx)).await.is_pending());
+        assert!(lazy(|cx| second.as_mut().poll(cx)).await.is_pending());
+        assert_eq!(service.count.0.cur_cap.get(), 1);
+        assert_eq!(service.count.0.cur_size.get(), 12);
+
+        gate.notify(());
+        assert_eq!(
+            lazy(|cx| first.as_mut().poll(cx)).await,
+            Poll::Ready(Ok(()))
+        );
+        assert!(lazy(|cx| second.as_mut().poll(cx)).await.is_pending());
+        assert_eq!(service.count.0.cur_cap.get(), 1);
+        assert_eq!(service.count.0.cur_size.get(), 12);
+        drop(second);
+        assert_eq!(service.count.0.cur_cap.get(), 0);
+        assert_eq!(service.count.0.cur_size.get(), 0);
+        assert!(service.count.0.waiters.borrow().is_empty());
+        pipeline.ready().await.unwrap();
+    }
 }
