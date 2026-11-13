@@ -1,6 +1,6 @@
 # Changes
 
-## [10.0.0] - unreleased
+## [10.0.0] - 2026-11-13
 
 * Add `Ticket`, a per-connection arrival ticket. The v3/v5 codecs issue one to each
   incoming `QoS 1` and `QoS 2` publish in decode order. `Publish::ticket()` and
@@ -9,10 +9,18 @@
 * `Decoded::Publish` gets a fourth field `Option<Ticket>`. `Decoded` no
   longer implements `Clone`. A cloned `Codec` starts its own ticket sequence
 
-* `Ticket` is re-exported from `ntex_util::services::ordered`
+* `Ticket` is re-exported from `ntex_util::services::ordered` (ntex-util 4.11),
+  `Ticket::turn()` returns `Result<(), Canceled>`
 
 * v3, v5: A SUBSCRIBE or UNSUBSCRIBE that fails to encode no longer keeps its packet id
   in flight, so it no longer leaks send credit or causes `PacketIdInUse` on reuse
+
+* v3, v5: Fix `QoS 1` and `QoS 2` publish order under write backpressure. Sends wait
+  in one FIFO send queue, and only the queue head waits for send credit and write
+  capacity. A send keeps its credit until it is encoded
+
+* v3: The sink uses the v5 send-credit queue: credit is reserved in waiter order,
+  and queued sends count against `MqttSink::credit()`
 
 ## [9.5.0] - 2026-11-04
 

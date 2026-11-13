@@ -1612,7 +1612,7 @@ mod tests {
                 let seqs = seqs2.clone();
                 async move {
                     let ticket = msg.ticket().unwrap();
-                    ticket.turn().await;
+                    ticket.turn().await.unwrap();
                     seqs.borrow_mut().push(ticket.seq());
                     if msg.topic().path() == "slow" {
                         sleep(Millis(50)).await;

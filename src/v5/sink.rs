@@ -2414,12 +2414,13 @@ mod tests {
             assert_eq!(sink.credit(), 1);
         }
 
-        /// STATEMENT: Increasing publish capacity reserves credit for the earliest waiting requests.
+        /// STATEMENT: Increasing publish capacity sends waiting requests in queue order.
         ///
         /// HOW:
         /// - Queue four sends with capacity one, then increase capacity to three.
-        /// - Assert no free credit and no bytes from the still-ungranted fourth send.
-        /// - Acknowledge the first send, poll the granted sends in reverse order, inspect their packet order, and acknowledge all to restore capacity.
+        /// - Assert no free credit, and that later sends stay queued until the earlier ones are encoded.
+        /// - Poll the waiting sends from last to first after each encode, inspect their packet order,
+        ///   and acknowledge all to restore capacity.
         #[ntex::test]
         async fn test_set_cap_grants_in_order() {
             let (client, _io, shared, sink) = setup(1);
@@ -2436,24 +2437,102 @@ mod tests {
             // a publish is in flight
             shared.set_cap(3);
             assert_eq!(sink.credit(), 0);
-            assert!(is_pending(&mut d).await);
-            assert_eq!(written(&client).await, Bytes::new());
 
-            // granted entries are skipped
-            assert_eq!(shared.pkt_ack(ack(1)), Ok(()));
+            // only the queue head is sent
             assert!(is_pending(&mut d).await);
             assert!(is_pending(&mut c).await);
+            assert_eq!(written(&client).await, Bytes::new());
             assert!(is_pending(&mut b).await);
-            assert_eq!(written(&client).await, publishes(&[4, 3, 2]));
+            assert_eq!(written(&client).await, publishes(&[2]));
+
+            assert!(is_pending(&mut d).await);
+            assert_eq!(written(&client).await, Bytes::new());
+            assert!(is_pending(&mut c).await);
+            assert_eq!(written(&client).await, publishes(&[3]));
+
+            // credit is exhausted
+            assert!(is_pending(&mut d).await);
+            assert_eq!(written(&client).await, Bytes::new());
+            assert_eq!(shared.pkt_ack(ack(1)), Ok(()));
+            assert!(is_pending(&mut d).await);
+            assert_eq!(written(&client).await, publishes(&[4]));
             assert_eq!(sink.credit(), 0);
 
-            assert_eq!(shared.pkt_ack(ack(4)), Ok(()));
-            assert_eq!(shared.pkt_ack(ack(3)), Ok(()));
-            assert_eq!(shared.pkt_ack(ack(2)), Ok(()));
+            for id in [2, 3, 4] {
+                assert_eq!(shared.pkt_ack(ack(id)), Ok(()));
+            }
             for f in [a, b, c, d] {
                 assert!(f.await.is_ok());
             }
             assert_eq!(sink.credit(), 3);
+        }
+
+        /// STATEMENT: Concurrent publishes waiting for write capacity are encoded in send order.
+        ///
+        /// HOW:
+        /// - Block writes and spawn eight `QoS 1` sends in identifier order, each waiting for write capacity.
+        /// - Drain the write buffer and assert the publishes follow the filler in identifier order.
+        /// - Acknowledge all publishes and assert every task completes with restored credit.
+        #[ntex::test]
+        async fn test_write_backpressure_keeps_order() {
+            let (client, io, shared, sink) = setup(16);
+            block_writes(&client, &io);
+
+            let done = Rc::new(std::cell::Cell::new(0));
+            for id in 1..=8 {
+                let (sink, done) = (sink.clone(), done.clone());
+                ntex_rt::spawn(async move {
+                    assert!(send(&sink, id).await.is_ok());
+                    done.set(done.get() + 1);
+                });
+                sleep(Millis(5)).await;
+            }
+            assert_eq!(sink.credit(), 8);
+
+            client.remote_buffer_cap(1024 * 1024);
+            sleep(Millis(100)).await;
+            let buf = client.read_any();
+            let ids: Vec<u8> = (1..=8).collect();
+            assert_eq!(buf.len(), 128 * 1024 + 8 * 8);
+            assert_eq!(buf.slice(128 * 1024..), publishes(&ids));
+
+            for id in 1..=8 {
+                assert_eq!(shared.pkt_ack(ack(id)), Ok(()));
+            }
+            sleep(Millis(25)).await;
+            assert_eq!(done.get(), 8);
+            assert_eq!(sink.credit(), 16);
+        }
+
+        /// STATEMENT: Cancelling the publish at the head of the send queue while it waits for write capacity passes the turn on.
+        ///
+        /// HOW:
+        /// - Block writes and poll three `QoS 1` sends until pending.
+        /// - Drop the queue head and a middle waiter, then drain the write buffer.
+        /// - Assert only the remaining publish is written and credit is restored after its acknowledgement.
+        #[ntex::test]
+        async fn test_cancelled_head_passes_turn() {
+            let (client, io, shared, sink) = setup(16);
+            block_writes(&client, &io);
+
+            let mut a = send(&sink, 1);
+            let mut b = send(&sink, 2);
+            let mut c = send(&sink, 3);
+            for f in [&mut a, &mut b, &mut c] {
+                assert!(is_pending(f).await);
+            }
+            assert_eq!(sink.credit(), 13);
+            drop(a);
+            drop(b);
+            assert_eq!(sink.credit(), 15);
+
+            unblock_writes(&client, &io).await;
+            assert!(is_pending(&mut c).await);
+            let buf = written(&client).await;
+            assert_eq!(buf.slice(128 * 1024..), publishes(&[3]));
+            assert_eq!(shared.pkt_ack(ack(3)), Ok(()));
+            assert!(c.await.is_ok());
+            assert_eq!(sink.credit(), 16);
         }
 
         /// STATEMENT: A `QoS 2` publish retains its send credit until `PublishComplete`.

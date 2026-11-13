@@ -8,6 +8,7 @@ use ntex_util::{HashMap, channel::pool};
 
 use crate::error::{DecodeError, EncodeError, MqttProtocolError, PayloadError, SendPacketError};
 use crate::io::{FrameState, STREAM_TAG};
+use crate::send_queue::{self, SendQueue, SendQueueOwner, WaitSendPermit};
 use crate::v3::codec::{self, Encoded, Publish};
 use crate::{QoS, payload::PayloadSource, types::packet_type};
 
@@ -89,8 +90,10 @@ pub struct MqttShared {
     io: IoRef,
     /// Maximum number of outstanding acknowledgment flows allowed for sends.
     cap: Cell<usize>,
-    /// Acknowledgment tracking and send-credit waiters for this connection.
+    /// Acknowledgment tracking for this connection.
     queues: RefCell<MqttSharedQueues>,
+    /// Sends waiting for send credit, encoded in queue order.
+    send_queue: RefCell<SendQueue>,
     /// Last generated packet identifier; reset to zero after allocating `u16::MAX`.
     inflight_idx: Cell<u16>,
     /// Connection role, keep-alive state, and shutdown/callback markers.
@@ -130,8 +133,6 @@ struct MqttSharedQueues {
     /// `QoS 1` packet identifiers in send order, used to reject reordered PUBACKs.
     // QoS 1 PUBLISH packet ids in send order
     pubacks: VecDeque<num::NonZeroU16>,
-    /// Readiness notifications queued until send capacity becomes available.
-    waiters: VecDeque<pool::Sender<()>>,
     /// PUBCOMP receivers retained after PUBREC until release or completion.
     // PUBCOMP receivers, one per QoS 2 PUBLISH awaiting release
     rx: HashMap<num::NonZeroU16, pool::Receiver<Ack>>,
@@ -154,9 +155,9 @@ impl MqttShared {
             queues: RefCell::new(MqttSharedQueues {
                 inflight: HashMap::default(),
                 pubacks: VecDeque::new(),
-                waiters: VecDeque::new(),
                 rx: HashMap::default(),
             }),
+            send_queue: RefCell::default(),
             inflight_idx: Cell::new(0),
             encode_error: Cell::new(None),
             streaming_remaining: Cell::new(None),
@@ -313,9 +314,10 @@ impl MqttShared {
 
     /// Returns whether send credit is available and write backpressure is off.
     ///
-    /// Does not check connection activity, exclude an outgoing stream, or reserve credit.
+    /// Queued sends get send credit first. Does not check connection activity,
+    /// exclude an outgoing stream, or reserve credit.
     pub(super) fn is_ready(&self) -> bool {
-        self.credit() > 0 && !self.io.is_wr_backpressure()
+        self.send_queue.borrow().is_empty() && self.credit() > 0 && !self.io.is_wr_backpressure()
     }
 
     /// Claims the DISCONNECT marker and returns whether it was already set.
@@ -331,11 +333,11 @@ impl MqttShared {
         sent
     }
 
-    /// Returns unused send capacity after counting all outstanding acknowledgment flows.
+    /// Returns send capacity not claimed by outstanding acknowledgment flows or queued sends.
     pub(super) fn credit(&self) -> usize {
         self.cap
             .get()
-            .saturating_sub(self.queues.borrow().inflight.len())
+            .saturating_sub(self.queues.borrow().inflight.len() + self.send_queue.borrow().len())
     }
 
     /// Allocates the next nonzero packet identifier, wrapping after `u16::MAX`.
@@ -364,11 +366,10 @@ impl MqttShared {
         }
     }
 
-    /// Updates send capacity and wakes queued operations that may now proceed.
+    /// Updates send capacity and grants newly available credit to the queue head.
     pub(super) fn set_cap(&self, cap: usize) {
         self.cap.set(cap);
-        // wake up queued request (receive max limit)
-        self.wake_waiters();
+        self.grant(&self.queues.borrow());
     }
 
     /// Installs the callback for nonblocking publish acks and disconnect notifications.
@@ -443,7 +444,7 @@ impl MqttShared {
 
         let mut queues = self.queues.borrow_mut();
         queues.pubacks.clear();
-        queues.waiters.clear();
+        self.send_queue.borrow_mut().close();
 
         if let Some(cb) = self.on_publish_ack.take() {
             for (idx, (tx, _)) in queues.inflight.drain() {
@@ -456,27 +457,13 @@ impl MqttShared {
         }
     }
 
-    /// Wakes queued operations up to the available send capacity without reserving it.
-    fn wake_waiters(&self) {
-        self.wake_waiters_inner(&mut self.queues.borrow_mut());
-    }
-
-    /// Notifies at most the available send capacity, skipping canceled waiters.
+    /// Grants send credit to the queue head if capacity allows it.
     ///
-    /// Notifications do not reserve credit; woken operations must check readiness again.
-    fn wake_waiters_inner(&self, queues: &mut MqttSharedQueues) {
-        if queues.inflight.len() < self.cap.get() {
-            let mut num = self.cap.get() - queues.inflight.len();
-            while num > 0 {
-                if let Some(tx) = queues.waiters.pop_front() {
-                    if tx.send(()).is_ok() {
-                        num -= 1;
-                    }
-                } else {
-                    break;
-                }
-            }
-        }
+    /// The head keeps the credit until its packet is in flight.
+    fn grant(&self, queues: &MqttSharedQueues) {
+        self.send_queue
+            .borrow_mut()
+            .grant(queues.inflight.len(), self.cap.get());
     }
 
     /// Waits for transport write capacity before encoding an outgoing payload chunk.
@@ -599,7 +586,7 @@ impl MqttShared {
             }
 
             // wake up queued request (receive max limit)
-            self.wake_waiters_inner(&mut queues);
+            self.grant(&queues);
             Ok(())
         }
     }
@@ -708,36 +695,27 @@ impl MqttShared {
         }
     }
 
-    /// Waits for write backpressure to clear and send credit to become available.
+    /// Reserves send credit and waits for write backpressure to be released.
     ///
-    /// Returns `false` if the connection closes; readiness does not reserve credit.
-    ///
-    /// A woken credit waiter checks again, a packet sent without waiting may take
-    /// the credit first or write backpressure may be enabled again, the waiter is
-    /// queued again in front of the others.
-    pub(super) async fn wait_readiness(&self) -> bool {
-        let mut woken = false;
-        loop {
-            if !self.wait_writable().await {
-                return false;
+    /// The send is queued for send credit immediately, not on the first poll.
+    /// Only the queue head waits for write backpressure, so sends are encoded
+    /// in queue order. Fails if the connection is closed.
+    pub(super) fn wait_send_ready(
+        self: &Rc<Self>,
+    ) -> impl Future<Output = Result<SendPermit, SendPacketError>> + use<> {
+        let permit: WaitSendPermit<Self> = if self.is_active() {
+            send_queue::send_permit(self)
+        } else {
+            send_queue::send_permit_disconnected(self)
+        };
+        let shared = self.clone();
+        async move {
+            let permit = permit.await?;
+            if shared.wait_writable().await {
+                Ok(permit)
+            } else {
+                Err(SendPacketError::Disconnected)
             }
-            let rx = {
-                let mut queues = self.queues.borrow_mut();
-                if queues.inflight.len() < self.cap.get() {
-                    return true;
-                }
-                let (tx, rx) = self.pool.waiters.channel();
-                if woken {
-                    queues.waiters.push_front(tx);
-                } else {
-                    queues.waiters.push_back(tx);
-                }
-                rx
-            };
-            if rx.await.is_err() {
-                return false;
-            }
-            woken = true;
         }
     }
 
@@ -758,6 +736,19 @@ impl MqttShared {
             Ok(()) => Ok(rx),
             Err(e) => Err(SendPacketError::Encode(e)),
         }
+    }
+}
+
+/// Send credit held by the queue head for an acknowledged send.
+pub(super) type SendPermit = send_queue::SendPermit<MqttShared>;
+
+impl SendQueueOwner for MqttShared {
+    fn send_queue(&self) -> &RefCell<SendQueue> {
+        &self.send_queue
+    }
+
+    fn grant_send(&self) {
+        self.grant(&self.queues.borrow());
     }
 }
 
@@ -949,11 +940,19 @@ mod tests {
     async fn test_closed_transport_readiness() {
         let (_peer, server) = IoTest::create();
         let io = Io::new(server, SharedCfg::new("test"));
-        let shared = MqttShared::new(io.get_ref(), codec::Codec::default(), true, Rc::default());
+        let shared = Rc::new(MqttShared::new(
+            io.get_ref(),
+            codec::Codec::default(),
+            true,
+            Rc::default(),
+        ));
         shared.set_cap(4);
         shared.force_close();
         assert!(!shared.wait_write_unblocked().await);
-        assert!(!shared.wait_readiness().await);
+        assert!(matches!(
+            shared.wait_send_ready().await,
+            Err(SendPacketError::Disconnected)
+        ));
         assert_eq!(
             shared.want_payload_stream().await,
             Err(SendPacketError::Disconnected)
