@@ -43,6 +43,8 @@ mod inflight;
 mod io;
 /// Streaming publish payload delivery and flow control.
 mod payload;
+/// Ordered queue of acknowledged sends waiting for send credit.
+mod send_queue;
 /// Protocol detection and combined v3.1.1/v5 server dispatch.
 mod server;
 /// Handshake-to-dispatcher adapter for protocol-specific servers.

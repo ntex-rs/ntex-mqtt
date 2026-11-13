@@ -3,7 +3,7 @@ use std::{cell::Cell, fmt, future::Future, future::ready, num::NonZeroU16, rc::R
 use ntex_bytes::{ByteString, Bytes};
 use ntex_util::{channel::pool, future::Either};
 
-use crate::v3::shared::{Ack, AckType, MqttShared};
+use crate::v3::shared::{Ack, AckType, MqttShared, SendPermit};
 use crate::v3::{codec, error::SendPacketError};
 use crate::{error::EncodeError, types::QoS};
 
@@ -68,8 +68,9 @@ impl MqttSink {
     /// Waits for send credit and writable connection state.
     ///
     /// Returns `false` when closure is observed, otherwise `true` when the
-    /// readiness check succeeds. Credit is not reserved for the caller; another
-    /// send can consume it before the caller sends.
+    /// readiness check succeeds. A waiting call queues immediately with publishes
+    /// and temporarily reserves credit. Completion releases that reservation to
+    /// the next waiter; the caller does not retain permission to send.
     /// An immediately ready result reflects state when this method is called,
     /// not when its future is later polled. This notification does not ensure
     /// that an active streaming payload has finished.
@@ -79,8 +80,8 @@ impl MqttSink {
         } else if self.0.is_ready() {
             Either::Left(ready(true))
         } else {
-            let shared = self.0.clone();
-            Either::Right(async move { shared.wait_readiness().await })
+            let permit = self.0.wait_send_ready();
+            Either::Right(async move { permit.await.is_ok() })
         }
     }
 
@@ -329,7 +330,8 @@ impl PublishBuilder {
 
     /// Sends a complete `QoS 1` publish and waits for `PublishAck`.
     ///
-    /// Waits for send credit and writable connection state before encoding.
+    /// Reserves send credit in waiter order and holds it while waiting for write
+    /// capacity.
     /// An already active streaming payload can cause [`EncodeError::ExpectPayload`].
     ///
     /// The acknowledgement is read by the connection dispatcher. Awaiting it in a
@@ -341,10 +343,8 @@ impl PublishBuilder {
             self.packet.payload_size = payload.len() as u32;
 
             // handle client receive maximum
-            if !self.shared.wait_readiness().await {
-                return Err(SendPacketError::Disconnected);
-            }
-            self.send_at_least_once_inner(payload).await
+            let permit = self.shared.wait_send_ready().await?;
+            self.send_at_least_once_inner(payload, permit).await
         } else {
             Err(SendPacketError::Disconnected)
         }
@@ -384,20 +384,28 @@ impl PublishBuilder {
     }
 
     /// Assigns an identifier, encodes a `QoS 1` publish, and awaits its acknowledgement.
-    async fn send_at_least_once_inner(mut self, payload: Bytes) -> Result<(), SendPacketError> {
+    async fn send_at_least_once_inner(
+        mut self,
+        payload: Bytes,
+        permit: SendPermit,
+    ) -> Result<(), SendPacketError> {
         let idx = self.shared.set_publish_id(&mut self.packet);
         log::trace!("Publish (QoS1) to {:#?}", self.packet);
 
-        self.shared
-            .wait_publish_response(idx, AckType::Publish, self.packet, Some(payload))?
-            .await
+        // the in-flight publish holds the send credit
+        let rx =
+            self.shared
+                .wait_publish_response(idx, AckType::Publish, self.packet, Some(payload));
+        drop(permit);
+        rx?.await
             .map(|_| ())
             .map_err(|_| SendPacketError::Disconnected)
     }
 
     /// Sends a complete `QoS 2` publish and waits for `PublishReceived`.
     ///
-    /// Waits for send credit and writable connection state before encoding.
+    /// Reserves send credit in waiter order and holds it while waiting for write
+    /// capacity.
     /// An already active streaming payload can cause [`EncodeError::ExpectPayload`].
     /// The returned handle controls release; send credit stays in use until
     /// `PublishComplete`.
@@ -416,10 +424,8 @@ impl PublishBuilder {
             self.packet.payload_size = payload.len() as u32;
 
             // handle client receive maximum
-            if !self.shared.wait_readiness().await {
-                return Err(SendPacketError::Disconnected);
-            }
-            self.send_exactly_once_inner(payload).await
+            let permit = self.shared.wait_send_ready().await?;
+            self.send_exactly_once_inner(payload, permit).await
         } else {
             Err(SendPacketError::Disconnected)
         }
@@ -429,13 +435,17 @@ impl PublishBuilder {
     async fn send_exactly_once_inner(
         mut self,
         payload: Bytes,
+        permit: SendPermit,
     ) -> Result<PublishReceived, SendPacketError> {
         let idx = self.shared.set_publish_id(&mut self.packet);
         log::trace!("Publish (QoS2) to {:#?}", self.packet);
 
+        // the in-flight publish holds the send credit
         let rx =
             self.shared
-                .wait_publish_response(idx, AckType::Receive, self.packet, Some(payload))?;
+                .wait_publish_response(idx, AckType::Receive, self.packet, Some(payload));
+        drop(permit);
+        let rx = rx?;
         let guard = ReleaseGuard(idx, &self.shared);
         let result = rx.await;
         std::mem::forget(guard);
@@ -454,7 +464,8 @@ impl PublishBuilder {
     /// concurrently with `StreamingPayload::send`: it waits for readiness, encodes
     /// the header, then waits for `PublishAck`. Send exactly `size` payload bytes
     /// in sequential chunks; no chunks are needed for zero.
-    /// The credit wait begins when the returned future is polled.
+    /// This call immediately enters the send-credit queue, even before the future
+    /// is polled.
     /// Dropping the sender before the header is encoded cancels the send. Once
     /// payload sending has begun, dropping it with remaining bytes terminates the
     /// connection. An already active stream can cause [`EncodeError::ExpectPayload`].
@@ -481,11 +492,10 @@ impl PublishBuilder {
             self.packet.payload_size = size;
 
             // handle client receive maximum
+            let permit = self.shared.wait_send_ready();
             let fut = Either::Left(async move {
-                if !self.shared.wait_readiness().await {
-                    return Err(SendPacketError::Disconnected);
-                }
-                self.stream_at_least_once_inner(tx).await
+                let permit = permit.await?;
+                self.stream_at_least_once_inner(tx, permit).await
             });
             (fut, stream)
         } else {
@@ -500,6 +510,7 @@ impl PublishBuilder {
     async fn stream_at_least_once_inner(
         mut self,
         tx: pool::Sender<()>,
+        permit: SendPermit,
     ) -> Result<(), SendPacketError> {
         // packet id
         let idx = self.shared.set_publish_id(&mut self.packet);
@@ -513,6 +524,7 @@ impl PublishBuilder {
             let rx = self
                 .shared
                 .wait_publish_response(idx, AckType::Publish, self.packet, None);
+            drop(permit);
             let _ = tx.send(());
 
             rx?.await
@@ -644,9 +656,7 @@ impl SubscribeBuilder {
         }
         if self.shared.is_active() {
             // handle client receive maximum
-            if !self.shared.wait_readiness().await {
-                return Err(SendPacketError::Disconnected);
-            }
+            let permit = self.shared.wait_send_ready().await?;
             let idx = self.id.unwrap_or_else(|| self.shared.next_id());
 
             // send subscribe to client
@@ -663,7 +673,9 @@ impl SubscribeBuilder {
                     packet_id: idx,
                     topic_filters: self.topic_filters,
                 },
-            )?;
+            );
+            drop(permit);
+            let rx = rx?;
             // wait ack from peer
             rx.await
                 .map_err(|_| SendPacketError::Disconnected)
@@ -742,9 +754,7 @@ impl UnsubscribeBuilder {
 
         if shared.is_active() {
             // handle client receive maximum
-            if !shared.wait_readiness().await {
-                return Err(SendPacketError::Disconnected);
-            }
+            let permit = shared.wait_send_ready().await?;
             // allocate packet id
             let idx = self.id.unwrap_or_else(|| shared.next_id());
 
@@ -758,7 +768,9 @@ impl UnsubscribeBuilder {
                     packet_id: idx,
                     topic_filters: filters,
                 },
-            )?;
+            );
+            drop(permit);
+            let rx = rx?;
             // wait ack from peer
             rx.await
                 .map_err(|_| SendPacketError::Disconnected)
@@ -1345,10 +1357,11 @@ mod tests {
         let mut publish = pin!(sink.publish("c").send_at_least_once(Bytes::new()));
         assert!(lazy(|cx| publish.as_mut().poll(cx).is_pending()).await);
 
-        // the payload goes first, the publish cannot interleave with it
+        // the payload goes first, the publish cannot interleave with it,
+        // the publish holds its send credit
         unblock_writes(&client, &io).await;
         assert!(lazy(|cx| publish.as_mut().poll(cx).is_pending()).await);
-        assert_eq!(sink.credit(), 16);
+        assert_eq!(sink.credit(), 15);
         chunk.await.unwrap();
         assert!(!shared.is_streaming());
 
@@ -1422,14 +1435,14 @@ mod tests {
         }
     }
 
-    /// STATEMENT: A woken `QoS 1` waiter rechecks credit after another publish takes the freed slot.
+    /// STATEMENT: Acknowledgement-released credit stays reserved for the first waiter in queue order.
     ///
     /// HOW:
     /// - Fill the only send slot, then queue a second publish and a readiness notification.
     /// - Acknowledge the first publish and start a third publish before polling the waiter.
-    /// - Inspect the sent bytes and assert the waiter and readiness notification remain pending until their turn.
+    /// - Inspect the sent bytes and assert the third publish and readiness wait for their turn.
     #[ntex::test]
-    async fn test_woken_waiter_rechecks_credit() {
+    async fn test_woken_waiter_keeps_credit() {
         let (client, _io, shared, sink) = setup(1);
 
         let mut a = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
@@ -1439,38 +1452,47 @@ mod tests {
         let mut ready = pin!(sink.ready());
         assert!(lazy(|cx| ready.as_mut().poll(cx).is_pending()).await);
 
-        // ack wakes "b", "c" takes the credit before "b" is polled
+        // ack grants the credit to "b", "c" queues behind it
         assert_eq!(shared.pkt_ack(Ack::Publish(id(1))), Ok(()));
         assert!(a.await.is_ok());
+        assert!(!sink.is_ready());
+        assert_eq!(shared.credit(), 0);
         let mut c = pin!(sink.publish("c").send_at_least_once(Bytes::new()));
         assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
-        assert_eq!(shared.credit(), 0);
         assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
         assert!(lazy(|cx| ready.as_mut().poll(cx).is_pending()).await);
         assert_eq!(shared.credit(), 0);
         sleep(Millis(50)).await;
         assert_eq!(
             client.read_any(),
-            Bytes::from_static(b"\x32\x05\x00\x01a\x00\x01\x32\x05\x00\x01c\x00\x02")
+            Bytes::from_static(b"\x32\x05\x00\x01a\x00\x01\x32\x05\x00\x01b\x00\x02")
         );
 
-        // "b" is still first in line
+        // readiness is next, then "c"
         assert_eq!(shared.pkt_ack(Ack::Publish(id(2))), Ok(()));
-        assert!(c.await.is_ok());
-        assert!(lazy(|cx| ready.as_mut().poll(cx).is_pending()).await);
-        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
-        assert_eq!(shared.credit(), 0);
-        assert_eq!(shared.pkt_ack(Ack::Publish(id(3))), Ok(()));
         assert!(b.await.is_ok());
+        assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
+        sleep(Millis(50)).await;
+        assert_eq!(client.read_any(), Bytes::new());
         assert!(ready.await);
+        assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
+        assert_eq!(shared.credit(), 0);
+        sleep(Millis(50)).await;
+        assert_eq!(
+            client.read_any(),
+            Bytes::from_static(b"\x32\x05\x00\x01c\x00\x03")
+        );
+        assert_eq!(shared.pkt_ack(Ack::Publish(id(3))), Ok(()));
+        assert!(c.await.is_ok());
+        assert_eq!(shared.credit(), 1);
     }
 
     /// STATEMENT: A publish woken by an acknowledgement still waits for write backpressure to drain.
     ///
     /// HOW:
     /// - Fill the only send slot, queue another publish, and block writes.
-    /// - Acknowledge the first publish and assert the waiter remains pending with one free credit.
-    /// - Drain writes and assert the second publish consumes that credit while awaiting its acknowledgement.
+    /// - Acknowledge the first publish and assert the waiter remains pending and holds the freed credit.
+    /// - Drain writes and assert the second publish keeps that credit while awaiting its acknowledgement.
     #[ntex::test]
     async fn test_ack_respects_write_backpressure() {
         let (client, io, shared, sink) = setup(1);
@@ -1479,27 +1501,119 @@ mod tests {
         assert!(lazy(|cx| a.as_mut().poll(cx).is_pending()).await);
         let mut b = pin!(sink.publish("b").send_at_least_once(Bytes::new()));
         assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
+        sleep(Millis(50)).await;
+        assert_eq!(
+            client.read_any(),
+            Bytes::from_static(b"\x32\x05\x00\x01a\x00\x01")
+        );
 
         block_writes(&client, &io);
         assert_eq!(shared.pkt_ack(Ack::Publish(id(1))), Ok(()));
         assert!(a.await.is_ok());
         assert!(!sink.is_ready());
         assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
-        assert_eq!(shared.credit(), 1);
+        assert_eq!(shared.credit(), 0);
+        sleep(Millis(50)).await;
+        assert_eq!(client.read_any(), Bytes::new());
 
         unblock_writes(&client, &io).await;
         assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
         assert_eq!(shared.credit(), 0);
+        sleep(Millis(50)).await;
+        let buf = client.read_any();
+        assert_eq!(buf.len(), 128 * 1024 + 7);
+        assert!(buf.ends_with(b"\x32\x05\x00\x01b\x00\x02"));
     }
 
-    /// STATEMENT: Increasing send capacity wakes only as many publishes as available credit permits.
+    /// STATEMENT: Concurrent publishes waiting for write capacity are encoded in send order.
     ///
     /// HOW:
-    /// - Start four sends with capacity one, increase capacity to three, and poll the waiters.
-    /// - Assert only the first two waiters consume the two new credits.
-    /// - Increase capacity under write backpressure and verify the final waiter consumes credit only after writes drain.
+    /// - Block writes and spawn eight `QoS 1` sends in identifier order, each waiting for write capacity.
+    /// - Drain the write buffer and assert the publishes follow the filler in identifier order.
+    /// - Acknowledge all publishes and assert every task completes with restored credit.
     #[ntex::test]
-    async fn test_set_cap_wakes_within_credit() {
+    async fn test_write_backpressure_keeps_order() {
+        let (client, io, shared, sink) = setup(16);
+        block_writes(&client, &io);
+
+        let done = Rc::new(std::cell::Cell::new(0));
+        for n in 1..=8 {
+            let (sink, done) = (sink.clone(), done.clone());
+            ntex_rt::spawn(async move {
+                let res = sink
+                    .publish("a")
+                    .packet_id(n)
+                    .send_at_least_once(Bytes::new())
+                    .await;
+                assert!(res.is_ok());
+                done.set(done.get() + 1);
+            });
+            sleep(Millis(5)).await;
+        }
+        assert_eq!(sink.credit(), 8);
+
+        client.remote_buffer_cap(1024 * 1024);
+        sleep(Millis(100)).await;
+        let buf = client.read_any();
+        let mut expected = Vec::new();
+        for n in 1..=8 {
+            expected.extend_from_slice(&[0x32, 0x05, 0x00, 0x01, b'a', 0x00, n]);
+        }
+        assert_eq!(buf.len(), 128 * 1024 + expected.len());
+        assert_eq!(buf.slice(128 * 1024..), Bytes::from(expected));
+
+        for n in 1..=8 {
+            assert_eq!(shared.pkt_ack(Ack::Publish(id(n))), Ok(()));
+        }
+        sleep(Millis(25)).await;
+        assert_eq!(done.get(), 8);
+        assert_eq!(sink.credit(), 16);
+    }
+
+    /// STATEMENT: Cancelling the publish at the head of the send queue while it waits for write capacity passes the turn on.
+    ///
+    /// HOW:
+    /// - Block writes and poll three `QoS 1` sends until pending.
+    /// - Drop the queue head and a middle waiter, then drain the write buffer.
+    /// - Assert only the remaining publish is written and credit is restored after its acknowledgement.
+    #[ntex::test]
+    async fn test_cancelled_head_passes_turn() {
+        let (client, io, shared, sink) = setup(16);
+        block_writes(&client, &io);
+
+        let mut a = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
+        assert!(is_pending(&mut a).await);
+        let mut b = Box::pin(sink.publish("b").send_at_least_once(Bytes::new()));
+        assert!(is_pending(&mut b).await);
+        let mut c = pin!(sink.publish("c").send_at_least_once(Bytes::new()));
+        assert!(is_pending(&mut c).await);
+        assert_eq!(sink.credit(), 13);
+        drop(b);
+        assert_eq!(sink.credit(), 14);
+        a.set(sink.publish("x").send_at_least_once(Bytes::new()));
+        assert_eq!(sink.credit(), 15);
+
+        unblock_writes(&client, &io).await;
+        assert!(is_pending(&mut c).await);
+        sleep(Millis(50)).await;
+        let buf = client.read_any();
+        assert_eq!(
+            buf.slice(128 * 1024..),
+            Bytes::from_static(b"\x32\x05\x00\x01c\x00\x01")
+        );
+        assert_eq!(shared.pkt_ack(Ack::Publish(id(1))), Ok(()));
+        assert!(c.await.is_ok());
+        assert_eq!(sink.credit(), 16);
+    }
+
+    /// STATEMENT: Increasing send capacity sends waiting publishes in queue order.
+    ///
+    /// HOW:
+    /// - Start four sends with capacity one, increase capacity to three, and poll the waiters from last to first.
+    /// - Assert only the queue head is encoded on each round and later sends wait for it.
+    /// - Increase capacity under write backpressure and verify the final waiter is encoded only after writes drain.
+    #[ntex::test]
+    async fn test_set_cap_sends_in_order() {
         let (client, io, shared, sink) = setup(1);
 
         let mut a = pin!(sink.publish("a").send_at_least_once(Bytes::new()));
@@ -1510,24 +1624,44 @@ mod tests {
         assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
         let mut d = pin!(sink.publish("d").send_at_least_once(Bytes::new()));
         assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
+        sleep(Millis(50)).await;
+        assert_eq!(
+            client.read_any(),
+            Bytes::from_static(b"\x32\x05\x00\x01a\x00\x01")
+        );
 
-        // one in flight, cap 3 leaves credit for "b" and "c"
+        // one in flight, queued sends reserve the rest
         shared.set_cap(3);
-        assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
-        assert_eq!(shared.credit(), 2);
-        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
-        assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
         assert_eq!(shared.credit(), 0);
         assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
+        sleep(Millis(50)).await;
+        assert_eq!(client.read_any(), Bytes::new());
+        assert!(lazy(|cx| b.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| c.as_mut().poll(cx).is_pending()).await);
+        assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
+        sleep(Millis(50)).await;
+        assert_eq!(
+            client.read_any(),
+            Bytes::from_static(b"\x32\x05\x00\x01b\x00\x02\x32\x05\x00\x01c\x00\x03")
+        );
+        assert_eq!(shared.credit(), 0);
 
         // no publish while write backpressure is enabled
         block_writes(&client, &io);
         shared.set_cap(4);
         assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
-        assert_eq!(shared.credit(), 1);
+        assert_eq!(shared.credit(), 0);
+        sleep(Millis(50)).await;
+        assert_eq!(client.read_any(), Bytes::new());
         unblock_writes(&client, &io).await;
         assert!(lazy(|cx| d.as_mut().poll(cx).is_pending()).await);
         assert_eq!(shared.credit(), 0);
+        sleep(Millis(50)).await;
+        let buf = client.read_any();
+        assert_eq!(buf.len(), 128 * 1024 + 7);
+        assert!(buf.ends_with(b"\x32\x05\x00\x01d\x00\x04"));
     }
 
     /// Tests of acknowledgement ordering and identifier matching across packet flows.
@@ -2174,7 +2308,8 @@ mod tests {
         assert!(is_pending(&mut publish).await);
         assert!(is_pending(&mut subscribe).await);
         assert!(is_pending(&mut unsubscribe).await);
-        assert_eq!(sink.credit(), 4);
+        // queued sends reserve credit
+        assert_eq!(sink.credit(), 1);
         sink.force_close();
         assert_eq!(publish.await, Err(SendPacketError::Disconnected));
         assert_eq!(subscribe.await, Err(SendPacketError::Disconnected));
