@@ -1,5 +1,11 @@
 # Changes
 
+## [10.0.2] - 2026-11-17
+
+* Decode input received together with a keep-alive or frame-read timer expiry before
+  handling the timeout, a packet that arrived in time is dispatched instead of closing
+  the connection with `KeepAliveTimeout`
+
 ## [10.0.1] - 2026-11-16
 
 * Fix undefined behavior in v3/v5 `Subscribe::iter_mut()` and v5
