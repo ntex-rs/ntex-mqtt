@@ -1,6 +1,6 @@
 [package]
 name = "ntex-mqtt"
-version = "10.0.1"
+version = "10.0.2"
 authors = ["ntex contributors <team@ntex.rs>"]
 description = "Client and Server framework for MQTT v5 and v3.1.1 protocols"
 documentation = "https://docs.rs/ntex-mqtt"
@@ -18,9 +18,9 @@ features = ["ntex-net/tokio"]
 ntex-bytes = "1.15"
 ntex-codec = "2.0"
 ntex-error = "3.1"
-ntex-io = "4.7.1"
+ntex-io = "4.7"
 ntex-net = "4.12"
-ntex-service = "5.7.2"
+ntex-service = "5.7"
 ntex-router = "2.3"
 ntex-rt = "4.9"
 ntex-util = "4.11"
@@ -32,9 +32,9 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
 [dev-dependencies]
-ntex = { version = "4.7.0", features = ["openssl"] }
+ntex = { version = "4.9.0", features = ["openssl"] }
 ntex-tls = "4.8.0"
-ntex-server = "4.5.1"
+ntex-server = "4.6.0"
 
 rand = "0.10"
 env_logger = "0.11"

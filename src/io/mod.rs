@@ -414,6 +414,9 @@ where
                                 return Poll::Pending;
                             }
                         }
+                        Err(RecvError::Timeout) if inner.timers.active != Timer::Write => {
+                            inner.decode_on_timeout(cx);
+                        }
                         Err(RecvError::Timeout) => {
                             if let Err(err) = inner.handle_timeout() {
                                 inner.stop(Control::proto(err));
@@ -837,6 +840,26 @@ where
                 Timer::Stopped
             }
         };
+    }
+
+    /// Handles a read timer expiry, input received together with the expiry wins over it
+    fn decode_on_timeout(&mut self, cx: &mut Context<'_>) {
+        // the buffered input is decoded first, a timer switched for the received
+        // input has not expired
+        match self.io.decode_item(&self.codec) {
+            Ok(decoded) => {
+                let timer = self.timers.active;
+                self.update_timer(&decoded);
+                if let Some(el) = decoded.item {
+                    self.call_service(cx, el);
+                } else if self.timers.active == timer
+                    && let Err(err) = self.handle_timeout()
+                {
+                    self.stop(Control::proto(err));
+                }
+            }
+            Err(err) => self.stop(Control::proto(MqttProtocolError::Decode(err))),
+        }
     }
 
     /// Handles an elapsed timer, extending a sufficient frame rate or returning a timeout error.
@@ -1915,6 +1938,77 @@ mod tests {
         );
         ntex_util::spawn(disp);
         (client, state, errs)
+    }
+
+    /// STATEMENT: A frame received together with the keep-alive expiry is dispatched instead of
+    /// stopping the connection.
+    ///
+    /// HOW:
+    /// - Start an echo dispatcher with keep-alive, write a full frame and signal the dispatcher
+    ///   timeout in the same task turn, so the frame is buffered when the timeout is reported.
+    /// - Verify the frame is echoed, the connection stays active and no protocol error is recorded.
+    #[ntex::test]
+    async fn test_keepalive_expiry_with_buffered_frame() {
+        let (client, state, errs) =
+            timeout_dispatcher(IoConfig::new().set_keepalive_timeout(Seconds(5)));
+        sleep(Millis(50)).await;
+
+        client.write(Bytes::from(vec![b'a'; 64]));
+        state.notify_timeout();
+
+        let buf = client.read().await.unwrap();
+        assert_eq!(buf, Bytes::from(vec![b'a'; 64]));
+        sleep(Millis(50)).await;
+        assert!(state.is_active());
+        assert!(errs.borrow().is_empty());
+    }
+
+    /// STATEMENT: A keep-alive expiry without buffered input still stops the connection.
+    ///
+    /// HOW:
+    /// - Start an idle echo dispatcher with keep-alive and signal the dispatcher timeout.
+    /// - Verify the dispatcher stops with exactly `MqttProtocolError::KeepAliveTimeout`.
+    #[ntex::test]
+    async fn test_keepalive_expiry_without_input() {
+        let (_client, state, errs) =
+            timeout_dispatcher(IoConfig::new().set_keepalive_timeout(Seconds(5)));
+        sleep(Millis(50)).await;
+
+        state.notify_timeout();
+        assert!(wait_until(|| !errs.borrow().is_empty()).await);
+        assert!(matches!(
+            &errs.borrow()[..],
+            [MqttProtocolError::KeepAliveTimeout]
+        ));
+    }
+
+    /// STATEMENT: A partial frame received together with the keep-alive expiry switches to the
+    /// frame-read timer instead of stopping the connection.
+    ///
+    /// HOW:
+    /// - Configure keep-alive and a frame-read rate, write half of a frame and signal the
+    ///   dispatcher timeout in the same task turn.
+    /// - Verify the connection stays active, then send the rest and verify the frame is echoed.
+    #[ntex::test]
+    async fn test_keepalive_expiry_with_partial_frame() {
+        let (client, state, errs) = timeout_dispatcher(
+            IoConfig::new()
+                .set_keepalive_timeout(Seconds(5))
+                .set_frame_read_rate(Seconds(5), Seconds::ZERO, 16),
+        );
+        sleep(Millis(50)).await;
+
+        client.write(Bytes::from(vec![b'a'; 32]));
+        state.notify_timeout();
+        sleep(Millis(50)).await;
+        assert!(state.is_active());
+        assert!(errs.borrow().is_empty());
+
+        client.write(Bytes::from(vec![b'b'; 32]));
+        let buf = client.read().await.unwrap();
+        assert_eq!(&buf[..32], &[b'a'; 32][..]);
+        assert_eq!(&buf[32..], &[b'b'; 32][..]);
+        assert!(errs.borrow().is_empty());
     }
 
     /// Decodes one byte per item, `p` and `P` are followed by more parts of a
