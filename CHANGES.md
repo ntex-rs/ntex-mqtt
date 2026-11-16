@@ -1,5 +1,11 @@
 # Changes
 
+## [10.0.1] - 2026-11-16
+
+* Fix undefined behavior in v3/v5 `Subscribe::iter_mut()` and v5
+  `Unsubscribe::iter_mut()`. The iterators no longer write through a pointer
+  derived from a shared reference
+
 ## [10.0.0] - 2026-11-13
 
 * Add `Ticket`, a per-connection arrival ticket. The v3/v5 codecs issue one to each

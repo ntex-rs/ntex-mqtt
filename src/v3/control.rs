@@ -1,6 +1,6 @@
 //! MQTT 3.1.1 server control messages
 
-use std::{fmt, marker::PhantomData, num::NonZeroU16, ptr};
+use std::{fmt, iter, num::NonZeroU16, slice};
 
 use ntex_bytes::ByteString;
 
@@ -218,9 +218,7 @@ impl Subscribe {
     /// Iterate over requested filters and mutable acknowledgment results.
     pub fn iter_mut(&mut self) -> SubscribeIter<'_> {
         SubscribeIter {
-            subs: ptr::from_ref(self).cast_mut(),
-            entry: 0,
-            lt: PhantomData,
+            entries: self.topics.iter().zip(self.codes.iter_mut()),
         }
     }
 
@@ -250,12 +248,11 @@ impl<'a> IntoIterator for &'a mut Subscribe {
 
 /// Iterator over subscription topics
 pub struct SubscribeIter<'a> {
-    /// Exclusively borrowed subscription storage; each result borrows a distinct entry.
-    subs: *mut Subscribe,
-    /// Index of the next topic and acknowledgment code to yield.
-    entry: usize,
-    /// Keeps the subscription exclusively borrowed for the iterator lifetime.
-    lt: PhantomData<&'a mut Subscribe>,
+    /// Requested topics paired with their distinct acknowledgment codes.
+    entries: iter::Zip<
+        slice::Iter<'a, (ByteString, QoS)>,
+        slice::IterMut<'a, codec::SubscribeReturnCode>,
+    >,
 }
 
 impl fmt::Debug for SubscribeIter<'_> {
@@ -264,31 +261,18 @@ impl fmt::Debug for SubscribeIter<'_> {
     }
 }
 
-impl<'a> SubscribeIter<'a> {
-    /// Yield the next topic with its distinct mutable result slot, advancing the cursor.
-    fn next_unsafe(&mut self) -> Option<Subscription<'a>> {
-        let subs = unsafe { &mut *self.subs };
-
-        if self.entry < subs.topics.len() {
-            let s = Subscription {
-                topic: &subs.topics[self.entry].0,
-                qos: subs.topics[self.entry].1,
-                code: &mut subs.codes[self.entry],
-            };
-            self.entry += 1;
-            Some(s)
-        } else {
-            None
-        }
-    }
-}
-
 impl<'a> Iterator for SubscribeIter<'a> {
     type Item = Subscription<'a>;
 
     #[inline]
     fn next(&mut self) -> Option<Subscription<'a>> {
-        self.next_unsafe()
+        self.entries
+            .next()
+            .map(|((topic, qos), code)| Subscription {
+                topic,
+                qos: *qos,
+                code,
+            })
     }
 }
 
@@ -430,5 +414,37 @@ mod tests {
         // Ping, Disconnect, WrBackpressure, Shutdown, PeerGone
         assert!(format!("{Ping:?}").contains("Ping"));
         assert!(format!("{Disconnect:?}").contains("Disconnect"));
+    }
+
+    /// STATEMENT: Subscriptions yielded by `Subscribe::iter_mut` stay valid while later ones are yielded.
+    ///
+    /// HOW:
+    /// - Collect every subscription of a two-topic `Subscribe` before updating any of them.
+    /// - Confirm the first topic, fail the second, and check each topic got its own return code.
+    /// - Under Miri, this also checks that later items do not invalidate earlier result borrows.
+    #[test]
+    fn iter_mut_items_outlive_iteration() {
+        let mut sub = Subscribe::new(
+            NonZeroU16::new(1).unwrap(),
+            0,
+            vec![
+                (ByteString::from_static("a"), QoS::AtLeastOnce),
+                (ByteString::from_static("b"), QoS::ExactlyOnce),
+            ],
+        );
+        let mut items: Vec<_> = sub.iter_mut().collect();
+        assert_eq!(items[0].topic(), "a");
+        assert_eq!(items[1].qos(), QoS::ExactlyOnce);
+        items[0].confirm(QoS::AtLeastOnce);
+        items[1].fail();
+        drop(items);
+
+        assert_eq!(
+            sub.codes,
+            [
+                codec::SubscribeReturnCode::Success(QoS::AtLeastOnce),
+                codec::SubscribeReturnCode::Failure
+            ]
+        );
     }
 }

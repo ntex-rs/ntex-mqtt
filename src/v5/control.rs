@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData, ptr};
+use std::{fmt, iter, slice};
 
 use ntex_bytes::ByteString;
 
@@ -297,9 +297,11 @@ impl Subscribe {
     /// Iterates over filters and options with mutable access to their `SUBACK` statuses.
     pub fn iter_mut(&mut self) -> SubscribeIter<'_> {
         SubscribeIter {
-            subs: ptr::from_ref(self).cast_mut(),
-            entry: 0,
-            lt: PhantomData,
+            entries: self
+                .packet
+                .topic_filters
+                .iter()
+                .zip(self.result.status.iter_mut()),
         }
     }
 
@@ -355,12 +357,11 @@ impl<'a> IntoIterator for &'a mut Subscribe {
 
 /// Iterator over requested filters, options, and mutable `SUBACK` statuses.
 pub struct SubscribeIter<'a> {
-    /// Exclusively borrowed request whose filter and status entries are yielded.
-    subs: *mut Subscribe,
-    /// Index of the next filter/status pair; only advances during iteration.
-    entry: usize,
-    /// Keeps the request exclusively borrowed for the lifetime of yielded entries.
-    lt: PhantomData<&'a mut Subscribe>,
+    /// Requested filters and options paired with their distinct `SUBACK` statuses.
+    entries: iter::Zip<
+        slice::Iter<'a, (ByteString, codec::SubscriptionOptions)>,
+        slice::IterMut<'a, codec::SubscribeAckReason>,
+    >,
 }
 
 impl fmt::Debug for SubscribeIter<'_> {
@@ -369,31 +370,18 @@ impl fmt::Debug for SubscribeIter<'_> {
     }
 }
 
-impl<'a> SubscribeIter<'a> {
-    /// Yields the next filter, options, and mutable acknowledgement status using the stored pointer.
-    fn next_unsafe(&mut self) -> Option<Subscription<'a>> {
-        let subs = unsafe { &mut *self.subs };
-
-        if self.entry < subs.packet.topic_filters.len() {
-            let s = Subscription {
-                topic: &subs.packet.topic_filters[self.entry].0,
-                options: &subs.packet.topic_filters[self.entry].1,
-                status: &mut subs.result.status[self.entry],
-            };
-            self.entry += 1;
-            Some(s)
-        } else {
-            None
-        }
-    }
-}
-
 impl<'a> Iterator for SubscribeIter<'a> {
     type Item = Subscription<'a>;
 
     #[inline]
     fn next(&mut self) -> Option<Subscription<'a>> {
-        self.next_unsafe()
+        self.entries
+            .next()
+            .map(|((topic, options), status)| Subscription {
+                topic,
+                options,
+                status,
+            })
     }
 }
 
@@ -502,9 +490,11 @@ impl Unsubscribe {
     /// Iterates over requested filters with mutable access to their `UNSUBACK` statuses.
     pub fn iter_mut(&mut self) -> UnsubscribeIter<'_> {
         UnsubscribeIter {
-            subs: ptr::from_ref::<Unsubscribe>(self).cast_mut(),
-            entry: 0,
-            lt: PhantomData,
+            entries: self
+                .packet
+                .topic_filters
+                .iter()
+                .zip(self.result.status.iter_mut()),
         }
     }
 
@@ -560,12 +550,9 @@ impl<'a> IntoIterator for &'a mut Unsubscribe {
 
 /// Iterator over requested topic filters and mutable `UNSUBACK` statuses.
 pub struct UnsubscribeIter<'a> {
-    /// Exclusively borrowed request whose filter and status entries are yielded.
-    subs: *mut Unsubscribe,
-    /// Index of the next filter/status pair; only advances during iteration.
-    entry: usize,
-    /// Keeps the request exclusively borrowed for the lifetime of yielded entries.
-    lt: PhantomData<&'a mut Unsubscribe>,
+    /// Requested filters paired with their distinct `UNSUBACK` statuses.
+    entries:
+        iter::Zip<slice::Iter<'a, ByteString>, slice::IterMut<'a, codec::UnsubscribeAckReason>>,
 }
 
 impl fmt::Debug for UnsubscribeIter<'_> {
@@ -574,30 +561,14 @@ impl fmt::Debug for UnsubscribeIter<'_> {
     }
 }
 
-impl<'a> UnsubscribeIter<'a> {
-    /// Yields the next filter and mutable acknowledgement status using the stored pointer.
-    fn next_unsafe(&mut self) -> Option<UnsubscribeItem<'a>> {
-        let subs = unsafe { &mut *self.subs };
-
-        if self.entry < subs.packet.topic_filters.len() {
-            let s = UnsubscribeItem {
-                topic: &subs.packet.topic_filters[self.entry],
-                status: &mut subs.result.status[self.entry],
-            };
-            self.entry += 1;
-            Some(s)
-        } else {
-            None
-        }
-    }
-}
-
 impl<'a> Iterator for UnsubscribeIter<'a> {
     type Item = UnsubscribeItem<'a>;
 
     #[inline]
     fn next(&mut self) -> Option<UnsubscribeItem<'a>> {
-        self.next_unsafe()
+        self.entries
+            .next()
+            .map(|(topic, status)| UnsubscribeItem { topic, status })
     }
 }
 
@@ -682,5 +653,66 @@ mod tests {
 
         // Ping
         assert!(format!("{Ping:?}").contains("Ping"));
+    }
+
+    /// STATEMENT: Items yielded by `Subscribe::iter_mut` and `Unsubscribe::iter_mut` stay valid while later ones are yielded.
+    ///
+    /// HOW:
+    /// - Collect every item of two-filter subscribe and unsubscribe messages before updating any of them.
+    /// - Confirm or succeed the first item, fail the second, and check each filter got its own status.
+    /// - Under Miri, this also checks that later items do not invalidate earlier status borrows.
+    #[test]
+    fn iter_mut_items_outlive_iteration() {
+        let mut sub = Subscribe::new(
+            codec::Subscribe {
+                packet_id: NonZeroU16::new(1).unwrap(),
+                id: None,
+                user_properties: Vec::new(),
+                topic_filters: vec![
+                    (
+                        ByteString::from_static("a"),
+                        codec::SubscriptionOptions::default(),
+                    ),
+                    (
+                        ByteString::from_static("b"),
+                        codec::SubscriptionOptions::default(),
+                    ),
+                ],
+            },
+            0,
+        );
+        let mut items: Vec<_> = sub.iter_mut().collect();
+        assert_eq!(items[1].topic(), "b");
+        items[0].confirm(QoS::AtLeastOnce);
+        items[1].fail(codec::SubscribeAckReason::NotAuthorized);
+        drop(items);
+        assert_eq!(
+            sub.result.status,
+            [
+                codec::SubscribeAckReason::GrantedQos1,
+                codec::SubscribeAckReason::NotAuthorized
+            ]
+        );
+
+        let mut unsub = Unsubscribe::new(
+            codec::Unsubscribe {
+                packet_id: NonZeroU16::new(2).unwrap(),
+                user_properties: Vec::new(),
+                topic_filters: vec![ByteString::from_static("a"), ByteString::from_static("b")],
+            },
+            0,
+        );
+        let mut items: Vec<_> = unsub.iter_mut().collect();
+        assert_eq!(items[1].topic(), "b");
+        items[0].success();
+        items[1].fail(codec::UnsubscribeAckReason::NoSubscriptionExisted);
+        drop(items);
+        assert_eq!(
+            unsub.result.status,
+            [
+                codec::UnsubscribeAckReason::Success,
+                codec::UnsubscribeAckReason::NoSubscriptionExisted
+            ]
+        );
     }
 }
